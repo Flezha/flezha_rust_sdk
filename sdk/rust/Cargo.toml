@@ -1,5 +1,5 @@
 [workspace]
-name = "aflecha_rust_sdk"
+resolver = "2"
 
 members = [
     "operator",
