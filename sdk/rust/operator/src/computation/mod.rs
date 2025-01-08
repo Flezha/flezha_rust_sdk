@@ -1,3 +1,5 @@
+mod computation_input;
+
 use std::sync::{Arc, Mutex, RwLock};
 use std::{collections::HashMap, os::unix::net::UnixStream};
 use std::io::Write;
@@ -5,10 +7,7 @@ use serde_json::Value;
 
 use crate::service::payloader;
 
-pub enum ComputationInput {
-    Text(String),
-    Binary(Vec<u8>),
-}
+pub use computation_input::ComputationInput;
 
 pub enum ComputationOutput {
     None,

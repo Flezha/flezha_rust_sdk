@@ -9,11 +9,11 @@ use std::{collections::HashMap, os::unix::net::UnixStream, sync::{Arc, Mutex, Rw
 use operator::ComputationOperator;
 
 pub use computation::{
-    ComputationInput,
     ComputationOutput,
     ComputationResult,
     Computation,
-    SerializableComputation
+    SerializableComputation,
+    ComputationInput
 };
 
 pub struct Aflecha {
