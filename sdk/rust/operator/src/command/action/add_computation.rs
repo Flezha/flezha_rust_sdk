@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use serde_json::Value;
 use serde::Deserialize;
 
-use crate::operator::ComputationOperator;
+use crate::node::WorkerNode;
 use crate::service::payloader;
 
 #[derive(Deserialize, Debug)]
@@ -19,7 +19,7 @@ pub struct AddComputationCommand {
 impl CommandAction for AddComputationCommand {
     fn handle(
         &self,
-        operator: &Arc<Mutex<ComputationOperator>>,
+        operator: &Arc<Mutex<WorkerNode>>,
         _message: &String,
         reference_id: String,
     ) {

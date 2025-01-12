@@ -1,12 +1,12 @@
 mod computation;
-mod operator;
+mod node;
 mod service;
 mod command;
 mod utility;
 
 use std::{collections::HashMap, os::unix::net::UnixStream, sync::{Arc, Mutex, RwLock}};
 
-use operator::ComputationOperator;
+use node::WorkerNode;
 
 pub use computation::{
     ComputationOutput,
@@ -20,7 +20,7 @@ pub struct Aflecha {
     _id: String,
     computations: Arc<RwLock<HashMap<String, Arc<Mutex<Box<dyn Computation>>>>>>,
     shared_io_streams: Arc<RwLock<HashMap<u8, UnixStream>>>,
-    operator: Arc<Mutex<ComputationOperator>>,
+    operator: Arc<Mutex<WorkerNode>>,
 }
 
 impl Aflecha {
@@ -32,7 +32,7 @@ impl Aflecha {
             _id: id.clone(),
             computations: Arc::clone(&computations),
             shared_io_streams: Arc::clone(&shared_io_streams),
-            operator: ComputationOperator::new(
+            operator: WorkerNode::new(
                 id.clone(),
                 computations,
                 shared_io_streams,

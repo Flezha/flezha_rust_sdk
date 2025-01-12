@@ -7,7 +7,7 @@ use super::CommandAction;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::operator::ComputationOperator;
+use crate::node::WorkerNode;
 use crate::service::payloader;
 
 #[derive(Deserialize)]
@@ -18,7 +18,7 @@ pub struct SerializeComputationCommand {
 impl CommandAction for SerializeComputationCommand {
     fn handle(
         &self,
-        operator: &Arc<Mutex<ComputationOperator>>,
+        operator: &Arc<Mutex<WorkerNode>>,
         _message: &String,
         reference_id: String,
     ) {

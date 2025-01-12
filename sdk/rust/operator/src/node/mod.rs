@@ -12,58 +12,58 @@ use std::thread::{self};
 use std::io::{self, Read};
 use std::time::Duration;
 
-pub struct ComputationOperator {
-    operator_id: String,
+pub struct WorkerNode {
+    namespace: String,
     computation_factory: HashMap<String, fn() -> Box<dyn Computation>>,
     computations: Arc<RwLock<HashMap<String, Arc<Mutex<Box<dyn Computation>>>>>>,
     control_stream: Arc<UnixStream>,
     shared_io_streams: Arc<RwLock<HashMap<u8, UnixStream>>>,
 }
 
-pub enum OperatorAction {
+pub enum NodeAction {
     ControlCommand(String, Vec<u8>),
     EngineIdConfirmation
 }
 
-impl ComputationOperator {
+impl WorkerNode {
     pub fn new(
-        operator_id: String,
+        namespace: String,
         computations: Arc<RwLock<HashMap<String, Arc<Mutex<Box<dyn Computation>>>>>>,
         shared_io_streams: Arc<RwLock<HashMap<u8, UnixStream>>>,
-    ) -> Arc<Mutex<ComputationOperator>> {
-        let (tx, rx): (mpsc::Sender<OperatorAction>, mpsc::Receiver<OperatorAction>) = mpsc::channel();
+    ) -> Arc<Mutex<WorkerNode>> {
+        let (tx, rx): (mpsc::Sender<NodeAction>, mpsc::Receiver<NodeAction>) = mpsc::channel();
         let tx = Arc::new(Mutex::new(tx));
         let rx = Arc::new(Mutex::new(rx));
     
         let (_control_thread, control_stream) = control_unit::connect_control_socket(
-            operator_id.clone(),
+            namespace.clone(),
             Arc::clone(&tx)
         );
 
-        // Make sure the operator id is passed to the Aflecha.
-        match rx.lock().unwrap().recv().expect("Failed to receive operator id confirmation") {
-            OperatorAction::EngineIdConfirmation => {},
+        // Make sure the namespace is passed to the Aflecha.
+        match rx.lock().unwrap().recv().expect("Failed to receive namespace confirmation") {
+            NodeAction::EngineIdConfirmation => {},
             _ => panic!("Wrong order of messages"),
         }
 
-        let operator = ComputationOperator {
-            operator_id,
+        let worker = WorkerNode {
+            namespace,
             control_stream,
             computations,
             shared_io_streams,
             computation_factory: HashMap::new(),
         };
     
-        let operator_arc = Arc::new(Mutex::new(operator));
+        let worker_arc = Arc::new(Mutex::new(worker));
             
         let _action_receiver = action_receiver::start_action_receiver(
-            Arc::clone(&operator_arc),
+            Arc::clone(&worker_arc),
             Arc::clone(&rx)
         );
     
         let _stdio_thread = start_stdio_thread();
     
-        operator_arc
+        worker_arc
     }
 
     pub fn register_factory(
@@ -98,8 +98,8 @@ impl ComputationOperator {
         Arc::clone(&self.control_stream)
     }
 
-    pub fn get_operator_id(&self) -> String {
-        self.operator_id.clone()
+    pub fn get_namespace(&self) -> String {
+        self.namespace.clone()
     }
 
     pub fn get_computations(&self) -> Arc<RwLock<HashMap<String, Arc<Mutex<Box<dyn Computation>>>>>> {
