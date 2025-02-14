@@ -30,7 +30,7 @@ impl CommandAction for ConnectSocketCommand {
         let operator_guard = operator.lock().unwrap();
         let computations = operator_guard.get_computations();
         let control_stream = operator_guard.get_control_stream();
-        let operator_id = operator_guard.get_namespace();
+        let group_id = operator_guard.get_namespace();
         let io_streams = operator_guard.get_io_streams();
         let reference_id = reference_id.clone();
 
@@ -38,8 +38,8 @@ impl CommandAction for ConnectSocketCommand {
 
         for key in 0..self.sockets_count {
             let computations_clone = Arc::clone(&computations);
-            let stream = connect_unix(&operator_id, "primary".to_string());
-            let shared_stream = connect_unix(&operator_id, "secondary".to_string());
+            let stream = connect_unix(&group_id, "primary".to_string());
+            let shared_stream = connect_unix(&group_id, "secondary".to_string());
 
             io_streams.write().unwrap().insert(key, shared_stream.try_clone().unwrap());
 
@@ -57,9 +57,11 @@ impl CommandAction for ConnectSocketCommand {
     }
 }
 
-fn connect_unix(operator_id: &String, stream_type: String) -> UnixStream {
-    let socket_path = path_helper::stream_socket_path(operator_id, stream_type);
-    UnixStream::connect(socket_path).expect("Failed to connect to the socket")
+fn connect_unix(group_id: &String, stream_type: String) -> UnixStream {
+    let socket_path = path_helper::stream_socket_path(group_id, stream_type);
+    
+    UnixStream::connect(socket_path.clone())
+        .expect(&format!("Failed to connect to the socket: {}", socket_path.clone()))
 }
 
 fn listen_incoming(mut stream: UnixStream, computations: &Arc<RwLock<HashMap<String, Arc<Mutex<Box<dyn Computation>>>>>>) {

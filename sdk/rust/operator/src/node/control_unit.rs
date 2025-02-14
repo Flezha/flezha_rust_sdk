@@ -10,16 +10,16 @@ use crate::utility::path_helper;
 use super::NodeAction;
 
 fn handle_control_socket(
-    operator_id: String,
+    group_id: String,
     tx: Arc<Mutex<mpsc::Sender<NodeAction>>>,
     stream_boxed: Arc<UnixStream>,  // Update the type here
 ) -> (thread::JoinHandle<()>, Arc<UnixStream>) {
     let stream_boxed_clone = Arc::clone(&stream_boxed);
 
     let thread = thread::spawn(move || {
-        let payload = payloader::build_from_str("connect_control_channel", &operator_id);
+        let payload = payloader::build_from_str("connect_control_channel", &group_id);
 
-        // Pass operator id to the Aflecha.
+        // Pass group id to the Aflecha.
         stream_boxed_clone.try_clone().unwrap().write_all(&payload).unwrap();
         
         tx.lock().unwrap().send(NodeAction::EngineIdConfirmation).unwrap();
