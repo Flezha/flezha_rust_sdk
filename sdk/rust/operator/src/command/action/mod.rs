@@ -1,3 +1,4 @@
+mod assign_operator_id;
 mod add_computation;
 mod rem_computation;
 mod connect_streams;
@@ -45,6 +46,11 @@ pub fn handle_action(
     let reference_id = command.reference_id;
 
     let command_action: Box<dyn CommandAction> = match payload_id.as_str() {
+        "assign_operator_id" => {
+            let command: assign_operator_id::AssignOperatorIdCommand = serde_json::from_value(command.data)
+                .expect("Failed to deserialize AssignOperatorIdCommand");
+            Box::new(command)
+        }
         "connect_sockets" => {
             let command: ConnectSocketCommand = serde_json::from_value(command.data)
                 .expect("Failed to deserialize OpenSocketCommand");
