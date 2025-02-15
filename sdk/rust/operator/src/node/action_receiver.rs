@@ -3,11 +3,11 @@ use std::sync::{mpsc, Arc, Mutex};
 
 use crate::command::action;
 
-use super::{WorkerNode, NodeAction};
+use super::{OperatorNode, NodeAction};
 
 
 pub fn start_action_receiver(
-    worker_node: Arc<Mutex<WorkerNode>>,
+    worker_node: Arc<Mutex<OperatorNode>>,
     rx: Arc<Mutex<mpsc::Receiver<NodeAction>>>,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {

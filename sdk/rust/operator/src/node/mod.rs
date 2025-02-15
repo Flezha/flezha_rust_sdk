@@ -12,7 +12,8 @@ use std::thread::{self};
 use std::io::{self, Read};
 use std::time::Duration;
 
-pub struct WorkerNode {
+pub struct OperatorNode {
+    operator_id: String,
     namespace: String,
     computation_factory: HashMap<String, fn() -> Box<dyn Computation>>,
     computations: Arc<RwLock<HashMap<String, Arc<Mutex<Box<dyn Computation>>>>>>,
@@ -25,12 +26,12 @@ pub enum NodeAction {
     EngineIdConfirmation
 }
 
-impl WorkerNode {
+impl OperatorNode {
     pub fn new(
         namespace: String,
         computations: Arc<RwLock<HashMap<String, Arc<Mutex<Box<dyn Computation>>>>>>,
         shared_io_streams: Arc<RwLock<HashMap<u8, UnixStream>>>,
-    ) -> Arc<Mutex<WorkerNode>> {
+    ) -> Arc<Mutex<OperatorNode>> {
         let (tx, rx): (mpsc::Sender<NodeAction>, mpsc::Receiver<NodeAction>) = mpsc::channel();
         let tx = Arc::new(Mutex::new(tx));
         let rx = Arc::new(Mutex::new(rx));
@@ -46,7 +47,8 @@ impl WorkerNode {
             _ => panic!("Wrong order of messages"),
         }
 
-        let worker = WorkerNode {
+        let worker = OperatorNode {
+            operator_id: "undefined".to_string(),
             namespace,
             control_stream,
             computations,

@@ -42,7 +42,7 @@ fn handle_control_socket(
 }
 
 pub fn connect_control_socket(
-    operator_id: String,
+    group_id: String,
     tx: Arc<Mutex<mpsc::Sender<NodeAction>>>,
 ) -> (thread::JoinHandle<()>, Arc<UnixStream>) {
     let socket_path = path_helper::control_socket_path();
@@ -50,5 +50,5 @@ pub fn connect_control_socket(
     let stream = UnixStream::connect(socket_path).expect("Failed to connect to control socket");
     let stream_boxed = Arc::new(stream);
 
-    handle_control_socket(operator_id, tx, stream_boxed)
+    handle_control_socket(group_id, tx, stream_boxed)
 }

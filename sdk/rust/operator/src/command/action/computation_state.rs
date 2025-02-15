@@ -5,7 +5,7 @@ use std::io::Write;
 use std::sync::{Arc, Mutex};
 use serde::Deserialize;
 
-use crate::node::WorkerNode;
+use crate::node::OperatorNode;
 use crate::service::payloader;
 
 #[derive(Deserialize, Debug)]
@@ -16,7 +16,7 @@ pub struct ComputationStateCommand {
 impl CommandAction for ComputationStateCommand {
     fn handle(
         &self,
-        operator: &Arc<Mutex<WorkerNode>>,
+        operator: &Arc<Mutex<OperatorNode>>,
         _message: &String,
         reference_id: String,
     ) {
