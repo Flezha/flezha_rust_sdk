@@ -14,7 +14,7 @@ use std::time::Duration;
 
 pub struct OperatorNode {
     operator_id: String,
-    namespace: String,
+    _namespace: String,
     computation_factory: HashMap<String, fn() -> Box<dyn Computation>>,
     computations: Arc<RwLock<HashMap<String, Arc<Mutex<Box<dyn Computation>>>>>>,
     control_stream: Arc<UnixStream>,
@@ -49,7 +49,7 @@ impl OperatorNode {
 
         let worker = OperatorNode {
             operator_id: "undefined".to_string(),
-            namespace,
+            _namespace: namespace,
             control_stream,
             computations,
             shared_io_streams,
@@ -100,8 +100,8 @@ impl OperatorNode {
         Arc::clone(&self.control_stream)
     }
 
-    pub fn get_namespace(&self) -> String {
-        self.namespace.clone()
+    pub fn _get_namespace(&self) -> String {
+        self._namespace.clone()
     }
 
     pub fn get_computations(&self) -> Arc<RwLock<HashMap<String, Arc<Mutex<Box<dyn Computation>>>>>> {
@@ -115,6 +115,10 @@ impl OperatorNode {
 
     pub fn get_io_streams(&self) -> Arc<RwLock<HashMap<u8, UnixStream>>> {
         Arc::clone(&self.shared_io_streams)
+    }
+
+    pub fn get_operator_id(&self) -> String {
+        self.operator_id.clone()
     }
 
     pub fn assign_operator_id(&mut self, operator_id: String) {
