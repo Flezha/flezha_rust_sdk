@@ -116,6 +116,10 @@ impl OperatorNode {
     pub fn get_io_streams(&self) -> Arc<RwLock<HashMap<u8, UnixStream>>> {
         Arc::clone(&self.shared_io_streams)
     }
+
+    pub fn assign_operator_id(&mut self, operator_id: String) {
+        self.operator_id = operator_id;
+    }
 }
 
 // Start a thread to monitor stdout and exit when stdin is closed. TODO: Maybe remove this?

@@ -21,7 +21,9 @@ impl CommandAction for AssignOperatorIdCommand {
         _message: &String,
         reference_id: String,
     ) {
-        let operator_guard = operator.lock().unwrap();        
+        let mut operator_guard = operator.lock().unwrap(); 
+
+        operator_guard.assign_operator_id(self.operator_id.clone());       
                     
         let mut hashmap: HashMap<String, Value> = HashMap::new();
         hashmap.insert("reference_id".to_string(), Value::String(reference_id));
