@@ -1,22 +1,22 @@
-mod assign_operator_id;
-mod add_worker;
-mod rem_worker;
-mod connect_streams;
-mod serialize_worker;
-mod deserialize_worker;
+mod operator_assign;
+mod worker_add;
+mod worker_rem;
+mod streams_connect;
+mod worker_serialize;
+mod worker_deserialize;
 mod worker_state;
 
 use std::sync::{Arc, Mutex};
 
-use connect_streams::ConnectSocketCommand;
-use serialize_worker::SerializeWorkerCommand;
-use deserialize_worker::DeSerializeWorkerCommand;
+use streams_connect::ConnectSocketCommand;
+use worker_serialize::SerializeWorkerCommand;
+use worker_deserialize::DeSerializeWorkerCommand;
 use worker_state::WorkerStateCommand;
 
 use crate::node::OperatorNode;
 
-use self::add_worker::AddWorkerCommand;
-use self::rem_worker::RemWorkerCommand;
+use self::worker_add::AddWorkerCommand;
+use self::worker_rem::RemWorkerCommand;
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -47,7 +47,7 @@ pub fn handle_action(
 
     let command_action: Box<dyn CommandAction> = match payload_id.as_str() {
         "assign_operator_id" => {
-            let command: assign_operator_id::AssignOperatorIdCommand = serde_json::from_value(command.data)
+            let command: operator_assign::AssignOperatorIdCommand = serde_json::from_value(command.data)
                 .expect("Failed to deserialize AssignOperatorIdCommand");
             Box::new(command)
         }
