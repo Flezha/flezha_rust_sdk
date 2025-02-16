@@ -1,22 +1,22 @@
 mod assign_operator_id;
-mod add_computation;
-mod rem_computation;
+mod add_worker;
+mod rem_worker;
 mod connect_streams;
-mod serialize_computation;
-mod deserialize_computation;
-mod computation_state;
+mod serialize_worker;
+mod deserialize_worker;
+mod worker_state;
 
 use std::sync::{Arc, Mutex};
 
 use connect_streams::ConnectSocketCommand;
-use serialize_computation::SerializeComputationCommand;
-use deserialize_computation::DeSerializeComputationCommand;
-use computation_state::ComputationStateCommand;
+use serialize_worker::SerializeWorkerCommand;
+use deserialize_worker::DeSerializeWorkerCommand;
+use worker_state::WorkerStateCommand;
 
 use crate::node::OperatorNode;
 
-use self::add_computation::AddComputationCommand;
-use self::rem_computation::RemComputationCommand;
+use self::add_worker::AddWorkerCommand;
+use self::rem_worker::RemWorkerCommand;
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -56,29 +56,29 @@ pub fn handle_action(
                 .expect("Failed to deserialize OpenSocketCommand");
             Box::new(command)
         }
-        "add_computation" => {
-            let command: AddComputationCommand = serde_json::from_value(command.data)
-                .expect("Failed to deserialize AddComputationCommand");
+        "add_worker" => {
+            let command: AddWorkerCommand = serde_json::from_value(command.data)
+                .expect("Failed to deserialize AddWorkerCommand");
             Box::new(command)
         }
-        "rem_computation" => {
-            let command: RemComputationCommand = serde_json::from_value(command.data)
-                .expect("Failed to deserialize AddComputationCommand");
+        "rem_worker" => {
+            let command: RemWorkerCommand = serde_json::from_value(command.data)
+                .expect("Failed to deserialize AddWorkerCommand");
             Box::new(command)
         }
-        "serialize_computation" => {
-            let command: SerializeComputationCommand = serde_json::from_value(command.data)
-                .expect("Failed to deserialize SerializeComputationCommand");
+        "serialize_worker" => {
+            let command: SerializeWorkerCommand = serde_json::from_value(command.data)
+                .expect("Failed to deserialize SerializeWorkerCommand");
             Box::new(command)
         }
-        "deserialize_computation" => {
-            let command: DeSerializeComputationCommand = serde_json::from_value(command.data)
-                .expect("Failed to deserialize DeSerializeComputationCommand");
+        "deserialize_worker" => {
+            let command: DeSerializeWorkerCommand = serde_json::from_value(command.data)
+                .expect("Failed to deserialize DeSerializeWorkerCommand");
             Box::new(command)
         }
-        "computation_state" => {
-            let command: ComputationStateCommand = serde_json::from_value(command.data)
-            .expect("Failed to deserialize ComputationStateCommand");
+        "worker_state" => {
+            let command: WorkerStateCommand = serde_json::from_value(command.data)
+            .expect("Failed to deserialize WorkerStateCommand");
         Box::new(command)
         }
         _ => {

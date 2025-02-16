@@ -11,11 +11,12 @@ use crate::node::OperatorNode;
 use crate::service::payloader;
 
 #[derive(Deserialize)]
-pub struct SerializeComputationCommand {
-    computation_id: String
+pub struct DeSerializeWorkerCommand {
+    worker_id: String,
+    serialized_data: Vec<u8>
 }
 
-impl CommandAction for SerializeComputationCommand {
+impl CommandAction for DeSerializeWorkerCommand {
     fn handle(
         &self,
         operator: &Arc<Mutex<OperatorNode>>,
@@ -24,31 +25,26 @@ impl CommandAction for SerializeComputationCommand {
     ) {
         let operator_guard = operator.lock().unwrap();
         let control_stream = operator_guard.get_control_stream();
-        let computations_lock = operator_guard.get_computations();
-        let computations = computations_lock.read().unwrap();
-
+        let workers_lock = operator_guard.get_workers();
+        let workers = workers_lock.read().unwrap();
+        
         drop(operator_guard);
 
-        let serialized_json = match computations.get(&self.computation_id) {
+        match workers.get(&self.worker_id) {
             Some(comp_arc) => {
-                let computation = &*comp_arc.lock().unwrap();
-                let serialized_data = computation.serialize_computation();
+                let worker = comp_arc.lock().unwrap();
 
-                let data_as_values = serialized_data.iter()
-                    .map(|&byte| Value::Number(serde_json::Number::from(byte)))
-                    .collect();
-    
-                Value::Array(data_as_values)
+                worker.deserialize_worker(&self.serialized_data);
             }
-            None => Value::Null,
+            None => (),
         };
 
+        // TODO: the same code is all over the place, refactor it.
         let mut hashmap: HashMap<String, Value> = HashMap::new();
         hashmap.insert("reference_id".to_string(), Value::String(reference_id));
-        hashmap.insert("data".to_string(), serialized_json);
 
         let json_string = serde_json::to_string(&hashmap).unwrap();
-        let payload = payloader::build_from_str(&"serialize_computation".to_string(), &json_string);
+        let payload = payloader::build_from_str(&"deserialize_worker".to_string(), &json_string);
         control_stream.try_clone().unwrap().write_all(&payload).unwrap();
     }
 }

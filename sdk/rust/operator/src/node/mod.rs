@@ -1,7 +1,7 @@
 pub mod action_receiver;
 mod control_unit;
 
-use crate::computation::Computation;
+use crate::worker::Worker;
 use crate::service::payloader;
 
 use std::io::Write;
@@ -15,8 +15,8 @@ use std::time::Duration;
 pub struct OperatorNode {
     operator_id: String,
     _namespace: String,
-    computation_factory: HashMap<String, fn() -> Box<dyn Computation>>,
-    computations: Arc<RwLock<HashMap<String, Arc<Mutex<Box<dyn Computation>>>>>>,
+    worker_factory: HashMap<String, fn() -> Box<dyn Worker>>,
+    workers: Arc<RwLock<HashMap<String, Arc<Mutex<Box<dyn Worker>>>>>>,
     control_stream: Arc<UnixStream>,
     shared_io_streams: Arc<RwLock<HashMap<u8, UnixStream>>>,
 }
@@ -29,7 +29,7 @@ pub enum NodeAction {
 impl OperatorNode {
     pub fn new(
         namespace: String,
-        computations: Arc<RwLock<HashMap<String, Arc<Mutex<Box<dyn Computation>>>>>>,
+        workers: Arc<RwLock<HashMap<String, Arc<Mutex<Box<dyn Worker>>>>>>,
         shared_io_streams: Arc<RwLock<HashMap<u8, UnixStream>>>,
     ) -> Arc<Mutex<OperatorNode>> {
         let (tx, rx): (mpsc::Sender<NodeAction>, mpsc::Receiver<NodeAction>) = mpsc::channel();
@@ -51,9 +51,9 @@ impl OperatorNode {
             operator_id: "undefined".to_string(),
             _namespace: namespace,
             control_stream,
-            computations,
+            workers,
             shared_io_streams,
-            computation_factory: HashMap::new(),
+            worker_factory: HashMap::new(),
         };
     
         let worker_arc = Arc::new(Mutex::new(worker));
@@ -71,7 +71,7 @@ impl OperatorNode {
     pub fn register_factory(
         &mut self,
         factory_id: String,
-        factory: fn() -> Box<dyn Computation>) {
+        factory: fn() -> Box<dyn Worker>) {
         let mut core_data = HashMap::new();
         
         core_data.insert("factory_id".to_string(), factory_id.clone());
@@ -80,20 +80,20 @@ impl OperatorNode {
         let payload = payloader::build_from_str(&"register_factory".to_string(), &json);
 
         self.control_stream.try_clone().unwrap().write_all(&payload).unwrap();
-        self.computation_factory.insert(factory_id.clone(), factory);
+        self.worker_factory.insert(factory_id.clone(), factory);
     }
 
-    pub fn get_factory(&self, factory_id: String) -> Option<&fn() -> Box<dyn Computation>> {
-        self.computation_factory.get(&factory_id)
+    pub fn get_factory(&self, factory_id: String) -> Option<&fn() -> Box<dyn Worker>> {
+        self.worker_factory.get(&factory_id)
     }
 
-    pub fn add_computation(&self, id: String, computation: Box<dyn Computation>) {
-        let computation = Arc::new(Mutex::new(computation));
-        self.computations.write().unwrap().insert(id, computation);
+    pub fn add_worker(&self, id: String, worker: Box<dyn Worker>) {
+        let worker = Arc::new(Mutex::new(worker));
+        self.workers.write().unwrap().insert(id, worker);
     }
 
-    pub fn rem_computation(&self, id: String) {
-        self.computations.write().unwrap().remove(&id);
+    pub fn rem_worker(&self, id: String) {
+        self.workers.write().unwrap().remove(&id);
     }
 
     pub fn get_control_stream(&self) -> Arc<UnixStream> {
@@ -104,13 +104,13 @@ impl OperatorNode {
         self._namespace.clone()
     }
 
-    pub fn get_computations(&self) -> Arc<RwLock<HashMap<String, Arc<Mutex<Box<dyn Computation>>>>>> {
-        Arc::clone(&self.computations)
+    pub fn get_workers(&self) -> Arc<RwLock<HashMap<String, Arc<Mutex<Box<dyn Worker>>>>>> {
+        Arc::clone(&self.workers)
     }
 
-    pub fn get_computation(&self, id: String) -> Option<Arc<Mutex<Box<dyn Computation>>>>
+    pub fn get_worker(&self, id: String) -> Option<Arc<Mutex<Box<dyn Worker>>>>
     {
-        self.computations.read().unwrap().get(&id).map(|computation| Arc::clone(computation))
+        self.workers.read().unwrap().get(&id).map(|worker| Arc::clone(worker))
     }
 
     pub fn get_io_streams(&self) -> Arc<RwLock<HashMap<u8, UnixStream>>> {

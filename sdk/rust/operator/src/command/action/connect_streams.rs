@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::thread;
 use std::str;
 
-use crate::computation::{self, ComputationInput, Computation};
+use crate::worker::{self, WorkerInput, Worker};
 use crate::node::OperatorNode;
 use crate::service::payloader;
 
@@ -28,7 +28,7 @@ impl CommandAction for ConnectSocketCommand {
         reference_id: String,
     ) {
         let operator_guard = operator.lock().unwrap();
-        let computations = operator_guard.get_computations();
+        let workers = operator_guard.get_workers();
         let control_stream = operator_guard.get_control_stream();
         let io_streams = operator_guard.get_io_streams();
         let reference_id = reference_id.clone();
@@ -37,14 +37,14 @@ impl CommandAction for ConnectSocketCommand {
         drop(operator_guard);
 
         for key in 0..self.sockets_count {
-            let computations_clone = Arc::clone(&computations);
+            let workers_clone = Arc::clone(&workers);
             let stream = connect_unix(&operator_id, "primary".to_string());
             let shared_stream = connect_unix(&operator_id, "secondary".to_string());
 
             io_streams.write().unwrap().insert(key, shared_stream.try_clone().unwrap());
 
             let _handle = thread::spawn(move || {
-                listen_incoming(stream, &computations_clone)
+                listen_incoming(stream, &workers_clone)
             });
         }
 
@@ -64,10 +64,10 @@ fn connect_unix(operator_id: &String, stream_type: String) -> UnixStream {
         .expect(&format!("Failed to connect to the socket: {}", socket_path.clone()))
 }
 
-fn listen_incoming(mut stream: UnixStream, computations: &Arc<RwLock<HashMap<String, Arc<Mutex<Box<dyn Computation>>>>>>) {
+fn listen_incoming(mut stream: UnixStream, workers: &Arc<RwLock<HashMap<String, Arc<Mutex<Box<dyn Worker>>>>>>) {
     loop {
         match payloader::extract_payload(&mut stream) {
-            Ok((computation_id, mut payload)) => {
+            Ok((worker_id, mut payload)) => {
                 // input_type is the first byte of the payload
                 let input_type = payload[0];
 
@@ -78,28 +78,28 @@ fn listen_incoming(mut stream: UnixStream, computations: &Arc<RwLock<HashMap<Str
                 payload.remove(0);
 
                 let input = match input_type {
-                    1 => ComputationInput::Binary(payload),
-                    2 => ComputationInput::Text(str::from_utf8(&payload).unwrap().to_string()),
+                    1 => WorkerInput::Binary(payload),
+                    2 => WorkerInput::Text(str::from_utf8(&payload).unwrap().to_string()),
                     types => panic!("Invalid input type {}", types),
                 };
 
                 match processing_type {
                     1 => {
-                        computation::exec(
-                            &computation_id,
-                            computations,
+                        worker::exec(
+                            &worker_id,
+                            workers,
                             &mut stream, 
                             input
                         )
                     },
                     2 => {
-                        let computations = Arc::clone(computations);
+                        let workers = Arc::clone(workers);
                         let mut stream = stream.try_clone().unwrap();
 
                         thread::spawn(move || {
-                            computation::exec(
-                                &computation_id,
-                                &computations,
+                            worker::exec(
+                                &worker_id,
+                                &workers,
                                 &mut stream, 
                                 input
                             )

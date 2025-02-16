@@ -9,11 +9,11 @@ use crate::node::OperatorNode;
 use crate::service::payloader;
 
 #[derive(Deserialize, Debug)]
-pub struct ComputationStateCommand {
-    computation_id: String
+pub struct WorkerStateCommand {
+    worker_id: String
 }
 
-impl CommandAction for ComputationStateCommand {
+impl CommandAction for WorkerStateCommand {
     fn handle(
         &self,
         operator: &Arc<Mutex<OperatorNode>>,
@@ -21,8 +21,8 @@ impl CommandAction for ComputationStateCommand {
         reference_id: String,
     ) {
         let operator_guard = operator.lock().unwrap();
-        let computation = operator_guard.get_computation(self.computation_id.clone()).unwrap();
-        let state_json = computation.lock().unwrap().to_json_string();
+        let worker = operator_guard.get_worker(self.worker_id.clone()).unwrap();
+        let state_json = worker.lock().unwrap().to_json_string();
 
         // TODO: the same code is duplicated in other commands also.
         let mut hashmap: HashMap<String, String> = HashMap::new();
@@ -30,7 +30,7 @@ impl CommandAction for ComputationStateCommand {
         hashmap.insert("data".to_string(), state_json);
 
         let json_string = serde_json::to_string(&hashmap).unwrap();
-        let payload = payloader::build_from_str(&"computation_state".to_string(), &json_string);
+        let payload = payloader::build_from_str(&"worker_state".to_string(), &json_string);
         operator_guard.get_control_stream().try_clone().unwrap().write_all(&payload).unwrap();
     }
 }
