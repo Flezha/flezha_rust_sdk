@@ -1,7 +1,7 @@
 use std::thread;
 use std::sync::{mpsc, Arc, Mutex};
 
-use crate::command::action;
+use crate::command;
 
 use super::{OperatorNode, NodeAction};
 
@@ -18,7 +18,7 @@ pub fn start_action_receiver(
                     match received {
                         NodeAction::ControlCommand(payload_id, payload) => {
                             let payload_message: String = String::from_utf8_lossy(&payload).to_string();
-                            action::handle_action(&worker_node, &payload_id, &payload_message);
+                            command::handle_action(&worker_node, &payload_id, &payload_message);
                         }
                         _ => panic!("Unexpected message received on worker channel"),
                     }
