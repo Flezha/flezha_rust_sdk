@@ -29,7 +29,7 @@ impl CommandAction for AssignOperatorIdCommand {
         hashmap.insert("reference_id".to_string(), Value::String(reference_id));
 
         let json_string = serde_json::to_string(&hashmap).unwrap();
-        let payload = payloader::build_from_str(&"add_worker".to_string(), &json_string);
+        let payload = payloader::build_from_str(&"add_pipeline".to_string(), &json_string);
 
         operator_guard.get_control_stream().try_clone().unwrap().write_all(&payload).unwrap();
     }

@@ -30,7 +30,7 @@ impl CommandAction for WorkerStateCommand {
         hashmap.insert("data".to_string(), state_json);
 
         let json_string = serde_json::to_string(&hashmap).unwrap();
-        let payload = payloader::build_from_str(&"worker_state".to_string(), &json_string);
+        let payload = payloader::build_from_str(&"pipeline_state".to_string(), &json_string);
         operator_guard.get_control_stream().try_clone().unwrap().write_all(&payload).unwrap();
     }
 }

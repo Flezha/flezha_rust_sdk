@@ -11,7 +11,7 @@ use crate::service::payloader;
 
 #[derive(Deserialize, Debug)]
 pub struct RemWorkerCommand {
-    worker_id: String
+    pipeline_id: String
 }
 
 impl CommandAction for RemWorkerCommand {
@@ -22,13 +22,13 @@ impl CommandAction for RemWorkerCommand {
         reference_id: String,
     ) {                
         let operator_guard = operator.lock().unwrap();
-        operator_guard.rem_worker(self.worker_id.clone());        
+        operator_guard.rem_pipeline(self.pipeline_id.clone());        
         
         let mut hashmap: HashMap<String, Value> = HashMap::new();
         hashmap.insert("reference_id".to_string(), Value::String(reference_id));
 
         let json_string = serde_json::to_string(&hashmap).unwrap();
-        let payload = payloader::build_from_str(&"rem_worker".to_string(), &json_string);
+        let payload = payloader::build_from_str(&"rem_pipeline".to_string(), &json_string);
 
         operator_guard.get_control_stream().try_clone().unwrap().write_all(&payload).unwrap();
     }

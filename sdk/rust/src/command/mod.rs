@@ -1,22 +1,22 @@
 mod operator_assign;
-mod worker_add;
-mod worker_rem;
+mod pipeline_add;
+mod pipeline_rem;
 mod streams_connect;
-mod worker_serialize;
-mod worker_deserialize;
-mod worker_state;
+mod pipeline_serialize;
+mod pipeline_deserialize;
+// TODO: mod pipeline_state;
 
 use std::sync::{Arc, Mutex};
 
 use streams_connect::ConnectSocketCommand;
-use worker_serialize::SerializeWorkerCommand;
-use worker_deserialize::DeSerializeWorkerCommand;
-use worker_state::WorkerStateCommand;
+use pipeline_serialize::SerializePipelineCommand;
+use pipeline_deserialize::DeSerializePipelineCommand;
+// TODO: use pipeline_state::WorkerStateCommand;
 
 use crate::node::OperatorNode;
 
-use self::worker_add::AddWorkerCommand;
-use self::worker_rem::RemWorkerCommand;
+use self::pipeline_add::AddPipelineCommand;
+use self::pipeline_rem::RemWorkerCommand;
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -56,31 +56,33 @@ pub fn handle_action(
                 .expect("Failed to deserialize OpenSocketCommand");
             Box::new(command)
         }
-        "add_worker" => {
-            let command: AddWorkerCommand = serde_json::from_value(command.data)
-                .expect("Failed to deserialize AddWorkerCommand");
+        "add_pipeline" => {
+            let command: AddPipelineCommand = serde_json::from_value(command.data)
+                .expect("Failed to deserialize AddPipelineCommand");
             Box::new(command)
         }
-        "rem_worker" => {
+        "rem_pipeline" => {
             let command: RemWorkerCommand = serde_json::from_value(command.data)
-                .expect("Failed to deserialize AddWorkerCommand");
+                .expect("Failed to deserialize AddPipelineCommand");
             Box::new(command)
         }
-        "serialize_worker" => {
-            let command: SerializeWorkerCommand = serde_json::from_value(command.data)
-                .expect("Failed to deserialize SerializeWorkerCommand");
+        // TODO: 
+        "serialize_pipeline" => {
+            let command: SerializePipelineCommand = serde_json::from_value(command.data)
+                .expect("Failed to deserialize SerializePipelineCommand");
             Box::new(command)
         }
-        "deserialize_worker" => {
-            let command: DeSerializeWorkerCommand = serde_json::from_value(command.data)
-                .expect("Failed to deserialize DeSerializeWorkerCommand");
+        "deserialize_pipeline" => {
+            let command: DeSerializePipelineCommand = serde_json::from_value(command.data)
+                .expect("Failed to deserialize DeSerializePipelineCommand");
             Box::new(command)
         }
-        "worker_state" => {
-            let command: WorkerStateCommand = serde_json::from_value(command.data)
-            .expect("Failed to deserialize WorkerStateCommand");
-        Box::new(command)
-        }
+        // TODO:
+        // "pipeline_state" => {
+        //     let command: WorkerStateCommand = serde_json::from_value(command.data)
+        //     .expect("Failed to deserialize WorkerStateCommand");
+        // Box::new(command)
+        // }
         _ => {
             panic!("Unknown command payload_id: {}", payload_id);
         }

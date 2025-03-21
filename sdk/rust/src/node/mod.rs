@@ -1,10 +1,8 @@
 pub mod action_receiver;
 mod control_unit;
 
-use crate::worker::Worker;
-use crate::service::payloader;
+use crate::pipeline::factory_registry::{get_factory, PipelineBox, PipelineHandle};
 
-use std::io::Write;
 use std::collections::HashMap;
 use std::os::unix::net::UnixStream;
 use std::sync::{mpsc, Arc, Mutex, RwLock};
@@ -12,11 +10,11 @@ use std::thread::{self};
 use std::io::{self, Read};
 use std::time::Duration;
 
+
 pub struct OperatorNode {
     operator_id: String,
     _namespace: String,
-    worker_factory: HashMap<String, fn() -> Box<dyn Worker>>,
-    workers: Arc<RwLock<HashMap<String, Arc<Mutex<Box<dyn Worker>>>>>>,
+    pipelines: Arc<RwLock<HashMap<String, Arc<Mutex<PipelineBox>>>>>,
     control_stream: Arc<UnixStream>,
     shared_io_streams: Arc<RwLock<HashMap<u8, UnixStream>>>,
 }
@@ -29,7 +27,7 @@ pub enum NodeAction {
 impl OperatorNode {
     pub fn new(
         namespace: String,
-        workers: Arc<RwLock<HashMap<String, Arc<Mutex<Box<dyn Worker>>>>>>,
+        pipelines: Arc<RwLock<HashMap<String, Arc<Mutex<PipelineBox>>>>>,
         shared_io_streams: Arc<RwLock<HashMap<u8, UnixStream>>>,
     ) -> Arc<Mutex<OperatorNode>> {
         let (tx, rx): (mpsc::Sender<NodeAction>, mpsc::Receiver<NodeAction>) = mpsc::channel();
@@ -51,9 +49,8 @@ impl OperatorNode {
             operator_id: "undefined".to_string(),
             _namespace: namespace,
             control_stream,
-            workers,
-            shared_io_streams,
-            worker_factory: HashMap::new(),
+            pipelines,
+            shared_io_streams
         };
     
         let worker_arc = Arc::new(Mutex::new(worker));
@@ -68,32 +65,42 @@ impl OperatorNode {
         worker_arc
     }
 
-    pub fn register_factory(
-        &mut self,
-        factory_id: String,
-        factory: fn() -> Box<dyn Worker>) {
-        let mut core_data = HashMap::new();
+    // TODO: move to somewhere else.
+    // pub fn register_factory(
+    //     &mut self,
+    //     factory_id: String,
+    //     factory: fn() -> Box<dyn Worker>) {
+    //     let mut core_data = HashMap::new();
         
-        core_data.insert("factory_id".to_string(), factory_id.clone());
+    //     core_data.insert("factory_id".to_string(), factory_id.clone());
 
-        let json = serde_json::to_string(&core_data).unwrap();
-        let payload = payloader::build_from_str(&"register_factory".to_string(), &json);
+    //     let json = serde_json::to_string(&core_data).unwrap();
+    //     let payload = payloader::build_from_str(&"register_factory".to_string(), &json);
 
-        self.control_stream.try_clone().unwrap().write_all(&payload).unwrap();
-        self.worker_factory.insert(factory_id.clone(), factory);
+    //     self.control_stream.try_clone().unwrap().write_all(&payload).unwrap();
+    //     self.worker_factory.insert(factory_id.clone(), factory);
+    // }
+
+    // pub fn get_factory(&self, factory_id: String) -> Option<&fn() -> Box<dyn Worker>> {
+    //     self.worker_factory.get(&factory_id)
+    // }
+
+    pub fn add_pipeline(&self, factory_id: String, pipeline_id: String) -> Option<PipelineHandle> {
+        if let Some(factory) = get_factory(factory_id) {
+            let pipeline = factory(pipeline_id.clone());
+            self.register_pipeline(pipeline_id.clone(), pipeline);
+            self.get_pipeline(pipeline_id)
+        } else {
+            None
+        }
     }
 
-    pub fn get_factory(&self, factory_id: String) -> Option<&fn() -> Box<dyn Worker>> {
-        self.worker_factory.get(&factory_id)
+    fn register_pipeline(&self, id: String, pipeline: PipelineBox) {
+        self.pipelines.write().unwrap().insert(id, Arc::new(Mutex::new(pipeline)));
     }
 
-    pub fn add_worker(&self, id: String, worker: Box<dyn Worker>) {
-        let worker = Arc::new(Mutex::new(worker));
-        self.workers.write().unwrap().insert(id, worker);
-    }
-
-    pub fn rem_worker(&self, id: String) {
-        self.workers.write().unwrap().remove(&id);
+    pub fn rem_pipeline(&self, id: String) {
+        self.pipelines.write().unwrap().remove(&id);
     }
 
     pub fn get_control_stream(&self) -> Arc<UnixStream> {
@@ -104,13 +111,12 @@ impl OperatorNode {
         self._namespace.clone()
     }
 
-    pub fn get_workers(&self) -> Arc<RwLock<HashMap<String, Arc<Mutex<Box<dyn Worker>>>>>> {
-        Arc::clone(&self.workers)
+    pub fn get_pipelines(&self) -> Arc<RwLock<HashMap<String, Arc<Mutex<PipelineBox>>>>> {
+        Arc::clone(&self.pipelines)
     }
 
-    pub fn get_worker(&self, id: String) -> Option<Arc<Mutex<Box<dyn Worker>>>>
-    {
-        self.workers.read().unwrap().get(&id).map(|worker| Arc::clone(worker))
+    pub fn get_pipeline(&self, id: String) -> Option<PipelineHandle> {    
+        self.pipelines.read().unwrap().get(&id).cloned().map(|pipeline| PipelineHandle { pipeline })
     }
 
     pub fn get_io_streams(&self) -> Arc<RwLock<HashMap<u8, UnixStream>>> {
