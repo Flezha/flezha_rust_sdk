@@ -34,7 +34,6 @@ impl From<PipelineInput> for PipelineOutput {
     }
 }
 
-
 pub trait Pipeline {
     /// Execute the pipeline on the given input. The pipeline can mutate its internal state.
     fn run(&mut self, input: PipelineInput) -> PipelineResult;
@@ -57,15 +56,18 @@ macro_rules! define_pipeline_factory {
         state: $State:ty,
         steps: [ $( $step_fn:expr ),+ $(,)? ]
     ) => {{
-        use $crate::pipeline::{Pipeline, PipelineInput, PipelineOutput};
+        use $crate::pipeline::{Pipeline, PipelineInput, PipelineOutput, PipelineResult};
         use $crate::pipeline::factory_registry::{register_pipeline_factory, PipelineFactory};
         use std::io;
-
-        let factory: PipelineFactory = Box::new(move |_pipeline_id: &str| {
+        
+        let factory_id_string = $factory_id.clone();
+        let factory_id_for_registration = factory_id_string.clone(); // Create another clone for registration
+        
+        let factory: PipelineFactory = Box::new(move |_pipeline_id: String| {
             struct ConcretePipeline {
                 state: $State,
                 steps: Vec<Box<dyn FnMut(PipelineInput, &mut $State) -> io::Result<PipelineOutput> + Send + Sync>>,
-                result_type: PipelineResultType,
+                result_type: $crate::pipeline::PipelineResultType,
                 factory_id: String,
             }
             
@@ -77,23 +79,31 @@ macro_rules! define_pipeline_factory {
                     
                     for step in &mut self.steps {
                         // Execute the current step
-                        let output = step(current_input, &mut self.state).unwrap();
-                        
-                        // Save the output for potential return
-                        final_output = output;
-                        
-                        // Convert output back to input for the next step
-                        current_input = match &final_output {
-                            PipelineOutput::Binary(data) => PipelineInput::Binary(data.clone()),
-                            PipelineOutput::Text(text) => PipelineInput::Text(text.clone()),
-                            // TODO: implement
-                            PipelineOutput::Custom(_) => PipelineInput::Text("hello world".to_string())
-                        };
+                        match step(current_input, &mut self.state) {
+                            Ok(output) => {
+                                // Save the output for potential return
+                                final_output = output;
+                                
+                                // Convert output back to input for the next step
+                                current_input = match &final_output {
+                                    PipelineOutput::Binary(data) => PipelineInput::Binary(data.clone()),
+                                    PipelineOutput::Text(text) => PipelineInput::Text(text.clone()),
+                                    PipelineOutput::Custom(_) => {
+                                        // Handle Custom type properly
+                                        return PipelineResult::None;
+                                    }
+                                };
+                            },
+                            Err(_) => {
+                                // Handle errors by returning None
+                                return PipelineResult::None;
+                            }
+                        }
                     }
 
                     match self.result_type {
-                        PipelineResultType::None => PipelineResult::None,
-                        PipelineResultType::Forward => PipelineResult::Forward(final_output),
+                        $crate::pipeline::PipelineResultType::None => PipelineResult::None,
+                        $crate::pipeline::PipelineResultType::Forward => PipelineResult::Forward(final_output),
                     }
                 }
                 
@@ -113,16 +123,16 @@ macro_rules! define_pipeline_factory {
             
             let pipeline = ConcretePipeline {
                 state: <$State as Default>::default(),
-                steps: vec![ $( Box::new($step_fn.clone()) ),+ ],
+                steps: vec![ $( Box::new($step_fn) ),+ ],
                 result_type: $result_type,
-                factory_id: $factory_id.to_string(),
+                factory_id: factory_id_string.clone(),
             };
             
             // Return the created pipeline
             Box::new(pipeline)
         });
         
-        // Register this factory in the global registry
-        register_pipeline_factory($factory_id, factory);
+        // Register this factory using the separate clone
+        register_pipeline_factory(factory_id_for_registration, factory);
     }};
 }

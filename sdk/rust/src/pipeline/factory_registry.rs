@@ -15,6 +15,7 @@ lazy_static! {
     static ref FACTORY_REGISTRY: RwLock<HashMap<String, Arc<PipelineFactory>>> = RwLock::new(HashMap::new());
 }
 
+
 /// Register a pipeline factory with a unique factory ID
 pub fn register_pipeline_factory(factory_id: String, factory: PipelineFactory) {
     FACTORY_REGISTRY.write().unwrap().insert(factory_id, Arc::new(factory));
