@@ -10,7 +10,7 @@ use crate::service::payloader;
 
 #[derive(Deserialize, Debug)]
 pub struct WorkerStateCommand {
-    worker_id: String
+    pipeline_id: String
 }
 
 impl CommandAction for WorkerStateCommand {
@@ -21,7 +21,7 @@ impl CommandAction for WorkerStateCommand {
         reference_id: String,
     ) {
         let operator_guard = operator.lock().unwrap();
-        let worker = operator_guard.get_worker(self.worker_id.clone()).unwrap();
+        let worker = operator_guard.get_worker(self.pipeline_id.clone()).unwrap();
         let state_json = worker.lock().unwrap().to_json_string();
 
         // TODO: the same code is duplicated in other commands also.
