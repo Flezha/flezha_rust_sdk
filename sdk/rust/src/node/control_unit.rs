@@ -4,10 +4,19 @@ use std::thread;
 use std::time::Duration;
 use std::os::unix::net::UnixStream;
 
+use serde::Serialize;
+
+use crate::pipeline::factory_registry::get_factory_ids;
 use crate::service::payloader;
 use crate::utility::path_helper;
 
 use super::NodeAction;
+
+#[derive(Serialize)]
+struct ControlInitMessage {
+    group_id: String,
+    factory_ids: Vec<String>,
+}
 
 fn handle_control_socket(
     group_id: String,
@@ -17,7 +26,14 @@ fn handle_control_socket(
     let stream_boxed_clone = Arc::clone(&stream_boxed);
 
     let thread = thread::spawn(move || {
-        let payload = payloader::build_from_str("connect_control_channel", &group_id);
+        let control_init_message = ControlInitMessage {
+            group_id: group_id.clone(),
+            factory_ids: get_factory_ids()
+        };
+
+        let control_message = serde_json::to_string(&control_init_message).unwrap();
+
+        let payload = payloader::build_from_str("connect_control_channel", &control_message);
 
         // Pass group id to the Aflecha.
         stream_boxed_clone.try_clone().unwrap().write_all(&payload).unwrap();

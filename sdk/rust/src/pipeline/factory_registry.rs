@@ -25,6 +25,10 @@ pub fn get_factory(factory_id: String) -> Option<Arc<PipelineFactory>> {
     FACTORY_REGISTRY.read().unwrap().get(&factory_id).cloned()
 }
 
+pub fn get_factory_ids() -> Vec<String> {
+    FACTORY_REGISTRY.read().unwrap().keys().cloned().collect()
+}
+
 /// A wrapper for a pipeline that handles locking
 pub struct PipelineHandle {
     pub pipeline: Arc<Mutex<PipelineBox>>,
