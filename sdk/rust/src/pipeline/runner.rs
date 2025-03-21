@@ -18,7 +18,7 @@ pub fn exec(
 
         pipeline.run(input)
     } else {
-        panic!("Worker with given ID not found {}", pipeline_id);
+        panic!("Pipeline with given ID not found {}", pipeline_id);
     }
 }
 
