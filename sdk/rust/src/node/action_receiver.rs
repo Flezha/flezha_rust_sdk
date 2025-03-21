@@ -7,7 +7,7 @@ use super::{OperatorNode, NodeAction};
 
 
 pub fn start_action_receiver(
-    worker_node: Arc<Mutex<OperatorNode>>,
+    pipeline_node: Arc<Mutex<OperatorNode>>,
     rx: Arc<Mutex<mpsc::Receiver<NodeAction>>>,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
@@ -18,9 +18,9 @@ pub fn start_action_receiver(
                     match received {
                         NodeAction::ControlCommand(payload_id, payload) => {
                             let payload_message: String = String::from_utf8_lossy(&payload).to_string();
-                            command::handle_action(&worker_node, &payload_id, &payload_message);
+                            command::handle_action(&pipeline_node, &payload_id, &payload_message);
                         }
-                        _ => panic!("Unexpected message received on worker channel"),
+                        _ => panic!("Unexpected message received on pipeline channel"),
                     }
                 }
                 Err(_) => {

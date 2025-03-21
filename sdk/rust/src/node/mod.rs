@@ -45,7 +45,7 @@ impl OperatorNode {
             _ => panic!("Wrong order of messages"),
         }
 
-        let worker = OperatorNode {
+        let pipeline = OperatorNode {
             operator_id: "undefined".to_string(),
             _namespace: namespace,
             control_stream,
@@ -53,16 +53,16 @@ impl OperatorNode {
             shared_io_streams
         };
     
-        let worker_arc = Arc::new(Mutex::new(worker));
+        let pipeline_arc = Arc::new(Mutex::new(pipeline));
             
         let _action_receiver = action_receiver::start_action_receiver(
-            Arc::clone(&worker_arc),
+            Arc::clone(&pipeline_arc),
             Arc::clone(&rx)
         );
     
         let _stdio_thread = start_stdio_thread();
     
-        worker_arc
+        pipeline_arc
     }
 
     // TODO: move to somewhere else.
@@ -78,11 +78,11 @@ impl OperatorNode {
     //     let payload = payloader::build_from_str(&"register_factory".to_string(), &json);
 
     //     self.control_stream.try_clone().unwrap().write_all(&payload).unwrap();
-    //     self.worker_factory.insert(factory_id.clone(), factory);
+    //     self.pipeline_factory.insert(factory_id.clone(), factory);
     // }
 
     // pub fn get_factory(&self, factory_id: String) -> Option<&fn() -> Box<dyn Worker>> {
-    //     self.worker_factory.get(&factory_id)
+    //     self.pipeline_factory.get(&factory_id)
     // }
 
     pub fn add_pipeline(&self, factory_id: String, pipeline_id: String) -> Option<PipelineHandle> {

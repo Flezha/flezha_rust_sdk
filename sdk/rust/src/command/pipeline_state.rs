@@ -21,8 +21,8 @@ impl CommandAction for WorkerStateCommand {
         reference_id: String,
     ) {
         let operator_guard = operator.lock().unwrap();
-        let worker = operator_guard.get_worker(self.pipeline_id.clone()).unwrap();
-        let state_json = worker.lock().unwrap().to_json_string();
+        let pipeline = operator_guard.get_pipeline(self.pipeline_id.clone()).unwrap();
+        let state_json = pipeline.lock().unwrap().to_json_string();
 
         // TODO: the same code is duplicated in other commands also.
         let mut hashmap: HashMap<String, String> = HashMap::new();
