@@ -24,6 +24,8 @@ impl CommandAction for AddPipelineCommand {
         _message: &String,
         reference_id: String,
     ) {
+        println!("AddPipelineCommand: {:?}", self);
+
         let operator_guard = operator.lock().unwrap();
         let pipeline_id = self.pipeline_id.clone();
 
