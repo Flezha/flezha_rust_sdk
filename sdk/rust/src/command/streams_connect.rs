@@ -27,14 +27,14 @@ impl CommandAction for ConnectSocketCommand {
         &self,
         operator: &Arc<Mutex<OperatorNode>>,
         _message: &String,
-        reference_id: String,
-    ) {
+        _errors: &mut Vec<String>
+    ) -> (String, String) {   
         let operator_guard = operator.lock().unwrap();
         let pipelines = operator_guard.get_pipelines();
-        let control_stream = operator_guard.get_control_stream();
         let io_streams = operator_guard.get_io_streams();
-        let reference_id = reference_id.clone();
         let operator_id = operator_guard.get_operator_id();
+
+        // TODO: Implement error handling.
 
         drop(operator_guard);
 
@@ -50,12 +50,7 @@ impl CommandAction for ConnectSocketCommand {
             });
         }
 
-        let mut hashmap: HashMap<String, Value> = HashMap::new();
-        hashmap.insert("reference_id".to_string(), Value::String(reference_id));
-
-        let json_string = serde_json::to_string(&hashmap).unwrap();
-        let payload = payloader::build_from_str(&"connect_sockets".to_string(), &json_string);
-        control_stream.try_clone().unwrap().write_all(&payload).unwrap();
+        ("connect_sockets".to_string(), "Connection to socket has been established".to_string())
     }
 }
 

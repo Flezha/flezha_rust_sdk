@@ -6,6 +6,8 @@ mod pipeline_serialize;
 mod pipeline_deserialize;
 // TODO: mod pipeline_state;
 
+use core::hash;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use streams_connect::ConnectSocketCommand;
@@ -14,20 +16,22 @@ use pipeline_deserialize::DeSerializePipelineCommand;
 // TODO: use pipeline_state::WorkerStateCommand;
 
 use crate::node::OperatorNode;
+use crate::service::payloader;
 
 use self::pipeline_add::AddPipelineCommand;
-use self::pipeline_rem::RemWorkerCommand;
+use self::pipeline_rem::RemPipelineCommand;
 
 use serde::Deserialize;
 use serde_json::Value;
+use std::io::Write;
 
 pub trait CommandAction {
     fn handle(
         &self,
         operator: &Arc<Mutex<OperatorNode>>,
         command_struct: &String,
-        reference_id: String,
-    );
+        errors: &mut Vec<String>
+    ) -> (String, String);
 }
 
 #[derive(Deserialize)]
@@ -44,6 +48,8 @@ pub fn handle_action(
     // Deserialize the command from the JSON message
     let command: Command = serde_json::from_str(message).expect("Failed to parse command");
     let reference_id = command.reference_id;
+    let mut errors: Vec<String> = vec![];
+    let mut status = String::from("success");
 
     let command_action: Box<dyn CommandAction> = match payload_id.as_str() {
         "assign_operator_id" => {
@@ -62,7 +68,7 @@ pub fn handle_action(
             Box::new(command)
         }
         "rem_pipeline" => {
-            let command: RemWorkerCommand = serde_json::from_value(command.data)
+            let command: RemPipelineCommand = serde_json::from_value(command.data)
                 .expect("Failed to deserialize AddPipelineCommand");
             Box::new(command)
         }
@@ -88,5 +94,42 @@ pub fn handle_action(
         }
     };
 
-    command_action.handle(operator, message, reference_id);
+    let (payload_id, info) = command_action.handle(
+        operator,
+        message,
+        &mut errors
+    );
+
+    reply_agent(operator, reference_id, payload_id, info, &mut status, &mut errors);
+}
+
+fn reply_agent(
+    operator: &Arc<Mutex<OperatorNode>>,
+    reference_id: String,
+    payload_id: String,
+    info_msg: String,
+    status: &mut String,
+    errors: &mut Vec<String>
+) {
+    let mut hashmap: HashMap<String, Value> = HashMap::new();
+    let operator_guard = operator.lock().unwrap();
+
+    if errors.len() > 0 {
+        *status = "error".to_string();
+    }
+                    
+    hashmap.insert("reference_id".to_string(), Value::String(reference_id));
+    hashmap.insert("status".to_string(), Value::String(status.to_string()));
+    hashmap.insert("info".to_string(), Value::String(info_msg));
+    hashmap.insert("errors".to_string(), Value::Array(errors.iter().map(|e| Value::String(e.clone())).collect()));
+
+    let json_string = serde_json::to_string(&hashmap).unwrap();
+    let payload = payloader::build_from_str(&payload_id, &json_string);
+
+    operator_guard
+        .get_control_stream()
+        .try_clone()
+        .unwrap()
+        .write_all(&payload)
+        .unwrap();
 }
