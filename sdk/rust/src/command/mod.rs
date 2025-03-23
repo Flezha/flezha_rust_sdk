@@ -6,7 +6,6 @@ mod pipeline_serialize;
 mod pipeline_deserialize;
 // TODO: mod pipeline_state;
 
-use core::hash;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
