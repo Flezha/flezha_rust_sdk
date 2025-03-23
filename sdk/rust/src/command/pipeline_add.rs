@@ -35,7 +35,7 @@ impl CommandAction for AddPipelineCommand {
         };
 
         let pipeline_opt = operator_guard.add_pipeline(
-            self.factory_id.clone(), 
+            self.factory_id.clone(),
             pipeline_id
         );
 
