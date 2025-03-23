@@ -15,12 +15,17 @@ impl CommandAction for RemPipelineCommand {
         &self,
         operator: &Arc<Mutex<OperatorNode>>,
         _message: &String,
-        _errors: &mut Vec<String>
+        errors: &mut Vec<String>
     ) -> (String, String) {       
-        // TODO: Implement error handling.         
         let operator_guard = operator.lock().unwrap();
-        operator_guard.rem_pipeline(self.pipeline_id.clone());        
-        
-        ("rem_pipeline".to_string(), "Pipeline has been removed".to_string())
+
+        if operator_guard.has_pipeline(self.pipeline_id.clone()) {
+            operator_guard.rem_pipeline(self.pipeline_id.clone());
+
+            ("rem_pipeline".to_string(), "Pipeline has been removed".to_string())
+        } else {
+            errors.push("Pipeline not found".to_string());
+            ("rem_pipeline".to_string(), "Pipeline not found".to_string())
+        }        
     }
 }

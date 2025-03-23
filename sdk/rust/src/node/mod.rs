@@ -130,6 +130,10 @@ impl OperatorNode {
     pub fn assign_operator_id(&mut self, operator_id: String) {
         self.operator_id = operator_id;
     }
+
+    pub fn has_pipeline(&self, id: String) -> bool {
+        self.pipelines.read().unwrap().contains_key(&id)
+    }
 }
 
 // Start a thread to monitor stdout and exit when stdin is closed. TODO: Maybe remove this?
