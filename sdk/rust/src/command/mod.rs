@@ -4,7 +4,7 @@ mod pipeline_rem;
 mod streams_connect;
 mod pipeline_serialize;
 mod pipeline_deserialize;
-// TODO: mod pipeline_state;
+mod pipeline_state;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use streams_connect::ConnectSocketCommand;
 use pipeline_serialize::SerializePipelineCommand;
 use pipeline_deserialize::DeSerializePipelineCommand;
-// TODO: use pipeline_state::WorkerStateCommand;
+use pipeline_state::PipelineStateCommand;
 
 use crate::node::OperatorNode;
 use crate::service::payloader;
@@ -82,12 +82,11 @@ pub fn handle_action(
                 .expect("Failed to deserialize DeSerializePipelineCommand");
             Box::new(command)
         }
-        // TODO:
-        // "pipeline_state" => {
-        //     let command: WorkerStateCommand = serde_json::from_value(command.data)
-        //     .expect("Failed to deserialize WorkerStateCommand");
-        // Box::new(command)
-        // }
+        "pipeline_state" => {
+            let command: PipelineStateCommand = serde_json::from_value(command.data)
+                .expect("Failed to deserialize PipelineStateCommand");
+            Box::new(command)
+        }
         _ => {
             panic!("Unknown command payload_id: {}", payload_id);
         }

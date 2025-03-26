@@ -2,6 +2,7 @@ pub mod factory_registry;
 pub mod runner;
 
 use std::io;
+extern crate erased_serde;
 
 pub enum PipelineInput {
     Binary(Vec<u8>),
@@ -35,17 +36,20 @@ impl From<PipelineInput> for PipelineOutput {
 }
 
 pub trait Pipeline {
-    /// Execute the pipeline on the given input. The pipeline can mutate its internal state.
+    // Execute the pipeline on the given input. The pipeline can mutate its internal state.
     fn run(&mut self, input: PipelineInput) -> PipelineResult;
     
-    /// Serialize the pipeline state.
+    // Serialize the pipeline state.
     fn serialize_state(&self) -> io::Result<Vec<u8>>;
     
-    /// Deserialize and restore the pipeline state.
+    // Deserialize and restore the pipeline state.
     fn deserialize_state(&mut self, data: &[u8]) -> io::Result<()>;
 
-    /// Get the factory ID of the pipeline.
+    // Get the factory ID of the pipeline.
     fn get_factory_id(&self) -> String;
+
+    // Get pipeline state as a serializable reference
+    fn get_state(&self) -> Box<dyn erased_serde::Serialize + '_>;
 }
 
 #[macro_export]
@@ -59,6 +63,12 @@ macro_rules! define_pipeline_factory {
         use $crate::pipeline::{Pipeline, PipelineInput, PipelineOutput, PipelineResult};
         use $crate::pipeline::factory_registry::{register_pipeline_factory, PipelineFactory};
         use std::io;
+        use serde::{Serialize, Deserialize};
+        use erased_serde;
+        
+        // Add compile-time check that State implements required traits
+        fn assert_state_requirements<T: Serialize + for<'de> Deserialize<'de> + Default + Send + Sync + 'static>() {}
+        assert_state_requirements::<$State>();
         
         let factory_id_string = $factory_id.clone();
         let factory_id_for_registration = factory_id_string.clone(); // Create another clone for registration
@@ -118,6 +128,10 @@ macro_rules! define_pipeline_factory {
 
                 fn get_factory_id(&self) -> String {
                     self.factory_id.clone()
+                }
+
+                fn get_state(&self) -> Box<dyn erased_serde::Serialize + '_> {
+                    Box::new(&self.state)
                 }
             }
             
