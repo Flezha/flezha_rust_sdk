@@ -52,9 +52,12 @@ impl CommandAction for SerializePipelineCommand {
             data_object.insert("factory_id".to_string(), Value::String(factory_id));
         }
 
+        // TODO: rename serialize and deserialize to migration_serialize and migration_deserialize
+        // TODO: we also need to kill the pipeline now.
+
         (
             "serialize_pipeline".to_string(),
-            "Pipeline state has been serialized".to_string()
+            serde_json::to_string(&Value::Object(data_object)).unwrap()
         )
     }
 }
