@@ -15,7 +15,7 @@ use super::NodeAction;
 #[derive(Serialize)]
 struct ControlInitMessage {
     group_id: String,
-    factory_ids: Vec<String>,
+    factory_ids: Vec<String>
 }
 
 fn handle_control_socket(
@@ -62,8 +62,11 @@ pub fn connect_control_socket(
     tx: Arc<Mutex<mpsc::Sender<NodeAction>>>,
 ) -> (thread::JoinHandle<()>, Arc<UnixStream>) {
     let socket_path = path_helper::control_socket_path();
+
     // Attempt to connect and unwrap immediately if successful
-    let stream = UnixStream::connect(socket_path).expect("Failed to connect to control socket");
+    let stream = UnixStream::connect(socket_path.clone())
+        .expect(&format!("Failed to connect to control socket on path {}", socket_path));
+
     let stream_boxed = Arc::new(stream);
 
     handle_control_socket(group_id, tx, stream_boxed)
