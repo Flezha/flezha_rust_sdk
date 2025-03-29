@@ -57,7 +57,7 @@ macro_rules! define_pipeline_factory {
     (
         factory_id: $factory_id:expr,
         result_type: $result_type:expr,
-        state: $State:ty,
+        state: $state:expr,
         steps: [ $( $step_fn:expr ),+ $(,)? ]
     ) => {{
         use $crate::pipeline::{Pipeline, PipelineInput, PipelineOutput, PipelineResult};
@@ -65,49 +65,36 @@ macro_rules! define_pipeline_factory {
         use std::io;
         use serde::{Serialize, Deserialize};
         use erased_serde;
-        
-        // Add compile-time check that State implements required traits
-        fn assert_state_requirements<T: Serialize + for<'de> Deserialize<'de> + Default + Send + Sync + 'static>() {}
-        assert_state_requirements::<$State>();
-        
+
         let factory_id_string = $factory_id.clone();
-        let factory_id_for_registration = factory_id_string.clone(); // Create another clone for registration
-        
+        let factory_id_for_registration = factory_id_string.clone();
+
         let factory: PipelineFactory = Box::new(move |_pipeline_id: String| {
-            struct ConcretePipeline {
-                state: $State,
-                steps: Vec<Box<dyn FnMut(PipelineInput, &mut $State) -> io::Result<PipelineOutput> + Send + Sync>>,
+            // The pipeline is defined with a generic state type.
+            // This enforces that the provided state expression has the required traits.
+            struct ConcretePipeline<State: Serialize + for<'de> Deserialize<'de> + Send + Sync + 'static> {
+                state: State,
+                steps: Vec<Box<dyn FnMut(PipelineInput, &mut State) -> io::Result<PipelineOutput> + Send + Sync>>,
                 result_type: $crate::pipeline::PipelineResultType,
                 factory_id: String,
             }
-            
-            impl Pipeline for ConcretePipeline {
+
+            impl<State: Serialize + for<'de> Deserialize<'de> + Send + Sync + 'static> Pipeline for ConcretePipeline<State> {
                 fn run(&mut self, input: PipelineInput) -> PipelineResult {
-                    // Each step takes the input and state
                     let mut current_input = input;
                     let mut final_output = PipelineOutput::Binary(vec![]);
                     
                     for step in &mut self.steps {
-                        // Execute the current step
                         match step(current_input, &mut self.state) {
                             Ok(output) => {
-                                // Save the output for potential return
                                 final_output = output;
-                                
-                                // Convert output back to input for the next step
                                 current_input = match &final_output {
                                     PipelineOutput::Binary(data) => PipelineInput::Binary(data.clone()),
                                     PipelineOutput::Text(text) => PipelineInput::Text(text.clone()),
-                                    PipelineOutput::Custom(_) => {
-                                        // Handle Custom type properly
-                                        return PipelineResult::None;
-                                    }
+                                    PipelineOutput::Custom(_) => return PipelineResult::None,
                                 };
                             },
-                            Err(_) => {
-                                // Handle errors by returning None
-                                return PipelineResult::None;
-                            }
+                            Err(_) => return PipelineResult::None,
                         }
                     }
 
@@ -118,11 +105,13 @@ macro_rules! define_pipeline_factory {
                 }
                 
                 fn serialize_state(&self) -> io::Result<Vec<u8>> {
-                    serde_json::to_vec(&self.state).map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+                    serde_json::to_vec(&self.state)
+                        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
                 }
                 
                 fn deserialize_state(&mut self, data: &[u8]) -> io::Result<()> {
-                    self.state = serde_json::from_slice(data).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                    self.state = serde_json::from_slice(data)
+                        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
                     Ok(())
                 }
 
@@ -134,19 +123,17 @@ macro_rules! define_pipeline_factory {
                     Box::new(&self.state)
                 }
             }
-            
+
             let pipeline = ConcretePipeline {
-                state: <$State as Default>::default(),
+                state: $state,
                 steps: vec![ $( Box::new($step_fn) ),+ ],
                 result_type: $result_type,
                 factory_id: factory_id_string.clone(),
             };
-            
-            // Return the created pipeline
+
             Box::new(pipeline)
         });
-        
-        // Register this factory using the separate clone
+
         register_pipeline_factory(factory_id_for_registration, factory);
     }};
 }
