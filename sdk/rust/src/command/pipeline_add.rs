@@ -23,8 +23,6 @@ impl CommandAction for AddPipelineCommand {
         _message: &String,
         errors: &mut Vec<String>
     ) -> (String, String) {
-        println!("AddPipelineCommand: {:?}", self);
-
         let operator_guard = operator.lock().unwrap();
         let pipeline_id = self.pipeline_id.clone();
 
@@ -41,11 +39,12 @@ impl CommandAction for AddPipelineCommand {
 
         if errors.len() == 0 {
             match pipeline_opt {
-                Some(_pipeline_handle) => {
-                    let _variables = value_to_hashmap(&self.variables).unwrap();
-    
-                    // TODO: Add later
-                    // pipeline.update_pipeline(&variables);
+                Some(pipeline_handle) => {
+                    let default_values: Vec<u8> = serde_json::to_vec(&self.variables).expect("Failed to serialize variables");
+                    let mut pipeline = pipeline_handle.pipeline_mut();
+
+                    pipeline.deserialize_state(&default_values)
+                        .expect("Failed to deserialize state");
 
                     return (
                         "add_pipeline".to_string(),
