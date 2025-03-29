@@ -9,11 +9,11 @@ use crate::node::OperatorNode;
 use crate::pipeline::factory_registry::PipelineHandle;
 
 #[derive(Deserialize)]
-pub struct SerializePipelineCommand {
+pub struct MigrationSerializationCommand {
     pipeline_id: String
 }
 
-impl CommandAction for SerializePipelineCommand {
+impl CommandAction for MigrationSerializationCommand {
     fn handle(
         &self,
         operator: &Arc<Mutex<OperatorNode>>,
@@ -56,7 +56,7 @@ impl CommandAction for SerializePipelineCommand {
         // TODO: we also need to kill the pipeline now.
 
         (
-            "serialize_pipeline".to_string(),
+            "migration_serialization".to_string(),
             serde_json::to_string(&Value::Object(data_object)).unwrap()
         )
     }

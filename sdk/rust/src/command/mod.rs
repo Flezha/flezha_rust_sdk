@@ -2,16 +2,16 @@ mod operator_assign;
 mod pipeline_add;
 mod pipeline_rem;
 mod streams_connect;
-mod pipeline_serialize;
-mod pipeline_deserialize;
+mod migration_serialization;
+mod migration_deserialization;
 mod pipeline_state;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use streams_connect::ConnectSocketCommand;
-use pipeline_serialize::SerializePipelineCommand;
-use pipeline_deserialize::DeSerializePipelineCommand;
+use migration_serialization::MigrationSerializationCommand;
+use migration_deserialization::MigrationDeserializationCommand;
 use pipeline_state::PipelineStateCommand;
 
 use crate::node::OperatorNode;
@@ -72,14 +72,14 @@ pub fn handle_action(
             Box::new(command)
         }
         // TODO: 
-        "serialize_pipeline" => {
-            let command: SerializePipelineCommand = serde_json::from_value(command.data)
-                .expect("Failed to deserialize SerializePipelineCommand");
+        "migration_serialization" => {
+            let command: MigrationSerializationCommand = serde_json::from_value(command.data)
+                .expect("Failed to deserialize MigrationSerializationCommand");
             Box::new(command)
         }
-        "deserialize_pipeline" => {
-            let command: DeSerializePipelineCommand = serde_json::from_value(command.data)
-                .expect("Failed to deserialize DeSerializePipelineCommand");
+        "migration_deserialization" => {
+            let command: MigrationDeserializationCommand = serde_json::from_value(command.data)
+                .expect("Failed to deserialize MigrationDeserializationCommand");
             Box::new(command)
         }
         "pipeline_state" => {

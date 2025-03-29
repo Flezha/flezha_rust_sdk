@@ -5,13 +5,13 @@ use super::CommandAction;
 use crate::node::OperatorNode;
 
 #[derive(Deserialize)]
-pub struct DeSerializePipelineCommand {
+pub struct MigrationDeserializationCommand {
     pipeline_id: String,
     factory_id: String,
     serialized_state: Vec<u8>
 }
 
-impl CommandAction for DeSerializePipelineCommand {
+impl CommandAction for MigrationDeserializationCommand {
     fn handle(
         &self,
         operator: &Arc<Mutex<OperatorNode>>,
@@ -34,7 +34,7 @@ impl CommandAction for DeSerializePipelineCommand {
         let _ = pipeline.deserialize_state(&self.serialized_state.clone());
 
         (
-            "deserialize_pipeline".to_string(),
+            "migration_deserialization".to_string(),
             "Pipeline has been deserialized".to_string()
         )
     }
