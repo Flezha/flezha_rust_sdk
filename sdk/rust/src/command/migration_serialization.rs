@@ -23,8 +23,6 @@ impl CommandAction for MigrationSerializationCommand {
         let operator_guard = operator.lock().unwrap();
         let pipeline_handle: Option<PipelineHandle> = operator_guard.get_pipeline(self.pipeline_id.clone());
 
-        drop(operator_guard);
-
         // TODO: Implement error handling.
 
         let (serialized_state, factory_id_opt) = match pipeline_handle {
@@ -52,8 +50,10 @@ impl CommandAction for MigrationSerializationCommand {
             data_object.insert("factory_id".to_string(), Value::String(factory_id));
         }
 
-        // TODO: rename serialize and deserialize to migration_serialize and migration_deserialize
-        // TODO: we also need to kill the pipeline now.
+        // Remove the pipeline from the operator
+        operator_guard.rem_pipeline(self.pipeline_id.clone());
+
+        drop(operator_guard);
 
         (
             "migration_serialization".to_string(),
