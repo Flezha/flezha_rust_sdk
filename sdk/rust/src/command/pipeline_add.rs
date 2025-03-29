@@ -40,12 +40,16 @@ impl CommandAction for AddPipelineCommand {
         if errors.len() == 0 {
             match pipeline_opt {
                 Some(pipeline_handle) => {
-                    let default_values: Vec<u8> = serde_json::to_vec(&self.variables).expect("Failed to serialize variables");
-                    let mut pipeline = pipeline_handle.pipeline_mut();
-
-                    pipeline.deserialize_state(&default_values)
-                        .expect("Failed to deserialize state");
-
+                    if let Some(arr) = self.variables.as_object() {
+                        if !arr.is_empty() {                            
+                            let default_values: Vec<u8> = serde_json::to_vec(&self.variables).expect("Failed to serialize variables");
+                            let mut pipeline = pipeline_handle.pipeline_mut();
+        
+                            pipeline.deserialize_state(&default_values)
+                                .expect("Failed to deserialize state");
+                        }
+                    }
+                    
                     return (
                         "add_pipeline".to_string(),
                         "Pipeline has been created".to_string()
