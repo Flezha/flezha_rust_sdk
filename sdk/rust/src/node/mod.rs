@@ -65,26 +65,6 @@ impl OperatorNode {
         pipeline_arc
     }
 
-    // TODO: move to somewhere else.
-    // pub fn register_factory(
-    //     &mut self,
-    //     factory_id: String,
-    //     factory: fn() -> Box<dyn Worker>) {
-    //     let mut core_data = HashMap::new();
-        
-    //     core_data.insert("factory_id".to_string(), factory_id.clone());
-
-    //     let json = serde_json::to_string(&core_data).unwrap();
-    //     let payload = payloader::build_from_str(&"register_factory".to_string(), &json);
-
-    //     self.control_stream.try_clone().unwrap().write_all(&payload).unwrap();
-    //     self.pipeline_factory.insert(factory_id.clone(), factory);
-    // }
-
-    // pub fn get_factory(&self, factory_id: String) -> Option<&fn() -> Box<dyn Worker>> {
-    //     self.pipeline_factory.get(&factory_id)
-    // }
-
     pub fn add_pipeline(&self, factory_id: String, pipeline_id: String) -> Option<PipelineHandle> {
         if let Some(factory) = get_factory(factory_id) {
             let pipeline = factory(pipeline_id.clone());
