@@ -63,10 +63,3 @@ impl CommandAction for AddPipelineCommand {
     }
 }
 
-fn value_to_hashmap(value: &Value) -> Option<HashMap<String, Value>> {
-    value.as_object().map(|map| {
-        map.iter()
-           .map(|(k, v)| (k.clone(), v.clone()))
-           .collect()
-    })
-}
