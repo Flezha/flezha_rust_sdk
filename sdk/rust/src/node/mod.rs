@@ -6,10 +6,6 @@ use crate::pipeline::factory_registry::{get_factory, PipelineBox, PipelineHandle
 use std::collections::HashMap;
 use std::os::unix::net::UnixStream;
 use std::sync::{mpsc, Arc, Mutex, RwLock};
-use std::thread::{self};
-use std::io::{self, Read};
-use std::time::Duration;
-
 
 pub struct OperatorNode {
     operator_id: String,
@@ -59,9 +55,7 @@ impl OperatorNode {
             Arc::clone(&pipeline_arc),
             Arc::clone(&rx)
         );
-    
-        let _stdio_thread = start_stdio_thread();
-    
+        
         pipeline_arc
     }
 
@@ -116,29 +110,3 @@ impl OperatorNode {
     }
 }
 
-// Start a thread to monitor stdout and exit when stdin is closed. TODO: Maybe remove this?
-fn start_stdio_thread() -> thread::JoinHandle<()> {
-       // Start a thread to monitor stdout
-       thread::spawn(|| {
-        let mut buf = [0u8; 1]; // Buffer to read from stdout
-
-        loop {
-            let result = io::stdin().read(&mut buf); // Attempt to read from stdin
-            match result {
-                Ok(0) => {
-                    // TODO: Log that stdin has been closed and exit.
-                    std::process::exit(0);
-                }
-                Ok(_) => {
-                    // Data available; continue monitoring
-                    println!("Data available: {:?}", buf);
-                }
-                Err(_e) => {
-                    // TODO: Log the error.
-                }
-            }
-
-            thread::sleep(Duration::from_secs(1));
-        }
-    })
-}
