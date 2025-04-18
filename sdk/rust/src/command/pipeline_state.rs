@@ -18,8 +18,6 @@ impl CommandAction for PipelineStateCommand {
         _message: &String,
         errors: &mut Vec<String>
     ) -> (String, String) {   
-        print!("STARTING GET STATE");
-
         let operator_guard = operator.lock().unwrap();
         let pipeline_handle: Option<PipelineHandle> = operator_guard.get_pipeline(self.pipeline_id.clone());
         let json_string = match pipeline_handle {
@@ -34,8 +32,6 @@ impl CommandAction for PipelineStateCommand {
                 serde_json::to_string(&"Unable to get pipeline state.".to_string()).unwrap()
             }
         };
-
-        print!("END GET STATE {}", json_string);
 
         (
             "pipeline_state".to_string(),
