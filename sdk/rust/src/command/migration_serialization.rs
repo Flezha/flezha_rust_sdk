@@ -51,7 +51,7 @@ impl CommandAction for MigrationSerializationCommand {
         }
 
         // Remove the pipeline from the operator
-        operator_guard.rem_pipeline(self.pipeline_id.clone());
+        operator_guard.stop_pipeline(self.pipeline_id.clone());
 
         drop(operator_guard);
 

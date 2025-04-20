@@ -1,6 +1,6 @@
 mod operator_assign;
-mod pipeline_add;
-mod pipeline_rem;
+mod pipeline_start;
+mod pipeline_stop;
 mod streams_connect;
 mod migration_serialization;
 mod migration_deserialization;
@@ -17,8 +17,8 @@ use pipeline_state::PipelineStateCommand;
 use crate::node::OperatorNode;
 use crate::service::payloader;
 
-use self::pipeline_add::AddPipelineCommand;
-use self::pipeline_rem::RemPipelineCommand;
+use self::pipeline_start::AddPipelineCommand;
+use self::pipeline_stop::RemPipelineCommand;
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -61,12 +61,12 @@ pub fn handle_action(
                 .expect("Failed to deserialize OpenSocketCommand");
             Box::new(command)
         }
-        "add_pipeline" => {
+        "start_pipeline" => {
             let command: AddPipelineCommand = serde_json::from_value(command.data)
                 .expect("Failed to deserialize AddPipelineCommand");
             Box::new(command)
         }
-        "rem_pipeline" => {
+        "stop_pipeline" => {
             let command: RemPipelineCommand = serde_json::from_value(command.data)
                 .expect("Failed to deserialize AddPipelineCommand");
             Box::new(command)

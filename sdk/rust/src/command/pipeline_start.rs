@@ -31,7 +31,7 @@ impl CommandAction for AddPipelineCommand {
             None => errors.push(format!("Factory with id {} does not exist", self.factory_id.clone())),
         };
 
-        let pipeline_opt = operator_guard.add_pipeline(
+        let pipeline_opt = operator_guard.start_pipeline(
             self.factory_id.clone(),
             pipeline_id
         );
@@ -50,7 +50,7 @@ impl CommandAction for AddPipelineCommand {
                     }
                     
                     return (
-                        "add_pipeline".to_string(),
+                        "start_pipeline".to_string(),
                         "Pipeline has been created".to_string()
                     )
                 },
@@ -58,7 +58,7 @@ impl CommandAction for AddPipelineCommand {
             }
         }
 
-        ("add_pipeline".to_string(), String::from(""))
+        ("start_pipeline".to_string(), String::from(""))
     }
 }
 

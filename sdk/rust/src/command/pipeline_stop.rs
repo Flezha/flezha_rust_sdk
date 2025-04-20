@@ -20,12 +20,12 @@ impl CommandAction for RemPipelineCommand {
         let operator_guard = operator.lock().unwrap();
 
         if operator_guard.has_pipeline(self.pipeline_id.clone()) {
-            operator_guard.rem_pipeline(self.pipeline_id.clone());
+            operator_guard.stop_pipeline(self.pipeline_id.clone());
 
-            ("rem_pipeline".to_string(), "Pipeline has been removed".to_string())
+            ("stop_pipeline".to_string(), "Pipeline has been removed".to_string())
         } else {
             errors.push("Pipeline not found".to_string());
-            ("rem_pipeline".to_string(), "Pipeline not found".to_string())
+            ("stop_pipeline".to_string(), "Pipeline not found".to_string())
         }        
     }
 }

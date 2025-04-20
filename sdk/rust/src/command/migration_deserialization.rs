@@ -22,7 +22,7 @@ impl CommandAction for MigrationDeserializationCommand {
         
         // TODO: Implement error handling.
 
-        let pipeline_handle = operator_guard.add_pipeline(
+        let pipeline_handle = operator_guard.start_pipeline(
             self.factory_id.clone(),
             self.pipeline_id.clone()
         ).unwrap();

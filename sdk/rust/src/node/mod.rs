@@ -59,7 +59,7 @@ impl OperatorNode {
         pipeline_arc
     }
 
-    pub fn add_pipeline(&self, factory_id: String, pipeline_id: String) -> Option<PipelineHandle> {
+    pub fn start_pipeline(&self, factory_id: String, pipeline_id: String) -> Option<PipelineHandle> {
         if let Some(factory) = get_factory(factory_id) {
             let pipeline = factory(pipeline_id.clone());
             self.register_pipeline(pipeline_id.clone(), pipeline);
@@ -73,7 +73,7 @@ impl OperatorNode {
         self.pipelines.write().unwrap().insert(id, Arc::new(Mutex::new(pipeline)));
     }
 
-    pub fn rem_pipeline(&self, id: String) {
+    pub fn stop_pipeline(&self, id: String) {
         self.pipelines.write().unwrap().remove(&id);
     }
 
