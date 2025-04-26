@@ -12,7 +12,7 @@ use crate::pipeline::factory_registry::get_factory;
 pub struct AddPipelineCommand {
     pipeline_id: String,
     factory_id: String,
-    variables: Value,
+    init_values: Value,
 }
 
 impl CommandAction for AddPipelineCommand {
@@ -39,9 +39,9 @@ impl CommandAction for AddPipelineCommand {
         if errors.len() == 0 {
             match pipeline_opt {
                 Some(pipeline_handle) => {
-                    if let Some(arr) = self.variables.as_object() {
+                    if let Some(arr) = self.init_values.as_object() {
                         if !arr.is_empty() {                            
-                            let default_values: Vec<u8> = serde_json::to_vec(&self.variables).expect("Failed to serialize variables");
+                            let default_values: Vec<u8> = serde_json::to_vec(&self.init_values).expect("Failed to serialize init values");
                             let mut pipeline = pipeline_handle.pipeline_mut();
         
                             pipeline.deserialize_state(&default_values)
