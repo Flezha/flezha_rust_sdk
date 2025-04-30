@@ -3,7 +3,7 @@ use super::CommandAction;
 use std::sync::{Arc, Mutex};
 use serde::Deserialize;
 
-use crate::node::OperatorNode;
+use crate::node::{OperatorNode, OperatorStatus};
 
 #[derive(Deserialize, Debug)]
 pub struct AssignOperatorIdCommand {
@@ -20,7 +20,8 @@ impl CommandAction for AssignOperatorIdCommand {
         // TODO: Implement error handling.
         
         let mut operator_guard = operator.lock().unwrap(); 
-        operator_guard.assign_operator_id(self.operator_id.clone());       
+        operator_guard.assign_operator_id(self.operator_id.clone());    
+        operator_guard.set_status(OperatorStatus::Running);
                     
         ("assign_operator_id".to_string(), "Operator assigned".to_string())
     }

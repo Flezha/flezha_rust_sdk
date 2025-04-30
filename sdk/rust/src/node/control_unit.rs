@@ -1,4 +1,5 @@
 use std::io::Write;
+use std::net::Shutdown;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -6,7 +7,7 @@ use std::os::unix::net::UnixStream;
 
 use serde::Serialize;
 
-use crate::command;
+use crate::command::{self, CommandActionType};
 use crate::pipeline::factory_registry::get_factory_ids;
 use crate::service::payloader;
 use crate::utility::path_helper;
@@ -32,10 +33,10 @@ pub fn open(
 
     let stream_box = Arc::new(stream);
 
-    handle_control_socket(group_id, tx, stream_box, operator)
+    sock_conn(group_id, tx, stream_box, operator)
 }
 
-fn handle_control_socket(
+fn sock_conn(
     group_id: String,
     tx: Arc<Mutex<mpsc::Sender<NodeAction>>>,
     stream_box: Arc<UnixStream>,
@@ -44,27 +45,31 @@ fn handle_control_socket(
     let stream_clone = Arc::clone(&stream_box);
 
     thread::spawn(move || {
-        let control_init_message = ControlInitMessage {
-            group_id: group_id.clone(),
-            factory_ids: get_factory_ids()
-        };
-
-        let control_message = serde_json::to_string(&control_init_message).unwrap();
-
-        let payload = payloader::build_from_str("connect_control_channel", &control_message);
-
-        // Pass group id to the Aflecha.
-        (&*stream_clone).write_all(&payload).unwrap();
-        
-        tx.lock().unwrap().send(NodeAction::EngineIdConfirmation).unwrap();
+        send_init_msg(group_id, tx, stream_clone.clone());
 
         loop {
             match payloader::extract_payload(&*stream_clone.clone()) {
                 Ok((payload_id, message)) => {
                     let payload_message: String = String::from_utf8_lossy(&message).to_string();
-                    let reply = command::handle_action(&operator, &payload_id, &payload_message);
 
-                    (&*stream_clone).write_all(&reply).unwrap();
+                    let (handler_type, reference_id) = command::get_handler(&payload_id, &payload_message);
+
+                    match handler_type {
+                        CommandActionType::Regular(handler) => {
+                            let reply = command::handle_action(&operator, handler, &payload_id, &payload_message, reference_id);
+                            (&*stream_clone).write_all(&reply).unwrap();
+                        }
+
+                        CommandActionType::OperatorShutdown(handler) => {
+                            let reply = command::handle_action(&operator, handler, &payload_id, &payload_message, reference_id);
+                            (&*stream_clone).write_all(&reply).unwrap();
+
+                            // Close the socket.
+                            stream_clone.shutdown(Shutdown::Both).unwrap();
+
+                            break;
+                        }
+                    }                    
                 }
                 Err(_e) => {
                     // Wait 100ms to avoid busy waiting
@@ -75,5 +80,20 @@ fn handle_control_socket(
             } 
         }
     })
+}
+
+fn send_init_msg(group_id: String, tx: Arc<Mutex<mpsc::Sender<NodeAction>>>, stream_clone: Arc<UnixStream>) {
+    let control_init_message = ControlInitMessage {
+        group_id: group_id.clone(),
+        factory_ids: get_factory_ids()
+    };
+
+    let control_message = serde_json::to_string(&control_init_message).unwrap();
+    let payload = payloader::build_from_str("connect_control_channel", &control_message);
+
+    // Pass group id to the Aflecha.
+    (&*stream_clone).write_all(&payload).unwrap();
+    
+    tx.lock().unwrap().send(NodeAction::EngineIdConfirmation).unwrap();
 }
 

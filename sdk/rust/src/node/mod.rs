@@ -6,11 +6,18 @@ use std::collections::HashMap;
 use std::os::unix::net::UnixStream;
 use std::sync::{mpsc, Arc, Mutex, RwLock};
 
+pub enum OperatorStatus {
+    Starting,
+    Running,
+    Stopped,
+}
+
 pub struct OperatorNode {
     operator_id: String,
     _namespace: String,
     pipelines: Arc<RwLock<HashMap<String, Arc<Mutex<PipelineBox>>>>>,
     shared_io_streams: Arc<RwLock<HashMap<u8, UnixStream>>>,
+    status: OperatorStatus,
 }
 
 pub enum NodeAction {
@@ -31,7 +38,8 @@ impl OperatorNode {
             operator_id: "undefined".to_string(),
             _namespace: namespace.clone(),
             pipelines,
-            shared_io_streams
+            shared_io_streams: shared_io_streams,
+            status: OperatorStatus::Starting,
         };
 
         let operator_arc = Arc::new(Mutex::new(operator));
@@ -90,6 +98,10 @@ impl OperatorNode {
 
     pub fn assign_operator_id(&mut self, operator_id: String) {
         self.operator_id = operator_id;
+    }
+
+    pub fn set_status(&mut self, status: OperatorStatus) {
+        self.status = status;
     }
 
     pub fn has_pipeline(&self, id: String) -> bool {
