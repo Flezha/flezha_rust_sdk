@@ -89,7 +89,7 @@ pub fn get_handler(
                 .expect("Failed to deserialize PipelineStateCommand");
             CommandActionType::Regular(Box::new(command))
         }
-        "operator_shutdown" => {
+        "operator_disconnect" => {
             let command: OperatorShutdownCommand = serde_json::from_value(command.data)
                 .expect("Failed to deserialize OperatorShutdownCommand");
             CommandActionType::OperatorShutdown(Box::new(command))

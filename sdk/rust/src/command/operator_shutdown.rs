@@ -18,6 +18,6 @@ impl CommandAction for OperatorShutdownCommand {
         let mut operator_guard = operator.lock().unwrap();
         operator_guard.set_status(OperatorStatus::Stopped);
 
-        ("operator_shutdown".to_string(), "Operator closing..".to_string())
+        ("operator_disconnect".to_string(), "Operator closing..".to_string())
     }
 }
