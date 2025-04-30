@@ -15,9 +15,7 @@ impl CommandAction for OperatorShutdownCommand {
         _message: &String,
         _errors: &mut Vec<String>
     ) -> (String, String) {   
-        
-            
-                    
+                
         ("operator_shutdown".to_string(), "Operator closing..".to_string())
     }
 }
