@@ -5,6 +5,7 @@ mod streams_connect;
 mod migration_serialization;
 mod migration_deserialization;
 mod pipeline_state;
+mod operator_shutdown;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -22,7 +23,6 @@ use self::pipeline_stop::RemPipelineCommand;
 
 use serde::Deserialize;
 use serde_json::Value;
-use std::io::Write;
 
 pub trait CommandAction {
     fn handle(
@@ -43,7 +43,7 @@ pub fn handle_action(
     operator: &Arc<Mutex<OperatorNode>>,
     payload_id: &String,
     message: &String
-) {
+) -> Vec<u8> {
     // Deserialize the command from the JSON message
     let command: Command = serde_json::from_str(message).expect("Failed to parse command");
     let reference_id = command.reference_id;
@@ -87,6 +87,11 @@ pub fn handle_action(
                 .expect("Failed to deserialize PipelineStateCommand");
             Box::new(command)
         }
+        "operator_shutdown" => {
+            let command: operator_shutdown::OperatorShutdownCommand = serde_json::from_value(command.data)
+                .expect("Failed to deserialize OperatorShutdownCommand");
+            Box::new(command)
+        }
         _ => {
             panic!("Unknown command payload_id: {}", payload_id);
         }
@@ -98,19 +103,17 @@ pub fn handle_action(
         &mut errors
     );
 
-    reply_agent(operator, reference_id, payload_id, info, &mut status, &mut errors);
+    get_reply(reference_id, payload_id, info, &mut status, &mut errors)
 }
 
-fn reply_agent(
-    operator: &Arc<Mutex<OperatorNode>>,
+fn get_reply(
     reference_id: String,
     payload_id: String,
     info_msg: String,
     status: &mut String,
     errors: &mut Vec<String>
-) {
+) -> Vec<u8> {
     let mut hashmap: HashMap<String, Value> = HashMap::new();
-    let operator_guard = operator.lock().unwrap();
 
     if errors.len() > 0 {
         *status = "error".to_string();
@@ -122,12 +125,6 @@ fn reply_agent(
     hashmap.insert("errors".to_string(), Value::Array(errors.iter().map(|e| Value::String(e.clone())).collect()));
 
     let json_string = serde_json::to_string(&hashmap).unwrap();
-    let payload = payloader::build_from_str(&payload_id, &json_string);
-
-    operator_guard
-        .get_control_stream()
-        .try_clone()
-        .unwrap()
-        .write_all(&payload)
-        .unwrap();
+    
+    payloader::build_from_str(&payload_id, &json_string)
 }

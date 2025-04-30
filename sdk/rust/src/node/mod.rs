@@ -1,4 +1,3 @@
-pub mod action_receiver;
 mod control_unit;
 
 use crate::pipeline::factory_registry::{get_factory, PipelineBox, PipelineHandle};
@@ -11,12 +10,10 @@ pub struct OperatorNode {
     operator_id: String,
     _namespace: String,
     pipelines: Arc<RwLock<HashMap<String, Arc<Mutex<PipelineBox>>>>>,
-    control_stream: Arc<UnixStream>,
     shared_io_streams: Arc<RwLock<HashMap<u8, UnixStream>>>,
 }
 
 pub enum NodeAction {
-    ControlCommand(String, Vec<u8>),
     EngineIdConfirmation
 }
 
@@ -30,33 +27,27 @@ impl OperatorNode {
         let tx = Arc::new(Mutex::new(tx));
         let rx = Arc::new(Mutex::new(rx));
     
-        let (_control_thread, control_stream) = control_unit::connect_control_socket(
-            namespace.clone(),
-            Arc::clone(&tx)
-        );
-
-        // Make sure the namespace is passed to the Aflecha.
-        match rx.lock().unwrap().recv().expect("Failed to receive namespace confirmation") {
-            NodeAction::EngineIdConfirmation => {},
-            _ => panic!("Wrong order of messages"),
-        }
-
-        let pipeline = OperatorNode {
+        let operator = OperatorNode {
             operator_id: "undefined".to_string(),
-            _namespace: namespace,
-            control_stream,
+            _namespace: namespace.clone(),
             pipelines,
             shared_io_streams
         };
-    
-        let pipeline_arc = Arc::new(Mutex::new(pipeline));
-            
-        let _action_receiver = action_receiver::start_action_receiver(
-            Arc::clone(&pipeline_arc),
-            Arc::clone(&rx)
+
+        let operator_arc = Arc::new(Mutex::new(operator));
+
+        let _control_thread = control_unit::open(
+            namespace,
+            Arc::clone(&tx),
+            operator_arc.clone()
         );
-        
-        pipeline_arc
+
+        // Make sure the namespace is passed to the agent.
+        match rx.lock().unwrap().recv().expect("Failed to receive namespace confirmation") {
+            NodeAction::EngineIdConfirmation => {}
+        }
+
+        operator_arc
     }
 
     pub fn start_pipeline(&self, factory_id: String, pipeline_id: String) -> Option<PipelineHandle> {
@@ -75,10 +66,6 @@ impl OperatorNode {
 
     pub fn stop_pipeline(&self, id: String) {
         self.pipelines.write().unwrap().remove(&id);
-    }
-
-    pub fn get_control_stream(&self) -> Arc<UnixStream> {
-        Arc::clone(&self.control_stream)
     }
 
     pub fn _get_namespace(&self) -> String {
