@@ -25,7 +25,7 @@ impl CommandAction for MigrationSerializationCommand {
 
         // TODO: Implement error handling.
 
-        let (serialized_state, factory_id_opt) = match pipeline_handle {
+        let serialized_state = match pipeline_handle {
             Some(p) => {
                 let pipeline = p.pipeline_mut();
 
@@ -34,21 +34,15 @@ impl CommandAction for MigrationSerializationCommand {
                 let data_as_values = serialized_state.iter()
                     .map(|&byte| Value::Number(serde_json::Number::from(byte)))
                     .collect();
-
-                let factory_id = pipeline.get_factory_id();
     
-                (Value::Array(data_as_values), Some(factory_id))
+                Value::Array(data_as_values)
             }
-            None => (Value::Null, None)
+            None => Value::Null
         };
 
         // Create a data object that contains both components
         let mut data_object = serde_json::Map::new();
         data_object.insert("serialized_state".to_string(), serialized_state);
-        
-        if let Some(factory_id) = factory_id_opt {
-            data_object.insert("factory_id".to_string(), Value::String(factory_id));
-        }
 
         // Remove the pipeline from the operator
         operator_guard.stop_pipeline(self.pipeline_id.clone());
