@@ -1,16 +1,11 @@
+use crate::pb::AssignOperatorId;
 use super::CommandAction;
 
 use std::sync::{Arc, Mutex};
-use serde::Deserialize;
 
 use crate::node::{OperatorNode, OperatorStatus};
 
-#[derive(Deserialize, Debug)]
-pub struct AssignOperatorIdCommand {
-    operator_id: String,
-}
-
-impl CommandAction for AssignOperatorIdCommand {
+impl CommandAction for AssignOperatorId {
     fn handle(
         &self,
         operator: &Arc<Mutex<OperatorNode>>,

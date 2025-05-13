@@ -16,7 +16,7 @@ pub struct OperatorNode {
     operator_id: String,
     _namespace: String,
     pipelines: Arc<RwLock<HashMap<String, Arc<Mutex<PipelineBox>>>>>,
-    shared_io_streams: Arc<RwLock<HashMap<u8, UnixStream>>>,
+    shared_io_streams: Arc<RwLock<HashMap<u32, UnixStream>>>,
     status: OperatorStatus,
 }
 
@@ -28,7 +28,7 @@ impl OperatorNode {
     pub fn new(
         namespace: String,
         pipelines: Arc<RwLock<HashMap<String, Arc<Mutex<PipelineBox>>>>>,
-        shared_io_streams: Arc<RwLock<HashMap<u8, UnixStream>>>,
+        shared_io_streams: Arc<RwLock<HashMap<u32, UnixStream>>>,
     ) -> Arc<Mutex<OperatorNode>> {
         let (tx, rx): (mpsc::Sender<NodeAction>, mpsc::Receiver<NodeAction>) = mpsc::channel();
         let tx = Arc::new(Mutex::new(tx));
@@ -88,7 +88,7 @@ impl OperatorNode {
         self.pipelines.read().unwrap().get(&id).cloned().map(|pipeline| PipelineHandle { pipeline })
     }
 
-    pub fn get_io_streams(&self) -> Arc<RwLock<HashMap<u8, UnixStream>>> {
+    pub fn get_io_streams(&self) -> Arc<RwLock<HashMap<u32, UnixStream>>> {
         Arc::clone(&self.shared_io_streams)
     }
 

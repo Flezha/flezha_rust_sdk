@@ -1,18 +1,19 @@
+use crate::pb::CommandRequest;
+use crate::pb::command_request::{Command};
+
 mod operator_assign;
 mod pipeline_start;
 mod pipeline_stop;
-mod streams_connect;
 mod migration_serialization;
 mod migration_deserialization;
 mod pipeline_state;
 mod operator_shutdown;
+mod streams_connect;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use operator_assign::AssignOperatorIdCommand;
 use operator_shutdown::OperatorShutdownCommand;
-use streams_connect::ConnectSocketCommand;
 use migration_serialization::MigrationSerializationCommand;
 use migration_deserialization::MigrationDeserializationCommand;
 use pipeline_state::PipelineStateCommand;
@@ -23,8 +24,8 @@ use crate::service::payloader;
 use self::pipeline_start::AddPipelineCommand;
 use self::pipeline_stop::RemPipelineCommand;
 
-use serde::Deserialize;
 use serde_json::Value;
+use prost::Message;
 
 pub trait CommandAction {
     fn handle(
@@ -40,67 +41,79 @@ pub enum CommandActionType {
     OperatorShutdown(Box<OperatorShutdownCommand>),
 }
 
-#[derive(Deserialize)]
-struct Command {
-    reference_id: String,
-    data: Value,
-}
 
 pub fn get_handler(    
-    payload_id: &String,
+    _payload_id: &String,
     message: &String
 ) -> (CommandActionType, String) {
-    let command: Command = serde_json::from_str(message).expect("Failed to parse command");
-    let reference_id = command.reference_id;
+    let wrapper_command = CommandRequest::decode(message.as_bytes())
+        .expect("Failed to decode message");
 
-    let handler = match payload_id.as_str() {
-        "assign_operator_id" => {
-            let command: AssignOperatorIdCommand = serde_json::from_value(command.data)
-                .expect("Failed to deserialize AssignOperatorIdCommand");
-            CommandActionType::Regular(Box::new(command))
-        }
-        "connect_sockets" => {
-            let command: ConnectSocketCommand = serde_json::from_value(command.data)
-                .expect("Failed to deserialize OpenSocketCommand");
-            CommandActionType::Regular(Box::new(command))
-        }
-        "start_pipeline" => {
-            let command: AddPipelineCommand = serde_json::from_value(command.data)
-                .expect("Failed to deserialize AddPipelineCommand");
-            CommandActionType::Regular(Box::new(command))    
-        }
-        "stop_pipeline" => {
-            let command: RemPipelineCommand = serde_json::from_value(command.data)
-                .expect("Failed to deserialize AddPipelineCommand");
-            CommandActionType::Regular(Box::new(command))
-        }
-        "migration_serialization" => {
-            let command: MigrationSerializationCommand = serde_json::from_value(command.data)
-                .expect("Failed to deserialize MigrationSerializationCommand");
-            CommandActionType::Regular(Box::new(command))
-        }
-        "migration_deserialization" => {
-            let command: MigrationDeserializationCommand = serde_json::from_value(command.data)
-                .expect("Failed to deserialize MigrationDeserializationCommand");
-            CommandActionType::Regular(Box::new(command))
-        }
-        "pipeline_state" => {
-            let command: PipelineStateCommand = serde_json::from_value(command.data)
-                .expect("Failed to deserialize PipelineStateCommand");
-            CommandActionType::Regular(Box::new(command))
-        }
-        "operator_disconnect" => {
-            let command: OperatorShutdownCommand = serde_json::from_value(command.data)
-                .expect("Failed to deserialize OperatorShutdownCommand");
-            CommandActionType::OperatorShutdown(Box::new(command))
-        }
-        _ => {
-            panic!("Unknown command payload_id: {}", payload_id);
-        }
+    let reference_id = wrapper_command.reference_id;
+
+    let command_handler = match wrapper_command.command.unwrap() {
+        Command::AssignOperatorId(proto_ch) => {
+            CommandActionType::Regular(Box::new(proto_ch))
+        },
+        Command::ConnectSocket(proto_ch) => {
+            CommandActionType::Regular(Box::new(proto_ch))
+        },
     };
 
-    (handler, reference_id)
+    (command_handler, reference_id)
 }
+
+    // let command: Command = serde_json::from_str(message).expect("Failed to parse command");
+    // let reference_id = command.reference_id;
+
+    // let handler = match payload_id.as_str() {
+    //     "assign_operator_id" => {
+    //         let command: AssignOperatorIdCommand = serde_json::from_value(command.data)
+    //             .expect("Failed to deserialize AssignOperatorIdCommand");
+    //         CommandActionType::Regular(Box::new(command))
+    //     }
+    //     "connect_sockets" => {
+    //         let command: ConnectSocketCommand = serde_json::from_value(command.data)
+    //             .expect("Failed to deserialize OpenSocketCommand");
+    //         CommandActionType::Regular(Box::new(command))
+    //     }
+    //     "start_pipeline" => {
+    //         let command: AddPipelineCommand = serde_json::from_value(command.data)
+    //             .expect("Failed to deserialize AddPipelineCommand");
+    //         CommandActionType::Regular(Box::new(command))    
+    //     }
+    //     "stop_pipeline" => {
+    //         let command: RemPipelineCommand = serde_json::from_value(command.data)
+    //             .expect("Failed to deserialize AddPipelineCommand");
+    //         CommandActionType::Regular(Box::new(command))
+    //     }
+    //     "migration_serialization" => {
+    //         let command: MigrationSerializationCommand = serde_json::from_value(command.data)
+    //             .expect("Failed to deserialize MigrationSerializationCommand");
+    //         CommandActionType::Regular(Box::new(command))
+    //     }
+    //     "migration_deserialization" => {
+    //         let command: MigrationDeserializationCommand = serde_json::from_value(command.data)
+    //             .expect("Failed to deserialize MigrationDeserializationCommand");
+    //         CommandActionType::Regular(Box::new(command))
+    //     }
+    //     "pipeline_state" => {
+    //         let command: PipelineStateCommand = serde_json::from_value(command.data)
+    //             .expect("Failed to deserialize PipelineStateCommand");
+    //         CommandActionType::Regular(Box::new(command))
+    //     }
+    //     "operator_disconnect" => {
+    //         let command: OperatorShutdownCommand = serde_json::from_value(command.data)
+    //             .expect("Failed to deserialize OperatorShutdownCommand");
+    //         CommandActionType::OperatorShutdown(Box::new(command))
+    //     }
+    //     _ => {
+    //         panic!("Unknown command payload_id: {}", payload_id);
+    //     }
+    // };
+
+    // (command_handler, reference_id)
+// }
 
 pub fn handle_action(
     operator: &Arc<Mutex<OperatorNode>>,

@@ -2,6 +2,7 @@
 name = "aflecha_operator"
 version = "0.1.0"
 edition = "2021"
+build = "build.rs"
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
@@ -10,3 +11,10 @@ byteorder = "1.4"
 bincode = "2.0"
 lazy_static = "1.4.0"
 erased-serde="0.4.6"
+prost = "0.13.5"
+
+[build-dependencies]
+prost-build = "0.13.5"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(rust_analyzer)"] }

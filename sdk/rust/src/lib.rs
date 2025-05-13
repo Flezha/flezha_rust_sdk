@@ -12,10 +12,15 @@ pub use pipeline::{PipelineInput, PipelineOutput, PipelineResult, PipelineResult
 use pipeline::factory_registry::PipelineBox;
 use pipeline::runner;
 
+pub mod pb {
+    #[cfg(not(rust_analyzer))]
+    include!(concat!(env!("OUT_DIR"), "/operator_commands.rs"));
+}
+
 pub struct Aflecha {
     _id: String,
     pipelines: Arc<RwLock<HashMap<String, Arc<Mutex<PipelineBox>>>>>,
-    shared_io_streams: Arc<RwLock<HashMap<u8, UnixStream>>>,
+    shared_io_streams: Arc<RwLock<HashMap<u32, UnixStream>>>,
     _operator: Arc<Mutex<OperatorNode>>,
 }
 

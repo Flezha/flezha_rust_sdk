@@ -1,4 +1,6 @@
-use serde::Deserialize;
+use crate::pb::ConnectSocket;
+use super::CommandAction;
+
 use std::os::unix::net::UnixStream;
 use std::sync::{RwLock, Arc, Mutex};
 use std::collections::HashMap;
@@ -11,16 +13,9 @@ use crate::pipeline::runner;
 use crate::node::OperatorNode;
 use crate::service::payloader;
 
-use super::CommandAction;
-
 use crate::utility::path_helper;
 
-#[derive(Deserialize)]
-pub struct ConnectSocketCommand {
-    sockets_count: u8
-}
-
-impl CommandAction for ConnectSocketCommand {
+impl CommandAction for ConnectSocket {
     fn handle(
         &self,
         operator: &Arc<Mutex<OperatorNode>>,
