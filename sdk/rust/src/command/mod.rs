@@ -1,4 +1,4 @@
-use crate::pb::CommandRequest;
+use crate::pb::{CommandRequest, CommandResponse};
 use crate::pb::command_request::{Command};
 
 mod operator_assign;
@@ -131,18 +131,18 @@ pub fn handle_action(
         &mut errors
     );
 
-    let mut hashmap: HashMap<String, Value> = HashMap::new();
-
     if errors.len() > 0 {
         status = "error".to_string();
     }
-                    
-    hashmap.insert("reference_id".to_string(), Value::String(reference_id));
-    hashmap.insert("status".to_string(), Value::String(status));
-    hashmap.insert("info".to_string(), Value::String(info_msg));
-    hashmap.insert("errors".to_string(), Value::Array(errors.iter().map(|e| Value::String(e.clone())).collect()));
 
-    let json_string = serde_json::to_string(&hashmap).unwrap();
+    let command_response: CommandResponse = CommandResponse {
+        reference_id,
+        status,
+        info: info_msg,
+        errors: errors.iter().map(|e| e.clone()).collect(),
+    };
+
+    let command_response_bytes = command_response.encode_to_vec();
     
-    payloader::build_from_str(&payload_id, &json_string)
+    payloader::build_from_binary(&payload_id, &command_response_bytes)
 }
