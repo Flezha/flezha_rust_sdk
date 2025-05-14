@@ -1,5 +1,9 @@
 use crate::pb::{CommandRequest, CommandResponse};
 use crate::pb::command_request::{Command};
+use crate::node::OperatorNode;
+use crate::service::payloader;
+use std::sync::{Arc, Mutex};
+use prost::Message;
 
 mod operator_assign;
 mod pipeline_start;
@@ -7,20 +11,8 @@ mod pipeline_stop;
 mod migration_serialization;
 mod migration_deserialization;
 mod pipeline_state;
-mod operator_shutdown;
+mod operator_disconnect;
 mod streams_connect;
-
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-
-use operator_shutdown::OperatorShutdownCommand;
-use pipeline_state::PipelineStateCommand;
-
-use crate::node::OperatorNode;
-use crate::service::payloader;
-
-use serde_json::Value;
-use prost::Message;
 
 pub trait CommandAction {
     fn handle(
@@ -33,9 +25,8 @@ pub trait CommandAction {
 
 pub enum CommandActionType {
     Regular(Box<dyn CommandAction>),
-    OperatorShutdown(Box<OperatorShutdownCommand>),
+    OperatorDisconnect(Box<dyn CommandAction>),
 }
-
 
 pub fn get_handler(    
     _payload_id: &String,
@@ -65,52 +56,16 @@ pub fn get_handler(
         Command::MigrationDeserialization(proto_ch) => {
             CommandActionType::Regular(Box::new(proto_ch))
         },
+        Command::PipelineState(proto_ch) => {
+            CommandActionType::Regular(Box::new(proto_ch))
+        },
+        Command::OperatorDisconnect(proto_ch) => {
+            CommandActionType::OperatorDisconnect(Box::new(proto_ch))
+        },
     };
 
     (command_handler, reference_id)
 }
-
-    // let command: Command = serde_json::from_str(message).expect("Failed to parse command");
-    // let reference_id = command.reference_id;
-
-    // let handler = match payload_id.as_str() {
-    //     "start_pipeline" => {
-    //         let command: AddPipelineCommand = serde_json::from_value(command.data)
-    //             .expect("Failed to deserialize AddPipelineCommand");
-    //         CommandActionType::Regular(Box::new(command))    
-    //     }
-    //     "stop_pipeline" => {
-    //         let command: RemPipelineCommand = serde_json::from_value(command.data)
-    //             .expect("Failed to deserialize AddPipelineCommand");
-    //         CommandActionType::Regular(Box::new(command))
-    //     }
-    //     "migration_serialization" => {
-    //         let command: MigrationSerializationCommand = serde_json::from_value(command.data)
-    //             .expect("Failed to deserialize MigrationSerializationCommand");
-    //         CommandActionType::Regular(Box::new(command))
-    //     }
-    //     "migration_deserialization" => {
-    //         let command: MigrationDeserializationCommand = serde_json::from_value(command.data)
-    //             .expect("Failed to deserialize MigrationDeserializationCommand");
-    //         CommandActionType::Regular(Box::new(command))
-    //     }
-    //     "pipeline_state" => {
-    //         let command: PipelineStateCommand = serde_json::from_value(command.data)
-    //             .expect("Failed to deserialize PipelineStateCommand");
-    //         CommandActionType::Regular(Box::new(command))
-    //     }
-    //     "operator_disconnect" => {
-    //         let command: OperatorShutdownCommand = serde_json::from_value(command.data)
-    //             .expect("Failed to deserialize OperatorShutdownCommand");
-    //         CommandActionType::OperatorShutdown(Box::new(command))
-    //     }
-    //     _ => {
-    //         panic!("Unknown command payload_id: {}", payload_id);
-    //     }
-    // };
-
-    // (command_handler, reference_id)
-// }
 
 pub fn handle_action(
     operator: &Arc<Mutex<OperatorNode>>,

@@ -1,14 +1,10 @@
 use super::CommandAction;
-
+use crate::pb::OperatorDisconnect;
 use std::sync::{Arc, Mutex};
-use serde::Deserialize;
 
 use crate::node::{OperatorNode, OperatorStatus};
 
-#[derive(Deserialize, Debug)]
-pub struct OperatorShutdownCommand {}
-
-impl CommandAction for OperatorShutdownCommand {
+impl CommandAction for OperatorDisconnect {
     fn handle(
         &self,
         operator: &Arc<Mutex<OperatorNode>>,
@@ -18,6 +14,6 @@ impl CommandAction for OperatorShutdownCommand {
         let mut operator_guard = operator.lock().unwrap();
         operator_guard.set_status(OperatorStatus::Stopped);
 
-        ("operator_disconnect".to_string(), "Operator closing..".to_string())
+        ("operator_disconnect".to_string(), "Operator disconnecting..".to_string())
     }
 }

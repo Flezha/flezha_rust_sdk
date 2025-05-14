@@ -1,17 +1,10 @@
-use super::CommandAction;
-
 use std::sync::{Arc, Mutex};
-use serde::Deserialize;
-
 use crate::node::OperatorNode;
 use crate::pipeline::factory_registry::PipelineHandle;
+use crate::pb::PipelineState;
+use super::CommandAction;
 
-#[derive(Deserialize, Debug)]
-pub struct PipelineStateCommand {
-    pipeline_id: String
-}
-
-impl CommandAction for PipelineStateCommand {
+impl CommandAction for PipelineState {
     fn handle(
         &self,
         operator: &Arc<Mutex<OperatorNode>>,

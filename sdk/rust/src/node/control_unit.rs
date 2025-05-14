@@ -60,7 +60,7 @@ fn sock_conn(
                             (&*stream_clone).write_all(&reply).unwrap();
                         }
 
-                        CommandActionType::OperatorShutdown(handler) => {
+                        CommandActionType::OperatorDisconnect(handler) => {
                             let reply = command::handle_action(&operator, handler, &payload_id, &payload_message, reference_id);
                             (&*stream_clone).write_all(&reply).unwrap();
 
