@@ -16,7 +16,6 @@ pub mod pb {
     #[cfg(not(rust_analyzer))]
     include!(concat!(env!("OUT_DIR"), "/operator_commands.rs"));
 }
-
 pub struct Aflecha {
     _id: String,
     pipelines: Arc<RwLock<HashMap<String, Arc<Mutex<PipelineBox>>>>>,
