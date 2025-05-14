@@ -1,16 +1,11 @@
 use super::CommandAction;
 
 use std::sync::{Arc, Mutex};
-use serde::Deserialize;
 
 use crate::node::OperatorNode;
+use crate::pb::RemPipeline;
 
-#[derive(Deserialize, Debug)]
-pub struct RemPipelineCommand {
-    pipeline_id: String
-}
-
-impl CommandAction for RemPipelineCommand {
+impl CommandAction for RemPipeline {
     fn handle(
         &self,
         operator: &Arc<Mutex<OperatorNode>>,

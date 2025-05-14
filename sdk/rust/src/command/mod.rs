@@ -21,9 +21,6 @@ use pipeline_state::PipelineStateCommand;
 use crate::node::OperatorNode;
 use crate::service::payloader;
 
-use self::pipeline_start::AddPipelineCommand;
-use self::pipeline_stop::RemPipelineCommand;
-
 use serde_json::Value;
 use prost::Message;
 
@@ -58,6 +55,12 @@ pub fn get_handler(
         Command::ConnectSocket(proto_ch) => {
             CommandActionType::Regular(Box::new(proto_ch))
         },
+        Command::AddPipeline(proto_ch) => {
+            CommandActionType::Regular(Box::new(proto_ch))
+        },
+        Command::RemPipeline(proto_ch) => {
+            CommandActionType::Regular(Box::new(proto_ch))
+        },
     };
 
     (command_handler, reference_id)
@@ -67,16 +70,6 @@ pub fn get_handler(
     // let reference_id = command.reference_id;
 
     // let handler = match payload_id.as_str() {
-    //     "assign_operator_id" => {
-    //         let command: AssignOperatorIdCommand = serde_json::from_value(command.data)
-    //             .expect("Failed to deserialize AssignOperatorIdCommand");
-    //         CommandActionType::Regular(Box::new(command))
-    //     }
-    //     "connect_sockets" => {
-    //         let command: ConnectSocketCommand = serde_json::from_value(command.data)
-    //             .expect("Failed to deserialize OpenSocketCommand");
-    //         CommandActionType::Regular(Box::new(command))
-    //     }
     //     "start_pipeline" => {
     //         let command: AddPipelineCommand = serde_json::from_value(command.data)
     //             .expect("Failed to deserialize AddPipelineCommand");
@@ -139,7 +132,7 @@ pub fn handle_action(
         reference_id,
         status,
         info: info_msg,
-        errors: errors.iter().map(|e| e.clone()).collect(),
+        errors: errors,
     };
 
     let command_response_bytes = command_response.encode_to_vec();
