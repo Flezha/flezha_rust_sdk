@@ -61,6 +61,9 @@ pub fn get_handler(
         Command::RemPipeline(proto_ch) => {
             CommandActionType::Regular(Box::new(proto_ch))
         },
+        Command::MigrationSerialization(proto_ch) => {
+            CommandActionType::Regular(Box::new(proto_ch))
+        },
     };
 
     (command_handler, reference_id)
