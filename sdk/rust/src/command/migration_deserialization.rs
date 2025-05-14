@@ -1,17 +1,9 @@
 use std::sync::{Arc, Mutex};
-use serde::Deserialize;
-
 use super::CommandAction;
+use crate::pb::MigrationDeserialization;
 use crate::node::OperatorNode;
 
-#[derive(Deserialize)]
-pub struct MigrationDeserializationCommand {
-    pipeline_id: String,
-    factory_id: String,
-    serialized_state: Vec<u8>
-}
-
-impl CommandAction for MigrationDeserializationCommand {
+impl CommandAction for MigrationDeserialization {
     fn handle(
         &self,
         operator: &Arc<Mutex<OperatorNode>>,

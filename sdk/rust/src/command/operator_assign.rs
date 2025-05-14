@@ -1,8 +1,6 @@
-use crate::pb::AssignOperatorId;
 use super::CommandAction;
-
 use std::sync::{Arc, Mutex};
-
+use crate::pb::AssignOperatorId;
 use crate::node::{OperatorNode, OperatorStatus};
 
 impl CommandAction for AssignOperatorId {

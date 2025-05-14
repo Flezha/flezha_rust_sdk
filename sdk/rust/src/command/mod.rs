@@ -14,8 +14,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use operator_shutdown::OperatorShutdownCommand;
-use migration_serialization::MigrationSerializationCommand;
-use migration_deserialization::MigrationDeserializationCommand;
 use pipeline_state::PipelineStateCommand;
 
 use crate::node::OperatorNode;
@@ -62,6 +60,9 @@ pub fn get_handler(
             CommandActionType::Regular(Box::new(proto_ch))
         },
         Command::MigrationSerialization(proto_ch) => {
+            CommandActionType::Regular(Box::new(proto_ch))
+        },
+        Command::MigrationDeserialization(proto_ch) => {
             CommandActionType::Regular(Box::new(proto_ch))
         },
     };

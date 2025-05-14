@@ -1,19 +1,11 @@
 use std::sync::{Arc, Mutex};
-
 use super::CommandAction;
-
-use serde::Deserialize;
 use serde_json::Value;
-
+use crate::pb::MigrationSerialization;
 use crate::node::OperatorNode;
 use crate::pipeline::factory_registry::PipelineHandle;
 
-#[derive(Deserialize)]
-pub struct MigrationSerializationCommand {
-    pipeline_id: String
-}
-
-impl CommandAction for MigrationSerializationCommand {
+impl CommandAction for MigrationSerialization {
     fn handle(
         &self,
         operator: &Arc<Mutex<OperatorNode>>,
