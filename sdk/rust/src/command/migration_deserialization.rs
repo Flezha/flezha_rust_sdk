@@ -9,7 +9,7 @@ impl CommandAction for MigrationDeserialization {
         operator: &Arc<Mutex<OperatorNode>>,
         _message: &String,
         _errors: &mut Vec<String>
-    ) -> (String, String) {      
+    ) -> (String, Vec<u8>) {      
         let operator_guard = operator.lock().unwrap();
         
         // TODO: Implement error handling.
@@ -27,7 +27,7 @@ impl CommandAction for MigrationDeserialization {
 
         (
             "migration_deserialization".to_string(),
-            "Pipeline has been deserialized".to_string()
+            Vec::new(),
         )
     }
 }

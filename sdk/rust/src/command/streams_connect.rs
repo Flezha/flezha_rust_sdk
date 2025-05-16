@@ -21,7 +21,7 @@ impl CommandAction for ConnectSocket {
         operator: &Arc<Mutex<OperatorNode>>,
         _message: &String,
         _errors: &mut Vec<String>
-    ) -> (String, String) {   
+    ) -> (String, Vec<u8>) {   
         let operator_guard = operator.lock().unwrap();
         let pipelines = operator_guard.get_pipelines();
         let io_streams = operator_guard.get_io_streams();
@@ -43,7 +43,7 @@ impl CommandAction for ConnectSocket {
             });
         }
 
-        ("connect_sockets".to_string(), "Connection to socket has been established".to_string())
+        ("connect_sockets".to_string(), Vec::new())
     }
 }
 

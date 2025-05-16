@@ -13,7 +13,7 @@ impl CommandAction for AddPipeline {
         operator: &Arc<Mutex<OperatorNode>>,
         _message: &String,
         errors: &mut Vec<String>
-    ) -> (String, String) {
+    ) -> (String, Vec<u8>) {
         let operator_guard = operator.lock().unwrap();
         let pipeline_id = self.pipeline_id.clone();
 
@@ -49,16 +49,13 @@ impl CommandAction for AddPipeline {
                         }
                     }
 
-                    return (
-                        "start_pipeline".to_string(),
-                        "Pipeline has been created".to_string()
-                    )
+                    return ("start_pipeline".to_string(),Vec::new())
                 },
                 None => errors.push(format!("Unable to create pipeline"))
             }
         }
 
-        ("start_pipeline".to_string(), String::from(""))
+        ("start_pipeline".to_string(), Vec::new())
     }
 }
 

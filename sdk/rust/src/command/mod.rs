@@ -20,7 +20,7 @@ pub trait CommandAction {
         operator: &Arc<Mutex<OperatorNode>>,
         command_struct: &String,
         errors: &mut Vec<String>
-    ) -> (String, String);
+    ) -> (String, Vec<u8>);
 }
 
 pub enum CommandActionType {
@@ -77,7 +77,7 @@ pub fn handle_action(
     let mut errors: Vec<String> = vec![];
     let mut status = String::from("success");
 
-    let (_payload_id, info_msg) = handler.handle(
+    let (_payload_id, raw_data) = handler.handle(
         operator,
         message,
         &mut errors
@@ -90,8 +90,8 @@ pub fn handle_action(
     let command_response: CommandResponse = CommandResponse {
         reference_id,
         status,
-        info: info_msg,
-        errors: errors,
+        errors,
+        raw_data
     };
 
     let command_response_bytes = command_response.encode_to_vec();

@@ -10,25 +10,30 @@ impl CommandAction for PipelineState {
         operator: &Arc<Mutex<OperatorNode>>,
         _message: &String,
         errors: &mut Vec<String>
-    ) -> (String, String) {   
+    ) -> (String, Vec<u8>) {   
         let operator_guard = operator.lock().unwrap();
         let pipeline_handle: Option<PipelineHandle> = operator_guard.get_pipeline(self.pipeline_id.clone());
-        let json_string = match pipeline_handle {
+        
+        match pipeline_handle {
             Some(pipeline_handle) => {
                 let pipeline = pipeline_handle.pipeline_mut();
                 let state_value = pipeline.get_state();
-                serde_json::to_string(&state_value).unwrap()
+
+                (
+                    "pipeline_state".to_string(),
+                    serde_json::to_vec(&state_value).unwrap()
+                )  
             },
             None => {
                 let error_message = format!("Pipeline with id {} not found", self.pipeline_id);
                 errors.push(error_message.clone());
-                serde_json::to_string(&"Unable to get pipeline state.".to_string()).unwrap()
-            }
-        };
+                serde_json::to_string(&"Unable to get pipeline state.".to_string()).unwrap();
 
-        (
-            "pipeline_state".to_string(),
-            json_string
-        )
+                (
+                    "pipeline_state".to_string(),
+                    Vec::new()
+                )
+            }
+        }
     }
 }

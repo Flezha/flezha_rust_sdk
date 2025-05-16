@@ -1,6 +1,5 @@
 use std::sync::{Arc, Mutex};
 use super::CommandAction;
-use serde_json::Value;
 use crate::pb::MigrationSerialization;
 use crate::node::OperatorNode;
 use crate::pipeline::factory_registry::PipelineHandle;
@@ -11,7 +10,7 @@ impl CommandAction for MigrationSerialization {
         operator: &Arc<Mutex<OperatorNode>>,
         _message: &String,
         _errors: &mut Vec<String>
-    ) -> (String, String) {       
+    ) -> (String, Vec<u8>) {       
         let operator_guard = operator.lock().unwrap();
         let pipeline_handle: Option<PipelineHandle> = operator_guard.get_pipeline(self.pipeline_id.clone());
 
@@ -20,21 +19,10 @@ impl CommandAction for MigrationSerialization {
         let serialized_state = match pipeline_handle {
             Some(p) => {
                 let pipeline = p.pipeline_mut();
-
-                let serialized_state = pipeline.serialize_state().unwrap();
-
-                let data_as_values = serialized_state.iter()
-                    .map(|&byte| Value::Number(serde_json::Number::from(byte)))
-                    .collect();
-    
-                Value::Array(data_as_values)
+                pipeline.serialize_state().unwrap()
             }
-            None => Value::Null
+            None => Vec::new(),
         };
-
-        // Create a data object that contains both components
-        let mut data_object = serde_json::Map::new();
-        data_object.insert("serialized_state".to_string(), serialized_state);
 
         // Remove the pipeline from the operator
         operator_guard.stop_pipeline(self.pipeline_id.clone());
@@ -43,7 +31,7 @@ impl CommandAction for MigrationSerialization {
 
         (
             "migration_serialization".to_string(),
-            serde_json::to_string(&Value::Object(data_object)).unwrap()
+            serialized_state
         )
     }
 }
