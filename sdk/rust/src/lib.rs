@@ -16,19 +16,19 @@ pub mod pb {
     #[cfg(not(rust_analyzer))]
     include!(concat!(env!("OUT_DIR"), "/operator_commands.rs"));
 }
-pub struct Aflecha {
+pub struct Flezha {
     _id: String,
     pipelines: Arc<RwLock<HashMap<String, Arc<Mutex<PipelineBox>>>>>,
     shared_io_streams: Arc<RwLock<HashMap<u32, UnixStream>>>,
     _operator: Arc<Mutex<OperatorNode>>,
 }
 
-impl Aflecha {
-    fn new(id: String) -> Aflecha {
+impl Flezha {
+    fn new(id: String) -> Flezha {
         let pipelines =  Arc::new(RwLock::new(HashMap::new()));
         let shared_io_streams = Arc::new(RwLock::new(HashMap::new()));
 
-        Aflecha {
+        Flezha {
             _id: id.clone(),
             pipelines: Arc::clone(&pipelines),
             shared_io_streams: Arc::clone(&shared_io_streams),
@@ -55,6 +55,6 @@ impl Aflecha {
     }
 }
 
-pub fn new(group_id: String) -> Aflecha {
-    Aflecha::new(group_id)
+pub fn new(group_id: String) -> Flezha {
+    Flezha::new(group_id)
 }
