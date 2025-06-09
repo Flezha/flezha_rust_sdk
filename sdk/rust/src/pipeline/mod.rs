@@ -52,6 +52,10 @@ pub trait Pipeline {
     fn get_state(&self) -> Box<dyn erased_serde::Serialize + '_>;
 }
 
+pub trait PipelineStep<State> {
+    fn run(&mut self, input: PipelineInput, state: &mut State) -> io::Result<PipelineOutput>;
+}
+
 #[macro_export]
 macro_rules! define_pipeline_factory {
     (
@@ -74,7 +78,7 @@ macro_rules! define_pipeline_factory {
             // This enforces that the provided state expression has the required traits.
             struct ConcretePipeline<State: Serialize + for<'de> Deserialize<'de> + Send + Sync + 'static> {
                 state: State,
-                steps: Vec<Box<dyn FnMut(PipelineInput, &mut State) -> io::Result<PipelineOutput> + Send + Sync>>,
+                steps: Vec<Box<dyn PipelineStep<State> + Send + Sync>>,
                 result_type: $crate::pipeline::PipelineResultType,
                 factory_id: String,
             }
@@ -85,7 +89,7 @@ macro_rules! define_pipeline_factory {
                     let mut final_output = PipelineOutput::Binary(vec![]);
                     
                     for step in &mut self.steps {
-                        match step(current_input, &mut self.state) {
+                        match step.run(current_input, &mut self.state) {
                             Ok(output) => {
                                 final_output = output;
                                 current_input = match &final_output {

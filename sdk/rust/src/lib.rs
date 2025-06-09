@@ -8,7 +8,7 @@ use std::{collections::HashMap, os::unix::net::UnixStream, sync::{Arc, Mutex, Rw
 
 use node::OperatorNode;
 
-pub use pipeline::{PipelineInput, PipelineOutput, PipelineResult, PipelineResultType};
+pub use pipeline::{PipelineInput, PipelineOutput, PipelineResult, PipelineResultType, PipelineStep};
 use pipeline::factory_registry::PipelineBox;
 use pipeline::runner;
 
