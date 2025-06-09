@@ -53,7 +53,7 @@ pub trait Pipeline {
 }
 
 pub trait PipelineStep<State> {
-    fn run(&mut self, input: PipelineInput, state: &mut State) -> io::Result<PipelineOutput>;
+    fn process(&mut self, input: PipelineInput, state: &mut State) -> io::Result<PipelineOutput>;
         
     // Optional method to perform actions after the step is created    
     fn post_create(&mut self, _state: &mut State) {}
@@ -92,7 +92,7 @@ macro_rules! define_pipeline_factory {
                     let mut final_output = PipelineOutput::Binary(vec![]);
                     
                     for step in &mut self.steps {
-                        match step.run(current_input, &mut self.state) {
+                        match step.process(current_input, &mut self.state) {
                             Ok(output) => {
                                 final_output = output;
                                 current_input = match &final_output {
