@@ -54,6 +54,9 @@ pub trait Pipeline {
 
 pub trait PipelineStep<State> {
     fn run(&mut self, input: PipelineInput, state: &mut State) -> io::Result<PipelineOutput>;
+        
+    // Optional method to perform actions after the step is created    
+    fn post_create(&mut self, _state: &mut State) {}
 }
 
 #[macro_export]
@@ -62,7 +65,7 @@ macro_rules! define_pipeline_factory {
         factory_id: $factory_id:expr,
         result_type: $result_type:expr,
         state: $state:expr,
-        steps: [ $( $step_fn:expr ),+ $(,)? ]
+        steps: [ $( $step_object:expr ),+ $(,)? ]
     ) => {{
         use $crate::pipeline::{Pipeline, PipelineInput, PipelineOutput, PipelineResult};
         use $crate::pipeline::factory_registry::{register_pipeline_factory, PipelineFactory};
@@ -128,9 +131,18 @@ macro_rules! define_pipeline_factory {
                 }
             }
 
+            // Create the pipeline with proper state initialization
+            let mut state = $state;
+            let mut steps: Vec<Box<dyn PipelineStep<_> + Send + Sync>> = vec![ $( Box::new($step_object) ),+ ];
+            
+            // Call post_create on each step
+            for step in &mut steps {
+                step.post_create(&mut state);
+            }
+
             let pipeline = ConcretePipeline {
-                state: $state,
-                steps: vec![ $( Box::new($step_fn) ),+ ],
+                state,
+                steps,
                 result_type: $result_type,
                 factory_id: factory_id_string.clone(),
             };
