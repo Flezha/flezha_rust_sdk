@@ -31,13 +31,13 @@ impl CommandAction for AddPipeline {
         if errors.len() == 0 {
             match pipeline_opt {
                 Some(pipeline_handle) => {
+                    let mut pipeline = pipeline_handle.pipeline_mut();
 
                     if !self.init_values.is_empty() {
                         match serde_json::from_str::<Value>(&self.init_values) {
                             Ok(json_value) => {
                                 if json_value.is_object() && !json_value.as_object().unwrap().is_empty() {
                                     let default_values: Vec<u8> = serde_json::to_vec(&json_value).expect("Failed to serialize init values");
-                                    let mut pipeline = pipeline_handle.pipeline_mut();
 
                                     pipeline.deserialize_state(&default_values)
                                         .expect("Failed to deserialize state");
@@ -48,6 +48,8 @@ impl CommandAction for AddPipeline {
                             }
                         }
                     }
+
+                    pipeline.post_alter();
 
                     return ("start_pipeline".to_string(),Vec::new())
                 },

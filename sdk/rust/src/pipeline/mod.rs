@@ -50,6 +50,8 @@ pub trait Pipeline {
 
     // Get pipeline state as a serializable reference
     fn get_state(&self) -> Box<dyn erased_serde::Serialize + '_>;
+
+    fn post_alter(&mut self);
 }
 
 pub trait PipelineStep<State> {
@@ -58,6 +60,7 @@ pub trait PipelineStep<State> {
     // Optional method to perform actions after the step is created    
     fn post_create(&mut self, _state: &mut State) {}
 }
+
 
 #[macro_export]
 macro_rules! define_pipeline_factory {
@@ -129,16 +132,17 @@ macro_rules! define_pipeline_factory {
                 fn get_state(&self) -> Box<dyn erased_serde::Serialize + '_> {
                     Box::new(&self.state)
                 }
+
+                fn post_alter(&mut self) {
+                    for step in &mut self.steps {
+                        step.post_create(&mut self.state);
+                    }
+                }
             }
 
             // Create the pipeline with proper state initialization
             let mut state = $state;
             let mut steps: Vec<Box<dyn PipelineStep<_> + Send + Sync>> = vec![ $( Box::new($step_object) ),+ ];
-            
-            // Call post_create on each step
-            for step in &mut steps {
-                step.post_create(&mut state);
-            }
 
             let pipeline = ConcretePipeline {
                 state,
