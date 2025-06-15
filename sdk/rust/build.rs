@@ -4,7 +4,7 @@ use std::fs;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // TODO: this needs to be dynamic from env variables or live with the project.
-    let proto_file = "../protobufs/operator_commands.proto";
+    let proto_file = "../../protobufs/operator_commands.proto";
     let proto_path = Path::new(proto_file);
 
     if !proto_path.exists() {
