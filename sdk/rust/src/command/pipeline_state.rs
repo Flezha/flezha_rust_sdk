@@ -17,7 +17,7 @@ impl CommandAction for PipelineState {
         match pipeline_handle {
             Some(pipeline_handle) => {
                 let pipeline = pipeline_handle.pipeline_mut();
-                let state_value = pipeline.get_state();
+                let state_value = pipeline.bin_serialize_state();
 
                 (
                     "pipeline_state".to_string(),

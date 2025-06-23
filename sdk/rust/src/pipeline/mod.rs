@@ -41,16 +41,19 @@ pub trait Pipeline {
     fn run(&mut self, input: PipelineInput) -> PipelineResult;
     
     // Serialize the pipeline state.
-    fn serialize_state(&self) -> io::Result<Vec<u8>>;
+    fn json_serialize_state(&self) -> io::Result<Vec<u8>>;
     
     // Deserialize and restore the pipeline state.
-    fn deserialize_state(&mut self, data: &[u8]) -> io::Result<()>;
+    fn json_deserialize_state(&mut self, data: &[u8]) -> io::Result<()>;
 
     // Get the factory ID of the pipeline.
     fn get_factory_id(&self) -> String;
 
+    // Get pipeline state for downcasting and serialization
+    fn get_state(&mut self) -> &mut dyn std::any::Any;
+
     // Get pipeline state as a serializable reference
-    fn get_state(&self) -> Box<dyn erased_serde::Serialize + '_>;
+    fn bin_serialize_state(&self) -> Box<dyn erased_serde::Serialize + '_>;
 
     fn post_alter(&mut self);
 }
@@ -95,12 +98,12 @@ impl<State: serde::Serialize + for<'de> serde::Deserialize<'de> + Send + Sync + 
         }
     }
     
-    fn serialize_state(&self) -> io::Result<Vec<u8>> {
+    fn json_serialize_state(&self) -> io::Result<Vec<u8>> {
         serde_json::to_vec(&self.state)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
     }
     
-    fn deserialize_state(&mut self, data: &[u8]) -> io::Result<()> {
+    fn json_deserialize_state(&mut self, data: &[u8]) -> io::Result<()> {
         self.state = serde_json::from_slice(data)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
         Ok(())
@@ -110,7 +113,11 @@ impl<State: serde::Serialize + for<'de> serde::Deserialize<'de> + Send + Sync + 
         self.factory_id.clone()
     }
 
-    fn get_state(&self) -> Box<dyn erased_serde::Serialize + '_> {
+    fn get_state(&mut self) -> &mut dyn std::any::Any {
+        &mut self.state
+    }
+
+    fn bin_serialize_state(&self) -> Box<dyn erased_serde::Serialize + '_> {
         Box::new(&self.state)
     }
 

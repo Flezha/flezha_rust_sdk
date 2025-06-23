@@ -23,7 +23,7 @@ impl CommandAction for MigrationDeserialization {
 
         let mut pipeline = pipeline_handle.pipeline_mut();
 
-        let _ = pipeline.deserialize_state(&self.serialized_state.clone());
+        let _ = pipeline.json_deserialize_state(&self.serialized_state.clone());
 
         (
             "migration_deserialization".to_string(),

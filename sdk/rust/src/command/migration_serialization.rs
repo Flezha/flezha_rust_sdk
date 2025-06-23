@@ -19,7 +19,7 @@ impl CommandAction for MigrationSerialization {
         let serialized_state = match pipeline_handle {
             Some(p) => {
                 let pipeline = p.pipeline_mut();
-                pipeline.serialize_state().unwrap()
+                pipeline.json_serialize_state().unwrap()
             }
             None => Vec::new(),
         };

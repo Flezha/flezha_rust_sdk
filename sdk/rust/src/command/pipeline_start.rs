@@ -39,7 +39,7 @@ impl CommandAction for AddPipeline {
                                 if json_value.is_object() && !json_value.as_object().unwrap().is_empty() {
                                     let default_values: Vec<u8> = serde_json::to_vec(&json_value).expect("Failed to serialize init values");
 
-                                    pipeline.deserialize_state(&default_values)
+                                    pipeline.json_deserialize_state(&default_values)
                                         .expect("Failed to deserialize state");
                                 }
                             },
