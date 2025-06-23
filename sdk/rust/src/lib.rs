@@ -40,6 +40,14 @@ impl Flezha {
         }
     }
 
+    pub fn get_pipeline(&self, pipeline_id: &str) -> Option<Arc<Mutex<PipelineBox>>> {
+        self.pipelines.read().unwrap().get(pipeline_id).cloned()
+    }
+
+    pub fn get_pipelines(&self) -> Arc<RwLock<HashMap<String, Arc<Mutex<PipelineBox>>>>> {
+        Arc::clone(&self.pipelines)
+    }
+
     pub fn run(&mut self, pipeline_id: String, input: PipelineInput) -> PipelineResult {
         runner::exec(
             &pipeline_id, 
