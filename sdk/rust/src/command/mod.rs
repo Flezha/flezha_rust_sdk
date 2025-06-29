@@ -95,6 +95,7 @@ pub fn handle_action(
     };
 
     let command_response_bytes = command_response.encode_to_vec();
-    
+
+    // TODO: hardcoded virtual channel.
     payloader::build_from_binary(&payload_id, 1, &command_response_bytes)
 }

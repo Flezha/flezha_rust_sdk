@@ -41,6 +41,7 @@ pub fn exec_agent(
 }
 
 pub fn pipe_to_agent(stream: &mut UnixStream, pipeline_id: &String, result: &PipelineOutput) {
+    // TODO: Hardcoded virtual channel.
     let payload = match result {
         PipelineOutput::Text(text) => {
             payloader::build_from_str(&pipeline_id, 1, text)

@@ -13,6 +13,18 @@ pub fn extract_payload<R: Read>(mut reader: R) -> io::Result<(String, Vec<u8>)> 
     }
     let payload_id = String::from_utf8_lossy(&id_buf).trim_end().to_string();
 
+    // Read the virtual channel (1 byte).
+    let mut virtual_channel_buf = [0; 1];
+    match reader.read_exact(&mut virtual_channel_buf) {
+        Ok(_) => (),
+        Err(e) => {
+            return Err(e);
+        }
+    }
+
+    // TODO: do something with the virtual channel.
+    let _virtual_channel = virtual_channel_buf[0];
+
     // Read the length prefix (8 bytes).
     let mut length_buf = [0; 8];
     match reader.read_exact(&mut length_buf) {
