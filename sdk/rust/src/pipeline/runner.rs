@@ -43,10 +43,10 @@ pub fn exec_agent(
 pub fn pipe_to_agent(stream: &mut UnixStream, pipeline_id: &String, result: &PipelineOutput) {
     let payload = match result {
         PipelineOutput::Text(text) => {
-            payloader::build_from_str(&pipeline_id, text)
+            payloader::build_from_str(&pipeline_id, 1, text)
         }
         PipelineOutput::Binary(binary) => {
-            payloader::build_from_binary(&pipeline_id, binary)
+            payloader::build_from_binary(&pipeline_id, 1, binary)
         },
         // TODO: Implement custom type serialization
         PipelineOutput::Custom(_) => {

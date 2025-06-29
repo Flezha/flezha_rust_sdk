@@ -35,23 +35,23 @@ pub fn extract_payload<R: Read>(mut reader: R) -> io::Result<(String, Vec<u8>)> 
     Ok((payload_id, message_buf))
 }
 
-pub fn build_from_binary(payload_id: &str, message: &[u8]) -> Vec<u8> {
-    build_payload(payload_id, message)
+pub fn build_from_binary(payload_id: &str, virtual_channel: u8,  message: &[u8]) -> Vec<u8> {
+    build_payload(payload_id, virtual_channel, message)
 }
 
-pub fn build_from_str(payload_id: &str, message: &str) -> Vec<u8> {
-    build_payload(payload_id, message.as_bytes())
+pub fn build_from_str(payload_id: &str, virtual_channel: u8, message: &str) -> Vec<u8> {
+    build_payload(payload_id, virtual_channel, message.as_bytes())
 }
 
-fn build_payload(payload_id: &str, message: &[u8]) -> Vec<u8> {
+fn build_payload(payload_id: &str, virtual_channel: u8, message: &[u8]) -> Vec<u8> {
     let message_len = message.len() as u64;
-    let mut payload = handle_payload_build(payload_id, message_len);
+    let mut payload = handle_payload_build(payload_id, virtual_channel, message_len);
     payload.write_all(message).unwrap();
 
     payload
 }
 
-fn handle_payload_build(payload_id: &str, message_len: u64) -> Vec<u8> {
+fn handle_payload_build(payload_id: &str, virtual_channel: u8, message_len: u64) -> Vec<u8> {
     // Ensure the payload ID is 32 bytes.
     let mut payload_id_padded = payload_id.to_string();
     if payload_id_padded.len() > 32 {
@@ -68,6 +68,9 @@ fn handle_payload_build(payload_id: &str, message_len: u64) -> Vec<u8> {
 
     // Write the payload ID (32 bytes) to the payload.
     payload.write_all(payload_id_padded.as_bytes()).unwrap();
+
+    // Write the virtual channel (1 byte) to the payload.
+    payload.push(virtual_channel);
 
     // Write the message size (8 bytes) to the payload.
     let _ = payload.write_u64::<BigEndian>(message_len);

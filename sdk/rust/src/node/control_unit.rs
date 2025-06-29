@@ -89,7 +89,7 @@ fn send_init_msg(group_id: String, tx: Arc<Mutex<mpsc::Sender<NodeAction>>>, str
     };
 
     let control_message = serde_json::to_string(&control_init_message).unwrap();
-    let payload = payloader::build_from_str("connect_control_channel", &control_message);
+    let payload = payloader::build_from_str("connect_control_channel", 1, &control_message);
 
     // Pass group id to the Flezha.
     (&*stream_clone).write_all(&payload).unwrap();
