@@ -2,6 +2,7 @@ pub mod factory_registry;
 pub mod runner;
 
 use std::io;
+
 extern crate erased_serde;
 
 pub enum PipelineInput {
@@ -58,6 +59,35 @@ pub trait Pipeline {
     fn post_alter(&mut self);
 }
 
+/// Trait for transforming input data before it enters the pipeline steps
+pub trait InputTransformer {
+    fn transform_input(&self, input: PipelineInput) -> io::Result<PipelineInput>;
+}
+
+/// Trait for transforming output data after all pipeline steps complete
+pub trait OutputTransformer {
+    fn transform_output(&self, output: PipelineOutput) -> io::Result<PipelineOutput>;
+}
+
+/// Default input transformer that passes data through unchanged
+pub struct DefaultInputTransformer;
+
+impl InputTransformer for DefaultInputTransformer {
+    fn transform_input(&self, input: PipelineInput) -> io::Result<PipelineInput> {
+        Ok(input)
+    }
+}
+
+/// Default output transformer that passes data through unchanged
+pub struct DefaultOutputTransformer;
+
+impl OutputTransformer for DefaultOutputTransformer {
+    fn transform_output(&self, output: PipelineOutput) -> io::Result<PipelineOutput> {
+        Ok(output)
+    }
+}
+
+
 pub trait PipelineStep<State> {
     fn process(&mut self, input: PipelineInput, state: &mut State) -> io::Result<PipelineOutput>;
         
@@ -65,11 +95,40 @@ pub trait PipelineStep<State> {
     fn post_create(&mut self, _state: &mut State) {}
 }
 
+#[derive(Clone)]
+pub struct PipelineSettings {
+    result_type: PipelineResultType,
+    input_transformer: Box<dyn InputTransformer + Send + Sync>,
+    output_transformer: Box<dyn OutputTransformer + Send + Sync>,
+}
+
+impl PipelineSettings {
+    pub fn new(result_type: PipelineResultType, input_transformer: Box<dyn InputTransformer + Send + Sync>, output_transformer: Box<dyn OutputTransformer + Send + Sync>) -> Self {
+        Self {
+            result_type,
+            input_transformer,
+            output_transformer,
+        }
+    }
+
+    pub fn default() -> Self {
+        Self {
+            result_type: PipelineResultType::Forward,
+            input_transformer: Box::new(DefaultInputTransformer),
+            output_transformer: Box::new(DefaultOutputTransformer),
+        }
+    }
+
+    pub fn get_result_type(&self) -> PipelineResultType {
+        self.result_type
+    }
+}
+
 /// A concrete pipeline implementation that can be used with any state type
 pub struct ConcretePipeline<State: serde::Serialize + for<'de> serde::Deserialize<'de> + Send + Sync + 'static> {
     state: State,
     steps: Vec<Box<dyn PipelineStep<State> + Send + Sync>>,
-    result_type: PipelineResultType,
+    settings: PipelineSettings,
     factory_id: String,
 }
 
@@ -92,7 +151,7 @@ impl<State: serde::Serialize + for<'de> serde::Deserialize<'de> + Send + Sync + 
             }
         }
 
-        match self.result_type {
+        match self.settings.get_result_type() {
             PipelineResultType::None => PipelineResult::None,
             PipelineResultType::Forward => PipelineResult::Forward(final_output),
         }
@@ -132,7 +191,7 @@ impl<State: serde::Serialize + for<'de> serde::Deserialize<'de> + Send + Sync + 
 /// Use a factory function for creating steps since steps can't be cloned
 pub fn create_pipeline_factory<State, F>(
     factory_id: String,
-    result_type: PipelineResultType,
+    settings: PipelineSettings,
     initial_state: State,
     step_factory: F,
 ) where
@@ -142,12 +201,14 @@ pub fn create_pipeline_factory<State, F>(
     use crate::pipeline::factory_registry::{register_pipeline_factory, PipelineFactory};
     
     let factory_id_clone = factory_id.clone();
+    let settings_clone = settings.clone();
+
     let factory: PipelineFactory = Box::new(move |_pipeline_id: String| {
         let steps = step_factory();
         let mut pipeline = ConcretePipeline {
             state: initial_state.clone(),
             steps,
-            result_type,
+            settings: settings_clone,
             factory_id: factory_id_clone.clone(),
         };
         
