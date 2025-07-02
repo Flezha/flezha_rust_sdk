@@ -62,11 +62,13 @@ pub trait Pipeline {
 /// Trait for transforming input data before it enters the pipeline steps
 pub trait InputTransformer {
     fn transform_input(&self, input: PipelineInput) -> io::Result<PipelineInput>;
+    fn clone_box(&self) -> Box<dyn InputTransformer + Send + Sync>;
 }
 
 /// Trait for transforming output data after all pipeline steps complete
 pub trait OutputTransformer {
     fn transform_output(&self, output: PipelineOutput) -> io::Result<PipelineOutput>;
+    fn clone_box(&self) -> Box<dyn OutputTransformer + Send + Sync>;
 }
 
 /// Default input transformer that passes data through unchanged
@@ -76,6 +78,10 @@ impl InputTransformer for DefaultInputTransformer {
     fn transform_input(&self, input: PipelineInput) -> io::Result<PipelineInput> {
         Ok(input)
     }
+    
+    fn clone_box(&self) -> Box<dyn InputTransformer + Send + Sync> {
+        Box::new(DefaultInputTransformer)
+    }
 }
 
 /// Default output transformer that passes data through unchanged
@@ -84,6 +90,10 @@ pub struct DefaultOutputTransformer;
 impl OutputTransformer for DefaultOutputTransformer {
     fn transform_output(&self, output: PipelineOutput) -> io::Result<PipelineOutput> {
         Ok(output)
+    }
+    
+    fn clone_box(&self) -> Box<dyn OutputTransformer + Send + Sync> {
+        Box::new(DefaultOutputTransformer)
     }
 }
 
@@ -95,11 +105,20 @@ pub trait PipelineStep<State> {
     fn post_create(&mut self, _state: &mut State) {}
 }
 
-#[derive(Clone)]
 pub struct PipelineSettings {
     result_type: PipelineResultType,
     input_transformer: Box<dyn InputTransformer + Send + Sync>,
     output_transformer: Box<dyn OutputTransformer + Send + Sync>,
+}
+
+impl Clone for PipelineSettings {
+    fn clone(&self) -> Self {
+        Self {
+            result_type: self.result_type,
+            input_transformer: self.input_transformer.clone_box(),
+            output_transformer: self.output_transformer.clone_box(),
+        }
+    }
 }
 
 impl PipelineSettings {
@@ -208,7 +227,7 @@ pub fn create_pipeline_factory<State, F>(
         let mut pipeline = ConcretePipeline {
             state: initial_state.clone(),
             steps,
-            settings: settings_clone,
+            settings: settings_clone.clone(),
             factory_id: factory_id_clone.clone(),
         };
         
