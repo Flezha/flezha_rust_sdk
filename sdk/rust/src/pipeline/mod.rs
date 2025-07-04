@@ -22,12 +22,6 @@ pub enum PipelineResult {
     Forward(PipelineOutput),
 }
 
-#[derive(Clone, Copy)]
-pub enum PipelineResultType {
-    None,
-    Forward,
-}
-
 pub trait Pipeline {
     // Execute the pipeline on the given input. The pipeline can mutate its internal state.
     fn run(&mut self, input: PipelineInput) -> PipelineResult;
@@ -56,9 +50,9 @@ pub trait InputTransformer<T> {
     fn clone_box(&self) -> Box<dyn InputTransformer<T> + Send + Sync>;
 }
 
-/// Trait for transforming generic output data to binary after all pipeline steps complete
+/// Trait for transforming generic output data to PipelineResult after all pipeline steps complete
 pub trait OutputTransformer<T> {
-    fn transform_output(&self, output: T, state: &dyn std::any::Any) -> io::Result<Vec<u8>>;
+    fn transform_output(&self, output: T, state: &dyn std::any::Any) -> PipelineResult;
     fn clone_box(&self) -> Box<dyn OutputTransformer<T> + Send + Sync>;
 }
 
@@ -98,8 +92,8 @@ impl InputTransformer<String> for DefaultInputTransformer {
 pub struct DefaultOutputTransformer;
 
 impl OutputTransformer<String> for DefaultOutputTransformer {
-    fn transform_output(&self, output: String, _state: &dyn std::any::Any) -> io::Result<Vec<u8>> {
-        Ok(output.into_bytes())
+    fn transform_output(&self, output: String, _state: &dyn std::any::Any) -> PipelineResult {
+        PipelineResult::Forward(PipelineOutput::Binary(output.into_bytes()))
     }
     
     fn clone_box(&self) -> Box<dyn OutputTransformer<String> + Send + Sync> {
@@ -115,7 +109,6 @@ pub trait PipelineStep<State, T> {
 }
 
 pub struct PipelineSettings<T> {
-    result_type: PipelineResultType,
     input_transformer: Box<dyn InputTransformer<T> + Send + Sync>,
     output_transformer: Box<dyn OutputTransformer<T> + Send + Sync>,
 }
@@ -123,7 +116,6 @@ pub struct PipelineSettings<T> {
 impl<T> Clone for PipelineSettings<T> {
     fn clone(&self) -> Self {
         Self {
-            result_type: self.result_type,
             input_transformer: self.input_transformer.clone_box(),
             output_transformer: self.output_transformer.clone_box(),
         }
@@ -131,16 +123,11 @@ impl<T> Clone for PipelineSettings<T> {
 }
 
 impl<T> PipelineSettings<T> {
-    pub fn new(result_type: PipelineResultType, input_transformer: Box<dyn InputTransformer<T> + Send + Sync>, output_transformer: Box<dyn OutputTransformer<T> + Send + Sync>) -> Self {
+    pub fn new(input_transformer: Box<dyn InputTransformer<T> + Send + Sync>, output_transformer: Box<dyn OutputTransformer<T> + Send + Sync>) -> Self {
         Self {
-            result_type,
             input_transformer,
             output_transformer,
         }
-    }
-
-    pub fn get_result_type(&self) -> PipelineResultType {
-        self.result_type
     }
 
     pub fn get_input_transformer(&self) -> &dyn InputTransformer<T> {
@@ -155,7 +142,6 @@ impl<T> PipelineSettings<T> {
 impl PipelineSettings<String> {
     pub fn default() -> Self {
         Self {
-            result_type: PipelineResultType::Forward,
             input_transformer: Box::new(DefaultInputTransformer),
             output_transformer: Box::new(DefaultOutputTransformer),
         }
@@ -195,16 +181,8 @@ where
             }
         }
 
-        match self.settings.get_result_type() {
-            PipelineResultType::None => PipelineResult::None,
-            PipelineResultType::Forward => {
-                // Convert generic output to binary using output transformer
-                match self.settings.get_output_transformer().transform_output(current_input, &self.state) {
-                    Ok(binary_data) => PipelineResult::Forward(PipelineOutput::Binary(binary_data)),
-                    Err(_) => PipelineResult::None,
-                }
-            },
-        }
+        // Let the output transformer decide the result type
+        self.settings.get_output_transformer().transform_output(current_input, &self.state)
     }
     
     fn json_serialize_state(&self) -> io::Result<Vec<u8>> {
