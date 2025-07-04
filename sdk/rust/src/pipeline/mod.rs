@@ -65,16 +65,6 @@ pub trait OutputTransformer<T> {
 /// Default input transformer that converts PipelineInput to common types
 pub struct DefaultInputTransformer;
 
-impl InputTransformer<PipelineInput> for DefaultInputTransformer {
-    fn transform_input(&self, input: PipelineInput) -> io::Result<PipelineInput> {
-        Ok(input)
-    }
-    
-    fn clone_box(&self) -> Box<dyn InputTransformer<PipelineInput> + Send + Sync> {
-        Box::new(DefaultInputTransformer)
-    }
-}
-
 impl InputTransformer<Vec<u8>> for DefaultInputTransformer {
     fn transform_input(&self, input: PipelineInput) -> io::Result<Vec<u8>> {
         match input {
@@ -106,20 +96,6 @@ impl InputTransformer<String> for DefaultInputTransformer {
 
 /// Default output transformer that converts common types to binary
 pub struct DefaultOutputTransformer;
-
-impl OutputTransformer<PipelineInput> for DefaultOutputTransformer {
-    fn transform_output(&self, output: PipelineInput, _state: &dyn std::any::Any) -> io::Result<Vec<u8>> {
-        match output {
-            PipelineInput::Binary(data) => Ok(data),
-            PipelineInput::Text(text) => Ok(text.into_bytes()),
-            PipelineInput::Custom(_) => todo!(),
-        }
-    }
-    
-    fn clone_box(&self) -> Box<dyn OutputTransformer<PipelineInput> + Send + Sync> {
-        Box::new(DefaultOutputTransformer)
-    }
-}
 
 impl OutputTransformer<String> for DefaultOutputTransformer {
     fn transform_output(&self, output: String, _state: &dyn std::any::Any) -> io::Result<Vec<u8>> {
@@ -173,16 +149,6 @@ impl<T> PipelineSettings<T> {
 
     pub fn get_output_transformer(&self) -> &dyn OutputTransformer<T> {
         self.output_transformer.as_ref()
-    }
-}
-
-impl PipelineSettings<PipelineInput> {
-    pub fn default() -> Self {
-        Self {
-            result_type: PipelineResultType::Forward,
-            input_transformer: Box::new(DefaultInputTransformer),
-            output_transformer: Box::new(DefaultOutputTransformer),
-        }
     }
 }
 
