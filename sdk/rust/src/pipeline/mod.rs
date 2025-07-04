@@ -51,9 +51,9 @@ pub trait InputTransformer<T> {
 }
 
 /// Trait for transforming generic output data to PipelineResult after all pipeline steps complete
-pub trait OutputTransformer<T> {
-    fn transform_output(&self, output: T, state: &dyn std::any::Any) -> PipelineResult;
-    fn clone_box(&self) -> Box<dyn OutputTransformer<T> + Send + Sync>;
+pub trait OutputTransformer<T, State> {
+    fn transform_output(&self, output: T, state: &State) -> PipelineResult;
+    fn clone_box(&self) -> Box<dyn OutputTransformer<T, State> + Send + Sync>;
 }
 
 /// Default input transformer that converts PipelineInput to common types
@@ -91,12 +91,12 @@ impl InputTransformer<String> for DefaultInputTransformer {
 /// Default output transformer that converts common types to binary
 pub struct DefaultOutputTransformer;
 
-impl OutputTransformer<String> for DefaultOutputTransformer {
-    fn transform_output(&self, output: String, _state: &dyn std::any::Any) -> PipelineResult {
+impl<State> OutputTransformer<String, State> for DefaultOutputTransformer {
+    fn transform_output(&self, output: String, _state: &State) -> PipelineResult {
         PipelineResult::Forward(PipelineOutput::Binary(output.into_bytes()))
     }
     
-    fn clone_box(&self) -> Box<dyn OutputTransformer<String> + Send + Sync> {
+    fn clone_box(&self) -> Box<dyn OutputTransformer<String, State> + Send + Sync> {
         Box::new(DefaultOutputTransformer)
     }
 }
@@ -108,12 +108,12 @@ pub trait PipelineStep<State, T> {
     fn post_create(&mut self, _state: &mut State) {}
 }
 
-pub struct PipelineSettings<T> {
+pub struct PipelineSettings<T, State> {
     input_transformer: Box<dyn InputTransformer<T> + Send + Sync>,
-    output_transformer: Box<dyn OutputTransformer<T> + Send + Sync>,
+    output_transformer: Box<dyn OutputTransformer<T, State> + Send + Sync>,
 }
 
-impl<T> Clone for PipelineSettings<T> {
+impl<T, State> Clone for PipelineSettings<T, State> {
     fn clone(&self) -> Self {
         Self {
             input_transformer: self.input_transformer.clone_box(),
@@ -122,8 +122,8 @@ impl<T> Clone for PipelineSettings<T> {
     }
 }
 
-impl<T> PipelineSettings<T> {
-    pub fn new(input_transformer: Box<dyn InputTransformer<T> + Send + Sync>, output_transformer: Box<dyn OutputTransformer<T> + Send + Sync>) -> Self {
+impl<T, State> PipelineSettings<T, State> {
+    pub fn new(input_transformer: Box<dyn InputTransformer<T> + Send + Sync>, output_transformer: Box<dyn OutputTransformer<T, State> + Send + Sync>) -> Self {
         Self {
             input_transformer,
             output_transformer,
@@ -134,12 +134,12 @@ impl<T> PipelineSettings<T> {
         self.input_transformer.as_ref()
     }
 
-    pub fn get_output_transformer(&self) -> &dyn OutputTransformer<T> {
+    pub fn get_output_transformer(&self) -> &dyn OutputTransformer<T, State> {
         self.output_transformer.as_ref()
     }
 }
 
-impl PipelineSettings<String> {
+impl<State> PipelineSettings<String, State> {
     pub fn default() -> Self {
         Self {
             input_transformer: Box::new(DefaultInputTransformer),
@@ -156,7 +156,7 @@ where
 {
     state: State,
     steps: Vec<Box<dyn PipelineStep<State, T> + Send + Sync>>,
-    settings: PipelineSettings<T>,
+    settings: PipelineSettings<T, State>,
     factory_id: String,
 }
 
@@ -217,7 +217,7 @@ where
 
 pub fn create_pipeline_factory<State, T, F>(
     factory_id: String,
-    settings: PipelineSettings<T>,
+    settings: PipelineSettings<T, State>,
     initial_state: State,
     step_factory: F,
 ) where
