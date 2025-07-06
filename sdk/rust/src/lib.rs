@@ -8,7 +8,15 @@ use std::{collections::HashMap, os::unix::net::UnixStream, sync::{Arc, Mutex, Rw
 
 use node::OperatorNode;
 
-pub use pipeline::{PipelineInput, PipelineOutput, PipelineResult, PipelineSettings, PipelineStep, create_pipeline_factory};
+pub use pipeline::{
+    PipelineInput, 
+    PipelineOutput, 
+    PipelineResult, 
+    PipelineSettings, 
+    PipelineStep, 
+    VirtualChannel,
+    create_pipeline_factory
+};
 use pipeline::factory_registry::PipelineBox;
 use pipeline::runner;
 
@@ -56,10 +64,10 @@ impl Flezha {
         )
     }
 
-    pub fn pipe_to_agent(&mut self, pipeline_id: String, result: PipelineOutput) {
+    pub fn pipe_to_agent(&mut self, pipeline_id: String, result: PipelineOutput, virtual_channel: VirtualChannel) {
         let mut io_stream = self.shared_io_streams.write().unwrap().values().next().unwrap().try_clone().unwrap();
 
-        runner::pipe_to_agent(&mut io_stream, &pipeline_id, &result);
+        runner::pipe_to_agent(&mut io_stream, &pipeline_id, &result, virtual_channel);
     }
 }
 

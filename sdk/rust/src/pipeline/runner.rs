@@ -3,7 +3,7 @@ use std::{collections::HashMap, os::unix::net::UnixStream};
 use std::io::Write;
 
 use crate::pipeline::factory_registry::PipelineBox;
-use crate::pipeline::{PipelineInput, PipelineOutput, PipelineResult};
+use crate::pipeline::{PipelineInput, PipelineOutput, PipelineResult, VirtualChannel};
 use crate::service::payloader;
 
 pub fn exec(
@@ -34,20 +34,20 @@ pub fn exec_agent(
         PipelineResult::None => {
             return;
         },
-        PipelineResult::Forward(output) => {
-            pipe_to_agent(stream, pipeline_id, &output);
+        PipelineResult::Forward(output, virtual_channel) => {
+            pipe_to_agent(stream, pipeline_id, &output, virtual_channel);
         }
     }
 }
 
-pub fn pipe_to_agent(stream: &mut UnixStream, pipeline_id: &String, result: &PipelineOutput) {
+pub fn pipe_to_agent(stream: &mut UnixStream, pipeline_id: &String, result: &PipelineOutput, virtual_channel: VirtualChannel) {
     // TODO: Hardcoded virtual channel.
     let payload = match result {
         PipelineOutput::Text(text) => {
-            payloader::build_from_str(&pipeline_id, 1, text)
+            payloader::build_from_str(&pipeline_id, virtual_channel, text)
         }
         PipelineOutput::Binary(binary) => {
-            payloader::build_from_binary(&pipeline_id, 1, binary)
+            payloader::build_from_binary(&pipeline_id, virtual_channel, binary)
         },
         // TODO: Implement custom type serialization
         PipelineOutput::Custom(_) => {
