@@ -27,10 +27,10 @@ pub enum PipelineResult {
 pub trait Pipeline {
     // Execute the pipeline on the given input. The pipeline can mutate its internal state.
     fn run(&mut self, input: PipelineInput) -> PipelineResult;
-    
+
     // Serialize the pipeline state.
     fn json_serialize_state(&self) -> io::Result<Vec<u8>>;
-    
+
     // Deserialize and restore the pipeline state.
     fn json_deserialize_state(&mut self, data: &[u8]) -> io::Result<()>;
 
@@ -66,10 +66,13 @@ impl InputTransformer<Vec<u8>> for DefaultInputTransformer {
         match input {
             PipelineInput::Binary(data) => Ok(data),
             PipelineInput::Text(text) => Ok(text.into_bytes()),
-            PipelineInput::Custom(_) => Err(io::Error::new(io::ErrorKind::InvalidData, "Cannot convert custom to Vec<u8>")),
+            PipelineInput::Custom(_) => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Cannot convert custom to Vec<u8>",
+            )),
         }
     }
-    
+
     fn clone_box(&self) -> Box<dyn InputTransformer<Vec<u8>> + Send + Sync> {
         Box::new(DefaultInputTransformer)
     }
@@ -79,12 +82,16 @@ impl InputTransformer<String> for DefaultInputTransformer {
     fn transform_input(&self, input: PipelineInput) -> io::Result<String> {
         match input {
             PipelineInput::Text(text) => Ok(text),
-            PipelineInput::Binary(data) => String::from_utf8(data)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e)),
-            PipelineInput::Custom(_) => Err(io::Error::new(io::ErrorKind::InvalidData, "Cannot convert custom to String")),
+            PipelineInput::Binary(data) => {
+                String::from_utf8(data).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+            }
+            PipelineInput::Custom(_) => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Cannot convert custom to String",
+            )),
         }
     }
-    
+
     fn clone_box(&self) -> Box<dyn InputTransformer<String> + Send + Sync> {
         Box::new(DefaultInputTransformer)
     }
@@ -97,7 +104,7 @@ impl<State> OutputTransformer<String, State> for DefaultOutputTransformer {
     fn transform_output(&self, output: String, _state: &State) -> PipelineResult {
         PipelineResult::Forward(PipelineOutput::Binary(output.into_bytes()), 1)
     }
-    
+
     fn clone_box(&self) -> Box<dyn OutputTransformer<String, State> + Send + Sync> {
         Box::new(DefaultOutputTransformer)
     }
@@ -105,8 +112,8 @@ impl<State> OutputTransformer<String, State> for DefaultOutputTransformer {
 
 pub trait PipelineStep<State, T> {
     fn process(&mut self, input: T, state: &mut State) -> io::Result<T>;
-        
-    // Optional method to perform actions after the step is created    
+
+    // Optional method to perform actions after the step is created
     fn post_create(&mut self, _state: &mut State) {}
 }
 
@@ -125,7 +132,10 @@ impl<T, State> Clone for PipelineSettings<T, State> {
 }
 
 impl<T, State> PipelineSettings<T, State> {
-    pub fn new(input_transformer: Box<dyn InputTransformer<T> + Send + Sync>, output_transformer: Box<dyn OutputTransformer<T, State> + Send + Sync>) -> Self {
+    pub fn new(
+        input_transformer: Box<dyn InputTransformer<T> + Send + Sync>,
+        output_transformer: Box<dyn OutputTransformer<T, State> + Send + Sync>,
+    ) -> Self {
         Self {
             input_transformer,
             output_transformer,
@@ -151,8 +161,8 @@ impl<State> PipelineSettings<String, State> {
 }
 
 /// A concrete pipeline implementation that can be used with any state type
-pub struct ConcretePipeline<State, T> 
-where 
+pub struct ConcretePipeline<State, T>
+where
     State: serde::Serialize + for<'de> serde::Deserialize<'de> + Send + Sync + 'static,
     T: Send + Sync + 'static,
 {
@@ -162,8 +172,8 @@ where
     factory_id: String,
 }
 
-impl<State, T> Pipeline for ConcretePipeline<State, T> 
-where 
+impl<State, T> Pipeline for ConcretePipeline<State, T>
+where
     State: serde::Serialize + for<'de> serde::Deserialize<'de> + Send + Sync + 'static,
     T: Send + Sync + 'static,
 {
@@ -173,28 +183,29 @@ where
             Ok(transformed) => transformed,
             Err(_) => return PipelineResult::None,
         };
-        
+
         for step in &mut self.steps {
             match step.process(current_input, &mut self.state) {
                 Ok(output) => {
                     current_input = output;
-                },
+                }
                 Err(_) => return PipelineResult::None,
             }
         }
 
         // Let the output transformer decide the result type
-        self.settings.get_output_transformer().transform_output(current_input, &self.state)
+        self.settings
+            .get_output_transformer()
+            .transform_output(current_input, &self.state)
     }
-    
+
     fn json_serialize_state(&self) -> io::Result<Vec<u8>> {
-        serde_json::to_vec(&self.state)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+        serde_json::to_vec(&self.state).map_err(|e| io::Error::new(io::ErrorKind::Other, e))
     }
-    
+
     fn json_deserialize_state(&mut self, data: &[u8]) -> io::Result<()> {
-        self.state = serde_json::from_slice(data)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        self.state =
+            serde_json::from_slice(data).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
         Ok(())
     }
 
@@ -228,7 +239,7 @@ pub fn create_pipeline_factory<State, T, F>(
     F: Fn() -> Vec<Box<dyn PipelineStep<State, T> + Send + Sync>> + Send + Sync + 'static,
 {
     use crate::pipeline::factory_registry::{register_pipeline_factory, PipelineFactory};
-    
+
     let factory_id_clone = factory_id.clone();
     let settings_clone = settings.clone();
 
@@ -240,7 +251,7 @@ pub fn create_pipeline_factory<State, T, F>(
             settings: settings_clone.clone(),
             factory_id: factory_id_clone.clone(),
         };
-        
+
         pipeline.post_alter();
         Box::new(pipeline) as Box<dyn Pipeline + Send + Sync>
     });

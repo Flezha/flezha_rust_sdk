@@ -1,18 +1,18 @@
+use std::io::Write;
 use std::sync::{Arc, Mutex, RwLock};
 use std::{collections::HashMap, os::unix::net::UnixStream};
-use std::io::Write;
 
 use crate::pipeline::factory_registry::PipelineBox;
 use crate::pipeline::{PipelineInput, PipelineOutput, PipelineResult, VirtualChannel};
 use crate::service::payloader;
 
 pub fn exec(
-    pipeline_id: &String, 
+    pipeline_id: &String,
     pipelines: &Arc<RwLock<HashMap<String, Arc<Mutex<PipelineBox>>>>>,
     input: PipelineInput,
 ) -> PipelineResult {
     let pipelines_read = pipelines.read().unwrap();
-                
+
     if let Some(c) = pipelines_read.get(pipeline_id.as_str()) {
         let mut pipeline = c.lock().unwrap();
 
@@ -24,23 +24,28 @@ pub fn exec(
 
 pub fn exec_agent(
     stream: &mut UnixStream,
-    pipeline_id: &String, 
+    pipeline_id: &String,
     pipelines: &Arc<RwLock<HashMap<String, Arc<Mutex<PipelineBox>>>>>,
     input: PipelineInput,
 ) {
-    let  pipeline_result = exec(pipeline_id, pipelines, input);
+    let pipeline_result = exec(pipeline_id, pipelines, input);
 
     match pipeline_result {
         PipelineResult::None => {
             return;
-        },
+        }
         PipelineResult::Forward(output, virtual_channel) => {
             pipe_to_agent(stream, pipeline_id, &output, virtual_channel);
         }
     }
 }
 
-pub fn pipe_to_agent(stream: &mut UnixStream, pipeline_id: &String, result: &PipelineOutput, virtual_channel: VirtualChannel) {
+pub fn pipe_to_agent(
+    stream: &mut UnixStream,
+    pipeline_id: &String,
+    result: &PipelineOutput,
+    virtual_channel: VirtualChannel,
+) {
     // TODO: Hardcoded virtual channel.
     let payload = match result {
         PipelineOutput::Text(text) => {
@@ -48,11 +53,11 @@ pub fn pipe_to_agent(stream: &mut UnixStream, pipeline_id: &String, result: &Pip
         }
         PipelineOutput::Binary(binary) => {
             payloader::build_from_binary(&pipeline_id, virtual_channel, binary)
-        },
+        }
         // TODO: Implement custom type serialization
         PipelineOutput::Custom(_) => {
             panic!("Unsupported pipeline output type");
-        },
+        }
     };
 
     if let Err(err) = stream.write_all(&payload) {

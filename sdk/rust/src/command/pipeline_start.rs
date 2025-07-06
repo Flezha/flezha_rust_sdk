@@ -1,32 +1,32 @@
 use super::CommandAction;
 
-use std::sync::{Arc, Mutex};
 use serde_json::Value;
+use std::sync::{Arc, Mutex};
 
 use crate::node::OperatorNode;
-use crate::pipeline::factory_registry::get_factory;
 use crate::pb::AddPipeline;
+use crate::pipeline::factory_registry::get_factory;
 
 impl CommandAction for AddPipeline {
     fn handle(
         &self,
         operator: &Arc<Mutex<OperatorNode>>,
         _message: &String,
-        errors: &mut Vec<String>
+        errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
         let operator_guard = operator.lock().unwrap();
         let pipeline_id = self.pipeline_id.clone();
 
         // Make sure factory exist.
         match get_factory(self.factory_id.clone()) {
-            Some(_) => {},
-            None => errors.push(format!("Factory with id {} does not exist", self.factory_id.clone())),
+            Some(_) => {}
+            None => errors.push(format!(
+                "Factory with id {} does not exist",
+                self.factory_id.clone()
+            )),
         };
 
-        let pipeline_opt = operator_guard.start_pipeline(
-            self.factory_id.clone(),
-            pipeline_id
-        );
+        let pipeline_opt = operator_guard.start_pipeline(self.factory_id.clone(), pipeline_id);
 
         if errors.len() == 0 {
             match pipeline_opt {
@@ -36,13 +36,17 @@ impl CommandAction for AddPipeline {
                     if !self.init_values.is_empty() {
                         match serde_json::from_str::<Value>(&self.init_values) {
                             Ok(json_value) => {
-                                if json_value.is_object() && !json_value.as_object().unwrap().is_empty() {
-                                    let default_values: Vec<u8> = serde_json::to_vec(&json_value).expect("Failed to serialize init values");
+                                if json_value.is_object()
+                                    && !json_value.as_object().unwrap().is_empty()
+                                {
+                                    let default_values: Vec<u8> = serde_json::to_vec(&json_value)
+                                        .expect("Failed to serialize init values");
 
-                                    pipeline.json_deserialize_state(&default_values)
+                                    pipeline
+                                        .json_deserialize_state(&default_values)
                                         .expect("Failed to deserialize state");
                                 }
-                            },
+                            }
                             Err(e) => {
                                 errors.push(format!("Failed to parse init_values as JSON: {}", e));
                             }
@@ -51,13 +55,12 @@ impl CommandAction for AddPipeline {
 
                     pipeline.post_alter();
 
-                    return ("start_pipeline".to_string(),Vec::new())
-                },
-                None => errors.push(format!("Unable to create pipeline"))
+                    return ("start_pipeline".to_string(), Vec::new());
+                }
+                None => errors.push(format!("Unable to create pipeline")),
             }
         }
 
         ("start_pipeline".to_string(), Vec::new())
     }
 }
-

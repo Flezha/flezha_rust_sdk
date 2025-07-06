@@ -1,9 +1,9 @@
 use std::io::Write;
 use std::net::Shutdown;
+use std::os::unix::net::UnixStream;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::Duration;
-use std::os::unix::net::UnixStream;
 
 use serde::Serialize;
 
@@ -17,19 +17,21 @@ use super::{NodeAction, OperatorNode};
 #[derive(Serialize)]
 struct ControlInitMessage {
     group_id: String,
-    factory_ids: Vec<String>
+    factory_ids: Vec<String>,
 }
 
 pub fn open(
     group_id: String,
     tx: Arc<Mutex<mpsc::Sender<NodeAction>>>,
-    operator: Arc<Mutex<OperatorNode>>
+    operator: Arc<Mutex<OperatorNode>>,
 ) -> thread::JoinHandle<()> {
     let socket_path = path_helper::control_socket_path();
 
     // Attempt to connect and unwrap immediately if successful
-    let stream = UnixStream::connect(socket_path.clone())
-        .expect(&format!("Failed to connect to control socket on path {}", socket_path));
+    let stream = UnixStream::connect(socket_path.clone()).expect(&format!(
+        "Failed to connect to control socket on path {}",
+        socket_path
+    ));
 
     let stream_box = Arc::new(stream);
 
@@ -40,7 +42,7 @@ fn sock_conn(
     group_id: String,
     tx: Arc<Mutex<mpsc::Sender<NodeAction>>>,
     stream_box: Arc<UnixStream>,
-    operator: Arc<Mutex<OperatorNode>>
+    operator: Arc<Mutex<OperatorNode>>,
 ) -> thread::JoinHandle<()> {
     let stream_clone = Arc::clone(&stream_box);
 
@@ -52,16 +54,29 @@ fn sock_conn(
                 Ok((payload_id, message)) => {
                     let payload_message: String = String::from_utf8_lossy(&message).to_string();
 
-                    let (handler_type, reference_id) = command::get_handler(&payload_id, &payload_message);
+                    let (handler_type, reference_id) =
+                        command::get_handler(&payload_id, &payload_message);
 
                     match handler_type {
                         CommandActionType::Regular(handler) => {
-                            let reply = command::handle_action(&operator, handler, &payload_id, &payload_message, reference_id);
+                            let reply = command::handle_action(
+                                &operator,
+                                handler,
+                                &payload_id,
+                                &payload_message,
+                                reference_id,
+                            );
                             (&*stream_clone).write_all(&reply).unwrap();
                         }
 
                         CommandActionType::OperatorDisconnect(handler) => {
-                            let reply = command::handle_action(&operator, handler, &payload_id, &payload_message, reference_id);
+                            let reply = command::handle_action(
+                                &operator,
+                                handler,
+                                &payload_id,
+                                &payload_message,
+                                reference_id,
+                            );
                             (&*stream_clone).write_all(&reply).unwrap();
 
                             // Close the socket.
@@ -69,7 +84,7 @@ fn sock_conn(
 
                             break;
                         }
-                    }                    
+                    }
                 }
                 Err(_e) => {
                     // Wait 100ms to avoid busy waiting
@@ -77,15 +92,19 @@ fn sock_conn(
                     thread::sleep(Duration::from_millis(100));
                     continue;
                 }
-            } 
+            }
         }
     })
 }
 
-fn send_init_msg(group_id: String, tx: Arc<Mutex<mpsc::Sender<NodeAction>>>, stream_clone: Arc<UnixStream>) {
+fn send_init_msg(
+    group_id: String,
+    tx: Arc<Mutex<mpsc::Sender<NodeAction>>>,
+    stream_clone: Arc<UnixStream>,
+) {
     let control_init_message = ControlInitMessage {
         group_id: group_id.clone(),
-        factory_ids: get_factory_ids()
+        factory_ids: get_factory_ids(),
     };
 
     let control_message = serde_json::to_string(&control_init_message).unwrap();
@@ -93,7 +112,9 @@ fn send_init_msg(group_id: String, tx: Arc<Mutex<mpsc::Sender<NodeAction>>>, str
 
     // Pass group id to the Flezha.
     (&*stream_clone).write_all(&payload).unwrap();
-    
-    tx.lock().unwrap().send(NodeAction::EngineIdConfirmation).unwrap();
-}
 
+    tx.lock()
+        .unwrap()
+        .send(NodeAction::EngineIdConfirmation)
+        .unwrap();
+}

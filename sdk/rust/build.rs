@@ -1,6 +1,6 @@
+use std::fs;
 use std::path::Path;
 use std::process::Command;
-use std::fs;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // TODO: this needs to be dynamic from env variables or live with the project.
@@ -14,9 +14,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let protoc_check = Command::new("protoc").arg("--version").output();
     match protoc_check {
         Ok(output) => {
-            if output.status.success() {} 
-            else {
-                println!("protoc is in PATH but returned an error: {}", String::from_utf8_lossy(&output.stderr));
+            if output.status.success() {
+            } else {
+                println!(
+                    "protoc is in PATH but returned an error: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
                 println!("Make sure protoc version is >= 3");
             }
         }

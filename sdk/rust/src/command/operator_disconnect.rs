@@ -9,8 +9,8 @@ impl CommandAction for OperatorDisconnect {
         &self,
         operator: &Arc<Mutex<OperatorNode>>,
         _message: &String,
-        _errors: &mut Vec<String>
-    ) -> (String, Vec<u8>) {   
+        _errors: &mut Vec<String>,
+    ) -> (String, Vec<u8>) {
         let mut operator_guard = operator.lock().unwrap();
         operator_guard.set_status(OperatorStatus::Stopped);
 

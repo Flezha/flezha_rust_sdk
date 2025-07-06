@@ -1,6 +1,6 @@
+use lazy_static::lazy_static;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
-use lazy_static::lazy_static;
 
 use crate::pipeline::{Pipeline, PipelineInput, PipelineResult};
 
@@ -12,13 +12,16 @@ pub type PipelineFactory = Box<dyn Fn(String) -> PipelineBox + Send + Sync>;
 
 // Use Arc<Mutex<PipelineBox>> for each pipeline
 lazy_static! {
-    static ref FACTORY_REGISTRY: RwLock<HashMap<String, Arc<PipelineFactory>>> = RwLock::new(HashMap::new());
+    static ref FACTORY_REGISTRY: RwLock<HashMap<String, Arc<PipelineFactory>>> =
+        RwLock::new(HashMap::new());
 }
-
 
 /// Register a pipeline factory with a unique factory ID
 pub fn register_pipeline_factory(factory_id: String, factory: PipelineFactory) {
-    FACTORY_REGISTRY.write().unwrap().insert(factory_id, Arc::new(factory));
+    FACTORY_REGISTRY
+        .write()
+        .unwrap()
+        .insert(factory_id, Arc::new(factory));
 }
 
 pub fn get_factory(factory_id: String) -> Option<Arc<PipelineFactory>> {
@@ -39,7 +42,7 @@ impl PipelineHandle {
     pub fn pipeline_mut(&self) -> std::sync::MutexGuard<PipelineBox> {
         self.pipeline.lock().unwrap()
     }
-    
+
     /// Execute the pipeline with the given input
     pub fn run(&self, input: PipelineInput) -> PipelineResult {
         self.pipeline_mut().run(input)

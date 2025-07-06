@@ -1,6 +1,6 @@
-use std::str;
+use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use std::io::{self, Read, Write};
-use byteorder::{BigEndian, WriteBytesExt, ReadBytesExt};
+use std::str;
 
 pub fn extract_payload<R: Read>(mut reader: R) -> io::Result<(String, Vec<u8>)> {
     // Read the payload ID (32 bytes).
@@ -47,7 +47,7 @@ pub fn extract_payload<R: Read>(mut reader: R) -> io::Result<(String, Vec<u8>)> 
     Ok((payload_id, message_buf))
 }
 
-pub fn build_from_binary(payload_id: &str, virtual_channel: u8,  message: &[u8]) -> Vec<u8> {
+pub fn build_from_binary(payload_id: &str, virtual_channel: u8, message: &[u8]) -> Vec<u8> {
     build_payload(payload_id, virtual_channel, message)
 }
 

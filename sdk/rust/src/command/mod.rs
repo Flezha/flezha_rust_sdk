@@ -1,17 +1,17 @@
-use crate::pb::{CommandRequest, CommandResponse};
-use crate::pb::command_request::{Command};
 use crate::node::OperatorNode;
+use crate::pb::command_request::Command;
+use crate::pb::{CommandRequest, CommandResponse};
 use crate::service::payloader;
-use std::sync::{Arc, Mutex};
 use prost::Message;
+use std::sync::{Arc, Mutex};
 
-mod operator_assign;
-mod pipeline_start;
-mod pipeline_stop;
-mod migration_serialization;
 mod migration_deserialization;
-mod pipeline_state;
+mod migration_serialization;
+mod operator_assign;
 mod operator_disconnect;
+mod pipeline_start;
+mod pipeline_state;
+mod pipeline_stop;
 mod streams_connect;
 
 pub trait CommandAction {
@@ -19,7 +19,7 @@ pub trait CommandAction {
         &self,
         operator: &Arc<Mutex<OperatorNode>>,
         command_struct: &String,
-        errors: &mut Vec<String>
+        errors: &mut Vec<String>,
     ) -> (String, Vec<u8>);
 }
 
@@ -28,40 +28,25 @@ pub enum CommandActionType {
     OperatorDisconnect(Box<dyn CommandAction>),
 }
 
-pub fn get_handler(    
-    _payload_id: &String,
-    message: &String
-) -> (CommandActionType, String) {
-    let wrapper_command = CommandRequest::decode(message.as_bytes())
-        .expect("Failed to decode message");
+pub fn get_handler(_payload_id: &String, message: &String) -> (CommandActionType, String) {
+    let wrapper_command =
+        CommandRequest::decode(message.as_bytes()).expect("Failed to decode message");
 
     let reference_id = wrapper_command.reference_id;
 
     let command_handler = match wrapper_command.command.unwrap() {
-        Command::AssignOperatorId(proto_ch) => {
-            CommandActionType::Regular(Box::new(proto_ch))
-        },
-        Command::ConnectSocket(proto_ch) => {
-            CommandActionType::Regular(Box::new(proto_ch))
-        },
-        Command::AddPipeline(proto_ch) => {
-            CommandActionType::Regular(Box::new(proto_ch))
-        },
-        Command::RemPipeline(proto_ch) => {
-            CommandActionType::Regular(Box::new(proto_ch))
-        },
-        Command::MigrationSerialization(proto_ch) => {
-            CommandActionType::Regular(Box::new(proto_ch))
-        },
+        Command::AssignOperatorId(proto_ch) => CommandActionType::Regular(Box::new(proto_ch)),
+        Command::ConnectSocket(proto_ch) => CommandActionType::Regular(Box::new(proto_ch)),
+        Command::AddPipeline(proto_ch) => CommandActionType::Regular(Box::new(proto_ch)),
+        Command::RemPipeline(proto_ch) => CommandActionType::Regular(Box::new(proto_ch)),
+        Command::MigrationSerialization(proto_ch) => CommandActionType::Regular(Box::new(proto_ch)),
         Command::MigrationDeserialization(proto_ch) => {
             CommandActionType::Regular(Box::new(proto_ch))
-        },
-        Command::PipelineState(proto_ch) => {
-            CommandActionType::Regular(Box::new(proto_ch))
-        },
+        }
+        Command::PipelineState(proto_ch) => CommandActionType::Regular(Box::new(proto_ch)),
         Command::OperatorDisconnect(proto_ch) => {
             CommandActionType::OperatorDisconnect(Box::new(proto_ch))
-        },
+        }
     };
 
     (command_handler, reference_id)
@@ -77,11 +62,7 @@ pub fn handle_action(
     let mut errors: Vec<String> = vec![];
     let mut status = String::from("success");
 
-    let (_payload_id, raw_data) = handler.handle(
-        operator,
-        message,
-        &mut errors
-    );
+    let (_payload_id, raw_data) = handler.handle(operator, message, &mut errors);
 
     if errors.len() > 0 {
         status = "error".to_string();
@@ -91,7 +72,7 @@ pub fn handle_action(
         reference_id,
         status,
         errors,
-        raw_data
+        raw_data,
     };
 
     let command_response_bytes = command_response.encode_to_vec();

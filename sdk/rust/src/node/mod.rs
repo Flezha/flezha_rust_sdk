@@ -21,7 +21,7 @@ pub struct OperatorNode {
 }
 
 pub enum NodeAction {
-    EngineIdConfirmation
+    EngineIdConfirmation,
 }
 
 impl OperatorNode {
@@ -33,7 +33,7 @@ impl OperatorNode {
         let (tx, rx): (mpsc::Sender<NodeAction>, mpsc::Receiver<NodeAction>) = mpsc::channel();
         let tx = Arc::new(Mutex::new(tx));
         let rx = Arc::new(Mutex::new(rx));
-    
+
         let operator = OperatorNode {
             operator_id: "undefined".to_string(),
             _namespace: namespace.clone(),
@@ -44,21 +44,26 @@ impl OperatorNode {
 
         let operator_arc = Arc::new(Mutex::new(operator));
 
-        let _control_thread = control_unit::open(
-            namespace,
-            Arc::clone(&tx),
-            operator_arc.clone()
-        );
+        let _control_thread = control_unit::open(namespace, Arc::clone(&tx), operator_arc.clone());
 
         // Make sure the namespace is passed to the agent.
-        match rx.lock().unwrap().recv().expect("Failed to receive namespace confirmation") {
+        match rx
+            .lock()
+            .unwrap()
+            .recv()
+            .expect("Failed to receive namespace confirmation")
+        {
             NodeAction::EngineIdConfirmation => {}
         }
 
         operator_arc
     }
 
-    pub fn start_pipeline(&self, factory_id: String, pipeline_id: String) -> Option<PipelineHandle> {
+    pub fn start_pipeline(
+        &self,
+        factory_id: String,
+        pipeline_id: String,
+    ) -> Option<PipelineHandle> {
         if let Some(factory) = get_factory(factory_id) {
             let pipeline = factory(pipeline_id.clone());
             self.register_pipeline(pipeline_id.clone(), pipeline);
@@ -69,7 +74,10 @@ impl OperatorNode {
     }
 
     fn register_pipeline(&self, id: String, pipeline: PipelineBox) {
-        self.pipelines.write().unwrap().insert(id, Arc::new(Mutex::new(pipeline)));
+        self.pipelines
+            .write()
+            .unwrap()
+            .insert(id, Arc::new(Mutex::new(pipeline)));
     }
 
     pub fn stop_pipeline(&self, id: String) {
@@ -84,8 +92,13 @@ impl OperatorNode {
         Arc::clone(&self.pipelines)
     }
 
-    pub fn get_pipeline(&self, id: String) -> Option<PipelineHandle> {    
-        self.pipelines.read().unwrap().get(&id).cloned().map(|pipeline| PipelineHandle { pipeline })
+    pub fn get_pipeline(&self, id: String) -> Option<PipelineHandle> {
+        self.pipelines
+            .read()
+            .unwrap()
+            .get(&id)
+            .cloned()
+            .map(|pipeline| PipelineHandle { pipeline })
     }
 
     pub fn get_io_streams(&self) -> Arc<RwLock<HashMap<u32, UnixStream>>> {
@@ -108,4 +121,3 @@ impl OperatorNode {
         self.pipelines.read().unwrap().contains_key(&id)
     }
 }
-

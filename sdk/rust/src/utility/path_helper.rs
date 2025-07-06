@@ -16,6 +16,6 @@ fn sockets_base_path() -> String {
     let key = "FLEZHA_SOCKET_FILES_PATH";
     match env::var(key) {
         Ok(val) => val.trim_end_matches('/').to_string(),
-        Err(_) => "app_data/sockets".to_string()
+        Err(_) => "app_data/sockets".to_string(),
     }
 }

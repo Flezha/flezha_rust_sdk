@@ -1,24 +1,23 @@
-pub mod pipeline;
-mod node;
-mod service;
 mod command;
+mod node;
+pub mod pipeline;
+mod service;
 mod utility;
 
-use std::{collections::HashMap, os::unix::net::UnixStream, sync::{Arc, Mutex, RwLock}};
+use std::{
+    collections::HashMap,
+    os::unix::net::UnixStream,
+    sync::{Arc, Mutex, RwLock},
+};
 
 use node::OperatorNode;
 
-pub use pipeline::{
-    PipelineInput, 
-    PipelineOutput, 
-    PipelineResult, 
-    PipelineSettings, 
-    PipelineStep, 
-    VirtualChannel,
-    create_pipeline_factory
-};
 use pipeline::factory_registry::PipelineBox;
 use pipeline::runner;
+pub use pipeline::{
+    create_pipeline_factory, PipelineInput, PipelineOutput, PipelineResult, PipelineSettings,
+    PipelineStep, VirtualChannel,
+};
 
 pub mod pb {
     #[cfg(not(rust_analyzer))]
@@ -33,18 +32,14 @@ pub struct Flezha {
 
 impl Flezha {
     fn new(id: String) -> Flezha {
-        let pipelines =  Arc::new(RwLock::new(HashMap::new()));
+        let pipelines = Arc::new(RwLock::new(HashMap::new()));
         let shared_io_streams = Arc::new(RwLock::new(HashMap::new()));
 
         Flezha {
             _id: id.clone(),
             pipelines: Arc::clone(&pipelines),
             shared_io_streams: Arc::clone(&shared_io_streams),
-            _operator: OperatorNode::new(
-                id.clone(),
-                pipelines,
-                shared_io_streams,
-            ),
+            _operator: OperatorNode::new(id.clone(), pipelines, shared_io_streams),
         }
     }
 
@@ -57,15 +52,24 @@ impl Flezha {
     }
 
     pub fn run(&mut self, pipeline_id: String, input: PipelineInput) -> PipelineResult {
-        runner::exec(
-            &pipeline_id, 
-            &self.pipelines,
-            input
-        )
+        runner::exec(&pipeline_id, &self.pipelines, input)
     }
 
-    pub fn pipe_to_agent(&mut self, pipeline_id: String, result: PipelineOutput, virtual_channel: VirtualChannel) {
-        let mut io_stream = self.shared_io_streams.write().unwrap().values().next().unwrap().try_clone().unwrap();
+    pub fn pipe_to_agent(
+        &mut self,
+        pipeline_id: String,
+        result: PipelineOutput,
+        virtual_channel: VirtualChannel,
+    ) {
+        let mut io_stream = self
+            .shared_io_streams
+            .write()
+            .unwrap()
+            .values()
+            .next()
+            .unwrap()
+            .try_clone()
+            .unwrap();
 
         runner::pipe_to_agent(&mut io_stream, &pipeline_id, &result, virtual_channel);
     }

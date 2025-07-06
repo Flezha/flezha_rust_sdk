@@ -10,8 +10,8 @@ impl CommandAction for RemPipeline {
         &self,
         operator: &Arc<Mutex<OperatorNode>>,
         _message: &String,
-        errors: &mut Vec<String>
-    ) -> (String, Vec<u8>) {       
+        errors: &mut Vec<String>,
+    ) -> (String, Vec<u8>) {
         let operator_guard = operator.lock().unwrap();
 
         if operator_guard.has_pipeline(self.pipeline_id.clone()) {
@@ -21,6 +21,6 @@ impl CommandAction for RemPipeline {
         } else {
             errors.push("Pipeline not found".to_string());
             ("stop_pipeline".to_string(), Vec::new())
-        }        
+        }
     }
 }
