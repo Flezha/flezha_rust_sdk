@@ -34,8 +34,10 @@ pub fn exec_agent(
         PipelineResult::None => {
             return;
         }
-        PipelineResult::Forward(output, virtual_channel) => {
-            pipe_to_agent(stream, pipeline_id, &output, virtual_channel);
+        PipelineResult::Forward(outputs) => {
+            for (output, virtual_channel) in outputs {
+                pipe_to_agent(stream, pipeline_id, &output, virtual_channel);
+            }
         }
     }
 }

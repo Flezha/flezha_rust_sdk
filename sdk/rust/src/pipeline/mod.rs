@@ -21,7 +21,7 @@ pub type VirtualChannel = u8;
 
 pub enum PipelineResult {
     None,
-    Forward(PipelineOutput, VirtualChannel),
+    Forward(Vec<(PipelineOutput, VirtualChannel)>),
 }
 
 pub trait Pipeline {
@@ -102,7 +102,7 @@ pub struct DefaultOutputTransformer;
 
 impl<State> OutputTransformer<String, State> for DefaultOutputTransformer {
     fn transform_output(&self, output: String, _state: &State) -> PipelineResult {
-        PipelineResult::Forward(PipelineOutput::Binary(output.into_bytes()), 1)
+        PipelineResult::Forward(vec![(PipelineOutput::Binary(output.into_bytes()), 1)])
     }
 
     fn clone_box(&self) -> Box<dyn OutputTransformer<String, State> + Send + Sync> {
