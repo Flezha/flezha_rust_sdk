@@ -54,7 +54,7 @@ pub trait InputTransformer<T> {
 
 /// Trait for transforming generic output data to PipelineResult after all pipeline steps complete
 pub trait OutputTransformer<T, State> {
-    fn transform_output(&self, output: T, state: &State) -> PipelineResult;
+    fn transform_output(&self, output: T, state: &mut State) -> PipelineResult;
     fn clone_box(&self) -> Box<dyn OutputTransformer<T, State> + Send + Sync>;
 }
 
@@ -101,7 +101,7 @@ impl InputTransformer<String> for DefaultInputTransformer {
 pub struct DefaultOutputTransformer;
 
 impl<State> OutputTransformer<String, State> for DefaultOutputTransformer {
-    fn transform_output(&self, output: String, _state: &State) -> PipelineResult {
+    fn transform_output(&self, output: String, _state: &mut State) -> PipelineResult {
         PipelineResult::Forward(vec![(PipelineOutput::Binary(output.into_bytes()), 1)])
     }
 
@@ -196,7 +196,7 @@ where
         // Let the output transformer decide the result type
         self.settings
             .get_output_transformer()
-            .transform_output(current_input, &self.state)
+            .transform_output(current_input, &mut self.state)
     }
 
     fn json_serialize_state(&self) -> io::Result<Vec<u8>> {
