@@ -79,12 +79,14 @@ fn listen_incoming(
                     types => panic!("Invalid input type {}", types),
                 };
 
+                // TODO: remove
+                // println!("Received message {:?}", input);
+
                 match processing_type {
                     1 => runner::exec_agent(&mut stream, &pipeline_id, pipelines, input),
                     2 => {
                         let pipelines = Arc::clone(pipelines);
                         let mut stream = stream.try_clone().unwrap();
-
                         thread::spawn(move || {
                             runner::exec_agent(&mut stream, &pipeline_id, &pipelines, input)
                         });

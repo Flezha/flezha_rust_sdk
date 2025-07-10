@@ -37,6 +37,17 @@ pub fn exec_agent(
         PipelineResult::Forward(outputs) => {
             for (output, virtual_channel) in outputs {
                 pipe_to_agent(stream, pipeline_id, &output, virtual_channel);
+
+                match output {
+                    PipelineOutput::Binary(bin) => {
+                        let string = String::from_utf8(bin).unwrap();
+
+                        println!("Handled message: {}", string);
+                    }
+                    _ => {
+                        println!("Handled something else");
+                    }
+                }
             }
         }
     }

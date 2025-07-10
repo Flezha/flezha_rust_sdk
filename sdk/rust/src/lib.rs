@@ -21,7 +21,9 @@ pub use pipeline::{
 
 pub mod pb {
     #[cfg(not(rust_analyzer))]
-    include!(concat!(env!("OUT_DIR"), "/operator_commands.rs"));
+    include!("generated/operator_commands.rs");
+    #[cfg(rust_analyzer)]
+    include!("generated/operator_commands.rs");
 }
 pub struct Flezha {
     _id: String,

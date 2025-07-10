@@ -5,12 +5,14 @@ use std::io;
 
 extern crate erased_serde;
 
+#[derive(Debug)]
 pub enum PipelineInput {
     Binary(Vec<u8>),
     Text(String),
     Custom(Box<dyn std::any::Any + Send + Sync>), // For client‐specific types
 }
 
+#[derive(Debug)]
 pub enum PipelineOutput {
     Binary(Vec<u8>),
     Text(String),
@@ -19,6 +21,7 @@ pub enum PipelineOutput {
 
 pub type VirtualChannel = u8;
 
+#[derive(Debug)]
 pub enum PipelineResult {
     None,
     Forward(Vec<(PipelineOutput, VirtualChannel)>),

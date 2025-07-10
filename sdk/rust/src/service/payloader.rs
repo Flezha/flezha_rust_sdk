@@ -75,9 +75,6 @@ fn handle_payload_build(payload_id: &str, virtual_channel: u8, message_len: u64)
     // Create a buffer to hold the payload.
     let mut payload = Vec::with_capacity(32 + 8 + message_len as usize);
 
-    // Prefix the payload with FLZP. TODO: update the prefix.
-    payload.write_all("FLZP".as_bytes()).unwrap();
-
     // Write the payload ID (32 bytes) to the payload.
     payload.write_all(payload_id_padded.as_bytes()).unwrap();
 
