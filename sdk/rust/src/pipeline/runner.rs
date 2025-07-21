@@ -23,7 +23,7 @@ pub fn exec(
 }
 
 pub fn exec_agent(
-    stream: &mut UnixStream,
+    mut stream: UnixStream,
     pipeline_id: &String,
     pipelines: &Arc<RwLock<HashMap<String, Arc<Mutex<PipelineBox>>>>>,
     input: PipelineInput,
@@ -36,18 +36,7 @@ pub fn exec_agent(
         }
         PipelineResult::Forward(outputs) => {
             for (output, virtual_channel) in outputs {
-                pipe_to_agent(stream, pipeline_id, &output, virtual_channel);
-
-                match output {
-                    PipelineOutput::Binary(bin) => {
-                        let string = String::from_utf8(bin).unwrap();
-
-                        println!("Handled message: {}", string);
-                    }
-                    _ => {
-                        println!("Handled something else");
-                    }
-                }
+                pipe_to_agent(&mut stream, pipeline_id, &output, virtual_channel);
             }
         }
     }

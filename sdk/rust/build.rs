@@ -48,7 +48,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Configure prost-build to output to src/generated
     let mut config = prost_build::Config::new();
     config.out_dir("src/generated");
-    
+
     config.compile_protos(&[proto_file_str.as_str()], &[proto_dir_str.as_str()])?;
 
     println!("Updated protobuf files in src/generated/");

@@ -1,9 +1,13 @@
 mod control_unit;
+pub(crate) mod coordinator;
+mod worker_pool;
 
+use crate::node::coordinator::CoordinatorMessage;
 use crate::pipeline::factory_registry::{get_factory, PipelineBox, PipelineHandle};
 
 use std::collections::HashMap;
 use std::os::unix::net::UnixStream;
+use std::sync::mpsc::Sender;
 use std::sync::{mpsc, Arc, Mutex, RwLock};
 
 pub enum OperatorStatus {
@@ -17,6 +21,7 @@ pub struct OperatorNode {
     _namespace: String,
     pipelines: Arc<RwLock<HashMap<String, Arc<Mutex<PipelineBox>>>>>,
     shared_io_streams: Arc<RwLock<HashMap<u32, UnixStream>>>,
+    coordinator_channel: Arc<Mutex<Sender<CoordinatorMessage>>>,
     status: OperatorStatus,
 }
 
@@ -30,26 +35,33 @@ impl OperatorNode {
         pipelines: Arc<RwLock<HashMap<String, Arc<Mutex<PipelineBox>>>>>,
         shared_io_streams: Arc<RwLock<HashMap<u32, UnixStream>>>,
     ) -> Arc<Mutex<OperatorNode>> {
-        let (tx, rx): (mpsc::Sender<NodeAction>, mpsc::Receiver<NodeAction>) = mpsc::channel();
-        let tx = Arc::new(Mutex::new(tx));
-        let rx = Arc::new(Mutex::new(rx));
+        let (itx, irx): (mpsc::Sender<NodeAction>, mpsc::Receiver<NodeAction>) = mpsc::channel();
+
+        let (ctx, crx): (
+            mpsc::Sender<CoordinatorMessage>,
+            mpsc::Receiver<CoordinatorMessage>,
+        ) = mpsc::channel();
 
         let operator = OperatorNode {
             operator_id: "undefined".to_string(),
             _namespace: namespace.clone(),
             pipelines,
             shared_io_streams: shared_io_streams,
+            coordinator_channel: Arc::new(Mutex::new(ctx)),
             status: OperatorStatus::Starting,
         };
 
         let operator_arc = Arc::new(Mutex::new(operator));
 
-        let _control_thread = control_unit::open(namespace, Arc::clone(&tx), operator_arc.clone());
+        let _coordinator_thread = coordinator::start(
+            namespace,
+            Arc::new(Mutex::new(crx)),
+            Arc::new(Mutex::new(itx)),
+            operator_arc.clone(),
+        );
 
         // Make sure the namespace is passed to the agent.
-        match rx
-            .lock()
-            .unwrap()
+        match irx
             .recv()
             .expect("Failed to receive namespace confirmation")
         {
@@ -119,5 +131,9 @@ impl OperatorNode {
 
     pub fn has_pipeline(&self, id: String) -> bool {
         self.pipelines.read().unwrap().contains_key(&id)
+    }
+
+    pub fn get_coordinator_channel(&self) -> Arc<Mutex<Sender<CoordinatorMessage>>> {
+        Arc::clone(&self.coordinator_channel)
     }
 }
