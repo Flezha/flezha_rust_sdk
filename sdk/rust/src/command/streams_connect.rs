@@ -3,7 +3,7 @@ use crate::pb::ConnectSocket;
 
 use std::os::unix::net::UnixStream;
 use std::str;
-use std::sync::mpsc::Sender;
+use crossbeam::channel::Sender;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -31,7 +31,7 @@ impl CommandAction for ConnectSocket {
         drop(operator_guard);
 
         for key in 0..self.sockets_count {
-            let ctx_clone = Arc::clone(&ctx);
+            let ctx_clone = ctx.lock().unwrap().clone();
             let stream = connect_unix(&operator_id, "primary".to_string());
             let shared_stream = connect_unix(&operator_id, "secondary".to_string());
 
@@ -56,7 +56,7 @@ fn connect_unix(operator_id: &String, stream_type: String) -> UnixStream {
     ))
 }
 
-fn listen_incoming(mut stream: UnixStream, ctx: Arc<Mutex<Sender<CoordinatorMessage>>>) {
+fn listen_incoming(mut stream: UnixStream, ctx: Sender<CoordinatorMessage>) {
     loop {
         match payloader::extract_payload(&mut stream) {
             Ok((pipeline_id, mut payload)) => {
@@ -81,9 +81,7 @@ fn listen_incoming(mut stream: UnixStream, ctx: Arc<Mutex<Sender<CoordinatorMess
                     types => panic!("Invalid input type {}", types),
                 };
 
-                ctx.lock()
-                    .unwrap()
-                    .send(CoordinatorMessage::WorkerCheckOut(
+                ctx.send(CoordinatorMessage::WorkerCheckOut(
                         pipeline_id,
                         input,
                         worker_type,

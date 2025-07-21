@@ -7,8 +7,8 @@ use crate::pipeline::factory_registry::{get_factory, PipelineBox, PipelineHandle
 
 use std::collections::HashMap;
 use std::os::unix::net::UnixStream;
-use std::sync::mpsc::Sender;
-use std::sync::{mpsc, Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
+use crossbeam::channel::{Receiver, Sender};
 
 pub enum OperatorStatus {
     Starting,
@@ -35,12 +35,12 @@ impl OperatorNode {
         pipelines: Arc<RwLock<HashMap<String, Arc<Mutex<PipelineBox>>>>>,
         shared_io_streams: Arc<RwLock<HashMap<u32, UnixStream>>>,
     ) -> Arc<Mutex<OperatorNode>> {
-        let (itx, irx): (mpsc::Sender<NodeAction>, mpsc::Receiver<NodeAction>) = mpsc::channel();
+        let (itx, irx): (Sender<NodeAction>, Receiver<NodeAction>) = crossbeam::channel::unbounded();
 
         let (ctx, crx): (
-            mpsc::Sender<CoordinatorMessage>,
-            mpsc::Receiver<CoordinatorMessage>,
-        ) = mpsc::channel();
+            Sender<CoordinatorMessage>,
+            Receiver<CoordinatorMessage>,
+        ) = crossbeam::channel::unbounded();
 
         let operator = OperatorNode {
             operator_id: "undefined".to_string(),

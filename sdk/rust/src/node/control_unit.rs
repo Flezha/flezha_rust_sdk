@@ -1,9 +1,10 @@
 use std::io::Write;
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
+use crossbeam::channel::Sender;
 
 use serde::Serialize;
 
@@ -22,7 +23,7 @@ struct ControlInitMessage {
 
 pub fn open(
     group_id: String,
-    tx: Arc<Mutex<mpsc::Sender<NodeAction>>>,
+    tx: Arc<Mutex<Sender<NodeAction>>>,
     operator: Arc<Mutex<OperatorNode>>,
 ) -> thread::JoinHandle<()> {
     let socket_path = path_helper::control_socket_path();
@@ -40,7 +41,7 @@ pub fn open(
 
 fn sock_conn(
     group_id: String,
-    tx: Arc<Mutex<mpsc::Sender<NodeAction>>>,
+    tx: Arc<Mutex<Sender<NodeAction>>>,
     stream_box: Arc<UnixStream>,
     operator: Arc<Mutex<OperatorNode>>,
 ) -> thread::JoinHandle<()> {
@@ -99,7 +100,7 @@ fn sock_conn(
 
 fn send_init_msg(
     group_id: String,
-    tx: Arc<Mutex<mpsc::Sender<NodeAction>>>,
+    tx: Arc<Mutex<Sender<NodeAction>>>,
     stream_clone: Arc<UnixStream>,
 ) {
     let control_init_message = ControlInitMessage {

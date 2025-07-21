@@ -1,13 +1,13 @@
 use std::os::unix::net::UnixStream;
 use std::primitive::u16;
-use std::sync::mpsc::Sender;
 use std::sync::RwLock;
 use std::thread;
 use std::{
     collections::HashMap,
     env,
-    sync::{mpsc, Arc, Mutex},
+    sync::{Arc, Mutex},
 };
+use crossbeam::channel::Sender;
 
 use crate::pipeline::factory_registry::PipelineBox;
 use crate::pipeline::runner;
@@ -19,15 +19,15 @@ pub enum WorkerPoolMessage {
 
 pub fn init_worker_pool(
     pipelines: Arc<RwLock<HashMap<String, Arc<Mutex<PipelineBox>>>>>,
-    ctx: Arc<Mutex<mpsc::Sender<CoordinatorMessage>>>,
+    ctx: Arc<Mutex<Sender<CoordinatorMessage>>>,
 ) -> HashMap<u16, Sender<WorkerPoolMessage>> {
     let worker_count = number_of_workers();
     let mut worker_channels: HashMap<u16, Sender<WorkerPoolMessage>> = HashMap::new();
 
     for i in 0..worker_count {
         let pipelines = Arc::clone(&pipelines);
-        let ctx_clone = Arc::clone(&ctx);
-        let (wtx, wrx) = mpsc::channel();
+        let ctx_clone = ctx.lock().unwrap().clone();
+        let (wtx, wrx) = crossbeam::channel::unbounded();
         worker_channels.insert(i, wtx);
 
         thread::spawn(move || {
@@ -36,16 +36,19 @@ pub fn init_worker_pool(
             check_in(&ctx_clone, CoordinatorMessage::WorkerInitCheckIn(worker_id));
 
             loop {
+                // TODO: remove
+                let start = std::time::Instant::now();
+
                 let message = wrx.recv().expect("Failed to receive message");
+
                 match message {
                     WorkerPoolMessage::HandleWork(pipeline_id, pipeline_input, unix_stream) => {
                         runner::exec_agent(unix_stream, &pipeline_id, &pipelines, pipeline_input);
-                        check_in(
-                            &ctx_clone,
-                            CoordinatorMessage::WorkerCheckIn(worker_id, pipeline_id),
-                        );
+                        check_in(&ctx_clone, CoordinatorMessage::WorkerCheckIn(worker_id, pipeline_id));
                     }
                 }
+
+                print!("Worker {} finished processing in {:?}\n", worker_id, start.elapsed());
             }
         });
     }
@@ -54,14 +57,15 @@ pub fn init_worker_pool(
 }
 
 pub fn pool_worker_delegate(
-    occupied_pipelines: &mut Vec<String>,
+    occupied_pipelines: &mut Vec<(String, std::time::Instant)>,
     workers_pool_tx: &HashMap<u16, Sender<WorkerPoolMessage>>,
     pipeline_id: String,
     pipeline_input: PipelineInput,
     worker_id: u16,
     stream: UnixStream,
 ) {
-    occupied_pipelines.push(pipeline_id.clone());
+    // TODO: remove instant
+    occupied_pipelines.push((pipeline_id.clone(), std::time::Instant::now()));
     workers_pool_tx
         .get(&worker_id)
         .unwrap()
@@ -73,11 +77,8 @@ pub fn pool_worker_delegate(
         .expect("Failed to send work to worker");
 }
 
-fn check_in(ctx: &Arc<Mutex<mpsc::Sender<CoordinatorMessage>>>, message: CoordinatorMessage) {
-    ctx.lock()
-        .unwrap()
-        .send(message)
-        .expect("Failed to send message to coordinator");
+fn check_in(ctx: &Sender<CoordinatorMessage>, message: CoordinatorMessage) {
+    ctx.send(message).expect("Failed to send message to coordinator");
 }
 
 fn number_of_workers() -> u16 {
