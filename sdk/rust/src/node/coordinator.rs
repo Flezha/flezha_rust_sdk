@@ -1,5 +1,5 @@
 use crossbeam::channel::{Receiver, Sender};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::os::unix::net::UnixStream;
 use std::{
     sync::{Arc, Mutex},
@@ -30,7 +30,7 @@ pub enum CoordinatorMessage {
 struct Coordinator {
     operator: Arc<Mutex<OperatorNode>>,
     workers_pool_tx: HashMap<u16, Sender<WorkerPoolMessage>>,
-    occupied_pipelines: Vec<String>,
+    occupied_pipelines: HashSet<String>,
     available_workers: VecDeque<u16>,
     work_queue: VecDeque<(String, PipelineInput, WorkerType, UnixStream)>,
 }
@@ -50,7 +50,7 @@ pub fn start(
         let mut coordinator = Coordinator {
             operator: operator_arc,
             workers_pool_tx: init_worker_pool(pipelines, ctx),
-            occupied_pipelines: vec![],
+            occupied_pipelines: HashSet::new(),
             available_workers: VecDeque::new(),
             work_queue: VecDeque::new(),
         };
@@ -78,7 +78,7 @@ pub fn start(
                         stream,
                     );
                 }
-                CoordinatorMessage::WorkerCheckIn(worker_id, worked_pipeline_id) => {                    
+                CoordinatorMessage::WorkerCheckIn(worker_id, worked_pipeline_id) => {
                     handle_checkin(&mut coordinator, worker_id, worked_pipeline_id);
                 }
             }
@@ -142,32 +142,17 @@ fn handle_checkin(coordinator: &mut Coordinator, worker_id: u16, worked_pipeline
     coordinator.available_workers.push_back(worker_id);
 
     // Remove the pipeline from occupied pipelines.
-    if let Some(pos) = coordinator
-        .occupied_pipelines
-        .iter()
-        .position(|x| *x == worked_pipeline_id)
-    {
-        coordinator.occupied_pipelines.remove(pos);
-    }
+    coordinator.occupied_pipelines.remove(&worked_pipeline_id);
 
-    // TODO: remove
-    let start = std::time::Instant::now();
-
-    // TODO: replace with contains
-    // Find the next available work in the queue.
-    let next_work = coordinator
-        .work_queue
-        .iter()
-        .position(|(pipe_id, _, _, _)| !coordinator.occupied_pipelines.contains(pipe_id));
-
-    if let Some(index) = next_work {
-        let removed_item = coordinator.work_queue.remove(index);
-
-        if let Some((pipe_id, pipe_input, processing_type, stream)) = removed_item {
+    // Process work queue from front only (front-only queue processing)
+    while let Some((pipe_id, _, _, _)) = coordinator.work_queue.front() {
+        if !coordinator.occupied_pipelines.contains(pipe_id) {
+            let (pipe_id, pipe_input, processing_type, stream) =
+                coordinator.work_queue.pop_front().unwrap();
             handle_checkout(coordinator, pipe_id, pipe_input, processing_type, stream);
+            break;
+        } else {
+            break; // Stop if front item is blocked
         }
     }
-
-    println!("Coordinator processed checkin message in {:?}", start.elapsed());
-
 }

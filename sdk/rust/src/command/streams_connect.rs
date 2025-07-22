@@ -1,9 +1,9 @@
 use super::CommandAction;
 use crate::pb::ConnectSocket;
 
+use crossbeam::channel::Sender;
 use std::os::unix::net::UnixStream;
 use std::str;
-use crossbeam::channel::Sender;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -58,9 +58,6 @@ fn connect_unix(operator_id: &String, stream_type: String) -> UnixStream {
 
 fn listen_incoming(mut stream: UnixStream, ctx: Sender<CoordinatorMessage>) {
     loop {
-        // TODO: remove
-        // let start = std::time::Instant::now();
-
         match payloader::extract_payload(&mut stream) {
             Ok((pipeline_id, mut payload)) => {
                 // input_type is the first byte of the payload
@@ -85,23 +82,17 @@ fn listen_incoming(mut stream: UnixStream, ctx: Sender<CoordinatorMessage>) {
                 };
 
                 ctx.send(CoordinatorMessage::WorkerCheckOut(
-                        pipeline_id,
-                        input,
-                        worker_type,
-                        stream.try_clone().unwrap(),
-                    ))
-                    .expect("Failed to send message to coordinator");
+                    pipeline_id,
+                    input,
+                    worker_type,
+                    stream.try_clone().unwrap(),
+                ))
+                .expect("Failed to send message to coordinator");
             }
             Err(_e) => {
                 // TODO: log error
                 break;
             }
         }
-
-        // TODO: remove
-        // println!(
-        //     "Received and processed message in {:?}",
-        //     start.elapsed()
-        // );
     }
 }

@@ -1,13 +1,13 @@
+use crossbeam::channel::Sender;
 use std::os::unix::net::UnixStream;
 use std::primitive::u16;
 use std::sync::RwLock;
 use std::thread;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     env,
     sync::{Arc, Mutex},
 };
-use crossbeam::channel::Sender;
 
 use crate::pipeline::factory_registry::PipelineBox;
 use crate::pipeline::runner;
@@ -41,7 +41,10 @@ pub fn init_worker_pool(
                 match message {
                     WorkerPoolMessage::HandleWork(pipeline_id, pipeline_input, unix_stream) => {
                         runner::exec_agent(unix_stream, &pipeline_id, &pipelines, pipeline_input);
-                        check_in(&ctx_clone, CoordinatorMessage::WorkerCheckIn(worker_id, pipeline_id));
+                        check_in(
+                            &ctx_clone,
+                            CoordinatorMessage::WorkerCheckIn(worker_id, pipeline_id),
+                        );
                     }
                 }
             }
@@ -52,15 +55,14 @@ pub fn init_worker_pool(
 }
 
 pub fn pool_worker_delegate(
-    occupied_pipelines: &mut Vec<String>,
+    occupied_pipelines: &mut HashSet<String>,
     workers_pool_tx: &HashMap<u16, Sender<WorkerPoolMessage>>,
     pipeline_id: String,
     pipeline_input: PipelineInput,
     worker_id: u16,
     stream: UnixStream,
 ) {
-    // TODO: remove instant
-    occupied_pipelines.push(pipeline_id.clone());
+    occupied_pipelines.insert(pipeline_id.clone());
     workers_pool_tx
         .get(&worker_id)
         .unwrap()
@@ -73,7 +75,8 @@ pub fn pool_worker_delegate(
 }
 
 fn check_in(ctx: &Sender<CoordinatorMessage>, message: CoordinatorMessage) {
-    ctx.send(message).expect("Failed to send message to coordinator");
+    ctx.send(message)
+        .expect("Failed to send message to coordinator");
 }
 
 fn number_of_workers() -> u16 {

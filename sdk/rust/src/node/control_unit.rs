@@ -1,10 +1,10 @@
+use crossbeam::channel::Sender;
 use std::io::Write;
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
-use crossbeam::channel::Sender;
 
 use serde::Serialize;
 
