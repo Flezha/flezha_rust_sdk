@@ -5,6 +5,9 @@ use std::{collections::HashMap, os::unix::net::UnixStream};
 use crate::pipeline::factory_registry::PipelineBox;
 use crate::pipeline::{PipelineInput, PipelineOutput, PipelineResult, VirtualChannel};
 use crate::service::payloader;
+use mio::{Events, Interest, Poll, Token};
+use std::os::unix::io::AsRawFd;
+use mio::unix::SourceFd;
 
 pub fn exec(
     pipeline_id: &String,
@@ -65,17 +68,35 @@ pub fn pipe_to_agent(
     match stream.write_all(&payload) {
         Ok(_) => {}
         Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-            // The stream is not ready to be written to, we need to wait.
-            // For simplicity, we'll do a busy wait with a small sleep.
-            // A more advanced implementation would use mio's event loop to wait for the stream to become writable.
+            let mut poll = Poll::new().unwrap();
+            let mut events = Events::with_capacity(1);
+            let token = Token(0);
+
+            poll.registry()
+                .register(&mut SourceFd(&stream.as_raw_fd()), token, Interest::WRITABLE)
+                .unwrap();
+
             loop {
-                std::thread::sleep(std::time::Duration::from_micros(100));
-                match stream.write_all(&payload) {
-                    Ok(_) => break,
-                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
-                    Err(err) => {
-                        eprintln!("Error writing to stream: {}", err);
-                        break;
+                poll.poll(&mut events, None).unwrap();
+                for event in events.iter() {
+                    if event.token() == token && event.is_writable() {
+                        match stream.write_all(&payload) {
+                            Ok(_) => {
+                                // Deregister the stream from the poll instance.
+                                poll.registry().deregister(&mut SourceFd(&stream.as_raw_fd())).unwrap();
+                                return;
+                            },
+                            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                                // The stream is still not ready, continue waiting.
+                                continue;
+                            }
+                            Err(err) => {
+                                eprintln!("Error writing to stream: {}", err);
+                                // Deregister the stream from the poll instance.
+                                poll.registry().deregister(&mut SourceFd(&stream.as_raw_fd())).unwrap();
+                                return;
+                            }
+                        }
                     }
                 }
             }
