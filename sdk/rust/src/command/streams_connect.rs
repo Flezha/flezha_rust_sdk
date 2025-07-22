@@ -2,6 +2,10 @@ use super::CommandAction;
 use crate::pb::ConnectSocket;
 
 use crossbeam::channel::Sender;
+use mio::unix::SourceFd;
+use mio::{Events, Interest, Poll, Token};
+use std::collections::HashMap;
+use std::os::unix::io::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::str;
 use std::sync::{Arc, Mutex};
@@ -13,6 +17,8 @@ use crate::pipeline::PipelineInput;
 use crate::service::payloader;
 
 use crate::utility::path_helper;
+
+const EVENTS_CAPACITY: usize = 1024;
 
 impl CommandAction for ConnectSocket {
     fn handle(
@@ -26,13 +32,15 @@ impl CommandAction for ConnectSocket {
         let operator_id = operator_guard.get_operator_id();
         let ctx = operator_guard.get_coordinator_channel();
 
-        // TODO: Implement error handling.
-
         drop(operator_guard);
 
+        let poll = Poll::new().unwrap();
+        let mut events = Events::with_capacity(EVENTS_CAPACITY);
+        let mut streams = HashMap::new();
+
         for key in 0..self.sockets_count {
-            let ctx_clone = ctx.lock().unwrap().clone();
             let stream = connect_unix(&operator_id, "primary".to_string());
+            stream.set_nonblocking(true).unwrap();
             let shared_stream = connect_unix(&operator_id, "secondary".to_string());
 
             io_streams
@@ -40,8 +48,21 @@ impl CommandAction for ConnectSocket {
                 .unwrap()
                 .insert(key, shared_stream.try_clone().unwrap());
 
-            let _handle = thread::spawn(move || listen_incoming(stream, ctx_clone));
+            let token = Token(key as usize);
+            poll.registry()
+                .register(
+                    &mut SourceFd(&stream.as_raw_fd()),
+                    token,
+                    Interest::READABLE,
+                )
+                .unwrap();
+
+            streams.insert(token, stream);
         }
+
+        let _handle = thread::spawn(move || {
+            listen_incoming(poll, &mut events, &mut streams, ctx.lock().unwrap().clone())
+        });
 
         ("connect_sockets".to_string(), Vec::new())
     }
@@ -56,42 +77,63 @@ fn connect_unix(operator_id: &String, stream_type: String) -> UnixStream {
     ))
 }
 
-fn listen_incoming(mut stream: UnixStream, ctx: Sender<CoordinatorMessage>) {
+fn listen_incoming(
+    mut poll: Poll,
+    events: &mut Events,
+    streams: &mut HashMap<Token, UnixStream>,
+    ctx: Sender<CoordinatorMessage>,
+) {
     loop {
-        match payloader::extract_payload(&mut stream) {
-            Ok((pipeline_id, mut payload)) => {
-                // input_type is the first byte of the payload
-                let input_type = payload[0];
+        poll.poll(events, None).unwrap();
 
-                // worker_type is the second byte of the payload
-                let worker_type_int = payload[1];
+        for event in events.iter() {
+            let token = event.token();
+            if let Some(stream) = streams.get_mut(&token) {
+                loop {
+                    match payloader::extract_payload_non_blocking(&mut *stream) {
+                        Ok(Some((pipeline_id, mut payload))) => {
+                            // input_type is the first byte of the payload
+                            let input_type = payload[0];
 
-                let worker_type = match worker_type_int {
-                    1 => WorkerType::ThreadPool,
-                    2 => WorkerType::ThreadSpawn,
-                    _ => panic!("Invalid worker type"),
-                };
+                            // worker_type is the second byte of the payload
+                            let worker_type_int = payload[1];
 
-                payload.remove(0);
-                payload.remove(0);
+                            let worker_type = match worker_type_int {
+                                1 => WorkerType::ThreadPool,
+                                2 => WorkerType::ThreadSpawn,
+                                _ => panic!("Invalid worker type"),
+                            };
 
-                let input = match input_type {
-                    1 => PipelineInput::Binary(payload),
-                    2 => PipelineInput::Text(str::from_utf8(&payload).unwrap().to_string()),
-                    types => panic!("Invalid input type {}", types),
-                };
+                            payload.remove(0);
+                            payload.remove(0);
 
-                ctx.send(CoordinatorMessage::WorkerCheckOut(
-                    pipeline_id,
-                    input,
-                    worker_type,
-                    stream.try_clone().unwrap(),
-                ))
-                .expect("Failed to send message to coordinator");
-            }
-            Err(_e) => {
-                // TODO: log error
-                break;
+                            let input = match input_type {
+                                1 => PipelineInput::Binary(payload),
+                                2 => {
+                                    PipelineInput::Text(str::from_utf8(&payload).unwrap().to_string())
+                                }
+                                types => panic!("Invalid input type {}", types),
+                            };
+
+                            ctx.send(CoordinatorMessage::WorkerCheckOut(
+                                pipeline_id,
+                                input,
+                                worker_type,
+                                stream.try_clone().unwrap(),
+                            ))
+                            .expect("Failed to send message to coordinator");
+                        }
+                        Ok(None) => {
+                            // Would block
+                            break;
+                        }
+                        Err(_e) => {
+                            // TODO: log error
+                            streams.remove(&token);
+                            break;
+                        }
+                    }
+                }
             }
         }
     }

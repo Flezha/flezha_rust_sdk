@@ -13,6 +13,7 @@ lazy_static = "1.4.0"
 erased-serde="0.4.6"
 prost = "0.13.5"
 crossbeam = "0.8"
+mio = { version = "0.8.11", features = ["os-poll", "os-ext"] }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(rust_analyzer)"] }

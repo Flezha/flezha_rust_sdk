@@ -62,7 +62,26 @@ pub fn pipe_to_agent(
         }
     };
 
-    if let Err(err) = stream.write_all(&payload) {
-        eprintln!("Error writing to stream: {}", err);
+    match stream.write_all(&payload) {
+        Ok(_) => {}
+        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+            // The stream is not ready to be written to, we need to wait.
+            // For simplicity, we'll do a busy wait with a small sleep.
+            // A more advanced implementation would use mio's event loop to wait for the stream to become writable.
+            loop {
+                std::thread::sleep(std::time::Duration::from_micros(100));
+                match stream.write_all(&payload) {
+                    Ok(_) => break,
+                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+                    Err(err) => {
+                        eprintln!("Error writing to stream: {}", err);
+                        break;
+                    }
+                }
+            }
+        }
+        Err(err) => {
+            eprintln!("Error writing to stream: {}", err);
+        }
     }
 }
