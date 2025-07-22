@@ -4,7 +4,7 @@ use std::primitive::u16;
 use std::sync::RwLock;
 use std::thread;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     env,
     sync::{Arc, Mutex},
 };

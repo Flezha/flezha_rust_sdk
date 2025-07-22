@@ -1,5 +1,5 @@
 use crossbeam::channel::{Receiver, Sender};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::os::unix::net::UnixStream;
 use std::{
     sync::{Arc, Mutex},
@@ -152,9 +152,10 @@ fn handle_checkin(coordinator: &mut Coordinator, worker_id: u16, worked_pipeline
     // Remove pipeline from active processing
     coordinator.pipeline_workers.remove(&worked_pipeline_id);
 
+    // TODO: handle different worker types.
     // Check if this pipeline has queued work
     if let Some(queue) = coordinator.pipeline_queues.get_mut(&worked_pipeline_id) {
-        if let Some((pipeline_input, worker_type, stream)) = queue.pop_front() {
+        if let Some((pipeline_input, _worker_type, stream)) = queue.pop_front() {
             // Process next item in this pipeline's queue with same worker (sticky assignment)
             coordinator.pipeline_workers.insert(worked_pipeline_id.clone(), worker_id);
             pool_worker_delegate(
@@ -178,8 +179,9 @@ fn handle_checkin(coordinator: &mut Coordinator, worker_id: u16, worked_pipeline
     while let Some(pipeline_id) = coordinator.pending_pipelines.pop_front() {
         // Check if pipeline is still idle and has work
         if !coordinator.pipeline_workers.contains_key(&pipeline_id) {
+            // TODO: handle different worker types.
             if let Some(queue) = coordinator.pipeline_queues.get_mut(&pipeline_id) {
-                if let Some((pipeline_input, worker_type, stream)) = queue.pop_front() {
+                if let Some((pipeline_input, _worker_type, stream)) = queue.pop_front() {
                     // Remove worker from available workers since we're assigning it
                     coordinator.available_workers.pop_back();
                     coordinator.pipeline_workers.insert(pipeline_id.clone(), worker_id);
