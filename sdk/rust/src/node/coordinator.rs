@@ -30,7 +30,7 @@ pub enum CoordinatorMessage {
 struct Coordinator {
     operator: Arc<Mutex<OperatorNode>>,
     workers_pool_tx: HashMap<u16, Sender<WorkerPoolMessage>>,
-    occupied_pipelines: Vec<(String, std::time::Instant)>,
+    occupied_pipelines: Vec<String>,
     available_workers: VecDeque<u16>,
     work_queue: VecDeque<(String, PipelineInput, WorkerType, UnixStream)>,
 }
@@ -60,9 +60,6 @@ pub fn start(
                 .recv()
                 .expect("Failed to receive coordinator message");
 
-            // TODO: remove
-            let start = std::time::Instant::now();
-
             match message {
                 CoordinatorMessage::WorkerInitCheckIn(worker_id) => {
                     coordinator.available_workers.push_back(worker_id);
@@ -81,15 +78,10 @@ pub fn start(
                         stream,
                     );
                 }
-                CoordinatorMessage::WorkerCheckIn(worker_id, worked_pipeline_id) => {
+                CoordinatorMessage::WorkerCheckIn(worker_id, worked_pipeline_id) => {                    
                     handle_checkin(&mut coordinator, worker_id, worked_pipeline_id);
                 }
             }
-
-            // println!(
-            //     "Coordinator processed message in {:?}",
-            //     start.elapsed()
-            // );
         }
     });
 }
@@ -102,8 +94,7 @@ fn handle_checkout(
     stream: UnixStream,
 ) {
     // Make sure the pipeline is not already occupied to keep the order of execution.
-    // TODO: replace back with contains
-    if !coordinator.occupied_pipelines.iter().any(|(id, _)| id == &pipeline_id) {
+    if !coordinator.occupied_pipelines.contains(&pipeline_id) {
         match worker_type {
             WorkerType::ThreadPool => {
                 // If there are available workers and the pipeline is not already occupied, assign a worker.
@@ -154,30 +145,20 @@ fn handle_checkin(coordinator: &mut Coordinator, worker_id: u16, worked_pipeline
     if let Some(pos) = coordinator
         .occupied_pipelines
         .iter()
-        .position(|(x, y)| *x == worked_pipeline_id)
+        .position(|x| *x == worked_pipeline_id)
     {
-
-        // TODO: remove
-        let elapsed = coordinator.occupied_pipelines[pos].1.elapsed().as_millis();
-
-        if elapsed >= 30 {
-        // TODO: remove the instant printing.
-        println!(
-            "Pipeline {} finished processing in {:?}",
-            worked_pipeline_id,
-            elapsed
-        );
-        }
-
         coordinator.occupied_pipelines.remove(pos);
     }
+
+    // TODO: remove
+    let start = std::time::Instant::now();
 
     // TODO: replace with contains
     // Find the next available work in the queue.
     let next_work = coordinator
         .work_queue
         .iter()
-        .position(|(pipe_id, _, _, _)| !coordinator.occupied_pipelines.iter().any(|(id, _)| id == pipe_id));
+        .position(|(pipe_id, _, _, _)| !coordinator.occupied_pipelines.contains(pipe_id));
 
     if let Some(index) = next_work {
         let removed_item = coordinator.work_queue.remove(index);
@@ -186,4 +167,7 @@ fn handle_checkin(coordinator: &mut Coordinator, worker_id: u16, worked_pipeline
             handle_checkout(coordinator, pipe_id, pipe_input, processing_type, stream);
         }
     }
+
+    println!("Coordinator processed checkin message in {:?}", start.elapsed());
+
 }

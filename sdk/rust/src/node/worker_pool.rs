@@ -36,9 +36,6 @@ pub fn init_worker_pool(
             check_in(&ctx_clone, CoordinatorMessage::WorkerInitCheckIn(worker_id));
 
             loop {
-                // TODO: remove
-                let start = std::time::Instant::now();
-
                 let message = wrx.recv().expect("Failed to receive message");
 
                 match message {
@@ -47,8 +44,6 @@ pub fn init_worker_pool(
                         check_in(&ctx_clone, CoordinatorMessage::WorkerCheckIn(worker_id, pipeline_id));
                     }
                 }
-
-                print!("Worker {} finished processing in {:?}\n", worker_id, start.elapsed());
             }
         });
     }
@@ -57,7 +52,7 @@ pub fn init_worker_pool(
 }
 
 pub fn pool_worker_delegate(
-    occupied_pipelines: &mut Vec<(String, std::time::Instant)>,
+    occupied_pipelines: &mut Vec<String>,
     workers_pool_tx: &HashMap<u16, Sender<WorkerPoolMessage>>,
     pipeline_id: String,
     pipeline_input: PipelineInput,
@@ -65,7 +60,7 @@ pub fn pool_worker_delegate(
     stream: UnixStream,
 ) {
     // TODO: remove instant
-    occupied_pipelines.push((pipeline_id.clone(), std::time::Instant::now()));
+    occupied_pipelines.push(pipeline_id.clone());
     workers_pool_tx
         .get(&worker_id)
         .unwrap()
