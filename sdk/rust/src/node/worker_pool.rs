@@ -77,12 +77,23 @@ fn check_in(ctx: &Sender<CoordinatorMessage>, message: CoordinatorMessage) {
         .expect("Failed to send message to coordinator");
 }
 
-// TODO: document this and add default values. Should by default come from the number of CPU cores.
+/// Determines the number of workers for the pool.
+///
+/// The number of workers is determined in the following order:
+/// 1. The value of the `FLEZHA_WORKER_POOL_SIZE` environment variable, if set and valid.
+/// 2. The number of available CPU cores, as a fallback.
+///
+/// # Panics
+///
+/// This function will panic if the determined number of workers is less than 1
+/// or greater than `u16::MAX`.
 fn number_of_workers() -> u16 {
     let key = "FLEZHA_WORKER_POOL_SIZE";
+    let default_workers = std::thread::available_parallelism().map_or(2, |v| v.get());
+
     let numb_of_worker = match env::var(key) {
-        Ok(val) => val.parse().unwrap_or(10),
-        Err(_) => 10,
+        Ok(val) => val.parse().unwrap_or(default_workers),
+        Err(_) => default_workers,
     };
 
     if numb_of_worker < 1 {
@@ -92,7 +103,7 @@ fn number_of_workers() -> u16 {
         );
     }
 
-    if numb_of_worker > u16::MAX as u32 {
+    if numb_of_worker > u16::MAX as usize {
         panic!("Number of workers exceeds maximum limit: {}", u16::MAX);
     }
 
