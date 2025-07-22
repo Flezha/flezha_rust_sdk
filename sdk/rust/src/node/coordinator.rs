@@ -27,12 +27,16 @@ pub enum CoordinatorMessage {
     WorkerCheckOut(String, PipelineInput, WorkerType, UnixStream),
 }
 
+type WorkItem = (PipelineInput, WorkerType, UnixStream);
+
 struct Coordinator {
     operator: Arc<Mutex<OperatorNode>>,
     workers_pool_tx: HashMap<u16, Sender<WorkerPoolMessage>>,
-    occupied_pipelines: HashSet<String>,
+    pipeline_queues: HashMap<String, VecDeque<WorkItem>>,
+    pipeline_workers: HashMap<String, u16>, // Track which worker is processing each pipeline
     available_workers: VecDeque<u16>,
-    work_queue: VecDeque<(String, PipelineInput, WorkerType, UnixStream)>,
+    // Optimization: Track which pipelines have work to avoid full iteration
+    pending_pipelines: VecDeque<String>,
 }
 
 pub fn start(
@@ -50,9 +54,10 @@ pub fn start(
         let mut coordinator = Coordinator {
             operator: operator_arc,
             workers_pool_tx: init_worker_pool(pipelines, ctx),
-            occupied_pipelines: HashSet::new(),
+            pipeline_queues: HashMap::new(),
+            pipeline_workers: HashMap::new(),
             available_workers: VecDeque::new(),
-            work_queue: VecDeque::new(),
+            pending_pipelines: VecDeque::new(),
         };
 
         loop {
@@ -93,66 +98,113 @@ fn handle_checkout(
     worker_type: WorkerType,
     stream: UnixStream,
 ) {
-    // Make sure the pipeline is not already occupied to keep the order of execution.
-    if !coordinator.occupied_pipelines.contains(&pipeline_id) {
-        match worker_type {
-            WorkerType::ThreadPool => {
-                // If there are available workers and the pipeline is not already occupied, assign a worker.
-                if let Some(worker_id) = coordinator.available_workers.pop_front() {
-                    pool_worker_delegate(
-                        &mut coordinator.occupied_pipelines,
-                        &coordinator.workers_pool_tx,
-                        pipeline_id,
-                        pipeline_input,
-                        worker_id,
-                        stream,
-                    )
-                } else {
-                    println!(
-                        "No available workers for pipeline {}. Adding to work queue.",
-                        pipeline_id
-                    );
-
-                    // No available workers, add to work queue.
-                    coordinator.work_queue.push_back((
-                        pipeline_id,
-                        pipeline_input,
-                        worker_type,
-                        stream,
-                    ));
+    match worker_type {
+        WorkerType::ThreadPool => {
+            // Check if pipeline is already being processed
+            if coordinator.pipeline_workers.contains_key(&pipeline_id) {
+                // Pipeline busy, add to its specific queue
+                let queue = coordinator
+                    .pipeline_queues
+                    .entry(pipeline_id.clone())
+                    .or_insert_with(VecDeque::new);
+                let is_first_item = queue.is_empty();
+                queue.push_back((pipeline_input, worker_type, stream));
+                
+                // Track that this pipeline has pending work
+                if is_first_item {
+                    coordinator.pending_pipelines.push_back(pipeline_id);
+                }
+            } else if let Some(worker_id) = coordinator.available_workers.pop_front() {
+                // Pipeline available and worker available, assign immediately
+                coordinator.pipeline_workers.insert(pipeline_id.clone(), worker_id);
+                pool_worker_delegate(
+                    &coordinator.workers_pool_tx,
+                    pipeline_id,
+                    pipeline_input,
+                    worker_id,
+                    stream,
+                );
+            } else {
+                // No available workers, add to pipeline queue
+                let queue = coordinator
+                    .pipeline_queues
+                    .entry(pipeline_id.clone())
+                    .or_insert_with(VecDeque::new);
+                let is_first_item = queue.is_empty();
+                queue.push_back((pipeline_input, worker_type, stream));
+                
+                // Track that this pipeline has pending work
+                if is_first_item {
+                    coordinator.pending_pipelines.push_back(pipeline_id);
                 }
             }
-            WorkerType::ThreadSpawn => {
-                let pipelines = coordinator.operator.lock().unwrap().get_pipelines();
-                thread::spawn(move || {
-                    runner::exec_agent(stream, &pipeline_id, &pipelines, pipeline_input)
-                });
-            }
         }
-    } else {
-        // If the pipeline is already occupied, add to work queue.
-        coordinator
-            .work_queue
-            .push_back((pipeline_id, pipeline_input, worker_type, stream));
+        WorkerType::ThreadSpawn => {
+            let pipelines = coordinator.operator.lock().unwrap().get_pipelines();
+            thread::spawn(move || {
+                runner::exec_agent(stream, &pipeline_id, &pipelines, pipeline_input)
+            });
+        }
     }
 }
 
 fn handle_checkin(coordinator: &mut Coordinator, worker_id: u16, worked_pipeline_id: String) {
-    // Append the worker back to available workers.
+    // Remove pipeline from active processing
+    coordinator.pipeline_workers.remove(&worked_pipeline_id);
+
+    // Check if this pipeline has queued work
+    if let Some(queue) = coordinator.pipeline_queues.get_mut(&worked_pipeline_id) {
+        if let Some((pipeline_input, worker_type, stream)) = queue.pop_front() {
+            // Process next item in this pipeline's queue with same worker (sticky assignment)
+            coordinator.pipeline_workers.insert(worked_pipeline_id.clone(), worker_id);
+            pool_worker_delegate(
+                &coordinator.workers_pool_tx,
+                worked_pipeline_id,
+                pipeline_input,
+                worker_id,
+                stream,
+            );
+            return;
+        } else {
+            // Queue is empty, remove it
+            coordinator.pipeline_queues.remove(&worked_pipeline_id);
+        }
+    }
+
+    // No work for this pipeline, make worker available for other pipelines
     coordinator.available_workers.push_back(worker_id);
 
-    // Remove the pipeline from occupied pipelines.
-    coordinator.occupied_pipelines.remove(&worked_pipeline_id);
-
-    // Process work queue from front only (front-only queue processing)
-    while let Some((pipe_id, _, _, _)) = coordinator.work_queue.front() {
-        if !coordinator.occupied_pipelines.contains(pipe_id) {
-            let (pipe_id, pipe_input, processing_type, stream) =
-                coordinator.work_queue.pop_front().unwrap();
-            handle_checkout(coordinator, pipe_id, pipe_input, processing_type, stream);
-            break;
+    // Optimized: Only check pipelines that have pending work
+    while let Some(pipeline_id) = coordinator.pending_pipelines.pop_front() {
+        // Check if pipeline is still idle and has work
+        if !coordinator.pipeline_workers.contains_key(&pipeline_id) {
+            if let Some(queue) = coordinator.pipeline_queues.get_mut(&pipeline_id) {
+                if let Some((pipeline_input, worker_type, stream)) = queue.pop_front() {
+                    // Remove worker from available workers since we're assigning it
+                    coordinator.available_workers.pop_back();
+                    coordinator.pipeline_workers.insert(pipeline_id.clone(), worker_id);
+                    pool_worker_delegate(
+                        &coordinator.workers_pool_tx,
+                        pipeline_id.clone(),
+                        pipeline_input,
+                        worker_id,
+                        stream,
+                    );
+                    
+                    // If queue still has work, put it back in pending list
+                    if !queue.is_empty() {
+                        coordinator.pending_pipelines.push_back(pipeline_id.clone());
+                    } else {
+                        // Queue is empty, remove it
+                        coordinator.pipeline_queues.remove(&pipeline_id);
+                    }
+                    return;
+                }
+            }
         } else {
-            break; // Stop if front item is blocked
+            // Pipeline is busy, put it back for later
+            coordinator.pending_pipelines.push_back(pipeline_id);
+            break;
         }
     }
 }

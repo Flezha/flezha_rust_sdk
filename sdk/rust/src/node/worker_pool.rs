@@ -55,14 +55,12 @@ pub fn init_worker_pool(
 }
 
 pub fn pool_worker_delegate(
-    occupied_pipelines: &mut HashSet<String>,
     workers_pool_tx: &HashMap<u16, Sender<WorkerPoolMessage>>,
     pipeline_id: String,
     pipeline_input: PipelineInput,
     worker_id: u16,
     stream: UnixStream,
 ) {
-    occupied_pipelines.insert(pipeline_id.clone());
     workers_pool_tx
         .get(&worker_id)
         .unwrap()
