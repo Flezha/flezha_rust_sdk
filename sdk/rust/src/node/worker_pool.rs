@@ -77,6 +77,7 @@ fn check_in(ctx: &Sender<CoordinatorMessage>, message: CoordinatorMessage) {
         .expect("Failed to send message to coordinator");
 }
 
+// TODO: document this and add default values. Should by default come from the number of CPU cores.
 fn number_of_workers() -> u16 {
     let key = "FLEZHA_WORKER_POOL_SIZE";
     let numb_of_worker = match env::var(key) {
