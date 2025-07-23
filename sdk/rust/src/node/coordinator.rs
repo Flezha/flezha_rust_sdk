@@ -13,7 +13,7 @@ use crate::{
         worker_pool::{init_worker_pool, pool_worker_delegate, WorkerPoolMessage},
         NodeAction, OperatorNode,
     },
-    PipelineInput,
+    ComputationInput,
 };
 
 pub enum WorkerType {
@@ -24,10 +24,10 @@ pub enum WorkerType {
 pub enum CoordinatorMessage {
     WorkerInitCheckIn(u16),
     WorkerCheckIn(u16, String),
-    WorkerCheckOut(String, PipelineInput, WorkerType, UnixStream),
+    WorkerCheckOut(String, ComputationInput, WorkerType, UnixStream),
 }
 
-type WorkItem = (PipelineInput, WorkerType, UnixStream);
+type WorkItem = (ComputationInput, WorkerType, UnixStream);
 
 struct Coordinator {
     operator: Arc<Mutex<OperatorNode>>,
@@ -94,7 +94,7 @@ pub fn start(
 fn handle_checkout(
     coordinator: &mut Coordinator,
     pipeline_id: String,
-    pipeline_input: PipelineInput,
+    pipeline_input: ComputationInput,
     worker_type: WorkerType,
     stream: UnixStream,
 ) {

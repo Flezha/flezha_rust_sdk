@@ -2,7 +2,7 @@ use lazy_static::lazy_static;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
-use crate::pipeline::{Pipeline, PipelineInput, PipelineResult};
+use crate::pipeline::{Pipeline, ComputationInput, ComputationResult};
 
 // Type erased pipeline for registration. All pipelines implement Pipeline.
 pub type PipelineBox = Box<dyn Pipeline + Send + Sync>;
@@ -44,7 +44,7 @@ impl PipelineHandle {
     }
 
     /// Execute the pipeline with the given input
-    pub fn run(&self, input: PipelineInput) -> PipelineResult {
+    pub fn run(&self, input: ComputationInput) -> ComputationResult {
         self.pipeline_mut().run(input)
     }
 }

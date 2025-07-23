@@ -13,7 +13,7 @@ use std::thread;
 
 use crate::node::coordinator::{CoordinatorMessage, WorkerType};
 use crate::node::OperatorNode;
-use crate::pipeline::PipelineInput;
+use crate::pipeline::ComputationInput;
 use crate::service::payloader;
 
 use crate::utility::path_helper;
@@ -108,9 +108,9 @@ fn listen_incoming(
                             payload.remove(0);
 
                             let input = match input_type {
-                                1 => PipelineInput::Binary(payload),
+                                1 => ComputationInput::Binary(payload),
                                 2 => {
-                                    PipelineInput::Text(str::from_utf8(&payload).unwrap().to_string())
+                                    ComputationInput::Text(str::from_utf8(&payload).unwrap().to_string())
                                 }
                                 types => panic!("Invalid input type {}", types),
                             };

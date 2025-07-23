@@ -6,14 +6,14 @@ use std::io;
 extern crate erased_serde;
 
 #[derive(Debug)]
-pub enum PipelineInput {
+pub enum ComputationInput {
     Binary(Vec<u8>),
     Text(String),
     Custom(Box<dyn std::any::Any + Send + Sync>), // For client‐specific types
 }
 
 #[derive(Debug)]
-pub enum PipelineOutput {
+pub enum ComputationOutput {
     Binary(Vec<u8>),
     Text(String),
     Custom(Box<dyn std::any::Any + Send + Sync>), // For client‐specific types
@@ -22,14 +22,14 @@ pub enum PipelineOutput {
 pub type VirtualChannel = u8;
 
 #[derive(Debug)]
-pub enum PipelineResult {
+pub enum ComputationResult {
     None,
-    Forward(Vec<(PipelineOutput, VirtualChannel)>),
+    Forward(Vec<(ComputationOutput, VirtualChannel)>),
 }
 
 pub trait Pipeline {
     // Execute the pipeline on the given input. The pipeline can mutate its internal state.
-    fn run(&mut self, input: PipelineInput) -> PipelineResult;
+    fn run(&mut self, input: ComputationInput) -> ComputationResult;
 
     // Serialize the pipeline state.
     fn json_serialize_state(&self) -> io::Result<Vec<u8>>;
@@ -51,25 +51,25 @@ pub trait Pipeline {
 
 /// Trait for transforming input data to generic type before it enters the pipeline steps
 pub trait InputTransformer<T> {
-    fn transform_input(&self, input: PipelineInput) -> io::Result<T>;
+    fn transform_input(&self, input: ComputationInput) -> io::Result<T>;
     fn clone_box(&self) -> Box<dyn InputTransformer<T> + Send + Sync>;
 }
 
-/// Trait for transforming generic output data to PipelineResult after all pipeline steps complete
+/// Trait for transforming generic output data to ComputationResult after all pipeline steps complete
 pub trait OutputTransformer<T, State> {
-    fn transform_output(&self, output: T, state: &mut State) -> PipelineResult;
+    fn transform_output(&self, output: T, state: &mut State) -> ComputationResult;
     fn clone_box(&self) -> Box<dyn OutputTransformer<T, State> + Send + Sync>;
 }
 
-/// Default input transformer that converts PipelineInput to common types
+/// Default input transformer that converts ComputationInput to common types
 pub struct DefaultInputTransformer;
 
 impl InputTransformer<Vec<u8>> for DefaultInputTransformer {
-    fn transform_input(&self, input: PipelineInput) -> io::Result<Vec<u8>> {
+    fn transform_input(&self, input: ComputationInput) -> io::Result<Vec<u8>> {
         match input {
-            PipelineInput::Binary(data) => Ok(data),
-            PipelineInput::Text(text) => Ok(text.into_bytes()),
-            PipelineInput::Custom(_) => Err(io::Error::new(
+            ComputationInput::Binary(data) => Ok(data),
+            ComputationInput::Text(text) => Ok(text.into_bytes()),
+            ComputationInput::Custom(_) => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "Cannot convert custom to Vec<u8>",
             )),
@@ -82,13 +82,13 @@ impl InputTransformer<Vec<u8>> for DefaultInputTransformer {
 }
 
 impl InputTransformer<String> for DefaultInputTransformer {
-    fn transform_input(&self, input: PipelineInput) -> io::Result<String> {
+    fn transform_input(&self, input: ComputationInput) -> io::Result<String> {
         match input {
-            PipelineInput::Text(text) => Ok(text),
-            PipelineInput::Binary(data) => {
+            ComputationInput::Text(text) => Ok(text),
+            ComputationInput::Binary(data) => {
                 String::from_utf8(data).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
             }
-            PipelineInput::Custom(_) => Err(io::Error::new(
+            ComputationInput::Custom(_) => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "Cannot convert custom to String",
             )),
@@ -104,8 +104,8 @@ impl InputTransformer<String> for DefaultInputTransformer {
 pub struct DefaultOutputTransformer;
 
 impl<State> OutputTransformer<String, State> for DefaultOutputTransformer {
-    fn transform_output(&self, output: String, _state: &mut State) -> PipelineResult {
-        PipelineResult::Forward(vec![(PipelineOutput::Binary(output.into_bytes()), 1)])
+    fn transform_output(&self, output: String, _state: &mut State) -> ComputationResult {
+        ComputationResult::Forward(vec![(ComputationOutput::Binary(output.into_bytes()), 1)])
     }
 
     fn clone_box(&self) -> Box<dyn OutputTransformer<String, State> + Send + Sync> {
@@ -180,18 +180,18 @@ where
     State: serde::Serialize + for<'de> serde::Deserialize<'de> + Send + Sync + 'static,
     T: Send + Sync + 'static,
 {
-    fn run(&mut self, input: PipelineInput) -> PipelineResult {
-        // Convert PipelineInput to generic input type using input transformer
+    fn run(&mut self, input: ComputationInput) -> ComputationResult {
+        // Convert ComputationInput to generic input type using input transformer
         let mut current_input = match self.settings.get_input_transformer().transform_input(input) {
             Ok(transformed) => transformed,
-            Err(_) => return PipelineResult::None,
+            Err(_) => return ComputationResult::None,
         };
 
         match self.handler.process(current_input, &mut self.state) {
             Ok(output) => {
                 current_input = output;
             }
-            Err(_) => return PipelineResult::None,
+            Err(_) => return ComputationResult::None,
         }
 
         // Let the output transformer decide the result type

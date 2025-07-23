@@ -15,7 +15,7 @@ use node::OperatorNode;
 use pipeline::factory_registry::PipelineBox;
 use pipeline::runner;
 pub use pipeline::{
-    register_factory, PipelineInput, PipelineOutput, PipelineResult, ComputationSettings,
+    register_factory, ComputationInput, ComputationOutput, ComputationResult, ComputationSettings,
     ComputationHandler, VirtualChannel,
 };
 
@@ -53,14 +53,14 @@ impl Flezha {
         Arc::clone(&self.pipelines)
     }
 
-    pub fn run(&mut self, pipeline_id: String, input: PipelineInput) -> PipelineResult {
+    pub fn run(&mut self, pipeline_id: String, input: ComputationInput) -> ComputationResult {
         runner::exec(&pipeline_id, &self.pipelines, input)
     }
 
     pub fn pipe_to_agent(
         &mut self,
         pipeline_id: String,
-        result: PipelineOutput,
+        result: ComputationOutput,
         virtual_channel: VirtualChannel,
     ) {
         let mut io_stream = self

@@ -11,10 +11,10 @@ use std::{
 
 use crate::pipeline::factory_registry::PipelineBox;
 use crate::pipeline::runner;
-use crate::{node::coordinator::CoordinatorMessage, PipelineInput};
+use crate::{node::coordinator::CoordinatorMessage, ComputationInput};
 
 pub enum WorkerPoolMessage {
-    HandleWork(String, PipelineInput, UnixStream),
+    HandleWork(String, ComputationInput, UnixStream),
 }
 
 pub fn init_worker_pool(
@@ -57,7 +57,7 @@ pub fn init_worker_pool(
 pub fn pool_worker_delegate(
     workers_pool_tx: &HashMap<u16, Sender<WorkerPoolMessage>>,
     pipeline_id: String,
-    pipeline_input: PipelineInput,
+    pipeline_input: ComputationInput,
     worker_id: u16,
     stream: UnixStream,
 ) {
