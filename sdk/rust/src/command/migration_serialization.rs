@@ -12,10 +12,7 @@ impl CommandAction for MigrationSerialization {
         _errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
         let operator_guard = operator.lock().unwrap();
-        let computation_handle: Option<ComputationHandle> =
-            operator_guard.get_computation(self.computation_id.clone());
-
-        // TODO: Implement error handling.
+        let computation_handle: Option<ComputationHandle> = operator_guard.get_computation(self.computation_id.clone());
 
         let serialized_state = match computation_handle {
             Some(p) => {

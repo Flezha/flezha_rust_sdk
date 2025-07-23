@@ -87,9 +87,8 @@ fn sock_conn(
                         }
                     }
                 }
-                Err(_e) => {
-                    // Wait 100ms to avoid busy waiting
-                    // TODO: is it neccesary?
+                Err(e) => {
+                    eprintln!("Error extracting payload: {}", e);
                     thread::sleep(Duration::from_millis(100));
                     continue;
                 }
