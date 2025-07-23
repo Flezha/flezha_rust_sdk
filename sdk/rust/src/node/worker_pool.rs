@@ -9,8 +9,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use crate::pipeline::factory_registry::ComputationBox;
-use crate::pipeline::runner;
+use crate::computation::factory_registry::ComputationBox;
+use crate::computation::runner;
 use crate::{node::coordinator::CoordinatorMessage, ComputationInput};
 
 pub enum WorkerPoolMessage {

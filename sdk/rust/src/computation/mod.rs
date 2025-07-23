@@ -237,7 +237,7 @@ pub fn register_factory<State, T, F>(
     T: Send + Sync + 'static,
     F: Fn() -> Box<dyn ComputationHandler<State, T> + Send + Sync> + Send + Sync + 'static,
 {
-    use crate::pipeline::factory_registry::{register_computation_factory, ComputationFactory};
+    use crate::computation::factory_registry::{register_computation_factory, ComputationFactory};
 
     let factory_id_clone = factory_id.clone();
     let settings_clone = settings.clone();

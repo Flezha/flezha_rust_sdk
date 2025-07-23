@@ -2,8 +2,8 @@ use std::io::Write;
 use std::sync::{Arc, Mutex, RwLock};
 use std::{collections::HashMap, os::unix::net::UnixStream};
 
-use crate::pipeline::factory_registry::ComputationBox;
-use crate::pipeline::{ComputationInput, ComputationOutput, ComputationResult, VirtualChannel};
+use crate::computation::factory_registry::ComputationBox;
+use crate::computation::{ComputationInput, ComputationOutput, ComputationResult, VirtualChannel};
 use crate::service::payloader;
 use mio::{Events, Interest, Poll, Token};
 use std::os::unix::io::AsRawFd;

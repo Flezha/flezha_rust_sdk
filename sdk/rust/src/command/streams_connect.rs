@@ -13,7 +13,7 @@ use std::thread;
 
 use crate::node::coordinator::{CoordinatorMessage, WorkerType};
 use crate::node::OperatorNode;
-use crate::pipeline::ComputationInput;
+use crate::computation::ComputationInput;
 use crate::service::payloader;
 
 use crate::utility::path_helper;

@@ -9,9 +9,9 @@ mod migration_deserialization;
 mod migration_serialization;
 mod operator_assign;
 mod operator_disconnect;
-mod pipeline_start;
-mod pipeline_state;
-mod pipeline_stop;
+mod computation_start;
+mod computation_state;
+mod computation_stop;
 mod streams_connect;
 
 pub trait CommandAction {

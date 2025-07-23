@@ -6,7 +6,7 @@ use std::{
     thread,
 };
 
-use crate::pipeline::runner;
+use crate::computation::runner;
 use crate::{
     node::{
         control_unit,

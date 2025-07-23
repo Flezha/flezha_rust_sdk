@@ -1,7 +1,7 @@
 use super::CommandAction;
 use crate::node::OperatorNode;
 use crate::pb::ComputationState;
-use crate::pipeline::factory_registry::ComputationHandle;
+use crate::computation::factory_registry::ComputationHandle;
 use std::sync::{Arc, Mutex};
 
 impl CommandAction for ComputationState {

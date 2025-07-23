@@ -2,7 +2,7 @@ use lazy_static::lazy_static;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
-use crate::pipeline::{Computation, ComputationInput, ComputationResult};
+use crate::computation::{Computation, ComputationInput, ComputationResult};
 
 // Type erased pipeline for registration. All pipelines implement Computation.
 pub type ComputationBox = Box<dyn Computation + Send + Sync>;

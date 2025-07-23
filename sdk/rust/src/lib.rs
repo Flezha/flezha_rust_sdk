@@ -1,6 +1,6 @@
 mod command;
 mod node;
-pub mod pipeline;
+pub mod computation;
 mod service;
 mod utility;
 
@@ -12,9 +12,9 @@ use std::{
 
 use node::OperatorNode;
 
-use pipeline::factory_registry::ComputationBox;
-use pipeline::runner;
-pub use pipeline::{
+use computation::factory_registry::ComputationBox;
+use computation::runner;
+pub use computation::{
     register_factory, ComputationInput, ComputationOutput, ComputationResult, ComputationSettings,
     ComputationHandler, VirtualChannel,
 };

@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::node::OperatorNode;
 use crate::pb::AddComputation;
-use crate::pipeline::factory_registry::get_factory;
+use crate::computation::factory_registry::get_factory;
 
 impl CommandAction for AddComputation {
     fn handle(
