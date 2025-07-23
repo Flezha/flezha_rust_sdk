@@ -2,15 +2,15 @@ use lazy_static::lazy_static;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
-use crate::pipeline::{Pipeline, ComputationInput, ComputationResult};
+use crate::pipeline::{Computation, ComputationInput, ComputationResult};
 
-// Type erased pipeline for registration. All pipelines implement Pipeline.
-pub type PipelineBox = Box<dyn Pipeline + Send + Sync>;
+// Type erased pipeline for registration. All pipelines implement Computation.
+pub type ComputationBox = Box<dyn Computation + Send + Sync>;
 
 // Factory function type that can create new pipeline instances
-pub type ComputationFactory = Box<dyn Fn(String) -> PipelineBox + Send + Sync>;
+pub type ComputationFactory = Box<dyn Fn(String) -> ComputationBox + Send + Sync>;
 
-// Use Arc<Mutex<PipelineBox>> for each pipeline
+// Use Arc<Mutex<ComputationBox>> for each pipeline
 lazy_static! {
     static ref FACTORY_REGISTRY: RwLock<HashMap<String, Arc<ComputationFactory>>> =
         RwLock::new(HashMap::new());
@@ -33,13 +33,13 @@ pub fn get_factory_ids() -> Vec<String> {
 }
 
 /// A wrapper for a pipeline that handles locking
-pub struct PipelineHandle {
-    pub pipeline: Arc<Mutex<PipelineBox>>,
+pub struct ComputationHandle {
+    pub pipeline: Arc<Mutex<ComputationBox>>,
 }
 
-impl PipelineHandle {
+impl ComputationHandle {
     /// Get mutable access to the pipeline
-    pub fn pipeline_mut(&self) -> std::sync::MutexGuard<PipelineBox> {
+    pub fn pipeline_mut(&self) -> std::sync::MutexGuard<ComputationBox> {
         self.pipeline.lock().unwrap()
     }
 

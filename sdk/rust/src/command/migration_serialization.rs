@@ -1,7 +1,7 @@
 use super::CommandAction;
 use crate::node::OperatorNode;
 use crate::pb::MigrationSerialization;
-use crate::pipeline::factory_registry::PipelineHandle;
+use crate::pipeline::factory_registry::ComputationHandle;
 use std::sync::{Arc, Mutex};
 
 impl CommandAction for MigrationSerialization {
@@ -12,7 +12,7 @@ impl CommandAction for MigrationSerialization {
         _errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
         let operator_guard = operator.lock().unwrap();
-        let pipeline_handle: Option<PipelineHandle> =
+        let pipeline_handle: Option<ComputationHandle> =
             operator_guard.get_pipeline(self.pipeline_id.clone());
 
         // TODO: Implement error handling.

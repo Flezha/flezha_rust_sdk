@@ -9,7 +9,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use crate::pipeline::factory_registry::PipelineBox;
+use crate::pipeline::factory_registry::ComputationBox;
 use crate::pipeline::runner;
 use crate::{node::coordinator::CoordinatorMessage, ComputationInput};
 
@@ -18,7 +18,7 @@ pub enum WorkerPoolMessage {
 }
 
 pub fn init_worker_pool(
-    pipelines: Arc<RwLock<HashMap<String, Arc<Mutex<PipelineBox>>>>>,
+    pipelines: Arc<RwLock<HashMap<String, Arc<Mutex<ComputationBox>>>>>,
     ctx: Arc<Mutex<Sender<CoordinatorMessage>>>,
 ) -> HashMap<u16, Sender<WorkerPoolMessage>> {
     let worker_count = number_of_workers();

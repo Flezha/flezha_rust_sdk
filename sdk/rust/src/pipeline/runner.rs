@@ -2,7 +2,7 @@ use std::io::Write;
 use std::sync::{Arc, Mutex, RwLock};
 use std::{collections::HashMap, os::unix::net::UnixStream};
 
-use crate::pipeline::factory_registry::PipelineBox;
+use crate::pipeline::factory_registry::ComputationBox;
 use crate::pipeline::{ComputationInput, ComputationOutput, ComputationResult, VirtualChannel};
 use crate::service::payloader;
 use mio::{Events, Interest, Poll, Token};
@@ -11,7 +11,7 @@ use mio::unix::SourceFd;
 
 pub fn exec(
     pipeline_id: &String,
-    pipelines: &Arc<RwLock<HashMap<String, Arc<Mutex<PipelineBox>>>>>,
+    pipelines: &Arc<RwLock<HashMap<String, Arc<Mutex<ComputationBox>>>>>,
     input: ComputationInput,
 ) -> ComputationResult {
     let pipelines_read = pipelines.read().unwrap();
@@ -21,14 +21,14 @@ pub fn exec(
 
         pipeline.run(input)
     } else {
-        panic!("Pipeline with given ID not found {}", pipeline_id);
+        panic!("Computation with given ID not found {}", pipeline_id);
     }
 }
 
 pub fn exec_agent(
     mut stream: UnixStream,
     pipeline_id: &String,
-    pipelines: &Arc<RwLock<HashMap<String, Arc<Mutex<PipelineBox>>>>>,
+    pipelines: &Arc<RwLock<HashMap<String, Arc<Mutex<ComputationBox>>>>>,
     input: ComputationInput,
 ) {
     let pipeline_result = exec(pipeline_id, pipelines, input);

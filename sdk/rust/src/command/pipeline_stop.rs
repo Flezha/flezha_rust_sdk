@@ -3,9 +3,9 @@ use super::CommandAction;
 use std::sync::{Arc, Mutex};
 
 use crate::node::OperatorNode;
-use crate::pb::RemPipeline;
+use crate::pb::RemComputation;
 
-impl CommandAction for RemPipeline {
+impl CommandAction for RemComputation {
     fn handle(
         &self,
         operator: &Arc<Mutex<OperatorNode>>,
@@ -19,7 +19,7 @@ impl CommandAction for RemPipeline {
 
             ("stop_pipeline".to_string(), Vec::new())
         } else {
-            errors.push("Pipeline not found".to_string());
+            errors.push("Computation not found".to_string());
             ("stop_pipeline".to_string(), Vec::new())
         }
     }

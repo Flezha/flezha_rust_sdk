@@ -12,7 +12,7 @@ use std::{
 
 use node::OperatorNode;
 
-use pipeline::factory_registry::PipelineBox;
+use pipeline::factory_registry::ComputationBox;
 use pipeline::runner;
 pub use pipeline::{
     register_factory, ComputationInput, ComputationOutput, ComputationResult, ComputationSettings,
@@ -27,7 +27,7 @@ pub mod pb {
 }
 pub struct Flezha {
     _id: String,
-    pipelines: Arc<RwLock<HashMap<String, Arc<Mutex<PipelineBox>>>>>,
+    pipelines: Arc<RwLock<HashMap<String, Arc<Mutex<ComputationBox>>>>>,
     shared_io_streams: Arc<RwLock<HashMap<u32, UnixStream>>>,
     _operator: Arc<Mutex<OperatorNode>>,
 }
@@ -45,11 +45,11 @@ impl Flezha {
         }
     }
 
-    pub fn get_pipeline(&self, pipeline_id: &str) -> Option<Arc<Mutex<PipelineBox>>> {
+    pub fn get_pipeline(&self, pipeline_id: &str) -> Option<Arc<Mutex<ComputationBox>>> {
         self.pipelines.read().unwrap().get(pipeline_id).cloned()
     }
 
-    pub fn get_pipelines(&self) -> Arc<RwLock<HashMap<String, Arc<Mutex<PipelineBox>>>>> {
+    pub fn get_pipelines(&self) -> Arc<RwLock<HashMap<String, Arc<Mutex<ComputationBox>>>>> {
         Arc::clone(&self.pipelines)
     }
 

@@ -15,15 +15,15 @@ pub mod command_request {
         #[prost(message, tag = "3")]
         ConnectSocket(super::ConnectSocket),
         #[prost(message, tag = "4")]
-        AddPipeline(super::AddPipeline),
+        AddComputation(super::AddComputation),
         #[prost(message, tag = "5")]
-        RemPipeline(super::RemPipeline),
+        RemComputation(super::RemComputation),
         #[prost(message, tag = "6")]
         MigrationSerialization(super::MigrationSerialization),
         #[prost(message, tag = "7")]
         MigrationDeserialization(super::MigrationDeserialization),
         #[prost(message, tag = "8")]
-        PipelineState(super::PipelineState),
+        ComputationState(super::ComputationState),
         #[prost(message, tag = "9")]
         OperatorDisconnect(super::OperatorDisconnect),
     }
@@ -50,7 +50,7 @@ pub struct ConnectSocket {
     pub sockets_count: u32,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct AddPipeline {
+pub struct AddComputation {
     #[prost(string, tag = "1")]
     pub pipeline_id: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
@@ -59,7 +59,7 @@ pub struct AddPipeline {
     pub init_values: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct RemPipeline {
+pub struct RemComputation {
     #[prost(string, tag = "1")]
     pub pipeline_id: ::prost::alloc::string::String,
 }
@@ -78,7 +78,7 @@ pub struct MigrationDeserialization {
     pub serialized_state: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct PipelineState {
+pub struct ComputationState {
     #[prost(string, tag = "1")]
     pub pipeline_id: ::prost::alloc::string::String,
 }

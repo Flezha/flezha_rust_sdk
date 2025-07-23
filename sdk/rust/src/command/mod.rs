@@ -37,13 +37,13 @@ pub fn get_handler(_payload_id: &String, message: &String) -> (CommandActionType
     let command_handler = match wrapper_command.command.unwrap() {
         Command::AssignOperatorId(proto_ch) => CommandActionType::Regular(Box::new(proto_ch)),
         Command::ConnectSocket(proto_ch) => CommandActionType::Regular(Box::new(proto_ch)),
-        Command::AddPipeline(proto_ch) => CommandActionType::Regular(Box::new(proto_ch)),
-        Command::RemPipeline(proto_ch) => CommandActionType::Regular(Box::new(proto_ch)),
+        Command::AddComputation(proto_ch) => CommandActionType::Regular(Box::new(proto_ch)),
+        Command::RemComputation(proto_ch) => CommandActionType::Regular(Box::new(proto_ch)),
         Command::MigrationSerialization(proto_ch) => CommandActionType::Regular(Box::new(proto_ch)),
         Command::MigrationDeserialization(proto_ch) => {
             CommandActionType::Regular(Box::new(proto_ch))
         }
-        Command::PipelineState(proto_ch) => CommandActionType::Regular(Box::new(proto_ch)),
+        Command::ComputationState(proto_ch) => CommandActionType::Regular(Box::new(proto_ch)),
         Command::OperatorDisconnect(proto_ch) => {
             CommandActionType::OperatorDisconnect(Box::new(proto_ch))
         }

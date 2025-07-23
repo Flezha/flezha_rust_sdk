@@ -102,7 +102,7 @@ fn handle_checkout(
         WorkerType::ThreadPool => {
             // Check if pipeline is already being processed
             if coordinator.pipeline_workers.contains_key(&pipeline_id) {
-                // Pipeline busy, add to its specific queue
+                // Computation busy, add to its specific queue
                 let queue = coordinator
                     .pipeline_queues
                     .entry(pipeline_id.clone())
@@ -115,7 +115,7 @@ fn handle_checkout(
                     coordinator.pending_pipelines.push_back(pipeline_id);
                 }
             } else if let Some(worker_id) = coordinator.available_workers.pop_front() {
-                // Pipeline available and worker available, assign immediately
+                // Computation available and worker available, assign immediately
                 coordinator.pipeline_workers.insert(pipeline_id.clone(), worker_id);
                 pool_worker_delegate(
                     &coordinator.workers_pool_tx,
@@ -204,7 +204,7 @@ fn handle_checkin(coordinator: &mut Coordinator, worker_id: u16, worked_pipeline
                 }
             }
         } else {
-            // Pipeline is busy, put it back for later
+            // Computation is busy, put it back for later
             coordinator.pending_pipelines.push_back(pipeline_id);
             break;
         }

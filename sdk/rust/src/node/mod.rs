@@ -3,7 +3,7 @@ pub(crate) mod coordinator;
 mod worker_pool;
 
 use crate::node::coordinator::CoordinatorMessage;
-use crate::pipeline::factory_registry::{get_factory, PipelineBox, PipelineHandle};
+use crate::pipeline::factory_registry::{get_factory, ComputationBox, ComputationHandle};
 
 use crossbeam::channel::{Receiver, Sender};
 use std::collections::HashMap;
@@ -19,7 +19,7 @@ pub enum OperatorStatus {
 pub struct OperatorNode {
     operator_id: String,
     _namespace: String,
-    pipelines: Arc<RwLock<HashMap<String, Arc<Mutex<PipelineBox>>>>>,
+    pipelines: Arc<RwLock<HashMap<String, Arc<Mutex<ComputationBox>>>>>,
     shared_io_streams: Arc<RwLock<HashMap<u32, UnixStream>>>,
     coordinator_channel: Arc<Mutex<Sender<CoordinatorMessage>>>,
     status: OperatorStatus,
@@ -32,7 +32,7 @@ pub enum NodeAction {
 impl OperatorNode {
     pub fn new(
         namespace: String,
-        pipelines: Arc<RwLock<HashMap<String, Arc<Mutex<PipelineBox>>>>>,
+        pipelines: Arc<RwLock<HashMap<String, Arc<Mutex<ComputationBox>>>>>,
         shared_io_streams: Arc<RwLock<HashMap<u32, UnixStream>>>,
     ) -> Arc<Mutex<OperatorNode>> {
         let (itx, irx): (Sender<NodeAction>, Receiver<NodeAction>) =
@@ -74,7 +74,7 @@ impl OperatorNode {
         &self,
         factory_id: String,
         pipeline_id: String,
-    ) -> Option<PipelineHandle> {
+    ) -> Option<ComputationHandle> {
         if let Some(factory) = get_factory(factory_id) {
             let pipeline = factory(pipeline_id.clone());
             self.register_pipeline(pipeline_id.clone(), pipeline);
@@ -84,7 +84,7 @@ impl OperatorNode {
         }
     }
 
-    fn register_pipeline(&self, id: String, pipeline: PipelineBox) {
+    fn register_pipeline(&self, id: String, pipeline: ComputationBox) {
         self.pipelines
             .write()
             .unwrap()
@@ -99,17 +99,17 @@ impl OperatorNode {
         self._namespace.clone()
     }
 
-    pub fn get_pipelines(&self) -> Arc<RwLock<HashMap<String, Arc<Mutex<PipelineBox>>>>> {
+    pub fn get_pipelines(&self) -> Arc<RwLock<HashMap<String, Arc<Mutex<ComputationBox>>>>> {
         Arc::clone(&self.pipelines)
     }
 
-    pub fn get_pipeline(&self, id: String) -> Option<PipelineHandle> {
+    pub fn get_pipeline(&self, id: String) -> Option<ComputationHandle> {
         self.pipelines
             .read()
             .unwrap()
             .get(&id)
             .cloned()
-            .map(|pipeline| PipelineHandle { pipeline })
+            .map(|pipeline| ComputationHandle { pipeline })
     }
 
     pub fn get_io_streams(&self) -> Arc<RwLock<HashMap<u32, UnixStream>>> {

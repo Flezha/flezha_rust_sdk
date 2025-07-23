@@ -27,7 +27,7 @@ pub enum ComputationResult {
     Forward(Vec<(ComputationOutput, VirtualChannel)>),
 }
 
-pub trait Pipeline {
+pub trait Computation {
     // Execute the pipeline on the given input. The pipeline can mutate its internal state.
     fn run(&mut self, input: ComputationInput) -> ComputationResult;
 
@@ -175,7 +175,7 @@ where
     factory_id: String,
 }
 
-impl<State, T> Pipeline for ComputationWrapper<State, T>
+impl<State, T> Computation for ComputationWrapper<State, T>
 where
     State: serde::Serialize + for<'de> serde::Deserialize<'de> + Send + Sync + 'static,
     T: Send + Sync + 'static,
@@ -252,7 +252,7 @@ pub fn register_factory<State, T, F>(
         };
 
         computation.post_alter();
-        Box::new(computation) as Box<dyn Pipeline + Send + Sync>
+        Box::new(computation) as Box<dyn Computation + Send + Sync>
     });
 
     register_computation_factory(factory_id, factory);

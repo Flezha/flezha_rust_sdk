@@ -1,10 +1,10 @@
 use super::CommandAction;
 use crate::node::OperatorNode;
-use crate::pb::PipelineState;
-use crate::pipeline::factory_registry::PipelineHandle;
+use crate::pb::ComputationState;
+use crate::pipeline::factory_registry::ComputationHandle;
 use std::sync::{Arc, Mutex};
 
-impl CommandAction for PipelineState {
+impl CommandAction for ComputationState {
     fn handle(
         &self,
         operator: &Arc<Mutex<OperatorNode>>,
@@ -12,7 +12,7 @@ impl CommandAction for PipelineState {
         errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
         let operator_guard = operator.lock().unwrap();
-        let pipeline_handle: Option<PipelineHandle> =
+        let pipeline_handle: Option<ComputationHandle> =
             operator_guard.get_pipeline(self.pipeline_id.clone());
 
         match pipeline_handle {
@@ -26,7 +26,7 @@ impl CommandAction for PipelineState {
                 )
             }
             None => {
-                let error_message = format!("Pipeline with id {} not found", self.pipeline_id);
+                let error_message = format!("Computation with id {} not found", self.pipeline_id);
                 errors.push(error_message.clone());
                 serde_json::to_string(&"Unable to get pipeline state.".to_string()).unwrap();
 
