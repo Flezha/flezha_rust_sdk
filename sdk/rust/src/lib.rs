@@ -27,34 +27,34 @@ pub mod pb {
 }
 pub struct Flezha {
     _id: String,
-    pipelines: Arc<RwLock<HashMap<String, Arc<Mutex<ComputationBox>>>>>,
+    computations: Arc<RwLock<HashMap<String, Arc<Mutex<ComputationBox>>>>>,
     shared_io_streams: Arc<RwLock<HashMap<u32, UnixStream>>>,
     _operator: Arc<Mutex<OperatorNode>>,
 }
 
 impl Flezha {
     fn new(id: String) -> Flezha {
-        let pipelines = Arc::new(RwLock::new(HashMap::new()));
+        let computations = Arc::new(RwLock::new(HashMap::new()));
         let shared_io_streams = Arc::new(RwLock::new(HashMap::new()));
 
         Flezha {
             _id: id.clone(),
-            pipelines: Arc::clone(&pipelines),
+            computations: Arc::clone(&computations),
             shared_io_streams: Arc::clone(&shared_io_streams),
-            _operator: OperatorNode::new(id.clone(), pipelines, shared_io_streams),
+            _operator: OperatorNode::new(id.clone(), computations, shared_io_streams),
         }
     }
 
-    pub fn get_pipeline(&self, computation_id: &str) -> Option<Arc<Mutex<ComputationBox>>> {
-        self.pipelines.read().unwrap().get(computation_id).cloned()
+    pub fn get_computation(&self, computation_id: &str) -> Option<Arc<Mutex<ComputationBox>>> {
+        self.computations.read().unwrap().get(computation_id).cloned()
     }
 
-    pub fn get_pipelines(&self) -> Arc<RwLock<HashMap<String, Arc<Mutex<ComputationBox>>>>> {
-        Arc::clone(&self.pipelines)
+    pub fn get_computations(&self) -> Arc<RwLock<HashMap<String, Arc<Mutex<ComputationBox>>>>> {
+        Arc::clone(&self.computations)
     }
 
     pub fn run(&mut self, computation_id: String, input: ComputationInput) -> ComputationResult {
-        runner::exec(&computation_id, &self.pipelines, input)
+        runner::exec(&computation_id, &self.computations, input)
     }
 
     pub fn pipe_to_agent(

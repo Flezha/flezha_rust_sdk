@@ -14,13 +14,13 @@ impl CommandAction for RemComputation {
     ) -> (String, Vec<u8>) {
         let operator_guard = operator.lock().unwrap();
 
-        if operator_guard.has_pipeline(self.computation_id.clone()) {
-            operator_guard.stop_pipeline(self.computation_id.clone());
+        if operator_guard.has_computation(self.computation_id.clone()) {
+            operator_guard.stop_computation(self.computation_id.clone());
 
-            ("stop_pipeline".to_string(), Vec::new())
+            ("stop_computation".to_string(), Vec::new())
         } else {
             errors.push("Computation not found".to_string());
-            ("stop_pipeline".to_string(), Vec::new())
+            ("stop_computation".to_string(), Vec::new())
         }
     }
 }

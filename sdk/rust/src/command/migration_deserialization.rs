@@ -14,15 +14,15 @@ impl CommandAction for MigrationDeserialization {
 
         // TODO: Implement error handling.
 
-        let pipeline_handle = operator_guard
-            .start_pipeline(self.factory_id.clone(), self.computation_id.clone())
+        let computation_handle = operator_guard
+            .start_computation(self.factory_id.clone(), self.computation_id.clone())
             .unwrap();
 
         drop(operator_guard);
 
-        let mut pipeline = pipeline_handle.pipeline_mut();
+        let mut computation = computation_handle.computation_mut();
 
-        let _ = pipeline.json_deserialize_state(&self.serialized_state.clone());
+        let _ = computation.json_deserialize_state(&self.serialized_state.clone());
 
         ("migration_deserialization".to_string(), Vec::new())
     }

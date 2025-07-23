@@ -19,7 +19,7 @@ pub enum OperatorStatus {
 pub struct OperatorNode {
     operator_id: String,
     _namespace: String,
-    pipelines: Arc<RwLock<HashMap<String, Arc<Mutex<ComputationBox>>>>>,
+    computations: Arc<RwLock<HashMap<String, Arc<Mutex<ComputationBox>>>>>,
     shared_io_streams: Arc<RwLock<HashMap<u32, UnixStream>>>,
     coordinator_channel: Arc<Mutex<Sender<CoordinatorMessage>>>,
     status: OperatorStatus,
@@ -32,7 +32,7 @@ pub enum NodeAction {
 impl OperatorNode {
     pub fn new(
         namespace: String,
-        pipelines: Arc<RwLock<HashMap<String, Arc<Mutex<ComputationBox>>>>>,
+        computations: Arc<RwLock<HashMap<String, Arc<Mutex<ComputationBox>>>>>,
         shared_io_streams: Arc<RwLock<HashMap<u32, UnixStream>>>,
     ) -> Arc<Mutex<OperatorNode>> {
         let (itx, irx): (Sender<NodeAction>, Receiver<NodeAction>) =
@@ -44,7 +44,7 @@ impl OperatorNode {
         let operator = OperatorNode {
             operator_id: "undefined".to_string(),
             _namespace: namespace.clone(),
-            pipelines,
+            computations,
             shared_io_streams: shared_io_streams,
             coordinator_channel: Arc::new(Mutex::new(ctx)),
             status: OperatorStatus::Starting,
@@ -70,46 +70,46 @@ impl OperatorNode {
         operator_arc
     }
 
-    pub fn start_pipeline(
+    pub fn start_computation(
         &self,
         factory_id: String,
         computation_id: String,
     ) -> Option<ComputationHandle> {
         if let Some(factory) = get_factory(factory_id) {
-            let pipeline = factory(computation_id.clone());
-            self.register_pipeline(computation_id.clone(), pipeline);
-            self.get_pipeline(computation_id)
+            let computation = factory(computation_id.clone());
+            self.register_computation(computation_id.clone(), computation);
+            self.get_computation(computation_id)
         } else {
             None
         }
     }
 
-    fn register_pipeline(&self, id: String, pipeline: ComputationBox) {
-        self.pipelines
+    fn register_computation(&self, id: String, computation: ComputationBox) {
+        self.computations
             .write()
             .unwrap()
-            .insert(id, Arc::new(Mutex::new(pipeline)));
+            .insert(id, Arc::new(Mutex::new(computation)));
     }
 
-    pub fn stop_pipeline(&self, id: String) {
-        self.pipelines.write().unwrap().remove(&id);
+    pub fn stop_computation(&self, id: String) {
+        self.computations.write().unwrap().remove(&id);
     }
 
     pub fn _get_namespace(&self) -> String {
         self._namespace.clone()
     }
 
-    pub fn get_pipelines(&self) -> Arc<RwLock<HashMap<String, Arc<Mutex<ComputationBox>>>>> {
-        Arc::clone(&self.pipelines)
+    pub fn get_computations(&self) -> Arc<RwLock<HashMap<String, Arc<Mutex<ComputationBox>>>>> {
+        Arc::clone(&self.computations)
     }
 
-    pub fn get_pipeline(&self, id: String) -> Option<ComputationHandle> {
-        self.pipelines
+    pub fn get_computation(&self, id: String) -> Option<ComputationHandle> {
+        self.computations
             .read()
             .unwrap()
             .get(&id)
             .cloned()
-            .map(|pipeline| ComputationHandle { pipeline })
+            .map(|computation| ComputationHandle { computation })
     }
 
     pub fn get_io_streams(&self) -> Arc<RwLock<HashMap<u32, UnixStream>>> {
@@ -128,8 +128,8 @@ impl OperatorNode {
         self.status = status;
     }
 
-    pub fn has_pipeline(&self, id: String) -> bool {
-        self.pipelines.read().unwrap().contains_key(&id)
+    pub fn has_computation(&self, id: String) -> bool {
+        self.computations.read().unwrap().contains_key(&id)
     }
 
     pub fn get_coordinator_channel(&self) -> Arc<Mutex<Sender<CoordinatorMessage>>> {

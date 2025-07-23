@@ -18,14 +18,14 @@ pub enum WorkerPoolMessage {
 }
 
 pub fn init_worker_pool(
-    pipelines: Arc<RwLock<HashMap<String, Arc<Mutex<ComputationBox>>>>>,
+    computations: Arc<RwLock<HashMap<String, Arc<Mutex<ComputationBox>>>>>,
     ctx: Arc<Mutex<Sender<CoordinatorMessage>>>,
 ) -> HashMap<u16, Sender<WorkerPoolMessage>> {
     let worker_count = number_of_workers();
     let mut worker_channels: HashMap<u16, Sender<WorkerPoolMessage>> = HashMap::new();
 
     for i in 0..worker_count {
-        let pipelines = Arc::clone(&pipelines);
+        let computations = Arc::clone(&computations);
         let ctx_clone = ctx.lock().unwrap().clone();
         let (wtx, wrx) = crossbeam::channel::unbounded();
         worker_channels.insert(i, wtx);
@@ -39,8 +39,8 @@ pub fn init_worker_pool(
                 let message = wrx.recv().expect("Failed to receive message");
 
                 match message {
-                    WorkerPoolMessage::HandleWork(computation_id, pipeline_input, unix_stream) => {
-                        runner::exec_agent(unix_stream, &computation_id, &pipelines, pipeline_input);
+                    WorkerPoolMessage::HandleWork(computation_id, computation_input, unix_stream) => {
+                        runner::exec_agent(unix_stream, &computation_id, &computations, computation_input);
                         check_in(
                             &ctx_clone,
                             CoordinatorMessage::WorkerCheckIn(worker_id, computation_id),
@@ -57,7 +57,7 @@ pub fn init_worker_pool(
 pub fn pool_worker_delegate(
     workers_pool_tx: &HashMap<u16, Sender<WorkerPoolMessage>>,
     computation_id: String,
-    pipeline_input: ComputationInput,
+    computation_input: ComputationInput,
     worker_id: u16,
     stream: UnixStream,
 ) {
@@ -66,7 +66,7 @@ pub fn pool_worker_delegate(
         .unwrap()
         .send(WorkerPoolMessage::HandleWork(
             computation_id,
-            pipeline_input,
+            computation_input,
             stream,
         ))
         .expect("Failed to send work to worker");

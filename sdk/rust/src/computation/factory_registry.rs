@@ -4,19 +4,19 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use crate::computation::{Computation, ComputationInput, ComputationResult};
 
-// Type erased pipeline for registration. All pipelines implement Computation.
+// Type erased computation for registration. All computations implement Computation.
 pub type ComputationBox = Box<dyn Computation + Send + Sync>;
 
-// Factory function type that can create new pipeline instances
+// Factory function type that can create new computation instances
 pub type ComputationFactory = Box<dyn Fn(String) -> ComputationBox + Send + Sync>;
 
-// Use Arc<Mutex<ComputationBox>> for each pipeline
+// Use Arc<Mutex<ComputationBox>> for each computation
 lazy_static! {
     static ref FACTORY_REGISTRY: RwLock<HashMap<String, Arc<ComputationFactory>>> =
         RwLock::new(HashMap::new());
 }
 
-/// Register a pipeline factory with a unique factory ID
+/// Register a computation factory with a unique factory ID
 pub fn register_computation_factory(factory_id: String, factory: ComputationFactory) {
     FACTORY_REGISTRY
         .write()
@@ -32,19 +32,19 @@ pub fn get_factory_ids() -> Vec<String> {
     FACTORY_REGISTRY.read().unwrap().keys().cloned().collect()
 }
 
-/// A wrapper for a pipeline that handles locking
+/// A wrapper for a computation that handles locking
 pub struct ComputationHandle {
-    pub pipeline: Arc<Mutex<ComputationBox>>,
+    pub computation: Arc<Mutex<ComputationBox>>,
 }
 
 impl ComputationHandle {
-    /// Get mutable access to the pipeline
-    pub fn pipeline_mut(&self) -> std::sync::MutexGuard<ComputationBox> {
-        self.pipeline.lock().unwrap()
+    /// Get mutable access to the computation
+    pub fn computation_mut(&self) -> std::sync::MutexGuard<ComputationBox> {
+        self.computation.lock().unwrap()
     }
 
-    /// Execute the pipeline with the given input
+    /// Execute the computation with the given input
     pub fn run(&self, input: ComputationInput) -> ComputationResult {
-        self.pipeline_mut().run(input)
+        self.computation_mut().run(input)
     }
 }

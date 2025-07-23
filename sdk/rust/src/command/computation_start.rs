@@ -26,12 +26,12 @@ impl CommandAction for AddComputation {
             )),
         };
 
-        let pipeline_opt = operator_guard.start_pipeline(self.factory_id.clone(), computation_id);
+        let computation_opt = operator_guard.start_computation(self.factory_id.clone(), computation_id);
 
         if errors.len() == 0 {
-            match pipeline_opt {
-                Some(pipeline_handle) => {
-                    let mut pipeline = pipeline_handle.pipeline_mut();
+            match computation_opt {
+                Some(computation_handle) => {
+                    let mut computation = computation_handle.computation_mut();
 
                     if !self.init_values.is_empty() {
                         match serde_json::from_str::<Value>(&self.init_values) {
@@ -42,7 +42,7 @@ impl CommandAction for AddComputation {
                                     let default_values: Vec<u8> = serde_json::to_vec(&json_value)
                                         .expect("Failed to serialize init values");
 
-                                    pipeline
+                                    computation
                                         .json_deserialize_state(&default_values)
                                         .expect("Failed to deserialize state");
                                 }
@@ -53,14 +53,14 @@ impl CommandAction for AddComputation {
                         }
                     }
 
-                    pipeline.post_alter();
+                    computation.post_alter();
 
-                    return ("start_pipeline".to_string(), Vec::new());
+                    return ("start_computation".to_string(), Vec::new());
                 }
-                None => errors.push(format!("Unable to create pipeline")),
+                None => errors.push(format!("Unable to create computation")),
             }
         }
 
-        ("start_pipeline".to_string(), Vec::new())
+        ("start_computation".to_string(), Vec::new())
     }
 }

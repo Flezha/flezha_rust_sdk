@@ -28,34 +28,34 @@ pub enum ComputationResult {
 }
 
 pub trait Computation {
-    // Execute the pipeline on the given input. The pipeline can mutate its internal state.
+    // Execute the computation on the given input. The computation can mutate its internal state.
     fn run(&mut self, input: ComputationInput) -> ComputationResult;
 
-    // Serialize the pipeline state.
+    // Serialize the computation state.
     fn json_serialize_state(&self) -> io::Result<Vec<u8>>;
 
-    // Deserialize and restore the pipeline state.
+    // Deserialize and restore the computation state.
     fn json_deserialize_state(&mut self, data: &[u8]) -> io::Result<()>;
 
-    // Get the factory ID of the pipeline.
+    // Get the factory ID of the computation.
     fn get_factory_id(&self) -> String;
 
-    // Get pipeline state for downcasting and serialization
+    // Get computation state for downcasting and serialization
     fn get_state(&mut self) -> &mut dyn std::any::Any;
 
-    // Get pipeline state as a serializable reference
+    // Get computation state as a serializable reference
     fn bin_serialize_state(&self) -> Box<dyn erased_serde::Serialize + '_>;
 
     fn post_alter(&mut self);
 }
 
-/// Trait for transforming input data to generic type before it enters the pipeline steps
+/// Trait for transforming input data to generic type before it enters the computation steps
 pub trait InputTransformer<T> {
     fn transform_input(&self, input: ComputationInput) -> io::Result<T>;
     fn clone_box(&self) -> Box<dyn InputTransformer<T> + Send + Sync>;
 }
 
-/// Trait for transforming generic output data to ComputationResult after all pipeline steps complete
+/// Trait for transforming generic output data to ComputationResult after all computation steps complete
 pub trait OutputTransformer<T, State> {
     fn transform_output(&self, output: T, state: &mut State) -> ComputationResult;
     fn clone_box(&self) -> Box<dyn OutputTransformer<T, State> + Send + Sync>;
@@ -163,7 +163,7 @@ impl<State> ComputationSettings<String, State> {
     }
 }
 
-/// A concrete pipeline implementation that can be used with any state type
+/// A concrete computation implementation that can be used with any state type
 pub struct ComputationWrapper<State, T>
 where
     State: serde::Serialize + for<'de> serde::Deserialize<'de> + Send + Sync + 'static,

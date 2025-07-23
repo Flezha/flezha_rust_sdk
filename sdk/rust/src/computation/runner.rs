@@ -11,15 +11,15 @@ use mio::unix::SourceFd;
 
 pub fn exec(
     computation_id: &String,
-    pipelines: &Arc<RwLock<HashMap<String, Arc<Mutex<ComputationBox>>>>>,
+    computations: &Arc<RwLock<HashMap<String, Arc<Mutex<ComputationBox>>>>>,
     input: ComputationInput,
 ) -> ComputationResult {
-    let pipelines_read = pipelines.read().unwrap();
+    let computations_read = computations.read().unwrap();
 
-    if let Some(c) = pipelines_read.get(computation_id.as_str()) {
-        let mut pipeline = c.lock().unwrap();
+    if let Some(c) = computations_read.get(computation_id.as_str()) {
+        let mut computation = c.lock().unwrap();
 
-        pipeline.run(input)
+        computation.run(input)
     } else {
         panic!("Computation with given ID not found {}", computation_id);
     }
@@ -28,12 +28,12 @@ pub fn exec(
 pub fn exec_agent(
     mut stream: UnixStream,
     computation_id: &String,
-    pipelines: &Arc<RwLock<HashMap<String, Arc<Mutex<ComputationBox>>>>>,
+    computations: &Arc<RwLock<HashMap<String, Arc<Mutex<ComputationBox>>>>>,
     input: ComputationInput,
 ) {
-    let pipeline_result = exec(computation_id, pipelines, input);
+    let computation_result = exec(computation_id, computations, input);
 
-    match pipeline_result {
+    match computation_result {
         ComputationResult::None => {
             return;
         }
@@ -61,7 +61,7 @@ pub fn pipe_to_agent(
         }
         // TODO: Implement custom type serialization
         ComputationOutput::Custom(_) => {
-            panic!("Unsupported pipeline output type");
+            panic!("Unsupported computation output type");
         }
     };
 

@@ -12,13 +12,13 @@ impl CommandAction for ComputationState {
         errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
         let operator_guard = operator.lock().unwrap();
-        let pipeline_handle: Option<ComputationHandle> =
-            operator_guard.get_pipeline(self.computation_id.clone());
+        let computation_handle: Option<ComputationHandle> =
+            operator_guard.get_computation(self.computation_id.clone());
 
-        match pipeline_handle {
-            Some(pipeline_handle) => {
-                let pipeline = pipeline_handle.pipeline_mut();
-                let state_value = pipeline.bin_serialize_state();
+        match computation_handle {
+            Some(computation_handle) => {
+                let computation = computation_handle.computation_mut();
+                let state_value = computation.bin_serialize_state();
 
                 (
                     "computation_state".to_string(),
@@ -28,7 +28,7 @@ impl CommandAction for ComputationState {
             None => {
                 let error_message = format!("Computation with id {} not found", self.computation_id);
                 errors.push(error_message.clone());
-                serde_json::to_string(&"Unable to get pipeline state.".to_string()).unwrap();
+                serde_json::to_string(&"Unable to get computation state.".to_string()).unwrap();
 
                 ("computation_state".to_string(), Vec::new())
             }

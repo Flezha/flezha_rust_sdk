@@ -32,11 +32,11 @@ type WorkItem = (ComputationInput, WorkerType, UnixStream);
 struct Coordinator {
     operator: Arc<Mutex<OperatorNode>>,
     workers_pool_tx: HashMap<u16, Sender<WorkerPoolMessage>>,
-    pipeline_queues: HashMap<String, VecDeque<WorkItem>>,
-    pipeline_workers: HashMap<String, u16>, // Track which worker is processing each pipeline
+    computation_queues: HashMap<String, VecDeque<WorkItem>>,
+    computation_workers: HashMap<String, u16>, // Track which worker is processing each computation
     available_workers: VecDeque<u16>,
-    // Optimization: Track which pipelines have work to avoid full iteration
-    pending_pipelines: VecDeque<String>,
+    // Optimization: Track which computations have work to avoid full iteration
+    pending_computations: VecDeque<String>,
 }
 
 pub fn start(
@@ -48,16 +48,16 @@ pub fn start(
     thread::spawn(move || {
         let _control_thread = control_unit::open(namespace, itx, operator_arc.clone());
         let ctx = operator_arc.lock().unwrap().coordinator_channel.clone();
-        let pipelines = operator_arc.lock().unwrap().get_pipelines();
+        let computations = operator_arc.lock().unwrap().get_computations();
         let crx_guard = crx.lock().unwrap();
 
         let mut coordinator = Coordinator {
             operator: operator_arc,
-            workers_pool_tx: init_worker_pool(pipelines, ctx),
-            pipeline_queues: HashMap::new(),
-            pipeline_workers: HashMap::new(),
+            workers_pool_tx: init_worker_pool(computations, ctx),
+            computation_queues: HashMap::new(),
+            computation_workers: HashMap::new(),
             available_workers: VecDeque::new(),
-            pending_pipelines: VecDeque::new(),
+            pending_computations: VecDeque::new(),
         };
 
         loop {
@@ -71,14 +71,14 @@ pub fn start(
                 }
                 CoordinatorMessage::WorkerCheckOut(
                     computation_id,
-                    pipeline_input,
+                    computation_input,
                     worker_type,
                     stream,
                 ) => {
                     handle_checkout(
                         &mut coordinator,
                         computation_id,
-                        pipeline_input,
+                        computation_input,
                         worker_type,
                         stream,
                     );
@@ -94,118 +94,118 @@ pub fn start(
 fn handle_checkout(
     coordinator: &mut Coordinator,
     computation_id: String,
-    pipeline_input: ComputationInput,
+    computation_input: ComputationInput,
     worker_type: WorkerType,
     stream: UnixStream,
 ) {
     match worker_type {
         WorkerType::ThreadPool => {
-            // Check if pipeline is already being processed
-            if coordinator.pipeline_workers.contains_key(&computation_id) {
+            // Check if computation is already being processed
+            if coordinator.computation_workers.contains_key(&computation_id) {
                 // Computation busy, add to its specific queue
                 let queue = coordinator
-                    .pipeline_queues
+                    .computation_queues
                     .entry(computation_id.clone())
                     .or_insert_with(VecDeque::new);
                 let is_first_item = queue.is_empty();
-                queue.push_back((pipeline_input, worker_type, stream));
+                queue.push_back((computation_input, worker_type, stream));
                 
-                // Track that this pipeline has pending work
+                // Track that this computation has pending work
                 if is_first_item {
-                    coordinator.pending_pipelines.push_back(computation_id);
+                    coordinator.pending_computations.push_back(computation_id);
                 }
             } else if let Some(worker_id) = coordinator.available_workers.pop_front() {
                 // Computation available and worker available, assign immediately
-                coordinator.pipeline_workers.insert(computation_id.clone(), worker_id);
+                coordinator.computation_workers.insert(computation_id.clone(), worker_id);
                 pool_worker_delegate(
                     &coordinator.workers_pool_tx,
                     computation_id,
-                    pipeline_input,
+                    computation_input,
                     worker_id,
                     stream,
                 );
             } else {
-                // No available workers, add to pipeline queue
+                // No available workers, add to computation queue
                 let queue = coordinator
-                    .pipeline_queues
+                    .computation_queues
                     .entry(computation_id.clone())
                     .or_insert_with(VecDeque::new);
                 let is_first_item = queue.is_empty();
-                queue.push_back((pipeline_input, worker_type, stream));
+                queue.push_back((computation_input, worker_type, stream));
                 
-                // Track that this pipeline has pending work
+                // Track that this computation has pending work
                 if is_first_item {
-                    coordinator.pending_pipelines.push_back(computation_id);
+                    coordinator.pending_computations.push_back(computation_id);
                 }
             }
         }
         WorkerType::ThreadSpawn => {
-            let pipelines = coordinator.operator.lock().unwrap().get_pipelines();
+            let computations = coordinator.operator.lock().unwrap().get_computations();
             thread::spawn(move || {
-                runner::exec_agent(stream, &computation_id, &pipelines, pipeline_input)
+                runner::exec_agent(stream, &computation_id, &computations, computation_input)
             });
         }
     }
 }
 
 fn handle_checkin(coordinator: &mut Coordinator, worker_id: u16, worked_computation_id: String) {
-    // Remove pipeline from active processing
-    coordinator.pipeline_workers.remove(&worked_computation_id);
+    // Remove computation from active processing
+    coordinator.computation_workers.remove(&worked_computation_id);
 
     // TODO: handle different worker types.
-    // Check if this pipeline has queued work
-    if let Some(queue) = coordinator.pipeline_queues.get_mut(&worked_computation_id) {
-        if let Some((pipeline_input, _worker_type, stream)) = queue.pop_front() {
-            // Process next item in this pipeline's queue with same worker (sticky assignment)
-            coordinator.pipeline_workers.insert(worked_computation_id.clone(), worker_id);
+    // Check if this computation has queued work
+    if let Some(queue) = coordinator.computation_queues.get_mut(&worked_computation_id) {
+        if let Some((computation_input, _worker_type, stream)) = queue.pop_front() {
+            // Process next item in this computation's queue with same worker (sticky assignment)
+            coordinator.computation_workers.insert(worked_computation_id.clone(), worker_id);
             pool_worker_delegate(
                 &coordinator.workers_pool_tx,
                 worked_computation_id,
-                pipeline_input,
+                computation_input,
                 worker_id,
                 stream,
             );
             return;
         } else {
             // Queue is empty, remove it
-            coordinator.pipeline_queues.remove(&worked_computation_id);
+            coordinator.computation_queues.remove(&worked_computation_id);
         }
     }
 
-    // No work for this pipeline, make worker available for other pipelines
+    // No work for this computation, make worker available for other computations
     coordinator.available_workers.push_back(worker_id);
 
-    // Optimized: Only check pipelines that have pending work
-    while let Some(computation_id) = coordinator.pending_pipelines.pop_front() {
-        // Check if pipeline is still idle and has work
-        if !coordinator.pipeline_workers.contains_key(&computation_id) {
+    // Optimized: Only check computations that have pending work
+    while let Some(computation_id) = coordinator.pending_computations.pop_front() {
+        // Check if computation is still idle and has work
+        if !coordinator.computation_workers.contains_key(&computation_id) {
             // TODO: handle different worker types.
-            if let Some(queue) = coordinator.pipeline_queues.get_mut(&computation_id) {
-                if let Some((pipeline_input, _worker_type, stream)) = queue.pop_front() {
+            if let Some(queue) = coordinator.computation_queues.get_mut(&computation_id) {
+                if let Some((computation_input, _worker_type, stream)) = queue.pop_front() {
                     // Remove worker from available workers since we're assigning it
                     coordinator.available_workers.pop_back();
-                    coordinator.pipeline_workers.insert(computation_id.clone(), worker_id);
+                    coordinator.computation_workers.insert(computation_id.clone(), worker_id);
                     pool_worker_delegate(
                         &coordinator.workers_pool_tx,
                         computation_id.clone(),
-                        pipeline_input,
+                        computation_input,
                         worker_id,
                         stream,
                     );
                     
                     // If queue still has work, put it back in pending list
                     if !queue.is_empty() {
-                        coordinator.pending_pipelines.push_back(computation_id.clone());
+                        coordinator.pending_computations.push_back(computation_id.clone());
                     } else {
                         // Queue is empty, remove it
-                        coordinator.pipeline_queues.remove(&computation_id);
+                        coordinator.computation_queues.remove(&computation_id);
                     }
                     return;
                 }
             }
         } else {
             // Computation is busy, put it back for later
-            coordinator.pending_pipelines.push_back(computation_id);
+            coordinator.pending_computations.push_back(computation_id);
             break;
         }
     }

@@ -12,21 +12,21 @@ impl CommandAction for MigrationSerialization {
         _errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
         let operator_guard = operator.lock().unwrap();
-        let pipeline_handle: Option<ComputationHandle> =
-            operator_guard.get_pipeline(self.computation_id.clone());
+        let computation_handle: Option<ComputationHandle> =
+            operator_guard.get_computation(self.computation_id.clone());
 
         // TODO: Implement error handling.
 
-        let serialized_state = match pipeline_handle {
+        let serialized_state = match computation_handle {
             Some(p) => {
-                let pipeline = p.pipeline_mut();
-                pipeline.json_serialize_state().unwrap()
+                let computation = p.computation_mut();
+                computation.json_serialize_state().unwrap()
             }
             None => Vec::new(),
         };
 
-        // Remove the pipeline from the operator
-        operator_guard.stop_pipeline(self.computation_id.clone());
+        // Remove the computation from the operator
+        operator_guard.stop_computation(self.computation_id.clone());
 
         drop(operator_guard);
 
