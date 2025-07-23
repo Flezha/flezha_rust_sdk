@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::{collections::HashMap, os::unix::net::UnixStream};
 
 use crate::computation::factory_registry::ComputationBox;
-use crate::computation::{ComputationError, ComputationInput, ComputationOutput, ComputationResult, VirtualChannel};
+use crate::computation::{ComputationError, ComputationId, ComputationInput, ComputationOutput, ComputationResult, VirtualChannel};
 use crate::service::payloader;
 use mio::{Events, Interest, Poll, Token};
 use std::os::unix::io::AsRawFd;
@@ -21,7 +21,7 @@ pub fn exec(
 
         computation.run(input)
     } else {
-        panic!("Computation with given ID not found {}", computation_id);
+        Err(format!("Computation with ID {} not found", computation_id))
     }
 }
 
@@ -36,8 +36,9 @@ pub fn exec_agent(
             match computation_result {
                 ComputationResult::None => return,
                 ComputationResult::Return(_) => return,
-                // TODO: handle piping to other computations.
-                ComputationResult::PipeToComputation(_) => return,
+                ComputationResult::PipeToComputation(outputs) => {
+                    pipe_to_computation(stream, computations, outputs);
+                }
                 ComputationResult::PipeToAgent(outputs) => {
                     for (output, virtual_channel) in outputs {
                         pipe_to_agent(&mut stream, computation_id, &output, virtual_channel);
@@ -110,6 +111,24 @@ pub fn pipe_to_agent(
         }
         Err(err) => {
             eprintln!("Error writing to stream: {}", err);
+        }
+    }
+}
+
+fn pipe_to_computation(
+    stream: UnixStream,
+    computations: &Arc<RwLock<HashMap<String, Arc<Mutex<ComputationBox>>>>>,
+    outputs: Vec<(ComputationId, ComputationOutput, VirtualChannel)>,
+) {
+    for (computation_id, output, virtual_channel) in outputs {
+        let mut stream_clone = stream.try_clone().unwrap();
+
+        if let Some(_computation) = computations.read().unwrap().get(&computation_id) {
+            let input = ComputationInput::from(output);
+            exec_agent(stream_clone, &computation_id, computations, input);
+        } else {
+            // Computation not found, try piping to the agent.
+            pipe_to_agent(&mut stream_clone, &computation_id, &output, virtual_channel);
         }
     }
 }

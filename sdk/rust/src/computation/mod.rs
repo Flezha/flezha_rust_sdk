@@ -17,6 +17,16 @@ pub enum ComputationInput {
     Custom(Box<dyn std::any::Any + Send + Sync>), // For client‐specific types
 }
 
+impl From<ComputationOutput> for ComputationInput {
+    fn from(output: ComputationOutput) -> Self {
+        match output {
+            ComputationOutput::Binary(data) => ComputationInput::Binary(data),
+            ComputationOutput::Text(text) => ComputationInput::Text(text),
+            ComputationOutput::Custom(custom) => ComputationInput::Custom(custom),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum ComputationOutput {
     Binary(Vec<u8>),
