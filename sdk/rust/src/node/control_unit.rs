@@ -52,7 +52,7 @@ fn sock_conn(
 
         loop {
             match payloader::extract_payload(&*stream_clone.clone()) {
-                Ok((payload_id, message)) => {
+                Ok((payload_id, message, _virtual_channel)) => {
                     let payload_message: String = String::from_utf8_lossy(&message).to_string();
 
                     let (handler_type, reference_id) =

@@ -2,7 +2,7 @@ use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use std::io::{self, Read, Write};
 use std::str;
 
-pub fn extract_payload<R: Read>(mut reader: R) -> io::Result<(String, Vec<u8>)> {
+pub fn extract_payload<R: Read>(mut reader: R) -> io::Result<(String, Vec<u8>, u8)> {
     // Read the payload ID (32 bytes).
     let mut id_buf = [0; 32];
     reader.read_exact(&mut id_buf)?;
@@ -12,8 +12,8 @@ pub fn extract_payload<R: Read>(mut reader: R) -> io::Result<(String, Vec<u8>)> 
     let mut virtual_channel_buf = [0; 1];
     reader.read_exact(&mut virtual_channel_buf)?;
 
-    // TODO: do something with the virtual channel.
-    let _virtual_channel = virtual_channel_buf[0];
+    // Read the virtual channel byte.
+    let virtual_channel = virtual_channel_buf[0];
 
     // Read the length prefix (8 bytes).
     let mut length_buf = [0; 8];
@@ -24,7 +24,7 @@ pub fn extract_payload<R: Read>(mut reader: R) -> io::Result<(String, Vec<u8>)> 
     let mut message_buf = vec![0; message_length];
     reader.read_exact(&mut message_buf)?;
 
-    Ok((payload_id, message_buf))
+    Ok((payload_id, message_buf, virtual_channel))
 }
 
 pub fn extract_payload_non_blocking<R: Read>(

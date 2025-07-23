@@ -59,7 +59,6 @@ pub fn pipe_to_agent(
     result: &ComputationOutput,
     virtual_channel: VirtualChannel,
 ) {
-    // TODO: Hardcoded virtual channel.
     let payload = match result {
         ComputationOutput::Text(text) => {
             payloader::build_from_str(&computation_id, virtual_channel, text)
