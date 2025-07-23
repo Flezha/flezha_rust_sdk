@@ -13,7 +13,7 @@ impl CommandAction for MigrationSerialization {
     ) -> (String, Vec<u8>) {
         let operator_guard = operator.lock().unwrap();
         let pipeline_handle: Option<ComputationHandle> =
-            operator_guard.get_pipeline(self.pipeline_id.clone());
+            operator_guard.get_pipeline(self.computation_id.clone());
 
         // TODO: Implement error handling.
 
@@ -26,7 +26,7 @@ impl CommandAction for MigrationSerialization {
         };
 
         // Remove the pipeline from the operator
-        operator_guard.stop_pipeline(self.pipeline_id.clone());
+        operator_guard.stop_pipeline(self.computation_id.clone());
 
         drop(operator_guard);
 

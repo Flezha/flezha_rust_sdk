@@ -45,21 +45,21 @@ impl Flezha {
         }
     }
 
-    pub fn get_pipeline(&self, pipeline_id: &str) -> Option<Arc<Mutex<ComputationBox>>> {
-        self.pipelines.read().unwrap().get(pipeline_id).cloned()
+    pub fn get_pipeline(&self, computation_id: &str) -> Option<Arc<Mutex<ComputationBox>>> {
+        self.pipelines.read().unwrap().get(computation_id).cloned()
     }
 
     pub fn get_pipelines(&self) -> Arc<RwLock<HashMap<String, Arc<Mutex<ComputationBox>>>>> {
         Arc::clone(&self.pipelines)
     }
 
-    pub fn run(&mut self, pipeline_id: String, input: ComputationInput) -> ComputationResult {
-        runner::exec(&pipeline_id, &self.pipelines, input)
+    pub fn run(&mut self, computation_id: String, input: ComputationInput) -> ComputationResult {
+        runner::exec(&computation_id, &self.pipelines, input)
     }
 
     pub fn pipe_to_agent(
         &mut self,
-        pipeline_id: String,
+        computation_id: String,
         result: ComputationOutput,
         virtual_channel: VirtualChannel,
     ) {
@@ -73,7 +73,7 @@ impl Flezha {
             .try_clone()
             .unwrap();
 
-        runner::pipe_to_agent(&mut io_stream, &pipeline_id, &result, virtual_channel);
+        runner::pipe_to_agent(&mut io_stream, &computation_id, &result, virtual_channel);
     }
 }
 

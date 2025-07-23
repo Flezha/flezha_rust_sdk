@@ -14,8 +14,8 @@ impl CommandAction for RemComputation {
     ) -> (String, Vec<u8>) {
         let operator_guard = operator.lock().unwrap();
 
-        if operator_guard.has_pipeline(self.pipeline_id.clone()) {
-            operator_guard.stop_pipeline(self.pipeline_id.clone());
+        if operator_guard.has_pipeline(self.computation_id.clone()) {
+            operator_guard.stop_pipeline(self.computation_id.clone());
 
             ("stop_pipeline".to_string(), Vec::new())
         } else {

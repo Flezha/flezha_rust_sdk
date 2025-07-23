@@ -15,7 +15,7 @@ impl CommandAction for AddComputation {
         errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
         let operator_guard = operator.lock().unwrap();
-        let pipeline_id = self.pipeline_id.clone();
+        let computation_id = self.computation_id.clone();
 
         // Make sure factory exist.
         match get_factory(self.factory_id.clone()) {
@@ -26,7 +26,7 @@ impl CommandAction for AddComputation {
             )),
         };
 
-        let pipeline_opt = operator_guard.start_pipeline(self.factory_id.clone(), pipeline_id);
+        let pipeline_opt = operator_guard.start_pipeline(self.factory_id.clone(), computation_id);
 
         if errors.len() == 0 {
             match pipeline_opt {

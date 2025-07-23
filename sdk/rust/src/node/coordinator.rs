@@ -70,21 +70,21 @@ pub fn start(
                     coordinator.available_workers.push_back(worker_id);
                 }
                 CoordinatorMessage::WorkerCheckOut(
-                    pipeline_id,
+                    computation_id,
                     pipeline_input,
                     worker_type,
                     stream,
                 ) => {
                     handle_checkout(
                         &mut coordinator,
-                        pipeline_id,
+                        computation_id,
                         pipeline_input,
                         worker_type,
                         stream,
                     );
                 }
-                CoordinatorMessage::WorkerCheckIn(worker_id, worked_pipeline_id) => {
-                    handle_checkin(&mut coordinator, worker_id, worked_pipeline_id);
+                CoordinatorMessage::WorkerCheckIn(worker_id, worked_computation_id) => {
+                    handle_checkin(&mut coordinator, worker_id, worked_computation_id);
                 }
             }
         }
@@ -93,7 +93,7 @@ pub fn start(
 
 fn handle_checkout(
     coordinator: &mut Coordinator,
-    pipeline_id: String,
+    computation_id: String,
     pipeline_input: ComputationInput,
     worker_type: WorkerType,
     stream: UnixStream,
@@ -101,25 +101,25 @@ fn handle_checkout(
     match worker_type {
         WorkerType::ThreadPool => {
             // Check if pipeline is already being processed
-            if coordinator.pipeline_workers.contains_key(&pipeline_id) {
+            if coordinator.pipeline_workers.contains_key(&computation_id) {
                 // Computation busy, add to its specific queue
                 let queue = coordinator
                     .pipeline_queues
-                    .entry(pipeline_id.clone())
+                    .entry(computation_id.clone())
                     .or_insert_with(VecDeque::new);
                 let is_first_item = queue.is_empty();
                 queue.push_back((pipeline_input, worker_type, stream));
                 
                 // Track that this pipeline has pending work
                 if is_first_item {
-                    coordinator.pending_pipelines.push_back(pipeline_id);
+                    coordinator.pending_pipelines.push_back(computation_id);
                 }
             } else if let Some(worker_id) = coordinator.available_workers.pop_front() {
                 // Computation available and worker available, assign immediately
-                coordinator.pipeline_workers.insert(pipeline_id.clone(), worker_id);
+                coordinator.pipeline_workers.insert(computation_id.clone(), worker_id);
                 pool_worker_delegate(
                     &coordinator.workers_pool_tx,
-                    pipeline_id,
+                    computation_id,
                     pipeline_input,
                     worker_id,
                     stream,
@@ -128,39 +128,39 @@ fn handle_checkout(
                 // No available workers, add to pipeline queue
                 let queue = coordinator
                     .pipeline_queues
-                    .entry(pipeline_id.clone())
+                    .entry(computation_id.clone())
                     .or_insert_with(VecDeque::new);
                 let is_first_item = queue.is_empty();
                 queue.push_back((pipeline_input, worker_type, stream));
                 
                 // Track that this pipeline has pending work
                 if is_first_item {
-                    coordinator.pending_pipelines.push_back(pipeline_id);
+                    coordinator.pending_pipelines.push_back(computation_id);
                 }
             }
         }
         WorkerType::ThreadSpawn => {
             let pipelines = coordinator.operator.lock().unwrap().get_pipelines();
             thread::spawn(move || {
-                runner::exec_agent(stream, &pipeline_id, &pipelines, pipeline_input)
+                runner::exec_agent(stream, &computation_id, &pipelines, pipeline_input)
             });
         }
     }
 }
 
-fn handle_checkin(coordinator: &mut Coordinator, worker_id: u16, worked_pipeline_id: String) {
+fn handle_checkin(coordinator: &mut Coordinator, worker_id: u16, worked_computation_id: String) {
     // Remove pipeline from active processing
-    coordinator.pipeline_workers.remove(&worked_pipeline_id);
+    coordinator.pipeline_workers.remove(&worked_computation_id);
 
     // TODO: handle different worker types.
     // Check if this pipeline has queued work
-    if let Some(queue) = coordinator.pipeline_queues.get_mut(&worked_pipeline_id) {
+    if let Some(queue) = coordinator.pipeline_queues.get_mut(&worked_computation_id) {
         if let Some((pipeline_input, _worker_type, stream)) = queue.pop_front() {
             // Process next item in this pipeline's queue with same worker (sticky assignment)
-            coordinator.pipeline_workers.insert(worked_pipeline_id.clone(), worker_id);
+            coordinator.pipeline_workers.insert(worked_computation_id.clone(), worker_id);
             pool_worker_delegate(
                 &coordinator.workers_pool_tx,
-                worked_pipeline_id,
+                worked_computation_id,
                 pipeline_input,
                 worker_id,
                 stream,
@@ -168,7 +168,7 @@ fn handle_checkin(coordinator: &mut Coordinator, worker_id: u16, worked_pipeline
             return;
         } else {
             // Queue is empty, remove it
-            coordinator.pipeline_queues.remove(&worked_pipeline_id);
+            coordinator.pipeline_queues.remove(&worked_computation_id);
         }
     }
 
@@ -176,18 +176,18 @@ fn handle_checkin(coordinator: &mut Coordinator, worker_id: u16, worked_pipeline
     coordinator.available_workers.push_back(worker_id);
 
     // Optimized: Only check pipelines that have pending work
-    while let Some(pipeline_id) = coordinator.pending_pipelines.pop_front() {
+    while let Some(computation_id) = coordinator.pending_pipelines.pop_front() {
         // Check if pipeline is still idle and has work
-        if !coordinator.pipeline_workers.contains_key(&pipeline_id) {
+        if !coordinator.pipeline_workers.contains_key(&computation_id) {
             // TODO: handle different worker types.
-            if let Some(queue) = coordinator.pipeline_queues.get_mut(&pipeline_id) {
+            if let Some(queue) = coordinator.pipeline_queues.get_mut(&computation_id) {
                 if let Some((pipeline_input, _worker_type, stream)) = queue.pop_front() {
                     // Remove worker from available workers since we're assigning it
                     coordinator.available_workers.pop_back();
-                    coordinator.pipeline_workers.insert(pipeline_id.clone(), worker_id);
+                    coordinator.pipeline_workers.insert(computation_id.clone(), worker_id);
                     pool_worker_delegate(
                         &coordinator.workers_pool_tx,
-                        pipeline_id.clone(),
+                        computation_id.clone(),
                         pipeline_input,
                         worker_id,
                         stream,
@@ -195,17 +195,17 @@ fn handle_checkin(coordinator: &mut Coordinator, worker_id: u16, worked_pipeline
                     
                     // If queue still has work, put it back in pending list
                     if !queue.is_empty() {
-                        coordinator.pending_pipelines.push_back(pipeline_id.clone());
+                        coordinator.pending_pipelines.push_back(computation_id.clone());
                     } else {
                         // Queue is empty, remove it
-                        coordinator.pipeline_queues.remove(&pipeline_id);
+                        coordinator.pipeline_queues.remove(&computation_id);
                     }
                     return;
                 }
             }
         } else {
             // Computation is busy, put it back for later
-            coordinator.pending_pipelines.push_back(pipeline_id);
+            coordinator.pending_pipelines.push_back(computation_id);
             break;
         }
     }

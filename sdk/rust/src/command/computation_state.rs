@@ -13,7 +13,7 @@ impl CommandAction for ComputationState {
     ) -> (String, Vec<u8>) {
         let operator_guard = operator.lock().unwrap();
         let pipeline_handle: Option<ComputationHandle> =
-            operator_guard.get_pipeline(self.pipeline_id.clone());
+            operator_guard.get_pipeline(self.computation_id.clone());
 
         match pipeline_handle {
             Some(pipeline_handle) => {
@@ -26,7 +26,7 @@ impl CommandAction for ComputationState {
                 )
             }
             None => {
-                let error_message = format!("Computation with id {} not found", self.pipeline_id);
+                let error_message = format!("Computation with id {} not found", self.computation_id);
                 errors.push(error_message.clone());
                 serde_json::to_string(&"Unable to get pipeline state.".to_string()).unwrap();
 

@@ -39,11 +39,11 @@ pub fn init_worker_pool(
                 let message = wrx.recv().expect("Failed to receive message");
 
                 match message {
-                    WorkerPoolMessage::HandleWork(pipeline_id, pipeline_input, unix_stream) => {
-                        runner::exec_agent(unix_stream, &pipeline_id, &pipelines, pipeline_input);
+                    WorkerPoolMessage::HandleWork(computation_id, pipeline_input, unix_stream) => {
+                        runner::exec_agent(unix_stream, &computation_id, &pipelines, pipeline_input);
                         check_in(
                             &ctx_clone,
-                            CoordinatorMessage::WorkerCheckIn(worker_id, pipeline_id),
+                            CoordinatorMessage::WorkerCheckIn(worker_id, computation_id),
                         );
                     }
                 }
@@ -56,7 +56,7 @@ pub fn init_worker_pool(
 
 pub fn pool_worker_delegate(
     workers_pool_tx: &HashMap<u16, Sender<WorkerPoolMessage>>,
-    pipeline_id: String,
+    computation_id: String,
     pipeline_input: ComputationInput,
     worker_id: u16,
     stream: UnixStream,
@@ -65,7 +65,7 @@ pub fn pool_worker_delegate(
         .get(&worker_id)
         .unwrap()
         .send(WorkerPoolMessage::HandleWork(
-            pipeline_id,
+            computation_id,
             pipeline_input,
             stream,
         ))

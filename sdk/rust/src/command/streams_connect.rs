@@ -91,7 +91,7 @@ fn listen_incoming(
             if let Some(stream) = streams.get_mut(&token) {
                 loop {
                     match payloader::extract_payload_non_blocking(&mut *stream) {
-                        Ok(Some((pipeline_id, mut payload))) => {
+                        Ok(Some((computation_id, mut payload))) => {
                             // input_type is the first byte of the payload
                             let input_type = payload[0];
 
@@ -116,7 +116,7 @@ fn listen_incoming(
                             };
 
                             ctx.send(CoordinatorMessage::WorkerCheckOut(
-                                pipeline_id,
+                                computation_id,
                                 input,
                                 worker_type,
                                 stream.try_clone().unwrap(),

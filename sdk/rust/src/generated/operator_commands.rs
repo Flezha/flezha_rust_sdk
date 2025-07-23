@@ -52,7 +52,7 @@ pub struct ConnectSocket {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct AddComputation {
     #[prost(string, tag = "1")]
-    pub pipeline_id: ::prost::alloc::string::String,
+    pub computation_id: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
     pub factory_id: ::prost::alloc::string::String,
     #[prost(string, tag = "3")]
@@ -61,17 +61,17 @@ pub struct AddComputation {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RemComputation {
     #[prost(string, tag = "1")]
-    pub pipeline_id: ::prost::alloc::string::String,
+    pub computation_id: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct MigrationSerialization {
     #[prost(string, tag = "1")]
-    pub pipeline_id: ::prost::alloc::string::String,
+    pub computation_id: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct MigrationDeserialization {
     #[prost(string, tag = "1")]
-    pub pipeline_id: ::prost::alloc::string::String,
+    pub computation_id: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
     pub factory_id: ::prost::alloc::string::String,
     #[prost(bytes = "vec", tag = "3")]
@@ -80,7 +80,7 @@ pub struct MigrationDeserialization {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ComputationState {
     #[prost(string, tag = "1")]
-    pub pipeline_id: ::prost::alloc::string::String,
+    pub computation_id: ::prost::alloc::string::String,
 }
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct OperatorDisconnect {}

@@ -73,12 +73,12 @@ impl OperatorNode {
     pub fn start_pipeline(
         &self,
         factory_id: String,
-        pipeline_id: String,
+        computation_id: String,
     ) -> Option<ComputationHandle> {
         if let Some(factory) = get_factory(factory_id) {
-            let pipeline = factory(pipeline_id.clone());
-            self.register_pipeline(pipeline_id.clone(), pipeline);
-            self.get_pipeline(pipeline_id)
+            let pipeline = factory(computation_id.clone());
+            self.register_pipeline(computation_id.clone(), pipeline);
+            self.get_pipeline(computation_id)
         } else {
             None
         }
