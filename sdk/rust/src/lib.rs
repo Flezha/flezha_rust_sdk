@@ -16,7 +16,7 @@ use pipeline::factory_registry::PipelineBox;
 use pipeline::runner;
 pub use pipeline::{
     register_factory, PipelineInput, PipelineOutput, PipelineResult, ComputationSettings,
-    PipelineStep, VirtualChannel,
+    ComputationHandler, VirtualChannel,
 };
 
 pub mod pb {

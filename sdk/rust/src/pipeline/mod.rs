@@ -113,7 +113,7 @@ impl<State> OutputTransformer<String, State> for DefaultOutputTransformer {
     }
 }
 
-pub trait PipelineStep<State, T> {
+pub trait ComputationHandler<State, T> {
     fn process(&mut self, input: T, state: &mut State) -> io::Result<T>;
 
     // Optional method to perform actions after the step is created
@@ -170,7 +170,7 @@ where
     T: Send + Sync + 'static,
 {
     state: State,
-    steps: Vec<Box<dyn PipelineStep<State, T> + Send + Sync>>,
+    steps: Vec<Box<dyn ComputationHandler<State, T> + Send + Sync>>,
     settings: ComputationSettings<T, State>,
     factory_id: String,
 }
@@ -239,7 +239,7 @@ pub fn register_factory<State, T, F>(
 ) where
     State: serde::Serialize + for<'de> serde::Deserialize<'de> + Send + Sync + Clone + 'static,
     T: Send + Sync + 'static,
-    F: Fn() -> Vec<Box<dyn PipelineStep<State, T> + Send + Sync>> + Send + Sync + 'static,
+    F: Fn() -> Vec<Box<dyn ComputationHandler<State, T> + Send + Sync>> + Send + Sync + 'static,
 {
     use crate::pipeline::factory_registry::{register_computation_factory, ComputationFactory};
 
