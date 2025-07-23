@@ -21,7 +21,7 @@ impl CommandAction for ComputationState {
                 let state_value = pipeline.bin_serialize_state();
 
                 (
-                    "pipeline_state".to_string(),
+                    "computation_state".to_string(),
                     serde_json::to_vec(&state_value).unwrap(),
                 )
             }
@@ -30,7 +30,7 @@ impl CommandAction for ComputationState {
                 errors.push(error_message.clone());
                 serde_json::to_string(&"Unable to get pipeline state.".to_string()).unwrap();
 
-                ("pipeline_state".to_string(), Vec::new())
+                ("computation_state".to_string(), Vec::new())
             }
         }
     }
