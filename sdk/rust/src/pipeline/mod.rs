@@ -235,19 +235,19 @@ pub fn register_factory<State, T, F>(
     factory_id: String,
     settings: ComputationSettings<T, State>,
     initial_state: State,
-    step_factory: F,
+    handler_generator: F,
 ) where
     State: serde::Serialize + for<'de> serde::Deserialize<'de> + Send + Sync + Clone + 'static,
     T: Send + Sync + 'static,
     F: Fn() -> Vec<Box<dyn PipelineStep<State, T> + Send + Sync>> + Send + Sync + 'static,
 {
-    use crate::pipeline::factory_registry::{register_pipeline_factory, PipelineFactory};
+    use crate::pipeline::factory_registry::{register_computation_factory, ComputationFactory};
 
     let factory_id_clone = factory_id.clone();
     let settings_clone = settings.clone();
 
-    let factory: PipelineFactory = Box::new(move |_pipeline_id: String| {
-        let steps = step_factory();
+    let factory: ComputationFactory = Box::new(move |_pipeline_id: String| {
+        let steps = handler_generator();
         let mut pipeline = ConcretePipeline {
             state: initial_state.clone(),
             steps,
@@ -259,5 +259,5 @@ pub fn register_factory<State, T, F>(
         Box::new(pipeline) as Box<dyn Pipeline + Send + Sync>
     });
 
-    register_pipeline_factory(factory_id, factory);
+    register_computation_factory(factory_id, factory);
 }

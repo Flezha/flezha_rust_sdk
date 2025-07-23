@@ -8,23 +8,23 @@ use crate::pipeline::{Pipeline, PipelineInput, PipelineResult};
 pub type PipelineBox = Box<dyn Pipeline + Send + Sync>;
 
 // Factory function type that can create new pipeline instances
-pub type PipelineFactory = Box<dyn Fn(String) -> PipelineBox + Send + Sync>;
+pub type ComputationFactory = Box<dyn Fn(String) -> PipelineBox + Send + Sync>;
 
 // Use Arc<Mutex<PipelineBox>> for each pipeline
 lazy_static! {
-    static ref FACTORY_REGISTRY: RwLock<HashMap<String, Arc<PipelineFactory>>> =
+    static ref FACTORY_REGISTRY: RwLock<HashMap<String, Arc<ComputationFactory>>> =
         RwLock::new(HashMap::new());
 }
 
 /// Register a pipeline factory with a unique factory ID
-pub fn register_pipeline_factory(factory_id: String, factory: PipelineFactory) {
+pub fn register_computation_factory(factory_id: String, factory: ComputationFactory) {
     FACTORY_REGISTRY
         .write()
         .unwrap()
         .insert(factory_id, Arc::new(factory));
 }
 
-pub fn get_factory(factory_id: String) -> Option<Arc<PipelineFactory>> {
+pub fn get_factory(factory_id: String) -> Option<Arc<ComputationFactory>> {
     FACTORY_REGISTRY.read().unwrap().get(&factory_id).cloned()
 }
 
