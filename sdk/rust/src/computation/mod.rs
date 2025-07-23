@@ -5,6 +5,10 @@ use std::io;
 
 extern crate erased_serde;
 
+pub type ComputationError = String;
+pub type InputError = String;
+pub type VirtualChannel = u8;
+
 #[derive(Debug)]
 pub enum ComputationInput {
     Binary(Vec<u8>),
@@ -19,8 +23,6 @@ pub enum ComputationOutput {
     Custom(Box<dyn std::any::Any + Send + Sync>), // For client‐specific types
 }
 
-pub type VirtualChannel = u8;
-
 #[derive(Debug)]
 pub enum ComputationResult {
     None,
@@ -29,7 +31,7 @@ pub enum ComputationResult {
 
 pub trait Computation {
     // Execute the computation on the given input. The computation can mutate its internal state.
-    fn run(&mut self, input: ComputationInput) -> ComputationResult;
+    fn run(&mut self, input: ComputationInput) -> Result<ComputationResult, ComputationError>;
 
     // Serialize the computation state.
     fn json_serialize_state(&self) -> io::Result<Vec<u8>>;
@@ -50,29 +52,26 @@ pub trait Computation {
 }
 
 /// Trait for transforming input data to generic type before it enters the computation steps
-pub trait InputTransformer<T> {
-    fn transform_input(&self, input: ComputationInput) -> io::Result<T>;
-    fn clone_box(&self) -> Box<dyn InputTransformer<T> + Send + Sync>;
+pub trait InputTransformer<Input> {
+    fn transform_input(&self, input: ComputationInput) -> Result<Input, InputError>;
+    fn clone_box(&self) -> Box<dyn InputTransformer<Input> + Send + Sync>;
 }
 
 /// Trait for transforming generic output data to ComputationResult after all computation steps complete
-pub trait OutputTransformer<T, State> {
-    fn transform_output(&self, output: T, state: &mut State) -> ComputationResult;
-    fn clone_box(&self) -> Box<dyn OutputTransformer<T, State> + Send + Sync>;
+pub trait OutputTransformer<Output, State> {
+    fn transform_output(&self, output: Output, state: &mut State) -> ComputationResult;
+    fn clone_box(&self) -> Box<dyn OutputTransformer<Output, State> + Send + Sync>;
 }
 
 /// Default input transformer that converts ComputationInput to common types
 pub struct DefaultInputTransformer;
 
 impl InputTransformer<Vec<u8>> for DefaultInputTransformer {
-    fn transform_input(&self, input: ComputationInput) -> io::Result<Vec<u8>> {
+    fn transform_input(&self, input: ComputationInput) -> Result<Vec<u8>, InputError> {
         match input {
             ComputationInput::Binary(data) => Ok(data),
             ComputationInput::Text(text) => Ok(text.into_bytes()),
-            ComputationInput::Custom(_) => Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Cannot convert custom to Vec<u8>",
-            )),
+            ComputationInput::Custom(_) => Err("Cannot convert custom to Vec<u8>".into()),
         }
     }
 
@@ -82,16 +81,13 @@ impl InputTransformer<Vec<u8>> for DefaultInputTransformer {
 }
 
 impl InputTransformer<String> for DefaultInputTransformer {
-    fn transform_input(&self, input: ComputationInput) -> io::Result<String> {
+    fn transform_input(&self, input: ComputationInput) -> Result<String, InputError> {
         match input {
             ComputationInput::Text(text) => Ok(text),
             ComputationInput::Binary(data) => {
-                String::from_utf8(data).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+                String::from_utf8(data).map_err(|e| e.to_string())
             }
-            ComputationInput::Custom(_) => Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Cannot convert custom to String",
-            )),
+            ComputationInput::Custom(_) => Err("Cannot convert custom to String".into()),
         }
     }
 
@@ -113,19 +109,19 @@ impl<State> OutputTransformer<String, State> for DefaultOutputTransformer {
     }
 }
 
-pub trait ComputationHandler<State, T> {
-    fn process(&mut self, input: T, state: &mut State) -> io::Result<T>;
+pub trait ComputationHandler<State, I, O> {
+    fn process(&mut self, input: I, state: &mut State) -> Result<O, ComputationError>;
 
     // Optional method to perform actions after the step is created
     fn post_create(&mut self, _state: &mut State) {}
 }
 
-pub struct ComputationSettings<T, State> {
-    input_transformer: Box<dyn InputTransformer<T> + Send + Sync>,
-    output_transformer: Box<dyn OutputTransformer<T, State> + Send + Sync>,
+pub struct ComputationSettings<State, I, O> {
+    input_transformer: Box<dyn InputTransformer<I> + Send + Sync>,
+    output_transformer: Box<dyn OutputTransformer<O, State> + Send + Sync>,
 }
 
-impl<T, State> Clone for ComputationSettings<T, State> {
+impl<State, I, O> Clone for ComputationSettings<State, I, O> {
     fn clone(&self) -> Self {
         Self {
             input_transformer: self.input_transformer.clone_box(),
@@ -134,10 +130,10 @@ impl<T, State> Clone for ComputationSettings<T, State> {
     }
 }
 
-impl<T, State> ComputationSettings<T, State> {
+impl<State, I, O> ComputationSettings<State, I, O> {
     pub fn new(
-        input_transformer: Box<dyn InputTransformer<T> + Send + Sync>,
-        output_transformer: Box<dyn OutputTransformer<T, State> + Send + Sync>,
+        input_transformer: Box<dyn InputTransformer<I> + Send + Sync>,
+        output_transformer: Box<dyn OutputTransformer<O, State> + Send + Sync>,
     ) -> Self {
         Self {
             input_transformer,
@@ -145,16 +141,16 @@ impl<T, State> ComputationSettings<T, State> {
         }
     }
 
-    pub fn get_input_transformer(&self) -> &dyn InputTransformer<T> {
+    pub fn get_input_transformer(&self) -> &dyn InputTransformer<I> {
         self.input_transformer.as_ref()
     }
 
-    pub fn get_output_transformer(&self) -> &dyn OutputTransformer<T, State> {
+    pub fn get_output_transformer(&self) -> &dyn OutputTransformer<O, State> {
         self.output_transformer.as_ref()
     }
 }
 
-impl<State> ComputationSettings<String, State> {
+impl<State> ComputationSettings<State, String, String> {
     pub fn default() -> Self {
         Self {
             input_transformer: Box::new(DefaultInputTransformer),
@@ -164,40 +160,42 @@ impl<State> ComputationSettings<String, State> {
 }
 
 /// A concrete computation implementation that can be used with any state type
-pub struct ComputationWrapper<State, T>
+pub struct ComputationWrapper<State, I, O>
 where
     State: serde::Serialize + for<'de> serde::Deserialize<'de> + Send + Sync + 'static,
-    T: Send + Sync + 'static,
+    I: Send + Sync + 'static,
+    O: Send + Sync + 'static,
 {
     state: State,
-    handler: Box<dyn ComputationHandler<State, T> + Send + Sync>,
-    settings: ComputationSettings<T, State>,
+    handler: Box<dyn ComputationHandler<State, I, O> + Send + Sync>,
+    settings: ComputationSettings<State, I, O>,
     factory_id: String,
 }
 
-impl<State, T> Computation for ComputationWrapper<State, T>
+impl<State, I, O> Computation for ComputationWrapper<State, I, O>
 where
     State: serde::Serialize + for<'de> serde::Deserialize<'de> + Send + Sync + 'static,
-    T: Send + Sync + 'static,
+    I: Send + Sync + 'static,
+    O: Send + Sync + 'static,
 {
-    fn run(&mut self, input: ComputationInput) -> ComputationResult {
+    fn run(&mut self, input: ComputationInput) -> Result<ComputationResult, ComputationError> {
         // Convert ComputationInput to generic input type using input transformer
-        let mut current_input = match self.settings.get_input_transformer().transform_input(input) {
+        let current_input = match self.settings.get_input_transformer().transform_input(input) {
             Ok(transformed) => transformed,
-            Err(_) => return ComputationResult::None,
+            Err(_) => return Err("Failed to transform input".into()),
         };
 
         match self.handler.process(current_input, &mut self.state) {
             Ok(output) => {
-                current_input = output;
-            }
-            Err(_) => return ComputationResult::None,
-        }
+                // Let the output transformer decide the result type
+                let result = self.settings
+                    .get_output_transformer()
+                    .transform_output(output, &mut self.state);
 
-        // Let the output transformer decide the result type
-        self.settings
-            .get_output_transformer()
-            .transform_output(current_input, &mut self.state)
+                Ok(result)
+            }
+            Err(err) => Err(format!("Computation error: {}", err)),
+        }
     }
 
     fn json_serialize_state(&self) -> io::Result<Vec<u8>> {
@@ -227,15 +225,16 @@ where
     }
 }
 
-pub fn register_factory<State, T, F>(
+pub fn register_factory<State, I, O, F>(
     factory_id: String,
-    settings: ComputationSettings<T, State>,
+    settings: ComputationSettings<State, I, O>,
     initial_state: State,
     handler_generator: F,
 ) where
     State: serde::Serialize + for<'de> serde::Deserialize<'de> + Send + Sync + Clone + 'static,
-    T: Send + Sync + 'static,
-    F: Fn() -> Box<dyn ComputationHandler<State, T> + Send + Sync> + Send + Sync + 'static,
+    I: Send + Sync + 'static,
+    O: Send + Sync + 'static,
+    F: Fn() -> Box<dyn ComputationHandler<State, I, O> + Send + Sync> + Send + Sync + 'static,
 {
     use crate::computation::factory_registry::{register_computation_factory, ComputationFactory};
 

@@ -19,6 +19,8 @@ pub use computation::{
     ComputationHandler, VirtualChannel,
 };
 
+use crate::computation::ComputationError;
+
 pub mod pb {
     #[cfg(not(rust_analyzer))]
     include!("generated/operator_commands.rs");
@@ -53,7 +55,7 @@ impl Flezha {
         Arc::clone(&self.computations)
     }
 
-    pub fn run(&mut self, computation_id: String, input: ComputationInput) -> ComputationResult {
+    pub fn run(&mut self, computation_id: String, input: ComputationInput) -> Result<ComputationResult, ComputationError> {
         runner::exec(&computation_id, &self.computations, input)
     }
 

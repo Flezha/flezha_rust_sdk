@@ -2,7 +2,7 @@ use lazy_static::lazy_static;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
-use crate::computation::{Computation, ComputationInput, ComputationResult};
+use crate::computation::{Computation, ComputationError, ComputationInput, ComputationResult};
 
 // Type erased computation for registration. All computations implement Computation.
 pub type ComputationBox = Box<dyn Computation + Send + Sync>;
@@ -44,7 +44,7 @@ impl ComputationHandle {
     }
 
     /// Execute the computation with the given input
-    pub fn run(&self, input: ComputationInput) -> ComputationResult {
+    pub fn run(&self, input: ComputationInput) -> Result<ComputationResult, ComputationError> {
         self.computation_mut().run(input)
     }
 }

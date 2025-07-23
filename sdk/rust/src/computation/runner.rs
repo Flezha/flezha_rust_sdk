@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::{collections::HashMap, os::unix::net::UnixStream};
 
 use crate::computation::factory_registry::ComputationBox;
-use crate::computation::{ComputationInput, ComputationOutput, ComputationResult, VirtualChannel};
+use crate::computation::{ComputationError, ComputationInput, ComputationOutput, ComputationResult, VirtualChannel};
 use crate::service::payloader;
 use mio::{Events, Interest, Poll, Token};
 use std::os::unix::io::AsRawFd;
@@ -13,7 +13,7 @@ pub fn exec(
     computation_id: &String,
     computations: &Arc<RwLock<HashMap<String, Arc<Mutex<ComputationBox>>>>>,
     input: ComputationInput,
-) -> ComputationResult {
+) -> Result<ComputationResult, ComputationError> {
     let computations_read = computations.read().unwrap();
 
     if let Some(c) = computations_read.get(computation_id.as_str()) {
@@ -31,16 +31,22 @@ pub fn exec_agent(
     computations: &Arc<RwLock<HashMap<String, Arc<Mutex<ComputationBox>>>>>,
     input: ComputationInput,
 ) {
-    let computation_result = exec(computation_id, computations, input);
-
-    match computation_result {
-        ComputationResult::None => {
-            return;
-        }
-        ComputationResult::Forward(outputs) => {
-            for (output, virtual_channel) in outputs {
-                pipe_to_agent(&mut stream, computation_id, &output, virtual_channel);
+    match exec(computation_id, computations, input) {
+        Ok(computation_result) => {
+            match computation_result {
+                ComputationResult::None => {
+                    return;
+                }
+                ComputationResult::Forward(outputs) => {
+                    for (output, virtual_channel) in outputs {
+                        pipe_to_agent(&mut stream, computation_id, &output, virtual_channel);
+                    }
+                }
             }
+        },
+        Err(e) => {
+            eprintln!("Error executing computation {}: {}", computation_id, e);
+            return;
         }
     }
 }
