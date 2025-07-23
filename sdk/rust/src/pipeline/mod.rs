@@ -164,18 +164,18 @@ impl<State> ComputationSettings<String, State> {
 }
 
 /// A concrete pipeline implementation that can be used with any state type
-pub struct ConcretePipeline<State, T>
+pub struct ComputationWrapper<State, T>
 where
     State: serde::Serialize + for<'de> serde::Deserialize<'de> + Send + Sync + 'static,
     T: Send + Sync + 'static,
 {
     state: State,
-    steps: Vec<Box<dyn ComputationHandler<State, T> + Send + Sync>>,
+    handler: Box<dyn ComputationHandler<State, T> + Send + Sync>,
     settings: ComputationSettings<T, State>,
     factory_id: String,
 }
 
-impl<State, T> Pipeline for ConcretePipeline<State, T>
+impl<State, T> Pipeline for ComputationWrapper<State, T>
 where
     State: serde::Serialize + for<'de> serde::Deserialize<'de> + Send + Sync + 'static,
     T: Send + Sync + 'static,
@@ -187,13 +187,11 @@ where
             Err(_) => return PipelineResult::None,
         };
 
-        for step in &mut self.steps {
-            match step.process(current_input, &mut self.state) {
-                Ok(output) => {
-                    current_input = output;
-                }
-                Err(_) => return PipelineResult::None,
+        match self.handler.process(current_input, &mut self.state) {
+            Ok(output) => {
+                current_input = output;
             }
+            Err(_) => return PipelineResult::None,
         }
 
         // Let the output transformer decide the result type
@@ -225,9 +223,7 @@ where
     }
 
     fn post_alter(&mut self) {
-        for step in &mut self.steps {
-            step.post_create(&mut self.state);
-        }
+        self.handler.post_create(&mut self.state);
     }
 }
 
@@ -239,24 +235,24 @@ pub fn register_factory<State, T, F>(
 ) where
     State: serde::Serialize + for<'de> serde::Deserialize<'de> + Send + Sync + Clone + 'static,
     T: Send + Sync + 'static,
-    F: Fn() -> Vec<Box<dyn ComputationHandler<State, T> + Send + Sync>> + Send + Sync + 'static,
+    F: Fn() -> Box<dyn ComputationHandler<State, T> + Send + Sync> + Send + Sync + 'static,
 {
     use crate::pipeline::factory_registry::{register_computation_factory, ComputationFactory};
 
     let factory_id_clone = factory_id.clone();
     let settings_clone = settings.clone();
 
-    let factory: ComputationFactory = Box::new(move |_pipeline_id: String| {
-        let steps = handler_generator();
-        let mut pipeline = ConcretePipeline {
+    let factory: ComputationFactory = Box::new(move |_computation_id: String| {
+        let handler = handler_generator();
+        let mut computation = ComputationWrapper {
             state: initial_state.clone(),
-            steps,
+            handler: handler,
             settings: settings_clone.clone(),
             factory_id: factory_id_clone.clone(),
         };
 
-        pipeline.post_alter();
-        Box::new(pipeline) as Box<dyn Pipeline + Send + Sync>
+        computation.post_alter();
+        Box::new(computation) as Box<dyn Pipeline + Send + Sync>
     });
 
     register_computation_factory(factory_id, factory);
