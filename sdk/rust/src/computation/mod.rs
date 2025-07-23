@@ -8,6 +8,7 @@ extern crate erased_serde;
 pub type ComputationError = String;
 pub type InputError = String;
 pub type VirtualChannel = u8;
+pub type ComputationId = String;
 
 #[derive(Debug)]
 pub enum ComputationInput {
@@ -26,7 +27,9 @@ pub enum ComputationOutput {
 #[derive(Debug)]
 pub enum ComputationResult {
     None,
-    Forward(Vec<(ComputationOutput, VirtualChannel)>),
+    Return(ComputationOutput),
+    PipeToAgent(Vec<(ComputationOutput, VirtualChannel)>),
+    PipeToComputation(Vec<(ComputationId, ComputationOutput, VirtualChannel)>),
 }
 
 pub trait Computation {
@@ -101,7 +104,7 @@ pub struct DefaultOutputTransformer;
 
 impl<State> OutputTransformer<String, State> for DefaultOutputTransformer {
     fn transform_output(&self, output: String, _state: &mut State) -> ComputationResult {
-        ComputationResult::Forward(vec![(ComputationOutput::Binary(output.into_bytes()), 1)])
+        ComputationResult::PipeToAgent(vec![(ComputationOutput::Binary(output.into_bytes()), 1)])
     }
 
     fn clone_box(&self) -> Box<dyn OutputTransformer<String, State> + Send + Sync> {

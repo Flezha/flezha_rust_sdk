@@ -34,10 +34,11 @@ pub fn exec_agent(
     match exec(computation_id, computations, input) {
         Ok(computation_result) => {
             match computation_result {
-                ComputationResult::None => {
-                    return;
-                }
-                ComputationResult::Forward(outputs) => {
+                ComputationResult::None => return,
+                ComputationResult::Return(_) => return,
+                // TODO: handle piping to other computations.
+                ComputationResult::PipeToComputation(_) => return,
+                ComputationResult::PipeToAgent(outputs) => {
                     for (output, virtual_channel) in outputs {
                         pipe_to_agent(&mut stream, computation_id, &output, virtual_channel);
                     }
