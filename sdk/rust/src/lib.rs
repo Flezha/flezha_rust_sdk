@@ -15,7 +15,7 @@ use node::OperatorNode;
 use pipeline::factory_registry::PipelineBox;
 use pipeline::runner;
 pub use pipeline::{
-    create_pipeline_factory, PipelineInput, PipelineOutput, PipelineResult, PipelineSettings,
+    register_factory, PipelineInput, PipelineOutput, PipelineResult, ComputationSettings,
     PipelineStep, VirtualChannel,
 };
 

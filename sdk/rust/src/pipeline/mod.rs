@@ -120,12 +120,12 @@ pub trait PipelineStep<State, T> {
     fn post_create(&mut self, _state: &mut State) {}
 }
 
-pub struct PipelineSettings<T, State> {
+pub struct ComputationSettings<T, State> {
     input_transformer: Box<dyn InputTransformer<T> + Send + Sync>,
     output_transformer: Box<dyn OutputTransformer<T, State> + Send + Sync>,
 }
 
-impl<T, State> Clone for PipelineSettings<T, State> {
+impl<T, State> Clone for ComputationSettings<T, State> {
     fn clone(&self) -> Self {
         Self {
             input_transformer: self.input_transformer.clone_box(),
@@ -134,7 +134,7 @@ impl<T, State> Clone for PipelineSettings<T, State> {
     }
 }
 
-impl<T, State> PipelineSettings<T, State> {
+impl<T, State> ComputationSettings<T, State> {
     pub fn new(
         input_transformer: Box<dyn InputTransformer<T> + Send + Sync>,
         output_transformer: Box<dyn OutputTransformer<T, State> + Send + Sync>,
@@ -154,7 +154,7 @@ impl<T, State> PipelineSettings<T, State> {
     }
 }
 
-impl<State> PipelineSettings<String, State> {
+impl<State> ComputationSettings<String, State> {
     pub fn default() -> Self {
         Self {
             input_transformer: Box::new(DefaultInputTransformer),
@@ -171,7 +171,7 @@ where
 {
     state: State,
     steps: Vec<Box<dyn PipelineStep<State, T> + Send + Sync>>,
-    settings: PipelineSettings<T, State>,
+    settings: ComputationSettings<T, State>,
     factory_id: String,
 }
 
@@ -231,9 +231,9 @@ where
     }
 }
 
-pub fn create_pipeline_factory<State, T, F>(
+pub fn register_factory<State, T, F>(
     factory_id: String,
-    settings: PipelineSettings<T, State>,
+    settings: ComputationSettings<T, State>,
     initial_state: State,
     step_factory: F,
 ) where
