@@ -1,8 +1,6 @@
 pub mod factory_registry;
 pub mod runner;
 
-use std::io;
-
 extern crate erased_serde;
 
 pub type ComputationError = String;
@@ -47,10 +45,10 @@ pub trait Computation {
     fn run(&mut self, input: ComputationInput) -> Result<ComputationResult, ComputationError>;
 
     // Serialize the computation state.
-    fn json_serialize_state(&self) -> io::Result<Vec<u8>>;
+    fn json_serialize_state(&self) -> Result<Vec<u8>, String>;
 
     // Deserialize and restore the computation state.
-    fn json_deserialize_state(&mut self, data: &[u8]) -> io::Result<()>;
+    fn json_deserialize_state(&mut self, data: &[u8]) -> Result<(), String>;
 
     // Get the factory ID of the computation.
     fn get_factory_id(&self) -> String;
@@ -211,13 +209,13 @@ where
         }
     }
 
-    fn json_serialize_state(&self) -> io::Result<Vec<u8>> {
-        serde_json::to_vec(&self.state).map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+    fn json_serialize_state(&self) -> Result<Vec<u8>, String> {
+        serde_json::to_vec(&self.state).map_err(|e| format!("Serialization error: {}", e))
     }
 
-    fn json_deserialize_state(&mut self, data: &[u8]) -> io::Result<()> {
+    fn json_deserialize_state(&mut self, data: &[u8]) -> Result<(), String> {
         self.state =
-            serde_json::from_slice(data).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            serde_json::from_slice(data).map_err(|e| format!("Deserialization error: {}", e))?;
         Ok(())
     }
 

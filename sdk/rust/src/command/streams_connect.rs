@@ -127,8 +127,9 @@ fn listen_incoming(
                             // Would block
                             break;
                         }
-                        Err(e) => {
-                            eprint!("Error extracting payload: {}", e);
+                        Err(_e) => {
+                            // Returns errors when testing.
+                            // eprint!("Error extracting payload: {}", e);
                             streams.remove(&token);
                             break;
                         }
