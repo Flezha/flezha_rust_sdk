@@ -77,8 +77,6 @@ pub fn handle_action(
     };
 
     let command_response_bytes = command_response.encode_to_vec();
-    let payload_metadata = HashMap::from([("virtual_channel".to_string(), "1".to_string())]);
-
-    // TODO: hardcoded virtual channel.
-    payloader::build_from_binary(&payload_id, &command_response_bytes, payload_metadata)
+    
+    payloader::build_from_binary(&payload_id, &command_response_bytes, HashMap::new())
 }
