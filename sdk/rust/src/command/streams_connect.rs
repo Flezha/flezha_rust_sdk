@@ -11,9 +11,9 @@ use std::str;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+use crate::computation::ComputationInput;
 use crate::node::coordinator::{CoordinatorMessage, WorkerType};
 use crate::node::OperatorNode;
-use crate::computation::ComputationInput;
 use crate::service::payloader;
 
 use crate::utility::path_helper;
@@ -109,9 +109,9 @@ fn listen_incoming(
 
                             let input = match input_type {
                                 1 => ComputationInput::Binary(payload),
-                                2 => {
-                                    ComputationInput::Text(str::from_utf8(&payload).unwrap().to_string())
-                                }
+                                2 => ComputationInput::Text(
+                                    str::from_utf8(&payload).unwrap().to_string(),
+                                ),
                                 types => panic!("Invalid input type {}", types),
                             };
 

@@ -2,8 +2,8 @@ mod control_unit;
 pub(crate) mod coordinator;
 mod worker_pool;
 
-use crate::node::coordinator::CoordinatorMessage;
 use crate::computation::factory_registry::{get_factory, ComputationBox, ComputationHandle};
+use crate::node::coordinator::CoordinatorMessage;
 
 use crossbeam::channel::{Receiver, Sender};
 use std::collections::HashMap;

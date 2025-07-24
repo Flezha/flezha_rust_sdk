@@ -101,7 +101,10 @@ fn handle_checkout(
     match worker_type {
         WorkerType::ThreadPool => {
             // Check if computation is already being processed
-            if coordinator.computation_workers.contains_key(&computation_id) {
+            if coordinator
+                .computation_workers
+                .contains_key(&computation_id)
+            {
                 // Computation busy, add to its specific queue
                 let queue = coordinator
                     .computation_queues
@@ -109,14 +112,16 @@ fn handle_checkout(
                     .or_insert_with(VecDeque::new);
                 let is_first_item = queue.is_empty();
                 queue.push_back((computation_input, worker_type, stream));
-                
+
                 // Track that this computation has pending work
                 if is_first_item {
                     coordinator.pending_computations.push_back(computation_id);
                 }
             } else if let Some(worker_id) = coordinator.available_workers.pop_front() {
                 // Computation available and worker available, assign immediately
-                coordinator.computation_workers.insert(computation_id.clone(), worker_id);
+                coordinator
+                    .computation_workers
+                    .insert(computation_id.clone(), worker_id);
                 pool_worker_delegate(
                     &coordinator.workers_pool_tx,
                     computation_id,
@@ -132,7 +137,7 @@ fn handle_checkout(
                     .or_insert_with(VecDeque::new);
                 let is_first_item = queue.is_empty();
                 queue.push_back((computation_input, worker_type, stream));
-                
+
                 // Track that this computation has pending work
                 if is_first_item {
                     coordinator.pending_computations.push_back(computation_id);
@@ -150,14 +155,21 @@ fn handle_checkout(
 
 fn handle_checkin(coordinator: &mut Coordinator, worker_id: u16, worked_computation_id: String) {
     // Remove computation from active processing
-    coordinator.computation_workers.remove(&worked_computation_id);
+    coordinator
+        .computation_workers
+        .remove(&worked_computation_id);
 
     // TODO: handle different worker types.
     // Check if this computation has queued work
-    if let Some(queue) = coordinator.computation_queues.get_mut(&worked_computation_id) {
+    if let Some(queue) = coordinator
+        .computation_queues
+        .get_mut(&worked_computation_id)
+    {
         if let Some((computation_input, _worker_type, stream)) = queue.pop_front() {
             // Process next item in this computation's queue with same worker (sticky assignment)
-            coordinator.computation_workers.insert(worked_computation_id.clone(), worker_id);
+            coordinator
+                .computation_workers
+                .insert(worked_computation_id.clone(), worker_id);
             pool_worker_delegate(
                 &coordinator.workers_pool_tx,
                 worked_computation_id,
@@ -168,7 +180,9 @@ fn handle_checkin(coordinator: &mut Coordinator, worker_id: u16, worked_computat
             return;
         } else {
             // Queue is empty, remove it
-            coordinator.computation_queues.remove(&worked_computation_id);
+            coordinator
+                .computation_queues
+                .remove(&worked_computation_id);
         }
     }
 
@@ -178,13 +192,18 @@ fn handle_checkin(coordinator: &mut Coordinator, worker_id: u16, worked_computat
     // Optimized: Only check computations that have pending work
     while let Some(computation_id) = coordinator.pending_computations.pop_front() {
         // Check if computation is still idle and has work
-        if !coordinator.computation_workers.contains_key(&computation_id) {
+        if !coordinator
+            .computation_workers
+            .contains_key(&computation_id)
+        {
             // TODO: handle different worker types.
             if let Some(queue) = coordinator.computation_queues.get_mut(&computation_id) {
                 if let Some((computation_input, _worker_type, stream)) = queue.pop_front() {
                     // Remove worker from available workers since we're assigning it
                     coordinator.available_workers.pop_back();
-                    coordinator.computation_workers.insert(computation_id.clone(), worker_id);
+                    coordinator
+                        .computation_workers
+                        .insert(computation_id.clone(), worker_id);
                     pool_worker_delegate(
                         &coordinator.workers_pool_tx,
                         computation_id.clone(),
@@ -192,10 +211,12 @@ fn handle_checkin(coordinator: &mut Coordinator, worker_id: u16, worked_computat
                         worker_id,
                         stream,
                     );
-                    
+
                     // If queue still has work, put it back in pending list
                     if !queue.is_empty() {
-                        coordinator.pending_computations.push_back(computation_id.clone());
+                        coordinator
+                            .pending_computations
+                            .push_back(computation_id.clone());
                     } else {
                         // Queue is empty, remove it
                         coordinator.computation_queues.remove(&computation_id);

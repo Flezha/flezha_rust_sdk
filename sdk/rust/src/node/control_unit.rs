@@ -109,7 +109,8 @@ fn send_init_msg(
     };
 
     let control_message = serde_json::to_string(&control_init_message).unwrap();
-    let payload = payloader::build_from_str("connect_control_channel", &control_message, HashMap::new());
+    let payload =
+        payloader::build_from_str("connect_control_channel", &control_message, HashMap::new());
 
     // Pass group id to the Flezha.
     (&*stream_clone).write_all(&payload).unwrap();

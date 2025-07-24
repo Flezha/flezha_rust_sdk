@@ -6,13 +6,13 @@ use prost::Message;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+mod computation_start;
+mod computation_state;
+mod computation_stop;
 mod migration_deserialization;
 mod migration_serialization;
 mod operator_assign;
 mod operator_disconnect;
-mod computation_start;
-mod computation_state;
-mod computation_stop;
 mod streams_connect;
 
 pub trait CommandAction {
@@ -77,6 +77,6 @@ pub fn handle_action(
     };
 
     let command_response_bytes = command_response.encode_to_vec();
-    
+
     payloader::build_from_binary(&payload_id, &command_response_bytes, HashMap::new())
 }

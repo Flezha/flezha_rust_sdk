@@ -1,7 +1,7 @@
 use super::CommandAction;
+use crate::computation::factory_registry::ComputationHandle;
 use crate::node::OperatorNode;
 use crate::pb::ComputationState;
-use crate::computation::factory_registry::ComputationHandle;
 use std::sync::{Arc, Mutex};
 
 impl CommandAction for ComputationState {
@@ -26,7 +26,8 @@ impl CommandAction for ComputationState {
                 )
             }
             None => {
-                let error_message = format!("Computation with id {} not found", self.computation_id);
+                let error_message =
+                    format!("Computation with id {} not found", self.computation_id);
                 errors.push(error_message.clone());
                 serde_json::to_string(&"Unable to get computation state.".to_string()).unwrap();
 

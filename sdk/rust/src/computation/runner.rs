@@ -3,11 +3,14 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::{collections::HashMap, os::unix::net::UnixStream};
 
 use crate::computation::factory_registry::ComputationBox;
-use crate::computation::{ComputationError, ComputationId, ComputationInput, ComputationOutput, ComputationResult, PayloadMetadata};
+use crate::computation::{
+    ComputationError, ComputationId, ComputationInput, ComputationOutput, ComputationResult,
+    PayloadMetadata,
+};
 use crate::service::payloader;
+use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Token};
 use std::os::unix::io::AsRawFd;
-use mio::unix::SourceFd;
 
 pub fn exec(
     computation_id: &String,
@@ -32,17 +35,15 @@ pub fn exec_agent(
     input: ComputationInput,
 ) {
     match exec(computation_id, computations, input) {
-        Ok(computation_result) => {
-            match computation_result {
-                ComputationResult::None => return,
-                ComputationResult::Return(_) => return,
-                ComputationResult::PipeToComputation(outputs) => {
-                    pipe_to_computation(stream, computations, outputs);
-                }
-                ComputationResult::PipeToAgent(outputs) => {
-                    for (output, metadata) in outputs {
-                        pipe_to_agent(&mut stream, computation_id, &output, metadata);
-                    }
+        Ok(computation_result) => match computation_result {
+            ComputationResult::None => return,
+            ComputationResult::Return(_) => return,
+            ComputationResult::PipeToComputation(outputs) => {
+                pipe_to_computation(stream, computations, outputs);
+            }
+            ComputationResult::PipeToAgent(outputs) => {
+                for (output, metadata) in outputs {
+                    pipe_to_agent(&mut stream, computation_id, &output, metadata);
                 }
             }
         },
@@ -60,9 +61,7 @@ pub fn pipe_to_agent(
     metadata: HashMap<String, String>,
 ) {
     let payload = match result {
-        ComputationOutput::Text(text) => {
-            payloader::build_from_str(&computation_id, text, metadata)
-        }
+        ComputationOutput::Text(text) => payloader::build_from_str(&computation_id, text, metadata),
         ComputationOutput::Binary(binary) => {
             payloader::build_from_binary(&computation_id, binary, metadata)
         }
@@ -80,7 +79,11 @@ pub fn pipe_to_agent(
             let token = Token(0);
 
             poll.registry()
-                .register(&mut SourceFd(&stream.as_raw_fd()), token, Interest::WRITABLE)
+                .register(
+                    &mut SourceFd(&stream.as_raw_fd()),
+                    token,
+                    Interest::WRITABLE,
+                )
                 .unwrap();
 
             loop {
@@ -90,9 +93,11 @@ pub fn pipe_to_agent(
                         match stream.write_all(&payload) {
                             Ok(_) => {
                                 // Deregister the stream from the poll instance.
-                                poll.registry().deregister(&mut SourceFd(&stream.as_raw_fd())).unwrap();
+                                poll.registry()
+                                    .deregister(&mut SourceFd(&stream.as_raw_fd()))
+                                    .unwrap();
                                 return;
-                            },
+                            }
                             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                                 // The stream is still not ready, continue waiting.
                                 continue;
@@ -100,7 +105,9 @@ pub fn pipe_to_agent(
                             Err(err) => {
                                 eprintln!("Error writing to stream: {}", err);
                                 // Deregister the stream from the poll instance.
-                                poll.registry().deregister(&mut SourceFd(&stream.as_raw_fd())).unwrap();
+                                poll.registry()
+                                    .deregister(&mut SourceFd(&stream.as_raw_fd()))
+                                    .unwrap();
                                 return;
                             }
                         }

@@ -5,7 +5,9 @@ use std::str;
 
 use crate::computation::PayloadMetadata;
 
-pub fn extract_payload<R: Read>(mut reader: R) -> io::Result<(String, Vec<u8>, HashMap<String, String>)> {
+pub fn extract_payload<R: Read>(
+    mut reader: R,
+) -> io::Result<(String, Vec<u8>, HashMap<String, String>)> {
     // Read the payload ID (32 bytes)
     let mut id_buf = [0; 32];
     reader.read_exact(&mut id_buf)?;
@@ -39,7 +41,10 @@ pub fn extract_payload_non_blocking<R: Read>(
     match reader.read(&mut header_buf) {
         Ok(0) => {
             // End of stream
-            return Err(io::Error::new(io::ErrorKind::BrokenPipe, "Connection closed"));
+            return Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "Connection closed",
+            ));
         }
         Ok(n) if n < 36 => {
             // This should not happen with UnixStream, but as a precaution.
@@ -166,11 +171,11 @@ fn build_payload(payload_id: &str, message: &[u8], metadata: PayloadMetadata) ->
 
 fn serialize_metadata(metadata: &HashMap<String, String>) -> Vec<u8> {
     let mut result = Vec::new();
-    
+
     for (key, value) in metadata {
         let key_bytes = key.as_bytes();
         let value_bytes = value.as_bytes();
-        
+
         // Write key size (1 byte)
         result.push(key_bytes.len() as u8);
         // Write value size (1 byte)
@@ -180,38 +185,39 @@ fn serialize_metadata(metadata: &HashMap<String, String>) -> Vec<u8> {
         // Write value
         result.extend_from_slice(value_bytes);
     }
-    
+
     result
 }
 
 fn deserialize_metadata(metadata_bytes: &[u8]) -> io::Result<HashMap<String, String>> {
     let mut metadata = HashMap::new();
     let mut offset = 0;
-    
+
     while offset < metadata_bytes.len() {
         if offset + 2 > metadata_bytes.len() {
             break; // Not enough bytes for key and value sizes
         }
-        
+
         let key_size = metadata_bytes[offset] as usize;
         let value_size = metadata_bytes[offset + 1] as usize;
         offset += 2;
-        
+
         if offset + key_size + value_size > metadata_bytes.len() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "Invalid metadata format: insufficient bytes for key/value"
+                "Invalid metadata format: insufficient bytes for key/value",
             ));
         }
-        
+
         let key = String::from_utf8_lossy(&metadata_bytes[offset..offset + key_size]).to_string();
         offset += key_size;
-        
-        let value = String::from_utf8_lossy(&metadata_bytes[offset..offset + value_size]).to_string();
+
+        let value =
+            String::from_utf8_lossy(&metadata_bytes[offset..offset + value_size]).to_string();
         offset += value_size;
-        
+
         metadata.insert(key, value);
     }
-    
+
     Ok(metadata)
 }

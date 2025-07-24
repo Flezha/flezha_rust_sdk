@@ -1,7 +1,7 @@
 use super::CommandAction;
+use crate::computation::factory_registry::ComputationHandle;
 use crate::node::OperatorNode;
 use crate::pb::MigrationSerialization;
-use crate::computation::factory_registry::ComputationHandle;
 use std::sync::{Arc, Mutex};
 
 impl CommandAction for MigrationSerialization {
@@ -12,7 +12,8 @@ impl CommandAction for MigrationSerialization {
         _errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
         let operator_guard = operator.lock().unwrap();
-        let computation_handle: Option<ComputationHandle> = operator_guard.get_computation(self.computation_id.clone());
+        let computation_handle: Option<ComputationHandle> =
+            operator_guard.get_computation(self.computation_id.clone());
 
         let serialized_state = match computation_handle {
             Some(p) => {

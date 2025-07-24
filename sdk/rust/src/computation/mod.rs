@@ -7,7 +7,6 @@ extern crate erased_serde;
 
 pub type ComputationError = String;
 pub type InputError = String;
-pub type VirtualChannel = u8;
 pub type ComputationId = String;
 pub type PayloadMetadata = HashMap<String, String>;
 
@@ -98,9 +97,7 @@ impl InputTransformer<String> for DefaultInputTransformer {
     fn transform_input(&self, input: ComputationInput) -> Result<String, InputError> {
         match input {
             ComputationInput::Text(text) => Ok(text),
-            ComputationInput::Binary(data) => {
-                String::from_utf8(data).map_err(|e| e.to_string())
-            }
+            ComputationInput::Binary(data) => String::from_utf8(data).map_err(|e| e.to_string()),
             ComputationInput::Custom(_) => Err("Cannot convert custom to String".into()),
         }
     }
@@ -117,7 +114,7 @@ impl<State> OutputTransformer<String, State> for DefaultOutputTransformer {
     fn transform_output(&self, output: String, _state: &mut State) -> ComputationResult {
         ComputationResult::PipeToAgent(vec![(
             ComputationOutput::Binary(output.into_bytes()),
-            HashMap::from([("virtual_channel".to_string(), "1".to_string())]),
+            HashMap::new(),
         )])
     }
 
@@ -205,7 +202,8 @@ where
         match self.handler.process(current_input, &mut self.state) {
             Ok(output) => {
                 // Let the output transformer decide the result type
-                let result = self.settings
+                let result = self
+                    .settings
                     .get_output_transformer()
                     .transform_output(output, &mut self.state);
 

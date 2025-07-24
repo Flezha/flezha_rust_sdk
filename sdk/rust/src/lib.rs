@@ -1,6 +1,6 @@
 mod command;
-mod node;
 pub mod computation;
+mod node;
 mod service;
 mod utility;
 
@@ -15,8 +15,8 @@ use node::OperatorNode;
 use computation::factory_registry::ComputationBox;
 use computation::runner;
 pub use computation::{
-    register_factory, ComputationInput, ComputationOutput, ComputationResult, ComputationSettings,
-    ComputationHandler, VirtualChannel,
+    register_factory, ComputationHandler, ComputationInput, ComputationOutput, ComputationResult,
+    ComputationSettings,
 };
 
 use crate::computation::{ComputationError, PayloadMetadata};
@@ -48,14 +48,22 @@ impl Flezha {
     }
 
     pub fn get_computation(&self, computation_id: &str) -> Option<Arc<Mutex<ComputationBox>>> {
-        self.computations.read().unwrap().get(computation_id).cloned()
+        self.computations
+            .read()
+            .unwrap()
+            .get(computation_id)
+            .cloned()
     }
 
     pub fn get_computations(&self) -> Arc<RwLock<HashMap<String, Arc<Mutex<ComputationBox>>>>> {
         Arc::clone(&self.computations)
     }
 
-    pub fn run(&mut self, computation_id: String, input: ComputationInput) -> Result<ComputationResult, ComputationError> {
+    pub fn run(
+        &mut self,
+        computation_id: String,
+        input: ComputationInput,
+    ) -> Result<ComputationResult, ComputationError> {
         runner::exec(&computation_id, &self.computations, input)
     }
 

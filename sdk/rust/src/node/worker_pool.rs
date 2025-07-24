@@ -39,8 +39,17 @@ pub fn init_worker_pool(
                 let message = wrx.recv().expect("Failed to receive message");
 
                 match message {
-                    WorkerPoolMessage::HandleWork(computation_id, computation_input, unix_stream) => {
-                        runner::exec_agent(unix_stream, &computation_id, &computations, computation_input);
+                    WorkerPoolMessage::HandleWork(
+                        computation_id,
+                        computation_input,
+                        unix_stream,
+                    ) => {
+                        runner::exec_agent(
+                            unix_stream,
+                            &computation_id,
+                            &computations,
+                            computation_input,
+                        );
                         check_in(
                             &ctx_clone,
                             CoordinatorMessage::WorkerCheckIn(worker_id, computation_id),
