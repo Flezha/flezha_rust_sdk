@@ -193,7 +193,7 @@ where
         // Convert ComputationInput to generic input type using input transformer
         let current_input = match self.settings.get_input_transformer().transform_input(input) {
             Ok(transformed) => transformed,
-            Err(_) => return Err("Failed to transform input".into()),
+            Err(e) => return Err(format!("Failed to transform input: {}", e)),
         };
 
         match self.handler.process(current_input, &mut self.state) {
