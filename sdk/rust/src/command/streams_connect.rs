@@ -91,7 +91,7 @@ fn listen_incoming(
             if let Some(stream) = streams.get_mut(&token) {
                 loop {
                     match payloader::extract_payload_non_blocking(&mut *stream) {
-                        Ok(Some((computation_id, mut payload))) => {
+                        Ok(Some((computation_id, mut payload, _metadata))) => {
                             // input_type is the first byte of the payload
                             let input_type = payload[0];
 

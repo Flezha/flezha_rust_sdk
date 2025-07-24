@@ -19,7 +19,7 @@ pub use computation::{
     ComputationHandler, VirtualChannel,
 };
 
-use crate::computation::ComputationError;
+use crate::computation::{ComputationError, PayloadMetadata};
 
 pub mod pb {
     #[cfg(not(rust_analyzer))]
@@ -63,7 +63,7 @@ impl Flezha {
         &mut self,
         computation_id: String,
         result: ComputationOutput,
-        virtual_channel: VirtualChannel,
+        metadata: PayloadMetadata,
     ) {
         let mut io_stream = self
             .shared_io_streams
@@ -75,7 +75,7 @@ impl Flezha {
             .try_clone()
             .unwrap();
 
-        runner::pipe_to_agent(&mut io_stream, &computation_id, &result, virtual_channel);
+        runner::pipe_to_agent(&mut io_stream, &computation_id, &result, metadata);
     }
 }
 

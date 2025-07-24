@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 pub mod factory_registry;
 pub mod runner;
 
@@ -7,6 +9,7 @@ pub type ComputationError = String;
 pub type InputError = String;
 pub type VirtualChannel = u8;
 pub type ComputationId = String;
+pub type PayloadMetadata = HashMap<String, String>;
 
 #[derive(Debug)]
 pub enum ComputationInput {
@@ -36,8 +39,8 @@ pub enum ComputationOutput {
 pub enum ComputationResult {
     None,
     Return(ComputationOutput),
-    PipeToAgent(Vec<(ComputationOutput, VirtualChannel)>),
-    PipeToComputation(Vec<(ComputationId, ComputationOutput, VirtualChannel)>),
+    PipeToAgent(Vec<(ComputationOutput, PayloadMetadata)>),
+    PipeToComputation(Vec<(ComputationId, ComputationOutput, PayloadMetadata)>),
 }
 
 pub trait Computation {
@@ -112,7 +115,10 @@ pub struct DefaultOutputTransformer;
 
 impl<State> OutputTransformer<String, State> for DefaultOutputTransformer {
     fn transform_output(&self, output: String, _state: &mut State) -> ComputationResult {
-        ComputationResult::PipeToAgent(vec![(ComputationOutput::Binary(output.into_bytes()), 1)])
+        ComputationResult::PipeToAgent(vec![(
+            ComputationOutput::Binary(output.into_bytes()),
+            HashMap::from([("virtual_channel".to_string(), "1".to_string())]),
+        )])
     }
 
     fn clone_box(&self) -> Box<dyn OutputTransformer<String, State> + Send + Sync> {

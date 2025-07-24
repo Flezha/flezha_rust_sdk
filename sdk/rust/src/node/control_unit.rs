@@ -1,4 +1,5 @@
 use crossbeam::channel::Sender;
+use std::collections::HashMap;
 use std::io::Write;
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
@@ -52,7 +53,7 @@ fn sock_conn(
 
         loop {
             match payloader::extract_payload(&*stream_clone.clone()) {
-                Ok((payload_id, message, _virtual_channel)) => {
+                Ok((payload_id, message, _metadata)) => {
                     let payload_message: String = String::from_utf8_lossy(&message).to_string();
 
                     let (handler_type, reference_id) =
@@ -108,7 +109,8 @@ fn send_init_msg(
     };
 
     let control_message = serde_json::to_string(&control_init_message).unwrap();
-    let payload = payloader::build_from_str("connect_control_channel", 1, &control_message);
+    let metadata = HashMap::from([("virtual_channel".to_string(), "1".to_string())]);
+    let payload = payloader::build_from_str("connect_control_channel", &control_message, metadata);
 
     // Pass group id to the Flezha.
     (&*stream_clone).write_all(&payload).unwrap();

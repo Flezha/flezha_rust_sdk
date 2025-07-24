@@ -3,6 +3,7 @@ use crate::pb::command_request::Command;
 use crate::pb::{CommandRequest, CommandResponse};
 use crate::service::payloader;
 use prost::Message;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 mod migration_deserialization;
@@ -76,7 +77,8 @@ pub fn handle_action(
     };
 
     let command_response_bytes = command_response.encode_to_vec();
+    let payload_metadata = HashMap::from([("virtual_channel".to_string(), "1".to_string())]);
 
     // TODO: hardcoded virtual channel.
-    payloader::build_from_binary(&payload_id, 1, &command_response_bytes)
+    payloader::build_from_binary(&payload_id, &command_response_bytes, payload_metadata)
 }

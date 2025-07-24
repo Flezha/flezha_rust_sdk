@@ -1,42 +1,47 @@
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
+use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::str;
 
-pub fn extract_payload<R: Read>(mut reader: R) -> io::Result<(String, Vec<u8>, u8)> {
-    // Read the payload ID (32 bytes).
+use crate::computation::PayloadMetadata;
+
+pub fn extract_payload<R: Read>(mut reader: R) -> io::Result<(String, Vec<u8>, HashMap<String, String>)> {
+    // Read the payload ID (32 bytes)
     let mut id_buf = [0; 32];
     reader.read_exact(&mut id_buf)?;
     let payload_id = String::from_utf8_lossy(&id_buf).trim_end().to_string();
 
-    // Read the virtual channel (1 byte).
-    let mut virtual_channel_buf = [0; 1];
-    reader.read_exact(&mut virtual_channel_buf)?;
+    // Read the message size (4 bytes)
+    let message_length = reader.read_u32::<BigEndian>()? as usize;
 
-    // Read the virtual channel byte.
-    let virtual_channel = virtual_channel_buf[0];
-
-    // Read the length prefix (8 bytes).
-    let mut length_buf = [0; 8];
-    reader.read_exact(&mut length_buf)?;
-    let message_length = (&length_buf[..]).read_u64::<BigEndian>()? as usize;
-
-    // Read the actual message.
+    // Read the actual message
     let mut message_buf = vec![0; message_length];
     reader.read_exact(&mut message_buf)?;
 
-    Ok((payload_id, message_buf, virtual_channel))
+    // Read the metadata size (2 bytes)
+    let metadata_length = reader.read_u16::<BigEndian>()? as usize;
+
+    // Read the metadata
+    let mut metadata_buf = vec![0; metadata_length];
+    reader.read_exact(&mut metadata_buf)?;
+
+    // Deserialize metadata
+    let metadata = deserialize_metadata(&metadata_buf)?;
+
+    Ok((payload_id, message_buf, metadata))
 }
 
 pub fn extract_payload_non_blocking<R: Read>(
     mut reader: R,
-) -> io::Result<Option<(String, Vec<u8>)>> {
-    let mut header_buf = [0; 41];
+) -> io::Result<Option<(String, Vec<u8>, HashMap<String, String>)>> {
+    // New header format: payload_id (32) + message_size (4) = 36 bytes
+    let mut header_buf = [0; 36];
     match reader.read(&mut header_buf) {
         Ok(0) => {
             // End of stream
             return Err(io::Error::new(io::ErrorKind::BrokenPipe, "Connection closed"));
         }
-        Ok(n) if n < 41 => {
+        Ok(n) if n < 36 => {
             // This should not happen with UnixStream, but as a precaution.
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -56,9 +61,9 @@ pub fn extract_payload_non_blocking<R: Read>(
 
     let id_buf = &header_buf[0..32];
     let payload_id = String::from_utf8_lossy(id_buf).trim_end().to_string();
-    let _virtual_channel = header_buf[32];
-    let message_length = (&header_buf[33..]).read_u64::<BigEndian>()? as usize;
+    let message_length = (&header_buf[32..]).read_u32::<BigEndian>()? as usize;
 
+    // Read the message
     let mut message_buf = vec![0; message_length];
     if message_length > 0 {
         match reader.read_exact(&mut message_buf) {
@@ -76,27 +81,60 @@ pub fn extract_payload_non_blocking<R: Read>(
         }
     }
 
-    Ok(Some((payload_id, message_buf)))
+    // Read the metadata size (2 bytes)
+    let mut metadata_size_buf = [0; 2];
+    match reader.read_exact(&mut metadata_size_buf) {
+        Ok(_) => {}
+        Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Partial metadata size read",
+            ));
+        }
+        Err(e) => {
+            return Err(e);
+        }
+    }
+    let metadata_length = (&metadata_size_buf[..]).read_u16::<BigEndian>()? as usize;
+
+    // Read the metadata
+    let mut metadata_buf = vec![0; metadata_length];
+    if metadata_length > 0 {
+        match reader.read_exact(&mut metadata_buf) {
+            Ok(_) => {}
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Partial metadata read",
+                ));
+            }
+            Err(e) => {
+                return Err(e);
+            }
+        }
+    }
+
+    // Deserialize metadata
+    let metadata = deserialize_metadata(&metadata_buf)?;
+
+    Ok(Some((payload_id, message_buf, metadata)))
 }
 
-pub fn build_from_binary(payload_id: &str, virtual_channel: u8, message: &[u8]) -> Vec<u8> {
-    build_payload(payload_id, virtual_channel, message)
+pub fn build_from_binary(payload_id: &str, message: &[u8], metadata: PayloadMetadata) -> Vec<u8> {
+    build_payload(payload_id, message, metadata)
 }
 
-pub fn build_from_str(payload_id: &str, virtual_channel: u8, message: &str) -> Vec<u8> {
-    build_payload(payload_id, virtual_channel, message.as_bytes())
+pub fn build_from_str(payload_id: &str, message: &str, metadata: PayloadMetadata) -> Vec<u8> {
+    build_payload(payload_id, message.as_bytes(), metadata)
 }
 
-fn build_payload(payload_id: &str, virtual_channel: u8, message: &[u8]) -> Vec<u8> {
-    let message_len = message.len() as u64;
-    let mut payload = handle_payload_build(payload_id, virtual_channel, message_len);
-    payload.write_all(message).unwrap();
+fn build_payload(payload_id: &str, message: &[u8], metadata: PayloadMetadata) -> Vec<u8> {
+    // Serialize metadata
+    let metadata_binary = serialize_metadata(&metadata);
+    let metadata_size = metadata_binary.len() as u16;
+    let message_size = message.len() as u32;
 
-    payload
-}
-
-fn handle_payload_build(payload_id: &str, virtual_channel: u8, message_len: u64) -> Vec<u8> {
-    // Ensure the payload ID is 32 bytes.
+    // Ensure the payload ID is 32 bytes
     let mut payload_id_padded = payload_id.to_string();
     if payload_id_padded.len() > 32 {
         payload_id_padded.truncate(32);
@@ -104,17 +142,76 @@ fn handle_payload_build(payload_id: &str, virtual_channel: u8, message_len: u64)
         payload_id_padded.push_str(&" ".repeat(32 - payload_id_padded.len()));
     }
 
-    // Create a buffer to hold the payload.
-    let mut payload = Vec::with_capacity(32 + 8 + message_len as usize);
+    // Calculate total capacity: payload_id (32) + message_size (4) + message + metadata_size (2) + metadata
+    let total_capacity = 32 + 4 + message.len() + 2 + metadata_binary.len();
+    let mut payload = Vec::with_capacity(total_capacity);
 
-    // Write the payload ID (32 bytes) to the payload.
+    // Write the payload ID (32 bytes)
     payload.write_all(payload_id_padded.as_bytes()).unwrap();
 
-    // Write the virtual channel (1 byte) to the payload.
-    payload.push(virtual_channel);
+    // Write the message size (4 bytes)
+    payload.write_u32::<BigEndian>(message_size).unwrap();
 
-    // Write the message size (8 bytes) to the payload.
-    let _ = payload.write_u64::<BigEndian>(message_len);
+    // Write the message
+    payload.write_all(message).unwrap();
+
+    // Write the metadata size (2 bytes)
+    payload.write_u16::<BigEndian>(metadata_size).unwrap();
+
+    // Write the metadata
+    payload.write_all(&metadata_binary).unwrap();
 
     payload
+}
+
+fn serialize_metadata(metadata: &HashMap<String, String>) -> Vec<u8> {
+    let mut result = Vec::new();
+    
+    for (key, value) in metadata {
+        let key_bytes = key.as_bytes();
+        let value_bytes = value.as_bytes();
+        
+        // Write key size (1 byte)
+        result.push(key_bytes.len() as u8);
+        // Write value size (1 byte)
+        result.push(value_bytes.len() as u8);
+        // Write key
+        result.extend_from_slice(key_bytes);
+        // Write value
+        result.extend_from_slice(value_bytes);
+    }
+    
+    result
+}
+
+fn deserialize_metadata(metadata_bytes: &[u8]) -> io::Result<HashMap<String, String>> {
+    let mut metadata = HashMap::new();
+    let mut offset = 0;
+    
+    while offset < metadata_bytes.len() {
+        if offset + 2 > metadata_bytes.len() {
+            break; // Not enough bytes for key and value sizes
+        }
+        
+        let key_size = metadata_bytes[offset] as usize;
+        let value_size = metadata_bytes[offset + 1] as usize;
+        offset += 2;
+        
+        if offset + key_size + value_size > metadata_bytes.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Invalid metadata format: insufficient bytes for key/value"
+            ));
+        }
+        
+        let key = String::from_utf8_lossy(&metadata_bytes[offset..offset + key_size]).to_string();
+        offset += key_size;
+        
+        let value = String::from_utf8_lossy(&metadata_bytes[offset..offset + value_size]).to_string();
+        offset += value_size;
+        
+        metadata.insert(key, value);
+    }
+    
+    Ok(metadata)
 }

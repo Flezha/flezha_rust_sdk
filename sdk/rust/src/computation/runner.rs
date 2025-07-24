@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::{collections::HashMap, os::unix::net::UnixStream};
 
 use crate::computation::factory_registry::ComputationBox;
-use crate::computation::{ComputationError, ComputationId, ComputationInput, ComputationOutput, ComputationResult, VirtualChannel};
+use crate::computation::{ComputationError, ComputationId, ComputationInput, ComputationOutput, ComputationResult, PayloadMetadata};
 use crate::service::payloader;
 use mio::{Events, Interest, Poll, Token};
 use std::os::unix::io::AsRawFd;
@@ -40,8 +40,8 @@ pub fn exec_agent(
                     pipe_to_computation(stream, computations, outputs);
                 }
                 ComputationResult::PipeToAgent(outputs) => {
-                    for (output, virtual_channel) in outputs {
-                        pipe_to_agent(&mut stream, computation_id, &output, virtual_channel);
+                    for (output, metadata) in outputs {
+                        pipe_to_agent(&mut stream, computation_id, &output, metadata);
                     }
                 }
             }
@@ -57,14 +57,14 @@ pub fn pipe_to_agent(
     stream: &mut UnixStream,
     computation_id: &String,
     result: &ComputationOutput,
-    virtual_channel: VirtualChannel,
+    metadata: HashMap<String, String>,
 ) {
     let payload = match result {
         ComputationOutput::Text(text) => {
-            payloader::build_from_str(&computation_id, virtual_channel, text)
+            payloader::build_from_str(&computation_id, text, metadata)
         }
         ComputationOutput::Binary(binary) => {
-            payloader::build_from_binary(&computation_id, virtual_channel, binary)
+            payloader::build_from_binary(&computation_id, binary, metadata)
         }
         // TODO: Implement custom type serialization
         ComputationOutput::Custom(_) => {
@@ -117,9 +117,9 @@ pub fn pipe_to_agent(
 fn pipe_to_computation(
     stream: UnixStream,
     computations: &Arc<RwLock<HashMap<String, Arc<Mutex<ComputationBox>>>>>,
-    outputs: Vec<(ComputationId, ComputationOutput, VirtualChannel)>,
+    outputs: Vec<(ComputationId, ComputationOutput, PayloadMetadata)>,
 ) {
-    for (computation_id, output, virtual_channel) in outputs {
+    for (computation_id, output, metadata) in outputs {
         let mut stream_clone = stream.try_clone().unwrap();
 
         if let Some(_computation) = computations.read().unwrap().get(&computation_id) {
@@ -127,7 +127,7 @@ fn pipe_to_computation(
             exec_agent(stream_clone, &computation_id, computations, input);
         } else {
             // Computation not found, try piping to the agent.
-            pipe_to_agent(&mut stream_clone, &computation_id, &output, virtual_channel);
+            pipe_to_agent(&mut stream_clone, &computation_id, &output, metadata);
         }
     }
 }
