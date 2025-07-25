@@ -91,28 +91,19 @@ fn listen_incoming(
             if let Some(stream) = streams.get_mut(&token) {
                 loop {
                     match payloader::extract_payload_non_blocking(&mut *stream) {
-                        Ok(Some((computation_id, mut payload, _metadata))) => {
-                            // input_type is the first byte of the payload
-                            let input_type = payload[0];
-
-                            // worker_type is the second byte of the payload
-                            let worker_type_int = payload[1];
-
-                            let worker_type = match worker_type_int {
-                                1 => WorkerType::ThreadPool,
-                                2 => WorkerType::ThreadSpawn,
+                        Ok(Some((computation_id, payload, metadata))) => {
+                            let worker_type = match metadata.get("worker_type".into()).unwrap_or(&"1".into()).as_str() {
+                                "1" => WorkerType::ThreadPool,
+                                "2" => WorkerType::ThreadSpawn,
                                 _ => panic!("Invalid worker type"),
                             };
 
-                            payload.remove(0);
-                            payload.remove(0);
-
-                            let input = match input_type {
-                                1 => ComputationInput::Binary(payload),
-                                2 => ComputationInput::Text(
+                            let input = match metadata.get("input_type".into()).unwrap_or(&"1".into()).as_str() {
+                                "1" => ComputationInput::Binary(payload),
+                                "2" => ComputationInput::Text(
                                     str::from_utf8(&payload).unwrap().to_string(),
                                 ),
-                                types => panic!("Invalid input type {}", types),
+                                err_type => panic!("Invalid input type {}", err_type),
                             };
 
                             ctx.send(CoordinatorMessage::WorkerCheckOut(
