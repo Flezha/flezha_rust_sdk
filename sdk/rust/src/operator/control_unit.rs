@@ -60,8 +60,9 @@ fn sock_conn(
                         ))
                         .unwrap();
                 }
-                Err(e) => {
-                    eprintln!("Error extracting payload: {}", e);
+                Err(_e) => {
+                    // Returns errors when testing.
+                    // eprint!("Error extracting payload: {}", e);
                     thread::sleep(Duration::from_millis(100));
                     continue;
                 }

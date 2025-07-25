@@ -13,19 +13,29 @@ pub fn extract_payload<R: Read>(
     reader.read_exact(&mut id_buf)?;
     let payload_id = String::from_utf8_lossy(&id_buf).trim_end().to_string();
 
+    // Read the payload size (4 bytes)
+    let payload_length = reader.read_u32::<BigEndian>()? as usize;
+
+    // Read the entire payload
+    let mut payload_buf = vec![0; payload_length];
+    reader.read_exact(&mut payload_buf)?;
+
+    // Parse the payload: message_size (4) + message + metadata_size (2) + metadata
+    let mut payload_reader = &payload_buf[..];
+    
     // Read the message size (4 bytes)
-    let message_length = reader.read_u32::<BigEndian>()? as usize;
+    let message_length = payload_reader.read_u32::<BigEndian>()? as usize;
 
     // Read the actual message
     let mut message_buf = vec![0; message_length];
-    reader.read_exact(&mut message_buf)?;
+    payload_reader.read_exact(&mut message_buf)?;
 
     // Read the metadata size (2 bytes)
-    let metadata_length = reader.read_u16::<BigEndian>()? as usize;
+    let metadata_length = payload_reader.read_u16::<BigEndian>()? as usize;
 
     // Read the metadata
     let mut metadata_buf = vec![0; metadata_length];
-    reader.read_exact(&mut metadata_buf)?;
+    payload_reader.read_exact(&mut metadata_buf)?;
 
     // Deserialize metadata
     let metadata = deserialize_metadata(&metadata_buf)?;
@@ -36,7 +46,7 @@ pub fn extract_payload<R: Read>(
 pub fn extract_payload_non_blocking<R: Read>(
     mut reader: R,
 ) -> io::Result<Option<(String, Vec<u8>, HashMap<String, String>)>> {
-    // New header format: payload_id (32) + message_size (4) = 36 bytes
+    // New header format: payload_id (32) + payload_size (4) = 36 bytes
     let mut header_buf = [0; 36];
     match reader.read(&mut header_buf) {
         Ok(0) => {
@@ -66,18 +76,18 @@ pub fn extract_payload_non_blocking<R: Read>(
 
     let id_buf = &header_buf[0..32];
     let payload_id = String::from_utf8_lossy(id_buf).trim_end().to_string();
-    let message_length = (&header_buf[32..]).read_u32::<BigEndian>()? as usize;
+    let payload_length = (&header_buf[32..]).read_u32::<BigEndian>()? as usize;
 
-    // Read the message
-    let mut message_buf = vec![0; message_length];
-    if message_length > 0 {
-        match reader.read_exact(&mut message_buf) {
+    // Read the entire payload
+    let mut payload_buf = vec![0; payload_length];
+    if payload_length > 0 {
+        match reader.read_exact(&mut payload_buf) {
             Ok(_) => {}
             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
                 // This is a protocol error. We got a header but can't get the body.
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    "Partial message read",
+                    "Partial payload read",
                 ));
             }
             Err(e) => {
@@ -86,38 +96,22 @@ pub fn extract_payload_non_blocking<R: Read>(
         }
     }
 
+    // Parse the payload: message_size (4) + message + metadata_size (2) + metadata
+    let mut payload_reader = &payload_buf[..];
+    
+    // Read the message size (4 bytes)
+    let message_length = payload_reader.read_u32::<BigEndian>()? as usize;
+
+    // Read the actual message
+    let mut message_buf = vec![0; message_length];
+    payload_reader.read_exact(&mut message_buf)?;
+
     // Read the metadata size (2 bytes)
-    let mut metadata_size_buf = [0; 2];
-    match reader.read_exact(&mut metadata_size_buf) {
-        Ok(_) => {}
-        Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Partial metadata size read",
-            ));
-        }
-        Err(e) => {
-            return Err(e);
-        }
-    }
-    let metadata_length = (&metadata_size_buf[..]).read_u16::<BigEndian>()? as usize;
+    let metadata_length = payload_reader.read_u16::<BigEndian>()? as usize;
 
     // Read the metadata
     let mut metadata_buf = vec![0; metadata_length];
-    if metadata_length > 0 {
-        match reader.read_exact(&mut metadata_buf) {
-            Ok(_) => {}
-            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "Partial metadata read",
-                ));
-            }
-            Err(e) => {
-                return Err(e);
-            }
-        }
-    }
+    payload_reader.read_exact(&mut metadata_buf)?;
 
     // Deserialize metadata
     let metadata = deserialize_metadata(&metadata_buf)?;
@@ -138,6 +132,9 @@ fn build_payload(payload_id: &str, message: &[u8], metadata: PayloadMetadata) ->
     let metadata_binary = serialize_metadata(&metadata);
     let metadata_size = metadata_binary.len() as u16;
     let message_size = message.len() as u32;
+    
+    // Calculate payload size: message_size (4) + message + metadata_size (2) + metadata
+    let payload_size = 4 + message.len() + 2 + metadata_binary.len();
 
     // Ensure the payload ID is 32 bytes
     let mut payload_id_padded = payload_id.to_string();
@@ -147,26 +144,29 @@ fn build_payload(payload_id: &str, message: &[u8], metadata: PayloadMetadata) ->
         payload_id_padded.push_str(&" ".repeat(32 - payload_id_padded.len()));
     }
 
-    // Calculate total capacity: payload_id (32) + message_size (4) + message + metadata_size (2) + metadata
-    let total_capacity = 32 + 4 + message.len() + 2 + metadata_binary.len();
-    let mut payload = Vec::with_capacity(total_capacity);
+    // Calculate total capacity: payload_id (32) + payload_size (4) + payload_size
+    let total_capacity = 32 + 4 + payload_size;
+    let mut result = Vec::with_capacity(total_capacity);
 
     // Write the payload ID (32 bytes)
-    payload.write_all(payload_id_padded.as_bytes()).unwrap();
+    result.write_all(payload_id_padded.as_bytes()).unwrap();
+
+    // Write the payload size (4 bytes)
+    result.write_u32::<BigEndian>(payload_size as u32).unwrap();
 
     // Write the message size (4 bytes)
-    payload.write_u32::<BigEndian>(message_size).unwrap();
+    result.write_u32::<BigEndian>(message_size).unwrap();
 
     // Write the message
-    payload.write_all(message).unwrap();
+    result.write_all(message).unwrap();
 
     // Write the metadata size (2 bytes)
-    payload.write_u16::<BigEndian>(metadata_size).unwrap();
+    result.write_u16::<BigEndian>(metadata_size).unwrap();
 
     // Write the metadata
-    payload.write_all(&metadata_binary).unwrap();
+    result.write_all(&metadata_binary).unwrap();
 
-    payload
+    result
 }
 
 fn serialize_metadata(metadata: &HashMap<String, String>) -> Vec<u8> {
