@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-pub mod exector;
+pub mod executor;
 pub mod factory_registry;
 
 extern crate erased_serde;

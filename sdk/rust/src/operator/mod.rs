@@ -10,23 +10,29 @@ use std::thread::{self, JoinHandle};
 
 use crate::computation::factory_registry::{get_factory, ComputationBox, ComputationHandle};
 
-use crate::computation::{exector, ComputationRunner};
+use crate::computation::{executor, ComputationRunner};
 use crate::operator::worker_pool::{init_worker_pool, pool_worker_delegate, WorkerPoolMessage};
 use crate::{command, ComputationInput};
+
+type WorkItem = (ComputationInput, UnixStream);
 
 pub enum OperatorMessage {
     WorkerInitCheckIn(u16),
     WorkerCheckIn(u16, String),
     WorkerCheckOut(String, ComputationInput, UnixStream),
     HandleCommandAction(String, Vec<u8>, HashMap<String, String>),
+    ReturnComputations,
 }
-
-type WorkItem = (ComputationInput, UnixStream);
 
 pub enum OperatorStatus {
     Starting,
     Running,
     Stopped,
+}
+
+pub enum ClientResponseMessage {
+    OperatorIdConfirmation,
+    ReturnComputations(Arc<RwLock<HashMap<String, Arc<Mutex<ComputationBox>>>>>),
 }
 
 pub struct OperatorNode {
@@ -41,10 +47,6 @@ pub struct OperatorNode {
     pending_computations: VecDeque<String>,
     operator_channel: Arc<Mutex<Sender<OperatorMessage>>>,
     status: OperatorStatus,
-}
-
-pub enum InitializationMessage {
-    OperatorIdConfirmation,
 }
 
 impl OperatorNode {
@@ -138,13 +140,14 @@ impl OperatorNode {
 pub fn start(
     namespace: String,
     (otx, orx): (Sender<OperatorMessage>, Receiver<OperatorMessage>),
-    itx: Sender<InitializationMessage>,
+    ctx: Sender<ClientResponseMessage>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
         let mut operator = OperatorNode::new(namespace.clone(), otx.clone());
-        let itx_arc = Arc::new(Mutex::new(itx));
+        let ctx_arc = Arc::new(Mutex::new(ctx));
         let otx_arc = Arc::new(Mutex::new(otx));
-        let (_control_thread, control_stream) = control_unit::open(namespace, itx_arc, otx_arc);
+        let (_control_thread, control_stream) =
+            control_unit::open(namespace, ctx_arc.clone(), otx_arc);
 
         loop {
             let message = orx.recv().expect("Failed to receive coordinator message");
@@ -163,9 +166,25 @@ pub fn start(
                 OperatorMessage::HandleCommandAction(payload_id, message, _metadata) => {
                     command::handle_command(&mut operator, &control_stream, &payload_id, &message);
                 }
+                OperatorMessage::ReturnComputations => {
+                    return_computations(&operator, ctx_arc.clone());
+                }
             }
         }
     })
+}
+
+fn return_computations(
+    operator: &OperatorNode,
+    ctx_arc: Arc<Mutex<Sender<ClientResponseMessage>>>,
+) {
+    let computations = operator.get_computations();
+
+    ctx_arc
+        .lock()
+        .unwrap()
+        .send(ClientResponseMessage::ReturnComputations(computations))
+        .expect("Failed to send computations response");
 }
 
 fn handle_checkin(operator: &mut OperatorNode, worker_id: u16, worked_computation_id: String) {
@@ -293,7 +312,7 @@ fn handle_checkout(
                 }
             }
             ComputationRunner::ThreadSpawn => {
-                exector::exec_agent(
+                executor::exec_agent(
                     stream,
                     &computation_id,
                     &operator.get_computations(),

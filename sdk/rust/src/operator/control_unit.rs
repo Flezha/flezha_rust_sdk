@@ -13,7 +13,7 @@ use crate::operator::OperatorMessage;
 use crate::service::payloader;
 use crate::utility::path_helper;
 
-use super::InitializationMessage;
+use super::ClientResponseMessage;
 
 #[derive(Serialize)]
 struct ControlInitMessage {
@@ -23,7 +23,7 @@ struct ControlInitMessage {
 
 pub fn open(
     group_id: String,
-    itx: Arc<Mutex<Sender<InitializationMessage>>>,
+    itx: Arc<Mutex<Sender<ClientResponseMessage>>>,
     otx: Arc<Mutex<Sender<OperatorMessage>>>,
 ) -> (thread::JoinHandle<()>, Arc<UnixStream>) {
     let socket_path = path_helper::control_socket_path();
@@ -42,7 +42,7 @@ pub fn open(
 fn sock_conn(
     group_id: String,
     stream_box: Arc<UnixStream>,
-    itx: Arc<Mutex<Sender<InitializationMessage>>>,
+    itx: Arc<Mutex<Sender<ClientResponseMessage>>>,
     otx: Arc<Mutex<Sender<OperatorMessage>>>,
 ) -> (thread::JoinHandle<()>, Arc<UnixStream>) {
     let stream_clone = Arc::clone(&stream_box);
@@ -74,7 +74,7 @@ fn sock_conn(
 
 fn send_init_msg(
     group_id: String,
-    tx: Arc<Mutex<Sender<InitializationMessage>>>,
+    tx: Arc<Mutex<Sender<ClientResponseMessage>>>,
     stream_clone: Arc<UnixStream>,
 ) {
     let control_init_message = ControlInitMessage {
@@ -91,6 +91,6 @@ fn send_init_msg(
 
     tx.lock()
         .unwrap()
-        .send(InitializationMessage::OperatorIdConfirmation)
+        .send(ClientResponseMessage::OperatorIdConfirmation)
         .unwrap();
 }

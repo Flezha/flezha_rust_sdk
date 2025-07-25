@@ -9,7 +9,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use crate::computation::exector;
+use crate::computation::executor;
 use crate::computation::factory_registry::ComputationBox;
 use crate::operator::OperatorMessage;
 use crate::ComputationInput;
@@ -45,7 +45,7 @@ pub fn init_worker_pool(
                         computation_input,
                         unix_stream,
                     ) => {
-                        exector::exec_agent(
+                        executor::exec_agent(
                             unix_stream,
                             &computation_id,
                             &computations,

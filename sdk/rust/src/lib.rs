@@ -4,7 +4,10 @@ mod operator;
 mod service;
 mod utility;
 
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex, RwLock},
+};
 
 use crossbeam::channel::{Receiver, Sender};
 
@@ -13,7 +16,10 @@ pub use computation::{
     ComputationSettings,
 };
 
-use crate::operator::{InitializationMessage, OperatorMessage};
+use crate::{
+    computation::factory_registry::ComputationBox,
+    operator::{ClientResponseMessage, OperatorMessage},
+};
 
 pub mod pb {
     #[cfg(not(rust_analyzer))]
@@ -23,37 +29,61 @@ pub mod pb {
 }
 pub struct Flezha {
     id: String,
-    _operator_channel: Arc<Mutex<crossbeam::channel::Sender<OperatorMessage>>>,
+    operator_tx: Arc<Mutex<crossbeam::channel::Sender<OperatorMessage>>>,
+    client_rx: Arc<Mutex<crossbeam::channel::Receiver<ClientResponseMessage>>>,
     _operator_thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Flezha {
     fn new(id: String) -> Flezha {
-        let (ctx, crx): (Sender<OperatorMessage>, Receiver<OperatorMessage>) =
+        let (otx, orx): (Sender<OperatorMessage>, Receiver<OperatorMessage>) =
             crossbeam::channel::unbounded();
-        let (itx, irx): (
-            Sender<InitializationMessage>,
-            Receiver<InitializationMessage>,
+        let (ctx, irx): (
+            Sender<ClientResponseMessage>,
+            Receiver<ClientResponseMessage>,
         ) = crossbeam::channel::unbounded();
-        let operator_thread = operator::start(id.clone(), (ctx.clone(), crx), itx);
+        let operator_thread = operator::start(id.clone(), (otx.clone(), orx), ctx);
 
         // Make sure the namespace is passed to the agent and confirmed
         match irx
             .recv()
             .expect("Failed to receive namespace confirmation")
         {
-            InitializationMessage::OperatorIdConfirmation => {}
+            ClientResponseMessage::OperatorIdConfirmation => {}
+            _ => panic!("Unexpected message type received"),
         }
 
         Flezha {
             id: id.clone(),
-            _operator_channel: Arc::new(Mutex::new(ctx)),
+            operator_tx: Arc::new(Mutex::new(otx)),
+            client_rx: Arc::new(Mutex::new(irx)),
             _operator_thread: Some(operator_thread),
         }
     }
 
     pub fn get_id(&self) -> &str {
         &self.id
+    }
+
+    pub fn get_computations(&self) -> Arc<RwLock<HashMap<String, Arc<Mutex<ComputationBox>>>>> {
+        self.operator_tx
+            .lock()
+            .unwrap()
+            .send(OperatorMessage::ReturnComputations)
+            .expect("Failed to send ReturnComputations message");
+
+        // Wait for the response from the operator
+        let response = self
+            .client_rx
+            .lock()
+            .unwrap()
+            .recv()
+            .expect("Failed to receive computations");
+
+        match response {
+            ClientResponseMessage::ReturnComputations(computations) => computations,
+            _ => panic!("Unexpected message type received"),
+        }
     }
 
     // TODO: add api functions to get information and execute computations
