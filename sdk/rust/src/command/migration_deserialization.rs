@@ -1,21 +1,16 @@
 use super::CommandAction;
-use crate::node::OperatorNode;
-use crate::pb::MigrationDeserialization;
-use std::sync::{Arc, Mutex};
+use crate::{operator::OperatorNode, pb::MigrationDeserialization};
 
 impl CommandAction for MigrationDeserialization {
     fn handle(
         &self,
-        operator: &Arc<Mutex<OperatorNode>>,
+        operator: &mut OperatorNode,
         _message: &String,
         _errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
-        let operator_guard = operator.lock().unwrap();
-        let computation_handle = operator_guard
+        let computation_handle = operator
             .start_computation(self.factory_id.clone(), self.computation_id.clone())
             .unwrap();
-
-        drop(operator_guard);
 
         let mut computation = computation_handle.computation_mut();
         let _ = computation.json_deserialize_state(&self.serialized_state.clone());

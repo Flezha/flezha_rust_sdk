@@ -1,18 +1,18 @@
 use super::CommandAction;
-use crate::node::{OperatorNode, OperatorStatus};
-use crate::pb::AssignOperatorId;
-use std::sync::{Arc, Mutex};
+use crate::{
+    operator::{OperatorNode, OperatorStatus},
+    pb::AssignOperatorId,
+};
 
 impl CommandAction for AssignOperatorId {
     fn handle(
         &self,
-        operator: &Arc<Mutex<OperatorNode>>,
+        operator: &mut OperatorNode,
         _message: &String,
         _errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
-        let mut operator_guard = operator.lock().unwrap();
-        operator_guard.assign_operator_id(self.operator_id.clone());
-        operator_guard.set_status(OperatorStatus::Running);
+        operator.assign_operator_id(self.operator_id.clone());
+        operator.set_status(OperatorStatus::Running);
 
         ("assign_operator_id".to_string(), Vec::new())
     }

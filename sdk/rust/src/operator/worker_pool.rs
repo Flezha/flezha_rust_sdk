@@ -9,9 +9,10 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use crate::computation::exector;
 use crate::computation::factory_registry::ComputationBox;
-use crate::computation::runner;
-use crate::{node::coordinator::CoordinatorMessage, ComputationInput};
+use crate::operator::OperatorMessage;
+use crate::ComputationInput;
 
 pub enum WorkerPoolMessage {
     HandleWork(String, ComputationInput, UnixStream),
@@ -19,7 +20,7 @@ pub enum WorkerPoolMessage {
 
 pub fn init_worker_pool(
     computations: Arc<RwLock<HashMap<String, Arc<Mutex<ComputationBox>>>>>,
-    ctx: Arc<Mutex<Sender<CoordinatorMessage>>>,
+    ctx: Arc<Mutex<Sender<OperatorMessage>>>,
 ) -> HashMap<u16, Sender<WorkerPoolMessage>> {
     let worker_count = number_of_workers();
     let mut worker_channels: HashMap<u16, Sender<WorkerPoolMessage>> = HashMap::new();
@@ -33,7 +34,7 @@ pub fn init_worker_pool(
         thread::spawn(move || {
             let worker_id = i;
 
-            check_in(&ctx_clone, CoordinatorMessage::WorkerInitCheckIn(worker_id));
+            check_in(&ctx_clone, OperatorMessage::WorkerInitCheckIn(worker_id));
 
             loop {
                 let message = wrx.recv().expect("Failed to receive message");
@@ -44,7 +45,7 @@ pub fn init_worker_pool(
                         computation_input,
                         unix_stream,
                     ) => {
-                        runner::exec_agent(
+                        exector::exec_agent(
                             unix_stream,
                             &computation_id,
                             &computations,
@@ -52,7 +53,7 @@ pub fn init_worker_pool(
                         );
                         check_in(
                             &ctx_clone,
-                            CoordinatorMessage::WorkerCheckIn(worker_id, computation_id),
+                            OperatorMessage::WorkerCheckIn(worker_id, computation_id),
                         );
                     }
                 }
@@ -81,7 +82,7 @@ pub fn pool_worker_delegate(
         .expect("Failed to send work to worker");
 }
 
-fn check_in(ctx: &Sender<CoordinatorMessage>, message: CoordinatorMessage) {
+fn check_in(ctx: &Sender<OperatorMessage>, message: OperatorMessage) {
     ctx.send(message)
         .expect("Failed to send message to coordinator");
 }

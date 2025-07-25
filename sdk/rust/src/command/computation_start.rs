@@ -1,20 +1,18 @@
 use super::CommandAction;
 
 use serde_json::Value;
-use std::sync::{Arc, Mutex};
 
 use crate::computation::factory_registry::get_factory;
-use crate::node::OperatorNode;
+use crate::operator::OperatorNode;
 use crate::pb::AddComputation;
 
 impl CommandAction for AddComputation {
     fn handle(
         &self,
-        operator: &Arc<Mutex<OperatorNode>>,
+        operator: &mut OperatorNode,
         _message: &String,
         errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
-        let operator_guard = operator.lock().unwrap();
         let computation_id = self.computation_id.clone();
 
         // Make sure factory exist.
@@ -26,8 +24,7 @@ impl CommandAction for AddComputation {
             )),
         };
 
-        let computation_opt =
-            operator_guard.start_computation(self.factory_id.clone(), computation_id);
+        let computation_opt = operator.start_computation(self.factory_id.clone(), computation_id);
 
         if errors.len() == 0 {
             match computation_opt {

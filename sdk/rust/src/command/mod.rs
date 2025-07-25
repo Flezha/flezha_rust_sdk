@@ -1,10 +1,13 @@
-use crate::node::OperatorNode;
+use crate::command;
+use crate::operator::OperatorNode;
 use crate::pb::command_request::Command;
 use crate::pb::{CommandRequest, CommandResponse};
 use crate::service::payloader;
 use prost::Message;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::io::Write;
+use std::net::Shutdown;
+use std::os::unix::net::UnixStream;
 
 mod computation_start;
 mod computation_state;
@@ -18,7 +21,7 @@ mod streams_connect;
 pub trait CommandAction {
     fn handle(
         &self,
-        operator: &Arc<Mutex<OperatorNode>>,
+        operator: &mut OperatorNode,
         command_struct: &String,
         errors: &mut Vec<String>,
     ) -> (String, Vec<u8>);
@@ -53,8 +56,46 @@ pub fn get_handler(_payload_id: &String, message: &String) -> (CommandActionType
     (command_handler, reference_id)
 }
 
-pub fn handle_action(
-    operator: &Arc<Mutex<OperatorNode>>,
+pub fn handle_command(
+    operator: &mut OperatorNode,
+    stream: &UnixStream,
+    payload_id: &String,
+    message: &Vec<u8>,
+) {
+    let payload_message: String = String::from_utf8_lossy(&message).to_string();
+
+    let (handler_type, reference_id) = command::get_handler(&payload_id, &payload_message);
+
+    match handler_type {
+        CommandActionType::Regular(handler) => {
+            let reply = command::exec_control(
+                operator,
+                handler,
+                &payload_id,
+                &payload_message,
+                reference_id,
+            );
+            (&*stream).write_all(&reply).unwrap();
+        }
+
+        CommandActionType::OperatorDisconnect(handler) => {
+            let reply = command::exec_control(
+                operator,
+                handler,
+                &payload_id,
+                &payload_message,
+                reference_id,
+            );
+            (&*stream).write_all(&reply).unwrap();
+
+            // Close the socket.
+            stream.shutdown(Shutdown::Both).unwrap();
+        }
+    }
+}
+
+fn exec_control(
+    operator: &mut OperatorNode,
     handler: Box<dyn CommandAction>,
     payload_id: &String,
     message: &String,

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
+pub mod exector;
 pub mod factory_registry;
-pub mod runner;
 
 extern crate erased_serde;
 
@@ -15,6 +15,12 @@ pub enum ComputationInput {
     Binary(Vec<u8>),
     Text(String),
     Custom(Box<dyn std::any::Any + Send + Sync>), // For client‐specific types
+}
+
+#[derive(Clone)]
+pub enum ComputationRunner {
+    ThreadPool,
+    ThreadSpawn,
 }
 
 impl From<ComputationOutput> for ComputationInput {
@@ -61,7 +67,11 @@ pub trait Computation {
     // Get computation state as a serializable reference
     fn bin_serialize_state(&self) -> Box<dyn erased_serde::Serialize + '_>;
 
+    // Optional method to perform actions after the computation is created or altered
     fn post_alter(&mut self);
+
+    // Get the settings of the computation
+    fn get_runner_type(&self) -> ComputationRunner;
 }
 
 /// Trait for transforming input data to generic type before it enters the computation steps
@@ -133,6 +143,7 @@ pub trait ComputationHandler<State, I, O> {
 pub struct ComputationSettings<State, I, O> {
     input_transformer: Box<dyn InputTransformer<I> + Send + Sync>,
     output_transformer: Box<dyn OutputTransformer<O, State> + Send + Sync>,
+    computation_runner: ComputationRunner,
 }
 
 impl<State, I, O> Clone for ComputationSettings<State, I, O> {
@@ -140,6 +151,7 @@ impl<State, I, O> Clone for ComputationSettings<State, I, O> {
         Self {
             input_transformer: self.input_transformer.clone_box(),
             output_transformer: self.output_transformer.clone_box(),
+            computation_runner: self.computation_runner.clone(),
         }
     }
 }
@@ -148,10 +160,12 @@ impl<State, I, O> ComputationSettings<State, I, O> {
     pub fn new(
         input_transformer: Box<dyn InputTransformer<I> + Send + Sync>,
         output_transformer: Box<dyn OutputTransformer<O, State> + Send + Sync>,
+        computation_runner: ComputationRunner,
     ) -> Self {
         Self {
             input_transformer,
             output_transformer,
+            computation_runner,
         }
     }
 
@@ -162,6 +176,10 @@ impl<State, I, O> ComputationSettings<State, I, O> {
     pub fn get_output_transformer(&self) -> &dyn OutputTransformer<O, State> {
         self.output_transformer.as_ref()
     }
+
+    pub fn get_computation_runner(&self) -> &ComputationRunner {
+        &self.computation_runner
+    }
 }
 
 impl<State> ComputationSettings<State, String, String> {
@@ -169,6 +187,7 @@ impl<State> ComputationSettings<State, String, String> {
         Self {
             input_transformer: Box::new(DefaultInputTransformer),
             output_transformer: Box::new(DefaultOutputTransformer),
+            computation_runner: ComputationRunner::ThreadPool,
         }
     }
 }
@@ -237,6 +256,10 @@ where
 
     fn post_alter(&mut self) {
         self.handler.post_create(&mut self.state);
+    }
+
+    fn get_runner_type(&self) -> ComputationRunner {
+        self.settings.get_computation_runner().clone()
     }
 }
 

@@ -8,12 +8,10 @@ use std::collections::HashMap;
 use std::os::unix::io::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::str;
-use std::sync::{Arc, Mutex};
 use std::thread;
 
 use crate::computation::ComputationInput;
-use crate::node::coordinator::{CoordinatorMessage, WorkerType};
-use crate::node::OperatorNode;
+use crate::operator::{OperatorMessage, OperatorNode};
 use crate::service::payloader;
 
 use crate::utility::path_helper;
@@ -23,16 +21,13 @@ const EVENTS_CAPACITY: usize = 1024;
 impl CommandAction for ConnectSocket {
     fn handle(
         &self,
-        operator: &Arc<Mutex<OperatorNode>>,
+        operator: &mut OperatorNode,
         _message: &String,
         _errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
-        let operator_guard = operator.lock().unwrap();
-        let io_streams = operator_guard.get_io_streams();
-        let operator_id = operator_guard.get_operator_id();
-        let ctx = operator_guard.get_coordinator_channel();
-
-        drop(operator_guard);
+        let io_streams = operator.get_io_streams();
+        let operator_id = operator.get_operator_id();
+        let ctx = operator.get_operator_channel();
 
         let poll = Poll::new().unwrap();
         let mut events = Events::with_capacity(EVENTS_CAPACITY);
@@ -81,7 +76,7 @@ fn listen_incoming(
     mut poll: Poll,
     events: &mut Events,
     streams: &mut HashMap<Token, UnixStream>,
-    ctx: Sender<CoordinatorMessage>,
+    ctx: Sender<OperatorMessage>,
 ) {
     loop {
         poll.poll(events, None).unwrap();
@@ -92,13 +87,11 @@ fn listen_incoming(
                 loop {
                     match payloader::extract_payload_non_blocking(&mut *stream) {
                         Ok(Some((computation_id, payload, metadata))) => {
-                            let worker_type = match metadata.get("worker_type".into()).unwrap_or(&"1".into()).as_str() {
-                                "1" => WorkerType::ThreadPool,
-                                "2" => WorkerType::ThreadSpawn,
-                                _ => panic!("Invalid worker type"),
-                            };
-
-                            let input = match metadata.get("input_type".into()).unwrap_or(&"1".into()).as_str() {
+                            let input = match metadata
+                                .get("input_type".into())
+                                .unwrap_or(&"1".into())
+                                .as_str()
+                            {
                                 "1" => ComputationInput::Binary(payload),
                                 "2" => ComputationInput::Text(
                                     str::from_utf8(&payload).unwrap().to_string(),
@@ -106,10 +99,9 @@ fn listen_incoming(
                                 err_type => panic!("Invalid input type {}", err_type),
                             };
 
-                            ctx.send(CoordinatorMessage::WorkerCheckOut(
+                            ctx.send(OperatorMessage::WorkerCheckOut(
                                 computation_id,
                                 input,
-                                worker_type,
                                 stream.try_clone().unwrap(),
                             ))
                             .expect("Failed to send message to coordinator");

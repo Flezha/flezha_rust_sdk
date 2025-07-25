@@ -1,19 +1,16 @@
 use super::CommandAction;
-use crate::computation::factory_registry::ComputationHandle;
-use crate::node::OperatorNode;
 use crate::pb::ComputationState;
-use std::sync::{Arc, Mutex};
+use crate::{computation::factory_registry::ComputationHandle, operator::OperatorNode};
 
 impl CommandAction for ComputationState {
     fn handle(
         &self,
-        operator: &Arc<Mutex<OperatorNode>>,
+        operator: &mut OperatorNode,
         _message: &String,
         errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
-        let operator_guard = operator.lock().unwrap();
         let computation_handle: Option<ComputationHandle> =
-            operator_guard.get_computation(self.computation_id.clone());
+            operator.get_computation(self.computation_id.clone());
 
         match computation_handle {
             Some(computation_handle) => {

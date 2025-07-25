@@ -1,25 +1,19 @@
 mod command;
 pub mod computation;
-mod node;
+mod operator;
 mod service;
 mod utility;
 
-use std::{
-    collections::HashMap,
-    os::unix::net::UnixStream,
-    sync::{Arc, Mutex, RwLock},
-};
+use std::sync::{Arc, Mutex};
 
-use node::OperatorNode;
+use crossbeam::channel::{Receiver, Sender};
 
-use computation::factory_registry::ComputationBox;
-use computation::runner;
 pub use computation::{
     register_factory, ComputationHandler, ComputationInput, ComputationOutput, ComputationResult,
     ComputationSettings,
 };
 
-use crate::computation::{ComputationError, PayloadMetadata};
+use crate::operator::{InitializationMessage, OperatorMessage};
 
 pub mod pb {
     #[cfg(not(rust_analyzer))]
@@ -28,63 +22,69 @@ pub mod pb {
     include!("generated/operator_commands.rs");
 }
 pub struct Flezha {
-    _id: String,
-    computations: Arc<RwLock<HashMap<String, Arc<Mutex<ComputationBox>>>>>,
-    shared_io_streams: Arc<RwLock<HashMap<u32, UnixStream>>>,
-    _operator: Arc<Mutex<OperatorNode>>,
+    id: String,
+    _operator_channel: Arc<Mutex<crossbeam::channel::Sender<OperatorMessage>>>,
+    _operator_thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Flezha {
     fn new(id: String) -> Flezha {
-        let computations = Arc::new(RwLock::new(HashMap::new()));
-        let shared_io_streams = Arc::new(RwLock::new(HashMap::new()));
+        let (ctx, crx): (Sender<OperatorMessage>, Receiver<OperatorMessage>) =
+            crossbeam::channel::unbounded();
+        let (itx, irx): (
+            Sender<InitializationMessage>,
+            Receiver<InitializationMessage>,
+        ) = crossbeam::channel::unbounded();
+        let operator_thread = operator::start(id.clone(), (ctx.clone(), crx), itx);
+
+        // Make sure the namespace is passed to the agent and confirmed
+        match irx
+            .recv()
+            .expect("Failed to receive namespace confirmation")
+        {
+            InitializationMessage::OperatorIdConfirmation => {}
+        }
 
         Flezha {
-            _id: id.clone(),
-            computations: Arc::clone(&computations),
-            shared_io_streams: Arc::clone(&shared_io_streams),
-            _operator: OperatorNode::new(id.clone(), computations, shared_io_streams),
+            id: id.clone(),
+            _operator_channel: Arc::new(Mutex::new(ctx)),
+            _operator_thread: Some(operator_thread),
         }
     }
 
-    pub fn get_computation(&self, computation_id: &str) -> Option<Arc<Mutex<ComputationBox>>> {
-        self.computations
-            .read()
-            .unwrap()
-            .get(computation_id)
-            .cloned()
+    pub fn get_id(&self) -> &str {
+        &self.id
     }
 
-    pub fn get_computations(&self) -> Arc<RwLock<HashMap<String, Arc<Mutex<ComputationBox>>>>> {
-        Arc::clone(&self.computations)
-    }
+    // TODO: add api functions to get information and execute computations
 
-    pub fn run(
-        &mut self,
-        computation_id: String,
-        input: ComputationInput,
-    ) -> Result<ComputationResult, ComputationError> {
-        runner::exec(&computation_id, &self.computations, input)
-    }
+    // TODO: add those public API methods to the Flezha struct
+    // pub fn run(
+    //     &mut self,
+    //     computation_id: String,
+    //     input: ComputationInput,
+    // ) -> Result<ComputationResult, ComputationError> {
+    //     runner::exec(&computation_id, &self.computations, input)
+    // }
 
-    pub fn pipe_to_agent(
-        &mut self,
-        computation_id: String,
-        result: ComputationOutput,
-        metadata: PayloadMetadata,
-    ) {
-        let mut io_stream = self
-            .shared_io_streams
-            .write()
-            .unwrap()
-            .values()
-            .next()
-            .unwrap()
-            .try_clone()
-            .unwrap();
+    // pub fn pipe_to_agent(
+    //     &mut self,
+    //     computation_id: String,
+    //     result: ComputationOutput,
+    //     metadata: PayloadMetadata,
+    // ) {
+    //     let mut io_stream = self
+    //         .shared_io_streams
+    //         .write()
+    //         .unwrap()
+    //         .values()
+    //         .next()
+    //         .unwrap()
+    //         .try_clone()
+    //         .unwrap();
 
-        runner::pipe_to_agent(&mut io_stream, &computation_id, &result, metadata);
-    }
+    //     runner::pipe_to_agent(&mut io_stream, &computation_id, &result, metadata);
+    // }
 }
 
 pub fn new(group_id: String) -> Flezha {
