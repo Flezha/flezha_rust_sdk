@@ -15,15 +15,15 @@ pub mod command_request {
         #[prost(message, tag = "3")]
         ConnectSocket(super::ConnectSocket),
         #[prost(message, tag = "4")]
-        AddComputation(super::AddComputation),
+        AddProcessor(super::AddProcessor),
         #[prost(message, tag = "5")]
-        RemComputation(super::RemComputation),
+        RemProcessor(super::RemProcessor),
         #[prost(message, tag = "6")]
         MigrationSerialization(super::MigrationSerialization),
         #[prost(message, tag = "7")]
         MigrationDeserialization(super::MigrationDeserialization),
         #[prost(message, tag = "8")]
-        ComputationState(super::ComputationState),
+        ProcessorState(super::ProcessorState),
         #[prost(message, tag = "9")]
         OperatorDisconnect(super::OperatorDisconnect),
     }
@@ -50,37 +50,37 @@ pub struct ConnectSocket {
     pub sockets_count: u32,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct AddComputation {
+pub struct AddProcessor {
     #[prost(string, tag = "1")]
-    pub computation_id: ::prost::alloc::string::String,
+    pub processor_id: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
     pub factory_id: ::prost::alloc::string::String,
     #[prost(string, tag = "3")]
     pub init_values: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct RemComputation {
+pub struct RemProcessor {
     #[prost(string, tag = "1")]
-    pub computation_id: ::prost::alloc::string::String,
+    pub processor_id: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct MigrationSerialization {
     #[prost(string, tag = "1")]
-    pub computation_id: ::prost::alloc::string::String,
+    pub processor_id: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct MigrationDeserialization {
     #[prost(string, tag = "1")]
-    pub computation_id: ::prost::alloc::string::String,
+    pub processor_id: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
     pub factory_id: ::prost::alloc::string::String,
     #[prost(bytes = "vec", tag = "3")]
     pub serialized_state: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ComputationState {
+pub struct ProcessorState {
     #[prost(string, tag = "1")]
-    pub computation_id: ::prost::alloc::string::String,
+    pub processor_id: ::prost::alloc::string::String,
 }
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct OperatorDisconnect {}

@@ -1,7 +1,7 @@
 use super::CommandAction;
-use crate::computation::factory_registry::ComputationHandle;
 use crate::operator::OperatorNode;
 use crate::pb::MigrationSerialization;
+use crate::processor::factory_registry::ProcessorHandle;
 
 impl CommandAction for MigrationSerialization {
     fn handle(
@@ -10,19 +10,19 @@ impl CommandAction for MigrationSerialization {
         _message: &String,
         _errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
-        let computation_handle: Option<ComputationHandle> =
-            operator.get_computation(self.computation_id.clone());
+        let processor_handle: Option<ProcessorHandle> =
+            operator.get_processor(self.processor_id.clone());
 
-        let serialized_state = match computation_handle {
+        let serialized_state = match processor_handle {
             Some(p) => {
-                let computation = p.computation_mut();
-                computation.json_serialize_state().unwrap()
+                let processor = p.processor_mut();
+                processor.json_serialize_state().unwrap()
             }
             None => Vec::new(),
         };
 
-        // Remove the computation from the operator
-        operator.stop_computation(self.computation_id.clone());
+        // Remove the processor from the operator
+        operator.stop_processor(self.processor_id.clone());
 
         ("migration_serialization".to_string(), serialized_state)
     }

@@ -1,6 +1,6 @@
 mod command;
-pub mod computation;
 mod operator;
+pub mod processor;
 mod service;
 mod utility;
 
@@ -11,14 +11,14 @@ use std::{
 
 use crossbeam::channel::{Receiver, Sender};
 
-pub use computation::{
-    register_factory, ComputationHandler, ComputationInput, ComputationOutput, ComputationResult,
-    ComputationSettings,
+pub use processor::{
+    register_factory, ProcessorHandler, ProcessorInput, ProcessorOutput, ProcessorResult,
+    ProcessorSettings,
 };
 
 use crate::{
-    computation::factory_registry::ComputationBox,
     operator::{ClientResponseMessage, OperatorMessage},
+    processor::factory_registry::ProcessorBox,
 };
 
 pub mod pb {
@@ -65,12 +65,12 @@ impl Flezha {
         &self.id
     }
 
-    pub fn get_computations(&self) -> Arc<RwLock<HashMap<String, Arc<Mutex<ComputationBox>>>>> {
+    pub fn get_processors(&self) -> Arc<RwLock<HashMap<String, Arc<Mutex<ProcessorBox>>>>> {
         self.operator_tx
             .lock()
             .unwrap()
-            .send(OperatorMessage::ReturnComputations)
-            .expect("Failed to send ReturnComputations message");
+            .send(OperatorMessage::ReturnProcessors)
+            .expect("Failed to send ReturnProcessors message");
 
         // Wait for the response from the operator
         let response = self
@@ -78,29 +78,29 @@ impl Flezha {
             .lock()
             .unwrap()
             .recv()
-            .expect("Failed to receive computations");
+            .expect("Failed to receive processors");
 
         match response {
-            ClientResponseMessage::ReturnComputations(computations) => computations,
+            ClientResponseMessage::ReturnProcessors(processors) => processors,
             _ => panic!("Unexpected message type received"),
         }
     }
 
-    // TODO: add api functions to get information and execute computations
+    // TODO: add api functions to get information and execute processors
 
     // TODO: add those public API methods to the Flezha struct
     // pub fn run(
     //     &mut self,
-    //     computation_id: String,
-    //     input: ComputationInput,
-    // ) -> Result<ComputationResult, ComputationError> {
-    //     runner::exec(&computation_id, &self.computations, input)
+    //     processor_id: String,
+    //     input: ProcessorInput,
+    // ) -> Result<ProcessorResult, ProcessorError> {
+    //     runner::exec(&processor_id, &self.processors, input)
     // }
 
     // pub fn pipe_to_agent(
     //     &mut self,
-    //     computation_id: String,
-    //     result: ComputationOutput,
+    //     processor_id: String,
+    //     result: ProcessorOutput,
     //     metadata: PayloadMetadata,
     // ) {
     //     let mut io_stream = self
@@ -113,7 +113,7 @@ impl Flezha {
     //         .try_clone()
     //         .unwrap();
 
-    //     runner::pipe_to_agent(&mut io_stream, &computation_id, &result, metadata);
+    //     runner::pipe_to_agent(&mut io_stream, &processor_id, &result, metadata);
     // }
 }
 

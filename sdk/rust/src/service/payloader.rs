@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::str;
 
-use crate::computation::PayloadMetadata;
+use crate::processor::PayloadMetadata;
 
 pub fn extract_payload<R: Read>(
     mut reader: R,
@@ -22,7 +22,7 @@ pub fn extract_payload<R: Read>(
 
     // Parse the payload: message_size (4) + message + metadata_size (2) + metadata
     let mut payload_reader = &payload_buf[..];
-    
+
     // Read the message size (4 bytes)
     let message_length = payload_reader.read_u32::<BigEndian>()? as usize;
 
@@ -98,7 +98,7 @@ pub fn extract_payload_non_blocking<R: Read>(
 
     // Parse the payload: message_size (4) + message + metadata_size (2) + metadata
     let mut payload_reader = &payload_buf[..];
-    
+
     // Read the message size (4 bytes)
     let message_length = payload_reader.read_u32::<BigEndian>()? as usize;
 
@@ -132,7 +132,7 @@ fn build_payload(payload_id: &str, message: &[u8], metadata: PayloadMetadata) ->
     let metadata_binary = serialize_metadata(&metadata);
     let metadata_size = metadata_binary.len() as u16;
     let message_size = message.len() as u32;
-    
+
     // Calculate payload size: message_size (4) + message + metadata_size (2) + metadata
     let payload_size = 4 + message.len() + 2 + metadata_binary.len();
 

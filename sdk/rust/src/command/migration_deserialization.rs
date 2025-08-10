@@ -8,12 +8,12 @@ impl CommandAction for MigrationDeserialization {
         _message: &String,
         _errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
-        let computation_handle = operator
-            .start_computation(self.factory_id.clone(), self.computation_id.clone())
+        let processor_handle = operator
+            .start_processor(self.factory_id.clone(), self.processor_id.clone())
             .unwrap();
 
-        let mut computation = computation_handle.computation_mut();
-        let _ = computation.json_deserialize_state(&self.serialized_state.clone());
+        let mut processor = processor_handle.processor_mut();
+        let _ = processor.json_deserialize_state(&self.serialized_state.clone());
 
         ("migration_deserialization".to_string(), Vec::new())
     }

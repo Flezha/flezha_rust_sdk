@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use serde::Serialize;
 
-use crate::computation::factory_registry::get_factory_ids;
 use crate::operator::OperatorMessage;
+use crate::processor::factory_registry::get_factory_ids;
 use crate::service::payloader;
 use crate::utility::path_helper;
 

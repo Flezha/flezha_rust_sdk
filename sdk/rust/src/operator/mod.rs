@@ -8,20 +8,20 @@ use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread::{self, JoinHandle};
 
-use crate::computation::factory_registry::{get_factory, ComputationBox, ComputationHandle};
+use crate::processor::factory_registry::{get_factory, ProcessorBox, ProcessorHandle};
 
-use crate::computation::{executor, ComputationRunner};
 use crate::operator::worker_pool::{init_worker_pool, pool_worker_delegate, WorkerPoolMessage};
-use crate::{command, ComputationInput};
+use crate::processor::{executor, ProcessorRunner};
+use crate::{command, ProcessorInput};
 
-type WorkItem = (ComputationInput, UnixStream);
+type WorkItem = (ProcessorInput, UnixStream);
 
 pub enum OperatorMessage {
     WorkerInitCheckIn(u16),
     WorkerCheckIn(u16, String),
-    WorkerCheckOut(String, ComputationInput, UnixStream),
+    WorkerCheckOut(String, ProcessorInput, UnixStream),
     HandleCommandAction(String, Vec<u8>, HashMap<String, String>),
-    ReturnComputations,
+    ReturnProcessors,
 }
 
 pub enum OperatorStatus {
@@ -32,84 +32,84 @@ pub enum OperatorStatus {
 
 pub enum ClientResponseMessage {
     OperatorIdConfirmation,
-    ReturnComputations(Arc<RwLock<HashMap<String, Arc<Mutex<ComputationBox>>>>>),
+    ReturnProcessors(Arc<RwLock<HashMap<String, Arc<Mutex<ProcessorBox>>>>>),
 }
 
 pub struct OperatorNode {
     operator_id: String,
     _namespace: String,
-    computations: Arc<RwLock<HashMap<String, Arc<Mutex<ComputationBox>>>>>,
+    processors: Arc<RwLock<HashMap<String, Arc<Mutex<ProcessorBox>>>>>,
     shared_io_streams: Arc<RwLock<HashMap<u32, UnixStream>>>,
     workers_pool_tx: HashMap<u16, Sender<WorkerPoolMessage>>,
-    computation_queues: HashMap<String, VecDeque<WorkItem>>,
-    computation_workers: HashMap<String, u16>,
+    processor_queues: HashMap<String, VecDeque<WorkItem>>,
+    processor_workers: HashMap<String, u16>,
     available_workers: VecDeque<u16>,
-    pending_computations: VecDeque<String>,
+    pending_processors: VecDeque<String>,
     operator_channel: Arc<Mutex<Sender<OperatorMessage>>>,
     status: OperatorStatus,
 }
 
 impl OperatorNode {
     pub fn new(namespace: String, otx: Sender<OperatorMessage>) -> OperatorNode {
-        let computations = Arc::new(RwLock::new(HashMap::new()));
+        let processors = Arc::new(RwLock::new(HashMap::new()));
         let shared_io_streams = Arc::new(RwLock::new(HashMap::new()));
         let otx_arc = Arc::new(Mutex::new(otx));
 
         OperatorNode {
             operator_id: "undefined".to_string(),
             _namespace: namespace.clone(),
-            computations: computations.clone(),
+            processors: processors.clone(),
             shared_io_streams: shared_io_streams,
-            workers_pool_tx: init_worker_pool(computations, otx_arc.clone()),
-            computation_queues: HashMap::new(),
-            computation_workers: HashMap::new(),
+            workers_pool_tx: init_worker_pool(processors, otx_arc.clone()),
+            processor_queues: HashMap::new(),
+            processor_workers: HashMap::new(),
             available_workers: VecDeque::new(),
-            pending_computations: VecDeque::new(),
+            pending_processors: VecDeque::new(),
             operator_channel: otx_arc.clone(),
             status: OperatorStatus::Starting,
         }
     }
 
-    pub fn start_computation(
+    pub fn start_processor(
         &self,
         factory_id: String,
-        computation_id: String,
-    ) -> Option<ComputationHandle> {
+        processor_id: String,
+    ) -> Option<ProcessorHandle> {
         if let Some(factory) = get_factory(factory_id) {
-            let computation = factory(computation_id.clone());
-            self.register_computation(computation_id.clone(), computation);
-            self.get_computation(computation_id)
+            let processor = factory(processor_id.clone());
+            self.register_processor(processor_id.clone(), processor);
+            self.get_processor(processor_id)
         } else {
             None
         }
     }
 
-    fn register_computation(&self, id: String, computation: ComputationBox) {
-        self.computations
+    fn register_processor(&self, id: String, processor: ProcessorBox) {
+        self.processors
             .write()
             .unwrap()
-            .insert(id, Arc::new(Mutex::new(computation)));
+            .insert(id, Arc::new(Mutex::new(processor)));
     }
 
-    pub fn stop_computation(&self, id: String) {
-        self.computations.write().unwrap().remove(&id);
+    pub fn stop_processor(&self, id: String) {
+        self.processors.write().unwrap().remove(&id);
     }
 
     pub fn _get_namespace(&self) -> String {
         self._namespace.clone()
     }
 
-    pub fn get_computations(&self) -> Arc<RwLock<HashMap<String, Arc<Mutex<ComputationBox>>>>> {
-        Arc::clone(&self.computations)
+    pub fn get_processors(&self) -> Arc<RwLock<HashMap<String, Arc<Mutex<ProcessorBox>>>>> {
+        Arc::clone(&self.processors)
     }
 
-    pub fn get_computation(&self, id: String) -> Option<ComputationHandle> {
-        self.computations
+    pub fn get_processor(&self, id: String) -> Option<ProcessorHandle> {
+        self.processors
             .read()
             .unwrap()
             .get(&id)
             .cloned()
-            .map(|computation| ComputationHandle { computation })
+            .map(|processor| ProcessorHandle { processor })
     }
 
     pub fn get_io_streams(&self) -> Arc<RwLock<HashMap<u32, UnixStream>>> {
@@ -128,8 +128,8 @@ impl OperatorNode {
         self.status = status;
     }
 
-    pub fn has_computation(&self, id: String) -> bool {
-        self.computations.read().unwrap().contains_key(&id)
+    pub fn has_processor(&self, id: String) -> bool {
+        self.processors.read().unwrap().contains_key(&id)
     }
 
     pub fn get_operator_channel(&self) -> Arc<Mutex<Sender<OperatorMessage>>> {
@@ -156,101 +156,96 @@ pub fn start(
                 OperatorMessage::WorkerInitCheckIn(worker_id) => {
                     operator.available_workers.push_back(worker_id);
                 }
-                OperatorMessage::WorkerCheckOut(computation_id, computation_input, stream) => {
-                    handle_checkout(&mut operator, computation_id, computation_input, stream);
+                OperatorMessage::WorkerCheckOut(processor_id, processor_input, stream) => {
+                    handle_checkout(&mut operator, processor_id, processor_input, stream);
                 }
-                OperatorMessage::WorkerCheckIn(worker_id, worked_computation_id) => {
-                    handle_checkin(&mut operator, worker_id, worked_computation_id);
+                OperatorMessage::WorkerCheckIn(worker_id, worked_processor_id) => {
+                    handle_checkin(&mut operator, worker_id, worked_processor_id);
                 }
                 // TODO: Do anything with metadata?
                 OperatorMessage::HandleCommandAction(payload_id, message, _metadata) => {
                     command::handle_command(&mut operator, &control_stream, &payload_id, &message);
                 }
-                OperatorMessage::ReturnComputations => {
-                    return_computations(&operator, ctx_arc.clone());
+                OperatorMessage::ReturnProcessors => {
+                    return_processors(&operator, ctx_arc.clone());
                 }
             }
         }
     })
 }
 
-fn return_computations(
-    operator: &OperatorNode,
-    ctx_arc: Arc<Mutex<Sender<ClientResponseMessage>>>,
-) {
-    let computations = operator.get_computations();
+fn return_processors(operator: &OperatorNode, ctx_arc: Arc<Mutex<Sender<ClientResponseMessage>>>) {
+    let processors = operator.get_processors();
 
     ctx_arc
         .lock()
         .unwrap()
-        .send(ClientResponseMessage::ReturnComputations(computations))
-        .expect("Failed to send computations response");
+        .send(ClientResponseMessage::ReturnProcessors(processors))
+        .expect("Failed to send processors response");
 }
 
-fn handle_checkin(operator: &mut OperatorNode, worker_id: u16, worked_computation_id: String) {
-    // Remove computation from active processing
-    operator.computation_workers.remove(&worked_computation_id);
+fn handle_checkin(operator: &mut OperatorNode, worker_id: u16, worked_processor_id: String) {
+    // Remove processor from active processing
+    operator.processor_workers.remove(&worked_processor_id);
 
     // TODO: handle different worker types.
-    // Check if this computation has queued work
-    if let Some(queue) = operator.computation_queues.get_mut(&worked_computation_id) {
-        if let Some((computation_input, stream)) = queue.pop_front() {
-            // Process next item in this computation's queue with same worker (sticky assignment)
+    // Check if this processor has queued work
+    if let Some(queue) = operator.processor_queues.get_mut(&worked_processor_id) {
+        if let Some((processor_input, stream)) = queue.pop_front() {
+            // Process next item in this processor's queue with same worker (sticky assignment)
             operator
-                .computation_workers
-                .insert(worked_computation_id.clone(), worker_id);
+                .processor_workers
+                .insert(worked_processor_id.clone(), worker_id);
             pool_worker_delegate(
                 &operator.workers_pool_tx,
-                worked_computation_id,
-                computation_input,
+                worked_processor_id,
+                processor_input,
                 worker_id,
                 stream,
             );
             return;
         } else {
             // Queue is empty, remove it
-            operator.computation_queues.remove(&worked_computation_id);
+            operator.processor_queues.remove(&worked_processor_id);
         }
     }
 
-    // No work for this computation, make worker available for other computations
+    // No work for this processor, make worker available for other processors
     operator.available_workers.push_back(worker_id);
 
-    // Optimized: Only check computations that have pending work
-    while let Some(computation_id) = operator.pending_computations.pop_front() {
-        // Check if computation is still idle and has work
-        if !operator.computation_workers.contains_key(&computation_id) {
+    // Optimized: Only check processors that have pending work
+    while let Some(processor_id) = operator.pending_processors.pop_front() {
+        // Check if processor is still idle and has work
+        if !operator.processor_workers.contains_key(&processor_id) {
             // TODO: handle different worker types.
-            if let Some(queue) = operator.computation_queues.get_mut(&computation_id) {
-                if let Some((computation_input, stream)) = queue.pop_front() {
+            if let Some(queue) = operator.processor_queues.get_mut(&processor_id) {
+                if let Some((processor_input, stream)) = queue.pop_front() {
                     // Remove worker from available workers since we're assigning it
                     operator.available_workers.pop_back();
                     operator
-                        .computation_workers
-                        .insert(computation_id.clone(), worker_id);
+                        .processor_workers
+                        .insert(processor_id.clone(), worker_id);
                     pool_worker_delegate(
                         &operator.workers_pool_tx,
-                        computation_id.clone(),
-                        computation_input,
+                        processor_id.clone(),
+                        processor_input,
                         worker_id,
                         stream,
                     );
 
                     // If queue still has work, put it back in pending list
                     if !queue.is_empty() {
-                        operator
-                            .pending_computations
-                            .push_back(computation_id.clone());
+                        operator.pending_processors.push_back(processor_id.clone());
                     } else {
                         // Queue is empty, remove it
-                        operator.computation_queues.remove(&computation_id);
+                        operator.processor_queues.remove(&processor_id);
                     }
                     return;
                 }
             }
         } else {
-            // Computation is busy, put it back for later
-            operator.pending_computations.push_back(computation_id);
+            // Processor is busy, put it back for later
+            operator.pending_processors.push_back(processor_id);
             break;
         }
     }
@@ -258,72 +253,72 @@ fn handle_checkin(operator: &mut OperatorNode, worker_id: u16, worked_computatio
 
 fn handle_checkout(
     operator: &mut OperatorNode,
-    computation_id: String,
-    computation_input: ComputationInput,
+    processor_id: String,
+    processor_input: ProcessorInput,
     stream: UnixStream,
 ) {
-    let computations_read = operator.computations.read().unwrap();
+    let processors_read = operator.processors.read().unwrap();
 
-    if let Some(c) = computations_read.get(computation_id.as_str()) {
-        let computation = c.lock().unwrap();
-        let runner_type = computation.get_runner_type();
+    if let Some(c) = processors_read.get(processor_id.as_str()) {
+        let processor = c.lock().unwrap();
+        let runner_type = processor.get_runner_type();
 
         match runner_type {
-            ComputationRunner::ThreadPool => {
-                // Check if computation is already being processed
-                if operator.computation_workers.contains_key(&computation_id) {
-                    // Computation busy, add to its specific queue
+            ProcessorRunner::ThreadPool => {
+                // Check if processor is already being processed
+                if operator.processor_workers.contains_key(&processor_id) {
+                    // Processor busy, add to its specific queue
                     let queue = operator
-                        .computation_queues
-                        .entry(computation_id.clone())
+                        .processor_queues
+                        .entry(processor_id.clone())
                         .or_insert_with(VecDeque::new);
                     let is_first_item = queue.is_empty();
-                    queue.push_back((computation_input, stream));
+                    queue.push_back((processor_input, stream));
 
-                    // Track that this computation has pending work
+                    // Track that this processor has pending work
                     if is_first_item {
-                        operator.pending_computations.push_back(computation_id);
+                        operator.pending_processors.push_back(processor_id);
                     }
                 } else if let Some(worker_id) = operator.available_workers.pop_front() {
-                    // Computation available and worker available, assign immediately
+                    // Processor available and worker available, assign immediately
                     operator
-                        .computation_workers
-                        .insert(computation_id.clone(), worker_id);
+                        .processor_workers
+                        .insert(processor_id.clone(), worker_id);
                     pool_worker_delegate(
                         &operator.workers_pool_tx,
-                        computation_id,
-                        computation_input,
+                        processor_id,
+                        processor_input,
                         worker_id,
                         stream,
                     );
                 } else {
-                    // No available workers, add to computation queue
+                    // No available workers, add to processor queue
                     let queue = operator
-                        .computation_queues
-                        .entry(computation_id.clone())
+                        .processor_queues
+                        .entry(processor_id.clone())
                         .or_insert_with(VecDeque::new);
                     let is_first_item = queue.is_empty();
-                    queue.push_back((computation_input, stream));
+                    queue.push_back((processor_input, stream));
 
-                    // Track that this computation has pending work
+                    // Track that this processor has pending work
                     if is_first_item {
-                        operator.pending_computations.push_back(computation_id);
+                        operator.pending_processors.push_back(processor_id);
                     }
                 }
             }
-            ComputationRunner::ThreadSpawn => {
+            ProcessorRunner::ThreadSpawn => {
                 executor::exec_agent(
                     stream,
-                    &computation_id,
-                    &operator.get_computations(),
-                    computation_input,
+                    &processor_id,
+                    &operator.get_processors(),
+                    processor_input,
                 );
             }
         }
     } else {
         eprint!(
-            "Computation {} not found in operator {}",
-            computation_id, operator.operator_id
+            "Processor {} not found in operator {}",
+            processor_id, operator.operator_id
         );
     }
 }

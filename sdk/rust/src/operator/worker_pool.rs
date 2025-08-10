@@ -9,24 +9,24 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use crate::computation::executor;
-use crate::computation::factory_registry::ComputationBox;
 use crate::operator::OperatorMessage;
-use crate::ComputationInput;
+use crate::processor::executor;
+use crate::processor::factory_registry::ProcessorBox;
+use crate::ProcessorInput;
 
 pub enum WorkerPoolMessage {
-    HandleWork(String, ComputationInput, UnixStream),
+    HandleWork(String, ProcessorInput, UnixStream),
 }
 
 pub fn init_worker_pool(
-    computations: Arc<RwLock<HashMap<String, Arc<Mutex<ComputationBox>>>>>,
+    processors: Arc<RwLock<HashMap<String, Arc<Mutex<ProcessorBox>>>>>,
     ctx: Arc<Mutex<Sender<OperatorMessage>>>,
 ) -> HashMap<u16, Sender<WorkerPoolMessage>> {
     let worker_count = number_of_workers();
     let mut worker_channels: HashMap<u16, Sender<WorkerPoolMessage>> = HashMap::new();
 
     for i in 0..worker_count {
-        let computations = Arc::clone(&computations);
+        let processors = Arc::clone(&processors);
         let ctx_clone = ctx.lock().unwrap().clone();
         let (wtx, wrx) = crossbeam::channel::unbounded();
         worker_channels.insert(i, wtx);
@@ -40,20 +40,16 @@ pub fn init_worker_pool(
                 let message = wrx.recv().expect("Failed to receive message");
 
                 match message {
-                    WorkerPoolMessage::HandleWork(
-                        computation_id,
-                        computation_input,
-                        unix_stream,
-                    ) => {
+                    WorkerPoolMessage::HandleWork(processor_id, processor_input, unix_stream) => {
                         executor::exec_agent(
                             unix_stream,
-                            &computation_id,
-                            &computations,
-                            computation_input,
+                            &processor_id,
+                            &processors,
+                            processor_input,
                         );
                         check_in(
                             &ctx_clone,
-                            OperatorMessage::WorkerCheckIn(worker_id, computation_id),
+                            OperatorMessage::WorkerCheckIn(worker_id, processor_id),
                         );
                     }
                 }
@@ -66,8 +62,8 @@ pub fn init_worker_pool(
 
 pub fn pool_worker_delegate(
     workers_pool_tx: &HashMap<u16, Sender<WorkerPoolMessage>>,
-    computation_id: String,
-    computation_input: ComputationInput,
+    processor_id: String,
+    processor_input: ProcessorInput,
     worker_id: u16,
     stream: UnixStream,
 ) {
@@ -75,8 +71,8 @@ pub fn pool_worker_delegate(
         .get(&worker_id)
         .unwrap()
         .send(WorkerPoolMessage::HandleWork(
-            computation_id,
-            computation_input,
+            processor_id,
+            processor_input,
             stream,
         ))
         .expect("Failed to send work to worker");

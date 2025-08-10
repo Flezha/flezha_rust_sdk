@@ -2,18 +2,18 @@ use super::CommandAction;
 
 use serde_json::Value;
 
-use crate::computation::factory_registry::get_factory;
 use crate::operator::OperatorNode;
-use crate::pb::AddComputation;
+use crate::pb::AddProcessor;
+use crate::processor::factory_registry::get_factory;
 
-impl CommandAction for AddComputation {
+impl CommandAction for AddProcessor {
     fn handle(
         &self,
         operator: &mut OperatorNode,
         _message: &String,
         errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
-        let computation_id = self.computation_id.clone();
+        let processor_id = self.processor_id.clone();
 
         // Make sure factory exist.
         match get_factory(self.factory_id.clone()) {
@@ -24,12 +24,12 @@ impl CommandAction for AddComputation {
             )),
         };
 
-        let computation_opt = operator.start_computation(self.factory_id.clone(), computation_id);
+        let processor_opt = operator.start_processor(self.factory_id.clone(), processor_id);
 
         if errors.len() == 0 {
-            match computation_opt {
-                Some(computation_handle) => {
-                    let mut computation = computation_handle.computation_mut();
+            match processor_opt {
+                Some(processor_handle) => {
+                    let mut processor = processor_handle.processor_mut();
 
                     if !self.init_values.is_empty() {
                         match serde_json::from_str::<Value>(&self.init_values) {
@@ -40,7 +40,7 @@ impl CommandAction for AddComputation {
                                     let default_values: Vec<u8> = serde_json::to_vec(&json_value)
                                         .expect("Failed to serialize init values");
 
-                                    computation
+                                    processor
                                         .json_deserialize_state(&default_values)
                                         .expect("Failed to deserialize state");
                                 }
@@ -51,14 +51,14 @@ impl CommandAction for AddComputation {
                         }
                     }
 
-                    computation.post_alter();
+                    processor.post_alter();
 
-                    return ("start_computation".to_string(), Vec::new());
+                    return ("start_processor".to_string(), Vec::new());
                 }
-                None => errors.push(format!("Unable to create computation")),
+                None => errors.push(format!("Unable to create processor")),
             }
         }
 
-        ("start_computation".to_string(), Vec::new())
+        ("start_processor".to_string(), Vec::new())
     }
 }

@@ -10,8 +10,8 @@ use std::os::unix::net::UnixStream;
 use std::str;
 use std::thread;
 
-use crate::computation::ComputationInput;
 use crate::operator::{OperatorMessage, OperatorNode};
+use crate::processor::ProcessorInput;
 use crate::service::payloader;
 
 use crate::utility::path_helper;
@@ -86,21 +86,21 @@ fn listen_incoming(
             if let Some(stream) = streams.get_mut(&token) {
                 loop {
                     match payloader::extract_payload_non_blocking(&mut *stream) {
-                        Ok(Some((computation_id, payload, metadata))) => {
+                        Ok(Some((processor_id, payload, metadata))) => {
                             let input = match metadata
                                 .get("input_type".into())
                                 .unwrap_or(&"1".into())
                                 .as_str()
                             {
-                                "1" => ComputationInput::Binary(payload),
-                                "2" => ComputationInput::Text(
+                                "1" => ProcessorInput::Binary(payload),
+                                "2" => ProcessorInput::Text(
                                     str::from_utf8(&payload).unwrap().to_string(),
                                 ),
                                 err_type => panic!("Invalid input type {}", err_type),
                             };
 
                             ctx.send(OperatorMessage::WorkerCheckOut(
-                                computation_id,
+                                processor_id,
                                 input,
                                 stream.try_clone().unwrap(),
                             ))

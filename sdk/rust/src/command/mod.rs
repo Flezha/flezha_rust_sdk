@@ -9,13 +9,13 @@ use std::io::Write;
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 
-mod computation_start;
-mod computation_state;
-mod computation_stop;
 mod migration_deserialization;
 mod migration_serialization;
 mod operator_assign;
 mod operator_disconnect;
+mod processor_start;
+mod processor_state;
+mod processor_stop;
 mod streams_connect;
 
 pub trait CommandAction {
@@ -41,13 +41,13 @@ pub fn get_handler(_payload_id: &String, message: &String) -> (CommandActionType
     let command_handler = match wrapper_command.command.unwrap() {
         Command::AssignOperatorId(proto_ch) => CommandActionType::Regular(Box::new(proto_ch)),
         Command::ConnectSocket(proto_ch) => CommandActionType::Regular(Box::new(proto_ch)),
-        Command::AddComputation(proto_ch) => CommandActionType::Regular(Box::new(proto_ch)),
-        Command::RemComputation(proto_ch) => CommandActionType::Regular(Box::new(proto_ch)),
+        Command::AddProcessor(proto_ch) => CommandActionType::Regular(Box::new(proto_ch)),
+        Command::RemProcessor(proto_ch) => CommandActionType::Regular(Box::new(proto_ch)),
         Command::MigrationSerialization(proto_ch) => CommandActionType::Regular(Box::new(proto_ch)),
         Command::MigrationDeserialization(proto_ch) => {
             CommandActionType::Regular(Box::new(proto_ch))
         }
-        Command::ComputationState(proto_ch) => CommandActionType::Regular(Box::new(proto_ch)),
+        Command::ProcessorState(proto_ch) => CommandActionType::Regular(Box::new(proto_ch)),
         Command::OperatorDisconnect(proto_ch) => {
             CommandActionType::OperatorDisconnect(Box::new(proto_ch))
         }

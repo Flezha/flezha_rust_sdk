@@ -2,10 +2,9 @@ use std::io::Write;
 use std::sync::{Arc, Mutex, RwLock};
 use std::{collections::HashMap, os::unix::net::UnixStream};
 
-use crate::computation::factory_registry::ComputationBox;
-use crate::computation::{
-    ComputationError, ComputationId, ComputationInput, ComputationOutput, ComputationResult,
-    PayloadMetadata,
+use crate::processor::factory_registry::ProcessorBox;
+use crate::processor::{
+    PayloadMetadata, ProcessorError, ProcessorId, ProcessorInput, ProcessorOutput, ProcessorResult,
 };
 use crate::service::payloader;
 use mio::unix::SourceFd;
@@ -13,42 +12,42 @@ use mio::{Events, Interest, Poll, Token};
 use std::os::unix::io::AsRawFd;
 
 pub fn exec(
-    computation_id: &String,
-    computations: &Arc<RwLock<HashMap<String, Arc<Mutex<ComputationBox>>>>>,
-    input: ComputationInput,
-) -> Result<ComputationResult, ComputationError> {
-    let computations_read = computations.read().unwrap();
+    processor_id: &String,
+    processors: &Arc<RwLock<HashMap<String, Arc<Mutex<ProcessorBox>>>>>,
+    input: ProcessorInput,
+) -> Result<ProcessorResult, ProcessorError> {
+    let processors_read = processors.read().unwrap();
 
-    if let Some(c) = computations_read.get(computation_id.as_str()) {
-        let mut computation = c.lock().unwrap();
+    if let Some(c) = processors_read.get(processor_id.as_str()) {
+        let mut processor = c.lock().unwrap();
 
-        computation.run(input)
+        processor.run(input)
     } else {
-        Err(format!("Computation with ID {} not found", computation_id))
+        Err(format!("Processor with ID {} not found", processor_id))
     }
 }
 
 pub fn exec_agent(
     mut stream: UnixStream,
-    computation_id: &String,
-    computations: &Arc<RwLock<HashMap<String, Arc<Mutex<ComputationBox>>>>>,
-    input: ComputationInput,
+    processor_id: &String,
+    processors: &Arc<RwLock<HashMap<String, Arc<Mutex<ProcessorBox>>>>>,
+    input: ProcessorInput,
 ) {
-    match exec(computation_id, computations, input) {
-        Ok(computation_result) => match computation_result {
-            ComputationResult::None => return,
-            ComputationResult::Return(_) => return,
-            ComputationResult::PipeToComputation(outputs) => {
-                pipe_to_computation(stream, computations, outputs);
+    match exec(processor_id, processors, input) {
+        Ok(processor_result) => match processor_result {
+            ProcessorResult::None => return,
+            ProcessorResult::Return(_) => return,
+            ProcessorResult::PipeToProcessor(outputs) => {
+                pipe_to_processor(stream, processors, outputs);
             }
-            ComputationResult::PipeToAgent(outputs) => {
+            ProcessorResult::PipeToAgent(outputs) => {
                 for (output, metadata) in outputs {
-                    pipe_to_agent(&mut stream, computation_id, &output, metadata);
+                    pipe_to_agent(&mut stream, processor_id, &output, metadata);
                 }
             }
         },
         Err(e) => {
-            eprintln!("Error executing computation {}: {}", computation_id, e);
+            eprintln!("Error executing processor {}: {}", processor_id, e);
             return;
         }
     }
@@ -56,18 +55,18 @@ pub fn exec_agent(
 
 pub fn pipe_to_agent(
     stream: &mut UnixStream,
-    computation_id: &String,
-    result: &ComputationOutput,
+    processor_id: &String,
+    result: &ProcessorOutput,
     metadata: HashMap<String, String>,
 ) {
     let payload = match result {
-        ComputationOutput::Text(text) => payloader::build_from_str(&computation_id, text, metadata),
-        ComputationOutput::Binary(binary) => {
-            payloader::build_from_binary(&computation_id, binary, metadata)
+        ProcessorOutput::Text(text) => payloader::build_from_str(&processor_id, text, metadata),
+        ProcessorOutput::Binary(binary) => {
+            payloader::build_from_binary(&processor_id, binary, metadata)
         }
         // TODO: Implement custom type serialization
-        ComputationOutput::Custom(_) => {
-            panic!("Unsupported computation output type");
+        ProcessorOutput::Custom(_) => {
+            panic!("Unsupported processor output type");
         }
     };
 
@@ -121,20 +120,20 @@ pub fn pipe_to_agent(
     }
 }
 
-fn pipe_to_computation(
+fn pipe_to_processor(
     stream: UnixStream,
-    computations: &Arc<RwLock<HashMap<String, Arc<Mutex<ComputationBox>>>>>,
-    outputs: Vec<(ComputationId, ComputationOutput, PayloadMetadata)>,
+    processors: &Arc<RwLock<HashMap<String, Arc<Mutex<ProcessorBox>>>>>,
+    outputs: Vec<(ProcessorId, ProcessorOutput, PayloadMetadata)>,
 ) {
-    for (computation_id, output, metadata) in outputs {
+    for (processor_id, output, metadata) in outputs {
         let mut stream_clone = stream.try_clone().unwrap();
 
-        if let Some(_computation) = computations.read().unwrap().get(&computation_id) {
-            let input = ComputationInput::from(output);
-            exec_agent(stream_clone, &computation_id, computations, input);
+        if let Some(_processor) = processors.read().unwrap().get(&processor_id) {
+            let input = ProcessorInput::from(output);
+            exec_agent(stream_clone, &processor_id, processors, input);
         } else {
-            // Computation not found, try piping to the agent.
-            pipe_to_agent(&mut stream_clone, &computation_id, &output, metadata);
+            // Processor not found, try piping to the agent.
+            pipe_to_agent(&mut stream_clone, &processor_id, &output, metadata);
         }
     }
 }
