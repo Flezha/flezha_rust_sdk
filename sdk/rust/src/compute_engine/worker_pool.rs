@@ -9,7 +9,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use crate::operator::OperatorMessage;
+use crate::compute_engine::ComputeEngineMessage;
 use crate::processor::executor;
 use crate::processor::factory_registry::ProcessorBox;
 use crate::ProcessorInput;
@@ -20,7 +20,7 @@ pub enum WorkerPoolMessage {
 
 pub fn init_worker_pool(
     processors: Arc<RwLock<HashMap<String, Arc<Mutex<ProcessorBox>>>>>,
-    ctx: Arc<Mutex<Sender<OperatorMessage>>>,
+    ctx: Arc<Mutex<Sender<ComputeEngineMessage>>>,
 ) -> HashMap<u16, Sender<WorkerPoolMessage>> {
     let worker_count = number_of_workers();
     let mut worker_channels: HashMap<u16, Sender<WorkerPoolMessage>> = HashMap::new();
@@ -34,7 +34,10 @@ pub fn init_worker_pool(
         thread::spawn(move || {
             let worker_id = i;
 
-            check_in(&ctx_clone, OperatorMessage::WorkerInitCheckIn(worker_id));
+            check_in(
+                &ctx_clone,
+                ComputeEngineMessage::WorkerInitCheckIn(worker_id),
+            );
 
             loop {
                 let message = wrx.recv().expect("Failed to receive message");
@@ -49,7 +52,7 @@ pub fn init_worker_pool(
                         );
                         check_in(
                             &ctx_clone,
-                            OperatorMessage::WorkerCheckIn(worker_id, processor_id),
+                            ComputeEngineMessage::WorkerCheckIn(worker_id, processor_id),
                         );
                     }
                 }
@@ -78,7 +81,7 @@ pub fn pool_worker_delegate(
         .expect("Failed to send work to worker");
 }
 
-fn check_in(ctx: &Sender<OperatorMessage>, message: OperatorMessage) {
+fn check_in(ctx: &Sender<ComputeEngineMessage>, message: ComputeEngineMessage) {
     ctx.send(message)
         .expect("Failed to send message to coordinator");
 }

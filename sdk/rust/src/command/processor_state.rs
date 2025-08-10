@@ -1,16 +1,16 @@
 use super::CommandAction;
 use crate::pb::ProcessorState;
-use crate::{operator::OperatorNode, processor::factory_registry::ProcessorHandle};
+use crate::{compute_engine::ComputeEngineNode, processor::factory_registry::ProcessorHandle};
 
 impl CommandAction for ProcessorState {
     fn handle(
         &self,
-        operator: &mut OperatorNode,
+        compute_engine: &mut ComputeEngineNode,
         _message: &String,
         errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
         let processor_handle: Option<ProcessorHandle> =
-            operator.get_processor(self.processor_id.clone());
+            compute_engine.get_processor(self.processor_id.clone());
 
         match processor_handle {
             Some(processor_handle) => {

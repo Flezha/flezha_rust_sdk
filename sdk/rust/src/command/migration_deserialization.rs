@@ -1,14 +1,14 @@
 use super::CommandAction;
-use crate::{operator::OperatorNode, pb::MigrationDeserialization};
+use crate::{compute_engine::ComputeEngineNode, pb::MigrationDeserialization};
 
 impl CommandAction for MigrationDeserialization {
     fn handle(
         &self,
-        operator: &mut OperatorNode,
+        compute_engine: &mut ComputeEngineNode,
         _message: &String,
         _errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
-        let processor_handle = operator
+        let processor_handle = compute_engine
             .start_processor(self.factory_id.clone(), self.processor_id.clone())
             .unwrap();
 

@@ -1,5 +1,4 @@
 mod control_unit;
-pub(crate) mod coordinator;
 mod worker_pool;
 
 use crossbeam::channel::{Receiver, Sender};
@@ -10,13 +9,15 @@ use std::thread::{self, JoinHandle};
 
 use crate::processor::factory_registry::{get_factory, ProcessorBox, ProcessorHandle};
 
-use crate::operator::worker_pool::{init_worker_pool, pool_worker_delegate, WorkerPoolMessage};
+use crate::compute_engine::worker_pool::{
+    init_worker_pool, pool_worker_delegate, WorkerPoolMessage,
+};
 use crate::processor::{executor, ProcessorRunner};
 use crate::{command, ProcessorInput};
 
 type WorkItem = (ProcessorInput, UnixStream);
 
-pub enum OperatorMessage {
+pub enum ComputeEngineMessage {
     WorkerInitCheckIn(u16),
     WorkerCheckIn(u16, String),
     WorkerCheckOut(String, ProcessorInput, UnixStream),
@@ -24,19 +25,19 @@ pub enum OperatorMessage {
     ReturnProcessors,
 }
 
-pub enum OperatorStatus {
+pub enum ComputeEngineStatus {
     Starting,
     Running,
     Stopped,
 }
 
 pub enum ClientResponseMessage {
-    OperatorIdConfirmation,
+    ComputeEngineIdConfirmation,
     ReturnProcessors(Arc<RwLock<HashMap<String, Arc<Mutex<ProcessorBox>>>>>),
 }
 
-pub struct OperatorNode {
-    operator_id: String,
+pub struct ComputeEngineNode {
+    compute_engine_id: String,
     _namespace: String,
     processors: Arc<RwLock<HashMap<String, Arc<Mutex<ProcessorBox>>>>>,
     shared_io_streams: Arc<RwLock<HashMap<u32, UnixStream>>>,
@@ -45,18 +46,18 @@ pub struct OperatorNode {
     processor_workers: HashMap<String, u16>,
     available_workers: VecDeque<u16>,
     pending_processors: VecDeque<String>,
-    operator_channel: Arc<Mutex<Sender<OperatorMessage>>>,
-    status: OperatorStatus,
+    compute_engine_channel: Arc<Mutex<Sender<ComputeEngineMessage>>>,
+    status: ComputeEngineStatus,
 }
 
-impl OperatorNode {
-    pub fn new(namespace: String, otx: Sender<OperatorMessage>) -> OperatorNode {
+impl ComputeEngineNode {
+    pub fn new(namespace: String, otx: Sender<ComputeEngineMessage>) -> ComputeEngineNode {
         let processors = Arc::new(RwLock::new(HashMap::new()));
         let shared_io_streams = Arc::new(RwLock::new(HashMap::new()));
         let otx_arc = Arc::new(Mutex::new(otx));
 
-        OperatorNode {
-            operator_id: "undefined".to_string(),
+        ComputeEngineNode {
+            compute_engine_id: "undefined".to_string(),
             _namespace: namespace.clone(),
             processors: processors.clone(),
             shared_io_streams: shared_io_streams,
@@ -65,8 +66,8 @@ impl OperatorNode {
             processor_workers: HashMap::new(),
             available_workers: VecDeque::new(),
             pending_processors: VecDeque::new(),
-            operator_channel: otx_arc.clone(),
-            status: OperatorStatus::Starting,
+            compute_engine_channel: otx_arc.clone(),
+            status: ComputeEngineStatus::Starting,
         }
     }
 
@@ -116,15 +117,15 @@ impl OperatorNode {
         Arc::clone(&self.shared_io_streams)
     }
 
-    pub fn get_operator_id(&self) -> String {
-        self.operator_id.clone()
+    pub fn get_compute_engine_id(&self) -> String {
+        self.compute_engine_id.clone()
     }
 
-    pub fn assign_operator_id(&mut self, operator_id: String) {
-        self.operator_id = operator_id;
+    pub fn assign_compute_engine_id(&mut self, compute_engine_id: String) {
+        self.compute_engine_id = compute_engine_id;
     }
 
-    pub fn set_status(&mut self, status: OperatorStatus) {
+    pub fn set_status(&mut self, status: ComputeEngineStatus) {
         self.status = status;
     }
 
@@ -132,18 +133,18 @@ impl OperatorNode {
         self.processors.read().unwrap().contains_key(&id)
     }
 
-    pub fn get_operator_channel(&self) -> Arc<Mutex<Sender<OperatorMessage>>> {
-        Arc::clone(&self.operator_channel)
+    pub fn get_compute_engine_channel(&self) -> Arc<Mutex<Sender<ComputeEngineMessage>>> {
+        Arc::clone(&self.compute_engine_channel)
     }
 }
 
 pub fn start(
     namespace: String,
-    (otx, orx): (Sender<OperatorMessage>, Receiver<OperatorMessage>),
+    (otx, orx): (Sender<ComputeEngineMessage>, Receiver<ComputeEngineMessage>),
     ctx: Sender<ClientResponseMessage>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
-        let mut operator = OperatorNode::new(namespace.clone(), otx.clone());
+        let mut compute_engine = ComputeEngineNode::new(namespace.clone(), otx.clone());
         let ctx_arc = Arc::new(Mutex::new(ctx));
         let otx_arc = Arc::new(Mutex::new(otx));
         let (_control_thread, control_stream) =
@@ -153,29 +154,37 @@ pub fn start(
             let message = orx.recv().expect("Failed to receive coordinator message");
 
             match message {
-                OperatorMessage::WorkerInitCheckIn(worker_id) => {
-                    operator.available_workers.push_back(worker_id);
+                ComputeEngineMessage::WorkerInitCheckIn(worker_id) => {
+                    compute_engine.available_workers.push_back(worker_id);
                 }
-                OperatorMessage::WorkerCheckOut(processor_id, processor_input, stream) => {
-                    handle_checkout(&mut operator, processor_id, processor_input, stream);
+                ComputeEngineMessage::WorkerCheckOut(processor_id, processor_input, stream) => {
+                    handle_checkout(&mut compute_engine, processor_id, processor_input, stream);
                 }
-                OperatorMessage::WorkerCheckIn(worker_id, worked_processor_id) => {
-                    handle_checkin(&mut operator, worker_id, worked_processor_id);
+                ComputeEngineMessage::WorkerCheckIn(worker_id, worked_processor_id) => {
+                    handle_checkin(&mut compute_engine, worker_id, worked_processor_id);
                 }
                 // TODO: Do anything with metadata?
-                OperatorMessage::HandleCommandAction(payload_id, message, _metadata) => {
-                    command::handle_command(&mut operator, &control_stream, &payload_id, &message);
+                ComputeEngineMessage::HandleCommandAction(payload_id, message, _metadata) => {
+                    command::handle_command(
+                        &mut compute_engine,
+                        &control_stream,
+                        &payload_id,
+                        &message,
+                    );
                 }
-                OperatorMessage::ReturnProcessors => {
-                    return_processors(&operator, ctx_arc.clone());
+                ComputeEngineMessage::ReturnProcessors => {
+                    return_processors(&compute_engine, ctx_arc.clone());
                 }
             }
         }
     })
 }
 
-fn return_processors(operator: &OperatorNode, ctx_arc: Arc<Mutex<Sender<ClientResponseMessage>>>) {
-    let processors = operator.get_processors();
+fn return_processors(
+    compute_engine: &ComputeEngineNode,
+    ctx_arc: Arc<Mutex<Sender<ClientResponseMessage>>>,
+) {
+    let processors = compute_engine.get_processors();
 
     ctx_arc
         .lock()
@@ -184,20 +193,29 @@ fn return_processors(operator: &OperatorNode, ctx_arc: Arc<Mutex<Sender<ClientRe
         .expect("Failed to send processors response");
 }
 
-fn handle_checkin(operator: &mut OperatorNode, worker_id: u16, worked_processor_id: String) {
+fn handle_checkin(
+    compute_engine: &mut ComputeEngineNode,
+    worker_id: u16,
+    worked_processor_id: String,
+) {
     // Remove processor from active processing
-    operator.processor_workers.remove(&worked_processor_id);
+    compute_engine
+        .processor_workers
+        .remove(&worked_processor_id);
 
     // TODO: handle different worker types.
     // Check if this processor has queued work
-    if let Some(queue) = operator.processor_queues.get_mut(&worked_processor_id) {
+    if let Some(queue) = compute_engine
+        .processor_queues
+        .get_mut(&worked_processor_id)
+    {
         if let Some((processor_input, stream)) = queue.pop_front() {
             // Process next item in this processor's queue with same worker (sticky assignment)
-            operator
+            compute_engine
                 .processor_workers
                 .insert(worked_processor_id.clone(), worker_id);
             pool_worker_delegate(
-                &operator.workers_pool_tx,
+                &compute_engine.workers_pool_tx,
                 worked_processor_id,
                 processor_input,
                 worker_id,
@@ -206,27 +224,27 @@ fn handle_checkin(operator: &mut OperatorNode, worker_id: u16, worked_processor_
             return;
         } else {
             // Queue is empty, remove it
-            operator.processor_queues.remove(&worked_processor_id);
+            compute_engine.processor_queues.remove(&worked_processor_id);
         }
     }
 
     // No work for this processor, make worker available for other processors
-    operator.available_workers.push_back(worker_id);
+    compute_engine.available_workers.push_back(worker_id);
 
     // Optimized: Only check processors that have pending work
-    while let Some(processor_id) = operator.pending_processors.pop_front() {
+    while let Some(processor_id) = compute_engine.pending_processors.pop_front() {
         // Check if processor is still idle and has work
-        if !operator.processor_workers.contains_key(&processor_id) {
+        if !compute_engine.processor_workers.contains_key(&processor_id) {
             // TODO: handle different worker types.
-            if let Some(queue) = operator.processor_queues.get_mut(&processor_id) {
+            if let Some(queue) = compute_engine.processor_queues.get_mut(&processor_id) {
                 if let Some((processor_input, stream)) = queue.pop_front() {
                     // Remove worker from available workers since we're assigning it
-                    operator.available_workers.pop_back();
-                    operator
+                    compute_engine.available_workers.pop_back();
+                    compute_engine
                         .processor_workers
                         .insert(processor_id.clone(), worker_id);
                     pool_worker_delegate(
-                        &operator.workers_pool_tx,
+                        &compute_engine.workers_pool_tx,
                         processor_id.clone(),
                         processor_input,
                         worker_id,
@@ -235,29 +253,31 @@ fn handle_checkin(operator: &mut OperatorNode, worker_id: u16, worked_processor_
 
                     // If queue still has work, put it back in pending list
                     if !queue.is_empty() {
-                        operator.pending_processors.push_back(processor_id.clone());
+                        compute_engine
+                            .pending_processors
+                            .push_back(processor_id.clone());
                     } else {
                         // Queue is empty, remove it
-                        operator.processor_queues.remove(&processor_id);
+                        compute_engine.processor_queues.remove(&processor_id);
                     }
                     return;
                 }
             }
         } else {
             // Processor is busy, put it back for later
-            operator.pending_processors.push_back(processor_id);
+            compute_engine.pending_processors.push_back(processor_id);
             break;
         }
     }
 }
 
 fn handle_checkout(
-    operator: &mut OperatorNode,
+    compute_engine: &mut ComputeEngineNode,
     processor_id: String,
     processor_input: ProcessorInput,
     stream: UnixStream,
 ) {
-    let processors_read = operator.processors.read().unwrap();
+    let processors_read = compute_engine.processors.read().unwrap();
 
     if let Some(c) = processors_read.get(processor_id.as_str()) {
         let processor = c.lock().unwrap();
@@ -266,9 +286,9 @@ fn handle_checkout(
         match runner_type {
             ProcessorRunner::ThreadPool => {
                 // Check if processor is already being processed
-                if operator.processor_workers.contains_key(&processor_id) {
+                if compute_engine.processor_workers.contains_key(&processor_id) {
                     // Processor busy, add to its specific queue
-                    let queue = operator
+                    let queue = compute_engine
                         .processor_queues
                         .entry(processor_id.clone())
                         .or_insert_with(VecDeque::new);
@@ -277,15 +297,15 @@ fn handle_checkout(
 
                     // Track that this processor has pending work
                     if is_first_item {
-                        operator.pending_processors.push_back(processor_id);
+                        compute_engine.pending_processors.push_back(processor_id);
                     }
-                } else if let Some(worker_id) = operator.available_workers.pop_front() {
+                } else if let Some(worker_id) = compute_engine.available_workers.pop_front() {
                     // Processor available and worker available, assign immediately
-                    operator
+                    compute_engine
                         .processor_workers
                         .insert(processor_id.clone(), worker_id);
                     pool_worker_delegate(
-                        &operator.workers_pool_tx,
+                        &compute_engine.workers_pool_tx,
                         processor_id,
                         processor_input,
                         worker_id,
@@ -293,7 +313,7 @@ fn handle_checkout(
                     );
                 } else {
                     // No available workers, add to processor queue
-                    let queue = operator
+                    let queue = compute_engine
                         .processor_queues
                         .entry(processor_id.clone())
                         .or_insert_with(VecDeque::new);
@@ -302,7 +322,7 @@ fn handle_checkout(
 
                     // Track that this processor has pending work
                     if is_first_item {
-                        operator.pending_processors.push_back(processor_id);
+                        compute_engine.pending_processors.push_back(processor_id);
                     }
                 }
             }
@@ -310,15 +330,15 @@ fn handle_checkout(
                 executor::exec_agent(
                     stream,
                     &processor_id,
-                    &operator.get_processors(),
+                    &compute_engine.get_processors(),
                     processor_input,
                 );
             }
         }
     } else {
         eprint!(
-            "Processor {} not found in operator {}",
-            processor_id, operator.operator_id
+            "Processor {} not found in compute_engine {}",
+            processor_id, compute_engine.compute_engine_id
         );
     }
 }

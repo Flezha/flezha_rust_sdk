@@ -1,5 +1,5 @@
 use crate::command;
-use crate::operator::OperatorNode;
+use crate::compute_engine::ComputeEngineNode;
 use crate::pb::command_request::Command;
 use crate::pb::{CommandRequest, CommandResponse};
 use crate::service::payloader;
@@ -9,10 +9,10 @@ use std::io::Write;
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 
+mod compute_engine_assign;
+mod compute_engine_disconnect;
 mod migration_deserialization;
 mod migration_serialization;
-mod operator_assign;
-mod operator_disconnect;
 mod processor_start;
 mod processor_state;
 mod processor_stop;
@@ -21,7 +21,7 @@ mod streams_connect;
 pub trait CommandAction {
     fn handle(
         &self,
-        operator: &mut OperatorNode,
+        compute_engine: &mut ComputeEngineNode,
         command_struct: &String,
         errors: &mut Vec<String>,
     ) -> (String, Vec<u8>);
@@ -29,7 +29,7 @@ pub trait CommandAction {
 
 pub enum CommandActionType {
     Regular(Box<dyn CommandAction>),
-    OperatorDisconnect(Box<dyn CommandAction>),
+    ComputeEngineDisconnect(Box<dyn CommandAction>),
 }
 
 pub fn get_handler(_payload_id: &String, message: &String) -> (CommandActionType, String) {
@@ -39,7 +39,7 @@ pub fn get_handler(_payload_id: &String, message: &String) -> (CommandActionType
     let reference_id = wrapper_command.reference_id;
 
     let command_handler = match wrapper_command.command.unwrap() {
-        Command::AssignOperatorId(proto_ch) => CommandActionType::Regular(Box::new(proto_ch)),
+        Command::AssignComputeEngineId(proto_ch) => CommandActionType::Regular(Box::new(proto_ch)),
         Command::ConnectSocket(proto_ch) => CommandActionType::Regular(Box::new(proto_ch)),
         Command::AddProcessor(proto_ch) => CommandActionType::Regular(Box::new(proto_ch)),
         Command::RemProcessor(proto_ch) => CommandActionType::Regular(Box::new(proto_ch)),
@@ -48,8 +48,8 @@ pub fn get_handler(_payload_id: &String, message: &String) -> (CommandActionType
             CommandActionType::Regular(Box::new(proto_ch))
         }
         Command::ProcessorState(proto_ch) => CommandActionType::Regular(Box::new(proto_ch)),
-        Command::OperatorDisconnect(proto_ch) => {
-            CommandActionType::OperatorDisconnect(Box::new(proto_ch))
+        Command::ComputeEngineDisconnect(proto_ch) => {
+            CommandActionType::ComputeEngineDisconnect(Box::new(proto_ch))
         }
     };
 
@@ -57,7 +57,7 @@ pub fn get_handler(_payload_id: &String, message: &String) -> (CommandActionType
 }
 
 pub fn handle_command(
-    operator: &mut OperatorNode,
+    compute_engine: &mut ComputeEngineNode,
     stream: &UnixStream,
     payload_id: &String,
     message: &Vec<u8>,
@@ -69,7 +69,7 @@ pub fn handle_command(
     match handler_type {
         CommandActionType::Regular(handler) => {
             let reply = command::exec_control(
-                operator,
+                compute_engine,
                 handler,
                 &payload_id,
                 &payload_message,
@@ -78,9 +78,9 @@ pub fn handle_command(
             (&*stream).write_all(&reply).unwrap();
         }
 
-        CommandActionType::OperatorDisconnect(handler) => {
+        CommandActionType::ComputeEngineDisconnect(handler) => {
             let reply = command::exec_control(
-                operator,
+                compute_engine,
                 handler,
                 &payload_id,
                 &payload_message,
@@ -95,7 +95,7 @@ pub fn handle_command(
 }
 
 fn exec_control(
-    operator: &mut OperatorNode,
+    compute_engine: &mut ComputeEngineNode,
     handler: Box<dyn CommandAction>,
     payload_id: &String,
     message: &String,
@@ -104,7 +104,7 @@ fn exec_control(
     let mut errors: Vec<String> = vec![];
     let mut status = String::from("success");
 
-    let (_payload_id, raw_data) = handler.handle(operator, message, &mut errors);
+    let (_payload_id, raw_data) = handler.handle(compute_engine, message, &mut errors);
 
     if errors.len() > 0 {
         status = "error".to_string();

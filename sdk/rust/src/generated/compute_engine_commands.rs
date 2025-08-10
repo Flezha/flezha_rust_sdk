@@ -11,7 +11,7 @@ pub mod command_request {
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Command {
         #[prost(message, tag = "2")]
-        AssignOperatorId(super::AssignOperatorId),
+        AssignComputeEngineId(super::AssignComputeEngineId),
         #[prost(message, tag = "3")]
         ConnectSocket(super::ConnectSocket),
         #[prost(message, tag = "4")]
@@ -25,7 +25,7 @@ pub mod command_request {
         #[prost(message, tag = "8")]
         ProcessorState(super::ProcessorState),
         #[prost(message, tag = "9")]
-        OperatorDisconnect(super::OperatorDisconnect),
+        ComputeEngineDisconnect(super::ComputeEngineDisconnect),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -40,9 +40,9 @@ pub struct CommandResponse {
     pub raw_data: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct AssignOperatorId {
+pub struct AssignComputeEngineId {
     #[prost(string, tag = "1")]
-    pub operator_id: ::prost::alloc::string::String,
+    pub compute_engine_id: ::prost::alloc::string::String,
 }
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct ConnectSocket {
@@ -83,4 +83,4 @@ pub struct ProcessorState {
     pub processor_id: ::prost::alloc::string::String,
 }
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
-pub struct OperatorDisconnect {}
+pub struct ComputeEngineDisconnect {}

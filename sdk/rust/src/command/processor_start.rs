@@ -2,14 +2,14 @@ use super::CommandAction;
 
 use serde_json::Value;
 
-use crate::operator::OperatorNode;
+use crate::compute_engine::ComputeEngineNode;
 use crate::pb::AddProcessor;
 use crate::processor::factory_registry::get_factory;
 
 impl CommandAction for AddProcessor {
     fn handle(
         &self,
-        operator: &mut OperatorNode,
+        compute_engine: &mut ComputeEngineNode,
         _message: &String,
         errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
@@ -24,7 +24,7 @@ impl CommandAction for AddProcessor {
             )),
         };
 
-        let processor_opt = operator.start_processor(self.factory_id.clone(), processor_id);
+        let processor_opt = compute_engine.start_processor(self.factory_id.clone(), processor_id);
 
         if errors.len() == 0 {
             match processor_opt {

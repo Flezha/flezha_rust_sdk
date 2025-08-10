@@ -18,7 +18,7 @@ if ! command -v protoc &> /dev/null; then
 fi
 
 # Check if we have the proto file
-PROTO_FILE="../../protobufs/operator_commands.proto"
+PROTO_FILE="../../protobufs/compute_engine_commands.proto"
 if [ ! -f "$PROTO_FILE" ]; then
     echo "Error: Proto file not found: $PROTO_FILE"
     exit 1
@@ -33,7 +33,7 @@ use std::fs;
 use std::path::Path;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let proto_file = "../../protobufs/operator_commands.proto";
+    let proto_file = "../../protobufs/compute_engine_commands.proto";
     let proto_file = fs::canonicalize(proto_file)?;
     let proto_file_str = proto_file.to_string_lossy().to_string();
     let proto_dir = proto_file.parent().unwrap();

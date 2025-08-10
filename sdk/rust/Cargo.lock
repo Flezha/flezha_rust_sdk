@@ -113,7 +113,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "flezha_operator"
+name = "flezha_compute_engine"
 version = "0.1.0"
 dependencies = [
  "bincode",

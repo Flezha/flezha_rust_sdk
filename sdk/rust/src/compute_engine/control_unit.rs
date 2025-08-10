@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use serde::Serialize;
 
-use crate::operator::OperatorMessage;
+use crate::compute_engine::ComputeEngineMessage;
 use crate::processor::factory_registry::get_factory_ids;
 use crate::service::payloader;
 use crate::utility::path_helper;
@@ -24,7 +24,7 @@ struct ControlInitMessage {
 pub fn open(
     namespace: String,
     itx: Arc<Mutex<Sender<ClientResponseMessage>>>,
-    otx: Arc<Mutex<Sender<OperatorMessage>>>,
+    otx: Arc<Mutex<Sender<ComputeEngineMessage>>>,
 ) -> (thread::JoinHandle<()>, Arc<UnixStream>) {
     let socket_path = path_helper::control_socket_path();
 
@@ -43,7 +43,7 @@ fn sock_conn(
     namespace: String,
     stream_box: Arc<UnixStream>,
     itx: Arc<Mutex<Sender<ClientResponseMessage>>>,
-    otx: Arc<Mutex<Sender<OperatorMessage>>>,
+    otx: Arc<Mutex<Sender<ComputeEngineMessage>>>,
 ) -> (thread::JoinHandle<()>, Arc<UnixStream>) {
     let stream_clone = Arc::clone(&stream_box);
 
@@ -55,7 +55,7 @@ fn sock_conn(
                 Ok((payload_id, message, metadata)) => {
                     otx.lock()
                         .unwrap()
-                        .send(OperatorMessage::HandleCommandAction(
+                        .send(ComputeEngineMessage::HandleCommandAction(
                             payload_id, message, metadata,
                         ))
                         .unwrap();
@@ -92,6 +92,6 @@ fn send_init_msg(
 
     tx.lock()
         .unwrap()
-        .send(ClientResponseMessage::OperatorIdConfirmation)
+        .send(ClientResponseMessage::ComputeEngineIdConfirmation)
         .unwrap();
 }

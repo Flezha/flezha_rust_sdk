@@ -1,5 +1,5 @@
 mod command;
-mod operator;
+mod compute_engine;
 pub mod processor;
 mod service;
 mod utility;
@@ -17,47 +17,47 @@ pub use processor::{
 };
 
 use crate::{
-    operator::{ClientResponseMessage, OperatorMessage},
+    compute_engine::{ClientResponseMessage, ComputeEngineMessage},
     processor::factory_registry::ProcessorBox,
 };
 
 pub mod pb {
     #[cfg(not(rust_analyzer))]
-    include!("generated/operator_commands.rs");
+    include!("generated/compute_engine_commands.rs");
     #[cfg(rust_analyzer)]
-    include!("generated/operator_commands.rs");
+    include!("generated/compute_engine_commands.rs");
 }
 pub struct Flezha {
     id: String,
-    operator_tx: Arc<Mutex<crossbeam::channel::Sender<OperatorMessage>>>,
+    compute_engine_tx: Arc<Mutex<crossbeam::channel::Sender<ComputeEngineMessage>>>,
     client_rx: Arc<Mutex<crossbeam::channel::Receiver<ClientResponseMessage>>>,
-    _operator_thread: Option<std::thread::JoinHandle<()>>,
+    _compute_engine_thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Flezha {
     fn new(id: String) -> Flezha {
-        let (otx, orx): (Sender<OperatorMessage>, Receiver<OperatorMessage>) =
+        let (otx, orx): (Sender<ComputeEngineMessage>, Receiver<ComputeEngineMessage>) =
             crossbeam::channel::unbounded();
         let (ctx, irx): (
             Sender<ClientResponseMessage>,
             Receiver<ClientResponseMessage>,
         ) = crossbeam::channel::unbounded();
-        let operator_thread = operator::start(id.clone(), (otx.clone(), orx), ctx);
+        let compute_engine_thread = compute_engine::start(id.clone(), (otx.clone(), orx), ctx);
 
         // Make sure the namespace is passed to the agent and confirmed
         match irx
             .recv()
             .expect("Failed to receive namespace confirmation")
         {
-            ClientResponseMessage::OperatorIdConfirmation => {}
+            ClientResponseMessage::ComputeEngineIdConfirmation => {}
             _ => panic!("Unexpected message type received"),
         }
 
         Flezha {
             id: id.clone(),
-            operator_tx: Arc::new(Mutex::new(otx)),
+            compute_engine_tx: Arc::new(Mutex::new(otx)),
             client_rx: Arc::new(Mutex::new(irx)),
-            _operator_thread: Some(operator_thread),
+            _compute_engine_thread: Some(compute_engine_thread),
         }
     }
 
@@ -66,13 +66,13 @@ impl Flezha {
     }
 
     pub fn get_processors(&self) -> Arc<RwLock<HashMap<String, Arc<Mutex<ProcessorBox>>>>> {
-        self.operator_tx
+        self.compute_engine_tx
             .lock()
             .unwrap()
-            .send(OperatorMessage::ReturnProcessors)
+            .send(ComputeEngineMessage::ReturnProcessors)
             .expect("Failed to send ReturnProcessors message");
 
-        // Wait for the response from the operator
+        // Wait for the response from the compute_engine
         let response = self
             .client_rx
             .lock()

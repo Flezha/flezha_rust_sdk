@@ -10,7 +10,7 @@ use std::os::unix::net::UnixStream;
 use std::str;
 use std::thread;
 
-use crate::operator::{OperatorMessage, OperatorNode};
+use crate::compute_engine::{ComputeEngineMessage, ComputeEngineNode};
 use crate::processor::ProcessorInput;
 use crate::service::payloader;
 
@@ -21,22 +21,22 @@ const EVENTS_CAPACITY: usize = 1024;
 impl CommandAction for ConnectSocket {
     fn handle(
         &self,
-        operator: &mut OperatorNode,
+        compute_engine: &mut ComputeEngineNode,
         _message: &String,
         _errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
-        let io_streams = operator.get_io_streams();
-        let operator_id = operator.get_operator_id();
-        let ctx = operator.get_operator_channel();
+        let io_streams = compute_engine.get_io_streams();
+        let compute_engine_id = compute_engine.get_compute_engine_id();
+        let ctx = compute_engine.get_compute_engine_channel();
 
         let poll = Poll::new().unwrap();
         let mut events = Events::with_capacity(EVENTS_CAPACITY);
         let mut streams = HashMap::new();
 
         for key in 0..self.sockets_count {
-            let stream = connect_unix(&operator_id, "primary".to_string());
+            let stream = connect_unix(&compute_engine_id, "primary".to_string());
             stream.set_nonblocking(true).unwrap();
-            let shared_stream = connect_unix(&operator_id, "secondary".to_string());
+            let shared_stream = connect_unix(&compute_engine_id, "secondary".to_string());
 
             io_streams
                 .write()
@@ -63,8 +63,8 @@ impl CommandAction for ConnectSocket {
     }
 }
 
-fn connect_unix(operator_id: &String, stream_type: String) -> UnixStream {
-    let socket_path = path_helper::stream_socket_path(operator_id, stream_type);
+fn connect_unix(compute_engine_id: &String, stream_type: String) -> UnixStream {
+    let socket_path = path_helper::stream_socket_path(compute_engine_id, stream_type);
 
     UnixStream::connect(socket_path.clone()).expect(&format!(
         "Failed to connect to the socket: {}",
@@ -76,7 +76,7 @@ fn listen_incoming(
     mut poll: Poll,
     events: &mut Events,
     streams: &mut HashMap<Token, UnixStream>,
-    ctx: Sender<OperatorMessage>,
+    ctx: Sender<ComputeEngineMessage>,
 ) {
     loop {
         poll.poll(events, None).unwrap();
@@ -99,7 +99,7 @@ fn listen_incoming(
                                 err_type => panic!("Invalid input type {}", err_type),
                             };
 
-                            ctx.send(OperatorMessage::WorkerCheckOut(
+                            ctx.send(ComputeEngineMessage::WorkerCheckOut(
                                 processor_id,
                                 input,
                                 stream.try_clone().unwrap(),
