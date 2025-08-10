@@ -17,12 +17,12 @@ use super::ClientResponseMessage;
 
 #[derive(Serialize)]
 struct ControlInitMessage {
-    group_id: String,
+    namespace: String,
     factory_ids: Vec<String>,
 }
 
 pub fn open(
-    group_id: String,
+    namespace: String,
     itx: Arc<Mutex<Sender<ClientResponseMessage>>>,
     otx: Arc<Mutex<Sender<OperatorMessage>>>,
 ) -> (thread::JoinHandle<()>, Arc<UnixStream>) {
@@ -36,11 +36,11 @@ pub fn open(
 
     let stream_box = Arc::new(stream);
 
-    sock_conn(group_id, stream_box, itx, otx)
+    sock_conn(namespace, stream_box, itx, otx)
 }
 
 fn sock_conn(
-    group_id: String,
+    namespace: String,
     stream_box: Arc<UnixStream>,
     itx: Arc<Mutex<Sender<ClientResponseMessage>>>,
     otx: Arc<Mutex<Sender<OperatorMessage>>>,
@@ -48,7 +48,7 @@ fn sock_conn(
     let stream_clone = Arc::clone(&stream_box);
 
     let handle = thread::spawn(move || {
-        send_init_msg(group_id, itx, stream_clone.clone());
+        send_init_msg(namespace, itx, stream_clone.clone());
 
         loop {
             match payloader::extract_payload(&*stream_clone.clone()) {
@@ -74,12 +74,12 @@ fn sock_conn(
 }
 
 fn send_init_msg(
-    group_id: String,
+    namespace: String,
     tx: Arc<Mutex<Sender<ClientResponseMessage>>>,
     stream_clone: Arc<UnixStream>,
 ) {
     let control_init_message = ControlInitMessage {
-        group_id: group_id.clone(),
+        namespace: namespace.clone(),
         factory_ids: get_factory_ids(),
     };
 
@@ -87,7 +87,7 @@ fn send_init_msg(
     let payload =
         payloader::build_from_str("connect_control_channel", &control_message, HashMap::new());
 
-    // Pass group id to the Flezha.
+    // Pass namespace id to the Flezha.
     (&*stream_clone).write_all(&payload).unwrap();
 
     tx.lock()

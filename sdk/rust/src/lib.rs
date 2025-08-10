@@ -117,6 +117,6 @@ impl Flezha {
     // }
 }
 
-pub fn new(group_id: String) -> Flezha {
-    Flezha::new(group_id)
+pub fn new(namespace: String) -> Flezha {
+    Flezha::new(namespace)
 }
