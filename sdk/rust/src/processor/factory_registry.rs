@@ -39,7 +39,7 @@ pub struct ProcessorHandle {
 
 impl ProcessorHandle {
     /// Get mutable access to the processor
-    pub fn processor_mut(&self) -> std::sync::MutexGuard<ProcessorBox> {
+    pub fn processor_mut(&self) -> std::sync::MutexGuard<'_, ProcessorBox> {
         self.processor.lock().unwrap()
     }
 
