@@ -1,15 +1,15 @@
 use std::io::Write;
 use std::sync::{Arc, Mutex, RwLock};
-use std::{collections::HashMap, os::unix::net::UnixStream};
+use std::collections::HashMap;
 
 use crate::processor::factory_registry::ProcessorBox;
 use crate::processor::{
     PayloadMetadata, ProcessorError, ProcessorId, ProcessorInput, ProcessorOutput, ProcessorResult,
 };
 use crate::service::payloader;
+use crate::transport::FlezhaStream;
 use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Token};
-use std::os::unix::io::AsRawFd;
 
 pub fn exec(
     processor_id: &String,
@@ -28,7 +28,7 @@ pub fn exec(
 }
 
 pub fn exec_agent(
-    mut stream: UnixStream,
+    mut stream: FlezhaStream,
     processor_id: &String,
     processors: &Arc<RwLock<HashMap<String, Arc<Mutex<ProcessorBox>>>>>,
     input: ProcessorInput,
@@ -54,7 +54,7 @@ pub fn exec_agent(
 }
 
 pub fn pipe_to_agent(
-    stream: &mut UnixStream,
+    stream: &mut FlezhaStream,
     processor_id: &String,
     result: &ProcessorOutput,
     metadata: HashMap<String, String>,
@@ -73,46 +73,46 @@ pub fn pipe_to_agent(
     match stream.write_all(&payload) {
         Ok(_) => {}
         Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-            let mut poll = Poll::new().unwrap();
-            let mut events = Events::with_capacity(1);
-            let token = Token(0);
+            if let Some(raw_fd) = stream.as_raw_fd() {
+                let mut poll = Poll::new().unwrap();
+                let mut events = Events::with_capacity(1);
+                let token = Token(0);
 
-            poll.registry()
-                .register(
-                    &mut SourceFd(&stream.as_raw_fd()),
-                    token,
-                    Interest::WRITABLE,
-                )
-                .unwrap();
+                poll.registry()
+                    .register(
+                        &mut SourceFd(&raw_fd),
+                        token,
+                        Interest::WRITABLE,
+                    )
+                    .unwrap();
 
-            loop {
-                poll.poll(&mut events, None).unwrap();
-                for event in events.iter() {
-                    if event.token() == token && event.is_writable() {
-                        match stream.write_all(&payload) {
-                            Ok(_) => {
-                                // Deregister the stream from the poll instance.
-                                poll.registry()
-                                    .deregister(&mut SourceFd(&stream.as_raw_fd()))
-                                    .unwrap();
-                                return;
-                            }
-                            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                                // The stream is still not ready, continue waiting.
-                                continue;
-                            }
-                            Err(err) => {
-                                eprintln!("Error writing to stream: {}", err);
-                                // Deregister the stream from the poll instance.
-                                poll.registry()
-                                    .deregister(&mut SourceFd(&stream.as_raw_fd()))
-                                    .unwrap();
-                                return;
+                loop {
+                    poll.poll(&mut events, None).unwrap();
+                    for event in events.iter() {
+                        if event.token() == token && event.is_writable() {
+                            match stream.write_all(&payload) {
+                                Ok(_) => {
+                                    poll.registry()
+                                        .deregister(&mut SourceFd(&raw_fd))
+                                        .unwrap();
+                                    return;
+                                }
+                                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                                    continue;
+                                }
+                                Err(err) => {
+                                    eprintln!("Error writing to stream: {}", err);
+                                    poll.registry()
+                                        .deregister(&mut SourceFd(&raw_fd))
+                                        .unwrap();
+                                    return;
+                                }
                             }
                         }
                     }
                 }
             }
+            // For non-Unix streams (e.g., QUIC), WouldBlock is handled internally
         }
         Err(err) => {
             eprintln!("Error writing to stream: {}", err);
@@ -121,7 +121,7 @@ pub fn pipe_to_agent(
 }
 
 fn pipe_to_processor(
-    stream: UnixStream,
+    stream: FlezhaStream,
     processors: &Arc<RwLock<HashMap<String, Arc<Mutex<ProcessorBox>>>>>,
     outputs: Vec<(ProcessorId, ProcessorOutput, PayloadMetadata)>,
 ) {

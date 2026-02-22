@@ -3,11 +3,11 @@ use crate::compute_engine::ComputeEngineNode;
 use crate::pb::command_request::Command;
 use crate::pb::{CommandRequest, CommandResponse};
 use crate::service::payloader;
+use crate::transport::FlezhaStream;
 use prost::Message;
 use std::collections::HashMap;
 use std::io::Write;
 use std::net::Shutdown;
-use std::os::unix::net::UnixStream;
 
 mod compute_engine_assign;
 mod compute_engine_disconnect;
@@ -58,7 +58,7 @@ pub fn get_handler(_payload_id: &String, message: &String) -> (CommandActionType
 
 pub fn handle_command(
     compute_engine: &mut ComputeEngineNode,
-    stream: &UnixStream,
+    stream: &FlezhaStream,
     payload_id: &String,
     message: &Vec<u8>,
 ) {

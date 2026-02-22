@@ -2,6 +2,7 @@ mod command;
 mod compute_engine;
 pub mod processor;
 mod service;
+pub mod transport;
 mod utility;
 
 use std::{

@@ -1,5 +1,4 @@
 use crossbeam::channel::Sender;
-use std::os::unix::net::UnixStream;
 use std::primitive::u16;
 use std::sync::RwLock;
 use std::thread;
@@ -12,10 +11,11 @@ use std::{
 use crate::compute_engine::ComputeEngineMessage;
 use crate::processor::executor;
 use crate::processor::factory_registry::ProcessorBox;
+use crate::transport::FlezhaStream;
 use crate::ProcessorInput;
 
 pub enum WorkerPoolMessage {
-    HandleWork(String, ProcessorInput, UnixStream),
+    HandleWork(String, ProcessorInput, FlezhaStream),
 }
 
 pub fn init_worker_pool(
@@ -43,9 +43,9 @@ pub fn init_worker_pool(
                 let message = wrx.recv().expect("Failed to receive message");
 
                 match message {
-                    WorkerPoolMessage::HandleWork(processor_id, processor_input, unix_stream) => {
+                    WorkerPoolMessage::HandleWork(processor_id, processor_input, stream) => {
                         executor::exec_agent(
-                            unix_stream,
+                            stream,
                             &processor_id,
                             &processors,
                             processor_input,
@@ -68,7 +68,7 @@ pub fn pool_worker_delegate(
     processor_id: String,
     processor_input: ProcessorInput,
     worker_id: u16,
-    stream: UnixStream,
+    stream: FlezhaStream,
 ) {
     workers_pool_tx
         .get(&worker_id)

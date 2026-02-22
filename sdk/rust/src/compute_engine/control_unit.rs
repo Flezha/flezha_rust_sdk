@@ -11,6 +11,9 @@ use serde::Serialize;
 use crate::compute_engine::ComputeEngineMessage;
 use crate::processor::factory_registry::get_factory_ids;
 use crate::service::payloader;
+use crate::transport::config::{get_transport_type, TransportType};
+use crate::transport::quic::QuicClient;
+use crate::transport::FlezhaStream;
 use crate::utility::path_helper;
 
 use super::ClientResponseMessage;
@@ -25,26 +28,64 @@ pub fn open(
     namespace: String,
     itx: Arc<Mutex<Sender<ClientResponseMessage>>>,
     otx: Arc<Mutex<Sender<ComputeEngineMessage>>>,
-) -> (thread::JoinHandle<()>, Arc<UnixStream>) {
+) -> (thread::JoinHandle<()>, Arc<FlezhaStream>, Option<Arc<QuicClient>>) {
+    match get_transport_type() {
+        TransportType::Uds => {
+            let (handle, stream) = open_uds(namespace, itx, otx);
+            (handle, stream, None)
+        }
+        TransportType::Quic => open_quic(namespace, itx, otx),
+    }
+}
+
+fn open_uds(
+    namespace: String,
+    itx: Arc<Mutex<Sender<ClientResponseMessage>>>,
+    otx: Arc<Mutex<Sender<ComputeEngineMessage>>>,
+) -> (thread::JoinHandle<()>, Arc<FlezhaStream>) {
     let socket_path = path_helper::control_socket_path();
 
-    // Attempt to connect and unwrap immediately if successful
     let stream = UnixStream::connect(socket_path.clone()).expect(&format!(
         "Failed to connect to control socket on path {}",
         socket_path
     ));
 
-    let stream_box = Arc::new(stream);
+    let stream_box = Arc::new(FlezhaStream::Unix(stream));
 
     sock_conn(namespace, stream_box, itx, otx)
 }
 
-fn sock_conn(
+fn open_quic(
     namespace: String,
-    stream_box: Arc<UnixStream>,
     itx: Arc<Mutex<Sender<ClientResponseMessage>>>,
     otx: Arc<Mutex<Sender<ComputeEngineMessage>>>,
-) -> (thread::JoinHandle<()>, Arc<UnixStream>) {
+) -> (thread::JoinHandle<()>, Arc<FlezhaStream>, Option<Arc<QuicClient>>) {
+    let address = crate::transport::config::quic_address();
+    let ca_cert_path = crate::transport::config::ca_cert_path();
+
+    let client = QuicClient::connect(&address, &ca_cert_path)
+        .expect("Failed to connect to QUIC server");
+
+    let client = Arc::new(client);
+
+    // Open first bidi stream as control channel
+    let control_stream = client
+        .open_bidi_stream()
+        .expect("Failed to open QUIC control stream");
+
+    let stream_box = Arc::new(FlezhaStream::Quic(control_stream));
+
+    let (handle, stream) = sock_conn(namespace, stream_box, itx, otx);
+
+    (handle, stream, Some(client))
+}
+
+fn sock_conn(
+    namespace: String,
+    stream_box: Arc<FlezhaStream>,
+    itx: Arc<Mutex<Sender<ClientResponseMessage>>>,
+    otx: Arc<Mutex<Sender<ComputeEngineMessage>>>,
+) -> (thread::JoinHandle<()>, Arc<FlezhaStream>) {
     let stream_clone = Arc::clone(&stream_box);
 
     let handle = thread::spawn(move || {
@@ -76,7 +117,7 @@ fn sock_conn(
 fn send_init_msg(
     namespace: String,
     tx: Arc<Mutex<Sender<ClientResponseMessage>>>,
-    stream_clone: Arc<UnixStream>,
+    stream_clone: Arc<FlezhaStream>,
 ) {
     let control_init_message = ControlInitMessage {
         namespace: namespace.clone(),

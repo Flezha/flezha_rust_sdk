@@ -3,9 +3,11 @@ mod worker_pool;
 
 use crossbeam::channel::{Receiver, Sender};
 use std::collections::{HashMap, VecDeque};
-use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread::{self, JoinHandle};
+
+use crate::transport::FlezhaStream;
+use crate::transport::quic::QuicClient;
 
 use crate::processor::factory_registry::{get_factory, ProcessorBox, ProcessorHandle};
 
@@ -15,12 +17,12 @@ use crate::compute_engine::worker_pool::{
 use crate::processor::{executor, ProcessorRunner};
 use crate::{command, ProcessorInput};
 
-type WorkItem = (ProcessorInput, UnixStream);
+type WorkItem = (ProcessorInput, FlezhaStream);
 
 pub enum ComputeEngineMessage {
     WorkerInitCheckIn(u16),
     WorkerCheckIn(u16, String),
-    WorkerCheckOut(String, ProcessorInput, UnixStream),
+    WorkerCheckOut(String, ProcessorInput, FlezhaStream),
     HandleCommandAction(String, Vec<u8>, HashMap<String, String>),
     ReturnProcessors,
 }
@@ -40,13 +42,14 @@ pub struct ComputeEngineNode {
     compute_engine_id: String,
     _namespace: String,
     processors: Arc<RwLock<HashMap<String, Arc<Mutex<ProcessorBox>>>>>,
-    shared_io_streams: Arc<RwLock<HashMap<u32, UnixStream>>>,
+    shared_io_streams: Arc<RwLock<HashMap<u32, FlezhaStream>>>,
     workers_pool_tx: HashMap<u16, Sender<WorkerPoolMessage>>,
     processor_queues: HashMap<String, VecDeque<WorkItem>>,
     processor_workers: HashMap<String, u16>,
     available_workers: VecDeque<u16>,
     pending_processors: VecDeque<String>,
     compute_engine_channel: Arc<Mutex<Sender<ComputeEngineMessage>>>,
+    quic_client: Option<Arc<QuicClient>>,
     status: ComputeEngineStatus,
 }
 
@@ -67,6 +70,7 @@ impl ComputeEngineNode {
             available_workers: VecDeque::new(),
             pending_processors: VecDeque::new(),
             compute_engine_channel: otx_arc.clone(),
+            quic_client: None,
             status: ComputeEngineStatus::Starting,
         }
     }
@@ -113,7 +117,7 @@ impl ComputeEngineNode {
             .map(|processor| ProcessorHandle { processor })
     }
 
-    pub fn get_io_streams(&self) -> Arc<RwLock<HashMap<u32, UnixStream>>> {
+    pub fn get_io_streams(&self) -> Arc<RwLock<HashMap<u32, FlezhaStream>>> {
         Arc::clone(&self.shared_io_streams)
     }
 
@@ -136,6 +140,14 @@ impl ComputeEngineNode {
     pub fn get_compute_engine_channel(&self) -> Arc<Mutex<Sender<ComputeEngineMessage>>> {
         Arc::clone(&self.compute_engine_channel)
     }
+
+    pub fn get_quic_client(&self) -> Option<Arc<QuicClient>> {
+        self.quic_client.clone()
+    }
+
+    pub fn set_quic_client(&mut self, client: Option<Arc<QuicClient>>) {
+        self.quic_client = client;
+    }
 }
 
 pub fn start(
@@ -147,8 +159,9 @@ pub fn start(
         let mut compute_engine = ComputeEngineNode::new(namespace.clone(), otx.clone());
         let ctx_arc = Arc::new(Mutex::new(ctx));
         let otx_arc = Arc::new(Mutex::new(otx));
-        let (_control_thread, control_stream) =
+        let (_control_thread, control_stream, quic_client) =
             control_unit::open(namespace, ctx_arc.clone(), otx_arc);
+        compute_engine.set_quic_client(quic_client);
 
         loop {
             let message = orx.recv().expect("Failed to receive coordinator message");
@@ -275,7 +288,7 @@ fn handle_checkout(
     compute_engine: &mut ComputeEngineNode,
     processor_id: String,
     processor_input: ProcessorInput,
-    stream: UnixStream,
+    stream: FlezhaStream,
 ) {
     let processors_read = compute_engine.processors.read().unwrap();
 
