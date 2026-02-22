@@ -15,7 +15,7 @@ use crate::transport::FlezhaStream;
 use crate::ProcessorInput;
 
 pub enum WorkerPoolMessage {
-    HandleWork(String, ProcessorInput, FlezhaStream),
+    HandleWork(String, ProcessorInput, Arc<FlezhaStream>),
 }
 
 pub fn init_worker_pool(
@@ -68,7 +68,7 @@ pub fn pool_worker_delegate(
     processor_id: String,
     processor_input: ProcessorInput,
     worker_id: u16,
-    stream: FlezhaStream,
+    stream: Arc<FlezhaStream>,
 ) {
     workers_pool_tx
         .get(&worker_id)

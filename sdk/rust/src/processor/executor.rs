@@ -1,5 +1,6 @@
 use std::io::Write;
 use std::sync::{Arc, Mutex, RwLock};
+
 use std::collections::HashMap;
 
 use crate::processor::factory_registry::ProcessorBox;
@@ -28,7 +29,7 @@ pub fn exec(
 }
 
 pub fn exec_agent(
-    mut stream: FlezhaStream,
+    stream: Arc<FlezhaStream>,
     processor_id: &String,
     processors: &Arc<RwLock<HashMap<String, Arc<Mutex<ProcessorBox>>>>>,
     input: ProcessorInput,
@@ -42,7 +43,7 @@ pub fn exec_agent(
             }
             ProcessorResult::PipeToAgent(outputs) => {
                 for (output, metadata) in outputs {
-                    pipe_to_agent(&mut stream, processor_id, &output, metadata);
+                    pipe_to_agent(&stream, processor_id, &output, metadata);
                 }
             }
         },
@@ -54,7 +55,7 @@ pub fn exec_agent(
 }
 
 pub fn pipe_to_agent(
-    stream: &mut FlezhaStream,
+    stream: &FlezhaStream,
     processor_id: &String,
     result: &ProcessorOutput,
     metadata: HashMap<String, String>,
@@ -70,7 +71,8 @@ pub fn pipe_to_agent(
         }
     };
 
-    match stream.write_all(&payload) {
+    let mut writer: &FlezhaStream = stream;
+    match writer.write_all(&payload) {
         Ok(_) => {}
         Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
             if let Some(raw_fd) = stream.as_raw_fd() {
@@ -90,7 +92,7 @@ pub fn pipe_to_agent(
                     poll.poll(&mut events, None).unwrap();
                     for event in events.iter() {
                         if event.token() == token && event.is_writable() {
-                            match stream.write_all(&payload) {
+                            match writer.write_all(&payload) {
                                 Ok(_) => {
                                     poll.registry()
                                         .deregister(&mut SourceFd(&raw_fd))
@@ -121,19 +123,17 @@ pub fn pipe_to_agent(
 }
 
 fn pipe_to_processor(
-    stream: FlezhaStream,
+    stream: Arc<FlezhaStream>,
     processors: &Arc<RwLock<HashMap<String, Arc<Mutex<ProcessorBox>>>>>,
     outputs: Vec<(ProcessorId, ProcessorOutput, PayloadMetadata)>,
 ) {
     for (processor_id, output, metadata) in outputs {
-        let mut stream_clone = stream.try_clone().unwrap();
-
         if let Some(_processor) = processors.read().unwrap().get(&processor_id) {
             let input = ProcessorInput::from(output);
-            exec_agent(stream_clone, &processor_id, processors, input);
+            exec_agent(Arc::clone(&stream), &processor_id, processors, input);
         } else {
             // Processor not found, try piping to the agent.
-            pipe_to_agent(&mut stream_clone, &processor_id, &output, metadata);
+            pipe_to_agent(&stream, &processor_id, &output, metadata);
         }
     }
 }

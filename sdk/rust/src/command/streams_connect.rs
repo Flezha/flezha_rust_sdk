@@ -9,6 +9,7 @@ use std::io::Write;
 use std::os::unix::io::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::str;
+use std::sync::Arc;
 use std::thread;
 
 use crate::compute_engine::{ComputeEngineMessage, ComputeEngineNode};
@@ -67,7 +68,7 @@ fn handle_uds(
             )
             .unwrap();
 
-        streams.insert(token, FlezhaStream::Unix(stream));
+        streams.insert(token, Arc::new(FlezhaStream::Unix(stream)));
     }
 
     let _handle = thread::spawn(move || {
@@ -136,7 +137,7 @@ fn connect_unix(compute_engine_id: &String, stream_type: String) -> UnixStream {
 fn listen_incoming_uds(
     mut poll: Poll,
     events: &mut Events,
-    streams: &mut HashMap<Token, FlezhaStream>,
+    streams: &mut HashMap<Token, Arc<FlezhaStream>>,
     ctx: Sender<ComputeEngineMessage>,
 ) {
     loop {
@@ -146,14 +147,14 @@ fn listen_incoming_uds(
             let token = event.token();
             if let Some(stream) = streams.get_mut(&token) {
                 loop {
-                    match payloader::extract_payload_non_blocking(&mut *stream) {
+                    match payloader::extract_payload_non_blocking(&mut &**stream) {
                         Ok(Some((processor_id, payload, metadata))) => {
                             let input = parse_input(payload, &metadata);
 
                             ctx.send(ComputeEngineMessage::WorkerCheckOut(
                                 processor_id,
                                 input,
-                                stream.try_clone().unwrap(),
+                                Arc::clone(stream),
                             ))
                             .expect("Failed to send message to coordinator");
                         }
@@ -181,17 +182,17 @@ fn listen_incoming_quic(
 
     for stream in streams.drain(..) {
         let ctx = ctx.clone();
+        let stream = Arc::new(stream);
         let handle = thread::spawn(move || {
-            let mut stream = stream;
             loop {
-                match payloader::extract_payload(&mut stream) {
+                match payloader::extract_payload(&mut &*stream) {
                     Ok((processor_id, payload, metadata)) => {
                         let input = parse_input(payload, &metadata);
 
                         ctx.send(ComputeEngineMessage::WorkerCheckOut(
                             processor_id,
                             input,
-                            stream.try_clone().unwrap(),
+                            Arc::clone(&stream),
                         ))
                         .expect("Failed to send message to coordinator");
                     }

@@ -17,12 +17,12 @@ use crate::compute_engine::worker_pool::{
 use crate::processor::{executor, ProcessorRunner};
 use crate::{command, ProcessorInput};
 
-type WorkItem = (ProcessorInput, FlezhaStream);
+type WorkItem = (ProcessorInput, Arc<FlezhaStream>);
 
 pub enum ComputeEngineMessage {
     WorkerInitCheckIn(u16),
     WorkerCheckIn(u16, String),
-    WorkerCheckOut(String, ProcessorInput, FlezhaStream),
+    WorkerCheckOut(String, ProcessorInput, Arc<FlezhaStream>),
     HandleCommandAction(String, Vec<u8>, HashMap<String, String>),
     ReturnProcessors,
 }
@@ -288,7 +288,7 @@ fn handle_checkout(
     compute_engine: &mut ComputeEngineNode,
     processor_id: String,
     processor_input: ProcessorInput,
-    stream: FlezhaStream,
+    stream: Arc<FlezhaStream>,
 ) {
     let processors_read = compute_engine.processors.read().unwrap();
 
