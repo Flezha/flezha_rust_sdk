@@ -91,19 +91,25 @@ fn handle_quic(
 
     let mut primary_streams = Vec::new();
 
+    eprintln!("[SDK] handle_quic: opening {} stream pairs", cmd.sockets_count);
+
     for key in 0..cmd.sockets_count {
+        eprintln!("[SDK] Opening primary stream {}", key);
         // Open primary stream and send type identifier
         let mut primary = quic_client
             .open_bidi_stream()
             .expect("Failed to open primary QUIC stream");
+        eprintln!("[SDK] Writing primary type byte {}", key);
         primary
             .write_all(&[protocol::STREAM_TYPE_PRIMARY])
             .expect("Failed to send primary stream type");
 
+        eprintln!("[SDK] Opening secondary stream {}", key);
         // Open secondary stream and send type identifier
         let mut secondary = quic_client
             .open_bidi_stream()
             .expect("Failed to open secondary QUIC stream");
+        eprintln!("[SDK] Writing secondary type byte {}", key);
         secondary
             .write_all(&[protocol::STREAM_TYPE_SECONDARY])
             .expect("Failed to send secondary stream type");
@@ -115,6 +121,7 @@ fn handle_quic(
 
         primary_streams.push(FlezhaStream::Quic(primary));
     }
+    eprintln!("[SDK] All streams opened");
 
     // For QUIC, we use blocking reads in a thread instead of mio polling
     let ctx_clone = ctx.lock().unwrap().clone();

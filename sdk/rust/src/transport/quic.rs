@@ -27,9 +27,11 @@ impl QuicClient {
                     .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
             }
 
-            let crypto = rustls::ClientConfig::builder()
+            let mut crypto = rustls::ClientConfig::builder()
                 .with_root_certificates(root_store)
                 .with_no_client_auth();
+
+            crypto.alpn_protocols = vec![b"flezha".to_vec()];
 
             let mut client_config = quinn::ClientConfig::new(Arc::new(
                 quinn::crypto::rustls::QuicClientConfig::try_from(crypto)
