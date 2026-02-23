@@ -101,7 +101,7 @@ fn handle_quic(
             .expect("Failed to open primary QUIC stream");
         eprintln!("[SDK] Writing primary type byte {}", key);
         primary
-            .write_all(&[protocol::STREAM_TYPE_PRIMARY])
+            .write_all(&[protocol::STREAM_TYPE_PRIMARY, key as u8])
             .expect("Failed to send primary stream type");
 
         eprintln!("[SDK] Opening secondary stream {}", key);
@@ -111,7 +111,7 @@ fn handle_quic(
             .expect("Failed to open secondary QUIC stream");
         eprintln!("[SDK] Writing secondary type byte {}", key);
         secondary
-            .write_all(&[protocol::STREAM_TYPE_SECONDARY])
+            .write_all(&[protocol::STREAM_TYPE_SECONDARY, key as u8])
             .expect("Failed to send secondary stream type");
 
         io_streams
