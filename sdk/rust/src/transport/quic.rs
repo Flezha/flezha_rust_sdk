@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use quinn::{Connection, RecvStream, SendStream};
 use tokio::runtime::Runtime;
+use tokio::sync::mpsc;
 
 /// Holds a QUIC connection and its backing tokio runtime.
 pub struct QuicClient {
@@ -40,6 +41,9 @@ impl QuicClient {
 
             let mut transport_config = quinn::TransportConfig::default();
             transport_config.keep_alive_interval(Some(std::time::Duration::from_secs(5)));
+            transport_config.stream_receive_window(8_388_608u32.into());
+            transport_config.receive_window(16_777_216u32.into());
+            transport_config.send_window(8_388_608);
             client_config.transport_config(Arc::new(transport_config));
 
             let mut endpoint = quinn::Endpoint::client("0.0.0.0:0".parse().unwrap())
@@ -65,6 +69,8 @@ impl QuicClient {
     }
 
     /// Open a new bidirectional stream on this connection.
+    /// Spawns dedicated async reader/writer tasks that drive all QUIC I/O on the
+    /// tokio runtime, completely decoupled from caller threads.
     pub fn open_bidi_stream(&self) -> io::Result<QuicBidiStream> {
         let (send, recv) = self.runtime.block_on(async {
             self.connection
@@ -73,11 +79,7 @@ impl QuicClient {
                 .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
         })?;
 
-        Ok(QuicBidiStream {
-            send: Arc::new(Mutex::new(send)),
-            recv: Arc::new(Mutex::new(recv)),
-            runtime: Arc::clone(&self.runtime),
-        })
+        Ok(QuicBidiStream::new(send, recv, Arc::clone(&self.runtime)))
     }
 
     /// Accept an incoming bidirectional stream from the peer.
@@ -89,27 +91,112 @@ impl QuicClient {
                 .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
         })?;
 
-        Ok(QuicBidiStream {
-            send: Arc::new(Mutex::new(send)),
-            recv: Arc::new(Mutex::new(recv)),
-            runtime: Arc::clone(&self.runtime),
-        })
+        Ok(QuicBidiStream::new(send, recv, Arc::clone(&self.runtime)))
     }
 }
 
-/// A bidirectional QUIC stream that implements std::io::Read and Write
-/// by blocking on the tokio runtime.
+/// Buffered reader backed by a tokio mpsc channel.
+/// An async reader task fills the channel; this struct provides a sync Read
+/// interface by calling `blocking_recv` — no tokio runtime involvement.
+struct ChannelReader {
+    rx: mpsc::Receiver<Vec<u8>>,
+    buf: Vec<u8>,
+    pos: usize,
+}
+
+impl Read for ChannelReader {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        // Serve from buffered chunk if available
+        if self.pos < self.buf.len() {
+            let n = std::cmp::min(out.len(), self.buf.len() - self.pos);
+            out[..n].copy_from_slice(&self.buf[self.pos..self.pos + n]);
+            self.pos += n;
+            return Ok(n);
+        }
+
+        // Buffer exhausted — wait for next chunk from the async reader task
+        match self.rx.blocking_recv() {
+            Some(chunk) => {
+                let n = std::cmp::min(out.len(), chunk.len());
+                out[..n].copy_from_slice(&chunk[..n]);
+                if n < chunk.len() {
+                    self.buf = chunk;
+                    self.pos = n;
+                } else {
+                    self.buf = Vec::new();
+                    self.pos = 0;
+                }
+                Ok(n)
+            }
+            None => Ok(0), // Channel closed = stream finished
+        }
+    }
+}
+
+/// A bidirectional QUIC stream that implements std::io::Read and Write.
+///
+/// All QUIC I/O is driven by async tasks on the tokio runtime:
+/// - An async **writer task** drains an mpsc channel into the QUIC SendStream.
+/// - An async **reader task** reads from the QUIC RecvStream into an mpsc channel.
+///
+/// Caller threads never call `block_on` — writes push into a channel (instant),
+/// reads block on a channel recv (pure sync, no runtime contention).
 pub struct QuicBidiStream {
-    send: Arc<Mutex<SendStream>>,
-    recv: Arc<Mutex<RecvStream>>,
+    write_tx: mpsc::UnboundedSender<Vec<u8>>,
+    recv: Arc<Mutex<ChannelReader>>,
     runtime: Arc<Runtime>,
 }
 
 impl QuicBidiStream {
-    /// Clone by sharing the Arc references (mutex-protected).
+    fn new(send: SendStream, recv: RecvStream, runtime: Arc<Runtime>) -> Self {
+        // Async writer task — owns the SendStream
+        let (write_tx, write_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+        runtime.spawn(Self::writer_task(send, write_rx));
+
+        // Async reader task — owns the RecvStream
+        // Bounded channel (64 chunks × 64KB = ~4MB buffer) provides backpressure.
+        let (read_tx, read_rx) = mpsc::channel::<Vec<u8>>(64);
+        runtime.spawn(Self::reader_task(recv, read_tx));
+
+        QuicBidiStream {
+            write_tx,
+            recv: Arc::new(Mutex::new(ChannelReader {
+                rx: read_rx,
+                buf: Vec::new(),
+                pos: 0,
+            })),
+            runtime,
+        }
+    }
+
+    async fn writer_task(mut send: SendStream, mut rx: mpsc::UnboundedReceiver<Vec<u8>>) {
+        while let Some(data) = rx.recv().await {
+            if send.write_all(&data).await.is_err() {
+                break;
+            }
+        }
+        let _ = send.finish();
+    }
+
+    async fn reader_task(mut recv: RecvStream, tx: mpsc::Sender<Vec<u8>>) {
+        let mut buf = vec![0u8; 65536];
+        loop {
+            match recv.read(&mut buf).await {
+                Ok(Some(n)) => {
+                    if tx.send(buf[..n].to_vec()).await.is_err() {
+                        break; // Consumer dropped
+                    }
+                }
+                Ok(None) => break, // Stream finished
+                Err(_) => break,   // Stream error
+            }
+        }
+    }
+
+    /// Clone by sharing the write channel and read channel.
     pub fn try_clone(&self) -> QuicBidiStream {
         QuicBidiStream {
-            send: Arc::clone(&self.send),
+            write_tx: self.write_tx.clone(),
             recv: Arc::clone(&self.recv),
             runtime: Arc::clone(&self.runtime),
         }
@@ -118,30 +205,18 @@ impl QuicBidiStream {
 
 impl Read for QuicBidiStream {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let mut recv = self.recv.lock()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Lock poisoned: {}", e)))?;
-
-        self.runtime.block_on(async {
-            match recv.read(buf).await {
-                Ok(Some(n)) => Ok(n),
-                Ok(None) => Ok(0), // Stream finished
-                Err(e) => Err(io::Error::new(io::ErrorKind::Other, e)),
-            }
-        })
+        self.recv.lock()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Lock poisoned: {}", e)))?
+            .read(buf)
     }
 }
 
 impl Write for QuicBidiStream {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let mut send = self.send.lock()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Lock poisoned: {}", e)))?;
-
-        self.runtime.block_on(async {
-            send.write(buf)
-                .await
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-            Ok(buf.len())
-        })
+        let len = buf.len();
+        self.write_tx.send(buf.to_vec())
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "QUIC write channel closed"))?;
+        Ok(len)
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -152,30 +227,18 @@ impl Write for QuicBidiStream {
 // Read/Write for &QuicBidiStream (needed for Arc<FlezhaStream>)
 impl Read for &QuicBidiStream {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let mut recv = self.recv.lock()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Lock poisoned: {}", e)))?;
-
-        self.runtime.block_on(async {
-            match recv.read(buf).await {
-                Ok(Some(n)) => Ok(n),
-                Ok(None) => Ok(0),
-                Err(e) => Err(io::Error::new(io::ErrorKind::Other, e)),
-            }
-        })
+        self.recv.lock()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Lock poisoned: {}", e)))?
+            .read(buf)
     }
 }
 
 impl Write for &QuicBidiStream {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let mut send = self.send.lock()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Lock poisoned: {}", e)))?;
-
-        self.runtime.block_on(async {
-            send.write(buf)
-                .await
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-            Ok(buf.len())
-        })
+        let len = buf.len();
+        self.write_tx.send(buf.to_vec())
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "QUIC write channel closed"))?;
+        Ok(len)
     }
 
     fn flush(&mut self) -> io::Result<()> {
