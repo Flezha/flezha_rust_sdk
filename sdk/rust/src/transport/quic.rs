@@ -1,211 +1,232 @@
+use std::collections::HashMap;
 use std::io::{self, Read, Write};
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
 
-use quinn::{Connection, RecvStream, SendStream};
-use tokio::runtime::Runtime;
-use tokio::sync::mpsc;
+use bytes::{Bytes, BytesMut};
+use crossbeam::channel;
+use mio::net::UdpSocket;
+use mio::{Events, Interest, Poll, Token, Waker};
+use quinn_proto::{
+    ClientConfig, ConnectionHandle, DatagramEvent, Dir, EndpointConfig, Event, StreamEvent,
+    StreamId, Transmit,
+};
 
-/// Holds a QUIC connection and its backing tokio runtime.
-pub struct QuicClient {
-    runtime: Arc<Runtime>,
-    connection: Connection,
+const UDP_TOKEN: Token = Token(0);
+const WAKER_TOKEN: Token = Token(1);
+
+// ---------------------------------------------------------------------------
+// Driver ↔ App communication types
+// ---------------------------------------------------------------------------
+
+enum DriverCommand {
+    OpenStream {
+        read_tx: channel::Sender<Bytes>,
+        reply: channel::Sender<io::Result<StreamId>>,
+    },
+    Write {
+        stream_id: StreamId,
+        data: Vec<u8>,
+        reply: channel::Sender<io::Result<usize>>,
+    },
+    Shutdown,
 }
 
-impl QuicClient {
-    /// Connect to a QUIC server at the given address using the CA cert for verification.
-    pub fn connect(address: &str, ca_cert_path: &str) -> io::Result<QuicClient> {
-        let runtime = Runtime::new()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-
-        let connection = runtime.block_on(async {
-            let ca_cert_pem = std::fs::read(ca_cert_path)?;
-            let mut reader = std::io::BufReader::new(&ca_cert_pem[..]);
-
-            let mut root_store = rustls::RootCertStore::empty();
-            for cert in rustls_pemfile::certs(&mut reader) {
-                let cert = cert.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-                root_store.add(cert)
-                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            }
-
-            let mut crypto = rustls::ClientConfig::builder()
-                .with_root_certificates(root_store)
-                .with_no_client_auth();
-
-            crypto.alpn_protocols = vec![b"flezha".to_vec()];
-
-            let mut client_config = quinn::ClientConfig::new(Arc::new(
-                quinn::crypto::rustls::QuicClientConfig::try_from(crypto)
-                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?,
-            ));
-
-            let mut transport_config = quinn::TransportConfig::default();
-            transport_config.keep_alive_interval(Some(std::time::Duration::from_secs(5)));
-            transport_config.stream_receive_window(8_388_608u32.into());
-            transport_config.receive_window(16_777_216u32.into());
-            transport_config.send_window(8_388_608);
-            client_config.transport_config(Arc::new(transport_config));
-
-            let mut endpoint = quinn::Endpoint::client("0.0.0.0:0".parse().unwrap())
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-            endpoint.set_default_client_config(client_config);
-
-            let addr = address.parse()
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, format!("Invalid address: {}", e)))?;
-
-            let connection = endpoint
-                .connect(addr, "localhost")
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
-                .await
-                .map_err(|e| io::Error::new(io::ErrorKind::ConnectionRefused, e))?;
-
-            Ok::<Connection, io::Error>(connection)
-        })?;
-
-        Ok(QuicClient {
-            runtime: Arc::new(runtime),
-            connection,
-        })
-    }
-
-    /// Open a new bidirectional stream on this connection.
-    /// Spawns dedicated async reader/writer tasks that drive all QUIC I/O on the
-    /// tokio runtime, completely decoupled from caller threads.
-    pub fn open_bidi_stream(&self) -> io::Result<QuicBidiStream> {
-        let (send, recv) = self.runtime.block_on(async {
-            self.connection
-                .open_bi()
-                .await
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
-        })?;
-
-        Ok(QuicBidiStream::new(send, recv, Arc::clone(&self.runtime)))
-    }
-
-    /// Accept an incoming bidirectional stream from the peer.
-    pub fn accept_bidi_stream(&self) -> io::Result<QuicBidiStream> {
-        let (send, recv) = self.runtime.block_on(async {
-            self.connection
-                .accept_bi()
-                .await
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
-        })?;
-
-        Ok(QuicBidiStream::new(send, recv, Arc::clone(&self.runtime)))
-    }
+struct StreamSlot {
+    read_tx: channel::Sender<Bytes>,
+    write_buf: Vec<u8>,
+    pending_write_reply: Option<(usize, channel::Sender<io::Result<usize>>)>,
 }
 
-/// Buffered reader backed by a tokio mpsc channel.
-/// An async reader task fills the channel; this struct provides a sync Read
-/// interface by calling `blocking_recv` — no tokio runtime involvement.
+// ---------------------------------------------------------------------------
+// ChannelReader — sync Read over crossbeam channel
+// ---------------------------------------------------------------------------
+
 struct ChannelReader {
-    rx: mpsc::Receiver<Vec<u8>>,
-    buf: Vec<u8>,
-    pos: usize,
+    rx: channel::Receiver<Bytes>,
+    buf: Bytes,
 }
 
 impl Read for ChannelReader {
     fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
         // Serve from buffered chunk if available
-        if self.pos < self.buf.len() {
-            let n = std::cmp::min(out.len(), self.buf.len() - self.pos);
-            out[..n].copy_from_slice(&self.buf[self.pos..self.pos + n]);
-            self.pos += n;
+        if !self.buf.is_empty() {
+            let n = std::cmp::min(out.len(), self.buf.len());
+            out[..n].copy_from_slice(&self.buf[..n]);
+            self.buf = self.buf.slice(n..);
             return Ok(n);
         }
 
-        // Buffer exhausted — wait for next chunk from the async reader task
-        match self.rx.blocking_recv() {
-            Some(chunk) => {
+        // Buffer exhausted — wait for next chunk from driver
+        match self.rx.recv() {
+            Ok(chunk) => {
                 let n = std::cmp::min(out.len(), chunk.len());
                 out[..n].copy_from_slice(&chunk[..n]);
                 if n < chunk.len() {
-                    self.buf = chunk;
-                    self.pos = n;
-                } else {
-                    self.buf = Vec::new();
-                    self.pos = 0;
+                    self.buf = chunk.slice(n..);
                 }
                 Ok(n)
             }
-            None => Ok(0), // Channel closed = stream finished
+            Err(_) => Ok(0), // Channel closed = stream finished
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// QuicClient — public API
+// ---------------------------------------------------------------------------
+
+/// Holds a QUIC connection driven by a background I/O thread using quinn-proto.
+pub struct QuicClient {
+    cmd_tx: channel::Sender<DriverCommand>,
+    waker: Arc<Waker>,
+    _driver_handle: thread::JoinHandle<()>,
+}
+
+impl QuicClient {
+    /// Connect to a QUIC server at the given address using the CA cert for verification.
+    pub fn connect(address: &str, ca_cert_path: &str) -> io::Result<QuicClient> {
+        // --- TLS config ---
+        let ca_cert_pem = std::fs::read(ca_cert_path)?;
+        let mut reader = std::io::BufReader::new(&ca_cert_pem[..]);
+
+        let mut root_store = rustls::RootCertStore::empty();
+        for cert in rustls_pemfile::certs(&mut reader) {
+            let cert = cert.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            root_store
+                .add(cert)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        }
+
+        let mut crypto = rustls::ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+        crypto.alpn_protocols = vec![b"flezha".to_vec()];
+
+        let mut client_config = ClientConfig::new(Arc::new(
+            quinn_proto::crypto::rustls::QuicClientConfig::try_from(crypto)
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?,
+        ));
+
+        let mut transport = quinn_proto::TransportConfig::default();
+        transport.keep_alive_interval(Some(Duration::from_secs(5)));
+        transport.stream_receive_window(8_388_608u32.into());
+        transport.receive_window(16_777_216u32.into());
+        transport.send_window(8_388_608);
+        client_config.transport_config(Arc::new(transport));
+
+        // --- UDP socket + mio Poll ---
+        let addr: SocketAddr = address
+            .parse()
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, format!("Invalid address: {}", e)))?;
+
+        let std_udp = std::net::UdpSocket::bind("0.0.0.0:0")?;
+        std_udp.set_nonblocking(true)?;
+        let mut udp = UdpSocket::from_std(std_udp);
+
+        let mut poll = Poll::new()?;
+        poll.registry()
+            .register(&mut udp, UDP_TOKEN, Interest::READABLE | Interest::WRITABLE)?;
+        let waker = Arc::new(Waker::new(poll.registry(), WAKER_TOKEN)?);
+
+        // --- quinn-proto Endpoint + Connection ---
+        let mut endpoint =
+            quinn_proto::Endpoint::new(Arc::new(EndpointConfig::default()), None, true, None);
+
+        let (conn_handle, mut connection) = endpoint
+            .connect(Instant::now(), client_config, addr, "localhost")
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("QUIC connect error: {}", e)))?;
+
+        // --- Blocking handshake ---
+        drive_handshake(&mut poll, &udp, &mut endpoint, conn_handle, &mut connection)?;
+
+        // --- Spawn driver thread ---
+        let (cmd_tx, cmd_rx) = channel::unbounded::<DriverCommand>();
+        let waker_clone = Arc::clone(&waker);
+
+        let driver_handle = thread::Builder::new()
+            .name("quic-io-driver".into())
+            .spawn(move || {
+                driver_loop(poll, udp, endpoint, conn_handle, connection, cmd_rx);
+            })
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+        Ok(QuicClient {
+            cmd_tx,
+            waker: waker_clone,
+            _driver_handle: driver_handle,
+        })
+    }
+
+    /// Open a new bidirectional stream on this connection.
+    pub fn open_bidi_stream(&self) -> io::Result<QuicBidiStream> {
+        let (read_tx, read_rx) = channel::bounded::<Bytes>(64);
+        let (reply_tx, reply_rx) = channel::bounded::<io::Result<StreamId>>(1);
+
+        self.cmd_tx
+            .send(DriverCommand::OpenStream {
+                read_tx,
+                reply: reply_tx,
+            })
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "Driver thread gone"))?;
+        self.waker.wake().map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+        let stream_id = reply_rx
+            .recv()
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "Driver reply dropped"))??;
+
+        Ok(QuicBidiStream {
+            stream_id,
+            cmd_tx: self.cmd_tx.clone(),
+            waker: Arc::clone(&self.waker),
+            read_rx: Arc::new(Mutex::new(ChannelReader {
+                rx: read_rx,
+                buf: Bytes::new(),
+            })),
+        })
+    }
+}
+
+impl Drop for QuicClient {
+    fn drop(&mut self) {
+        let _ = self.cmd_tx.send(DriverCommand::Shutdown);
+        let _ = self.waker.wake();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// QuicBidiStream — public API, same interface as before
+// ---------------------------------------------------------------------------
 
 /// A bidirectional QUIC stream that implements std::io::Read and Write.
 ///
-/// All QUIC I/O is driven by async tasks on the tokio runtime:
-/// - An async **writer task** drains an mpsc channel into the QUIC SendStream.
-/// - An async **reader task** reads from the QUIC RecvStream into an mpsc channel.
-///
-/// Caller threads never call `block_on` — writes push into a channel (instant),
-/// reads block on a channel recv (pure sync, no runtime contention).
+/// All QUIC I/O is driven by a background driver thread using quinn-proto.
+/// App threads communicate with the driver via crossbeam channels.
 pub struct QuicBidiStream {
-    write_tx: mpsc::UnboundedSender<Vec<u8>>,
-    recv: Arc<Mutex<ChannelReader>>,
-    runtime: Arc<Runtime>,
+    stream_id: StreamId,
+    cmd_tx: channel::Sender<DriverCommand>,
+    waker: Arc<Waker>,
+    read_rx: Arc<Mutex<ChannelReader>>,
 }
 
 impl QuicBidiStream {
-    fn new(send: SendStream, recv: RecvStream, runtime: Arc<Runtime>) -> Self {
-        // Async writer task — owns the SendStream
-        let (write_tx, write_rx) = mpsc::unbounded_channel::<Vec<u8>>();
-        runtime.spawn(Self::writer_task(send, write_rx));
-
-        // Async reader task — owns the RecvStream
-        // Bounded channel (64 chunks × 64KB = ~4MB buffer) provides backpressure.
-        let (read_tx, read_rx) = mpsc::channel::<Vec<u8>>(64);
-        runtime.spawn(Self::reader_task(recv, read_tx));
-
-        QuicBidiStream {
-            write_tx,
-            recv: Arc::new(Mutex::new(ChannelReader {
-                rx: read_rx,
-                buf: Vec::new(),
-                pos: 0,
-            })),
-            runtime,
-        }
-    }
-
-    async fn writer_task(mut send: SendStream, mut rx: mpsc::UnboundedReceiver<Vec<u8>>) {
-        while let Some(data) = rx.recv().await {
-            if send.write_all(&data).await.is_err() {
-                break;
-            }
-        }
-        let _ = send.finish();
-    }
-
-    async fn reader_task(mut recv: RecvStream, tx: mpsc::Sender<Vec<u8>>) {
-        let mut buf = vec![0u8; 65536];
-        loop {
-            match recv.read(&mut buf).await {
-                Ok(Some(n)) => {
-                    if tx.send(buf[..n].to_vec()).await.is_err() {
-                        break; // Consumer dropped
-                    }
-                }
-                Ok(None) => break, // Stream finished
-                Err(_) => break,   // Stream error
-            }
-        }
-    }
-
     /// Clone by sharing the write channel and read channel.
     pub fn try_clone(&self) -> QuicBidiStream {
         QuicBidiStream {
-            write_tx: self.write_tx.clone(),
-            recv: Arc::clone(&self.recv),
-            runtime: Arc::clone(&self.runtime),
+            stream_id: self.stream_id,
+            cmd_tx: self.cmd_tx.clone(),
+            waker: Arc::clone(&self.waker),
+            read_rx: Arc::clone(&self.read_rx),
         }
     }
 }
 
 impl Read for QuicBidiStream {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.recv.lock()
+        self.read_rx
+            .lock()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Lock poisoned: {}", e)))?
             .read(buf)
     }
@@ -213,10 +234,20 @@ impl Read for QuicBidiStream {
 
 impl Write for QuicBidiStream {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let len = buf.len();
-        self.write_tx.send(buf.to_vec())
+        let (reply_tx, reply_rx) = channel::bounded(1);
+        self.cmd_tx
+            .send(DriverCommand::Write {
+                stream_id: self.stream_id,
+                data: buf.to_vec(),
+                reply: reply_tx,
+            })
             .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "QUIC write channel closed"))?;
-        Ok(len)
+        self.waker
+            .wake()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        reply_rx
+            .recv()
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "Driver reply dropped"))?
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -227,7 +258,8 @@ impl Write for QuicBidiStream {
 // Read/Write for &QuicBidiStream (needed for Arc<FlezhaStream>)
 impl Read for &QuicBidiStream {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.recv.lock()
+        self.read_rx
+            .lock()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Lock poisoned: {}", e)))?
             .read(buf)
     }
@@ -235,13 +267,374 @@ impl Read for &QuicBidiStream {
 
 impl Write for &QuicBidiStream {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let len = buf.len();
-        self.write_tx.send(buf.to_vec())
+        let (reply_tx, reply_rx) = channel::bounded(1);
+        self.cmd_tx
+            .send(DriverCommand::Write {
+                stream_id: self.stream_id,
+                data: buf.to_vec(),
+                reply: reply_tx,
+            })
             .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "QUIC write channel closed"))?;
-        Ok(len)
+        self.waker
+            .wake()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        reply_rx
+            .recv()
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "Driver reply dropped"))?
     }
 
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Handshake — blocking mio loop until Event::Connected
+// ---------------------------------------------------------------------------
+
+fn drive_handshake(
+    poll: &mut Poll,
+    udp: &UdpSocket,
+    endpoint: &mut quinn_proto::Endpoint,
+    conn_handle: ConnectionHandle,
+    connection: &mut quinn_proto::Connection,
+) -> io::Result<()> {
+    let mut events = Events::with_capacity(64);
+    let mut udp_buf = vec![0u8; 65536];
+    let mut transmit_buf = Vec::new();
+
+    // Flush initial handshake packets
+    flush_transmits(connection, udp, &mut transmit_buf)?;
+
+    loop {
+        let timeout = connection.poll_timeout().map(|deadline| {
+            deadline.saturating_duration_since(Instant::now())
+        });
+        let poll_timeout = timeout.unwrap_or(Duration::from_millis(100));
+        poll.poll(&mut events, Some(poll_timeout))?;
+
+        let now = Instant::now();
+
+        // Handle timer
+        if let Some(deadline) = connection.poll_timeout() {
+            if now >= deadline {
+                connection.handle_timeout(now);
+            }
+        }
+
+        // Read incoming UDP
+        loop {
+            match udp.recv_from(&mut udp_buf) {
+                Ok((n, remote)) => {
+                    let data = BytesMut::from(&udp_buf[..n]);
+                    let mut resp_buf = Vec::new();
+                    if let Some(event) = endpoint.handle(now, remote, None, None, data, &mut resp_buf) {
+                        match event {
+                            DatagramEvent::ConnectionEvent(ch, event) => {
+                                if ch == conn_handle {
+                                    connection.handle_event(event);
+                                }
+                            }
+                            DatagramEvent::Response(transmit) => {
+                                send_transmit(udp, &transmit, &resp_buf)?;
+                            }
+                            DatagramEvent::NewConnection(_) => {}
+                        }
+                    }
+                }
+                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                Err(e) => return Err(e),
+            }
+        }
+
+        // Pump endpoint ↔ connection event feedback
+        pump_endpoint_events(endpoint, conn_handle, connection);
+
+        // Flush outgoing packets
+        flush_transmits(connection, udp, &mut transmit_buf)?;
+
+        // Check for Connected event
+        while let Some(event) = connection.poll() {
+            match event {
+                Event::Connected => return Ok(()),
+                Event::ConnectionLost { reason } => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::ConnectionRefused,
+                        format!("QUIC handshake failed: {}", reason),
+                    ));
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Driver loop — main I/O thread
+// ---------------------------------------------------------------------------
+
+fn driver_loop(
+    mut poll: Poll,
+    udp: UdpSocket,
+    mut endpoint: quinn_proto::Endpoint,
+    conn_handle: ConnectionHandle,
+    mut connection: quinn_proto::Connection,
+    cmd_rx: channel::Receiver<DriverCommand>,
+) {
+    let mut events = Events::with_capacity(256);
+    let mut udp_buf = vec![0u8; 65536];
+    let mut transmit_buf = Vec::new();
+    let mut streams: HashMap<StreamId, StreamSlot> = HashMap::new();
+
+    loop {
+        // 1. Poll with timeout from connection
+        let timeout = connection
+            .poll_timeout()
+            .map(|deadline| deadline.saturating_duration_since(Instant::now()));
+        let poll_timeout = timeout.unwrap_or(Duration::from_millis(100));
+        let _ = poll.poll(&mut events, Some(poll_timeout));
+
+        let now = Instant::now();
+
+        // 2. Handle timer
+        if let Some(deadline) = connection.poll_timeout() {
+            if now >= deadline {
+                connection.handle_timeout(now);
+            }
+        }
+
+        // 3. Read incoming UDP datagrams
+        loop {
+            match udp.recv_from(&mut udp_buf) {
+                Ok((n, remote)) => {
+                    let data = BytesMut::from(&udp_buf[..n]);
+                    let mut resp_buf = Vec::new();
+                    if let Some(event) =
+                        endpoint.handle(now, remote, None, None, data, &mut resp_buf)
+                    {
+                        match event {
+                            DatagramEvent::ConnectionEvent(ch, event) => {
+                                if ch == conn_handle {
+                                    connection.handle_event(event);
+                                }
+                            }
+                            DatagramEvent::Response(transmit) => {
+                                let _ = send_transmit(&udp, &transmit, &resp_buf);
+                            }
+                            DatagramEvent::NewConnection(_) => {}
+                        }
+                    }
+                }
+                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                Err(_) => break,
+            }
+        }
+
+        // 4. Process commands from app threads
+        while let Ok(cmd) = cmd_rx.try_recv() {
+            match cmd {
+                DriverCommand::OpenStream { read_tx, reply } => {
+                    match connection.streams().open(Dir::Bi) {
+                        Some(stream_id) => {
+                            streams.insert(
+                                stream_id,
+                                StreamSlot {
+                                    read_tx,
+                                    write_buf: Vec::new(),
+                                    pending_write_reply: None,
+                                },
+                            );
+                            let _ = reply.send(Ok(stream_id));
+                        }
+                        None => {
+                            let _ = reply.send(Err(io::Error::new(
+                                io::ErrorKind::Other,
+                                "Stream limit reached",
+                            )));
+                        }
+                    }
+                }
+                DriverCommand::Write {
+                    stream_id,
+                    data,
+                    reply,
+                } => {
+                    if let Some(slot) = streams.get_mut(&stream_id) {
+                        let total_len = data.len();
+                        match connection.send_stream(stream_id).write(&data) {
+                            Ok(written) => {
+                                if written < total_len {
+                                    // Partial write — buffer remainder, defer reply
+                                    slot.write_buf.extend_from_slice(&data[written..]);
+                                    slot.pending_write_reply = Some((total_len, reply));
+                                } else {
+                                    let _ = reply.send(Ok(total_len));
+                                }
+                            }
+                            Err(quinn_proto::WriteError::Blocked) => {
+                                // Fully blocked — buffer everything, defer reply
+                                slot.write_buf = data;
+                                slot.pending_write_reply = Some((total_len, reply));
+                            }
+                            Err(e) => {
+                                let _ = reply.send(Err(io::Error::new(
+                                    io::ErrorKind::BrokenPipe,
+                                    format!("QUIC write error: {}", e),
+                                )));
+                            }
+                        }
+                    } else {
+                        let _ = reply.send(Err(io::Error::new(
+                            io::ErrorKind::NotFound,
+                            "Unknown stream ID",
+                        )));
+                    }
+                }
+                DriverCommand::Shutdown => {
+                    connection.close(
+                        now,
+                        quinn_proto::VarInt::from_u32(0),
+                        b"shutdown".to_vec().into(),
+                    );
+                    let _ = flush_transmits(&mut connection, &udp, &mut transmit_buf);
+                    return;
+                }
+            }
+        }
+
+        // 5. Pump endpoint ↔ connection event feedback
+        pump_endpoint_events(&mut endpoint, conn_handle, &mut connection);
+
+        // 6. Poll connection events — dispatch stream events
+        while let Some(event) = connection.poll() {
+            match event {
+                Event::Stream(StreamEvent::Readable { id }) => {
+                    drain_readable(&mut connection, id, &mut streams);
+                }
+                Event::Stream(StreamEvent::Writable { id }) => {
+                    flush_write_buffer(&mut connection, id, &mut streams);
+                }
+                Event::ConnectionLost { .. } => {
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        // 7. Flush outgoing packets
+        let _ = flush_transmits(&mut connection, &udp, &mut transmit_buf);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Drain readable data from a stream and push to the channel.
+fn drain_readable(
+    connection: &mut quinn_proto::Connection,
+    id: StreamId,
+    streams: &mut HashMap<StreamId, StreamSlot>,
+) {
+    let slot = match streams.get(&id) {
+        Some(s) => s,
+        None => return,
+    };
+    let read_tx = slot.read_tx.clone();
+
+    match connection.recv_stream(id).read(true) {
+        Ok(mut chunks) => {
+            loop {
+                match chunks.next(usize::MAX) {
+                    Ok(Some(chunk)) => {
+                        if read_tx.send(chunk.bytes).is_err() {
+                            break; // Consumer dropped
+                        }
+                    }
+                    Ok(None) => break, // No more data
+                    Err(quinn_proto::ReadError::Blocked) => break,
+                    Err(_) => break,
+                }
+            }
+            let _ = chunks.finalize();
+        }
+        Err(_) => {}
+    }
+}
+
+/// Flush buffered write data for a stream that became writable.
+fn flush_write_buffer(
+    connection: &mut quinn_proto::Connection,
+    id: StreamId,
+    streams: &mut HashMap<StreamId, StreamSlot>,
+) {
+    let slot = match streams.get_mut(&id) {
+        Some(s) => s,
+        None => return,
+    };
+
+    if slot.write_buf.is_empty() {
+        return;
+    }
+
+    match connection.send_stream(id).write(&slot.write_buf) {
+        Ok(written) => {
+            slot.write_buf.drain(..written);
+            if slot.write_buf.is_empty() {
+                // All buffered data sent — reply to the app
+                if let Some((total, reply)) = slot.pending_write_reply.take() {
+                    let _ = reply.send(Ok(total));
+                }
+            }
+        }
+        Err(quinn_proto::WriteError::Blocked) => {
+            // Still blocked, keep buffer
+        }
+        Err(e) => {
+            slot.write_buf.clear();
+            if let Some((_, reply)) = slot.pending_write_reply.take() {
+                let _ = reply.send(Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    format!("QUIC write error: {}", e),
+                )));
+            }
+        }
+    }
+}
+
+/// Pump endpoint events back and forth between endpoint and connection.
+fn pump_endpoint_events(
+    endpoint: &mut quinn_proto::Endpoint,
+    conn_handle: ConnectionHandle,
+    connection: &mut quinn_proto::Connection,
+) {
+    while let Some(endpoint_event) = connection.poll_endpoint_events() {
+        if let Some(conn_event) = endpoint.handle_event(conn_handle, endpoint_event) {
+            connection.handle_event(conn_event);
+        }
+    }
+}
+
+/// Flush all pending transmits from the connection to the UDP socket.
+fn flush_transmits(
+    connection: &mut quinn_proto::Connection,
+    udp: &UdpSocket,
+    buf: &mut Vec<u8>,
+) -> io::Result<()> {
+    let now = Instant::now();
+    while let Some(transmit) = connection.poll_transmit(now, 1, buf) {
+        send_transmit(udp, &transmit, buf)?;
+        buf.clear();
+    }
+    Ok(())
+}
+
+/// Send a single transmit (datagram) on the UDP socket.
+fn send_transmit(udp: &UdpSocket, transmit: &Transmit, buf: &[u8]) -> io::Result<()> {
+    let data = &buf[..transmit.size];
+    match udp.send_to(data, transmit.destination) {
+        Ok(_) => Ok(()),
+        Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => Ok(()),
+        Err(e) => Err(e),
     }
 }

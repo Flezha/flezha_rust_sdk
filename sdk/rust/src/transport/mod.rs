@@ -27,7 +27,7 @@ impl FlezhaStream {
     pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
         match self {
             FlezhaStream::Unix(stream) => stream.set_nonblocking(nonblocking),
-            FlezhaStream::Quic(_) => Ok(()), // QUIC manages this internally via tokio
+            FlezhaStream::Quic(_) => Ok(()), // QUIC manages this internally
         }
     }
 

@@ -12,9 +12,9 @@ lazy_static = "1.4.0"
 erased-serde="0.4.6"
 prost = "0.13.5"
 crossbeam = "0.8"
-mio = { version = "0.8.11", features = ["os-poll", "os-ext"] }
-quinn = "0.11"
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "io-util", "time"] }
+mio = { version = "0.8.11", features = ["os-poll", "os-ext", "net"] }
+quinn-proto = "0.11"
+bytes = "1"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rustls-pemfile = "2"
 
