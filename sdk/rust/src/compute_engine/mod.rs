@@ -6,8 +6,8 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread::{self, JoinHandle};
 
-use crate::transport::FlezhaStream;
-use crate::transport::quic::QuicClient;
+use flz_transport::transport::FlezhaStream;
+use flz_transport::transport::quic::QuicClient;
 
 use crate::processor::factory_registry::{get_factory, ProcessorBox, ProcessorHandle};
 

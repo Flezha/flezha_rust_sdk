@@ -10,11 +10,11 @@ use serde::Serialize;
 
 use crate::compute_engine::ComputeEngineMessage;
 use crate::processor::factory_registry::get_factory_ids;
-use crate::service::payloader;
-use crate::transport::config::{get_transport_type, TransportType};
-use crate::transport::quic::QuicClient;
-use crate::transport::FlezhaStream;
-use crate::utility::path_helper;
+use flz_transport::service::payloader;
+use flz_transport::transport::config::{get_transport_type, TransportType};
+use flz_transport::transport::quic::QuicClient;
+use flz_transport::transport::FlezhaStream;
+use flz_transport::utility::path_helper;
 
 use super::ClientResponseMessage;
 
@@ -60,8 +60,8 @@ fn open_quic(
     itx: Arc<Mutex<Sender<ClientResponseMessage>>>,
     otx: Arc<Mutex<Sender<ComputeEngineMessage>>>,
 ) -> (thread::JoinHandle<()>, Arc<FlezhaStream>, Option<Arc<QuicClient>>) {
-    let address = crate::transport::config::quic_address();
-    let ca_cert_path = crate::transport::config::ca_cert_path();
+    let address = flz_transport::transport::config::quic_address();
+    let ca_cert_path = flz_transport::transport::config::ca_cert_path();
 
     let client = QuicClient::connect(&address, &ca_cert_path)
         .expect("Failed to connect to QUIC server");

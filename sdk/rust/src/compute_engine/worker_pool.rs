@@ -11,7 +11,7 @@ use std::{
 use crate::compute_engine::ComputeEngineMessage;
 use crate::processor::executor;
 use crate::processor::factory_registry::ProcessorBox;
-use crate::transport::FlezhaStream;
+use flz_transport::transport::FlezhaStream;
 use crate::ProcessorInput;
 
 pub enum WorkerPoolMessage {

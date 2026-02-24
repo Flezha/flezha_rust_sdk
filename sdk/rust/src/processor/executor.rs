@@ -7,8 +7,8 @@ use crate::processor::factory_registry::ProcessorBox;
 use crate::processor::{
     PayloadMetadata, ProcessorError, ProcessorId, ProcessorInput, ProcessorOutput, ProcessorResult,
 };
-use crate::service::payloader;
-use crate::transport::FlezhaStream;
+use flz_transport::service::payloader;
+use flz_transport::transport::FlezhaStream;
 use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Token};
 

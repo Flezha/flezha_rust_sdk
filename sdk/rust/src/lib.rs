@@ -1,9 +1,6 @@
 mod command;
 mod compute_engine;
 pub mod processor;
-mod service;
-pub mod transport;
-mod utility;
 
 use std::{
     collections::HashMap,
@@ -22,12 +19,17 @@ use crate::{
     processor::factory_registry::ProcessorBox,
 };
 
+// Re-export transport layer from shared library
+pub use flz_transport::transport;
+pub use flz_transport::service;
+
 pub mod pb {
     #[cfg(not(rust_analyzer))]
     include!("generated/compute_engine_commands.rs");
     #[cfg(rust_analyzer)]
     include!("generated/compute_engine_commands.rs");
 }
+
 pub struct Flezha {
     id: String,
     compute_engine_tx: Arc<Mutex<crossbeam::channel::Sender<ComputeEngineMessage>>>,
@@ -86,36 +88,6 @@ impl Flezha {
             _ => panic!("Unexpected message type received"),
         }
     }
-
-    // TODO: add api functions to get information and execute processors
-
-    // TODO: add those public API methods to the Flezha struct
-    // pub fn run(
-    //     &mut self,
-    //     processor_id: String,
-    //     input: ProcessorInput,
-    // ) -> Result<ProcessorResult, ProcessorError> {
-    //     runner::exec(&processor_id, &self.processors, input)
-    // }
-
-    // pub fn pipe_to_agent(
-    //     &mut self,
-    //     processor_id: String,
-    //     result: ProcessorOutput,
-    //     metadata: PayloadMetadata,
-    // ) {
-    //     let mut io_stream = self
-    //         .shared_io_streams
-    //         .write()
-    //         .unwrap()
-    //         .values()
-    //         .next()
-    //         .unwrap()
-    //         .try_clone()
-    //         .unwrap();
-
-    //     runner::pipe_to_agent(&mut io_stream, &processor_id, &result, metadata);
-    // }
 }
 
 pub fn new(namespace: String) -> Flezha {

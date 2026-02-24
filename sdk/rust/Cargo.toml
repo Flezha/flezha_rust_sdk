@@ -4,19 +4,15 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+flz_transport = { path = "../../flz_transport" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 byteorder = "1.4"
-bincode = "2.0"
 lazy_static = "1.4.0"
-erased-serde="0.4.6"
+erased-serde = "0.4.6"
 prost = "0.13.5"
 crossbeam = "0.8"
 mio = { version = "0.8.11", features = ["os-poll", "os-ext", "net"] }
-quinn-proto = "0.11"
-bytes = "1"
-rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
-rustls-pemfile = "2"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(rust_analyzer)"] }

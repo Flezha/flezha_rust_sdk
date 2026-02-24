@@ -14,12 +14,12 @@ use std::thread;
 
 use crate::compute_engine::{ComputeEngineMessage, ComputeEngineNode};
 use crate::processor::ProcessorInput;
-use crate::service::payloader;
-use crate::transport::config::{get_transport_type, TransportType};
-use crate::transport::protocol;
-use crate::transport::FlezhaStream;
+use flz_transport::service::payloader;
+use flz_transport::transport::config::{get_transport_type, TransportType};
+use flz_transport::transport::protocol;
+use flz_transport::transport::FlezhaStream;
 
-use crate::utility::path_helper;
+use flz_transport::utility::path_helper;
 
 const EVENTS_CAPACITY: usize = 1024;
 
