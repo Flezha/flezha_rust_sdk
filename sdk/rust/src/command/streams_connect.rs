@@ -2,11 +2,8 @@ use super::CommandAction;
 use crate::pb::ConnectSocket;
 
 use crossbeam::channel::Sender;
-use mio::unix::SourceFd;
-use mio::{Events, Interest, Poll, Token};
 use std::collections::HashMap;
 use std::io::Write;
-use std::os::unix::io::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::str;
 use std::sync::Arc;
@@ -20,8 +17,6 @@ use flz_transport::transport::protocol;
 use flz_transport::transport::FlezhaStream;
 
 use flz_transport::utility::path_helper;
-
-const EVENTS_CAPACITY: usize = 1024;
 
 impl CommandAction for ConnectSocket {
     fn handle(
@@ -45,13 +40,10 @@ fn handle_uds(
     let compute_engine_id = compute_engine.get_compute_engine_id();
     let ctx = compute_engine.get_compute_engine_channel();
 
-    let poll = Poll::new().unwrap();
-    let mut events = Events::with_capacity(EVENTS_CAPACITY);
-    let mut streams = HashMap::new();
+    let mut primary_streams = Vec::new();
 
     for key in 0..cmd.sockets_count {
         let stream = connect_unix(&compute_engine_id, "primary".to_string());
-        stream.set_nonblocking(true).unwrap();
         let shared_stream = connect_unix(&compute_engine_id, "secondary".to_string());
 
         io_streams
@@ -59,20 +51,12 @@ fn handle_uds(
             .unwrap()
             .insert(key, FlezhaStream::Unix(shared_stream.try_clone().unwrap()));
 
-        let token = Token(key as usize);
-        poll.registry()
-            .register(
-                &mut SourceFd(&stream.as_raw_fd()),
-                token,
-                Interest::READABLE,
-            )
-            .unwrap();
-
-        streams.insert(token, Arc::new(FlezhaStream::Unix(stream)));
+        primary_streams.push(FlezhaStream::Unix(stream));
     }
 
+    let ctx_clone = ctx.lock().unwrap().clone();
     let _handle = thread::spawn(move || {
-        listen_incoming_uds(poll, &mut events, &mut streams, ctx.lock().unwrap().clone())
+        listen_incoming_uds(primary_streams, ctx_clone);
     });
 
     ("connect_sockets".to_string(), Vec::new())
@@ -135,41 +119,38 @@ fn connect_unix(compute_engine_id: &String, stream_type: String) -> UnixStream {
 }
 
 fn listen_incoming_uds(
-    mut poll: Poll,
-    events: &mut Events,
-    streams: &mut HashMap<Token, Arc<FlezhaStream>>,
+    streams: Vec<FlezhaStream>,
     ctx: Sender<ComputeEngineMessage>,
 ) {
-    loop {
-        poll.poll(events, None).unwrap();
+    let mut handles = Vec::new();
 
-        for event in events.iter() {
-            let token = event.token();
-            if let Some(stream) = streams.get_mut(&token) {
-                loop {
-                    match payloader::extract_payload_non_blocking(&mut &**stream) {
-                        Ok(Some((processor_id, payload, metadata))) => {
-                            let input = parse_input(payload, &metadata);
+    for stream in streams {
+        let ctx = ctx.clone();
+        let stream = Arc::new(stream);
+        let handle = thread::spawn(move || {
+            loop {
+                match payloader::extract_payload(&mut &*stream) {
+                    Ok((processor_id, payload, metadata)) => {
+                        let input = parse_input(payload, &metadata);
 
-                            ctx.send(ComputeEngineMessage::WorkerCheckOut(
-                                processor_id,
-                                input,
-                                Arc::clone(stream),
-                            ))
-                            .expect("Failed to send message to coordinator");
-                        }
-                        Ok(None) => {
-                            // Would block
-                            break;
-                        }
-                        Err(_e) => {
-                            streams.remove(&token);
-                            break;
-                        }
+                        ctx.send(ComputeEngineMessage::WorkerCheckOut(
+                            processor_id,
+                            input,
+                            Arc::clone(&stream),
+                        ))
+                        .expect("Failed to send message to coordinator");
+                    }
+                    Err(_e) => {
+                        break;
                     }
                 }
             }
-        }
+        });
+        handles.push(handle);
+    }
+
+    for handle in handles {
+        let _ = handle.join();
     }
 }
 
