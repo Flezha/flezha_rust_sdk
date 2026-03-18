@@ -268,13 +268,16 @@ pub fn register_factory<State, I, O, F>(
     settings: ProcessorSettings<State, I, O>,
     initial_state: State,
     handler_generator: F,
+    description: Option<String>,
 ) where
     State: serde::Serialize + for<'de> serde::Deserialize<'de> + Send + Sync + Clone + 'static,
     I: Send + Sync + 'static,
     O: Send + Sync + 'static,
     F: Fn() -> Box<dyn ProcessorHandler<State, I, O> + Send + Sync> + Send + Sync + 'static,
 {
-    use crate::processor::factory_registry::{register_processor_factory, ProcessorFactory};
+    use crate::processor::factory_registry::{
+        register_factory_description, register_processor_factory, ProcessorFactory,
+    };
 
     let factory_id_clone = factory_id.clone();
     let settings_clone = settings.clone();
@@ -292,5 +295,6 @@ pub fn register_factory<State, I, O, F>(
         Box::new(processor) as Box<dyn Processor + Send + Sync>
     });
 
+    register_factory_description(factory_id.clone(), description);
     register_processor_factory(factory_id, factory);
 }

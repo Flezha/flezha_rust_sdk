@@ -9,7 +9,7 @@ use std::time::Duration;
 use serde::Serialize;
 
 use crate::compute_engine::ComputeEngineMessage;
-use crate::processor::factory_registry::get_factory_ids;
+use crate::processor::factory_registry::{get_factories, get_factory_ids};
 use flz_transport::service::payloader;
 use flz_transport::transport::config::{get_transport_type, TransportType};
 use flz_transport::transport::quic::QuicClient;
@@ -19,9 +19,16 @@ use flz_transport::utility::path_helper;
 use super::ClientResponseMessage;
 
 #[derive(Serialize)]
+struct FactoryInfo {
+    id: String,
+    description: Option<String>,
+}
+
+#[derive(Serialize)]
 struct ControlInitMessage {
     namespace: String,
     factory_ids: Vec<String>,
+    factories: Vec<FactoryInfo>,
 }
 
 pub fn open(
@@ -119,9 +126,20 @@ fn send_init_msg(
     tx: Arc<Mutex<Sender<ClientResponseMessage>>>,
     stream_clone: Arc<FlezhaStream>,
 ) {
+    let factory_ids = get_factory_ids();
+    let descriptions = get_factories();
+    let factories: Vec<FactoryInfo> = factory_ids
+        .iter()
+        .map(|id| FactoryInfo {
+            id: id.clone(),
+            description: descriptions.get(id).cloned().flatten(),
+        })
+        .collect();
+
     let control_init_message = ControlInitMessage {
         namespace: namespace.clone(),
-        factory_ids: get_factory_ids(),
+        factory_ids,
+        factories,
     };
 
     let control_message = serde_json::to_string(&control_init_message).unwrap();

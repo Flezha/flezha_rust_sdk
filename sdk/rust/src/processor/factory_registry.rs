@@ -14,6 +14,8 @@ pub type ProcessorFactory = Box<dyn Fn(String) -> ProcessorBox + Send + Sync>;
 lazy_static! {
     static ref FACTORY_REGISTRY: RwLock<HashMap<String, Arc<ProcessorFactory>>> =
         RwLock::new(HashMap::new());
+    static ref DESCRIPTION_REGISTRY: RwLock<HashMap<String, Option<String>>> =
+        RwLock::new(HashMap::new());
 }
 
 /// Register a processor factory with a unique factory ID
@@ -30,6 +32,17 @@ pub fn get_factory(factory_id: String) -> Option<Arc<ProcessorFactory>> {
 
 pub fn get_factory_ids() -> Vec<String> {
     FACTORY_REGISTRY.read().unwrap().keys().cloned().collect()
+}
+
+pub fn register_factory_description(factory_id: String, description: Option<String>) {
+    DESCRIPTION_REGISTRY
+        .write()
+        .unwrap()
+        .insert(factory_id, description);
+}
+
+pub fn get_factories() -> HashMap<String, Option<String>> {
+    DESCRIPTION_REGISTRY.read().unwrap().clone()
 }
 
 /// A wrapper for a processor that handles locking
