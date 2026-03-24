@@ -25,6 +25,7 @@ pub enum ComputeEngineMessage {
     WorkerCheckOut(String, ProcessorInput, Arc<FlezhaStream>),
     HandleCommandAction(String, Vec<u8>, HashMap<String, String>),
     ReturnProcessors,
+    Reconnect,
 }
 
 pub enum ComputeEngineStatus {
@@ -159,8 +160,8 @@ pub fn start(
         let mut compute_engine = ComputeEngineNode::new(namespace.clone(), otx.clone());
         let ctx_arc = Arc::new(Mutex::new(ctx));
         let otx_arc = Arc::new(Mutex::new(otx));
-        let (_control_thread, control_stream, quic_client) =
-            control_unit::open(namespace, ctx_arc.clone(), otx_arc);
+        let (_control_thread, mut control_stream, quic_client) =
+            control_unit::open(namespace.clone(), ctx_arc.clone(), otx_arc.clone());
         compute_engine.set_quic_client(quic_client);
 
         loop {
@@ -188,6 +189,18 @@ pub fn start(
                 ComputeEngineMessage::ReturnProcessors => {
                     return_processors(&compute_engine, ctx_arc.clone());
                 }
+                ComputeEngineMessage::Reconnect => {
+                    // Skip reconnection if this was an intentional disconnect
+                    if matches!(compute_engine.status, ComputeEngineStatus::Stopped) {
+                        continue;
+                    }
+                    handle_reconnect(
+                        &mut compute_engine,
+                        &mut control_stream,
+                        &namespace,
+                        &otx_arc,
+                    );
+                }
             }
         }
     })
@@ -204,6 +217,32 @@ fn return_processors(
         .unwrap()
         .send(ClientResponseMessage::ReturnProcessors(processors))
         .expect("Failed to send processors response");
+}
+
+fn handle_reconnect(
+    compute_engine: &mut ComputeEngineNode,
+    control_stream: &mut Arc<FlezhaStream>,
+    namespace: &str,
+    otx_arc: &Arc<Mutex<Sender<ComputeEngineMessage>>>,
+) {
+    compute_engine.set_status(ComputeEngineStatus::Stopped);
+
+    // Clear dead state — all streams are gone
+    compute_engine.get_io_streams().write().unwrap().clear();
+    compute_engine.get_processors().write().unwrap().clear();
+    compute_engine.processor_queues.clear();
+    compute_engine.processor_workers.clear();
+    compute_engine.pending_processors.clear();
+    compute_engine.assign_compute_engine_id("undefined".to_string());
+
+    // Reconnect with backoff (blocks until agent is back)
+    let (_, new_stream, new_quic) =
+        control_unit::open_reconnect(namespace.to_string(), otx_arc.clone());
+
+    *control_stream = new_stream;
+    compute_engine.set_quic_client(new_quic);
+
+    // Agent will send AssignComputeEngineId → ConnectSocket → AddProcessor...
 }
 
 fn handle_checkin(

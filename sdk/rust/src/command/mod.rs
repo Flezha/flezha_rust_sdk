@@ -75,7 +75,9 @@ pub fn handle_command(
                 &payload_message,
                 reference_id,
             );
-            (&*stream).write_all(&reply).unwrap();
+            if let Err(e) = (&*stream).write_all(&reply) {
+                eprintln!("[flezha] Failed to write command response: {}", e);
+            }
         }
 
         CommandActionType::ComputeEngineDisconnect(handler) => {
@@ -86,10 +88,12 @@ pub fn handle_command(
                 &payload_message,
                 reference_id,
             );
-            (&*stream).write_all(&reply).unwrap();
+            if let Err(e) = (&*stream).write_all(&reply) {
+                eprintln!("[flezha] Failed to write disconnect response: {}", e);
+            }
 
             // Close the socket.
-            stream.shutdown(Shutdown::Both).unwrap();
+            let _ = stream.shutdown(Shutdown::Both);
         }
     }
 }
