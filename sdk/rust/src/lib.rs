@@ -10,8 +10,8 @@ use std::{
 use crossbeam::channel::{Receiver, Sender};
 
 pub use processor::{
-    register_factory, ProcessorHandler, ProcessorInput, ProcessorOutput, ProcessorResult,
-    ProcessorSettings,
+    register_factory, FactoryMetadata, ProcessorHandler, ProcessorInput, ProcessorOutput,
+    ProcessorResult, ProcessorSettings,
 };
 
 use crate::{

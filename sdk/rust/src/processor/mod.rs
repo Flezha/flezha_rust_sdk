@@ -263,12 +263,30 @@ where
     }
 }
 
+pub struct FactoryMetadata {
+    pub description: Option<String>,
+}
+
+impl FactoryMetadata {
+    pub fn new(description: &str) -> Self {
+        Self {
+            description: Some(description.to_string()),
+        }
+    }
+}
+
+impl Default for FactoryMetadata {
+    fn default() -> Self {
+        Self { description: None }
+    }
+}
+
 pub fn register_factory<State, I, O, F>(
     factory_id: String,
     settings: ProcessorSettings<State, I, O>,
     initial_state: State,
     handler_generator: F,
-    description: Option<String>,
+    metadata: FactoryMetadata,
 ) where
     State: serde::Serialize + for<'de> serde::Deserialize<'de> + Send + Sync + Clone + 'static,
     I: Send + Sync + 'static,
@@ -295,6 +313,6 @@ pub fn register_factory<State, I, O, F>(
         Box::new(processor) as Box<dyn Processor + Send + Sync>
     });
 
-    register_factory_description(factory_id.clone(), description);
+    register_factory_description(factory_id.clone(), metadata.description);
     register_processor_factory(factory_id, factory);
 }
