@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::io::Write;
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -11,6 +12,15 @@ use flz_transport::service::payloader;
 use flz_transport::transport::FlezhaStream;
 use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Token};
+
+// Per-thread scratch buffer for framing an outbound payload. Reusing this
+// across calls means the hot path does no allocation for frames up to
+// `capacity()` bytes (frames beyond that cause a grow; the grown capacity
+// is then retained). For the reference `do_nothing` workload each frame is
+// ~70 bytes so the buffer stays tiny.
+thread_local! {
+    static FRAME_SCRATCH: RefCell<Vec<u8>> = RefCell::new(Vec::with_capacity(4096));
+}
 
 pub fn exec(
     processor_id: &String,
@@ -43,7 +53,7 @@ pub fn exec_agent(
             }
             ProcessorResult::PipeToAgent(outputs) => {
                 for (output, metadata) in outputs {
-                    pipe_to_agent(&stream, processor_id, &output, metadata);
+                    pipe_to_agent(&stream, processor_id, &output, &metadata);
                 }
             }
         },
@@ -56,23 +66,39 @@ pub fn exec_agent(
 
 pub fn pipe_to_agent(
     stream: &FlezhaStream,
-    processor_id: &String,
+    processor_id: &str,
     result: &ProcessorOutput,
-    metadata: HashMap<String, String>,
+    metadata: &HashMap<String, String>,
 ) {
-    let payload = match result {
-        ProcessorOutput::Text(text) => payloader::build_from_str(&processor_id, text, metadata),
-        ProcessorOutput::Binary(binary) => {
-            payloader::build_from_binary(&processor_id, binary, metadata)
+    // Zero-alloc fast path: build the frame bytes into a thread-local scratch
+    // Vec, flush with one write_all, and leave the Vec's capacity in place
+    // for the next call on this thread. Equivalent to the Java SDK's
+    // FrameEncoder.build + NativeTransport.streamWrite, minus one malloc/free
+    // per message.
+    FRAME_SCRATCH.with(|cell| {
+        let mut buf = cell.borrow_mut();
+        buf.clear();
+        match result {
+            ProcessorOutput::Text(text) => {
+                payloader::build_from_str_into(&mut buf, processor_id, text, metadata);
+            }
+            ProcessorOutput::Binary(binary) => {
+                payloader::build_from_binary_into(&mut buf, processor_id, binary, metadata);
+            }
+            ProcessorOutput::Custom(_) => {
+                panic!("Unsupported processor output type");
+            }
         }
-        // TODO: Implement custom type serialization
-        ProcessorOutput::Custom(_) => {
-            panic!("Unsupported processor output type");
-        }
-    };
+        pipe_to_agent_raw(stream, &buf);
+    });
+}
 
+/// Write an already-built framed payload to the stream, with a mio-based
+/// WouldBlock retry. Used by the fast-dispatch batch flusher that frames
+/// many payloads into one buffer.
+pub fn pipe_to_agent_raw(stream: &FlezhaStream, payload: &[u8]) {
     let mut writer: &FlezhaStream = stream;
-    match writer.write_all(&payload) {
+    match writer.write_all(payload) {
         Ok(_) => {}
         Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
             if let Some(raw_fd) = stream.as_raw_fd() {
@@ -81,18 +107,14 @@ pub fn pipe_to_agent(
                 let token = Token(0);
 
                 poll.registry()
-                    .register(
-                        &mut SourceFd(&raw_fd),
-                        token,
-                        Interest::WRITABLE,
-                    )
+                    .register(&mut SourceFd(&raw_fd), token, Interest::WRITABLE)
                     .unwrap();
 
                 loop {
                     poll.poll(&mut events, None).unwrap();
                     for event in events.iter() {
                         if event.token() == token && event.is_writable() {
-                            match writer.write_all(&payload) {
+                            match writer.write_all(payload) {
                                 Ok(_) => {
                                     poll.registry()
                                         .deregister(&mut SourceFd(&raw_fd))
@@ -114,7 +136,7 @@ pub fn pipe_to_agent(
                     }
                 }
             }
-            // For non-Unix streams (e.g., QUIC), WouldBlock is handled internally
+            // For non-Unix streams (e.g., QUIC), WouldBlock is handled internally.
         }
         Err(err) => {
             eprintln!("Error writing to stream: {}", err);
@@ -133,7 +155,7 @@ fn pipe_to_processor(
             exec_agent(Arc::clone(&stream), &processor_id, processors, input);
         } else {
             // Processor not found, try piping to the agent.
-            pipe_to_agent(&stream, &processor_id, &output, metadata);
+            pipe_to_agent(&stream, &processor_id, &output, &metadata);
         }
     }
 }
