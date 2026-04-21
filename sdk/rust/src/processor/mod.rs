@@ -72,6 +72,14 @@ pub trait Processor {
 
     // Get the settings of the processor
     fn get_runner_type(&self) -> ProcessorRunner;
+
+    // Handle a typed out-of-band message from the agent's
+    // `processor-message-handlers` routing path. Default returns an
+    // explicit "unsupported" error so the agent can surface misrouted
+    // calls as loud `ProcessorMessageResponse.error` values.
+    fn handle_message(&mut self, _payload: &[u8]) -> Result<Vec<u8>, String> {
+        Err("processor does not support handle_message".to_string())
+    }
 }
 
 /// Trait for transforming input data to generic type before it enters the processor steps
@@ -138,6 +146,18 @@ pub trait ProcessorHandler<State, I, O> {
 
     // Optional method to perform actions after the step is created
     fn post_create(&mut self, _state: &mut State) {}
+
+    // Optional handler for typed request/reply messages routed by the
+    // agent's `processor-message-handlers` mechanism. Implementors may
+    // consult `state` to compute a reply. Default returns an explicit
+    // "unsupported" error.
+    fn handle_message(
+        &mut self,
+        _payload: &[u8],
+        _state: &mut State,
+    ) -> Result<Vec<u8>, String> {
+        Err("processor does not support handle_message".to_string())
+    }
 }
 
 pub struct ProcessorSettings<State, I, O> {
@@ -260,6 +280,10 @@ where
 
     fn get_runner_type(&self) -> ProcessorRunner {
         self.settings.get_processor_runner().clone()
+    }
+
+    fn handle_message(&mut self, payload: &[u8]) -> Result<Vec<u8>, String> {
+        self.handler.handle_message(payload, &mut self.state)
     }
 }
 

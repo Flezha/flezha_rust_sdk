@@ -13,6 +13,7 @@ mod compute_engine_assign;
 mod compute_engine_disconnect;
 mod migration_deserialization;
 mod migration_serialization;
+mod processor_message;
 mod processor_start;
 mod processor_state;
 mod processor_stop;
@@ -51,6 +52,7 @@ pub fn get_handler(_payload_id: &String, message: &String) -> (CommandActionType
         Command::ComputeEngineDisconnect(proto_ch) => {
             CommandActionType::ComputeEngineDisconnect(Box::new(proto_ch))
         }
+        Command::ProcessorMessage(proto_ch) => CommandActionType::Regular(Box::new(proto_ch)),
     };
 
     (command_handler, reference_id)
