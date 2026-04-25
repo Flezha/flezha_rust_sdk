@@ -170,7 +170,13 @@ fn sock_conn(
                         continue;
                     }
                     _ => {
-                        eprintln!("[flezha] Control channel disconnected: {}", e);
+                        // Disconnects are expected during graceful agent
+                        // shutdown / test teardown. Surfacing them via
+                        // `FLEZHA_LOG=debug` keeps the agent's stdout
+                        // clean while still allowing operators to opt in.
+                        if std::env::var("FLEZHA_LOG").as_deref() == Ok("debug") {
+                            eprintln!("[flezha] Control channel disconnected: {}", e);
+                        }
                         let _ = otx
                             .lock()
                             .unwrap()
