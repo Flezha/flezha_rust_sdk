@@ -3,7 +3,7 @@
 pub struct CommandRequest {
     #[prost(string, tag = "1")]
     pub reference_id: ::prost::alloc::string::String,
-    #[prost(oneof = "command_request::Command", tags = "2, 3, 4, 5, 6, 7, 8, 9, 10")]
+    #[prost(oneof = "command_request::Command", tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11")]
     pub command: ::core::option::Option<command_request::Command>,
 }
 /// Nested message and enum types in `CommandRequest`.
@@ -28,6 +28,8 @@ pub mod command_request {
         ComputeEngineDisconnect(super::ComputeEngineDisconnect),
         #[prost(message, tag = "10")]
         ProcessorMessage(super::ProcessorMessage),
+        #[prost(message, tag = "11")]
+        ProcessorApplyState(super::ProcessorApplyState),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -99,4 +101,13 @@ pub struct ProcessorMessageResponse {
     pub payload: ::prost::alloc::vec::Vec<u8>,
     #[prost(string, tag = "2")]
     pub error: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ProcessorApplyState {
+    #[prost(string, tag = "1")]
+    pub processor_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub factory_id: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "3")]
+    pub state_binary: ::prost::alloc::vec::Vec<u8>,
 }

@@ -67,6 +67,15 @@ pub trait Processor {
     // Get processor state as a serializable reference
     fn bin_serialize_state(&self) -> Box<dyn erased_serde::Serialize + '_>;
 
+    // Apply a previously-captured state binary, primed by the agent before
+    // the first input. Inverse of `bin_serialize_state`. Default returns the
+    // canonical "apply_state_not_supported" token so a stale SDK build can
+    // be detected by the agent. The default `ProcessorWrapper` overrides
+    // this to round-trip JSON via `json_deserialize_state`.
+    fn bin_apply_state(&mut self, _state_binary: &[u8]) -> Result<(), String> {
+        Err("apply_state_not_supported".to_string())
+    }
+
     // Optional method to perform actions after the processor is created or altered
     fn post_alter(&mut self);
 
@@ -272,6 +281,14 @@ where
 
     fn bin_serialize_state(&self) -> Box<dyn erased_serde::Serialize + '_> {
         Box::new(&self.state)
+    }
+
+    fn bin_apply_state(&mut self, state_binary: &[u8]) -> Result<(), String> {
+        // The wrapper's `bin_serialize_state` produces JSON-compatible
+        // serde output today, so the inverse here uses `serde_json` to
+        // decode. Concrete `Processor` impls that ship a non-JSON binary
+        // format must override this method.
+        self.json_deserialize_state(state_binary)
     }
 
     fn post_alter(&mut self) {

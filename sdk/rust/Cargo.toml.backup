@@ -1,0 +1,49 @@
+[package]
+name = "flezha_compute_engine"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = []
+# When enabled, routes every inbound message through per-processor mailboxes
+# backed by a DashMap registry and a Chase-Lev work-stealing pool, bypassing
+# the single-coordinator dispatch path. Preserves sticky per-processor ordering.
+# Rolled out behind a flag (see openspec/changes/optimize-rust-sdk-dispatch).
+fast-dispatch = ["dep:dashmap", "dep:crossbeam-deque"]
+# Exposes internal dispatch types (mailbox, work-stealing pool, registry
+# constructors) for the crate's own benches/tests. NOT a stable public API.
+# Only enabled by the `[[bench]]` targets via `required-features`.
+bench-internals = ["fast-dispatch"]
+
+[dependencies]
+flz_transport = { path = "../../flz_transport" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+byteorder = "1.4"
+lazy_static = "1.4.0"
+erased-serde = "0.4.6"
+prost = "0.13.5"
+crossbeam = "0.8"
+mio = { version = "0.8.11", features = ["os-poll", "os-ext", "net"] }
+dashmap = { version = "6", optional = true }
+crossbeam-deque = { version = "0.8", optional = true }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+erased-serde = "0.4.6"
+
+[target.'cfg(loom)'.dev-dependencies]
+loom = "0.7"
+
+[[bench]]
+name = "dispatch"
+harness = false
+required-features = ["bench-internals"]
+
+[[bench]]
+name = "correctness"
+harness = false
+required-features = ["bench-internals"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(rust_analyzer)", "cfg(loom)"] }

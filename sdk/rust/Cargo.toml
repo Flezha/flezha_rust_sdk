@@ -47,3 +47,6 @@ required-features = ["bench-internals"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(rust_analyzer)", "cfg(loom)"] }
+
+[build-dependencies]
+prost-build = "0.13.5"
