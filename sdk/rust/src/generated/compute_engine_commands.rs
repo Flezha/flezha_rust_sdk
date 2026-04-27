@@ -3,7 +3,10 @@
 pub struct CommandRequest {
     #[prost(string, tag = "1")]
     pub reference_id: ::prost::alloc::string::String,
-    #[prost(oneof = "command_request::Command", tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11")]
+    #[prost(
+        oneof = "command_request::Command",
+        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13"
+    )]
     pub command: ::core::option::Option<command_request::Command>,
 }
 /// Nested message and enum types in `CommandRequest`.
@@ -30,6 +33,10 @@ pub mod command_request {
         ProcessorMessage(super::ProcessorMessage),
         #[prost(message, tag = "11")]
         ProcessorApplyState(super::ProcessorApplyState),
+        #[prost(message, tag = "12")]
+        OperatorShutdownNotification(super::OperatorShutdownNotification),
+        #[prost(message, tag = "13")]
+        OperatorShutdownAck(super::OperatorShutdownAck),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -102,6 +109,12 @@ pub struct ProcessorMessageResponse {
     #[prost(string, tag = "2")]
     pub error: ::prost::alloc::string::String,
 }
+/// Inverse of ProcessorState. Sent by the agent to a compute-engine SDK to
+/// prime a freshly-spawned processor's GenServer/struct state from a
+/// previously-captured `state_binary`. Round-trips with the same opaque
+/// SDK-internal serialization used by ProcessorState. SDKs that do not
+/// implement Apply respond with status="error" and error\[\] containing the
+/// canonical token "apply_state_not_supported".
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ProcessorApplyState {
     #[prost(string, tag = "1")]
@@ -110,4 +123,38 @@ pub struct ProcessorApplyState {
     pub factory_id: ::prost::alloc::string::String,
     #[prost(bytes = "vec", tag = "3")]
     pub state_binary: ::prost::alloc::vec::Vec<u8>,
+}
+/// Sent by the SDK to the agent on graceful shutdown (SIGTERM, Drop of the
+/// SDK handle, explicit disconnect()) for each currently-running processor.
+/// Carries the operator's freshest in-memory state binary so the agent can
+/// overwrite Overwatch.state.snapshot before the next AddProcessor reissue
+/// (see operator-agent-connection-healing capability).
+///
+/// Direction is reversed compared to most CommandRequest variants: SDK -> Agent.
+/// Wire format reuses the same CommandRequest envelope and the
+/// "control_command" payload_id; the agent's ControlChannel inspects the
+/// oneof tag to dispatch.
+///
+/// Older agents that do not recognise this opcode skip it via Protox's
+/// unknown-field handling; older SDKs that do not emit it fall back to the
+/// periodic-snapshot freshness shipped by heal-connections-on-restart.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct OperatorShutdownNotification {
+    #[prost(string, tag = "1")]
+    pub processor_id: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "2")]
+    pub serialized_state: ::prost::alloc::vec::Vec<u8>,
+}
+/// Agent's reply to OperatorShutdownNotification. Carries no state — its
+/// purpose is purely to unblock the SDK's bounded ack-wait so the SDK can
+/// proceed to exit. The agent emits the ack as soon as the snapshot cast is
+/// enqueued on the Overwatch GenServer (not after the cast has been applied).
+///
+/// Agent -> SDK direction at the wire level — same envelope as the
+/// notification. The SDK awaits this with a per-processor 2 s timeout
+/// (parallelised across processors) and exits regardless after the timeout.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct OperatorShutdownAck {
+    #[prost(string, tag = "1")]
+    pub processor_id: ::prost::alloc::string::String,
 }

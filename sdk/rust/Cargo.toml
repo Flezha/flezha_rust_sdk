@@ -26,6 +26,10 @@ crossbeam = "0.8"
 mio = { version = "0.8.11", features = ["os-poll", "os-ext", "net"] }
 dashmap = { version = "6", optional = true }
 crossbeam-deque = { version = "0.8", optional = true }
+# SIGTERM trap for the SDK's graceful-shutdown handler. Default features
+# (channel + iterator) are sufficient — we use `Iterator` to block on
+# delivered signals from a dedicated handler thread.
+signal-hook = "0.3"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

@@ -81,6 +81,27 @@
 //! returns without re-registering, so the existing processor's state is
 //! preserved across the reconnect.
 //!
+//! # Graceful shutdown
+//!
+//! The SDK installs a SIGTERM handler at construction time and runs the
+//! same routine from the `Flezha` handle's `Drop`. On graceful shutdown
+//! it walks every running processor, calls `json_serialize_state()`
+//! synchronously (the same code path used for `MigrationSerialization`),
+//! and emits one `OperatorShutdownNotification{processor_id,
+//! serialized_state}` per processor on the control channel. The agent
+//! overwrites `Overwatch.state.snapshot` with the binary and emits an
+//! `OperatorShutdownAck`. The SDK then exits — the per-processor ack
+//! wait is bounded at **2 s**, parallelised across processors so total
+//! wait is bounded by 2 s (not 2N s). The serializer step is capped at
+//! the agent's `cross_node_request_timeout` ceiling (**10 s**); concrete
+//! `Processor` impls with multi-second serializers should refactor to
+//! stay well below it. Consumers do not need to call this manually —
+//! both `Drop` and SIGTERM trigger it automatically. SIGKILL bypasses
+//! the routine by definition; the agent falls back to the most recent
+//! periodic snapshot exactly as today. See
+//! `openspec/changes/ship-fresh-state-on-sdk-shutdown` for the full
+//! contract.
+//!
 //! # Tuning
 //!
 //! - `FLEZHA_WORKER_POOL_SIZE` — number of work-stealing threads (default:
@@ -98,6 +119,7 @@
 mod command;
 mod compute_engine;
 pub mod processor;
+mod shutdown;
 
 use std::{
     collections::HashMap,
@@ -114,6 +136,7 @@ pub use processor::{
 use crate::{
     compute_engine::{ClientResponseMessage, ComputeEngineMessage},
     processor::factory_registry::ProcessorBox,
+    shutdown::ShutdownBridge,
 };
 
 // Re-export transport layer from shared library
@@ -132,6 +155,7 @@ pub struct Flezha {
     compute_engine_tx: Arc<Mutex<crossbeam::channel::Sender<ComputeEngineMessage>>>,
     client_rx: Arc<Mutex<crossbeam::channel::Receiver<ClientResponseMessage>>>,
     _compute_engine_thread: Option<std::thread::JoinHandle<()>>,
+    shutdown_bridge: Arc<ShutdownBridge>,
 }
 
 impl Flezha {
@@ -142,7 +166,21 @@ impl Flezha {
             Sender<ClientResponseMessage>,
             Receiver<ClientResponseMessage>,
         ) = crossbeam::channel::unbounded();
-        let compute_engine_thread = compute_engine::start(id.clone(), (otx.clone(), orx), ctx);
+
+        let shutdown_bridge = ShutdownBridge::new();
+        // Register up-front so SIGTERM during the brief
+        // start-and-handshake window still picks up this SDK. The bridge
+        // returns early from `run_graceful_shutdown` if its
+        // `control_stream` / `snapshot_fn` are still unset, so this is
+        // safe even before the coordinator wires them in.
+        shutdown::register_bridge(Arc::clone(&shutdown_bridge));
+
+        let compute_engine_thread = compute_engine::start(
+            id.clone(),
+            (otx.clone(), orx),
+            ctx,
+            Arc::clone(&shutdown_bridge),
+        );
 
         // Make sure the namespace is passed to the agent and confirmed
         match irx
@@ -158,6 +196,7 @@ impl Flezha {
             compute_engine_tx: Arc::new(Mutex::new(otx)),
             client_rx: Arc::new(Mutex::new(irx)),
             _compute_engine_thread: Some(compute_engine_thread),
+            shutdown_bridge,
         }
     }
 
@@ -189,6 +228,18 @@ impl Flezha {
 
 pub fn new(namespace: String) -> Flezha {
     Flezha::new(namespace)
+}
+
+/// Drop trigger for the graceful-shutdown sequence — covers explicit
+/// `disconnect()` flows where the user lets the `Flezha` handle go out
+/// of scope and any test path that creates a transient SDK. The SIGTERM
+/// path runs the same routine via the global bridge registry; the
+/// `shutdown_started` AtomicBool guards against double execution if
+/// both fire.
+impl Drop for Flezha {
+    fn drop(&mut self) {
+        self.shutdown_bridge.run_graceful_shutdown();
+    }
 }
 
 // ---------------------------------------------------------------------------

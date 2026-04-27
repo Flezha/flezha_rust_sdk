@@ -25,6 +25,7 @@ use crate::processor::factory_registry::{
 use crate::processor::executor;
 use crate::processor::ProcessorRunner;
 use crate::processor::ProcessorResult;
+use crate::shutdown::ShutdownBridge;
 use crate::ProcessorInput;
 
 use super::mailbox;
@@ -149,14 +150,31 @@ pub fn start(
     namespace: String,
     (otx, orx): (Sender<ComputeEngineMessage>, Receiver<ComputeEngineMessage>),
     ctx: Sender<ClientResponseMessage>,
+    shutdown_bridge: Arc<ShutdownBridge>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
         let mut compute_engine = ComputeEngineNode::new(namespace.clone(), otx.clone());
+
+        // Capture a registry-snapshot closure now so the shutdown bridge
+        // can enumerate processors without going through the coordinator
+        // channel. This survives reconnects since the registry Arc is
+        // stable.
+        {
+            let registry = Arc::clone(&compute_engine.registry);
+            shutdown_bridge.set_snapshot_fn(Box::new(move || {
+                registry
+                    .snapshot()
+                    .into_iter()
+                    .collect::<Vec<(String, Arc<Mutex<ProcessorBox>>)>>()
+            }));
+        }
+
         let ctx_arc = Arc::new(Mutex::new(ctx));
         let otx_arc = Arc::new(Mutex::new(otx));
         let (_control_thread, mut control_stream, quic_client) =
             control_unit::open(namespace.clone(), ctx_arc.clone(), otx_arc.clone());
         compute_engine.set_quic_client(quic_client);
+        shutdown_bridge.set_control_stream(Some(Arc::clone(&control_stream)));
 
         loop {
             let message = orx.recv().expect("Failed to receive coordinator message");
@@ -183,6 +201,7 @@ pub fn start(
                         &namespace,
                         &otx_arc,
                     );
+                    shutdown_bridge.set_control_stream(Some(Arc::clone(&control_stream)));
                 }
             }
         }

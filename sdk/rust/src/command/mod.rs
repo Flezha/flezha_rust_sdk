@@ -32,6 +32,16 @@ pub trait CommandAction {
 pub enum CommandActionType {
     Regular(Box<dyn CommandAction>),
     ComputeEngineDisconnect(Box<dyn CommandAction>),
+    /// Agent -> SDK `OperatorShutdownAck`. Wake the corresponding
+    /// per-processor wait channel registered by the SDK's graceful-
+    /// shutdown routine. No `CommandResponse` is written — the agent
+    /// sent this as its own `CommandRequest`, not in reply to one we
+    /// sent. See ship-fresh-state-on-sdk-shutdown.
+    AckSignal,
+    /// Defensive: SDK should never receive `OperatorShutdownNotification`
+    /// (it's the SDK->agent direction). Logged and dropped if a buggy
+    /// or future agent ever emits one.
+    NotificationIgnore,
 }
 
 pub fn get_handler(_payload_id: &String, message: &String) -> (CommandActionType, String) {
@@ -55,6 +65,8 @@ pub fn get_handler(_payload_id: &String, message: &String) -> (CommandActionType
         }
         Command::ProcessorMessage(proto_ch) => CommandActionType::Regular(Box::new(proto_ch)),
         Command::ProcessorApplyState(proto_ch) => CommandActionType::Regular(Box::new(proto_ch)),
+        Command::OperatorShutdownNotification(_) => CommandActionType::NotificationIgnore,
+        Command::OperatorShutdownAck(_) => CommandActionType::AckSignal,
     };
 
     (command_handler, reference_id)
@@ -98,6 +110,21 @@ pub fn handle_command(
 
             // Close the socket.
             let _ = stream.shutdown(Shutdown::Both);
+        }
+
+        CommandActionType::AckSignal => {
+            // Suppress unused-variable warnings for unused params.
+            let _ = compute_engine;
+            crate::shutdown::signal_ack(&reference_id);
+        }
+
+        CommandActionType::NotificationIgnore => {
+            let _ = compute_engine;
+            eprintln!(
+                "[flezha] Received unexpected OperatorShutdownNotification (ref={}); \
+                 ignoring — SDK is the SENDER, not the receiver.",
+                reference_id
+            );
         }
     }
 }

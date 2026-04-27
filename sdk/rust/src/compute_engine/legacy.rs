@@ -19,6 +19,7 @@ use crate::compute_engine::worker_pool::{
     init_worker_pool, pool_worker_delegate, WorkerPoolMessage,
 };
 use crate::processor::{executor, ProcessorRunner};
+use crate::shutdown::ShutdownBridge;
 use crate::{command, ProcessorInput};
 
 use super::{ClientResponseMessage, ComputeEngineMessage, ComputeEngineStatus};
@@ -142,14 +143,34 @@ pub fn start(
     namespace: String,
     (otx, orx): (Sender<ComputeEngineMessage>, Receiver<ComputeEngineMessage>),
     ctx: Sender<ClientResponseMessage>,
+    shutdown_bridge: Arc<ShutdownBridge>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
         let mut compute_engine = ComputeEngineNode::new(namespace.clone(), otx.clone());
+
+        // Capture a registry-snapshot closure now so the shutdown bridge
+        // can enumerate processors without going through the coordinator
+        // channel. The legacy backend stores processors in
+        // `Arc<RwLock<HashMap<...>>>` directly; the closure clones the
+        // outer `Arc` so it survives reconnects.
+        {
+            let processors = Arc::clone(&compute_engine.processors);
+            shutdown_bridge.set_snapshot_fn(Box::new(move || {
+                processors
+                    .read()
+                    .unwrap()
+                    .iter()
+                    .map(|(id, p)| (id.clone(), Arc::clone(p)))
+                    .collect()
+            }));
+        }
+
         let ctx_arc = Arc::new(Mutex::new(ctx));
         let otx_arc = Arc::new(Mutex::new(otx));
         let (_control_thread, mut control_stream, quic_client) =
             control_unit::open(namespace.clone(), ctx_arc.clone(), otx_arc.clone());
         compute_engine.set_quic_client(quic_client);
+        shutdown_bridge.set_control_stream(Some(Arc::clone(&control_stream)));
 
         loop {
             let message = orx.recv().expect("Failed to receive coordinator message");
@@ -185,6 +206,7 @@ pub fn start(
                         &namespace,
                         &otx_arc,
                     );
+                    shutdown_bridge.set_control_stream(Some(Arc::clone(&control_stream)));
                 }
             }
         }
