@@ -6,6 +6,9 @@ use crate::compute_engine::ComputeEngineNode;
 use crate::pb::AddProcessor;
 use crate::processor::factory_registry::get_factory;
 
+#[cfg(test)]
+mod tests;
+
 impl CommandAction for AddProcessor {
     fn handle(
         &self,
@@ -14,6 +17,19 @@ impl CommandAction for AddProcessor {
         errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
         let processor_id = self.processor_id.clone();
+
+        // Idempotent on reconnect: the agent re-issues AddProcessor for every
+        // processor ProcessHub still has tagged to this operator's profile
+        // after a restart. If the processor is already in the local registry,
+        // skip without re-registering — keeps the existing processor's state
+        // intact and prevents duplicate-init crashes.
+        if compute_engine.has_processor(processor_id.clone()) {
+            eprintln!(
+                "[flezha] AddProcessor: processor {} already registered, skipping",
+                processor_id
+            );
+            return ("start_processor".to_string(), Vec::new());
+        }
 
         // Make sure factory exist.
         match get_factory(self.factory_id.clone()) {

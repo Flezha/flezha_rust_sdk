@@ -70,6 +70,17 @@
 //! size. The mailbox's inflight flag ensures `process(...)` never runs
 //! concurrently for the same processor.
 //!
+//! # Reconnect & idempotency
+//!
+//! The SDK's reconnect loop runs forever with capped exponential backoff. On
+//! every successful reconnect the agent re-issues `AddProcessor` for every
+//! processor ProcessHub still has assigned to this operator's profile. The
+//! `AddProcessor` handler is idempotent on duplicate `processor_id`: if the
+//! local registry already contains the processor it logs
+//! `"AddProcessor: processor <id> already registered, skipping"` and
+//! returns without re-registering, so the existing processor's state is
+//! preserved across the reconnect.
+//!
 //! # Tuning
 //!
 //! - `FLEZHA_WORKER_POOL_SIZE` — number of work-stealing threads (default:
