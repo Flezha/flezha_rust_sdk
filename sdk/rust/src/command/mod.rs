@@ -16,7 +16,7 @@ mod migration_serialization;
 mod processor_apply_state;
 mod processor_message;
 mod processor_start;
-mod processor_state;
+pub(crate) mod processor_state;
 mod processor_stop;
 mod streams_connect;
 

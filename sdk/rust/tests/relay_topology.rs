@@ -1,0 +1,210 @@
+//! Section 2 unit tests: topology construction + RelayInstance partition
+//! creation. Covers the umbrella scenarios:
+//! - "Single partition for a Shard with no partitioning declared"
+//! - "Static partitions created at relay startup"
+//! - "Dynamic-mode-only declaration is rejected in v1"
+//! - "Entry channel of arbitrary type fails at startup" (compile-time
+//!   covered by tests/ui/entry_channel_disallowed_type.rs)
+
+use std::sync::Arc;
+
+use flezha_compute_engine::channel::ChannelBuilder;
+use flezha_compute_engine::relay::builder::build_topology_for;
+use flezha_compute_engine::shard::{Shard, ShardCtx, ShardError};
+use flezha_compute_engine::Relay;
+
+#[derive(Default)]
+struct EchoShard;
+impl Shard for EchoShard {
+    type Input = String;
+    type Output = String;
+    type State = ();
+    fn name() -> &'static str {
+        "echo_shard"
+    }
+    fn init_state(_: Option<&str>) -> () {}
+    fn run(&mut self, _: String, _: &mut (), _: &mut ShardCtx<'_>) -> Result<(), ShardError> {
+        Ok(())
+    }
+}
+
+struct SingleRelay;
+impl Relay for SingleRelay {
+    fn factory_id() -> &'static str {
+        "single_relay"
+    }
+    fn channels(c: &mut ChannelBuilder) {
+        c.input::<String>("inp").into::<EchoShard>();
+    }
+}
+
+#[test]
+fn single_mode_partition_creation() {
+    let topology = build_topology_for::<SingleRelay>().expect("build topology");
+    assert_eq!(topology.shards.len(), 1);
+    assert_eq!(topology.channels.len(), 1);
+    assert!(topology.shards[0].partition_keys.is_empty());
+    assert_eq!(topology.shards[0].input_channel_id, Some(0));
+    assert_eq!(topology.channels[0].consumers, vec![0]);
+}
+
+#[derive(Default)]
+struct StaticShard;
+impl Shard for StaticShard {
+    type Input = String;
+    type Output = String;
+    type State = Vec<String>;
+    fn name() -> &'static str {
+        "static_shard"
+    }
+    fn init_state(shard_key: Option<&str>) -> Vec<String> {
+        vec![shard_key.unwrap_or("none").to_string()]
+    }
+    fn shard_keys() -> Vec<&'static str> {
+        vec!["a", "b", "c"]
+    }
+    const PARTITION_FOR_OVERRIDDEN: bool = true;
+    fn partition_for(input: &String) -> Vec<&'static str> {
+        if input.starts_with('a') {
+            vec!["a"]
+        } else if input.starts_with('b') {
+            vec!["b"]
+        } else {
+            vec!["c"]
+        }
+    }
+    fn run(
+        &mut self,
+        input: String,
+        state: &mut Vec<String>,
+        _: &mut ShardCtx<'_>,
+    ) -> Result<(), ShardError> {
+        state.push(input);
+        Ok(())
+    }
+}
+
+struct StaticRelay;
+impl Relay for StaticRelay {
+    fn factory_id() -> &'static str {
+        "static_relay"
+    }
+    fn channels(c: &mut ChannelBuilder) {
+        c.input::<String>("inp").into::<StaticShard>();
+    }
+}
+
+#[test]
+fn static_mode_partition_creation() {
+    let topology = build_topology_for::<StaticRelay>().expect("build topology");
+    assert_eq!(topology.shards.len(), 1);
+    assert_eq!(topology.shards[0].partition_keys, vec!["a", "b", "c"]);
+    assert!(topology.shards[0].partition_for_overridden);
+}
+
+/// Dynamic-mode-only Shard: overrides `shard_key` without declaring
+/// `shard_keys`. v1 rejects this at build_topology time.
+#[derive(Default)]
+struct DynamicOnlyShard;
+impl Shard for DynamicOnlyShard {
+    type Input = String;
+    type Output = String;
+    type State = ();
+    fn name() -> &'static str {
+        "dynamic_only_shard"
+    }
+    fn init_state(_: Option<&str>) -> () {}
+    const SHARD_KEY_OVERRIDDEN: bool = true;
+    fn shard_key(_input: &String) -> Option<String> {
+        Some("k".to_string())
+    }
+    fn run(&mut self, _: String, _: &mut (), _: &mut ShardCtx<'_>) -> Result<(), ShardError> {
+        Ok(())
+    }
+}
+
+struct DynamicOnlyRelay;
+impl Relay for DynamicOnlyRelay {
+    fn factory_id() -> &'static str {
+        "dynamic_only_relay"
+    }
+    fn channels(c: &mut ChannelBuilder) {
+        c.input::<String>("inp").into::<DynamicOnlyShard>();
+    }
+}
+
+#[test]
+fn dynamic_mode_only_rejection() {
+    let err = build_topology_for::<DynamicOnlyRelay>()
+        .err()
+        .expect("expected dynamic-mode-only rejection");
+    let msg = format!("{:?}", err.errors);
+    assert!(
+        msg.contains("DynamicModeOnly"),
+        "expected DynamicModeOnly error, got {msg}"
+    );
+}
+
+/// Static-mode shard whose `partition_for` override is missing the
+/// matching `PARTITION_FOR_OVERRIDDEN = true` const. v1 rejects this
+/// at build_topology time per design.md Open Question 1.
+#[derive(Default)]
+struct UnannotatedStaticShard;
+impl Shard for UnannotatedStaticShard {
+    type Input = String;
+    type Output = String;
+    type State = ();
+    fn name() -> &'static str {
+        "unannotated_static_shard"
+    }
+    fn init_state(_: Option<&str>) -> () {}
+    fn shard_keys() -> Vec<&'static str> {
+        vec!["a"]
+    }
+    // PARTITION_FOR_OVERRIDDEN intentionally NOT set; default is false.
+    fn partition_for(_: &String) -> Vec<&'static str> {
+        vec!["a"]
+    }
+    fn run(&mut self, _: String, _: &mut (), _: &mut ShardCtx<'_>) -> Result<(), ShardError> {
+        Ok(())
+    }
+}
+
+struct UnannotatedRelay;
+impl Relay for UnannotatedRelay {
+    fn factory_id() -> &'static str {
+        "unannotated_relay"
+    }
+    fn channels(c: &mut ChannelBuilder) {
+        c.input::<String>("inp").into::<UnannotatedStaticShard>();
+    }
+}
+
+#[test]
+fn unannotated_static_mode_rejection() {
+    let err = build_topology_for::<UnannotatedRelay>()
+        .err()
+        .expect("expected partition_for-missing rejection");
+    let msg = format!("{:?}", err.errors);
+    assert!(
+        msg.contains("PartitionForMissing"),
+        "expected PartitionForMissing error, got {msg}"
+    );
+}
+
+#[test]
+fn relay_instance_creates_partitions() {
+    use flezha_compute_engine::__dispatch_internals as bi;
+    let topology = build_topology_for::<StaticRelay>().expect("topology");
+    let pool = Arc::new(bi::WorkStealingPool::with_size(2));
+    let instance = flezha_compute_engine::relay::RelayInstance::new(
+        topology,
+        Arc::from("instance-id"),
+        pool,
+    );
+    assert_eq!(instance.partitions.len(), 1);
+    assert_eq!(instance.partitions[0].len(), 3);
+    assert_eq!(instance.partition_key_to_idx[0].get("a"), Some(&0));
+    assert_eq!(instance.partition_key_to_idx[0].get("b"), Some(&1));
+    assert_eq!(instance.partition_key_to_idx[0].get("c"), Some(&2));
+}

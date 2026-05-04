@@ -1,316 +1,412 @@
-//! Dispatch performance benches.
+//! Throughput benches under the relay-mvp-rust model.
 //!
-//! Runs the fast-dispatch path in isolation (no Elixir agent, no real
-//! sockets) so regressions in the Rust SDK's core show up cleanly.
+//! Two shapes (per `relay-mvp-rust/design.md` Decision 6 +
+//! `relay-bench-harness/design.md` Decisions 1-12):
+//! - `regression_100x1x1x10k` — apples-to-apples regression check
+//!   (100 relays × 1 shard × 1 partition × 10K msg).
+//! - `partitioning_stress_8x4x8x20k/<pool>` — partitioning-stress
+//!   check (8 relays × 4 shards × 8 partitions × 20K msg/relay,
+//!   fan-out factor 8 on the entry shard). Sweeps pool sizes from
+//!   `FLEZHA_BENCH_POOL_SIZES` (default: a single host-detected size).
+//!
+//! Both rely on the `bench-internals` feature for access to the
+//! `RelayDispatchHandle` and the work-stealing pool.
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use std::collections::HashMap;
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
-use std::thread;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use flezha_compute_engine::processor::factory_registry::ProcessorBox;
-use flezha_compute_engine::processor::{
-    Processor, ProcessorError, ProcessorInput, ProcessorResult, ProcessorRunner,
-};
-use flezha_compute_engine::transport::FlezhaStream;
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 
-use flezha_compute_engine::__dispatch_internals::*;
+use flezha_compute_engine::__dispatch_internals as bi;
+use flezha_compute_engine::channel::ChannelBuilder;
+use flezha_compute_engine::relay::builder::build_topology_for;
+use flezha_compute_engine::relay::registry::RelayInstanceRegistry;
+use flezha_compute_engine::relay::RelayInstance;
+use flezha_compute_engine::shard::{Shard, ShardCtx, ShardError};
+use flezha_compute_engine::Relay;
+use flz_transport::transport::FlezhaStream;
 
-// ---------------------------------------------------------------------------
-// Benchable no-op processor (plus a counter-backed one for drain detection)
-// ---------------------------------------------------------------------------
+// ----- Shared bench helpers (Decision 10: duplicated locally per bench file) -----
 
-struct NoopCountingProcessor {
-    counter: Arc<AtomicUsize>,
-    state_anchor: (),
-}
-
-impl Processor for NoopCountingProcessor {
-    fn run(&mut self, _input: ProcessorInput) -> Result<ProcessorResult, ProcessorError> {
-        self.counter.fetch_add(1, Ordering::AcqRel);
-        Ok(ProcessorResult::None)
-    }
-    fn json_serialize_state(&self) -> Result<Vec<u8>, String> {
-        Ok(Vec::new())
-    }
-    fn json_deserialize_state(&mut self, _data: &[u8]) -> Result<(), String> {
-        Ok(())
-    }
-    fn get_factory_id(&self) -> String {
-        "noop".to_string()
-    }
-    fn get_state(&mut self) -> &mut dyn std::any::Any {
-        &mut self.state_anchor
-    }
-    fn bin_serialize_state(&self) -> Box<dyn erased_serde::Serialize + '_> {
-        Box::new(&self.state_anchor)
-    }
-    fn post_alter(&mut self) {}
-    fn get_runner_type(&self) -> ProcessorRunner {
-        ProcessorRunner::ThreadPool
-    }
+fn pool_size_from_env_or_cpus() -> usize {
+    std::env::var("FLEZHA_WORKER_POOL_SIZE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(2)
+        })
 }
 
 fn dummy_stream() -> Arc<FlezhaStream> {
-    let (a, _b) = UnixStream::pair().expect("pair");
+    let (a, _b) = UnixStream::pair().expect("UnixStream::pair");
     Arc::new(FlezhaStream::Unix(a))
 }
 
-fn wait_for_counter(counter: &AtomicUsize, target: usize, budget: Duration) {
+fn wait_until<F: Fn() -> bool>(predicate: F, timeout: Duration) -> bool {
     let start = Instant::now();
-    while counter.load(Ordering::Acquire) < target {
-        if start.elapsed() > budget {
-            panic!(
-                "drain timed out at {}/{}",
-                counter.load(Ordering::Acquire),
-                target
-            );
+    while !predicate() {
+        if start.elapsed() > timeout {
+            return false;
         }
-        thread::yield_now();
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    true
+}
+
+// ----- Regression bench: 100 relays × 1 shard × 1 partition × 10K msg -----
+
+static REG_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+#[derive(Default)]
+struct RegressionShard;
+impl Shard for RegressionShard {
+    type Input = Vec<u8>;
+    type Output = Vec<u8>;
+    type State = ();
+    fn name() -> &'static str {
+        "regression_shard"
+    }
+    fn init_state(_: Option<&str>) {}
+    fn run(
+        &mut self,
+        _: Vec<u8>,
+        _: &mut (),
+        _: &mut ShardCtx<'_>,
+    ) -> Result<(), ShardError> {
+        REG_COUNTER.fetch_add(1, Ordering::Relaxed);
+        Ok(())
     }
 }
 
-// ---------------------------------------------------------------------------
-// 7.1 — throughput_single_processor
-// ---------------------------------------------------------------------------
-
-fn bench_throughput_single_processor(c: &mut Criterion) {
-    let mut group = c.benchmark_group("throughput_single_processor");
-    let n = 10_000usize;
-    group.throughput(Throughput::Elements(n as u64));
-    group.sample_size(10);
-    group.measurement_time(Duration::from_secs(10));
-
-    group.bench_function(BenchmarkId::from_parameter(n), |b| {
-        b.iter_custom(|iters| {
-            let pool_size = num_cpus_heuristic();
-            let (handle, _pool) = new_handle_with_pool_size(pool_size);
-            let counter = Arc::new(AtomicUsize::new(0));
-            register_direct(
-                &handle.registry,
-                "solo".to_string(),
-                Box::new(NoopCountingProcessor {
-                    counter: Arc::clone(&counter),
-                    state_anchor: (),
-                }),
-            );
-            let stream = dummy_stream();
-
-            let start = Instant::now();
-            for _ in 0..iters {
-                counter.store(0, Ordering::Release);
-                for i in 0..n {
-                    handle.dispatch(
-                        "solo".to_string(),
-                        ProcessorInput::Text(i.to_string()),
-                        Arc::clone(&stream),
-                    );
-                }
-                wait_for_counter(&counter, n, Duration::from_secs(30));
-            }
-            black_box(start.elapsed())
-        })
-    });
-    group.finish();
+struct RegressionRelay;
+impl Relay for RegressionRelay {
+    fn factory_id() -> &'static str {
+        "regression_bench_relay"
+    }
+    fn channels(c: &mut ChannelBuilder) {
+        c.input::<Vec<u8>>("input").into::<RegressionShard>();
+    }
 }
 
-// ---------------------------------------------------------------------------
-// 7.2 — throughput_many_processors
-// ---------------------------------------------------------------------------
+fn regression_bench(c: &mut Criterion) {
+    let n_relays = 100usize;
+    let msgs_per_relay = 10_000usize;
+    let total = n_relays * msgs_per_relay;
 
-fn bench_throughput_many_processors(c: &mut Criterion) {
-    let mut group = c.benchmark_group("throughput_many_processors");
-    let num_processors = 100usize;
-    let messages_per = 10_000usize;
-    let total = num_processors * messages_per;
-    group.throughput(Throughput::Elements(total as u64));
-    group.sample_size(10);
-    group.measurement_time(Duration::from_secs(20));
+    let pool = Arc::new(bi::WorkStealingPool::with_size(pool_size_from_env_or_cpus()));
+    let topology = build_topology_for::<RegressionRelay>().expect("topology");
+    let registry = Arc::new(RelayInstanceRegistry::new());
 
-    group.bench_function("100x10k", |b| {
-        b.iter_custom(|iters| {
-            let pool_size = num_cpus_heuristic();
-            let (handle, _pool) = new_handle_with_pool_size(pool_size);
-            let counter = Arc::new(AtomicUsize::new(0));
-            let mut pids = Vec::with_capacity(num_processors);
-            for i in 0..num_processors {
-                let pid = format!("p{}", i);
-                register_direct(
-                    &handle.registry,
-                    pid.clone(),
-                    Box::new(NoopCountingProcessor {
-                        counter: Arc::clone(&counter),
-                        state_anchor: (),
-                    }),
-                );
-                pids.push(pid);
-            }
-            let stream = dummy_stream();
+    let instance_ids: Vec<String> = (0..n_relays)
+        .map(|i| format!("regression-{}", i))
+        .collect();
+    for id in &instance_ids {
+        let inst = RelayInstance::new(
+            Arc::clone(&topology),
+            Arc::from(id.as_str()),
+            Arc::clone(&pool),
+        );
+        registry.register(inst);
+    }
 
-            let start = Instant::now();
-            for _ in 0..iters {
-                counter.store(0, Ordering::Release);
-                for i in 0..total {
-                    let pid = &pids[i % num_processors];
-                    handle.dispatch(
-                        pid.clone(),
-                        ProcessorInput::Text(i.to_string()),
-                        Arc::clone(&stream),
-                    );
-                }
-                wait_for_counter(&counter, total, Duration::from_secs(60));
-            }
-            black_box(start.elapsed())
-        })
-    });
-    group.finish();
-}
-
-// ---------------------------------------------------------------------------
-// 7.3 — latency_p99 (one-in-one-out)
-// ---------------------------------------------------------------------------
-
-fn bench_latency_p99(c: &mut Criterion) {
-    let mut group = c.benchmark_group("latency_p99");
-    group.sample_size(200);
-    group.measurement_time(Duration::from_secs(10));
-
-    let pool_size = num_cpus_heuristic();
-    let (handle, _pool) = new_handle_with_pool_size(pool_size);
-    let counter = Arc::new(AtomicUsize::new(0));
-    register_direct(
-        &handle.registry,
-        "lat".to_string(),
-        Box::new(NoopCountingProcessor {
-            counter: Arc::clone(&counter),
-            state_anchor: (),
-        }),
-    );
+    let handle = bi::RelayDispatchHandle {
+        registry: Arc::clone(&registry),
+        pool: Arc::clone(&pool),
+    };
     let stream = dummy_stream();
+    let payload: Vec<u8> = b"x".repeat(64);
 
-    // Preload: force any lazy init.
-    handle.dispatch(
-        "lat".to_string(),
-        ProcessorInput::Text("warmup".to_string()),
-        Arc::clone(&stream),
-    );
-    wait_for_counter(&counter, 1, Duration::from_secs(5));
-
-    group.bench_function("single_round_trip", |b| {
-        b.iter(|| {
-            let before = counter.load(Ordering::Acquire);
-            handle.dispatch(
-                "lat".to_string(),
-                ProcessorInput::Text("x".to_string()),
-                Arc::clone(&stream),
-            );
-            while counter.load(Ordering::Acquire) <= before {
-                std::hint::spin_loop();
+    let mut group = c.benchmark_group("relay_dispatch");
+    group.measurement_time(Duration::from_secs(60));
+    group.sample_size(10);
+    group.throughput(criterion::Throughput::Elements(total as u64));
+    group.bench_function("regression_100x1x1x10k", |b| {
+        b.iter_custom(|iters| {
+            let mut elapsed = Duration::ZERO;
+            for _ in 0..iters {
+                REG_COUNTER.store(0, Ordering::Release);
+                let start = Instant::now();
+                for id in &instance_ids {
+                    for _ in 0..msgs_per_relay {
+                        let mut md = HashMap::new();
+                        md.insert("channel".to_string(), "input".to_string());
+                        handle.dispatch(
+                            id,
+                            payload.clone(),
+                            &md,
+                            Arc::clone(&stream),
+                        );
+                    }
+                }
+                let drained = wait_until(
+                    || REG_COUNTER.load(Ordering::Acquire) == total,
+                    Duration::from_secs(60),
+                );
+                elapsed += start.elapsed();
+                assert!(
+                    drained,
+                    "regression bench drain timed out: {} of {}",
+                    REG_COUNTER.load(Ordering::Acquire),
+                    total
+                );
             }
+            elapsed
         });
     });
     group.finish();
 }
 
-// ---------------------------------------------------------------------------
-// 7.4 — dashmap_vs_rwlock_read_contention
-//
-// Reads from the DashMap registry under contention, compared to a naive
-// RwLock<HashMap> baseline. Asserts DashMap is faster or at worst within
-// noise — it's the change justification.
-// ---------------------------------------------------------------------------
+// ----- Partitioning-stress bench: 4 shards × 8 partitions, fan-out 8 -----
 
-fn bench_dashmap_vs_rwlock_read_contention(c: &mut Criterion) {
-    let mut group = c.benchmark_group("registry_read_contention");
-    let entries = 1_000usize;
-    let readers = 8usize;
-    let reads_per_thread = 10_000usize;
+static PART_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
-    // Pre-populate both registries with equivalent entries.
-    let dm_registry = Arc::new(ProcessorRegistry::new());
-    let rw_registry: Arc<RwLock<std::collections::HashMap<String, Arc<Mutex<ProcessorBox>>>>> =
-        Arc::new(RwLock::new(std::collections::HashMap::new()));
+const STRESS_KEYS: &[&str] = &["p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7"];
 
-    for i in 0..entries {
-        let pid = format!("k{}", i);
-        register_direct(
-            &dm_registry,
-            pid.clone(),
-            Box::new(NoopCountingProcessor {
-                counter: Arc::new(AtomicUsize::new(0)),
-                state_anchor: (),
-            }),
-        );
-        rw_registry.write().unwrap().insert(
-            pid,
-            Arc::new(Mutex::new(Box::new(NoopCountingProcessor {
-                counter: Arc::new(AtomicUsize::new(0)),
-                state_anchor: (),
-            }) as ProcessorBox)),
+// Entry-shard routing: fan out every input to all 8 partitions per
+// `relay-bench-harness/design.md` Decision 7 / task §1.1.
+fn entry_partition_for(_: &Vec<u8>) -> Vec<&'static str> {
+    STRESS_KEYS.to_vec()
+}
+
+// Downstream-shard routing: pin each emit to a single partition so the
+// fan-out factor stays bounded at 8 (entry) and each pipeline stage runs
+// once per upstream emit. Per task §1.1 ("partition_for returning all 8
+// keys for the entry shard") only the entry shard fans out N-wide; B/C/D
+// have 8 partitions each (Decision 7) but route to one.
+fn pipeline_partition_for(_: &Vec<u8>) -> Vec<&'static str> {
+    vec!["p0"]
+}
+
+#[derive(Default)]
+struct StressBenchShardA;
+impl Shard for StressBenchShardA {
+    type Input = Vec<u8>;
+    type Output = Vec<u8>;
+    type State = ();
+    fn name() -> &'static str {
+        "stress_bench_a"
+    }
+    fn init_state(_: Option<&str>) {}
+    fn shard_keys() -> Vec<&'static str> {
+        STRESS_KEYS.to_vec()
+    }
+    const PARTITION_FOR_OVERRIDDEN: bool = true;
+    fn partition_for(input: &Vec<u8>) -> Vec<&'static str> {
+        entry_partition_for(input)
+    }
+    fn run(
+        &mut self,
+        input: Vec<u8>,
+        _: &mut (),
+        ctx: &mut ShardCtx<'_>,
+    ) -> Result<(), ShardError> {
+        PART_COUNTER.fetch_add(1, Ordering::Relaxed);
+        ctx.emit::<Vec<u8>>(input)
+    }
+}
+
+#[derive(Default)]
+struct StressBenchShardB;
+impl Shard for StressBenchShardB {
+    type Input = Vec<u8>;
+    type Output = Vec<u8>;
+    type State = ();
+    fn name() -> &'static str {
+        "stress_bench_b"
+    }
+    fn init_state(_: Option<&str>) {}
+    fn shard_keys() -> Vec<&'static str> {
+        STRESS_KEYS.to_vec()
+    }
+    const PARTITION_FOR_OVERRIDDEN: bool = true;
+    fn partition_for(input: &Vec<u8>) -> Vec<&'static str> {
+        pipeline_partition_for(input)
+    }
+    fn run(
+        &mut self,
+        input: Vec<u8>,
+        _: &mut (),
+        ctx: &mut ShardCtx<'_>,
+    ) -> Result<(), ShardError> {
+        PART_COUNTER.fetch_add(1, Ordering::Relaxed);
+        ctx.emit::<Vec<u8>>(input)
+    }
+}
+
+#[derive(Default)]
+struct StressBenchShardC;
+impl Shard for StressBenchShardC {
+    type Input = Vec<u8>;
+    type Output = Vec<u8>;
+    type State = ();
+    fn name() -> &'static str {
+        "stress_bench_c"
+    }
+    fn init_state(_: Option<&str>) {}
+    fn shard_keys() -> Vec<&'static str> {
+        STRESS_KEYS.to_vec()
+    }
+    const PARTITION_FOR_OVERRIDDEN: bool = true;
+    fn partition_for(input: &Vec<u8>) -> Vec<&'static str> {
+        pipeline_partition_for(input)
+    }
+    fn run(
+        &mut self,
+        input: Vec<u8>,
+        _: &mut (),
+        ctx: &mut ShardCtx<'_>,
+    ) -> Result<(), ShardError> {
+        PART_COUNTER.fetch_add(1, Ordering::Relaxed);
+        ctx.emit::<Vec<u8>>(input)
+    }
+}
+
+#[derive(Default)]
+struct StressBenchShardD;
+impl Shard for StressBenchShardD {
+    type Input = Vec<u8>;
+    type Output = Vec<u8>;
+    type State = ();
+    fn name() -> &'static str {
+        "stress_bench_d"
+    }
+    fn init_state(_: Option<&str>) {}
+    fn shard_keys() -> Vec<&'static str> {
+        STRESS_KEYS.to_vec()
+    }
+    const PARTITION_FOR_OVERRIDDEN: bool = true;
+    fn partition_for(input: &Vec<u8>) -> Vec<&'static str> {
+        pipeline_partition_for(input)
+    }
+    fn run(
+        &mut self,
+        _: Vec<u8>,
+        _: &mut (),
+        _: &mut ShardCtx<'_>,
+    ) -> Result<(), ShardError> {
+        PART_COUNTER.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+}
+
+struct PartitioningStressBenchRelay;
+impl Relay for PartitioningStressBenchRelay {
+    fn factory_id() -> &'static str {
+        "partitioning_stress_bench_relay"
+    }
+    fn channels(c: &mut ChannelBuilder) {
+        c.input::<Vec<u8>>("input").into::<StressBenchShardA>();
+        c.channel::<Vec<u8>>("a_to_b")
+            .from::<StressBenchShardA>()
+            .into::<StressBenchShardB>();
+        c.channel::<Vec<u8>>("b_to_c")
+            .from::<StressBenchShardB>()
+            .into::<StressBenchShardC>();
+        c.channel::<Vec<u8>>("c_to_d")
+            .from::<StressBenchShardC>()
+            .into::<StressBenchShardD>();
+    }
+}
+
+fn partitioning_stress_bench(c: &mut Criterion) {
+    let n_relays = 8usize;
+    let msgs_per_relay = 20_000usize;
+    let inputs_total = n_relays * msgs_per_relay;
+    let fan_out = STRESS_KEYS.len();
+    let shards = 4usize;
+    // Each input fans out to all 8 partitions of the entry shard, and each
+    // emit to a downstream shard fans out the same way → total Shard::run
+    // invocations = inputs × fan_out × shards.
+    let expected_runs = inputs_total * fan_out * shards;
+
+    let pool_sizes: Vec<usize> = match std::env::var("FLEZHA_BENCH_POOL_SIZES") {
+        Ok(s) => {
+            let parsed: Vec<usize> = s
+                .split(',')
+                .filter_map(|p| p.trim().parse().ok())
+                .collect();
+            if parsed.is_empty() {
+                vec![pool_size_from_env_or_cpus()]
+            } else {
+                parsed
+            }
+        }
+        Err(_) => vec![pool_size_from_env_or_cpus()],
+    };
+
+    let topology = build_topology_for::<PartitioningStressBenchRelay>().expect("topology");
+    let payload: Vec<u8> = b"x".repeat(64);
+    let stream = dummy_stream();
+
+    let mut group = c.benchmark_group("partitioning_stress_8x4x8x20k");
+    group.measurement_time(Duration::from_secs(30));
+    group.sample_size(10);
+    group.throughput(criterion::Throughput::Elements(expected_runs as u64));
+
+    for pool_size in pool_sizes {
+        let pool = Arc::new(bi::WorkStealingPool::with_size(pool_size));
+        let registry = Arc::new(RelayInstanceRegistry::new());
+        let instance_ids: Vec<String> = (0..n_relays)
+            .map(|i| format!("partitioning-stress-{}", i))
+            .collect();
+        for id in &instance_ids {
+            let inst = RelayInstance::new(
+                Arc::clone(&topology),
+                Arc::from(id.as_str()),
+                Arc::clone(&pool),
+            );
+            registry.register(inst);
+        }
+        let handle = bi::RelayDispatchHandle {
+            registry: Arc::clone(&registry),
+            pool: Arc::clone(&pool),
+        };
+
+        group.bench_with_input(
+            BenchmarkId::from_parameter(pool_size),
+            &pool_size,
+            |b, _| {
+                b.iter_custom(|iters| {
+                    let mut elapsed = Duration::ZERO;
+                    for _ in 0..iters {
+                        PART_COUNTER.store(0, Ordering::Release);
+                        let start = Instant::now();
+                        for id in &instance_ids {
+                            for _ in 0..msgs_per_relay {
+                                let mut md = HashMap::new();
+                                md.insert("channel".to_string(), "input".to_string());
+                                handle.dispatch(
+                                    id,
+                                    payload.clone(),
+                                    &md,
+                                    Arc::clone(&stream),
+                                );
+                            }
+                        }
+                        let drained = wait_until(
+                            || PART_COUNTER.load(Ordering::Acquire) == expected_runs,
+                            Duration::from_secs(120),
+                        );
+                        elapsed += start.elapsed();
+                        assert!(
+                            drained,
+                            "partitioning stress drain timed out: {} of {}",
+                            PART_COUNTER.load(Ordering::Acquire),
+                            expected_runs
+                        );
+                    }
+                    elapsed
+                });
+            },
         );
     }
-
-    group.bench_function("dashmap", |b| {
-        b.iter_custom(|iters| {
-            let start = Instant::now();
-            for _ in 0..iters {
-                let mut handles = Vec::new();
-                for _ in 0..readers {
-                    let reg = Arc::clone(&dm_registry);
-                    handles.push(thread::spawn(move || {
-                        for i in 0..reads_per_thread {
-                            let key = format!("k{}", i % entries);
-                            let _ = black_box(reg.get_processor(&key));
-                        }
-                    }));
-                }
-                for h in handles {
-                    h.join().unwrap();
-                }
-            }
-            start.elapsed()
-        })
-    });
-
-    group.bench_function("rwlock_hashmap", |b| {
-        b.iter_custom(|iters| {
-            let start = Instant::now();
-            for _ in 0..iters {
-                let mut handles = Vec::new();
-                for _ in 0..readers {
-                    let reg = Arc::clone(&rw_registry);
-                    handles.push(thread::spawn(move || {
-                        for i in 0..reads_per_thread {
-                            let key = format!("k{}", i % entries);
-                            let guard = reg.read().unwrap();
-                            let _ = black_box(guard.get(&key).cloned());
-                        }
-                    }));
-                }
-                for h in handles {
-                    h.join().unwrap();
-                }
-            }
-            start.elapsed()
-        })
-    });
-
     group.finish();
 }
 
-fn num_cpus_heuristic() -> usize {
-    std::thread::available_parallelism()
-        .map_or(2, |v| v.get())
-        .min(16)
-}
-
-criterion_group!(
-    benches,
-    bench_throughput_single_processor,
-    bench_throughput_many_processors,
-    bench_latency_p99,
-    bench_dashmap_vs_rwlock_read_contention
-);
+criterion_group!(benches, regression_bench, partitioning_stress_bench);
 criterion_main!(benches);

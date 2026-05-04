@@ -1,7 +1,12 @@
+//! `MigrationSerialization` — produces the per-Shard / per-Partition
+//! state blob per `relay-mvp-rust/design.md` Decision 10, then removes
+//! the Relay instance from the local registry (the agent is migrating
+//! it elsewhere).
+
 use super::CommandAction;
+use crate::command::processor_state::serialize_relay_state;
 use crate::compute_engine::ComputeEngineNode;
 use crate::pb::MigrationSerialization;
-use crate::processor::factory_registry::ProcessorHandle;
 
 impl CommandAction for MigrationSerialization {
     fn handle(
@@ -10,19 +15,12 @@ impl CommandAction for MigrationSerialization {
         _message: &String,
         _errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
-        let processor_handle: Option<ProcessorHandle> =
-            compute_engine.get_processor(self.processor_id.clone());
-
-        let serialized_state = match processor_handle {
-            Some(p) => {
-                let processor = p.processor_mut();
-                processor.json_serialize_state().unwrap()
-            }
+        let serialized_state = match compute_engine.get_relay(&self.processor_id) {
+            Some(instance) => serialize_relay_state(&instance),
             None => Vec::new(),
         };
 
-        // Remove the processor from the compute_engine
-        compute_engine.stop_processor(self.processor_id.clone());
+        compute_engine.stop_relay(&self.processor_id);
 
         ("migration_serialization".to_string(), serialized_state)
     }

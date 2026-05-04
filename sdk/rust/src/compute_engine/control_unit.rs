@@ -9,7 +9,7 @@ use std::time::Duration;
 use serde::Serialize;
 
 use crate::compute_engine::ComputeEngineMessage;
-use crate::processor::factory_registry::{get_factories, get_factory_ids};
+use crate::relay::registry::class_factory_ids;
 use flz_transport::service::payloader;
 use flz_transport::transport::config::{get_transport_type, TransportType};
 use flz_transport::transport::quic::QuicClient;
@@ -192,13 +192,12 @@ fn sock_conn(
 }
 
 fn send_init_msg(namespace: String, stream_clone: Arc<FlezhaStream>) {
-    let factory_ids = get_factory_ids();
-    let descriptions = get_factories();
+    let factory_ids: Vec<String> = class_factory_ids().iter().map(|s| s.to_string()).collect();
     let factories: Vec<FactoryInfo> = factory_ids
         .iter()
         .map(|id| FactoryInfo {
             id: id.clone(),
-            description: descriptions.get(id).cloned().flatten(),
+            description: None,
         })
         .collect();
 

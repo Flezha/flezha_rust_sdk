@@ -1,42 +1,29 @@
+//! `ProcessorMessage` — under the relay-mvp-rust cutover, the SDK
+//! responds with the canonical "unsupported" error for every request
+//! per `relay-mvp-rust/design.md` Decision 9.
+//!
+//! `relay-message-handlers` (umbrella roadmap row 4) ships per-Shard
+//! `handle_message` over the new model and re-enables the disabled
+//! integration tests that this fallback parks.
+
 use super::CommandAction;
+use crate::compute_engine::ComputeEngineNode;
 use crate::pb::{ProcessorMessage, ProcessorMessageResponse};
-use crate::{compute_engine::ComputeEngineNode, processor::factory_registry::ProcessorHandle};
 use prost::Message;
+
+const UNSUPPORTED_ERROR: &str = "processor does not support handle_message";
 
 impl CommandAction for ProcessorMessage {
     fn handle(
         &self,
-        compute_engine: &mut ComputeEngineNode,
+        _compute_engine: &mut ComputeEngineNode,
         _message: &String,
-        errors: &mut Vec<String>,
+        _errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
-        let payload_id = "processor_message".to_string();
-
-        let processor_handle: Option<ProcessorHandle> =
-            compute_engine.get_processor(self.processor_id.clone());
-
-        match processor_handle {
-            Some(processor_handle) => {
-                let response = {
-                    let mut processor = processor_handle.processor_mut();
-                    match processor.handle_message(&self.payload) {
-                        Ok(reply) => ProcessorMessageResponse {
-                            payload: reply,
-                            error: String::new(),
-                        },
-                        Err(err) => ProcessorMessageResponse {
-                            payload: Vec::new(),
-                            error: err,
-                        },
-                    }
-                };
-
-                (payload_id, response.encode_to_vec())
-            }
-            None => {
-                errors.push(format!("Processor with id {} not found", self.processor_id));
-                (payload_id, Vec::new())
-            }
-        }
+        let response = ProcessorMessageResponse {
+            payload: Vec::new(),
+            error: UNSUPPORTED_ERROR.to_string(),
+        };
+        ("processor_message".to_string(), response.encode_to_vec())
     }
 }

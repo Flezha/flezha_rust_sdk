@@ -1,14 +1,8 @@
-//! Fast-dispatch path. Per-processor mailboxes backed by a DashMap registry
-//! and a Chase-Lev work-stealing pool. Replaces the single-coordinator
-//! dispatch loop that gates the legacy path on `ComputeEngineMessage::
-//! WorkerCheckOut` / `WorkerCheckIn` / `WorkerInitCheckIn`.
-//!
-//! The coordinator thread still exists — it's needed for control-plane
-//! messages (`HandleCommandAction`, `ReturnProcessors`, `Reconnect`) — but
-//! data-plane traffic bypasses it entirely. Stream readers push into the
-//! processor's mailbox directly (see `command::streams_connect::listen_incoming_*`).
-
-#![cfg(feature = "fast-dispatch")]
+//! Per-Partition mailboxes backed by a DashMap registry and a Chase-Lev
+//! work-stealing pool. The coordinator thread still exists for control-plane
+//! traffic (`HandleCommandAction`, `ReturnProcessors`, `Reconnect`) but
+//! data-plane traffic bypasses it entirely — stream readers push directly
+//! into the targeted Relay instance's partition mailboxes.
 
 use crossbeam::channel::{Receiver, Sender};
 use std::collections::HashMap;
@@ -19,16 +13,10 @@ use flz_transport::transport::FlezhaStream;
 use flz_transport::transport::quic::QuicClient;
 
 use crate::command;
-use crate::processor::factory_registry::{
-    get_factory, ProcessorBox, ProcessorHandle, ProcessorRegistry, ProcessorSlot,
-};
-use crate::processor::executor;
-use crate::processor::ProcessorRunner;
-use crate::processor::ProcessorResult;
+use crate::relay::instance::RelayInstance;
+use crate::relay::registry::{get_class as get_relay_class, RelayInstanceRegistry};
 use crate::shutdown::ShutdownBridge;
-use crate::ProcessorInput;
 
-use super::mailbox;
 use super::work_stealing_pool::WorkStealingPool;
 use super::{ClientResponseMessage, ComputeEngineMessage, ComputeEngineStatus};
 use super::control_unit;
@@ -36,11 +24,11 @@ use super::control_unit;
 pub struct ComputeEngineNode {
     compute_engine_id: String,
     _namespace: String,
-    registry: Arc<ProcessorRegistry>,
+    relay_registry: Arc<RelayInstanceRegistry>,
     pool: Arc<WorkStealingPool>,
     shared_io_streams: Arc<RwLock<HashMap<u32, FlezhaStream>>>,
-    /// Control-plane channel kept for parity with the legacy API surface;
-    /// data-plane traffic does not go through this channel under fast-dispatch.
+    /// Control-plane channel kept for parity with the public API surface;
+    /// data-plane traffic does not go through this channel.
     #[allow(dead_code)]
     compute_engine_channel: Arc<Mutex<Sender<ComputeEngineMessage>>>,
     quic_client: Option<Arc<QuicClient>>,
@@ -49,7 +37,7 @@ pub struct ComputeEngineNode {
 
 impl ComputeEngineNode {
     pub fn new(namespace: String, otx: Sender<ComputeEngineMessage>) -> ComputeEngineNode {
-        let registry = Arc::new(ProcessorRegistry::new());
+        let relay_registry = Arc::new(RelayInstanceRegistry::new());
         let pool = Arc::new(WorkStealingPool::new());
         let shared_io_streams = Arc::new(RwLock::new(HashMap::new()));
         let otx_arc = Arc::new(Mutex::new(otx));
@@ -57,7 +45,7 @@ impl ComputeEngineNode {
         ComputeEngineNode {
             compute_engine_id: "undefined".to_string(),
             _namespace: namespace,
-            registry,
+            relay_registry,
             pool,
             shared_io_streams,
             compute_engine_channel: otx_arc,
@@ -66,42 +54,61 @@ impl ComputeEngineNode {
         }
     }
 
-    pub fn start_processor(
+    /// Spawn a Relay instance from a registered Relay class. `factory_id`
+    /// is looked up in the global class registry; `instance_id` is what
+    /// the wire calls `processor_id`. Idempotent on duplicate
+    /// `instance_id`: returns the existing instance.
+    pub fn start_relay(
         &self,
         factory_id: String,
-        processor_id: String,
-    ) -> Option<ProcessorHandle> {
-        if let Some(factory) = get_factory(factory_id) {
-            let processor = factory(processor_id.clone());
-            let slot = self.registry.register(processor_id, processor);
-            Some(ProcessorHandle {
-                processor: Arc::clone(&slot.processor),
-            })
-        } else {
-            None
+        instance_id: String,
+    ) -> Option<Arc<RelayInstance>> {
+        if let Some(existing) = self.relay_registry.get(&instance_id) {
+            return Some(existing);
         }
+        let topology = get_relay_class(&factory_id)?;
+        let instance = RelayInstance::new(
+            topology,
+            Arc::from(instance_id.as_str()),
+            Arc::clone(&self.pool),
+        );
+        Some(self.relay_registry.register(instance))
     }
 
-    pub fn stop_processor(&self, id: String) {
-        let _ = self.registry.remove(&id);
+    pub fn stop_relay(&self, instance_id: &str) -> bool {
+        self.relay_registry.remove(instance_id).is_some()
+    }
+
+    pub fn has_relay(&self, instance_id: &str) -> bool {
+        self.relay_registry.contains(instance_id)
+    }
+
+    pub fn get_relay(&self, instance_id: &str) -> Option<Arc<RelayInstance>> {
+        self.relay_registry.get(instance_id)
+    }
+
+    pub fn get_relay_registry(&self) -> Arc<RelayInstanceRegistry> {
+        Arc::clone(&self.relay_registry)
+    }
+
+    pub fn relay_dispatch_handle(&self) -> RelayDispatchHandle {
+        RelayDispatchHandle {
+            registry: Arc::clone(&self.relay_registry),
+            pool: Arc::clone(&self.pool),
+        }
     }
 
     pub fn _get_namespace(&self) -> String {
         self._namespace.clone()
     }
 
-    /// Public-API compat: returns an `Arc<RwLock<HashMap<...>>>` view built
-    /// from a point-in-time snapshot of the DashMap. Callers use this for
-    /// inspection/iteration; mutations go through `start_processor` /
-    /// `stop_processor` / `AddProcessor` / `RemProcessor` as before.
-    pub fn get_processors(&self) -> Arc<RwLock<HashMap<String, Arc<Mutex<ProcessorBox>>>>> {
-        Arc::new(RwLock::new(self.registry.snapshot()))
-    }
-
-    pub fn get_processor(&self, id: String) -> Option<ProcessorHandle> {
-        self.registry
-            .get_processor(&id)
-            .map(|processor| ProcessorHandle { processor })
+    /// Public-API view: snapshot of live Relay instances. Mirrors the
+    /// pre-`relay-mvp-rust` `Flezha::get_processors()` shape so external
+    /// inspectors that walk the registry continue to work.
+    pub fn get_processors(
+        &self,
+    ) -> Arc<RwLock<HashMap<String, Arc<Mutex<Arc<RelayInstance>>>>>> {
+        crate::relay::registry::snapshot_as_processor_view(&self.relay_registry)
     }
 
     pub fn get_io_streams(&self) -> Arc<RwLock<HashMap<u32, FlezhaStream>>> {
@@ -120,10 +127,6 @@ impl ComputeEngineNode {
         self.status = status;
     }
 
-    pub fn has_processor(&self, id: String) -> bool {
-        self.registry.contains(&id)
-    }
-
     #[allow(dead_code)]
     pub fn get_compute_engine_channel(&self) -> Arc<Mutex<Sender<ComputeEngineMessage>>> {
         Arc::clone(&self.compute_engine_channel)
@@ -136,14 +139,6 @@ impl ComputeEngineNode {
     pub fn set_quic_client(&mut self, client: Option<Arc<QuicClient>>) {
         self.quic_client = client;
     }
-
-    /// Build a cheap handle for stream readers to push into mailboxes.
-    pub fn fast_handle(&self) -> FastDispatchHandle {
-        FastDispatchHandle {
-            registry: Arc::clone(&self.registry),
-            pool: Arc::clone(&self.pool),
-        }
-    }
 }
 
 pub fn start(
@@ -155,17 +150,20 @@ pub fn start(
     thread::spawn(move || {
         let mut compute_engine = ComputeEngineNode::new(namespace.clone(), otx.clone());
 
-        // Capture a registry-snapshot closure now so the shutdown bridge
-        // can enumerate processors without going through the coordinator
-        // channel. This survives reconnects since the registry Arc is
-        // stable.
+        // Capture a registry snapshot closure now so the shutdown bridge
+        // can enumerate live Relay instances without going through the
+        // coordinator channel. Survives reconnects since the registry
+        // Arc is stable.
         {
-            let registry = Arc::clone(&compute_engine.registry);
+            let registry = Arc::clone(&compute_engine.relay_registry);
             shutdown_bridge.set_snapshot_fn(Box::new(move || {
                 registry
                     .snapshot()
                     .into_iter()
-                    .collect::<Vec<(String, Arc<Mutex<ProcessorBox>>)>>()
+                    .map(|(k, instance)| {
+                        (k, crate::command::processor_state::serialize_relay_state(&instance))
+                    })
+                    .collect()
             }));
         }
 
@@ -229,7 +227,7 @@ fn handle_reconnect(
     compute_engine.set_status(ComputeEngineStatus::Stopped);
 
     compute_engine.shared_io_streams.write().unwrap().clear();
-    compute_engine.registry.clear();
+    compute_engine.relay_registry.clear();
     compute_engine.assign_compute_engine_id("undefined".to_string());
 
     let (_, new_stream, new_quic) =
@@ -239,153 +237,143 @@ fn handle_reconnect(
     compute_engine.set_quic_client(new_quic);
 }
 
-// ---------------------------------------------------------------------------
-// Stream-reader hot path.
-//
-// Called from `command::streams_connect::listen_incoming_uds`/`_quic`. Looks
-// up the processor via the DashMap, dispatches to the right runner mode,
-// and pushes into the mailbox on ThreadPool / spawns a thread on ThreadSpawn.
-// ---------------------------------------------------------------------------
-
-/// Cheap-to-clone handle for stream readers.
+/// Stream-reader handle for the Relay model. Cheap to clone; carries a
+/// reference to the live Relay-instance registry and the work-stealing
+/// pool used to schedule per-Partition drain tasks.
 #[derive(Clone)]
-pub struct FastDispatchHandle {
-    pub registry: Arc<ProcessorRegistry>,
+pub struct RelayDispatchHandle {
+    pub registry: Arc<RelayInstanceRegistry>,
     pub pool: Arc<WorkStealingPool>,
 }
 
-impl FastDispatchHandle {
-    pub fn dispatch(&self, processor_id: String, input: ProcessorInput, stream: Arc<FlezhaStream>) {
-        let slot = match self.registry.get(&processor_id) {
-            Some(s) => s,
+impl RelayDispatchHandle {
+    /// Dispatch a frame from the wire. Resolves the entry channel by
+    /// `metadata["channel"]` (or the Relay's first declared input
+    /// channel as the documented default), wraps the payload bytes via
+    /// the channel's `wrap_input`, and pushes the typed
+    /// `Arc<dyn Any + Send + Sync>` onto every consumer Shard's
+    /// partition mailbox.
+    pub fn dispatch(
+        &self,
+        instance_id: &str,
+        payload: Vec<u8>,
+        metadata: &HashMap<String, String>,
+        stream: Arc<FlezhaStream>,
+    ) {
+        let instance = match self.registry.get(instance_id) {
+            Some(i) => i,
             None => {
-                eprintln!("[flezha] Processor {} not found", processor_id);
+                eprintln!("[flezha] relay instance {} not found", instance_id);
                 return;
             }
         };
 
-        match slot.runner_type.clone() {
-            ProcessorRunner::ThreadPool => {
-                dispatch_thread_pool(&slot, processor_id, input, stream, self);
-            }
-            ProcessorRunner::ThreadSpawn => {
-                dispatch_thread_spawn(&slot, processor_id, input, stream);
-            }
-        }
-    }
-}
+        let topology = &instance.topology;
 
-fn dispatch_thread_pool(
-    slot: &Arc<ProcessorSlot>,
-    _processor_id: String,
-    input: ProcessorInput,
-    stream: Arc<FlezhaStream>,
-    handle: &FastDispatchHandle,
-) {
-    // Hot path: only a lock-free queue push + an atomic CAS. No closure
-    // allocation on the common case where someone else is already draining.
-    slot.mailbox.push_only(mailbox::ProcessorPayload { input, stream });
-
-    if slot.mailbox.try_mark_inflight() {
-        let slot_cloned = Arc::clone(slot);
-        let handle_cloned = handle.clone();
-        handle
-            .pool
-            .submit(Box::new(move || drain_slot(&slot_cloned, &handle_cloned)));
-    }
-}
-
-/// Drain loop for a single processor's mailbox. Invariant: at most one
-/// call is active per slot at any moment (enforced by `inflight`).
-fn drain_slot(slot: &Arc<ProcessorSlot>, handle: &FastDispatchHandle) {
-    loop {
-        while let Some(payload) = slot.mailbox.pop() {
-            let mailbox::ProcessorPayload { input, stream } = payload;
-            let result = {
-                let mut p = slot.processor.lock().unwrap();
-                p.run(input)
-            };
-            handle_drain_result(&slot.processor_id, result, &stream, handle);
-        }
-
-        slot.mailbox.release_inflight();
-        if slot.mailbox.is_empty() {
-            return;
-        }
-        // Missed-wake recovery: someone pushed while we were releasing. If
-        // we can re-acquire, resume; otherwise another drain already took over.
-        if !slot.mailbox.try_mark_inflight() {
-            return;
-        }
-    }
-}
-
-fn handle_drain_result(
-    processor_id: &Arc<str>,
-    result: Result<ProcessorResult, crate::processor::ProcessorError>,
-    stream: &Arc<FlezhaStream>,
-    handle: &FastDispatchHandle,
-) {
-    match result {
-        Ok(ProcessorResult::None) | Ok(ProcessorResult::Return(_)) => {}
-        Ok(ProcessorResult::PipeToAgent(outputs)) => {
-            // `processor_id.as_ref()` → `&str`, no allocation. pipe_to_agent
-            // now accepts `&str` + `&metadata`, so the whole write path is
-            // alloc-free (frame bytes go into a thread-local scratch buffer).
-            for (output, metadata) in outputs {
-                executor::pipe_to_agent(stream, processor_id.as_ref(), &output, &metadata);
-            }
-        }
-        Ok(ProcessorResult::PipeToProcessor(outputs)) => {
-            for (target_id, output, metadata) in outputs {
-                if handle.registry.contains(&target_id) {
-                    let input = ProcessorInput::from(output);
-                    handle.dispatch(target_id, input, Arc::clone(stream));
-                } else {
-                    executor::pipe_to_agent(stream, &target_id, &output, &metadata);
+        let channel_id = match metadata.get("channel") {
+            Some(name) => match topology.lookup_channel_id(name) {
+                Some(id) => id,
+                None => {
+                    eprintln!(
+                        "[flezha] relay {} has no channel `{}`",
+                        instance_id, name
+                    );
+                    return;
+                }
+            },
+            None => {
+                match topology
+                    .channels
+                    .iter()
+                    .position(|c| c.kind == crate::channel::ChannelKind::Entry)
+                {
+                    Some(idx) => idx as u32,
+                    None => {
+                        eprintln!(
+                            "[flezha] relay {} has no entry channels",
+                            instance_id
+                        );
+                        return;
+                    }
                 }
             }
-        }
-        Err(e) => eprintln!("Error executing processor {}: {}", processor_id, e),
-    }
-}
-
-
-fn dispatch_thread_spawn(
-    slot: &Arc<ProcessorSlot>,
-    processor_id: String,
-    input: ProcessorInput,
-    stream: Arc<FlezhaStream>,
-) {
-    // ThreadSpawn semantics: one OS thread per invocation, no cross-invocation
-    // ordering. Matches legacy-path behavior.
-    let processor = Arc::clone(&slot.processor);
-    thread::spawn(move || {
-        let result = {
-            let mut p = processor.lock().unwrap();
-            p.run(input)
         };
-        // Reentrancy guard: PipeToProcessor outputs from a ThreadSpawn runner
-        // have nowhere to chain in this function — historically the legacy
-        // path also recursed through `exec_agent`, so we emulate by piping
-        // the outputs to agent directly (missing processor => pipe to agent).
-        match result {
-            Ok(ProcessorResult::None) | Ok(ProcessorResult::Return(_)) => {}
-            Ok(ProcessorResult::PipeToAgent(outputs)) => {
-                for (output, metadata) in outputs {
-                    executor::pipe_to_agent(&stream, &processor_id, &output, &metadata);
+
+        let channel = match topology.channel(channel_id) {
+            Some(c) => c,
+            None => return,
+        };
+
+        let typed_payload = match &channel.wrap_input {
+            Some(wrap) => match wrap(payload) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!(
+                        "[flezha] relay {} channel `{}`: wrap_input failed: {}",
+                        instance_id, channel.name, e
+                    );
+                    return;
+                }
+            },
+            None => {
+                eprintln!(
+                    "[flezha] relay {} channel `{}` has no entry wrapper",
+                    instance_id, channel.name
+                );
+                return;
+            }
+        };
+
+        for &consumer_shard_id in &channel.consumers {
+            let consumer = match topology.shard(consumer_shard_id) {
+                Some(s) => s,
+                None => continue,
+            };
+            let partitions = match instance.partitions.get(consumer_shard_id as usize) {
+                Some(p) => p,
+                None => continue,
+            };
+            if consumer.partition_keys.is_empty() {
+                if let Some(slot) = partitions.first() {
+                    enqueue(slot, build_payload(&typed_payload, &stream));
+                }
+            } else {
+                let key_to_idx =
+                    instance.partition_key_to_idx.get(consumer_shard_id as usize);
+                let keys = (consumer.partition_for_erased)(&*typed_payload);
+                for key in keys {
+                    if let Some(map) = key_to_idx {
+                        if let Some(&idx) = map.get(key) {
+                            if let Some(slot) = partitions.get(idx) {
+                                enqueue(slot, build_payload(&typed_payload, &stream));
+                            }
+                        }
+                    }
                 }
             }
-            Ok(ProcessorResult::PipeToProcessor(outputs)) => {
-                // No FastDispatchHandle reachable here (ThreadSpawn does not
-                // get one). Fall back to pipe_to_agent for each output, which
-                // matches legacy's `processor not found → pipe_to_agent` fallback.
-                for (pid, output, metadata) in outputs {
-                    executor::pipe_to_agent(&stream, &pid, &output, &metadata);
-                }
-            }
-            Err(e) => eprintln!("Error executing processor {}: {}", processor_id, e),
         }
-    });
+    }
 }
 
+fn enqueue(
+    slot: &Arc<crate::partition::PartitionSlot>,
+    payload: crate::partition::PartitionPayload,
+) {
+    slot.mailbox.push_only(payload);
+    if slot.mailbox.try_mark_inflight() {
+        let cloned = Arc::clone(slot);
+        slot.pool.submit(Box::new(move || {
+            crate::relay::dispatcher::drain_partition(&cloned)
+        }));
+    }
+}
+
+fn build_payload(
+    value: &Arc<dyn std::any::Any + Send + Sync>,
+    stream: &Arc<FlezhaStream>,
+) -> crate::partition::PartitionPayload {
+    crate::partition::PartitionPayload {
+        value: Arc::clone(value),
+        stream: Arc::clone(stream),
+    }
+}

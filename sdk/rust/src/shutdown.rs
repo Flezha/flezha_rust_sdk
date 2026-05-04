@@ -41,7 +41,6 @@ use flz_transport::service::payloader;
 use flz_transport::transport::FlezhaStream;
 
 use crate::pb;
-use crate::processor::factory_registry::ProcessorBox;
 
 /// Per-processor ack wait. Kubernetes default
 /// `terminationGracePeriodSeconds` is 30 s; with parallel acks this
@@ -60,8 +59,11 @@ pub const SERIALIZER_TIMEOUT: Duration = Duration::from_secs(10);
 /// to dispatch SDK-initiated variants vs `CommandResponse`s.
 const SHUTDOWN_PAYLOAD_ID: &str = "control_command";
 
+/// Returns `(instance_id, serialized_state_bytes)` per live Relay
+/// instance. The closure is responsible for walking the live registry
+/// and serializing each instance via `processor_state::serialize_relay_state`.
 pub type ProcessorSnapshotFn =
-    Box<dyn Fn() -> Vec<(String, Arc<Mutex<ProcessorBox>>)> + Send + Sync>;
+    Box<dyn Fn() -> Vec<(String, Vec<u8>)> + Send + Sync>;
 
 /// Bridge between the user-facing `Flezha` handle and the per-instance
 /// runtime state required for a graceful shutdown sequence.
@@ -133,21 +135,7 @@ impl ShutdownBridge {
 
         let mut wait_handles = Vec::with_capacity(processors.len());
 
-        for (processor_id, processor_arc) in processors {
-            let serialized_state = {
-                let processor = processor_arc.lock().unwrap();
-                match processor.json_serialize_state() {
-                    Ok(bytes) => bytes,
-                    Err(reason) => {
-                        eprintln!(
-                            "[flezha] Skipping shutdown notification for {} — \
-                             json_serialize_state failed: {}",
-                            processor_id, reason
-                        );
-                        continue;
-                    }
-                }
-            };
+        for (processor_id, serialized_state) in processors {
 
             let reference_id = format!(
                 "shutdown-{}-{}",
@@ -306,45 +294,10 @@ mod tests {
     //! contract: notification correctly framed + bounded ack wait.
     use super::*;
     use crate::pb;
-    use crate::processor::{
-        Processor, ProcessorError, ProcessorInput, ProcessorResult, ProcessorRunner,
-    };
     use prost::Message;
     use std::io::Read;
     use std::os::unix::net::UnixStream;
     use std::time::Instant;
-
-    /// Minimal `Processor` impl whose `json_serialize_state` returns a
-    /// fixed binary chosen at construction time. Sufficient to drive the
-    /// shutdown bridge — `run` and friends are never invoked here.
-    struct StubProcessor {
-        snapshot: Vec<u8>,
-    }
-
-    impl Processor for StubProcessor {
-        fn run(&mut self, _input: ProcessorInput) -> Result<ProcessorResult, ProcessorError> {
-            Ok(ProcessorResult::None)
-        }
-        fn json_serialize_state(&self) -> Result<Vec<u8>, String> {
-            Ok(self.snapshot.clone())
-        }
-        fn json_deserialize_state(&mut self, _data: &[u8]) -> Result<(), String> {
-            Ok(())
-        }
-        fn get_factory_id(&self) -> String {
-            "stub_shutdown_factory".to_string()
-        }
-        fn get_state(&mut self) -> &mut dyn std::any::Any {
-            &mut self.snapshot
-        }
-        fn bin_serialize_state(&self) -> Box<dyn erased_serde::Serialize + '_> {
-            Box::new(&self.snapshot)
-        }
-        fn post_alter(&mut self) {}
-        fn get_runner_type(&self) -> ProcessorRunner {
-            ProcessorRunner::ThreadSpawn
-        }
-    }
 
     fn build_bridge_with_processor(
         processor_id: &str,
@@ -355,10 +308,9 @@ mod tests {
         let bridge = ShutdownBridge::new();
         bridge.set_control_stream(Some(Arc::new(FlezhaStream::Unix(sdk_side))));
 
-        let processor: ProcessorBox = Box::new(StubProcessor { snapshot });
-        let processor_arc = Arc::new(Mutex::new(processor));
         let pid = processor_id.to_string();
-        bridge.set_snapshot_fn(Box::new(move || vec![(pid.clone(), Arc::clone(&processor_arc))]));
+        let snap = snapshot.clone();
+        bridge.set_snapshot_fn(Box::new(move || vec![(pid.clone(), snap.clone())]));
 
         (bridge, agent_side)
     }

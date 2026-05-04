@@ -1,18 +1,13 @@
+//! Inverse of `processor_state`. Section 4 routes the state binary
+//! through the dispatcher's per-Shard / per-Partition apply path.
+//! Section 3 ships the wiring stub: any `bin_apply_state` request
+//! returns the canonical `apply_state_not_supported` token until the
+//! dispatcher exposes its apply hook.
+
 use super::CommandAction;
 use crate::compute_engine::ComputeEngineNode;
 use crate::pb::ProcessorApplyState;
-use crate::processor::factory_registry::ProcessorHandle;
 
-/// Inverse of `processor_state`. Receives an opaque SDK-serialised state
-/// binary captured by a previous snapshot and feeds it to the processor's
-/// `bin_apply_state` (or equivalent) before any input is delivered.
-///
-/// The default `Processor` impl returns `Err(ApplyNotSupported)`; concrete
-/// processors override `bin_apply_state` to thread the binary through their
-/// state-init pathway. When the SDK build does not implement Apply for a
-/// given processor, the agent observes a non-empty `errors` list containing
-/// the canonical token `apply_state_not_supported` and falls back to empty
-/// default state.
 impl CommandAction for ProcessorApplyState {
     fn handle(
         &self,
@@ -20,26 +15,16 @@ impl CommandAction for ProcessorApplyState {
         _message: &String,
         errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
-        let processor_handle: Option<ProcessorHandle> =
-            compute_engine.get_processor(self.processor_id.clone());
-
-        match processor_handle {
-            Some(processor_handle) => {
-                let mut processor = processor_handle.processor_mut();
-
-                match processor.bin_apply_state(&self.state_binary) {
-                    Ok(()) => ("processor_apply_state".to_string(), Vec::new()),
-                    Err(reason) => {
-                        errors.push(reason);
-                        ("processor_apply_state".to_string(), Vec::new())
-                    }
-                }
-            }
-            None => {
-                let error_message = format!("Processor with id {} not found", self.processor_id);
-                errors.push(error_message);
-                ("processor_apply_state".to_string(), Vec::new())
-            }
+        if !compute_engine.has_relay(&self.processor_id) {
+            errors.push(format!(
+                "Relay instance with id {} not found",
+                self.processor_id
+            ));
+            return ("processor_apply_state".to_string(), Vec::new());
         }
+
+        // Section 4: invoke the dispatcher's apply entry point.
+        errors.push("apply_state_not_supported".to_string());
+        ("processor_apply_state".to_string(), Vec::new())
     }
 }

@@ -2,123 +2,83 @@
 //!
 //! # Dispatch model
 //!
-//! The SDK picks one of two internal dispatch backends at compile time:
+//! Stream readers push directly into per-Partition lock-free mailboxes
+//! (`crossbeam::queue::SegQueue` + `AtomicBool inflight`). A Chase-Lev
+//! work-stealing pool drains the mailboxes. A `DashMap`-backed
+//! [`relay::registry::RelayInstanceRegistry`] holds live Relay
+//! instances; the central coordinator runs but only handles
+//! control-plane traffic.
 //!
-//! - **Legacy** (default; `fast-dispatch` feature off). Every inbound
-//!   message crosses a single coordinator channel; a central `ComputeEngineNode`
-//!   loop performs lock-heavy routing. Preserved behind
-//!   `#[cfg(not(feature = "fast-dispatch"))]` during the
-//!   optimize-rust-sdk-dispatch rollout.
-//! - **Fast-dispatch** (`fast-dispatch` feature on). Stream readers push
-//!   directly into a per-processor lock-free mailbox
-//!   (`crossbeam::queue::SegQueue` + `AtomicBool inflight`). A Chase-Lev
-//!   work-stealing pool drains the mailboxes. A `DashMap`-backed
-//!   [`processor::factory_registry::ProcessorRegistry`] replaces
-//!   `RwLock<HashMap>` for live processor lookup. The central coordinator
-//!   still runs but only handles control-plane traffic.
-//!
-//! Both backends are **observationally equivalent** to SDK users:
-//!
-//! - Public API — `new`, [`Flezha`], [`Flezha::get_id`],
-//!   [`Flezha::get_processors`], [`register_factory`], [`ProcessorHandler`],
-//!   [`ProcessorInput`] / [`ProcessorOutput`] / [`ProcessorResult`],
-//!   [`ProcessorSettings`], [`FactoryMetadata`] — has identical signatures
-//!   across both features.
-//! - Sticky per-processor ordering under `ProcessorRunner::ThreadPool` is
-//!   guaranteed under both: no two invocations of the same processor's
-//!   `process(...)` ever overlap, and inputs are observed in the order
-//!   they arrived on the primary stream.
-//! - `ProcessorRunner::ThreadSpawn` retains per-invocation thread spawn
-//!   semantics.
-//! - Reconnect, migration, and command-dispatch behavior are preserved
-//!   byte-for-byte (see `docs/sdk_protocol_spec.md` §5, §8).
-//!
-//! # Worked example (sticky ordering with fast-dispatch)
+//! # Worked example (sticky ordering)
 //!
 //! ```no_run
 //! use flezha_compute_engine::{
-//!     register_factory, FactoryMetadata, ProcessorHandler, ProcessorSettings,
+//!     register_relay, ChannelBuilder, Relay, Shard, ShardCtx, ShardError,
 //! };
-//! use flezha_compute_engine::processor::ProcessorError;
 //! # #[derive(serde::Serialize, serde::Deserialize, Clone)]
-//! # struct MyState { seen: Vec<String> }
+//! # struct AppendState { seen: Vec<String> }
 //!
-//! struct Appender;
-//! impl ProcessorHandler<MyState, String, String> for Appender {
-//!     fn process(&mut self, input: String, state: &mut MyState)
-//!         -> Result<String, ProcessorError>
-//!     {
-//!         state.seen.push(input.clone());
-//!         Ok(input)
+//! #[derive(Default)]
+//! struct AppendShard;
+//! impl Shard for AppendShard {
+//!     type Input = String;
+//!     type Output = String;
+//!     type State = AppendState;
+//!     fn name() -> &'static str { "append_shard" }
+//!     fn init_state(_: Option<&str>) -> AppendState {
+//!         AppendState { seen: vec![] }
+//!     }
+//!     fn run(
+//!         &mut self,
+//!         input: String,
+//!         state: &mut AppendState,
+//!         _: &mut ShardCtx<'_>,
+//!     ) -> Result<(), ShardError> {
+//!         state.seen.push(input);
+//!         Ok(())
 //!     }
 //! }
 //!
-//! register_factory(
-//!     "appender".to_string(),
-//!     ProcessorSettings::<MyState, String, String>::default(),
-//!     MyState { seen: vec![] },
-//!     || Box::new(Appender),
-//!     FactoryMetadata::default(),
-//! );
+//! struct AppendRelay;
+//! impl Relay for AppendRelay {
+//!     fn factory_id() -> &'static str { "appender" }
+//!     fn channels(c: &mut ChannelBuilder) {
+//!         c.input::<String>("input").into::<AppendShard>();
+//!     }
+//! }
 //!
+//! register_relay::<AppendRelay>();
 //! let _ = flezha_compute_engine::new("my_namespace".to_string());
 //! ```
 //!
-//! When 10,000 messages targeting a single "appender" processor arrive on
-//! a primary stream, the final `state.seen` vector contains those 10,000
-//! inputs in the exact order they arrived, regardless of the worker-pool
-//! size. The mailbox's inflight flag ensures `process(...)` never runs
-//! concurrently for the same processor.
+//! When 10,000 messages targeting one `appender` Relay instance arrive
+//! on the entry channel, the final `state.seen` vector contains those
+//! 10,000 inputs in arrival order — the per-Partition inflight CAS
+//! guarantees no two `Shard::run` calls overlap on the same partition.
 //!
 //! # Reconnect & idempotency
 //!
-//! The SDK's reconnect loop runs forever with capped exponential backoff. On
-//! every successful reconnect the agent re-issues `AddProcessor` for every
-//! processor ProcessHub still has assigned to this operator's profile. The
-//! `AddProcessor` handler is idempotent on duplicate `processor_id`: if the
-//! local registry already contains the processor it logs
-//! `"AddProcessor: processor <id> already registered, skipping"` and
-//! returns without re-registering, so the existing processor's state is
-//! preserved across the reconnect.
-//!
-//! # Graceful shutdown
-//!
-//! The SDK installs a SIGTERM handler at construction time and runs the
-//! same routine from the `Flezha` handle's `Drop`. On graceful shutdown
-//! it walks every running processor, calls `json_serialize_state()`
-//! synchronously (the same code path used for `MigrationSerialization`),
-//! and emits one `OperatorShutdownNotification{processor_id,
-//! serialized_state}` per processor on the control channel. The agent
-//! overwrites `Overwatch.state.snapshot` with the binary and emits an
-//! `OperatorShutdownAck`. The SDK then exits — the per-processor ack
-//! wait is bounded at **2 s**, parallelised across processors so total
-//! wait is bounded by 2 s (not 2N s). The serializer step is capped at
-//! the agent's `cross_node_request_timeout` ceiling (**10 s**); concrete
-//! `Processor` impls with multi-second serializers should refactor to
-//! stay well below it. Consumers do not need to call this manually —
-//! both `Drop` and SIGTERM trigger it automatically. SIGKILL bypasses
-//! the routine by definition; the agent falls back to the most recent
-//! periodic snapshot exactly as today. See
-//! `openspec/changes/ship-fresh-state-on-sdk-shutdown` for the full
-//! contract.
+//! The SDK's reconnect loop runs forever with capped exponential
+//! backoff. On every successful reconnect the agent re-issues
+//! `AddProcessor` for every Relay instance ProcessHub still has tagged
+//! to this operator's profile. The handler is idempotent on duplicate
+//! `processor_id`: if the local registry already contains the instance
+//! it logs and returns without re-registering, so the existing
+//! per-Partition state is preserved across the reconnect.
 //!
 //! # Tuning
 //!
-//! - `FLEZHA_WORKER_POOL_SIZE` — number of work-stealing threads (default:
-//!   `std::thread::available_parallelism()`).
+//! - `FLEZHA_WORKER_POOL_SIZE` — number of work-stealing threads
+//!   (default: `std::thread::available_parallelism()`).
 //! - `FLEZHA_TRANSPORT` — `"uds"` (default) or `"quic"`.
 //! - `FLEZHA_QUIC_ADDRESS` — QUIC endpoint address.
-//!
-//! # Feature flags
-//!
-//! | Feature           | Default | Description                                            |
-//! |-------------------|---------|--------------------------------------------------------|
-//! | `fast-dispatch`   | off     | Per-processor mailboxes + work-stealing pool.          |
-//! | `bench-internals` | off     | Exposes internal dispatch types for this crate's benches. NOT stable. |
 
+pub mod channel;
 mod command;
 mod compute_engine;
-pub mod processor;
+pub mod partition;
+pub mod relay;
+pub mod shard;
 mod shutdown;
 
 use std::{
@@ -128,18 +88,16 @@ use std::{
 
 use crossbeam::channel::{Receiver, Sender};
 
-pub use processor::{
-    register_factory, FactoryMetadata, ProcessorHandler, ProcessorInput, ProcessorOutput,
-    ProcessorResult, ProcessorSettings,
-};
+pub use channel::{Channel, ChannelBuilder};
+pub use relay::Relay;
+pub use shard::{Shard, ShardCtx, ShardError};
 
 use crate::{
     compute_engine::{ClientResponseMessage, ComputeEngineMessage},
-    processor::factory_registry::ProcessorBox,
+    relay::instance::RelayInstance,
     shutdown::ShutdownBridge,
 };
 
-// Re-export transport layer from shared library
 pub use flz_transport::transport;
 pub use flz_transport::service;
 
@@ -148,6 +106,22 @@ pub mod pb {
     include!("generated/compute_engine_commands.rs");
     #[cfg(rust_analyzer)]
     include!("generated/compute_engine_commands.rs");
+}
+
+/// Register a Relay class with the SDK. Calls `R::channels(...)` once,
+/// freezes the resulting topology in the global class registry, and
+/// makes the class spawnable via the agent's `flz processor start
+/// <factory_id>` command (which routes to `start_relay` on the
+/// `ComputeEngineNode`).
+///
+/// Idempotent on the same `factory_id` — re-registration overwrites
+/// the prior topology. Panics if `R::channels` produced an invalid
+/// topology (duplicate channel names, unwired channels, missing
+/// `partition_for` overrides, etc.).
+pub fn register_relay<R: Relay>() {
+    let topology = relay::builder::build_topology_for::<R>()
+        .expect("register_relay: invalid topology");
+    relay::registry::register_class(R::factory_id(), topology);
 }
 
 pub struct Flezha {
@@ -168,11 +142,6 @@ impl Flezha {
         ) = crossbeam::channel::unbounded();
 
         let shutdown_bridge = ShutdownBridge::new();
-        // Register up-front so SIGTERM during the brief
-        // start-and-handshake window still picks up this SDK. The bridge
-        // returns early from `run_graceful_shutdown` if its
-        // `control_stream` / `snapshot_fn` are still unset, so this is
-        // safe even before the coordinator wires them in.
         shutdown::register_bridge(Arc::clone(&shutdown_bridge));
 
         let compute_engine_thread = compute_engine::start(
@@ -182,7 +151,6 @@ impl Flezha {
             Arc::clone(&shutdown_bridge),
         );
 
-        // Make sure the namespace is passed to the agent and confirmed
         match irx
             .recv()
             .expect("Failed to receive namespace confirmation")
@@ -200,18 +168,27 @@ impl Flezha {
         }
     }
 
+    /// Convenience pass-through to the free [`register_relay`] function.
+    pub fn register_relay<R: Relay>(&self) {
+        register_relay::<R>()
+    }
+
     pub fn get_id(&self) -> &str {
         &self.id
     }
 
-    pub fn get_processors(&self) -> Arc<RwLock<HashMap<String, Arc<Mutex<ProcessorBox>>>>> {
+    /// Snapshot of the live Relay-instance registry. Returned shape
+    /// mirrors the pre-`relay-mvp-rust` `get_processors` for backward
+    /// compatibility.
+    pub fn get_processors(
+        &self,
+    ) -> Arc<RwLock<HashMap<String, Arc<Mutex<Arc<RelayInstance>>>>>> {
         self.compute_engine_tx
             .lock()
             .unwrap()
             .send(ComputeEngineMessage::ReturnProcessors)
             .expect("Failed to send ReturnProcessors message");
 
-        // Wait for the response from the compute_engine
         let response = self
             .client_rx
             .lock()
@@ -230,12 +207,7 @@ pub fn new(namespace: String) -> Flezha {
     Flezha::new(namespace)
 }
 
-/// Drop trigger for the graceful-shutdown sequence — covers explicit
-/// `disconnect()` flows where the user lets the `Flezha` handle go out
-/// of scope and any test path that creates a transient SDK. The SIGTERM
-/// path runs the same routine via the global bridge registry; the
-/// `shutdown_started` AtomicBool guards against double execution if
-/// both fire.
+/// Drop trigger for the graceful-shutdown sequence.
 impl Drop for Flezha {
     fn drop(&mut self) {
         self.shutdown_bridge.run_graceful_shutdown();
@@ -244,46 +216,15 @@ impl Drop for Flezha {
 
 // ---------------------------------------------------------------------------
 // Internal dispatch surface for benches/tests. NOT a stable API. Only
-// available under the `bench-internals` feature, which is enabled by this
-// crate's `[[bench]]` targets via `required-features`. Downstream consumers
-// never enable this feature, so the surface below is not part of the crate's
-// public API for version-compat purposes.
+// available under the `bench-internals` feature, which is enabled by
+// this crate's `[[bench]]` targets via `required-features`. Downstream
+// consumers never enable this feature, so the surface below is not part
+// of the crate's public API for version-compat purposes.
 // ---------------------------------------------------------------------------
 #[cfg(feature = "bench-internals")]
 #[doc(hidden)]
 pub mod __dispatch_internals {
-    pub use crate::compute_engine::fast::FastDispatchHandle;
-    pub use crate::compute_engine::mailbox::{
-        new_processor_mailbox, Mailbox, ProcessorMailbox, ProcessorPayload,
-    };
+    pub use crate::compute_engine::fast::RelayDispatchHandle;
+    pub use crate::compute_engine::mailbox::Mailbox;
     pub use crate::compute_engine::work_stealing_pool::WorkStealingPool;
-    pub use crate::processor::factory_registry::{
-        ProcessorBox, ProcessorRegistry, ProcessorSlot,
-    };
-
-    use std::sync::Arc;
-
-    /// Build a registry + pool pair sharing lifetime with a new FastDispatchHandle.
-    pub fn new_handle_with_pool_size(pool_size: usize) -> (FastDispatchHandle, Arc<WorkStealingPool>) {
-        let registry = Arc::new(ProcessorRegistry::new());
-        let pool = Arc::new(WorkStealingPool::with_size(pool_size));
-        (
-            FastDispatchHandle {
-                registry: Arc::clone(&registry),
-                pool: Arc::clone(&pool),
-            },
-            pool,
-        )
-    }
-
-    /// Manually register a processor into a registry (bypasses the factory
-    /// registry). Returns the Arc<ProcessorSlot> so benches can grab the
-    /// mailbox and push directly or inspect the processor state.
-    pub fn register_direct(
-        registry: &ProcessorRegistry,
-        processor_id: String,
-        processor: ProcessorBox,
-    ) -> Arc<ProcessorSlot> {
-        registry.register(processor_id, processor)
-    }
 }

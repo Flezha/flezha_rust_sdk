@@ -1,0 +1,5 @@
+error[E0432]: unresolved import `flezha_compute_engine::ProcessorHandler`
+ --> tests/ui/legacy_api_not_importable.rs:5:5
+  |
+5 | use flezha_compute_engine::ProcessorHandler;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no `ProcessorHandler` in the root

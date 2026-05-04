@@ -1,29 +1,18 @@
 use super::CommandAction;
 use crate::pb::ConnectSocket;
 
-use std::collections::HashMap;
-use std::io::Write;
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::thread;
 
 use crate::compute_engine::ComputeEngineNode;
-use crate::processor::ProcessorInput;
 use flz_transport::service::payloader;
 use flz_transport::transport::config::{get_transport_type, TransportType};
 use flz_transport::transport::protocol;
 use flz_transport::transport::FlezhaStream;
-
 use flz_transport::utility::path_helper;
 
-#[cfg(not(feature = "fast-dispatch"))]
-use {
-    crate::compute_engine::ComputeEngineMessage,
-    crossbeam::channel::Sender,
-};
-
-#[cfg(feature = "fast-dispatch")]
-use crate::compute_engine::fast::FastDispatchHandle;
+use crate::compute_engine::fast::RelayDispatchHandle;
 
 impl CommandAction for ConnectSocket {
     fn handle(
@@ -43,10 +32,10 @@ fn handle_uds(cmd: &ConnectSocket, compute_engine: &mut ComputeEngineNode) -> (S
     let io_streams = compute_engine.get_io_streams();
     let compute_engine_id = compute_engine.get_compute_engine_id();
 
-    // Pair each primary with its secondary explicitly. Agent→SDK reads on
-    // primary; SDK→agent writes on secondary. Rust used to write back on
-    // primary, which put inbound reads + outbound writes on the same FD and
-    // hurt throughput ~4× vs the Java SDK (which writes on the secondary).
+    // Pair each primary with its secondary explicitly. Agent→SDK reads
+    // on primary; SDK→agent writes on secondary. Putting reads + writes
+    // on the same FD hurts throughput ~4× (Java SDK writes on the
+    // secondary; matching that here keeps the throughput floor).
     let mut stream_pairs: Vec<(FlezhaStream, Arc<FlezhaStream>)> = Vec::new();
 
     for key in 0..cmd.sockets_count {
@@ -99,141 +88,41 @@ fn handle_quic(cmd: &ConnectSocket, compute_engine: &mut ComputeEngineNode) -> (
     ("connect_sockets".to_string(), Vec::new())
 }
 
-// ---------------------------------------------------------------------------
-// Listener spawn — legacy path (coordinator channel) and fast path (mailbox).
-// ---------------------------------------------------------------------------
-
-#[cfg(not(feature = "fast-dispatch"))]
 fn spawn_listener_uds(
     compute_engine: &ComputeEngineNode,
     pairs: Vec<(FlezhaStream, Arc<FlezhaStream>)>,
 ) {
-    let ctx = compute_engine.get_compute_engine_channel();
-    let ctx_clone = ctx.lock().unwrap().clone();
-    let _ = thread::spawn(move || listen_incoming_uds_legacy(pairs, ctx_clone));
+    let handle = compute_engine.relay_dispatch_handle();
+    let _ = thread::spawn(move || listen_incoming_uds(pairs, handle));
 }
 
-#[cfg(not(feature = "fast-dispatch"))]
 fn spawn_listener_quic(
     compute_engine: &ComputeEngineNode,
     pairs: Vec<(FlezhaStream, Arc<FlezhaStream>)>,
 ) {
-    let ctx = compute_engine.get_compute_engine_channel();
-    let ctx_clone = ctx.lock().unwrap().clone();
-    let _ = thread::spawn(move || listen_incoming_quic_legacy(pairs, ctx_clone));
+    let handle = compute_engine.relay_dispatch_handle();
+    let _ = thread::spawn(move || listen_incoming_quic(pairs, handle));
 }
 
-#[cfg(feature = "fast-dispatch")]
-fn spawn_listener_uds(
-    compute_engine: &ComputeEngineNode,
+fn listen_incoming_uds(
     pairs: Vec<(FlezhaStream, Arc<FlezhaStream>)>,
-) {
-    let handle = compute_engine.fast_handle();
-    let _ = thread::spawn(move || listen_incoming_uds_fast(pairs, handle));
-}
-
-#[cfg(feature = "fast-dispatch")]
-fn spawn_listener_quic(
-    compute_engine: &ComputeEngineNode,
-    pairs: Vec<(FlezhaStream, Arc<FlezhaStream>)>,
-) {
-    let handle = compute_engine.fast_handle();
-    let _ = thread::spawn(move || listen_incoming_quic_fast(pairs, handle));
-}
-
-// ---------------------------------------------------------------------------
-// Legacy listen loops: publish to the coordinator via `ComputeEngineMessage`.
-// ---------------------------------------------------------------------------
-
-#[cfg(not(feature = "fast-dispatch"))]
-fn listen_incoming_uds_legacy(
-    pairs: Vec<(FlezhaStream, Arc<FlezhaStream>)>,
-    ctx: Sender<ComputeEngineMessage>,
-) {
-    let mut handles = Vec::new();
-    for (primary, secondary) in pairs {
-        let ctx = ctx.clone();
-        let primary = Arc::new(primary);
-        let handle = thread::spawn(move || loop {
-            match payloader::extract_payload(&mut &*primary) {
-                Ok((processor_id, payload, metadata)) => {
-                    let input = parse_input(payload, &metadata);
-                    // Ship the SECONDARY stream to the executor so writes
-                    // back to the agent don't contend with the primary's
-                    // read side.
-                    ctx.send(ComputeEngineMessage::WorkerCheckOut(
-                        processor_id,
-                        input,
-                        Arc::clone(&secondary),
-                    ))
-                    .expect("Failed to send message to coordinator");
-                }
-                Err(_e) => break,
-            }
-        });
-        handles.push(handle);
-    }
-    for handle in handles {
-        let _ = handle.join();
-    }
-}
-
-#[cfg(not(feature = "fast-dispatch"))]
-fn listen_incoming_quic_legacy(
-    mut pairs: Vec<(FlezhaStream, Arc<FlezhaStream>)>,
-    ctx: Sender<ComputeEngineMessage>,
-) {
-    let mut handles = Vec::new();
-    for (primary, secondary) in pairs.drain(..) {
-        let ctx = ctx.clone();
-        let primary = Arc::new(primary);
-        let handle = thread::spawn(move || loop {
-            match payloader::extract_payload(&mut &*primary) {
-                Ok((processor_id, payload, metadata)) => {
-                    let input = parse_input(payload, &metadata);
-                    ctx.send(ComputeEngineMessage::WorkerCheckOut(
-                        processor_id,
-                        input,
-                        Arc::clone(&secondary),
-                    ))
-                    .expect("Failed to send message to coordinator");
-                }
-                Err(_e) => break,
-            }
-        });
-        handles.push(handle);
-    }
-    for handle in handles {
-        let _ = handle.join();
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Fast-dispatch listen loops: push directly into per-processor mailboxes.
-// ---------------------------------------------------------------------------
-
-#[cfg(feature = "fast-dispatch")]
-fn listen_incoming_uds_fast(
-    pairs: Vec<(FlezhaStream, Arc<FlezhaStream>)>,
-    handle: FastDispatchHandle,
+    handle: RelayDispatchHandle,
 ) {
     let mut handles = Vec::new();
     for (primary, secondary) in pairs {
         let handle = handle.clone();
         let primary = Arc::new(primary);
         let h = thread::spawn(move || {
-            // Buffered reader collapses the 3 read syscalls per message
-            // (32-byte id + 4-byte size + payload) into single-buffer refills.
-            // This is the #1 reason the Rust SDK under-performed Java: Java's
-            // JNI reader uses an 8KB buf per syscall; Rust's payloader did
-            // 3 small syscalls per frame. At 1M msgs that's the difference
-            // between ~3M read syscalls and ~few-thousand.
             let mut reader = std::io::BufReader::with_capacity(64 * 1024, &*primary);
             loop {
                 match payloader::extract_payload(&mut reader) {
-                    Ok((processor_id, payload, metadata)) => {
-                        let input = parse_input(payload, &metadata);
-                        handle.dispatch(processor_id, input, Arc::clone(&secondary));
+                    Ok((instance_id, payload, metadata)) => {
+                        handle.dispatch(
+                            &instance_id,
+                            payload,
+                            &metadata,
+                            Arc::clone(&secondary),
+                        );
                     }
                     Err(_e) => break,
                 }
@@ -246,10 +135,9 @@ fn listen_incoming_uds_fast(
     }
 }
 
-#[cfg(feature = "fast-dispatch")]
-fn listen_incoming_quic_fast(
+fn listen_incoming_quic(
     mut pairs: Vec<(FlezhaStream, Arc<FlezhaStream>)>,
-    handle: FastDispatchHandle,
+    handle: RelayDispatchHandle,
 ) {
     let mut handles = Vec::new();
     for (primary, secondary) in pairs.drain(..) {
@@ -259,9 +147,13 @@ fn listen_incoming_quic_fast(
             let mut reader = std::io::BufReader::with_capacity(64 * 1024, &*primary);
             loop {
                 match payloader::extract_payload(&mut reader) {
-                    Ok((processor_id, payload, metadata)) => {
-                        let input = parse_input(payload, &metadata);
-                        handle.dispatch(processor_id, input, Arc::clone(&secondary));
+                    Ok((instance_id, payload, metadata)) => {
+                        handle.dispatch(
+                            &instance_id,
+                            payload,
+                            &metadata,
+                            Arc::clone(&secondary),
+                        );
                     }
                     Err(_e) => break,
                 }
@@ -273,10 +165,6 @@ fn listen_incoming_quic_fast(
         let _ = h.join();
     }
 }
-
-// ---------------------------------------------------------------------------
-// Shared helpers.
-// ---------------------------------------------------------------------------
 
 fn connect_unix(compute_engine_id: &String, stream_type: String) -> UnixStream {
     let socket_path = path_helper::stream_socket_path(compute_engine_id, stream_type);
@@ -287,19 +175,4 @@ fn connect_unix(compute_engine_id: &String, stream_type: String) -> UnixStream {
     ))
 }
 
-fn parse_input(payload: Vec<u8>, metadata: &HashMap<String, String>) -> ProcessorInput {
-    // Fast path: `input_type` either absent (binary, the default) or "1"/"2".
-    // Avoids an owned-String default on the hot path.
-    let input_type: &str = metadata.get("input_type").map(String::as_str).unwrap_or("1");
-
-    match input_type {
-        "1" => ProcessorInput::Binary(payload),
-        // `String::from_utf8` reuses the Vec<u8>'s allocation as the String's
-        // backing store — zero-copy vs the old `from_utf8(&p).unwrap().to_string()`
-        // which validated AND allocated a fresh String.
-        "2" => ProcessorInput::Text(
-            String::from_utf8(payload).expect("input_type=2 but payload is not valid UTF-8"),
-        ),
-        err_type => panic!("Invalid input type {}", err_type),
-    }
-}
+use std::io::Write;

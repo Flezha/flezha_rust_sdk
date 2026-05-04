@@ -225,27 +225,6 @@ impl<Payload: Send + 'static> Default for Mailbox<Payload> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Flezha-specific payload + mailbox alias
-// ---------------------------------------------------------------------------
-
-use flz_transport::transport::FlezhaStream;
-use crate::ProcessorInput;
-
-/// What the stream reader pushes into a processor's mailbox.
-pub struct ProcessorPayload {
-    pub input: ProcessorInput,
-    pub stream: Arc<FlezhaStream>,
-}
-
-/// Concrete mailbox type used by the fast-dispatch path.
-pub type ProcessorMailbox = Arc<Mailbox<ProcessorPayload>>;
-
-/// Construct a fresh mailbox wrapped in Arc (matches `ProcessorMailbox`).
-pub fn new_processor_mailbox() -> ProcessorMailbox {
-    Arc::new(Mailbox::<ProcessorPayload>::new())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

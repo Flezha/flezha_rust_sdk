@@ -1,0 +1,341 @@
+//! Per-Shard typed dispatcher.
+//!
+//! `ShardDispatcherImpl<S>` carries S statically so:
+//! - mailbox payloads are downcast to `Arc<S::Input>` without allocation
+//! - the partition's state is downcast to `(S, S::State)` and threaded
+//!   through `S::run` with a typed signature
+//! - the emit sink already knows the cached output channel id
+//!
+//! The dispatcher trait object stores a single `Arc<dyn ShardDispatcher>`
+//! per `PartitionSlot`. The inflight CAS on the mailbox guarantees that
+//! `dispatch(...)` is never called concurrently for the same slot, so
+//! the per-partition `(S, S::State)` is safely accessible behind a
+//! `Mutex` lock that is always uncontended in practice.
+
+use std::any::Any;
+use std::collections::HashMap;
+use std::io::Write;
+use std::sync::{Arc, Weak};
+
+use flz_transport::service::payloader;
+use flz_transport::transport::FlezhaStream;
+
+use crate::channel::builder::BuildPartitionArgs;
+use crate::channel::{ChannelId, ChannelKind, ShardId};
+use crate::compute_engine::mailbox::Mailbox;
+use crate::partition::{PartitionPayload, PartitionSlot, ShardDispatcher};
+use crate::relay::instance::RelayInstance;
+use crate::relay::topology::RelayTopology;
+use crate::shard::ctx::EmitSink;
+use crate::shard::{Shard, ShardCtx, ShardError};
+
+/// Per-partition holder for a typed Shard instance + its State. Boxed and
+/// type-erased into `PartitionSlot.state`.
+pub(crate) struct PartitionState<S: Shard> {
+    pub shard: S,
+    pub state: S::State,
+}
+
+/// Typed dispatcher. Caches the producer-edge output channel id at
+/// construction so emit pays zero name-lookup cost on the hot path.
+pub struct ShardDispatcherImpl<S: Shard> {
+    shard_id: ShardId,
+    output_channel_id: Option<ChannelId>,
+    output_channel_kind: ChannelKind,
+    output_channel_name: Option<Arc<str>>,
+    _phantom: std::marker::PhantomData<fn() -> S>,
+}
+
+impl<S: Shard> ShardDispatcherImpl<S> {
+    pub fn new(
+        shard_id: ShardId,
+        output_channel_id: Option<ChannelId>,
+        output_channel_kind: ChannelKind,
+        output_channel_name: Option<Arc<str>>,
+    ) -> Self {
+        Self {
+            shard_id,
+            output_channel_id,
+            output_channel_kind,
+            output_channel_name,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<S: Shard> ShardDispatcher for ShardDispatcherImpl<S> {
+    fn dispatch(
+        &self,
+        payload: PartitionPayload,
+        state: &mut Box<dyn Any + Send>,
+        instance: &Weak<RelayInstance>,
+    ) {
+        let PartitionPayload { value, stream } = payload;
+
+        // Downcast value to Arc<S::Input>. Consumers with different
+        // Input types in the same Relay downcast independently because
+        // the channel wiring guarantees they only ever receive their
+        // own type.
+        let input_arc = match Arc::downcast::<S::Input>(value) {
+            Ok(arc) => arc,
+            Err(_) => {
+                eprintln!(
+                    "[flezha] dispatcher: payload type mismatch for shard {}",
+                    S::name()
+                );
+                return;
+            }
+        };
+
+        // Zero-copy when the Arc is uniquely held; falls back to a
+        // value clone when fan-out kept it shared. The `Clone` bound on
+        // `Shard::Input` makes this explicit at the type level.
+        let input: S::Input = Arc::unwrap_or_clone(input_arc);
+
+        let typed_state = state
+            .downcast_mut::<PartitionState<S>>()
+            .expect("dispatcher: state type mismatch for shard");
+
+        let mut sink = PartitionEmitSink {
+            output_channel_id: self.output_channel_id,
+            output_channel_kind: self.output_channel_kind,
+            output_channel_name: self.output_channel_name.as_deref(),
+            instance: instance.upgrade(),
+            stream: Arc::clone(&stream),
+        };
+
+        let mut ctx = ShardCtx::new(&mut sink);
+
+        if let Err(err) =
+            typed_state
+                .shard
+                .run(input, &mut typed_state.state, &mut ctx)
+        {
+            eprintln!("[flezha] shard {} run error: {}", S::name(), err);
+        }
+    }
+
+    fn shard_id(&self) -> ShardId {
+        self.shard_id
+    }
+}
+
+/// Per-invocation emit sink, constructed fresh inside each `dispatch`
+/// call. Holds an upgraded `Arc<RelayInstance>` for the duration of the
+/// run; if the instance has been dropped, every emit returns
+/// `UnknownChannel`.
+struct PartitionEmitSink<'a> {
+    output_channel_id: Option<ChannelId>,
+    output_channel_kind: ChannelKind,
+    output_channel_name: Option<&'a str>,
+    instance: Option<Arc<RelayInstance>>,
+    stream: Arc<FlezhaStream>,
+}
+
+impl<'a> EmitSink for PartitionEmitSink<'a> {
+    fn emit_inter_shard(
+        &mut self,
+        value: Arc<dyn Any + Send + Sync>,
+    ) -> Result<(), ShardError> {
+        let cid = self.output_channel_id.ok_or_else(|| ShardError::UnknownChannel {
+            channel: self
+                .output_channel_name
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "<unknown>".to_string()),
+        })?;
+        let instance = self.instance.as_ref().ok_or_else(|| ShardError::UnknownChannel {
+            channel: self
+                .output_channel_name
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "<unknown>".to_string()),
+        })?;
+
+        let descriptor = instance.topology.channel(cid).ok_or_else(|| {
+            ShardError::UnknownChannel {
+                channel: format!("<channel id {}>", cid),
+            }
+        })?;
+
+        for &consumer_shard_id in &descriptor.consumers {
+            let consumer_shard =
+                instance
+                    .topology
+                    .shard(consumer_shard_id)
+                    .ok_or_else(|| ShardError::UnknownChannel {
+                        channel: format!("<shard id {}>", consumer_shard_id),
+                    })?;
+
+            let partitions = match instance.partitions.get(consumer_shard_id as usize) {
+                Some(p) => p,
+                None => continue,
+            };
+
+            if consumer_shard.partition_keys.is_empty() {
+                if let Some(slot) = partitions.first() {
+                    enqueue(slot, payload_for(&value, &self.stream));
+                }
+            } else {
+                let key_to_idx =
+                    instance.partition_key_to_idx.get(consumer_shard_id as usize);
+                let keys = (consumer_shard.partition_for_erased)(&*value);
+                for key in keys {
+                    if let Some(map) = key_to_idx {
+                        if let Some(&idx) = map.get(key) {
+                            if let Some(slot) = partitions.get(idx) {
+                                enqueue(slot, payload_for(&value, &self.stream));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn emit_plugin(
+        &mut self,
+        value: Arc<dyn Any + Send + Sync>,
+        meta: Option<HashMap<String, String>>,
+    ) -> Result<(), ShardError> {
+        let cid = self.output_channel_id.ok_or_else(|| ShardError::UnknownChannel {
+            channel: self.channel_name().to_string(),
+        })?;
+        let instance = self.instance.as_ref().ok_or_else(|| ShardError::UnknownChannel {
+            channel: self.channel_name().to_string(),
+        })?;
+        let descriptor = instance.topology.channel(cid).ok_or_else(|| {
+            ShardError::UnknownChannel {
+                channel: format!("<channel id {}>", cid),
+            }
+        })?;
+
+        let serialize = descriptor.plugin_serializer.as_ref().ok_or_else(|| {
+            ShardError::Custom(format!(
+                "plugin channel `{}` is missing a serializer (use .to_plugin(name) at \
+                 declaration time)",
+                descriptor.name
+            ))
+        })?;
+
+        let bytes = serialize(&*value);
+
+        let mut metadata: HashMap<String, String> = match meta {
+            Some(mut m) => {
+                // Reserved key: drop any user-supplied "channel" entry
+                // per umbrella's "ShardCtx emit semantics" requirement.
+                m.remove("channel");
+                m
+            }
+            None => HashMap::new(),
+        };
+        metadata.insert("channel".to_string(), descriptor.name.to_string());
+
+        send_plugin_frame(&self.stream, &instance.instance_id, &bytes, &metadata);
+        Ok(())
+    }
+
+    fn channel_name(&self) -> &str {
+        self.output_channel_name.unwrap_or("<unset>")
+    }
+
+    fn is_plugin_bound(&self) -> bool {
+        matches!(self.output_channel_kind, ChannelKind::PluginBound)
+    }
+}
+
+fn enqueue(slot: &Arc<PartitionSlot>, payload: PartitionPayload) {
+    slot.mailbox.push_only(payload);
+    if slot.mailbox.try_mark_inflight() {
+        let cloned = Arc::clone(slot);
+        slot.pool.submit(Box::new(move || drain_partition(&cloned)));
+    }
+}
+
+fn payload_for(
+    value: &Arc<dyn Any + Send + Sync>,
+    stream: &Arc<FlezhaStream>,
+) -> PartitionPayload {
+    PartitionPayload {
+        value: Arc::clone(value),
+        stream: Arc::clone(stream),
+    }
+}
+
+fn send_plugin_frame(
+    stream: &Arc<FlezhaStream>,
+    instance_id: &str,
+    bytes: &[u8],
+    metadata: &HashMap<String, String>,
+) {
+    let frame =
+        payloader::build_from_binary(instance_id, bytes, metadata.clone());
+    if let Err(e) = (&**stream).write_all(&frame) {
+        eprintln!(
+            "[flezha] plugin emit: failed to write {} bytes for {}: {}",
+            bytes.len(),
+            instance_id,
+            e
+        );
+    }
+}
+
+#[allow(dead_code)]
+fn _force_use(_t: &Arc<RelayTopology>) {}
+
+pub fn drain_partition(slot: &Arc<PartitionSlot>) {
+    loop {
+        while let Some(payload) = slot.mailbox.pop() {
+            let mut state_guard = slot.state.lock().unwrap();
+            let instance_weak = Weak::clone(&slot.instance);
+            slot.dispatcher
+                .dispatch(payload, &mut state_guard, &instance_weak);
+        }
+        slot.mailbox.release_inflight();
+        if slot.mailbox.is_empty() {
+            return;
+        }
+        if !slot.mailbox.try_mark_inflight() {
+            return;
+        }
+    }
+}
+
+/// Build one `PartitionSlot` for a Shard. Captures S statically; the
+/// channel builder collects this closure into `ShardEntry.build_partition`
+/// during `Relay::channels` and `build_topology` invokes it once per
+/// partition at relay-instance startup.
+pub fn build_partition_slot<S: Shard>(args: BuildPartitionArgs<'_>) -> Arc<PartitionSlot> {
+    let shard = S::default();
+    let state = S::init_state(args.shard_key);
+    let typed_state = PartitionState::<S> { shard, state };
+
+    let topology = Arc::clone(&args.topology);
+    let shard_desc = topology
+        .shard(args.shard_id)
+        .expect("build_partition_slot: shard id missing in topology");
+
+    let dispatcher = Arc::new(ShardDispatcherImpl::<S>::new(
+        args.shard_id,
+        shard_desc.output_channel_id,
+        shard_desc
+            .output_channel_id
+            .and_then(|id| topology.channel(id))
+            .map(|c| c.kind)
+            .unwrap_or(ChannelKind::InterShard),
+        shard_desc
+            .output_channel_id
+            .and_then(|id| topology.channel(id))
+            .map(|c| Arc::clone(&c.name)),
+    )) as Arc<dyn ShardDispatcher>;
+
+    Arc::new(PartitionSlot {
+        state: std::sync::Mutex::new(Box::new(typed_state)),
+        mailbox: Arc::new(Mailbox::new()),
+        dispatcher,
+        shard_id: args.shard_id,
+        shard_key: args.shard_key.map(Arc::from),
+        pool: args.pool,
+        instance: args.instance,
+        topology,
+    })
+}

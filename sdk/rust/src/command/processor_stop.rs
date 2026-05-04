@@ -8,12 +8,11 @@ impl CommandAction for RemProcessor {
         _message: &String,
         errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
-        if compute_engine.has_processor(self.processor_id.clone()) {
-            compute_engine.stop_processor(self.processor_id.clone());
-
+        if compute_engine.has_relay(&self.processor_id) {
+            compute_engine.stop_relay(&self.processor_id);
             ("stop_processor".to_string(), Vec::new())
         } else {
-            errors.push("Processor not found".to_string());
+            errors.push("Relay instance not found".to_string());
             ("stop_processor".to_string(), Vec::new())
         }
     }

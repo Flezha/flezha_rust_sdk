@@ -1,0 +1,16 @@
+error[E0271]: type mismatch resolving `<ProducesCandle as Shard>::Output == TradeMsg`
+  --> tests/ui/wire_wrong_output.rs:26:17
+   |
+26 |         .from::<ProducesCandle>();
+   |                 ^^^^^^^^^^^^^^ type mismatch resolving `<ProducesCandle as Shard>::Output == TradeMsg`
+   |
+note: expected this to be `TradeMsg`
+  --> tests/ui/wire_wrong_output.rs:15:19
+   |
+15 |     type Output = Candle;
+   |                   ^^^^^^
+note: required by a bound in `ChannelDecl::<'b, T>::from`
+  --> src/channel/builder.rs
+   |
+   |     pub fn from<S: Shard<Output = T>>(self) -> ChannelDeclWithProducer<'b, T> {
+   |                          ^^^^^^^^^^ required by this bound in `ChannelDecl::<'b, T>::from`
