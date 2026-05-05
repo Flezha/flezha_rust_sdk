@@ -324,6 +324,8 @@ impl RelayDispatchHandle {
             }
         };
 
+        let policy = channel.overflow_policy;
+
         for &consumer_shard_id in &channel.consumers {
             let consumer = match topology.shard(consumer_shard_id) {
                 Some(s) => s,
@@ -335,7 +337,11 @@ impl RelayDispatchHandle {
             };
             if consumer.partition_keys.is_empty() {
                 if let Some(slot) = partitions.first() {
-                    enqueue(slot, build_payload(&typed_payload, &stream));
+                    crate::relay::dispatcher::enqueue(
+                        slot,
+                        build_payload(&typed_payload, &stream),
+                        policy,
+                    );
                 }
             } else {
                 let key_to_idx =
@@ -345,26 +351,17 @@ impl RelayDispatchHandle {
                     if let Some(map) = key_to_idx {
                         if let Some(&idx) = map.get(key) {
                             if let Some(slot) = partitions.get(idx) {
-                                enqueue(slot, build_payload(&typed_payload, &stream));
+                                crate::relay::dispatcher::enqueue(
+                                    slot,
+                                    build_payload(&typed_payload, &stream),
+                                    policy,
+                                );
                             }
                         }
                     }
                 }
             }
         }
-    }
-}
-
-fn enqueue(
-    slot: &Arc<crate::partition::PartitionSlot>,
-    payload: crate::partition::PartitionPayload,
-) {
-    slot.mailbox.push_only(payload);
-    if slot.mailbox.try_mark_inflight() {
-        let cloned = Arc::clone(slot);
-        slot.pool.submit(Box::new(move || {
-            crate::relay::dispatcher::drain_partition(&cloned)
-        }));
     }
 }
 

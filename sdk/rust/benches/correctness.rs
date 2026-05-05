@@ -10,11 +10,17 @@
 //!   shard with 4 partition keys, `partition_for` returning all 4
 //!   keys per input. Characterizes the fan-out cost.
 //!
-//! The sync-op invariant ("≤ 3 sync ops per message" on the
-//! single-partition path; "3 + N × 2" for fan-out width N) is an
+//! The sync-op invariant ("≤ 4 sync ops per message" on the
+//! single-partition path; "4 + N × 3" for fan-out width N) is an
 //! analytical bound enforced by code review, per
-//! `relay-bench-harness/design.md` Decision 8 / risk note 4. These
-//! benches report raw msg/s; CI compares against
+//! `relay-bench-harness/design.md` Decision 8 / risk note 4 and
+//! `relay-bounded-mailbox/design.md` Decision 7. The 4-op budget
+//! covers: (1) registry/topology lookup, (2) ArrayQueue try_push,
+//! (3) `pushes_total` Relaxed counter, (4) inflight CAS. The fan-out
+//! per-target cost is 3 ops (try_push + counter + inflight CAS), so
+//! width N adds `N × 3` on top of the shared registry lookup.
+//!
+//! These benches report raw msg/s; CI compares against
 //! `SINGLE_PARTITION_FLOOR_MSG_PER_SEC` in `docs/benchmarking.md` as a
 //! diagnostic, not a hard gate.
 
@@ -32,7 +38,7 @@ use flezha_compute_engine::relay::builder::build_topology_for;
 use flezha_compute_engine::relay::registry::RelayInstanceRegistry;
 use flezha_compute_engine::relay::RelayInstance;
 use flezha_compute_engine::shard::{Shard, ShardCtx, ShardError};
-use flezha_compute_engine::Relay;
+use flezha_compute_engine::{OverflowPolicy, Relay};
 use flz_transport::transport::FlezhaStream;
 
 // Helpers — duplicated from `dispatch.rs` per `relay-bench-harness/design.md`
@@ -96,7 +102,15 @@ impl Relay for SinglePartitionRelay {
         "single_partition_relay"
     }
     fn channels(c: &mut ChannelBuilder) {
-        c.input::<Vec<u8>>("input").into::<SinglePartitionShard>();
+        // Opt the entry channel into Block so the bench measures the
+        // dispatch hot path without DropNewest-induced losses (the
+        // microbench bursts 100K msgs at default capacity 1024). Drops
+        // would skew the throughput number; Block makes the producer
+        // park briefly until the consumer drains, which is the desired
+        // measurement under sustained back-pressure.
+        c.input::<Vec<u8>>("input")
+            .on_full(OverflowPolicy::Block)
+            .into::<SinglePartitionShard>();
     }
 }
 
@@ -198,7 +212,9 @@ impl Relay for StaticFanoutRelay {
         "static_fanout_relay"
     }
     fn channels(c: &mut ChannelBuilder) {
-        c.input::<Vec<u8>>("input").into::<FanoutShard>();
+        c.input::<Vec<u8>>("input")
+            .on_full(OverflowPolicy::Block)
+            .into::<FanoutShard>();
     }
 }
 

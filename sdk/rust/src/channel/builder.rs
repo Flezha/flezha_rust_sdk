@@ -15,7 +15,7 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use crate::channel::entry_type::EntryChannelType;
-use crate::channel::{Channel, ChannelKind, ShardId};
+use crate::channel::{Channel, ChannelKind, OverflowPolicy, ShardId};
 use crate::shard::Shard;
 
 /// Type-erased dispatcher factory for one Shard. Stored on
@@ -33,6 +33,15 @@ pub(crate) struct ShardEntry {
     pub input_type_id: std::any::TypeId,
     /// Erased output-type marker: matches the producer-edge's payload type.
     pub output_type_id: std::any::TypeId,
+
+    /// `Shard::mailbox_capacity()` captured at registration time. The
+    /// resolved value (after applying env-var precedence in `build_topology`)
+    /// is the size of every Partition mailbox built for this Shard.
+    pub mailbox_capacity: usize,
+
+    /// `Shard::MAILBOX_CAPACITY_OVERRIDDEN` captured at registration time.
+    /// Drives the precedence rule in `resolve_mailbox_capacity`.
+    pub mailbox_capacity_overridden: bool,
 
     /// Build a per-partition slot. The closure captures the Shard type
     /// statically so the partition mailbox carries `Arc<S::Input>` items
@@ -73,6 +82,13 @@ pub(crate) struct ChannelEntry {
     pub payload_type_id: std::any::TypeId,
     pub wrap_input: Option<crate::channel::EntryWrapFn>,
     pub plugin_serializer: Option<crate::channel::PluginSerializeFn>,
+    /// Backpressure policy applied at the push site when the consumer
+    /// mailbox is full. Initialized at `declare_channel` time per
+    /// channel kind (Entry → DropNewest, InterShard → Block); plugin-bound
+    /// declarations carry a placeholder that is never consulted because
+    /// `emit_plugin` writes straight to the wire. `.on_full(...)`
+    /// overwrites this value.
+    pub overflow_policy: OverflowPolicy,
 }
 
 /// Reasons `Relay::channels(c)` declarations fail at registration time.
@@ -102,6 +118,16 @@ pub enum BuildTopologyError {
 
     #[error("shard `{name}` registered with conflicting input/output types")]
     TypeMismatch { name: &'static str },
+
+    #[error(
+        "shard `{shard}` declared mailbox_capacity = 0; capacity must be in 1..=1_048_576"
+    )]
+    MailboxCapacityZero { shard: &'static str },
+
+    #[error(
+        "shard `{shard}` declared mailbox_capacity = {value}; capacity must be in 1..=1_048_576"
+    )]
+    MailboxCapacityTooLarge { shard: &'static str, value: usize },
 }
 
 /// Builder collected by `Relay::channels`. Internal state turns into a
@@ -171,6 +197,7 @@ impl ChannelBuilder {
             payload_type_id: std::any::TypeId::of::<T>(),
             wrap_input: None,
             plugin_serializer: None,
+            overflow_policy: default_policy_for_kind(kind),
         });
         self.name_to_id.insert(name, id);
         id
@@ -206,11 +233,26 @@ impl ChannelBuilder {
             output_channel_id: None,
             input_type_id: std::any::TypeId::of::<S::Input>(),
             output_type_id: std::any::TypeId::of::<S::Output>(),
+            mailbox_capacity: S::mailbox_capacity(),
+            mailbox_capacity_overridden: S::MAILBOX_CAPACITY_OVERRIDDEN,
             build_partition,
             partition_for_erased,
         });
         self.shard_name_to_id.insert(S::name(), id);
         id
+    }
+}
+
+/// Per-kind default for the channel's `OverflowPolicy`. Entry channels
+/// drop to keep the wire reader running; inter-shard channels block to
+/// preserve ordering through stateful pipelines. Plugin-bound channels
+/// have no SDK mailbox and the value is never consulted; we still set
+/// `Block` so the field is always meaningful and to keep the descriptor
+/// cheap to compare against.
+pub(crate) fn default_policy_for_kind(kind: ChannelKind) -> OverflowPolicy {
+    match kind {
+        ChannelKind::Entry => OverflowPolicy::DropNewest,
+        ChannelKind::InterShard | ChannelKind::PluginBound => OverflowPolicy::Block,
     }
 }
 
@@ -237,6 +279,15 @@ impl<'b, T: 'static + Send + Sync> EntryChannel<'b, T> {
         Channel::new(self.channel_id)
     }
 
+    /// Override the per-kind default `OverflowPolicy`. Entry channels
+    /// default to `DropNewest`; declare `Block` here only if you accept
+    /// stalling the shared wire reader on this Relay's saturation (see
+    /// `docs/relay_architecture.md` for the co-tenancy hazard).
+    pub fn on_full(self, policy: OverflowPolicy) -> Self {
+        self.builder.channels[self.channel_id as usize].overflow_policy = policy;
+        self
+    }
+
     /// Discarded handle accessor (rarely useful — kept for symmetry).
     pub fn name(&self) -> &'static str {
         self.name
@@ -252,6 +303,15 @@ pub struct ChannelDecl<'b, T> {
 }
 
 impl<'b, T: 'static + Send + Sync> ChannelDecl<'b, T> {
+    /// Override the per-kind default `OverflowPolicy` before wiring the
+    /// producer. Inter-shard channels default to `Block`; switch to
+    /// `DropNewest` / `DropOldest` on a per-channel basis when ordering
+    /// can be sacrificed for liveness.
+    pub fn on_full(self, policy: OverflowPolicy) -> Self {
+        self.builder.channels[self.channel_id as usize].overflow_policy = policy;
+        self
+    }
+
     /// Wire the producer Shard. Compile-time bound: `S::Output == T`.
     /// Multi-producer is a compile error: this consumes `self` and returns
     /// `ChannelDeclWithProducer`, which has no `.from` method.
@@ -292,6 +352,15 @@ pub struct ChannelDeclWithProducer<'b, T> {
 }
 
 impl<'b, T: 'static + Send + Sync> ChannelDeclWithProducer<'b, T> {
+    /// Override the per-kind default `OverflowPolicy`. Available only
+    /// before `.to_plugin(...)`; the resulting `Channel<T>` handle has
+    /// no `.on_full(...)` method, so plugin-bound declarations are a
+    /// compile error.
+    pub fn on_full(self, policy: OverflowPolicy) -> Self {
+        self.builder.channels[self.channel_id as usize].overflow_policy = policy;
+        self
+    }
+
     /// Wire an inter-shard consumer. Compile-time bound: `S::Input == T`.
     /// Calling `.into` repeatedly is allowed (fan-out).
     pub fn into<S: Shard<Input = T>>(self) -> Self {

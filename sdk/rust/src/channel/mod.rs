@@ -53,6 +53,24 @@ pub enum ChannelKind {
     PluginBound,
 }
 
+/// Per-channel backpressure policy applied at the producer-side push
+/// site when the consumer's bounded mailbox is full. Declared via
+/// `.on_full(...)` on the channel builder; defaults to `DropNewest` for
+/// entry channels and `Block` for inter-shard channels. Plugin-bound
+/// channels have no SDK-side mailbox and ignore this value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverflowPolicy {
+    /// Producer parks until the consumer drains an item, then retries.
+    /// Preserves ordering at the cost of producer-thread stall.
+    Block,
+    /// Incoming item is discarded; consumer's `drops_newest_total` increments.
+    DropNewest,
+    /// Consumer's mailbox atomically drops its oldest item and accepts the
+    /// new one; consumer's `drops_oldest_total` increments. Best-effort
+    /// under MPMC contention.
+    DropOldest,
+}
+
 pub struct ChannelDescriptor {
     pub name: Arc<str>,
     pub kind: ChannelKind,
@@ -67,6 +85,11 @@ pub struct ChannelDescriptor {
     /// For plugin-bound channels: serialize the typed payload to wire
     /// bytes. For other kinds: `None`.
     pub plugin_serializer: Option<PluginSerializeFn>,
+    /// Backpressure policy applied at the push site when the consumer's
+    /// mailbox is full. Set at declaration time per channel kind, optionally
+    /// overridden by `.on_full(...)`. Plugin-bound channels carry a
+    /// placeholder value that is never consulted.
+    pub overflow_policy: OverflowPolicy,
 }
 
 pub type EntryWrapFn =

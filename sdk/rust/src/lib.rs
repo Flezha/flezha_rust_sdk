@@ -88,7 +88,7 @@ use std::{
 
 use crossbeam::channel::{Receiver, Sender};
 
-pub use channel::{Channel, ChannelBuilder};
+pub use channel::{Channel, ChannelBuilder, OverflowPolicy};
 pub use relay::Relay;
 pub use shard::{Shard, ShardCtx, ShardError};
 

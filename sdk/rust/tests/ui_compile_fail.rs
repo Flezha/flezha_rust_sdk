@@ -13,4 +13,5 @@ fn ui_compile_fail() {
     t.compile_fail("tests/ui/wire_wrong_input.rs");
     t.compile_fail("tests/ui/entry_channel_disallowed_type.rs");
     t.compile_fail("tests/ui/legacy_api_not_importable.rs");
+    t.compile_fail("tests/ui/plugin_bound_disallows_on_full.rs");
 }

@@ -1,76 +1,112 @@
-//! Per-processor mailbox: lock-free FIFO + inflight flag.
+//! Per-processor mailbox: bounded lock-free FIFO + inflight flag + counters.
 //!
-//! Invariant (sticky ordering):
-//!   For a given mailbox, at most one worker thread is inside `run_drain`
-//!   at any wall-clock instant. Items are processed in FIFO arrival order.
+//! Invariants:
 //!
-//! Wake protocol:
-//!   - Producers call `push_and_maybe_submit(item, pool, drain_fn)`:
-//!       1. enqueue the item (lock-free push on `SegQueue`);
-//!       2. CAS `inflight false→true`. On success, the caller becomes the
-//!          "owner" and submits a drain closure to the work-stealing pool.
-//!          On failure someone else already owns the drain and will pick
-//!          up the new item.
-//!   - The drain loop pops items until the queue is empty, then stores
-//!     `inflight = false`, then re-checks the queue. If the queue became
-//!     non-empty between the last pop and the store (a concurrent push
-//!     beat us), we re-CAS to resume ownership; otherwise we exit.
+//! - **Sticky ordering**: for a given mailbox, at most one worker thread is
+//!   inside the drain loop at any wall-clock instant. Items are processed in
+//!   FIFO arrival order. The inflight CAS guarantees mutual exclusion.
+//! - **Bounded capacity**: the queue is a fixed-size [`ArrayQueue`] sized at
+//!   construction (`Mailbox::with_capacity`). Pushes that would exceed the
+//!   cap return the rejected payload to the caller; the caller decides what
+//!   to do based on the channel's declared `OverflowPolicy` (Block, drop the
+//!   newest, or replace the oldest via `force_push`).
 //!
-//! The re-check-and-re-CAS closes the classic missed-wake race:
+//! Wake protocol (unchanged from the unbounded shape):
+//!
+//!   - Producer calls `try_push(item)` → on success, CASes `inflight false→true`.
+//!     On a winning CAS the caller submits a drain task to the work-stealing
+//!     pool; on a losing CAS another drain is already in flight and will pop
+//!     the new item.
+//!   - The drain loop pops items until the queue is empty, stores
+//!     `inflight = false`, then re-checks `is_empty`. If a producer's push
+//!     raced our store (their CAS failed because we still held inflight, but
+//!     their push made it onto the queue), the re-check sees the new item and
+//!     we re-CAS to resume ownership.
 //!
 //!   T1 (drainer):                    T2 (producer):
-//!     pop() -> None                    push(item)
+//!     pop() -> None                    push(item)            // succeeds
 //!                                      CAS false→true -> FAILS (still true)
 //!     store(inflight = false)
 //!     pop() -> Some(item)  <-- rescues the missed wake
 //!
 //! This is the standard "actor dispatch" pattern used in Erlang's run queue
-//! and Akka's Dispatcher.
+//! and Akka's Dispatcher; it remains correct under [`ArrayQueue`]'s
+//! lock-free push/pop because the queue's internal ordering guarantees that
+//! a successful push is observable to a subsequent `is_empty()` /  `pop()`
+//! on any thread.
 
-use crossbeam::queue::SegQueue;
+use crossbeam::queue::ArrayQueue;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::compute_engine::work_stealing_pool::{Task, WorkStealingPool};
+use crate::partition::PartitionCounters;
 
 /// A single item on the wire for a processor — the work the drain loop will
-/// hand to `processor::executor::exec_agent`. We keep the fields opaque to
-/// the mailbox so this module is decoupled from `ProcessorInput` internals.
+/// hand to `processor::executor::exec_agent`. The wrapper keeps the queue
+/// type opaque to the rest of the SDK and lets us recover the rejected
+/// payload from a failed `ArrayQueue::push` without an extra clone.
 pub struct WorkItem<Payload> {
     pub payload: Payload,
 }
 
-/// Per-processor mailbox.
+/// Returned by the convenience `push_and_maybe_submit*` helpers when the
+/// underlying bounded queue rejects the push. The caller can recover the
+/// payload from the wrapper.
+#[derive(Debug)]
+pub struct BackpressureError<Payload> {
+    pub payload: Payload,
+}
+
+impl<Payload> std::fmt::Display for BackpressureError<Payload> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("mailbox full: push rejected by bounded queue")
+    }
+}
+
+impl<Payload: std::fmt::Debug> std::error::Error for BackpressureError<Payload> {}
+
+/// Per-Partition mailbox: a bounded `ArrayQueue<WorkItem<Payload>>` plus an
+/// `AtomicBool` inflight flag and a [`PartitionCounters`] block.
 ///
 /// `Payload` is the user-defined work item shape. For Flezha, it's
-/// `(ProcessorInput, Arc<FlezhaStream>)` — see
-/// `compute_engine::mailbox_runtime::ProcessorPayload`.
+/// [`crate::partition::PartitionPayload`].
 pub struct Mailbox<Payload: Send + 'static> {
-    queue: SegQueue<WorkItem<Payload>>,
+    queue: ArrayQueue<WorkItem<Payload>>,
     inflight: AtomicBool,
+    counters: PartitionCounters,
 }
 
 impl<Payload: Send + 'static> Mailbox<Payload> {
-    pub fn new() -> Self {
+    /// Allocate a bounded mailbox with the given capacity. Capacity must
+    /// be `>= 1`; the `ArrayQueue` constructor panics on 0, so callers
+    /// (i.e. `relay::builder::resolve_mailbox_capacity`) must validate
+    /// the value before calling here.
+    pub fn with_capacity(capacity: usize) -> Self {
         Mailbox {
-            queue: SegQueue::new(),
+            queue: ArrayQueue::new(capacity),
             inflight: AtomicBool::new(false),
+            counters: PartitionCounters::default(),
         }
     }
 
     /// Enqueue an item and, if nobody is draining, submit a per-item drain.
     ///
     /// `drain_fn` is invoked once per popped item. Preserved for callers
-    /// that don't need batching (e.g. correctness tests).
+    /// that don't need batching (e.g. correctness tests). Returns
+    /// `Err(BackpressureError { payload })` when the bounded queue rejects
+    /// the push; callers wanting block / drop semantics should use the
+    /// low-level `try_push` / `force_push` primitives instead.
     pub fn push_and_maybe_submit<F>(
         self: &Arc<Self>,
         payload: Payload,
         pool: &WorkStealingPool,
         drain_fn: F,
-    ) where
+    ) -> Result<(), BackpressureError<Payload>>
+    where
         F: Fn(Payload) + Send + Sync + 'static,
     {
-        self.queue.push(WorkItem { payload });
+        self.try_push(payload).map_err(|payload| BackpressureError { payload })?;
 
         if self
             .inflight
@@ -84,6 +120,7 @@ impl<Payload: Send + 'static> Mailbox<Payload> {
             });
             pool.submit(task);
         }
+        Ok(())
     }
 
     /// Enqueue an item and, if nobody is draining, submit a BATCH drain.
@@ -96,16 +133,19 @@ impl<Payload: Send + 'static> Mailbox<Payload> {
     /// same missed-wake guard as the per-item variant.
     ///
     /// This is what the fast-dispatch hot path uses so 10k messages hitting
-    /// one processor during a burst produce ONE syscall, not 10k.
+    /// one processor during a burst produce ONE syscall, not 10k. Returns
+    /// `Err(BackpressureError { payload })` when the bounded queue rejects
+    /// the push.
     pub fn push_and_maybe_submit_batched<F>(
         self: &Arc<Self>,
         payload: Payload,
         pool: &WorkStealingPool,
         drain_fn: F,
-    ) where
+    ) -> Result<(), BackpressureError<Payload>>
+    where
         F: Fn(&mut BatchContext<Payload>) + Send + Sync + 'static,
     {
-        self.queue.push(WorkItem { payload });
+        self.try_push(payload).map_err(|payload| BackpressureError { payload })?;
 
         if self
             .inflight
@@ -119,6 +159,7 @@ impl<Payload: Send + 'static> Mailbox<Payload> {
             });
             pool.submit(task);
         }
+        Ok(())
     }
 
     fn run_drain<F>(self: Arc<Self>, drain_fn: &F)
@@ -167,19 +208,56 @@ impl<Payload: Send + 'static> Mailbox<Payload> {
         }
     }
 
+    /// Bounded capacity declared at construction. Constant for the
+    /// lifetime of the mailbox.
+    #[inline]
+    pub fn capacity(&self) -> usize {
+        self.queue.capacity()
+    }
+
+    /// Snapshot of the queue's current length. Approximate under MPMC
+    /// contention; exposed for diagnostics, not as a synchronization
+    /// primitive.
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.queue.len()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.queue.is_empty()
+    }
+
+    /// Per-Partition counter set. Producer-side enqueue paths bump these
+    /// on push success / block / drop events; readers (future metrics
+    /// export) use [`Ordering::Relaxed`] loads.
+    #[inline]
+    pub fn counters(&self) -> &PartitionCounters {
+        &self.counters
     }
 
     // ---- Low-level primitives for callers that want to manage the drain
     //      task themselves (avoiding per-dispatch closure allocation). ----
 
-    /// Push a payload without allocating/submitting anything. Pair with
-    /// `try_mark_inflight` to decide whether THIS caller should schedule
-    /// the drain.
+    /// Try to enqueue a payload onto the bounded queue without scheduling
+    /// any drain. Returns the rejected payload on full so the caller can
+    /// apply the channel's overflow policy (block-and-retry, drop-newest,
+    /// drop-oldest via [`Self::force_push`]).
     #[inline]
-    pub fn push_only(&self, payload: Payload) {
-        self.queue.push(WorkItem { payload });
+    pub fn try_push(&self, payload: Payload) -> Result<(), Payload> {
+        self.queue
+            .push(WorkItem { payload })
+            .map_err(|item| item.payload)
+    }
+
+    /// Atomically pop the oldest item if the queue is full, then push the
+    /// new payload. Returns the dropped payload to the caller for
+    /// accounting (`drops_oldest_total` counter increments). Best-effort
+    /// under MPMC contention per Decision 9.
+    #[inline]
+    pub fn force_push(&self, payload: Payload) -> Option<Payload> {
+        self.queue
+            .force_push(WorkItem { payload })
+            .map(|item| item.payload)
     }
 
     /// CAS inflight false→true. Returns true on success (caller owns the
@@ -219,12 +297,6 @@ impl<'a, Payload: Send + 'static> BatchContext<'a, Payload> {
     }
 }
 
-impl<Payload: Send + 'static> Default for Mailbox<Payload> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -232,10 +304,16 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
+    /// Capacity sized well above the test workload so the bounded queue
+    /// never rejects in this pure ordering check; bounded-mailbox
+    /// behavior under saturation has its own scenario tests in
+    /// `tests/relay_dispatch.rs`.
+    const TEST_CAPACITY: usize = 8192;
+
     #[test]
     fn single_producer_drains_in_order() {
         let pool = WorkStealingPool::with_size(2);
-        let mbox: Arc<Mailbox<usize>> = Arc::new(Mailbox::new());
+        let mbox: Arc<Mailbox<usize>> = Arc::new(Mailbox::with_capacity(TEST_CAPACITY));
         let seen: Arc<std::sync::Mutex<Vec<usize>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
         let done = Arc::new(AtomicUsize::new(0));
 
@@ -250,7 +328,8 @@ mod tests {
         let n = 1000usize;
         for i in 0..n {
             let drain = Arc::clone(&drain);
-            mbox.push_and_maybe_submit(i, &pool, move |p| drain(p));
+            mbox.push_and_maybe_submit(i, &pool, move |p| drain(p))
+                .expect("test capacity too small");
         }
 
         let start = std::time::Instant::now();
@@ -270,7 +349,7 @@ mod tests {
     #[test]
     fn concurrent_pushes_never_overlap_drain() {
         let pool = WorkStealingPool::with_size(4);
-        let mbox: Arc<Mailbox<usize>> = Arc::new(Mailbox::new());
+        let mbox: Arc<Mailbox<usize>> = Arc::new(Mailbox::with_capacity(TEST_CAPACITY));
         let concurrent = Arc::new(AtomicUsize::new(0));
         let max_seen = Arc::new(AtomicUsize::new(0));
         let done = Arc::new(AtomicUsize::new(0));
@@ -310,7 +389,8 @@ mod tests {
             handles.push(std::thread::spawn(move || {
                 for i in 0..per_producer {
                     let drain = Arc::clone(&drain);
-                    mbox.push_and_maybe_submit(i, pool_ref, move |p| drain(p));
+                    mbox.push_and_maybe_submit(i, pool_ref, move |p| drain(p))
+                        .expect("test capacity too small");
                 }
             }));
         }
@@ -330,5 +410,40 @@ mod tests {
             1,
             "mailbox allowed concurrent drain!"
         );
+    }
+
+    #[test]
+    fn try_push_returns_payload_when_full() {
+        let mbox: Arc<Mailbox<usize>> = Arc::new(Mailbox::with_capacity(2));
+        assert_eq!(mbox.try_push(1), Ok(()));
+        assert_eq!(mbox.try_push(2), Ok(()));
+        assert_eq!(mbox.try_push(3), Err(3));
+        // Drain one, room is back.
+        assert_eq!(mbox.pop(), Some(1));
+        assert_eq!(mbox.try_push(3), Ok(()));
+    }
+
+    #[test]
+    fn force_push_returns_dropped_oldest() {
+        let mbox: Arc<Mailbox<usize>> = Arc::new(Mailbox::with_capacity(2));
+        assert_eq!(mbox.try_push(1), Ok(()));
+        assert_eq!(mbox.try_push(2), Ok(()));
+        // Full: force_push pops the oldest (1) and accepts 3.
+        assert_eq!(mbox.force_push(3), Some(1));
+        assert_eq!(mbox.pop(), Some(2));
+        assert_eq!(mbox.pop(), Some(3));
+        assert_eq!(mbox.pop(), None);
+    }
+
+    #[test]
+    fn capacity_and_len_track_pushes() {
+        let mbox: Arc<Mailbox<usize>> = Arc::new(Mailbox::with_capacity(4));
+        assert_eq!(mbox.capacity(), 4);
+        assert_eq!(mbox.len(), 0);
+        assert!(mbox.is_empty());
+        mbox.try_push(10).unwrap();
+        mbox.try_push(20).unwrap();
+        assert_eq!(mbox.len(), 2);
+        assert!(!mbox.is_empty());
     }
 }

@@ -73,6 +73,34 @@ pub trait Shard: Send + Sync + 'static + Default {
     /// per umbrella Decision 7.
     const SHARD_KEY_OVERRIDDEN: bool = false;
 
+    /// Per-Partition mailbox capacity. The consumer Partition allocates
+    /// one bounded ring buffer of this size at relay startup. Static-mode
+    /// Shards allocate one mailbox per declared partition key, all sharing
+    /// the same capacity.
+    ///
+    /// Override precedence at registration time:
+    ///   1. This method's value, if `MAILBOX_CAPACITY_OVERRIDDEN = true`.
+    ///   2. `FLEZHA_MAILBOX_CAPACITY` env var (parsed as `usize`).
+    ///   3. The built-in default (`DEFAULT_MAILBOX_CAPACITY`).
+    ///
+    /// Implementors overriding the default MUST also set
+    /// `MAILBOX_CAPACITY_OVERRIDDEN = true` so the runtime can tell an
+    /// explicit-but-equal-to-default override from the inherited default.
+    /// Capacity must be in `1..=1_048_576`; out-of-range values fail
+    /// `register_relay::<R>()` with the offending Shard name.
+    fn mailbox_capacity() -> usize {
+        Self::DEFAULT_MAILBOX_CAPACITY
+    }
+
+    /// Default mailbox capacity used by [`Self::mailbox_capacity`].
+    const DEFAULT_MAILBOX_CAPACITY: usize = 1024;
+
+    /// Override-detection sentinel for `mailbox_capacity`. Default `false`;
+    /// implementors that override `mailbox_capacity()` MUST set this to
+    /// `true` so the runtime applies the Shard value over any
+    /// `FLEZHA_MAILBOX_CAPACITY` env override.
+    const MAILBOX_CAPACITY_OVERRIDDEN: bool = false;
+
     /// Compute. Receives the typed input, mutable state for the
     /// partition, and a context for emitting outputs. Producing zero
     /// outputs == no `ctx.emit(...)` call. Returning Err logs against

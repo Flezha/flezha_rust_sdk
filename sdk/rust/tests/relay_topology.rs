@@ -192,6 +192,100 @@ fn unannotated_static_mode_rejection() {
     );
 }
 
+/// Shard whose `mailbox_capacity()` returns 0; `build_topology` must
+/// reject the relay with the offending Shard's name.
+#[derive(Default)]
+struct ZeroCapacityShard;
+impl Shard for ZeroCapacityShard {
+    type Input = String;
+    type Output = String;
+    type State = ();
+    fn name() -> &'static str {
+        "zero_capacity_shard"
+    }
+    fn init_state(_: Option<&str>) -> () {}
+    fn mailbox_capacity() -> usize {
+        0
+    }
+    const MAILBOX_CAPACITY_OVERRIDDEN: bool = true;
+    fn run(&mut self, _: String, _: &mut (), _: &mut ShardCtx<'_>) -> Result<(), ShardError> {
+        Ok(())
+    }
+}
+
+struct ZeroCapacityRelay;
+impl Relay for ZeroCapacityRelay {
+    fn factory_id() -> &'static str {
+        "zero_capacity_relay"
+    }
+    fn channels(c: &mut ChannelBuilder) {
+        c.input::<String>("inp").into::<ZeroCapacityShard>();
+    }
+}
+
+#[test]
+fn capacity_zero_is_rejected_at_relay_startup() {
+    let err = build_topology_for::<ZeroCapacityRelay>()
+        .err()
+        .expect("expected mailbox-capacity-zero rejection");
+    let msg = format!("{:?}", err.errors);
+    assert!(
+        msg.contains("MailboxCapacityZero"),
+        "expected MailboxCapacityZero error, got {msg}"
+    );
+    assert!(
+        msg.contains("zero_capacity_shard"),
+        "expected offending Shard name in error, got {msg}"
+    );
+}
+
+/// Shard with explicit override of 4096 — the resolved capacity must
+/// equal that value when threaded through `build_topology`.
+#[derive(Default)]
+struct ExplicitCapShard;
+impl Shard for ExplicitCapShard {
+    type Input = String;
+    type Output = String;
+    type State = ();
+    fn name() -> &'static str {
+        "explicit_cap_shard"
+    }
+    fn init_state(_: Option<&str>) -> () {}
+    fn mailbox_capacity() -> usize {
+        4096
+    }
+    const MAILBOX_CAPACITY_OVERRIDDEN: bool = true;
+    fn run(&mut self, _: String, _: &mut (), _: &mut ShardCtx<'_>) -> Result<(), ShardError> {
+        Ok(())
+    }
+}
+
+struct ExplicitCapRelay;
+impl Relay for ExplicitCapRelay {
+    fn factory_id() -> &'static str {
+        "explicit_cap_relay"
+    }
+    fn channels(c: &mut ChannelBuilder) {
+        c.input::<String>("inp").into::<ExplicitCapShard>();
+    }
+}
+
+#[test]
+fn explicit_capacity_threads_to_topology_descriptor() {
+    let topology = build_topology_for::<ExplicitCapRelay>().expect("topology");
+    assert_eq!(topology.shards.len(), 1);
+    assert_eq!(topology.shards[0].mailbox_capacity, 4096);
+    assert!(topology.shards[0].mailbox_capacity_overridden);
+}
+
+/// Default Shard inherits the 1024 default.
+#[test]
+fn default_capacity_is_1024_in_topology() {
+    let topology = build_topology_for::<SingleRelay>().expect("topology");
+    assert_eq!(topology.shards[0].mailbox_capacity, 1024);
+    assert!(!topology.shards[0].mailbox_capacity_overridden);
+}
+
 #[test]
 fn relay_instance_creates_partitions() {
     use flezha_compute_engine::__dispatch_internals as bi;

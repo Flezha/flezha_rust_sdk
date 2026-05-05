@@ -20,8 +20,10 @@ use std::sync::{Arc, Weak};
 use flz_transport::service::payloader;
 use flz_transport::transport::FlezhaStream;
 
+use std::sync::atomic::Ordering;
+
 use crate::channel::builder::BuildPartitionArgs;
-use crate::channel::{ChannelId, ChannelKind, ShardId};
+use crate::channel::{ChannelId, ChannelKind, OverflowPolicy, ShardId};
 use crate::compute_engine::mailbox::Mailbox;
 use crate::partition::{PartitionPayload, PartitionSlot, ShardDispatcher};
 use crate::relay::instance::RelayInstance;
@@ -156,6 +158,8 @@ impl<'a> EmitSink for PartitionEmitSink<'a> {
             }
         })?;
 
+        let policy = descriptor.overflow_policy;
+
         for &consumer_shard_id in &descriptor.consumers {
             let consumer_shard =
                 instance
@@ -172,7 +176,7 @@ impl<'a> EmitSink for PartitionEmitSink<'a> {
 
             if consumer_shard.partition_keys.is_empty() {
                 if let Some(slot) = partitions.first() {
-                    enqueue(slot, payload_for(&value, &self.stream));
+                    enqueue(slot, payload_for(&value, &self.stream), policy);
                 }
             } else {
                 let key_to_idx =
@@ -182,7 +186,7 @@ impl<'a> EmitSink for PartitionEmitSink<'a> {
                     if let Some(map) = key_to_idx {
                         if let Some(&idx) = map.get(key) {
                             if let Some(slot) = partitions.get(idx) {
-                                enqueue(slot, payload_for(&value, &self.stream));
+                                enqueue(slot, payload_for(&value, &self.stream), policy);
                             }
                         }
                     }
@@ -243,11 +247,63 @@ impl<'a> EmitSink for PartitionEmitSink<'a> {
     }
 }
 
-fn enqueue(slot: &Arc<PartitionSlot>, payload: PartitionPayload) {
-    slot.mailbox.push_only(payload);
-    if slot.mailbox.try_mark_inflight() {
-        let cloned = Arc::clone(slot);
-        slot.pool.submit(Box::new(move || drain_partition(&cloned)));
+/// Apply the channel's `OverflowPolicy` when pushing onto a Partition's
+/// bounded mailbox. Bumps the appropriate per-Partition counter on every
+/// outcome and submits a drain task on success / DropOldest. On Block,
+/// parks the calling thread on the slot's `BlockParker` and retries
+/// until the push succeeds (Decision 3).
+pub(crate) fn enqueue(
+    slot: &Arc<PartitionSlot>,
+    payload: PartitionPayload,
+    policy: OverflowPolicy,
+) {
+    let mut next = payload;
+    loop {
+        match slot.mailbox.try_push(next) {
+            Ok(()) => {
+                slot.mailbox
+                    .counters()
+                    .pushes_total
+                    .fetch_add(1, Ordering::Relaxed);
+                if slot.mailbox.try_mark_inflight() {
+                    let cloned = Arc::clone(slot);
+                    slot.pool
+                        .submit(Box::new(move || drain_partition(&cloned)));
+                }
+                return;
+            }
+            Err(returned) => match policy {
+                OverflowPolicy::Block => {
+                    slot.mailbox
+                        .counters()
+                        .pushes_blocked_total
+                        .fetch_add(1, Ordering::Relaxed);
+                    next = returned;
+                    slot.block_parker.wait_one();
+                }
+                OverflowPolicy::DropNewest => {
+                    slot.mailbox
+                        .counters()
+                        .drops_newest_total
+                        .fetch_add(1, Ordering::Relaxed);
+                    drop(returned);
+                    return;
+                }
+                OverflowPolicy::DropOldest => {
+                    let _dropped = slot.mailbox.force_push(returned);
+                    slot.mailbox
+                        .counters()
+                        .drops_oldest_total
+                        .fetch_add(1, Ordering::Relaxed);
+                    if slot.mailbox.try_mark_inflight() {
+                        let cloned = Arc::clone(slot);
+                        slot.pool
+                            .submit(Box::new(move || drain_partition(&cloned)));
+                    }
+                    return;
+                }
+            },
+        }
     }
 }
 
@@ -285,6 +341,10 @@ fn _force_use(_t: &Arc<RelayTopology>) {}
 pub fn drain_partition(slot: &Arc<PartitionSlot>) {
     loop {
         while let Some(payload) = slot.mailbox.pop() {
+            // Free one waiter (if any) before running the dispatcher;
+            // the popped slot is now available for the unparked producer
+            // to re-attempt its push.
+            slot.block_parker.unpark_one();
             let mut state_guard = slot.state.lock().unwrap();
             let instance_weak = Weak::clone(&slot.instance);
             slot.dispatcher
@@ -330,12 +390,13 @@ pub fn build_partition_slot<S: Shard>(args: BuildPartitionArgs<'_>) -> Arc<Parti
 
     Arc::new(PartitionSlot {
         state: std::sync::Mutex::new(Box::new(typed_state)),
-        mailbox: Arc::new(Mailbox::new()),
+        mailbox: Arc::new(Mailbox::with_capacity(shard_desc.mailbox_capacity)),
         dispatcher,
         shard_id: args.shard_id,
         shard_key: args.shard_key.map(Arc::from),
         pool: args.pool,
         instance: args.instance,
         topology,
+        block_parker: crate::partition::BlockParker::new(),
     })
 }

@@ -18,6 +18,14 @@ pub struct ShardDescriptor {
     pub output_channel_id: Option<ChannelId>,
     pub input_type_id: std::any::TypeId,
     pub output_type_id: std::any::TypeId,
+    /// Final per-Partition mailbox capacity for every Partition this
+    /// Shard owns, after applying the override / env-var / default
+    /// precedence in `relay::builder::resolve_mailbox_capacity`.
+    pub mailbox_capacity: usize,
+    /// `Shard::MAILBOX_CAPACITY_OVERRIDDEN` captured at registration time.
+    /// Carried for diagnostics so a future tooling change can show which
+    /// Shards opted into an explicit capacity.
+    pub mailbox_capacity_overridden: bool,
     pub build_partition: PartitionBuilder,
     pub partition_for_erased: PartitionForFn,
 }

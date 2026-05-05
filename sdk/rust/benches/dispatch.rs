@@ -26,7 +26,7 @@ use flezha_compute_engine::relay::builder::build_topology_for;
 use flezha_compute_engine::relay::registry::RelayInstanceRegistry;
 use flezha_compute_engine::relay::RelayInstance;
 use flezha_compute_engine::shard::{Shard, ShardCtx, ShardError};
-use flezha_compute_engine::Relay;
+use flezha_compute_engine::{OverflowPolicy, Relay};
 use flz_transport::transport::FlezhaStream;
 
 // ----- Shared bench helpers (Decision 10: duplicated locally per bench file) -----
@@ -89,7 +89,14 @@ impl Relay for RegressionRelay {
         "regression_bench_relay"
     }
     fn channels(c: &mut ChannelBuilder) {
-        c.input::<Vec<u8>>("input").into::<RegressionShard>();
+        // Opt the entry channel into Block: the bench bursts 10K msgs
+        // per relay against the default capacity-1024 mailbox; under
+        // DropNewest the producer side would drop frames mid-burst and
+        // the throughput number would silently misrepresent the
+        // dispatch hot path.
+        c.input::<Vec<u8>>("input")
+            .on_full(OverflowPolicy::Block)
+            .into::<RegressionShard>();
     }
 }
 
@@ -300,7 +307,13 @@ impl Relay for PartitioningStressBenchRelay {
         "partitioning_stress_bench_relay"
     }
     fn channels(c: &mut ChannelBuilder) {
-        c.input::<Vec<u8>>("input").into::<StressBenchShardA>();
+        // Opt the entry channel into Block to avoid DropNewest losses
+        // during the 20K-msg-per-relay burst against the cap-1024
+        // mailbox. Inter-shard channels keep their default Block
+        // policy, which preserves ordering through the pipeline.
+        c.input::<Vec<u8>>("input")
+            .on_full(OverflowPolicy::Block)
+            .into::<StressBenchShardA>();
         c.channel::<Vec<u8>>("a_to_b")
             .from::<StressBenchShardA>()
             .into::<StressBenchShardB>();
