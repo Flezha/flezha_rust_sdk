@@ -20,6 +20,7 @@
 
 pub mod flusher;
 pub mod header;
+pub mod partition_state_sink;
 pub mod restore;
 
 pub use restore::{RestoreError, RestoreInitPayload};
@@ -160,10 +161,12 @@ pub struct PartitionSlot {
     /// per drained record; `send_frame` failures decrement to preserve
     /// monotonicity (no gaps in the agent's WAL view).
     pub change_seq: Arc<std::sync::atomic::AtomicU64>,
-    /// Stable per-Partition id stamped into the wire frames. Carried so
-    /// the flusher can produce frames without re-deriving the id from
-    /// `(shard_id, partition_index)`.
-    pub partition_id: u32,
+    /// Stable per-Partition identity (`(relay_class, shard_id, partition_key)`)
+    /// encoded for the wire by `flusher::encode_partition_identity`. The
+    /// flusher reads this verbatim into each frame's
+    /// `partition_id_bytes` field; the agent decodes the same structure
+    /// to route the frame to the right per-Partition WAL.
+    pub partition_identity: Arc<Vec<u8>>,
 }
 
 impl PartitionSlot {

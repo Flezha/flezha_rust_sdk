@@ -9,15 +9,18 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::net::Shutdown;
 
+mod compact;
 mod compute_engine_assign;
 mod compute_engine_disconnect;
 mod migration_deserialization;
 mod migration_serialization;
+mod partition_status;
 mod processor_apply_state;
 mod processor_message;
 mod processor_start;
 pub(crate) mod processor_state;
 mod processor_stop;
+mod restore;
 mod streams_connect;
 
 pub trait CommandAction {
@@ -67,6 +70,16 @@ pub fn get_handler(_payload_id: &String, message: &String) -> (CommandActionType
         Command::ProcessorApplyState(proto_ch) => CommandActionType::Regular(Box::new(proto_ch)),
         Command::OperatorShutdownNotification(_) => CommandActionType::NotificationIgnore,
         Command::OperatorShutdownAck(_) => CommandActionType::AckSignal,
+        Command::RestoreInitState(proto_ch) => CommandActionType::Regular(Box::new(proto_ch)),
+        // SDK is the SENDER for the response variants — receiving them
+        // is a protocol bug. Drop the message, log it like the other
+        // direction-mistake (`OperatorShutdownNotification`).
+        Command::RestoreInitStateResponse(_) => CommandActionType::NotificationIgnore,
+        Command::CompactPartition(proto_ch) => CommandActionType::Regular(Box::new(proto_ch)),
+        Command::CompactPartitionResponse(_) => CommandActionType::NotificationIgnore,
+        Command::PartitionMailboxStatus(proto_ch) => {
+            CommandActionType::Regular(Box::new(proto_ch))
+        }
     };
 
     (command_handler, reference_id)

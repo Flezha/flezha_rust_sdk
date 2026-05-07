@@ -8,23 +8,24 @@
 //! and `payload.change_log_bytes` for instrumentation but never has to
 //! decode them.
 
-use crate::partition::header::{
-    decode_header, validate_header_for_change, validate_header_for_state,
-};
+use crate::partition::header::{decode_header, validate_header_for_change};
 
 /// Snapshot + change-log bytes handed to `Shard::init_state` on a warm
 /// restore. Borrowed (`&[u8]`) so the runtime owns the underlying buffers
 /// for the duration of the call without an allocation.
 pub struct RestoreInitPayload<'a> {
     /// Snapshot bytes from the latest snapshot file. Empty if no
-    /// snapshot has been written for this Partition. The first 16 bytes
-    /// are the version header; the remainder is the postcard-encoded
-    /// `S::State`.
+    /// snapshot has been written for this Partition. The body is the
+    /// postcard-encoded `S::State` exactly as the SDK shipped it via
+    /// `partition_state_snapshot`. The agent strips its on-disk header
+    /// before shipping, so this slice does NOT include the 16-byte
+    /// header — it is the raw State payload.
     pub snapshot_bytes: &'a [u8],
     /// Change-log bytes (concatenated WAL records). Each record is
-    /// framed `[partition_id: u32 BE][seq: u64 BE][header: 16B][change_bytes][crc32: u32 BE]`
-    /// — the same shape produced by the per-Partition flusher's
-    /// `build_partition_state_change_frame`.
+    /// framed `[seq: u64 BE][len: u32 BE][header: 16B][change_bytes][crc32: u32 BE]`
+    /// where `len = 16 + change_bytes.len()` and `crc32` covers
+    /// `header + change_bytes`. This matches the agent's on-disk WAL
+    /// record format (`Flezha.State.WalWriter.encode_record/3`).
     pub change_log_bytes: &'a [u8],
 }
 
@@ -68,26 +69,22 @@ where
     let mut state = S::init_state(shard_key, payload.copied_view());
     if let Some(p) = payload {
         if !p.snapshot_bytes.is_empty() {
-            let header = decode_header(&p.snapshot_bytes[..16.min(p.snapshot_bytes.len())])?;
-            validate_header_for_state::<S>(&header)?;
-            // CRC32 over the post-header body should match the header's crc32.
-            let body = &p.snapshot_bytes[16..];
-            if crc32fast::hash(body) != header.crc32 {
-                return Err(RestoreError::CrcMismatch {
-                    partition: 0,
-                    seq: 0,
-                });
-            }
-            state = postcard::from_bytes(body)
+            // The agent strips the snapshot file's header before shipping;
+            // the body here is the raw postcard-encoded `S::State`.
+            state = postcard::from_bytes(p.snapshot_bytes)
                 .map_err(|e| RestoreError::SnapshotDecode(e.to_string()))?;
         }
         for record in iter_change_log_records(p.change_log_bytes) {
             let record = record?;
             let header = decode_header(record.header)?;
             validate_header_for_change::<S>(&header)?;
-            if crc32fast::hash(record.change_bytes) != header.crc32 {
+            // The trailing crc32 in the WAL covers header + change_bytes.
+            let mut crc_input = Vec::with_capacity(16 + record.change_bytes.len());
+            crc_input.extend_from_slice(record.header);
+            crc_input.extend_from_slice(record.change_bytes);
+            if crc32fast::hash(&crc_input) != record.trailing_crc {
                 return Err(RestoreError::CrcMismatch {
-                    partition: record.partition_id,
+                    partition: 0,
                     seq: record.seq,
                 });
             }
@@ -99,22 +96,22 @@ where
     Ok(state)
 }
 
-/// One framed WAL record as produced by the per-Partition flusher.
-/// Field-borrowed against the source byte buffer.
+/// One framed WAL record as produced by the agent's
+/// `Flezha.State.WalWriter.encode_record/3`. Field-borrowed against the
+/// source byte buffer. `change_bytes` excludes the leading 16-byte
+/// header (which is exposed separately as `header`).
 #[derive(Debug)]
 pub(crate) struct ChangeLogRecord<'a> {
-    pub partition_id: u32,
     pub seq: u64,
     pub header: &'a [u8],
     pub change_bytes: &'a [u8],
+    pub trailing_crc: u32,
 }
 
-/// Iterate concatenated WAL records using the framing
-/// `[partition_id: u32 BE][seq: u64 BE][header: 16B][change_bytes_len: u32 BE][change_bytes][crc32: u32 BE]`.
-///
-/// The `change_bytes_len` field bounds the trailing change-bytes range
-/// so the iterator can step records without re-deserializing the
-/// payload to learn its length.
+/// Iterate concatenated WAL records using the agent on-disk framing
+/// `[seq: u64 BE][len: u32 BE][header: 16B][change_bytes][crc32: u32 BE]`
+/// where `len = 16 + change_bytes.len()` and `crc32` covers
+/// `header + change_bytes`.
 pub(crate) fn iter_change_log_records(
     bytes: &[u8],
 ) -> impl Iterator<Item = Result<ChangeLogRecord<'_>, RestoreError>> {
@@ -132,54 +129,50 @@ impl<'a> Iterator for ChangeLogIter<'a> {
         if self.remaining.is_empty() {
             return None;
         }
-        // Minimum frame: 4 (partition_id) + 8 (seq) + 16 (header) + 4 (len) + 4 (crc) = 36
-        if self.remaining.len() < 36 {
+        // Minimum frame: 8 (seq) + 4 (len) + 16 (header) + 4 (crc) = 32
+        if self.remaining.len() < 32 {
             return Some(Err(RestoreError::HeaderInvalid));
         }
-        let partition_id = u32::from_be_bytes([
+        let seq = u64::from_be_bytes([
             self.remaining[0],
             self.remaining[1],
             self.remaining[2],
             self.remaining[3],
-        ]);
-        let seq = u64::from_be_bytes([
             self.remaining[4],
             self.remaining[5],
             self.remaining[6],
             self.remaining[7],
+        ]);
+        let len = u32::from_be_bytes([
             self.remaining[8],
             self.remaining[9],
             self.remaining[10],
             self.remaining[11],
-        ]);
-        let header = &self.remaining[12..28];
-        let len = u32::from_be_bytes([
-            self.remaining[28],
-            self.remaining[29],
-            self.remaining[30],
-            self.remaining[31],
         ]) as usize;
-        let body_start = 32usize;
-        let body_end = body_start + len;
-        let frame_end = body_end + 4;
+        if len < 16 {
+            return Some(Err(RestoreError::HeaderInvalid));
+        }
+        let header_start = 12usize;
+        let header_end = header_start + 16;
+        let change_start = header_end;
+        let change_end = header_start + len; // = 12 + 16 + change_bytes.len()
+        let frame_end = change_end + 4;
         if self.remaining.len() < frame_end {
             return Some(Err(RestoreError::HeaderInvalid));
         }
-        let change_bytes = &self.remaining[body_start..body_end];
+        let header = &self.remaining[header_start..header_end];
+        let change_bytes = &self.remaining[change_start..change_end];
         let trailing_crc = u32::from_be_bytes([
-            self.remaining[body_end],
-            self.remaining[body_end + 1],
-            self.remaining[body_end + 2],
-            self.remaining[body_end + 3],
+            self.remaining[change_end],
+            self.remaining[change_end + 1],
+            self.remaining[change_end + 2],
+            self.remaining[change_end + 3],
         ]);
-        if trailing_crc != crc32fast::hash(change_bytes) {
-            return Some(Err(RestoreError::CrcMismatch { partition: partition_id, seq }));
-        }
         let record = ChangeLogRecord {
-            partition_id,
             seq,
             header,
             change_bytes,
+            trailing_crc,
         };
         self.remaining = &self.remaining[frame_end..];
         Some(Ok(record))

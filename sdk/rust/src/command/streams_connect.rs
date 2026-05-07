@@ -1,11 +1,15 @@
 use super::CommandAction;
 use crate::pb::ConnectSocket;
 
+use std::collections::HashMap;
+use std::io::Write;
 use std::os::unix::net::UnixStream;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 use crate::compute_engine::ComputeEngineNode;
+use crate::partition::flusher::{SendError, SendFrameFn};
+use crate::partition::partition_state_sink;
 use flz_transport::service::payloader;
 use flz_transport::transport::config::{get_transport_type, TransportType};
 use flz_transport::transport::protocol;
@@ -49,6 +53,7 @@ fn handle_uds(cmd: &ConnectSocket, compute_engine: &mut ComputeEngineNode) -> (S
         stream_pairs.push((FlezhaStream::Unix(primary), secondary_for_write));
     }
 
+    install_partition_state_sink_from_pairs(&stream_pairs);
     spawn_listener_uds(compute_engine, stream_pairs);
     ("connect_sockets".to_string(), Vec::new())
 }
@@ -84,8 +89,38 @@ fn handle_quic(cmd: &ConnectSocket, compute_engine: &mut ComputeEngineNode) -> (
         stream_pairs.push((FlezhaStream::Quic(primary), secondary_for_write));
     }
 
+    install_partition_state_sink_from_pairs(&stream_pairs);
     spawn_listener_quic(compute_engine, stream_pairs);
     ("connect_sockets".to_string(), Vec::new())
+}
+
+/// Install the global `partition_state_sink` wrapping the FIRST
+/// secondary stream from the freshly-connected pairs. The flusher uses
+/// this sink to ship `partition_state_change` and
+/// `partition_state_snapshot` frames; one secondary is enough because
+/// the WAL is single-writer per partition and the agent serializes the
+/// per-Partition writes server-side.
+fn install_partition_state_sink_from_pairs(
+    pairs: &Vec<(FlezhaStream, Arc<FlezhaStream>)>,
+) {
+    if let Some((_, secondary)) = pairs.first() {
+        let sink_stream = Arc::clone(secondary);
+        // The Mutex serializes writes from the single flusher thread —
+        // belt-and-braces given that the flusher has only one writer.
+        let writer = Arc::new(Mutex::new(sink_stream));
+        let send_fn: SendFrameFn = Arc::new(move |frame: Vec<u8>| -> Result<(), SendError> {
+            let payload = payloader::build_from_binary(
+                "partition_state_change",
+                &frame,
+                HashMap::new(),
+            );
+            let stream = writer.lock().map_err(|e| SendError::Other(e.to_string()))?;
+            (&**stream)
+                .write_all(&payload)
+                .map_err(|e| SendError::TransportDown(e.to_string()))
+        });
+        partition_state_sink::install_global_sink(send_fn);
+    }
 }
 
 fn spawn_listener_uds(
@@ -174,5 +209,3 @@ fn connect_unix(compute_engine_id: &String, stream_type: String) -> UnixStream {
         socket_path.clone()
     ))
 }
-
-use std::io::Write;

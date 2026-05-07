@@ -5,7 +5,7 @@ pub struct CommandRequest {
     pub reference_id: ::prost::alloc::string::String,
     #[prost(
         oneof = "command_request::Command",
-        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13"
+        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18"
     )]
     pub command: ::core::option::Option<command_request::Command>,
 }
@@ -37,6 +37,16 @@ pub mod command_request {
         OperatorShutdownNotification(super::OperatorShutdownNotification),
         #[prost(message, tag = "13")]
         OperatorShutdownAck(super::OperatorShutdownAck),
+        #[prost(message, tag = "14")]
+        RestoreInitState(super::RestoreInitState),
+        #[prost(message, tag = "15")]
+        RestoreInitStateResponse(super::RestoreInitStateResponse),
+        #[prost(message, tag = "16")]
+        CompactPartition(super::CompactPartition),
+        #[prost(message, tag = "17")]
+        CompactPartitionResponse(super::CompactPartitionResponse),
+        #[prost(message, tag = "18")]
+        PartitionMailboxStatus(super::PartitionMailboxStatus),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -157,4 +167,62 @@ pub struct OperatorShutdownNotification {
 pub struct OperatorShutdownAck {
     #[prost(string, tag = "1")]
     pub processor_id: ::prost::alloc::string::String,
+}
+/// Per-Partition state restore handshake: agent ships latest snapshot
+/// bytes plus tail-WAL bytes, SDK applies them to the partition's State
+/// before any input is processed. See `relay-state-persistence-agent`
+/// design Decision 8.
+///
+/// `partition_id` is the structured byte identifier
+/// `[relay_class_len: u8][relay_class][shard_id_len: u8][shard_id]
+///   [partition_key_len: u16 BE][partition_key]`. `change_log_bytes` is
+/// the tail of the WAL framed `[seq: u64 BE][len: u32 BE]
+/// [header: 16B][change_bytes][crc32: u32 BE]` records back-to-back.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RestoreInitState {
+    #[prost(bytes = "vec", tag = "1")]
+    pub partition_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub snapshot_bytes: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub change_log_bytes: ::prost::alloc::vec::Vec<u8>,
+}
+/// SDK acknowledgement after applying a `RestoreInitState`. `terminal_seq`
+/// is the highest WAL seq folded into State; the agent expects the next
+/// `partition_state_change` to carry `seq = terminal_seq + 1`.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RestoreInitStateResponse {
+    #[prost(bytes = "vec", tag = "1")]
+    pub partition_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "2")]
+    pub terminal_seq: u64,
+}
+/// Agent-issued compaction request. The SDK clones the partition's
+/// `Self::State` under the sticky CAS, serializes it, and replies via
+/// `partition_state_snapshot` then `CompactPartitionResponse`.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CompactPartition {
+    #[prost(bytes = "vec", tag = "1")]
+    pub partition_id: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CompactPartitionResponse {
+    #[prost(bytes = "vec", tag = "1")]
+    pub partition_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "2")]
+    pub snapshot_seq: u64,
+    #[prost(uint64, tag = "3")]
+    pub snapshot_bytes_size: u64,
+}
+/// Back-pressure signal: the agent's per-Partition WAL outbox is at the
+/// high watermark (`status = "full"`) or has drained below the low
+/// watermark (`status = "open"`). The SDK's per-Partition mailbox
+/// observer translates the signal into the channel's declared
+/// `OverflowPolicy`.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PartitionMailboxStatus {
+    #[prost(bytes = "vec", tag = "1")]
+    pub partition_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag = "2")]
+    pub status: ::prost::alloc::string::String,
 }

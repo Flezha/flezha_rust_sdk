@@ -7,22 +7,24 @@
 //! iterate registered Partitions, drain non-empty buffers, build wire
 //! frames, hand them to the per-Partition `send_frame` fn pointer.
 //!
-//! Frame layout (umbrella spec / `rust-sdk-dispatch` delta):
+//! Frame layout (matches agent `Flezha.State.Wire.decode_frame/1`):
 //!
 //! ```text
-//! [partition_id: u32 BE]
+//! [partition_id_len: u16 BE]
+//! [partition_id_bytes]   // [rc_len:u8][rc][sh_len:u8][sh][pk_len:u16 BE][pk]
 //! [seq: u64 BE]
 //! [header: 16B]
-//! [change_bytes_len: u32 BE]
-//! [change_bytes]
-//! [crc32: u32 BE over change_bytes]
+//! [body_len: u32 BE]
+//! [body]                 // change_bytes (or snapshot_bytes for compactions)
+//! [crc32: u32 BE over body]
 //! ```
 //!
-//! Header is the 16-byte `HeaderTemplate::stamp` output (per Decision 8);
-//! the trailing CRC32 is the same value for redundancy on the wire so
-//! the agent's WAL reader can validate framing without re-decoding the
-//! header. The `change_bytes_len` field bounds the change-bytes range so
-//! the WAL reader can step records without re-deserialization.
+//! The structured `partition_id_bytes` carries `(relay_class, shard_id,
+//! partition_key)` so the agent can route the record to the right
+//! per-Partition WAL file without a side-table mapping. Header is the
+//! 16-byte `HeaderTemplate::stamp` output (per Decision 8); the trailing
+//! CRC32 covers the body so the agent can validate framing without
+//! re-decoding the header.
 
 use std::any::Any;
 use std::collections::HashMap;
@@ -54,12 +56,34 @@ pub type SendFrameFn = Arc<dyn Fn(Vec<u8>) -> Result<(), SendError> + Send + Syn
 
 /// Per-Partition entry registered with the flusher.
 struct FlusherEntry {
-    partition_id: u32,
+    partition_identity: Arc<Vec<u8>>,
     buffer: Arc<Mutex<Box<dyn FlushableBuffer>>>,
     persistence_enabled: bool,
     change_seq: Arc<AtomicU64>,
     send_frame: SendFrameFn,
     header: HeaderTemplate,
+}
+
+/// Encode `(relay_class, shard_id, partition_key)` into the wire-format
+/// `partition_id_bytes` consumed by the agent's `decode_partition_id`.
+pub fn encode_partition_identity(
+    relay_class: &str,
+    shard_id: &str,
+    partition_key: &str,
+) -> Vec<u8> {
+    let rc = relay_class.as_bytes();
+    let sh = shard_id.as_bytes();
+    let pk = partition_key.as_bytes();
+    assert!(rc.len() <= 255 && sh.len() <= 255, "relay_class / shard_id ≤ 255 bytes");
+    assert!(pk.len() <= 0xFFFF, "partition_key ≤ 65535 bytes");
+    let mut out = Vec::with_capacity(1 + rc.len() + 1 + sh.len() + 2 + pk.len());
+    out.push(rc.len() as u8);
+    out.extend_from_slice(rc);
+    out.push(sh.len() as u8);
+    out.extend_from_slice(sh);
+    out.extend_from_slice(&(pk.len() as u16).to_be_bytes());
+    out.extend_from_slice(pk);
+    out
 }
 
 /// Type-erased per-Partition flush buffer. The dispatcher downcasts to
@@ -73,7 +97,7 @@ pub trait FlushableBuffer: Send + Any {
     /// returned frames carry seq values in increasing order.
     fn drain_to_frames(
         &mut self,
-        partition_id: u32,
+        partition_identity: &[u8],
         change_seq: &AtomicU64,
         header: &HeaderTemplate,
     ) -> (usize, Vec<Vec<u8>>);
@@ -102,7 +126,7 @@ impl<S: crate::shard::Shard> Default for TypedBuffer<S> {
 impl<S: crate::shard::Shard> FlushableBuffer for TypedBuffer<S> {
     fn drain_to_frames(
         &mut self,
-        partition_id: u32,
+        partition_identity: &[u8],
         change_seq: &AtomicU64,
         header: &HeaderTemplate,
     ) -> (usize, Vec<Vec<u8>>) {
@@ -114,7 +138,12 @@ impl<S: crate::shard::Shard> FlushableBuffer for TypedBuffer<S> {
             .into_iter()
             .map(|c| {
                 let seq = change_seq.fetch_add(1, Ordering::Relaxed);
-                build_partition_state_change_frame::<S::Change>(partition_id, seq, header, &c)
+                build_partition_state_change_frame::<S::Change>(
+                    partition_identity,
+                    seq,
+                    header,
+                    &c,
+                )
             })
             .collect();
         let count = frames.len();
@@ -156,9 +185,12 @@ pub fn coalesce<C: Change>(buf: Vec<C>) -> Vec<C> {
     out
 }
 
-/// Build one wire frame: `[partition_id][seq][header][len][change_bytes][crc32]`.
+/// Build one wire frame matching `Flezha.State.Wire.decode_frame/1`.
+///
+/// `[partition_id_len: u16 BE][partition_id_bytes][seq: u64 BE][header: 16B]
+///  [body_len: u32 BE][body][crc32: u32 BE over body]`
 pub fn build_partition_state_change_frame<C: Change>(
-    partition_id: u32,
+    partition_identity: &[u8],
     seq: u64,
     header: &HeaderTemplate,
     change: &C,
@@ -166,14 +198,27 @@ pub fn build_partition_state_change_frame<C: Change>(
     let change_bytes = postcard::to_allocvec(change)
         .expect("postcard serialization of Change failed; Change must be Serialize");
     let header_bytes = header.stamp(&change_bytes);
-    let crc = crc32fast::hash(&change_bytes);
+    build_partition_frame(partition_identity, seq, &header_bytes, &change_bytes)
+}
+
+/// Build one wire frame from already-serialized body bytes. Used by the
+/// snapshot path (where the body is the postcard-encoded `Self::State`).
+pub fn build_partition_frame(
+    partition_identity: &[u8],
+    seq: u64,
+    header: &[u8; 16],
+    body: &[u8],
+) -> Vec<u8> {
+    let crc = crc32fast::hash(body);
+    let pid_len = partition_identity.len();
     let mut frame =
-        Vec::with_capacity(4 + 8 + 16 + 4 + change_bytes.len() + 4);
-    frame.extend_from_slice(&partition_id.to_be_bytes());
+        Vec::with_capacity(2 + pid_len + 8 + 16 + 4 + body.len() + 4);
+    frame.extend_from_slice(&(pid_len as u16).to_be_bytes());
+    frame.extend_from_slice(partition_identity);
     frame.extend_from_slice(&seq.to_be_bytes());
-    frame.extend_from_slice(&header_bytes);
-    frame.extend_from_slice(&(change_bytes.len() as u32).to_be_bytes());
-    frame.extend_from_slice(&change_bytes);
+    frame.extend_from_slice(header);
+    frame.extend_from_slice(&(body.len() as u32).to_be_bytes());
+    frame.extend_from_slice(body);
     frame.extend_from_slice(&crc.to_be_bytes());
     frame
 }
@@ -225,7 +270,7 @@ impl PartitionFlusher {
     /// flusher lives for the duration of the process).
     pub fn register(
         &self,
-        partition_id: u32,
+        partition_identity: Arc<Vec<u8>>,
         buffer: Arc<Mutex<Box<dyn FlushableBuffer>>>,
         persistence_enabled: bool,
         change_seq: Arc<AtomicU64>,
@@ -236,7 +281,7 @@ impl PartitionFlusher {
         self.entries.insert(
             id,
             FlusherEntry {
-                partition_id,
+                partition_identity,
                 buffer,
                 persistence_enabled,
                 change_seq,
@@ -273,7 +318,7 @@ impl PartitionFlusher {
                     continue;
                 }
                 let (_count, frames) = guard.drain_to_frames(
-                    entry.partition_id,
+                    entry.partition_identity.as_slice(),
                     &entry.change_seq,
                     &entry.header,
                 );
@@ -282,9 +327,8 @@ impl PartitionFlusher {
             if !entry.persistence_enabled {
                 tracing::trace!(
                     target: "flezha::flusher",
-                    "drain-and-discard {} frames for partition {} (persistence_enabled = false)",
+                    "drain-and-discard {} frames (persistence_enabled = false)",
                     frames.len(),
-                    entry.partition_id,
                 );
                 continue;
             }
@@ -292,8 +336,7 @@ impl PartitionFlusher {
                 if let Err(e) = (entry.send_frame)(frame) {
                     tracing::warn!(
                         target: "flezha::flusher",
-                        "send_frame failed for partition {}: {}",
-                        entry.partition_id,
+                        "send_frame failed: {}",
                         e,
                     );
                     // Decrement seq so the next drain re-sends from the
@@ -307,19 +350,21 @@ impl PartitionFlusher {
     }
 }
 
-// PATCH_POINT_FOR_RELAY_STATE_PERSISTENCE_AGENT
-//
-// The follow-up `relay-state-persistence-agent` change replaces the
-// binding of `stub_send_frame` with the real NIF send-bytes path. Grep
-// for this comment in `relay-state-persistence-agent` to find the
-// callsite.
-pub fn stub_send_frame(bytes: Vec<u8>) -> Result<(), SendError> {
-    tracing::trace!(
-        target: "flezha::flusher::stub",
-        "would send {} bytes",
-        bytes.len(),
-    );
-    Ok(())
+/// Send-frame fn used until the SDK boot wires
+/// `partition_state_sink::install_global_sink`. Returns `TransportDown`
+/// so the flusher decrements seq and retries on the next drain pass.
+pub fn fallback_send_frame(_bytes: Vec<u8>) -> Result<(), SendError> {
+    Err(SendError::TransportDown(
+        "partition_state_sink not installed".into(),
+    ))
+}
+
+/// Returns the currently-installed global send-frame fn. Used by the
+/// dispatcher when it constructs each `FlusherEntry`. Falls back to
+/// `fallback_send_frame` when the SDK has not yet wired the sink (e.g.
+/// during unit tests).
+pub fn current_send_frame_fn() -> SendFrameFn {
+    crate::partition::partition_state_sink::current_send_frame_fn()
 }
 
 #[cfg(test)]
@@ -385,27 +430,47 @@ mod tests {
     }
 
     #[test]
-    fn frame_layout_is_partition_id_seq_header_len_body_crc() {
+    fn frame_layout_matches_agent_decode_format() {
         let template = HeaderTemplate::new(0x010203, 1);
         let change = TestChange { key: None, ts: 0, value: 42 };
-        let frame = build_partition_state_change_frame::<TestChange>(7, 99, &template, &change);
-        // 4 + 8 + 16 + 4 + body + 4
+        let identity = encode_partition_identity("MarketRelay", "OhlcShard", "M1");
+        let frame = build_partition_state_change_frame::<TestChange>(&identity, 99, &template, &change);
+
         let body_bytes = postcard::to_allocvec(&change).unwrap();
-        assert_eq!(frame.len(), 4 + 8 + 16 + 4 + body_bytes.len() + 4);
-        assert_eq!(&frame[0..4], &7u32.to_be_bytes());
-        assert_eq!(&frame[4..12], &99u64.to_be_bytes());
-        // header[0] = sdk_lang Rust = 1
-        assert_eq!(frame[12], 1);
-        // body length field
+
+        // Layout: [pid_len:u16][pid][seq:u64][header:16][body_len:u32][body][crc32:u32]
+        let pid_len = u16::from_be_bytes([frame[0], frame[1]]) as usize;
+        assert_eq!(pid_len, identity.len());
+        assert_eq!(&frame[2..2 + pid_len], identity.as_slice());
+
+        let seq_off = 2 + pid_len;
+        let header_off = seq_off + 8;
+        let body_len_off = header_off + 16;
+        let body_off = body_len_off + 4;
+
+        assert_eq!(&frame[seq_off..seq_off + 8], &99u64.to_be_bytes());
+        assert_eq!(frame[header_off], 1); // sdk_lang Rust = 1
         assert_eq!(
-            &frame[28..32],
+            &frame[body_len_off..body_len_off + 4],
             &(body_bytes.len() as u32).to_be_bytes(),
         );
-        let body_end = 32 + body_bytes.len();
-        assert_eq!(&frame[32..body_end], &body_bytes[..]);
+        assert_eq!(&frame[body_off..body_off + body_bytes.len()], body_bytes.as_slice());
+        let crc_off = body_off + body_bytes.len();
         assert_eq!(
-            &frame[body_end..body_end + 4],
+            &frame[crc_off..crc_off + 4],
             &crc32fast::hash(&body_bytes).to_be_bytes(),
         );
+    }
+
+    #[test]
+    fn encode_partition_identity_round_trips_three_fields() {
+        let id = encode_partition_identity("MarketRelay", "OhlcShard", "M1");
+        // [rc_len:u8 = 11][rc][sh_len:u8 = 9][sh][pk_len:u16 BE = 2][pk]
+        assert_eq!(id[0], 11);
+        assert_eq!(&id[1..12], b"MarketRelay");
+        assert_eq!(id[12], 9);
+        assert_eq!(&id[13..22], b"OhlcShard");
+        assert_eq!(&id[22..24], &2u16.to_be_bytes());
+        assert_eq!(&id[24..26], b"M1");
     }
 }

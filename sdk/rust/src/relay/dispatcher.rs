@@ -28,7 +28,8 @@ use crate::channel::builder::BuildPartitionArgs;
 use crate::channel::{ChannelId, ChannelKind, OverflowPolicy, ShardId};
 use crate::compute_engine::mailbox::Mailbox;
 use crate::partition::flusher::{
-    stub_send_frame, FlushableBuffer, PartitionFlusher, TypedBuffer,
+    current_send_frame_fn, encode_partition_identity, FlushableBuffer, PartitionFlusher,
+    TypedBuffer,
 };
 use crate::partition::header::HeaderTemplate;
 use crate::partition::{PartitionPayload, PartitionSlot, ShardDispatcher};
@@ -415,8 +416,11 @@ pub fn build_partition_slot<S: Shard>(args: BuildPartitionArgs<'_>) -> Arc<Parti
     ));
 
     let change_seq = Arc::new(AtomicU64::new(0));
-    let partition_id =
-        ((args.shard_id as u32) << 16) | ((args.partition_index as u32) & 0xFFFF);
+    let partition_identity = Arc::new(encode_partition_identity(
+        topology.factory_id,
+        shard_desc.name.as_ref(),
+        args.shard_key.unwrap_or(""),
+    ));
 
     // Skip flusher registration entirely for `Change == NoChange` Shards
     // per `design.md` Open Question 2 (TypeId comparison at registration
@@ -427,11 +431,11 @@ pub fn build_partition_slot<S: Shard>(args: BuildPartitionArgs<'_>) -> Arc<Parti
     if TypeId::of::<S::Change>() != TypeId::of::<NoChange>() {
         let flusher = PartitionFlusher::instance();
         flusher.register(
-            partition_id,
+            Arc::clone(&partition_identity),
             Arc::clone(&flush_buffer),
             args.persistence_enabled,
             Arc::clone(&change_seq),
-            Arc::new(stub_send_frame),
+            current_send_frame_fn(),
             HeaderTemplate::for_shard::<S>(),
         );
     }
@@ -449,6 +453,6 @@ pub fn build_partition_slot<S: Shard>(args: BuildPartitionArgs<'_>) -> Arc<Parti
         flush_buffer,
         persistence_enabled: args.persistence_enabled,
         change_seq,
-        partition_id,
+        partition_identity,
     })
 }
