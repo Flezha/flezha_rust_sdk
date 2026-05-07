@@ -13,9 +13,11 @@
 //! `Mutex` lock that is always uncontended in practice.
 
 use std::any::Any;
+use std::any::TypeId;
 use std::collections::HashMap;
 use std::io::Write;
-use std::sync::{Arc, Weak};
+use std::sync::atomic::AtomicU64;
+use std::sync::{Arc, Mutex, Weak};
 
 use flz_transport::service::payloader;
 use flz_transport::transport::FlezhaStream;
@@ -25,10 +27,16 @@ use std::sync::atomic::Ordering;
 use crate::channel::builder::BuildPartitionArgs;
 use crate::channel::{ChannelId, ChannelKind, OverflowPolicy, ShardId};
 use crate::compute_engine::mailbox::Mailbox;
+use crate::partition::flusher::{
+    stub_send_frame, FlushableBuffer, PartitionFlusher, TypedBuffer,
+};
+use crate::partition::header::HeaderTemplate;
 use crate::partition::{PartitionPayload, PartitionSlot, ShardDispatcher};
 use crate::relay::instance::RelayInstance;
 use crate::relay::topology::RelayTopology;
+use crate::shard::change::NoChange;
 use crate::shard::ctx::EmitSink;
+use crate::shard::state_handle::StateHandle;
 use crate::shard::{Shard, ShardCtx, ShardError};
 
 /// Per-partition holder for a typed Shard instance + its State. Boxed and
@@ -70,6 +78,7 @@ impl<S: Shard> ShardDispatcher for ShardDispatcherImpl<S> {
         &self,
         payload: PartitionPayload,
         state: &mut Box<dyn Any + Send>,
+        flush_buffer: &mut Box<dyn FlushableBuffer>,
         instance: &Weak<RelayInstance>,
     ) {
         let PartitionPayload { value, stream } = payload;
@@ -98,6 +107,11 @@ impl<S: Shard> ShardDispatcher for ShardDispatcherImpl<S> {
             .downcast_mut::<PartitionState<S>>()
             .expect("dispatcher: state type mismatch for shard");
 
+        let typed_buffer = flush_buffer
+            .as_any_mut()
+            .downcast_mut::<TypedBuffer<S>>()
+            .expect("dispatcher: flush buffer type mismatch for shard");
+
         let mut sink = PartitionEmitSink {
             output_channel_id: self.output_channel_id,
             output_channel_kind: self.output_channel_kind,
@@ -107,12 +121,9 @@ impl<S: Shard> ShardDispatcher for ShardDispatcherImpl<S> {
         };
 
         let mut ctx = ShardCtx::new(&mut sink);
+        let handle = StateHandle::<S>::new(&mut typed_state.state, &mut typed_buffer.inner);
 
-        if let Err(err) =
-            typed_state
-                .shard
-                .run(input, &mut typed_state.state, &mut ctx)
-        {
+        if let Err(err) = typed_state.shard.run(input, handle, &mut ctx) {
             eprintln!("[flezha] shard {} run error: {}", S::name(), err);
         }
     }
@@ -346,9 +357,17 @@ pub fn drain_partition(slot: &Arc<PartitionSlot>) {
             // to re-attempt its push.
             slot.block_parker.unpark_one();
             let mut state_guard = slot.state.lock().unwrap();
+            let mut buffer_guard = match slot.flush_buffer.lock() {
+                Ok(g) => g,
+                Err(poisoned) => poisoned.into_inner(),
+            };
             let instance_weak = Weak::clone(&slot.instance);
-            slot.dispatcher
-                .dispatch(payload, &mut state_guard, &instance_weak);
+            slot.dispatcher.dispatch(
+                payload,
+                &mut state_guard,
+                &mut buffer_guard,
+                &instance_weak,
+            );
         }
         slot.mailbox.release_inflight();
         if slot.mailbox.is_empty() {
@@ -366,7 +385,10 @@ pub fn drain_partition(slot: &Arc<PartitionSlot>) {
 /// partition at relay-instance startup.
 pub fn build_partition_slot<S: Shard>(args: BuildPartitionArgs<'_>) -> Arc<PartitionSlot> {
     let shard = S::default();
-    let state = S::init_state(args.shard_key);
+    // v1 cold-start path: `init_payload` is `None`. The agent change
+    // wires the warm-restart path through `init_partition_with_payload`
+    // and calls a richer constructor.
+    let state = S::init_state(args.shard_key, None);
     let typed_state = PartitionState::<S> { shard, state };
 
     let topology = Arc::clone(&args.topology);
@@ -388,6 +410,32 @@ pub fn build_partition_slot<S: Shard>(args: BuildPartitionArgs<'_>) -> Arc<Parti
             .map(|c| Arc::clone(&c.name)),
     )) as Arc<dyn ShardDispatcher>;
 
+    let flush_buffer: Arc<Mutex<Box<dyn FlushableBuffer>>> = Arc::new(Mutex::new(
+        Box::new(TypedBuffer::<S>::default()) as Box<dyn FlushableBuffer>,
+    ));
+
+    let change_seq = Arc::new(AtomicU64::new(0));
+    let partition_id =
+        ((args.shard_id as u32) << 16) | ((args.partition_index as u32) & 0xFFFF);
+
+    // Skip flusher registration entirely for `Change == NoChange` Shards
+    // per `design.md` Open Question 2 (TypeId comparison at registration
+    // time). The PartitionSlot still carries a (always-empty) flush
+    // buffer so the dispatcher can construct a `StateHandle<'_, S>`
+    // uniformly for all Shards; only the per-process flusher registry
+    // is conditional.
+    if TypeId::of::<S::Change>() != TypeId::of::<NoChange>() {
+        let flusher = PartitionFlusher::instance();
+        flusher.register(
+            partition_id,
+            Arc::clone(&flush_buffer),
+            args.persistence_enabled,
+            Arc::clone(&change_seq),
+            Arc::new(stub_send_frame),
+            HeaderTemplate::for_shard::<S>(),
+        );
+    }
+
     Arc::new(PartitionSlot {
         state: std::sync::Mutex::new(Box::new(typed_state)),
         mailbox: Arc::new(Mailbox::with_capacity(shard_desc.mailbox_capacity)),
@@ -398,5 +446,9 @@ pub fn build_partition_slot<S: Shard>(args: BuildPartitionArgs<'_>) -> Arc<Parti
         instance: args.instance,
         topology,
         block_parker: crate::partition::BlockParker::new(),
+        flush_buffer,
+        persistence_enabled: args.persistence_enabled,
+        change_seq,
+        partition_id,
     })
 }

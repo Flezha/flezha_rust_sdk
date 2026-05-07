@@ -9,14 +9,23 @@
 //! instances; the central coordinator runs but only handles
 //! control-plane traffic.
 //!
-//! # Worked example (sticky ordering)
+//! # Worked example (sticky ordering, with persistent state)
 //!
 //! ```no_run
 //! use flezha_compute_engine::{
 //!     register_relay, ChannelBuilder, Relay, Shard, ShardCtx, ShardError,
 //! };
-//! # #[derive(serde::Serialize, serde::Deserialize, Clone)]
-//! # struct AppendState { seen: Vec<String> }
+//! use flezha_compute_engine::state::{
+//!     Change, NoChange, RestoreInitPayload, StateHandle, WallClock,
+//! };
+//! use serde::{Deserialize, Serialize};
+//!
+//! #[derive(Serialize, Deserialize, Clone, Default)]
+//! struct AppendState { seen: Vec<String> }
+//!
+//! #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+//! struct AppendChange(String);
+//! impl Change for AppendChange {}
 //!
 //! #[derive(Default)]
 //! struct AppendShard;
@@ -24,17 +33,23 @@
 //!     type Input = String;
 //!     type Output = String;
 //!     type State = AppendState;
+//!     type Change = AppendChange;
+//!     type Clock = WallClock;
+//!     type Config = ();
 //!     fn name() -> &'static str { "append_shard" }
-//!     fn init_state(_: Option<&str>) -> AppendState {
+//!     fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> AppendState {
 //!         AppendState { seen: vec![] }
+//!     }
+//!     fn apply_change(state: &mut AppendState, change: &AppendChange) {
+//!         state.seen.push(change.0.clone());
 //!     }
 //!     fn run(
 //!         &mut self,
 //!         input: String,
-//!         state: &mut AppendState,
+//!         mut state: StateHandle<'_, Self>,
 //!         _: &mut ShardCtx<'_>,
 //!     ) -> Result<(), ShardError> {
-//!         state.seen.push(input);
+//!         state.apply(AppendChange(input));
 //!         Ok(())
 //!     }
 //! }
@@ -49,6 +64,7 @@
 //!
 //! register_relay::<AppendRelay>();
 //! let _ = flezha_compute_engine::new("my_namespace".to_string());
+//! # fn _ref() -> Option<NoChange> { None }
 //! ```
 //!
 //! When 10,000 messages targeting one `appender` Relay instance arrive
@@ -81,6 +97,20 @@ pub mod relay;
 pub mod shard;
 mod shutdown;
 
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
+
+/// One-stop import path for the `relay-state-persistence-rust` trait
+/// surface. Bring everything into scope with
+/// `use flezha_compute_engine::state::*;` to write Shards that declare
+/// `Change` types and route mutations through `state.apply(...)`.
+pub mod state {
+    pub use crate::partition::restore::{RestoreError, RestoreInitPayload};
+    pub use crate::shard::change::{Change, CoalesceKey, NoChange};
+    pub use crate::shard::clock::{Clock, EventTimeFrom, LogicalClock, WallClock};
+    pub use crate::shard::state_handle::StateHandle;
+}
+
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex, RwLock},
@@ -89,8 +119,12 @@ use std::{
 use crossbeam::channel::{Receiver, Sender};
 
 pub use channel::{Channel, ChannelBuilder, OverflowPolicy};
+pub use partition::{RestoreError, RestoreInitPayload};
 pub use relay::Relay;
-pub use shard::{Shard, ShardCtx, ShardError};
+pub use shard::{
+    Change, Clock, CoalesceKey, EventTimeFrom, LogicalClock, NoChange, Shard, ShardCtx,
+    ShardError, StateHandle, WallClock,
+};
 
 use crate::{
     compute_engine::{ClientResponseMessage, ComputeEngineMessage},

@@ -37,6 +37,7 @@ use flezha_compute_engine::channel::ChannelBuilder;
 use flezha_compute_engine::relay::builder::build_topology_for;
 use flezha_compute_engine::relay::registry::RelayInstanceRegistry;
 use flezha_compute_engine::relay::RelayInstance;
+use flezha_compute_engine::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
 use flezha_compute_engine::shard::{Shard, ShardCtx, ShardError};
 use flezha_compute_engine::{OverflowPolicy, Relay};
 use flz_transport::transport::FlezhaStream;
@@ -81,14 +82,17 @@ impl Shard for SinglePartitionShard {
     type Input = Vec<u8>;
     type Output = Vec<u8>;
     type State = ();
+    type Change = NoChange;
+    type Clock = WallClock;
+    type Config = ();
     fn name() -> &'static str {
         "single_partition_shard"
     }
-    fn init_state(_: Option<&str>) {}
+    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
     fn run(
         &mut self,
         _: Vec<u8>,
-        _: &mut (),
+        _: StateHandle<'_, SinglePartitionShard>,
         _: &mut ShardCtx<'_>,
     ) -> Result<(), ShardError> {
         SINGLE_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -184,10 +188,13 @@ impl Shard for FanoutShard {
     type Input = Vec<u8>;
     type Output = Vec<u8>;
     type State = ();
+    type Change = NoChange;
+    type Clock = WallClock;
+    type Config = ();
     fn name() -> &'static str {
         "fanout_shard"
     }
-    fn init_state(_: Option<&str>) {}
+    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
     fn shard_keys() -> Vec<&'static str> {
         FANOUT_KEYS.to_vec()
     }
@@ -198,7 +205,7 @@ impl Shard for FanoutShard {
     fn run(
         &mut self,
         _: Vec<u8>,
-        _: &mut (),
+        _: StateHandle<'_, FanoutShard>,
         _: &mut ShardCtx<'_>,
     ) -> Result<(), ShardError> {
         FANOUT_COUNTER.fetch_add(1, Ordering::Relaxed);

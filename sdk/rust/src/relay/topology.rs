@@ -36,6 +36,10 @@ pub struct RelayTopology {
     pub shards: Vec<ShardDescriptor>,
     pub shard_name_to_id: HashMap<&'static str, ShardId>,
     pub factory_id: &'static str,
+    /// Captured `Relay::PERSISTENCE_ENABLED` const at registration.
+    /// `RelayInstance::new` resolves the final per-instance flag using
+    /// this const + the operator override from relay-start metadata.
+    pub persistence_enabled_const: bool,
 }
 
 impl RelayTopology {

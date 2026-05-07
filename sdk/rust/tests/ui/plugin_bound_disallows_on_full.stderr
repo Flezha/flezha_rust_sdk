@@ -1,14 +1,14 @@
 error[E0599]: no method named `on_full` found for struct `Channel<T>` in the current scope
-  --> tests/ui/plugin_bound_disallows_on_full.rs:29:10
+  --> tests/ui/plugin_bound_disallows_on_full.rs:33:10
    |
-26 |       c.channel::<Vec<u8>>("p")
+30 |       c.channel::<Vec<u8>>("p")
    |       - ----------------------- method `on_full` is available on `ChannelDecl<'_, Vec<u8>>`
    |  _____|
    | |
-27 | |         .from::<PluginProducer>()
+31 | |         .from::<PluginProducer>()
    | |          ------------------------ method `on_full` is available on `ChannelDeclWithProducer<'_, Vec<u8>>`
-28 | |         .to_plugin("k")
-29 | |         .on_full(OverflowPolicy::Block);
+32 | |         .to_plugin("k")
+33 | |         .on_full(OverflowPolicy::Block);
    | |         -^^^^^^^ method not found in `Channel<Vec<u8>>`
    | |_________|
    |

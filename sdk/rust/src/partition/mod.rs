@@ -9,6 +9,20 @@
 //! [`BlockParker`] and the drain loop unparks one waiter per popped
 //! item. Per-Partition push / drop / block counters live on
 //! [`PartitionCounters`] and are bumped on the producer side.
+//!
+//! State persistence (`relay-state-persistence-rust`):
+//!
+//! Each `PartitionSlot` whose Shard's `Change` type is not `NoChange`
+//! also carries a type-erased flush buffer (`Arc<Mutex<Box<dyn FlushableBuffer>>>`),
+//! a per-instance `persistence_enabled: bool` flag, and a `change_seq:
+//! AtomicU64` counter. The per-process [`flusher::PartitionFlusher`]
+//! drains all registered buffers on its linger cadence.
+
+pub mod flusher;
+pub mod header;
+pub mod restore;
+
+pub use restore::{RestoreError, RestoreInitPayload};
 
 use std::any::Any;
 use std::collections::VecDeque;
@@ -131,6 +145,25 @@ pub struct PartitionSlot {
     /// mailbox. Drained one entry at a time by `drain_partition` after
     /// every successful pop.
     pub block_parker: BlockParker,
+    /// Per-Partition flush buffer holding `Vec<S::Change>` behind the
+    /// type-erased `FlushableBuffer` trait object. The dispatcher locks
+    /// this Mutex for the duration of `Shard::run` and constructs a
+    /// `StateHandle` from the borrowed Vec inside; the per-process
+    /// flusher locks it on each linger tick to drain.
+    pub flush_buffer: Arc<Mutex<Box<dyn flusher::FlushableBuffer>>>,
+    /// Frozen-at-instance-start persistence flag. Resolved by
+    /// `relay::persistence::resolve_persistence_enabled` from the
+    /// operator override + Relay class const at `RelayInstance::new`
+    /// time and propagated here.
+    pub persistence_enabled: bool,
+    /// Per-Partition WAL seq counter. The flusher fetches-and-adds once
+    /// per drained record; `send_frame` failures decrement to preserve
+    /// monotonicity (no gaps in the agent's WAL view).
+    pub change_seq: Arc<std::sync::atomic::AtomicU64>,
+    /// Stable per-Partition id stamped into the wire frames. Carried so
+    /// the flusher can produce frames without re-deriving the id from
+    /// `(shard_id, partition_index)`.
+    pub partition_id: u32,
 }
 
 impl PartitionSlot {
@@ -148,6 +181,7 @@ pub trait ShardDispatcher: Send + Sync + 'static {
         &self,
         payload: PartitionPayload,
         state: &mut Box<dyn Any + Send>,
+        flush_buffer: &mut Box<dyn flusher::FlushableBuffer>,
         instance: &Weak<crate::relay::instance::RelayInstance>,
     );
 

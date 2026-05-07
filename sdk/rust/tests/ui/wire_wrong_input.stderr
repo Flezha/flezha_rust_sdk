@@ -1,13 +1,13 @@
 error[E0271]: type mismatch resolving `<ConsumesCandle as Shard>::Input == TradeMsg`
-  --> tests/ui/wire_wrong_input.rs:42:17
+  --> tests/ui/wire_wrong_input.rs:49:17
    |
-42 |         .into::<ConsumesCandle>();
+49 |         .into::<ConsumesCandle>();
    |                 ^^^^^^^^^^^^^^ type mismatch resolving `<ConsumesCandle as Shard>::Input == TradeMsg`
    |
 note: expected this to be `TradeMsg`
-  --> tests/ui/wire_wrong_input.rs:29:18
+  --> tests/ui/wire_wrong_input.rs:33:18
    |
-29 |     type Input = Candle;
+33 |     type Input = Candle;
    |                  ^^^^^^
 note: required by a bound in `ChannelDeclWithProducer::<'b, T>::into`
   --> src/channel/builder.rs

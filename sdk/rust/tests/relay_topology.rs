@@ -11,6 +11,7 @@ use std::sync::Arc;
 use flezha_compute_engine::channel::ChannelBuilder;
 use flezha_compute_engine::relay::builder::build_topology_for;
 use flezha_compute_engine::shard::{Shard, ShardCtx, ShardError};
+use flezha_compute_engine::state::{Change, NoChange, RestoreInitPayload, StateHandle, WallClock};
 use flezha_compute_engine::Relay;
 
 #[derive(Default)]
@@ -19,11 +20,14 @@ impl Shard for EchoShard {
     type Input = String;
     type Output = String;
     type State = ();
+    type Change = NoChange;
+    type Clock = WallClock;
+    type Config = ();
     fn name() -> &'static str {
         "echo_shard"
     }
-    fn init_state(_: Option<&str>) -> () {}
-    fn run(&mut self, _: String, _: &mut (), _: &mut ShardCtx<'_>) -> Result<(), ShardError> {
+    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
+    fn run(&mut self, _: String, _: StateHandle<'_, Self>, _: &mut ShardCtx<'_>) -> Result<(), ShardError> {
         Ok(())
     }
 }
@@ -48,17 +52,27 @@ fn single_mode_partition_creation() {
     assert_eq!(topology.channels[0].consumers, vec![0]);
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
+struct AppendChange(String);
+impl Change for AppendChange {}
+
 #[derive(Default)]
 struct StaticShard;
 impl Shard for StaticShard {
     type Input = String;
     type Output = String;
     type State = Vec<String>;
+    type Change = AppendChange;
+    type Clock = WallClock;
+    type Config = ();
     fn name() -> &'static str {
         "static_shard"
     }
-    fn init_state(shard_key: Option<&str>) -> Vec<String> {
+    fn init_state(shard_key: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> Vec<String> {
         vec![shard_key.unwrap_or("none").to_string()]
+    }
+    fn apply_change(state: &mut Vec<String>, change: &AppendChange) {
+        state.push(change.0.clone());
     }
     fn shard_keys() -> Vec<&'static str> {
         vec!["a", "b", "c"]
@@ -76,10 +90,10 @@ impl Shard for StaticShard {
     fn run(
         &mut self,
         input: String,
-        state: &mut Vec<String>,
+        mut state: StateHandle<'_, Self>,
         _: &mut ShardCtx<'_>,
     ) -> Result<(), ShardError> {
-        state.push(input);
+        state.apply(AppendChange(input));
         Ok(())
     }
 }
@@ -110,15 +124,18 @@ impl Shard for DynamicOnlyShard {
     type Input = String;
     type Output = String;
     type State = ();
+    type Change = NoChange;
+    type Clock = WallClock;
+    type Config = ();
     fn name() -> &'static str {
         "dynamic_only_shard"
     }
-    fn init_state(_: Option<&str>) -> () {}
+    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
     const SHARD_KEY_OVERRIDDEN: bool = true;
     fn shard_key(_input: &String) -> Option<String> {
         Some("k".to_string())
     }
-    fn run(&mut self, _: String, _: &mut (), _: &mut ShardCtx<'_>) -> Result<(), ShardError> {
+    fn run(&mut self, _: String, _: StateHandle<'_, Self>, _: &mut ShardCtx<'_>) -> Result<(), ShardError> {
         Ok(())
     }
 }
@@ -146,26 +163,27 @@ fn dynamic_mode_only_rejection() {
 }
 
 /// Static-mode shard whose `partition_for` override is missing the
-/// matching `PARTITION_FOR_OVERRIDDEN = true` const. v1 rejects this
-/// at build_topology time per design.md Open Question 1.
+/// matching `PARTITION_FOR_OVERRIDDEN = true` const.
 #[derive(Default)]
 struct UnannotatedStaticShard;
 impl Shard for UnannotatedStaticShard {
     type Input = String;
     type Output = String;
     type State = ();
+    type Change = NoChange;
+    type Clock = WallClock;
+    type Config = ();
     fn name() -> &'static str {
         "unannotated_static_shard"
     }
-    fn init_state(_: Option<&str>) -> () {}
+    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
     fn shard_keys() -> Vec<&'static str> {
         vec!["a"]
     }
-    // PARTITION_FOR_OVERRIDDEN intentionally NOT set; default is false.
     fn partition_for(_: &String) -> Vec<&'static str> {
         vec!["a"]
     }
-    fn run(&mut self, _: String, _: &mut (), _: &mut ShardCtx<'_>) -> Result<(), ShardError> {
+    fn run(&mut self, _: String, _: StateHandle<'_, Self>, _: &mut ShardCtx<'_>) -> Result<(), ShardError> {
         Ok(())
     }
 }
@@ -200,15 +218,18 @@ impl Shard for ZeroCapacityShard {
     type Input = String;
     type Output = String;
     type State = ();
+    type Change = NoChange;
+    type Clock = WallClock;
+    type Config = ();
     fn name() -> &'static str {
         "zero_capacity_shard"
     }
-    fn init_state(_: Option<&str>) -> () {}
+    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
     fn mailbox_capacity() -> usize {
         0
     }
     const MAILBOX_CAPACITY_OVERRIDDEN: bool = true;
-    fn run(&mut self, _: String, _: &mut (), _: &mut ShardCtx<'_>) -> Result<(), ShardError> {
+    fn run(&mut self, _: String, _: StateHandle<'_, Self>, _: &mut ShardCtx<'_>) -> Result<(), ShardError> {
         Ok(())
     }
 }
@@ -247,15 +268,18 @@ impl Shard for ExplicitCapShard {
     type Input = String;
     type Output = String;
     type State = ();
+    type Change = NoChange;
+    type Clock = WallClock;
+    type Config = ();
     fn name() -> &'static str {
         "explicit_cap_shard"
     }
-    fn init_state(_: Option<&str>) -> () {}
+    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
     fn mailbox_capacity() -> usize {
         4096
     }
     const MAILBOX_CAPACITY_OVERRIDDEN: bool = true;
-    fn run(&mut self, _: String, _: &mut (), _: &mut ShardCtx<'_>) -> Result<(), ShardError> {
+    fn run(&mut self, _: String, _: StateHandle<'_, Self>, _: &mut ShardCtx<'_>) -> Result<(), ShardError> {
         Ok(())
     }
 }

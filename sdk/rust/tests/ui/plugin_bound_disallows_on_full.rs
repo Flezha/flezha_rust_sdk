@@ -7,6 +7,7 @@
 
 use flezha_compute_engine::channel::ChannelBuilder;
 use flezha_compute_engine::shard::{Shard, ShardCtx, ShardError};
+use flezha_compute_engine::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
 use flezha_compute_engine::OverflowPolicy;
 
 #[derive(Default)]
@@ -15,9 +16,12 @@ impl Shard for PluginProducer {
     type Input = ();
     type Output = Vec<u8>;
     type State = ();
+    type Change = NoChange;
+    type Clock = WallClock;
+    type Config = ();
     fn name() -> &'static str { "plugin_producer" }
-    fn init_state(_: Option<&str>) {}
-    fn run(&mut self, _: (), _: &mut (), _: &mut ShardCtx<'_>) -> Result<(), ShardError> {
+    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
+    fn run(&mut self, _: (), _: StateHandle<'_, Self>, _: &mut ShardCtx<'_>) -> Result<(), ShardError> {
         Ok(())
     }
 }

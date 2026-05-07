@@ -42,6 +42,18 @@ pub fn build_topology(
     factory_id: &'static str,
     builder: ChannelBuilder,
 ) -> Result<Arc<RelayTopology>, TopologyBuildError> {
+    build_topology_with_persistence(factory_id, builder, true)
+}
+
+/// Like [`build_topology`] but accepts the `Relay::PERSISTENCE_ENABLED`
+/// const captured at registration. `build_topology_for::<R>()` is the
+/// canonical caller; tests that exercise topology without a Relay
+/// generic call [`build_topology`] which defaults the const to `true`.
+pub fn build_topology_with_persistence(
+    factory_id: &'static str,
+    builder: ChannelBuilder,
+    persistence_enabled_const: bool,
+) -> Result<Arc<RelayTopology>, TopologyBuildError> {
     let ChannelBuilder {
         channels,
         name_to_id,
@@ -126,16 +138,19 @@ pub fn build_topology(
         shards: shard_descs,
         shard_name_to_id: shard_name_to_id_static,
         factory_id,
+        persistence_enabled_const,
     }))
 }
 
 /// Convenience constructor used by `register_relay::<R>()`. Calls
-/// `R::channels(...)` once and returns the resulting topology.
+/// `R::channels(...)` once and returns the resulting topology, capturing
+/// `R::PERSISTENCE_ENABLED` so `RelayInstance::new` can resolve the
+/// final per-instance flag.
 pub fn build_topology_for<R: crate::relay::Relay>() -> Result<Arc<RelayTopology>, TopologyBuildError>
 {
     let mut cb = ChannelBuilder::new();
     R::channels(&mut cb);
-    build_topology(R::factory_id(), cb)
+    build_topology_with_persistence(R::factory_id(), cb, R::PERSISTENCE_ENABLED)
 }
 
 /// Resolve a Shard's mailbox capacity per Decision 6: an explicit

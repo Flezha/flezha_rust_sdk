@@ -9,6 +9,10 @@ default = []
 # constructors) for the crate's own benches/tests. NOT a stable public API.
 # Only enabled by the `[[bench]]` targets via `required-features`.
 bench-internals = []
+# Exposes `flezha_compute_engine::testing::ShardTestHarness` for downstream
+# crates that want to write replay-equality tests. Test code in this crate
+# also compiles the surface under `cfg(test)` regardless of the feature.
+testing = []
 
 [dependencies]
 flz_transport = { path = "../../flz_transport" }
@@ -26,6 +30,12 @@ crossbeam-deque = "0.8"
 # (channel + iterator) are sufficient — we use `Iterator` to block on
 # delivered signals from a dedicated handler thread.
 signal-hook = "0.3"
+# State persistence: postcard for change/state encoding (deterministic,
+# already a transitive dep via flz_transport's framing path); crc32fast
+# for the 16-byte header CRC; tracing for the wire-stub's trace events.
+postcard = { version = "1.0", features = ["use-std"] }
+crc32fast = "1.4"
+tracing = "0.1"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
@@ -44,6 +54,10 @@ required-features = ["bench-internals"]
 name = "correctness"
 harness = false
 required-features = ["bench-internals"]
+
+[[bench]]
+name = "state"
+harness = false
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(rust_analyzer)", "cfg(loom)"] }

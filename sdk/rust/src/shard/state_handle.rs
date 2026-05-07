@@ -1,0 +1,48 @@
+//! `StateHandle<'_, S>` mutation chokepoint per `design.md` Decision 1.
+//!
+//! The dispatcher constructs a `StateHandle` borrowing the partition's
+//! `&mut S::State` and `&mut Vec<S::Change>`; the user's `Shard::run`
+//! receives the handle in place of `&mut S::State` and reads via the
+//! `Deref` impl, mutates via `apply(change)`. The lack of a `DerefMut`
+//! impl is the structural enforcement of the "no forgotten Change"
+//! invariant: direct field mutation is impossible without going through
+//! `apply` because the user never holds a `&mut Self::State`.
+
+use std::ops::Deref;
+
+use crate::shard::Shard;
+
+/// Mutation chokepoint passed into `Shard::run` in place of
+/// `&mut Self::State`. Reads via `Deref<Target = S::State>`; mutates only
+/// via [`StateHandle::apply`].
+pub struct StateHandle<'a, S: Shard> {
+    state: &'a mut S::State,
+    buffer: &'a mut Vec<S::Change>,
+}
+
+impl<'a, S: Shard> StateHandle<'a, S> {
+    /// Construct a handle from the partition's borrowed state + buffer.
+    /// Internal: only the dispatcher and the test harness should
+    /// instantiate this directly.
+    #[doc(hidden)]
+    pub fn new(state: &'a mut S::State, buffer: &'a mut Vec<S::Change>) -> Self {
+        Self { state, buffer }
+    }
+
+    /// Apply a Change. Runs `S::apply_change(state, &change)` to fold
+    /// the mutation into the underlying state, then pushes the Change
+    /// onto the per-Partition flush buffer for the flusher to drain.
+    /// The Change is retained for `ShardTestHarness::replay_equals`
+    /// regardless of `Relay::PERSISTENCE_ENABLED`.
+    pub fn apply(&mut self, change: S::Change) {
+        S::apply_change(self.state, &change);
+        self.buffer.push(change);
+    }
+}
+
+impl<'a, S: Shard> Deref for StateHandle<'a, S> {
+    type Target = S::State;
+    fn deref(&self) -> &S::State {
+        self.state
+    }
+}

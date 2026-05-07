@@ -69,6 +69,14 @@ pub struct BuildPartitionArgs<'a> {
     pub instance: std::sync::Weak<crate::relay::instance::RelayInstance>,
     pub shard_id: ShardId,
     pub shard_key: Option<&'a str>,
+    /// Zero-based partition index within the Shard. `0` for single-mode
+    /// shards; `0..shard_keys().len()` for static-mode shards.
+    pub partition_index: usize,
+    /// Frozen-at-instance-start persistence flag, propagated from the
+    /// `RelayInstance`. The `PartitionSlot` carries this on its
+    /// `persistence_enabled` field; the per-process flusher inspects it
+    /// at drain time to decide whether to call `send_frame`.
+    pub persistence_enabled: bool,
     pub pool: Arc<crate::compute_engine::work_stealing_pool::WorkStealingPool>,
 }
 

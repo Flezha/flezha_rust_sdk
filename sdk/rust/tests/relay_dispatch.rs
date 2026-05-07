@@ -19,6 +19,7 @@ use flezha_compute_engine::relay::builder::build_topology_for;
 use flezha_compute_engine::relay::registry::RelayInstanceRegistry;
 use flezha_compute_engine::relay::RelayInstance;
 use flezha_compute_engine::shard::{Shard, ShardCtx, ShardError};
+use flezha_compute_engine::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
 use flezha_compute_engine::{OverflowPolicy, Relay};
 use flz_transport::transport::FlezhaStream;
 use bi::RelayDispatchHandle;
@@ -51,14 +52,17 @@ impl Shard for AppendShard {
     type Input = String;
     type Output = String;
     type State = ();
+    type Change = NoChange;
+    type Clock = WallClock;
+    type Config = ();
     fn name() -> &'static str {
         "append_shard"
     }
-    fn init_state(_: Option<&str>) -> () {}
+    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) -> () {}
     fn run(
         &mut self,
         input: String,
-        _: &mut (),
+        _: StateHandle<'_, AppendShard>,
         _: &mut ShardCtx<'_>,
     ) -> Result<(), ShardError> {
         APPEND_OBSERVED.lock().unwrap().push(input);
@@ -132,14 +136,17 @@ impl Shard for ConcurrencyProbeShard {
     type Input = String;
     type Output = String;
     type State = ();
+    type Change = NoChange;
+    type Clock = WallClock;
+    type Config = ();
     fn name() -> &'static str {
         "concurrency_probe_shard"
     }
-    fn init_state(_: Option<&str>) -> () {}
+    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) -> () {}
     fn run(
         &mut self,
         _: String,
-        _: &mut (),
+        _: StateHandle<'_, ConcurrencyProbeShard>,
         _: &mut ShardCtx<'_>,
     ) -> Result<(), ShardError> {
         let cur = APPEND_CONCURRENT.fetch_add(1, Ordering::AcqRel) + 1;
@@ -250,10 +257,13 @@ impl Shard for ParallelStaticShard {
     type Input = String;
     type Output = String;
     type State = &'static str;
+    type Change = NoChange;
+    type Clock = WallClock;
+    type Config = ();
     fn name() -> &'static str {
         "parallel_static_shard"
     }
-    fn init_state(shard_key: Option<&str>) -> &'static str {
+    fn init_state(shard_key: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) -> &'static str {
         match shard_key {
             Some("a") => "a",
             Some("b") => "b",
@@ -277,7 +287,7 @@ impl Shard for ParallelStaticShard {
     fn run(
         &mut self,
         input: String,
-        state: &mut &'static str,
+        state: StateHandle<'_, ParallelStaticShard>,
         _: &mut ShardCtx<'_>,
     ) -> Result<(), ShardError> {
         parallel_observed()
@@ -360,16 +370,19 @@ impl Shard for CountingShard {
     type Input = String;
     type Output = String;
     type State = AtomicUsize;
+    type Change = NoChange;
+    type Clock = WallClock;
+    type Config = ();
     fn name() -> &'static str {
         "counting_shard"
     }
-    fn init_state(_: Option<&str>) -> AtomicUsize {
+    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) -> AtomicUsize {
         AtomicUsize::new(0)
     }
     fn run(
         &mut self,
         _: String,
-        state: &mut AtomicUsize,
+        state: StateHandle<'_, CountingShard>,
         _: &mut ShardCtx<'_>,
     ) -> Result<(), ShardError> {
         state.fetch_add(1, Ordering::AcqRel);
@@ -423,14 +436,17 @@ impl Shard for MetaProducerShard {
     type Input = String;
     type Output = String;
     type State = ();
+    type Change = NoChange;
+    type Clock = WallClock;
+    type Config = ();
     fn name() -> &'static str {
         "meta_producer_shard"
     }
-    fn init_state(_: Option<&str>) -> () {}
+    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) -> () {}
     fn run(
         &mut self,
         input: String,
-        _: &mut (),
+        _: StateHandle<'_, MetaProducerShard>,
         ctx: &mut ShardCtx<'_>,
     ) -> Result<(), ShardError> {
         let mut meta = HashMap::new();
@@ -449,11 +465,14 @@ impl Shard for MetaConsumerShard {
     type Input = String;
     type Output = ();
     type State = ();
+    type Change = NoChange;
+    type Clock = WallClock;
+    type Config = ();
     fn name() -> &'static str {
         "meta_consumer_shard"
     }
-    fn init_state(_: Option<&str>) -> () {}
-    fn run(&mut self, _: String, _: &mut (), _: &mut ShardCtx<'_>) -> Result<(), ShardError> {
+    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) -> () {}
+    fn run(&mut self, _: String, _: StateHandle<'_, MetaConsumerShard>, _: &mut ShardCtx<'_>) -> Result<(), ShardError> {
         Ok(())
     }
 }
@@ -516,10 +535,13 @@ impl Shard for BlockStressShard {
     type Input = Vec<u8>;
     type Output = ();
     type State = ();
+    type Change = NoChange;
+    type Clock = WallClock;
+    type Config = ();
     fn name() -> &'static str {
         "block_stress_shard"
     }
-    fn init_state(_: Option<&str>) {}
+    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
     fn mailbox_capacity() -> usize {
         16
     }
@@ -527,7 +549,7 @@ impl Shard for BlockStressShard {
     fn run(
         &mut self,
         _: Vec<u8>,
-        _: &mut (),
+        _: StateHandle<'_, BlockStressShard>,
         _: &mut ShardCtx<'_>,
     ) -> Result<(), ShardError> {
         // Tiny pause so producers actually get to park rather than
@@ -638,10 +660,13 @@ impl Shard for DropNewestShard {
     type Input = Vec<u8>;
     type Output = ();
     type State = ();
+    type Change = NoChange;
+    type Clock = WallClock;
+    type Config = ();
     fn name() -> &'static str {
         "drop_newest_shard"
     }
-    fn init_state(_: Option<&str>) {}
+    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
     fn mailbox_capacity() -> usize {
         2
     }
@@ -649,7 +674,7 @@ impl Shard for DropNewestShard {
     fn run(
         &mut self,
         _: Vec<u8>,
-        _: &mut (),
+        _: StateHandle<'_, DropNewestShard>,
         _: &mut ShardCtx<'_>,
     ) -> Result<(), ShardError> {
         DROP_NEWEST_RECEIVED.fetch_add(1, Ordering::Relaxed);
@@ -751,10 +776,13 @@ impl Shard for DropOldestShard {
     type Input = Vec<u8>;
     type Output = ();
     type State = ();
+    type Change = NoChange;
+    type Clock = WallClock;
+    type Config = ();
     fn name() -> &'static str {
         "drop_oldest_shard"
     }
-    fn init_state(_: Option<&str>) {}
+    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
     fn mailbox_capacity() -> usize {
         2
     }
@@ -762,7 +790,7 @@ impl Shard for DropOldestShard {
     fn run(
         &mut self,
         input: Vec<u8>,
-        _: &mut (),
+        _: StateHandle<'_, DropOldestShard>,
         _: &mut ShardCtx<'_>,
     ) -> Result<(), ShardError> {
         DROP_OLDEST_OBSERVED.lock().unwrap().push(input);
@@ -872,14 +900,17 @@ impl Shard for InterShardProducer {
     type Input = String;
     type Output = String;
     type State = ();
+    type Change = NoChange;
+    type Clock = WallClock;
+    type Config = ();
     fn name() -> &'static str {
         "inter_shard_producer"
     }
-    fn init_state(_: Option<&str>) {}
+    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
     fn run(
         &mut self,
         input: String,
-        _: &mut (),
+        _: StateHandle<'_, InterShardProducer>,
         ctx: &mut ShardCtx<'_>,
     ) -> Result<(), ShardError> {
         ctx.emit::<String>(input)?;
@@ -893,14 +924,17 @@ impl Shard for InterShardConsumer {
     type Input = String;
     type Output = ();
     type State = ();
+    type Change = NoChange;
+    type Clock = WallClock;
+    type Config = ();
     fn name() -> &'static str {
         "inter_shard_consumer"
     }
-    fn init_state(_: Option<&str>) {}
+    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
     fn run(
         &mut self,
         _: String,
-        _: &mut (),
+        _: StateHandle<'_, InterShardConsumer>,
         _: &mut ShardCtx<'_>,
     ) -> Result<(), ShardError> {
         INTER_SHARD_DOWNSTREAM.fetch_add(1, Ordering::Relaxed);
@@ -934,10 +968,13 @@ impl Shard for StickyBoundedShard {
     type Input = Vec<u8>;
     type Output = ();
     type State = ();
+    type Change = NoChange;
+    type Clock = WallClock;
+    type Config = ();
     fn name() -> &'static str {
         "sticky_bounded_shard"
     }
-    fn init_state(_: Option<&str>) {}
+    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
     fn mailbox_capacity() -> usize {
         16
     }
@@ -945,7 +982,7 @@ impl Shard for StickyBoundedShard {
     fn run(
         &mut self,
         _: Vec<u8>,
-        _: &mut (),
+        _: StateHandle<'_, StickyBoundedShard>,
         _: &mut ShardCtx<'_>,
     ) -> Result<(), ShardError> {
         let cur = STICKY_BOUNDED_CONCURRENT.fetch_add(1, Ordering::AcqRel) + 1;
@@ -1066,10 +1103,13 @@ impl Shard for WireSlowAShard {
     type Input = Vec<u8>;
     type Output = ();
     type State = ();
+    type Change = NoChange;
+    type Clock = WallClock;
+    type Config = ();
     fn name() -> &'static str {
         "wire_slow_a_shard"
     }
-    fn init_state(_: Option<&str>) {}
+    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
     fn mailbox_capacity() -> usize {
         2
     }
@@ -1077,7 +1117,7 @@ impl Shard for WireSlowAShard {
     fn run(
         &mut self,
         _: Vec<u8>,
-        _: &mut (),
+        _: StateHandle<'_, WireSlowAShard>,
         _: &mut ShardCtx<'_>,
     ) -> Result<(), ShardError> {
         WIRE_A_DELIVERED.fetch_add(1, Ordering::Relaxed);
@@ -1091,14 +1131,17 @@ impl Shard for WireFastBShard {
     type Input = Vec<u8>;
     type Output = ();
     type State = ();
+    type Change = NoChange;
+    type Clock = WallClock;
+    type Config = ();
     fn name() -> &'static str {
         "wire_fast_b_shard"
     }
-    fn init_state(_: Option<&str>) {}
+    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
     fn run(
         &mut self,
         _: Vec<u8>,
-        _: &mut (),
+        _: StateHandle<'_, WireFastBShard>,
         _: &mut ShardCtx<'_>,
     ) -> Result<(), ShardError> {
         WIRE_B_DELIVERED.fetch_add(1, Ordering::Relaxed);

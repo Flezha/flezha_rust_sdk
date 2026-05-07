@@ -25,6 +25,7 @@ use flezha_compute_engine::channel::ChannelBuilder;
 use flezha_compute_engine::relay::builder::build_topology_for;
 use flezha_compute_engine::relay::registry::RelayInstanceRegistry;
 use flezha_compute_engine::relay::RelayInstance;
+use flezha_compute_engine::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
 use flezha_compute_engine::shard::{Shard, ShardCtx, ShardError};
 use flezha_compute_engine::{OverflowPolicy, Relay};
 use flz_transport::transport::FlezhaStream;
@@ -68,14 +69,17 @@ impl Shard for RegressionShard {
     type Input = Vec<u8>;
     type Output = Vec<u8>;
     type State = ();
+    type Change = NoChange;
+    type Clock = WallClock;
+    type Config = ();
     fn name() -> &'static str {
         "regression_shard"
     }
-    fn init_state(_: Option<&str>) {}
+    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
     fn run(
         &mut self,
         _: Vec<u8>,
-        _: &mut (),
+        _: StateHandle<'_, RegressionShard>,
         _: &mut ShardCtx<'_>,
     ) -> Result<(), ShardError> {
         REG_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -195,10 +199,13 @@ impl Shard for StressBenchShardA {
     type Input = Vec<u8>;
     type Output = Vec<u8>;
     type State = ();
+    type Change = NoChange;
+    type Clock = WallClock;
+    type Config = ();
     fn name() -> &'static str {
         "stress_bench_a"
     }
-    fn init_state(_: Option<&str>) {}
+    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
     fn shard_keys() -> Vec<&'static str> {
         STRESS_KEYS.to_vec()
     }
@@ -209,7 +216,7 @@ impl Shard for StressBenchShardA {
     fn run(
         &mut self,
         input: Vec<u8>,
-        _: &mut (),
+        _: StateHandle<'_, StressBenchShardA>,
         ctx: &mut ShardCtx<'_>,
     ) -> Result<(), ShardError> {
         PART_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -223,10 +230,13 @@ impl Shard for StressBenchShardB {
     type Input = Vec<u8>;
     type Output = Vec<u8>;
     type State = ();
+    type Change = NoChange;
+    type Clock = WallClock;
+    type Config = ();
     fn name() -> &'static str {
         "stress_bench_b"
     }
-    fn init_state(_: Option<&str>) {}
+    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
     fn shard_keys() -> Vec<&'static str> {
         STRESS_KEYS.to_vec()
     }
@@ -237,7 +247,7 @@ impl Shard for StressBenchShardB {
     fn run(
         &mut self,
         input: Vec<u8>,
-        _: &mut (),
+        _: StateHandle<'_, StressBenchShardB>,
         ctx: &mut ShardCtx<'_>,
     ) -> Result<(), ShardError> {
         PART_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -251,10 +261,13 @@ impl Shard for StressBenchShardC {
     type Input = Vec<u8>;
     type Output = Vec<u8>;
     type State = ();
+    type Change = NoChange;
+    type Clock = WallClock;
+    type Config = ();
     fn name() -> &'static str {
         "stress_bench_c"
     }
-    fn init_state(_: Option<&str>) {}
+    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
     fn shard_keys() -> Vec<&'static str> {
         STRESS_KEYS.to_vec()
     }
@@ -265,7 +278,7 @@ impl Shard for StressBenchShardC {
     fn run(
         &mut self,
         input: Vec<u8>,
-        _: &mut (),
+        _: StateHandle<'_, StressBenchShardC>,
         ctx: &mut ShardCtx<'_>,
     ) -> Result<(), ShardError> {
         PART_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -279,10 +292,13 @@ impl Shard for StressBenchShardD {
     type Input = Vec<u8>;
     type Output = Vec<u8>;
     type State = ();
+    type Change = NoChange;
+    type Clock = WallClock;
+    type Config = ();
     fn name() -> &'static str {
         "stress_bench_d"
     }
-    fn init_state(_: Option<&str>) {}
+    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
     fn shard_keys() -> Vec<&'static str> {
         STRESS_KEYS.to_vec()
     }
@@ -293,7 +309,7 @@ impl Shard for StressBenchShardD {
     fn run(
         &mut self,
         _: Vec<u8>,
-        _: &mut (),
+        _: StateHandle<'_, StressBenchShardD>,
         _: &mut ShardCtx<'_>,
     ) -> Result<(), ShardError> {
         PART_COUNTER.fetch_add(1, Ordering::Relaxed);

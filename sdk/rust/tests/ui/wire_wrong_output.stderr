@@ -1,13 +1,13 @@
 error[E0271]: type mismatch resolving `<ProducesCandle as Shard>::Output == TradeMsg`
-  --> tests/ui/wire_wrong_output.rs:26:17
+  --> tests/ui/wire_wrong_output.rs:30:17
    |
-26 |         .from::<ProducesCandle>();
+30 |         .from::<ProducesCandle>();
    |                 ^^^^^^^^^^^^^^ type mismatch resolving `<ProducesCandle as Shard>::Output == TradeMsg`
    |
 note: expected this to be `TradeMsg`
-  --> tests/ui/wire_wrong_output.rs:15:19
+  --> tests/ui/wire_wrong_output.rs:16:19
    |
-15 |     type Output = Candle;
+16 |     type Output = Candle;
    |                   ^^^^^^
 note: required by a bound in `ChannelDecl::<'b, T>::from`
   --> src/channel/builder.rs
