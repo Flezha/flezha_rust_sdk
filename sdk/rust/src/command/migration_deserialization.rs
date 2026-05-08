@@ -13,7 +13,7 @@ impl CommandAction for MigrationDeserialization {
     fn handle(
         &self,
         executor: &mut ExecutorNode,
-        _message: &String,
+        _message: &str,
         errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
         match executor.start_relay(self.factory_id.clone(), self.relay_id.clone()) {

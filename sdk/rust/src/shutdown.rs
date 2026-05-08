@@ -47,12 +47,6 @@ use crate::pb;
 /// bounds the total ack wait at 2 s regardless of relay count.
 const ACK_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Per-relay serializer ceiling — matches the controller's
-/// `cross_node_request_timeout`. Implementors with slow serializers
-/// should refactor before this cap matters in production.
-#[allow(dead_code)]
-pub const SERIALIZER_TIMEOUT: Duration = Duration::from_secs(10);
-
 /// Wire-level payload_id reused from the existing controller -> SDK
 /// `CommandRequest` flow. The `CommandRequest` envelope is
 /// bidirectional; the controller's `ControlChannel` peeks at the oneof tag
@@ -79,8 +73,8 @@ pub struct ShutdownBridge {
 
     /// Closure that returns a point-in-time snapshot of currently-running
     /// relays. Populated by the coordinator at startup; the closure
-    /// captures an `Arc` to the backend's registry so the bridge can be
-    /// agnostic to legacy vs fast-dispatch.
+    /// captures an `Arc` to the backend's registry so the bridge stays
+    /// decoupled from the dispatcher implementation.
     snapshot_fn: Mutex<Option<RelaySnapshotFn>>,
 
     /// Single-shot guard: a graceful shutdown runs at most once per
@@ -303,7 +297,7 @@ mod tests {
         relay_id: &str,
         snapshot: Vec<u8>,
     ) -> (Arc<ShutdownBridge>, UnixStream) {
-        let (sdk_side, agent_side) = UnixStream::pair().expect("UnixStream::pair");
+        let (sdk_side, controller_side) = UnixStream::pair().expect("UnixStream::pair");
 
         let bridge = ShutdownBridge::new();
         bridge.set_control_stream(Some(Arc::new(FlezhaStream::Unix(sdk_side))));
@@ -312,7 +306,7 @@ mod tests {
         let snap = snapshot.clone();
         bridge.set_snapshot_fn(Box::new(move || vec![(pid.clone(), snap.clone())]));
 
-        (bridge, agent_side)
+        (bridge, controller_side)
     }
 
     /// Decode a Payloader-framed payload from raw bytes captured off the
@@ -338,7 +332,7 @@ mod tests {
     #[test]
     fn graceful_shutdown_emits_framed_executor_shutdown_notification() {
         let snapshot = b"final-state-bytes".to_vec();
-        let (bridge, mut agent_side) = build_bridge_with_relay("p1", snapshot.clone());
+        let (bridge, mut controller_side) = build_bridge_with_relay("p1", snapshot.clone());
 
         let bridge_for_run = Arc::clone(&bridge);
         // run_graceful_shutdown blocks waiting for an ack we never send;
@@ -349,7 +343,7 @@ mod tests {
         // SDK writes the notification before sleeping on the ack channel,
         // so a single read() pulls the full frame.
         let mut buf = vec![0u8; 4096];
-        let n = agent_side.read(&mut buf).expect("read shutdown frame");
+        let n = controller_side.read(&mut buf).expect("read shutdown frame");
         buf.truncate(n);
 
         let (payload_id, message) = decode_frame(&buf);
@@ -376,7 +370,7 @@ mod tests {
 
     #[test]
     fn graceful_shutdown_returns_within_2s_when_ack_never_arrives() {
-        let (bridge, _agent_side) =
+        let (bridge, _controller_side) =
             build_bridge_with_relay("p_timeout", b"unused".to_vec());
 
         let started = Instant::now();
@@ -409,7 +403,7 @@ mod tests {
 
     #[test]
     fn run_graceful_shutdown_is_idempotent() {
-        let (bridge, _agent_side) =
+        let (bridge, _controller_side) =
             build_bridge_with_relay("p_idem", b"x".to_vec());
 
         // First run — exercises the timeout path. Second run sees

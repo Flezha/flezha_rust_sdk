@@ -82,6 +82,8 @@ fn open_with_retry(
     }
 }
 
+// reason: tuple bundles per-transport handles needed by the caller; refactoring would split the QUIC path's QuicClient out behind another wrapper
+#[allow(clippy::type_complexity)]
 fn try_open(
     namespace: String,
     itx: Option<Arc<Mutex<Sender<ClientResponseMessage>>>>,
@@ -111,6 +113,8 @@ fn try_open_uds(
     Ok(sock_conn(namespace, stream_box, itx, otx))
 }
 
+// reason: same wire shape as try_open; QuicClient handle is part of the return contract
+#[allow(clippy::type_complexity)]
 fn try_open_quic(
     namespace: String,
     itx: Option<Arc<Mutex<Sender<ClientResponseMessage>>>>,

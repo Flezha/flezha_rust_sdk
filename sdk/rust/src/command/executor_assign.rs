@@ -8,7 +8,7 @@ impl CommandAction for AssignExecutorId {
     fn handle(
         &self,
         executor: &mut ExecutorNode,
-        _message: &String,
+        _message: &str,
         _errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
         executor.assign_executor_id(self.executor_id.clone());

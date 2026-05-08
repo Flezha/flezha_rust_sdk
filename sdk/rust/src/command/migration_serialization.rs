@@ -12,7 +12,7 @@ impl CommandAction for MigrationSerialization {
     fn handle(
         &self,
         executor: &mut ExecutorNode,
-        _message: &String,
+        _message: &str,
         _errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
         let serialized_state = match executor.get_relay(&self.relay_id) {

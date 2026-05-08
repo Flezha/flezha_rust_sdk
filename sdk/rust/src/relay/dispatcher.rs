@@ -34,7 +34,6 @@ use crate::partition::flusher::{
 use crate::partition::header::HeaderTemplate;
 use crate::partition::{PartitionPayload, PartitionSlot, ShardDispatcher};
 use crate::relay::instance::RelayInstance;
-use crate::relay::topology::RelayTopology;
 use crate::shard::change::NoChange;
 use crate::shard::ctx::EmitSink;
 use crate::shard::state_handle::StateHandle;
@@ -380,9 +379,6 @@ fn send_plugin_frame(
         );
     }
 }
-
-#[allow(dead_code)]
-fn _force_use(_t: &Arc<RelayTopology>) {}
 
 pub fn drain_partition(slot: &Arc<PartitionSlot>) {
     loop {

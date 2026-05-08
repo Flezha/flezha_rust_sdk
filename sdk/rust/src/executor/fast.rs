@@ -27,20 +27,15 @@ pub struct ExecutorNode {
     relay_registry: Arc<RelayInstanceRegistry>,
     pool: Arc<WorkStealingPool>,
     shared_io_streams: Arc<RwLock<HashMap<u32, FlezhaStream>>>,
-    /// Control-plane channel kept for parity with the public API surface;
-    /// data-plane traffic does not go through this channel.
-    #[allow(dead_code)]
-    executor_channel: Arc<Mutex<Sender<ExecutorMessage>>>,
     quic_client: Option<Arc<QuicClient>>,
     status: ExecutorStatus,
 }
 
 impl ExecutorNode {
-    pub fn new(namespace: String, otx: Sender<ExecutorMessage>) -> ExecutorNode {
+    pub fn new(namespace: String) -> ExecutorNode {
         let relay_registry = Arc::new(RelayInstanceRegistry::new());
         let pool = Arc::new(WorkStealingPool::new());
         let shared_io_streams = Arc::new(RwLock::new(HashMap::new()));
-        let otx_arc = Arc::new(Mutex::new(otx));
 
         ExecutorNode {
             executor_id: "undefined".to_string(),
@@ -48,7 +43,6 @@ impl ExecutorNode {
             relay_registry,
             pool,
             shared_io_streams,
-            executor_channel: otx_arc,
             quic_client: None,
             status: ExecutorStatus::Starting,
         }
@@ -87,14 +81,9 @@ impl ExecutorNode {
         self.relay_registry.get(instance_id)
     }
 
-    pub fn get_relay_registry(&self) -> Arc<RelayInstanceRegistry> {
-        Arc::clone(&self.relay_registry)
-    }
-
     pub fn relay_dispatch_handle(&self) -> RelayDispatchHandle {
         RelayDispatchHandle {
             registry: Arc::clone(&self.relay_registry),
-            pool: Arc::clone(&self.pool),
         }
     }
 
@@ -105,6 +94,8 @@ impl ExecutorNode {
     /// Public-API view: snapshot of live Relay instances. Mirrors the
     /// pre-`relay-mvp-rust` `Flezha::get_relays()` shape so external
     /// inspectors that walk the registry continue to work.
+    // reason: returned shape is the public API; splitting it would break external inspectors
+    #[allow(clippy::type_complexity)]
     pub fn get_relays(
         &self,
     ) -> Arc<RwLock<HashMap<String, Arc<Mutex<Arc<RelayInstance>>>>>> {
@@ -127,11 +118,6 @@ impl ExecutorNode {
         self.status = status;
     }
 
-    #[allow(dead_code)]
-    pub fn get_executor_channel(&self) -> Arc<Mutex<Sender<ExecutorMessage>>> {
-        Arc::clone(&self.executor_channel)
-    }
-
     pub fn get_quic_client(&self) -> Option<Arc<QuicClient>> {
         self.quic_client.clone()
     }
@@ -148,7 +134,7 @@ pub fn start(
     shutdown_bridge: Arc<ShutdownBridge>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
-        let mut executor = ExecutorNode::new(namespace.clone(), otx.clone());
+        let mut executor = ExecutorNode::new(namespace.clone());
 
         // Capture a registry snapshot closure now so the shutdown bridge
         // can enumerate live Relay instances without going through the
@@ -238,12 +224,11 @@ fn handle_reconnect(
 }
 
 /// Stream-reader handle for the Relay model. Cheap to clone; carries a
-/// reference to the live Relay-instance registry and the work-stealing
-/// pool used to schedule per-Partition drain tasks.
+/// reference to the live Relay-instance registry. Per-Partition drain
+/// scheduling uses the pool held by `PartitionSlot`.
 #[derive(Clone)]
 pub struct RelayDispatchHandle {
     pub registry: Arc<RelayInstanceRegistry>,
-    pub pool: Arc<WorkStealingPool>,
 }
 
 impl RelayDispatchHandle {

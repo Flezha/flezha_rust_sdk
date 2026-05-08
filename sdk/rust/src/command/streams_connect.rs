@@ -22,7 +22,7 @@ impl CommandAction for ConnectSocket {
     fn handle(
         &self,
         executor: &mut ExecutorNode,
-        _message: &String,
+        _message: &str,
         _errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
         match get_transport_type() {
@@ -36,8 +36,8 @@ fn handle_uds(cmd: &ConnectSocket, executor: &mut ExecutorNode) -> (String, Vec<
     let io_streams = executor.get_io_streams();
     let executor_id = executor.get_executor_id();
 
-    // Pair each primary with its secondary explicitly. Agent→SDK reads
-    // on primary; SDK→controller writes on secondary. Putting reads + writes
+    // Pair each primary with its secondary explicitly. Controller→SDK reads
+    // on primary; SDK→Controller writes on secondary. Putting reads + writes
     // on the same FD hurts throughput ~4× (Java SDK writes on the
     // secondary; matching that here keeps the throughput floor).
     let mut stream_pairs: Vec<(FlezhaStream, Arc<FlezhaStream>)> = Vec::new();
@@ -101,7 +101,7 @@ fn handle_quic(cmd: &ConnectSocket, executor: &mut ExecutorNode) -> (String, Vec
 /// the WAL is single-writer per partition and the controller serializes the
 /// per-Partition writes server-side.
 fn install_partition_state_sink_from_pairs(
-    pairs: &Vec<(FlezhaStream, Arc<FlezhaStream>)>,
+    pairs: &[(FlezhaStream, Arc<FlezhaStream>)],
 ) {
     if let Some((_, secondary)) = pairs.first() {
         let sink_stream = Arc::clone(secondary);
@@ -149,18 +149,9 @@ fn listen_incoming_uds(
         let primary = Arc::new(primary);
         let h = thread::spawn(move || {
             let mut reader = std::io::BufReader::with_capacity(64 * 1024, &*primary);
-            loop {
-                match payloader::extract_payload(&mut reader) {
-                    Ok((instance_id, payload, metadata)) => {
-                        handle.dispatch(
-                            &instance_id,
-                            payload,
-                            &metadata,
-                            Arc::clone(&secondary),
-                        );
-                    }
-                    Err(_e) => break,
-                }
+            while let Ok((instance_id, payload, metadata)) = payloader::extract_payload(&mut reader)
+            {
+                handle.dispatch(&instance_id, payload, &metadata, Arc::clone(&secondary));
             }
         });
         handles.push(h);
@@ -180,18 +171,9 @@ fn listen_incoming_quic(
         let primary = Arc::new(primary);
         let h = thread::spawn(move || {
             let mut reader = std::io::BufReader::with_capacity(64 * 1024, &*primary);
-            loop {
-                match payloader::extract_payload(&mut reader) {
-                    Ok((instance_id, payload, metadata)) => {
-                        handle.dispatch(
-                            &instance_id,
-                            payload,
-                            &metadata,
-                            Arc::clone(&secondary),
-                        );
-                    }
-                    Err(_e) => break,
-                }
+            while let Ok((instance_id, payload, metadata)) = payloader::extract_payload(&mut reader)
+            {
+                handle.dispatch(&instance_id, payload, &metadata, Arc::clone(&secondary));
             }
         });
         handles.push(h);
@@ -201,11 +183,9 @@ fn listen_incoming_quic(
     }
 }
 
-fn connect_unix(executor_id: &String, stream_type: String) -> UnixStream {
+fn connect_unix(executor_id: &str, stream_type: String) -> UnixStream {
     let socket_path = path_helper::stream_socket_path(executor_id, stream_type);
 
-    UnixStream::connect(socket_path.clone()).expect(&format!(
-        "Failed to connect to the socket: {}",
-        socket_path.clone()
-    ))
+    UnixStream::connect(&socket_path)
+        .unwrap_or_else(|_| panic!("Failed to connect to the socket: {}", socket_path))
 }

@@ -133,7 +133,6 @@ fn throughput_single_partition(c: &mut Criterion) {
 
     let handle = bi::RelayDispatchHandle {
         registry: Arc::clone(&registry),
-        pool: Arc::clone(&pool),
     };
     let stream = dummy_stream();
     let payload: Vec<u8> = b"x".repeat(64);
@@ -242,7 +241,6 @@ fn throughput_static_fanout(c: &mut Criterion) {
 
     let handle = bi::RelayDispatchHandle {
         registry: Arc::clone(&registry),
-        pool: Arc::clone(&pool),
     };
     let stream = dummy_stream();
     let payload: Vec<u8> = b"x".repeat(64);

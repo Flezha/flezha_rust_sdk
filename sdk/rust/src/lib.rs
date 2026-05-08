@@ -214,6 +214,8 @@ impl Flezha {
     /// Snapshot of the live Relay-instance registry. Returned shape
     /// mirrors the pre-`relay-mvp-rust` `get_relays` for backward
     /// compatibility.
+    // reason: public API; refactor would break external callers (test apps, observability)
+    #[allow(clippy::type_complexity)]
     pub fn get_relays(
         &self,
     ) -> Arc<RwLock<HashMap<String, Arc<Mutex<Arc<RelayInstance>>>>>> {

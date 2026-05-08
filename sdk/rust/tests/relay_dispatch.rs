@@ -93,7 +93,6 @@ fn per_partition_input_order_preserved() {
 
     let handle = RelayDispatchHandle {
         registry: Arc::clone(&registry),
-        pool: Arc::clone(&pool),
     };
     let stream = dummy_stream();
 
@@ -193,7 +192,6 @@ fn same_partition_never_runs_concurrently() {
     registry.register(instance);
     let handle = RelayDispatchHandle {
         registry: Arc::clone(&registry),
-        pool: Arc::clone(&pool),
     };
     let stream = dummy_stream();
 
@@ -328,7 +326,6 @@ fn static_partitions_dispatch_independently() {
     registry.register(instance);
     let handle = RelayDispatchHandle {
         registry: Arc::clone(&registry),
-        pool: Arc::clone(&pool),
     };
     let stream = dummy_stream();
 
@@ -512,7 +509,6 @@ fn emit_with_meta_rejected_on_inter_shard() {
     registry.register(instance);
     let handle = RelayDispatchHandle {
         registry: Arc::clone(&registry),
-        pool: Arc::clone(&pool),
     };
     let stream = dummy_stream();
 
@@ -605,7 +601,6 @@ fn block_stress_100_producers_no_loss() {
     registry.register(Arc::clone(&instance));
     let handle = RelayDispatchHandle {
         registry: Arc::clone(&registry),
-        pool: Arc::clone(&pool),
     };
     let stream = dummy_stream();
 
@@ -732,7 +727,6 @@ fn drop_newest_discards_when_full_and_only_bumps_newest_counter() {
 
     let handle = RelayDispatchHandle {
         registry: Arc::clone(&registry),
-        pool: Arc::clone(&pool),
     };
     let stream = dummy_stream();
     let mut md = HashMap::new();
@@ -844,7 +838,6 @@ fn drop_oldest_evicts_head_and_bumps_oldest_counter() {
 
     let handle = RelayDispatchHandle {
         registry: Arc::clone(&registry),
-        pool: Arc::clone(&pool),
     };
     let stream = dummy_stream();
     let mut md = HashMap::new();
@@ -1052,7 +1045,6 @@ fn sticky_ordering_holds_under_bounded_block() {
     registry.register(Arc::clone(&instance));
     let handle = RelayDispatchHandle {
         registry: Arc::clone(&registry),
-        pool: Arc::clone(&pool),
     };
     let stream = dummy_stream();
 
@@ -1227,7 +1219,6 @@ fn default_entry_policy_does_not_stall_sibling_relays() {
 
     let handle = RelayDispatchHandle {
         registry: Arc::clone(&registry),
-        pool: Arc::clone(&pool),
     };
     let stream = dummy_stream();
     let mut md = HashMap::new();
@@ -1307,7 +1298,6 @@ fn opt_in_entry_block_stalls_sibling_relays() {
 
     let handle = RelayDispatchHandle {
         registry: Arc::clone(&registry),
-        pool: Arc::clone(&pool),
     };
     let stream = dummy_stream();
 
@@ -1399,7 +1389,6 @@ fn default_inter_shard_policy_is_block_and_pushes_total_increments() {
     registry.register(Arc::clone(&instance));
     let handle = RelayDispatchHandle {
         registry: Arc::clone(&registry),
-        pool: Arc::clone(&pool),
     };
     let stream = dummy_stream();
 

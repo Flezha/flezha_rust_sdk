@@ -12,7 +12,7 @@ impl CommandAction for PartitionApplyState {
     fn handle(
         &self,
         executor: &mut ExecutorNode,
-        _message: &String,
+        _message: &str,
         errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
         if !executor.has_relay(&self.relay_id) {

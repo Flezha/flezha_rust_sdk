@@ -20,7 +20,7 @@ impl CommandAction for PartitionState {
     fn handle(
         &self,
         executor: &mut ExecutorNode,
-        _message: &String,
+        _message: &str,
         errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
         match executor.get_relay(&self.relay_id) {

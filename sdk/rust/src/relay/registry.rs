@@ -79,6 +79,10 @@ impl RelayInstanceRegistry {
     pub fn len(&self) -> usize {
         self.inner.len()
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
 }
 
 impl Default for RelayInstanceRegistry {
@@ -93,6 +97,8 @@ impl Default for RelayInstanceRegistry {
 /// touching DashMap internals. The inner Mutex is a placeholder kept for
 /// API compatibility — `RelayInstance` is itself shared via Arc and does
 /// not require a Mutex on the read path.
+// reason: return shape mirrors Flezha::get_relays() public API; splitting would break external inspectors
+#[allow(clippy::type_complexity)]
 pub fn snapshot_as_relay_view(
     registry: &RelayInstanceRegistry,
 ) -> Arc<RwLock<HashMap<String, Arc<Mutex<Arc<RelayInstance>>>>>> {

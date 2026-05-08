@@ -18,7 +18,7 @@ impl CommandAction for PartitionMailboxStatus {
     fn handle(
         &self,
         _executor: &mut ExecutorNode,
-        _message: &String,
+        _message: &str,
         errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
         match self.status.as_str() {

@@ -26,6 +26,7 @@ use crate::shard::{Shard, ShardCtx, ShardError, StateHandle};
 /// Recorded emit: type-erased value + optional plugin metadata.
 struct Emit {
     value: Arc<dyn Any + Send + Sync>,
+    // reason: meta is captured for replay-equality fixtures; tests assert through the public ShardTestHarness API which the compiler can't see at this struct level
     #[allow(dead_code)]
     meta: Option<HashMap<String, String>>,
 }

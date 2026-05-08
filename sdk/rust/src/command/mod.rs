@@ -27,7 +27,7 @@ pub trait CommandAction {
     fn handle(
         &self,
         executor: &mut ExecutorNode,
-        command_struct: &String,
+        command_struct: &str,
         errors: &mut Vec<String>,
     ) -> (String, Vec<u8>);
 }
@@ -35,7 +35,7 @@ pub trait CommandAction {
 pub enum CommandActionType {
     Regular(Box<dyn CommandAction>),
     ExecutorDisconnect(Box<dyn CommandAction>),
-    /// Agent -> SDK `ExecutorShutdownAck`. Wake the corresponding
+    /// Controller -> SDK `ExecutorShutdownAck`. Wake the corresponding
     /// per-relay wait channel registered by the SDK's graceful-
     /// shutdown routine. No `CommandResponse` is written — the controller
     /// sent this as its own `CommandRequest`, not in reply to one we
@@ -47,7 +47,7 @@ pub enum CommandActionType {
     NotificationIgnore,
 }
 
-pub fn get_handler(_payload_id: &String, message: &String) -> (CommandActionType, String) {
+pub fn get_handler(_payload_id: &str, message: &str) -> (CommandActionType, String) {
     let wrapper_command =
         CommandRequest::decode(message.as_bytes()).expect("Failed to decode message");
 
@@ -88,19 +88,19 @@ pub fn get_handler(_payload_id: &String, message: &String) -> (CommandActionType
 pub fn handle_command(
     executor: &mut ExecutorNode,
     stream: &FlezhaStream,
-    payload_id: &String,
-    message: &Vec<u8>,
+    payload_id: &str,
+    message: &[u8],
 ) {
-    let payload_message: String = String::from_utf8_lossy(&message).to_string();
+    let payload_message: String = String::from_utf8_lossy(message).to_string();
 
-    let (handler_type, reference_id) = command::get_handler(&payload_id, &payload_message);
+    let (handler_type, reference_id) = command::get_handler(payload_id, &payload_message);
 
     match handler_type {
         CommandActionType::Regular(handler) => {
             let reply = command::exec_control(
                 executor,
                 handler,
-                &payload_id,
+                payload_id,
                 &payload_message,
                 reference_id,
             );
@@ -113,7 +113,7 @@ pub fn handle_command(
             let reply = command::exec_control(
                 executor,
                 handler,
-                &payload_id,
+                payload_id,
                 &payload_message,
                 reference_id,
             );
@@ -145,8 +145,8 @@ pub fn handle_command(
 fn exec_control(
     executor: &mut ExecutorNode,
     handler: Box<dyn CommandAction>,
-    payload_id: &String,
-    message: &String,
+    payload_id: &str,
+    message: &str,
     reference_id: String,
 ) -> Vec<u8> {
     let mut errors: Vec<String> = vec![];
@@ -154,7 +154,7 @@ fn exec_control(
 
     let (_payload_id, raw_data) = handler.handle(executor, message, &mut errors);
 
-    if errors.len() > 0 {
+    if !errors.is_empty() {
         status = "error".to_string();
     }
 
@@ -167,5 +167,5 @@ fn exec_control(
 
     let command_response_bytes = command_response.encode_to_vec();
 
-    payloader::build_from_binary(&payload_id, &command_response_bytes, HashMap::new())
+    payloader::build_from_binary(payload_id, &command_response_bytes, HashMap::new())
 }

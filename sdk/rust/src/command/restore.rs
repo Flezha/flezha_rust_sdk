@@ -18,7 +18,7 @@ impl CommandAction for RestoreInitState {
     fn handle(
         &self,
         _executor: &mut ExecutorNode,
-        _message: &String,
+        _message: &str,
         errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
         let mut terminal_seq: u64 = 0;

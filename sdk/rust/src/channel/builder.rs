@@ -106,7 +106,6 @@ pub(crate) struct ChannelEntry {
     pub producer: Option<ShardId>,
     pub consumers: Vec<ShardId>,
     pub plugin_name: Option<&'static str>,
-    pub payload_type_id: std::any::TypeId,
     pub wrap_input: Option<crate::channel::EntryWrapFn>,
     pub plugin_serializer: Option<crate::channel::PluginSerializeFn>,
     /// Backpressure policy applied at the push site when the consumer
@@ -184,7 +183,7 @@ impl ChannelBuilder {
         &mut self,
         name: &'static str,
     ) -> EntryChannel<'_, T> {
-        let id = self.declare_channel::<T>(name, ChannelKind::Entry);
+        let id = self.declare_channel(name, ChannelKind::Entry);
         let wrap_fn: crate::channel::EntryWrapFn = Arc::new(|bytes: Vec<u8>| T::wrap(bytes));
         self.channels[id as usize].wrap_input = Some(wrap_fn);
         EntryChannel {
@@ -201,7 +200,7 @@ impl ChannelBuilder {
         &mut self,
         name: &'static str,
     ) -> ChannelDecl<'_, T> {
-        let id = self.declare_channel::<T>(name, ChannelKind::InterShard);
+        let id = self.declare_channel(name, ChannelKind::InterShard);
         ChannelDecl {
             builder: self,
             channel_id: id,
@@ -210,7 +209,7 @@ impl ChannelBuilder {
         }
     }
 
-    fn declare_channel<T: 'static>(&mut self, name: &'static str, kind: ChannelKind) -> u32 {
+    fn declare_channel(&mut self, name: &'static str, kind: ChannelKind) -> u32 {
         if self.name_to_id.contains_key(name) {
             self.errors.push(BuildTopologyError::DuplicateChannel(name));
         }
@@ -221,7 +220,6 @@ impl ChannelBuilder {
             producer: None,
             consumers: Vec::new(),
             plugin_name: None,
-            payload_type_id: std::any::TypeId::of::<T>(),
             wrap_input: None,
             plugin_serializer: None,
             overflow_policy: default_policy_for_kind(kind),
@@ -368,7 +366,6 @@ impl<'b, T: 'static + Send + Sync> ChannelDecl<'b, T> {
         ChannelDeclWithProducer {
             builder: self.builder,
             channel_id: self.channel_id,
-            name: self.name,
             _phantom: PhantomData,
         }
     }
@@ -379,7 +376,6 @@ impl<'b, T: 'static + Send + Sync> ChannelDecl<'b, T> {
 pub struct ChannelDeclWithProducer<'b, T> {
     builder: &'b mut ChannelBuilder,
     channel_id: u32,
-    name: &'static str,
     _phantom: PhantomData<fn() -> T>,
 }
 

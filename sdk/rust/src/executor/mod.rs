@@ -25,6 +25,8 @@ pub enum ExecutorStatus {
     Stopped,
 }
 
+// reason: ReturnRelays carries the same public shape returned by Flezha::get_relays()
+#[allow(clippy::type_complexity)]
 pub enum ClientResponseMessage {
     ExecutorIdConfirmation,
     /// Snapshot of live Relay instances. Returned to `Flezha::get_relays()`

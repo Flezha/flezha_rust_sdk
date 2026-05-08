@@ -37,10 +37,7 @@ impl<T> Channel<T> {
 
 impl<T> Clone for Channel<T> {
     fn clone(&self) -> Self {
-        Self {
-            id: self.id,
-            _phantom: PhantomData,
-        }
+        *self
     }
 }
 

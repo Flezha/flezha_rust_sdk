@@ -43,7 +43,7 @@ use crate::executor::work_stealing_pool::{Task, WorkStealingPool};
 use crate::partition::PartitionCounters;
 
 /// A single item on the wire for a relay — the work the drain loop will
-/// hand to `relay::executor::exec_agent`. The wrapper keeps the queue
+/// dispatch via the partition's `Dispatcher`. The wrapper keeps the queue
 /// type opaque to the rest of the SDK and lets us recover the rejected
 /// payload from a failed `ArrayQueue::push` without an extra clone.
 pub struct WorkItem<Payload> {
@@ -341,8 +341,8 @@ mod tests {
         }
         let v = seen.lock().unwrap().clone();
         assert_eq!(v.len(), n);
-        for i in 0..n {
-            assert_eq!(v[i], i, "out-of-order at {}", i);
+        for (i, val) in v.iter().enumerate().take(n) {
+            assert_eq!(*val, i, "out-of-order at {}", i);
         }
     }
 

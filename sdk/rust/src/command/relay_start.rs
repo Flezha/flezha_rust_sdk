@@ -7,7 +7,7 @@ impl CommandAction for AddRelay {
     fn handle(
         &self,
         executor: &mut ExecutorNode,
-        _message: &String,
+        _message: &str,
         errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
         let instance_id = self.relay_id.clone();

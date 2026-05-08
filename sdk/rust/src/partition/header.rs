@@ -146,7 +146,7 @@ mod tests {
     fn stamp_layout_matches_umbrella_spec() {
         // Umbrella scenario: SDK at version 0.5.3, SCHEMA_VERSION = 1,
         // change_bytes [0x01, 0x02, 0x03] → header bytes per the spec.
-        let template = HeaderTemplate::new((0 << 16) | (5 << 8) | 3, 1);
+        let template = HeaderTemplate::new(0x000503, 1);
         let header = template.stamp(&[0x01, 0x02, 0x03]);
         assert_eq!(header[0], 0x01);
         assert_eq!(&header[1..5], &[0x00, 0x00, 0x05, 0x03]);

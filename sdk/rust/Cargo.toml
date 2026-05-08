@@ -59,5 +59,17 @@ required-features = ["bench-internals"]
 name = "state"
 harness = false
 
+[[test]]
+name = "relay_dispatch"
+required-features = ["bench-internals"]
+
+[[test]]
+name = "relay_topology"
+required-features = ["bench-internals"]
+
+[[test]]
+name = "state_serialize"
+required-features = ["bench-internals"]
+
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(rust_analyzer)", "cfg(loom)"] }

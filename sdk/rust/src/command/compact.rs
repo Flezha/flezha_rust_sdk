@@ -19,7 +19,7 @@ impl CommandAction for CompactPartition {
     fn handle(
         &self,
         _executor: &mut ExecutorNode,
-        _message: &String,
+        _message: &str,
         _errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
         let response = CompactPartitionResponse {

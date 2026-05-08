@@ -430,7 +430,7 @@ mod tests {
     }
 
     #[test]
-    fn frame_layout_matches_agent_decode_format() {
+    fn frame_layout_matches_controller_decode_format() {
         let template = HeaderTemplate::new(0x010203, 1);
         let change = TestChange { key: None, ts: 0, value: 42 };
         let identity = encode_partition_identity("MarketRelay", "OhlcShard", "M1");
