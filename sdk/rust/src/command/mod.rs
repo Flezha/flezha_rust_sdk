@@ -18,7 +18,7 @@ mod partition_status;
 mod partition_apply_state;
 mod relay_message;
 mod relay_start;
-pub(crate) mod partition_state;
+pub mod partition_state;
 mod relay_stop;
 mod restore;
 mod streams_connect;

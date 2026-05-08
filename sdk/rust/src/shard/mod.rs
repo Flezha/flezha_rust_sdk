@@ -18,6 +18,7 @@ pub use state_handle::StateHandle;
 pub(crate) use ctx::EmitSink;
 
 use serde::de::DeserializeOwned;
+use serde::Serialize;
 
 use crate::partition::restore::RestoreInitPayload;
 
@@ -58,7 +59,11 @@ pub trait Shard: Send + Sync + 'static + Default {
     /// shared-Arc case (`Arc::unwrap_or_clone`).
     type Input: Send + Sync + 'static + Clone;
     type Output: Send + Sync + 'static;
-    type State: Send + Sync + 'static;
+    /// Per-Partition state. Bounded on `Serialize + DeserializeOwned` so
+    /// the runtime can serialize state for `PartitionState` /
+    /// `MigrationSerialization` and seed it from `AddRelay.init_values`
+    /// without going through the user's `init_state`.
+    type State: Send + Sync + 'static + Serialize + DeserializeOwned;
 
     /// Persistent mutation record. Use [`NoChange`] (the uninhabited
     /// default) to opt out of persistence machinery — the runtime

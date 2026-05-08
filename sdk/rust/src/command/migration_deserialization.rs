@@ -1,10 +1,11 @@
 //! `MigrationDeserialization` — restore a Relay instance's per-Shard /
 //! per-Partition state from a snapshot blob and register it locally.
-//! Section 4 wires the actual state-restoration path through the
-//! dispatcher's `apply_state` entry point; section 3 ships the
-//! wiring so the wire command continues to round-trip.
+//! Reuses `apply_init_values` for the state-application path so a
+//! migrated instance ends up with byte-identical Partition state to the
+//! source instance produced by `serialize_relay_state`.
 
 use super::CommandAction;
+use crate::command::partition_state::apply_init_values;
 use crate::executor::ExecutorNode;
 use crate::pb::MigrationDeserialization;
 
@@ -16,12 +17,22 @@ impl CommandAction for MigrationDeserialization {
         errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
         match executor.start_relay(self.factory_id.clone(), self.relay_id.clone()) {
-            Some(_instance) => {
-                // Section 4 consumes self.serialized_state and applies
-                // per-Shard / per-Partition state via the dispatcher's
-                // State-erasure layer. Until then we accept the bytes
-                // and discard them so the controller's migration handshake
-                // completes; the new instance starts with init_state.
+            Some(instance) => {
+                if !self.serialized_state.is_empty() {
+                    let json_str = match std::str::from_utf8(&self.serialized_state) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            errors.push(format!(
+                                "MigrationDeserialization: serialized_state is not UTF-8: {}",
+                                e
+                            ));
+                            return ("migration_deserialization".to_string(), Vec::new());
+                        }
+                    };
+                    if let Err(e) = apply_init_values(&instance, json_str) {
+                        errors.push(e);
+                    }
+                }
                 ("migration_deserialization".to_string(), Vec::new())
             }
             None => {

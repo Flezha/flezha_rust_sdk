@@ -52,10 +52,29 @@ pub(crate) struct ShardEntry {
     /// partition keys. Single-mode shards return an empty vec; the runtime
     /// then routes everything to partition index 0.
     pub partition_for_erased: PartitionForFn,
+
+    /// Serialize a Partition's typed state to JSON. Captures S statically
+    /// so the closure downcasts the type-erased `Box<dyn Any + Send>`
+    /// stored in `PartitionSlot::state` and produces a `serde_json::Value`
+    /// via the `S::State: Serialize` bound on the trait.
+    pub serialize_state: SerializeStateFn,
+
+    /// Deserialize a per-Shard JSON value into a fresh State and wrap
+    /// it as the typed-erased payload `PartitionSlot::state` expects
+    /// (a `Box<PartitionState<S>>`). Captures S statically; constructs
+    /// a fresh `S` via `Default` since the user's `Shard` is stateless.
+    pub deserialize_state: DeserializeStateFn,
 }
 
 pub(crate) type PartitionForFn =
     Arc<dyn Fn(&dyn Any) -> Vec<&'static str> + Send + Sync + 'static>;
+
+pub(crate) type SerializeStateFn =
+    Arc<dyn Fn(&Box<dyn Any + Send>) -> Result<serde_json::Value, String> + Send + Sync + 'static>;
+
+pub(crate) type DeserializeStateFn = Arc<
+    dyn Fn(&serde_json::Value) -> Result<Box<dyn Any + Send>, String> + Send + Sync + 'static,
+>;
 
 pub(crate) type PartitionBuilder = Box<
     dyn Fn(BuildPartitionArgs<'_>) -> Arc<crate::partition::PartitionSlot>
@@ -232,6 +251,9 @@ impl ChannelBuilder {
                 crate::partition::build_partition_slot::<S>(args)
             });
 
+        let (serialize_state, deserialize_state) =
+            crate::relay::dispatcher::build_state_fns::<S>();
+
         self.shards.push(ShardEntry {
             name: S::name(),
             partition_keys: S::shard_keys(),
@@ -245,6 +267,8 @@ impl ChannelBuilder {
             mailbox_capacity_overridden: S::MAILBOX_CAPACITY_OVERRIDDEN,
             build_partition,
             partition_for_erased,
+            serialize_state,
+            deserialize_state,
         });
         self.shard_name_to_id.insert(S::name(), id);
         id

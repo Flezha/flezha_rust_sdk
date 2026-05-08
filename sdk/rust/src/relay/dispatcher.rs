@@ -42,9 +42,43 @@ use crate::shard::{Shard, ShardCtx, ShardError};
 
 /// Per-partition holder for a typed Shard instance + its State. Boxed and
 /// type-erased into `PartitionSlot.state`.
-pub(crate) struct PartitionState<S: Shard> {
+pub struct PartitionState<S: Shard> {
     pub shard: S,
     pub state: S::State,
+}
+
+/// Build the per-Shard serialize/deserialize state fn pointers used by
+/// `serialize_relay_state` and `apply_init_values`. The closure captures
+/// S statically; `serialize_state` downcasts the type-erased state to
+/// `PartitionState<S>` and emits `serde_json::Value` via `S::State:
+/// Serialize`. `deserialize_state` parses a `serde_json::Value` into
+/// `S::State` and wraps it with a fresh `S::default()` to match what the
+/// dispatcher expects when it locks the Mutex.
+pub(crate) fn build_state_fns<S: Shard>() -> (
+    crate::channel::builder::SerializeStateFn,
+    crate::channel::builder::DeserializeStateFn,
+) {
+    let serialize: crate::channel::builder::SerializeStateFn = Arc::new(
+        |state: &Box<dyn Any + Send>| -> Result<serde_json::Value, String> {
+            let typed = state
+                .downcast_ref::<PartitionState<S>>()
+                .ok_or_else(|| "serialize_state: state type mismatch".to_string())?;
+            serde_json::to_value(&typed.state)
+                .map_err(|e| format!("serialize_state: {}", e))
+        },
+    );
+    let deserialize: crate::channel::builder::DeserializeStateFn = Arc::new(
+        |value: &serde_json::Value| -> Result<Box<dyn Any + Send>, String> {
+            let state: S::State = serde_json::from_value(value.clone())
+                .map_err(|e| format!("deserialize_state: {}", e))?;
+            let typed = PartitionState::<S> {
+                shard: S::default(),
+                state,
+            };
+            Ok(Box::new(typed) as Box<dyn Any + Send>)
+        },
+    );
+    (serialize, deserialize)
 }
 
 /// Typed dispatcher. Caches the producer-edge output channel id at

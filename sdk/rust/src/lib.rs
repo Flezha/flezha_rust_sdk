@@ -90,7 +90,7 @@
 //! - `FLEZHA_QUIC_ADDRESS` — QUIC endpoint address.
 
 pub mod channel;
-mod command;
+pub mod command;
 mod executor;
 pub mod partition;
 pub mod relay;
@@ -262,3 +262,4 @@ pub mod __dispatch_internals {
     pub use crate::executor::mailbox::Mailbox;
     pub use crate::executor::work_stealing_pool::WorkStealingPool;
 }
+

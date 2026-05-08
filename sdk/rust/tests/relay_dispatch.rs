@@ -256,20 +256,20 @@ struct ParallelStaticShard;
 impl Shard for ParallelStaticShard {
     type Input = String;
     type Output = String;
-    type State = &'static str;
+    type State = String;
     type Change = NoChange;
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
         "parallel_static_shard"
     }
-    fn init_state(shard_key: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) -> &'static str {
+    fn init_state(shard_key: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) -> String {
         match shard_key {
-            Some("a") => "a",
-            Some("b") => "b",
-            Some("c") => "c",
-            Some("d") => "d",
-            _ => "?",
+            Some("a") => "a".to_string(),
+            Some("b") => "b".to_string(),
+            Some("c") => "c".to_string(),
+            Some("d") => "d".to_string(),
+            _ => "?".to_string(),
         }
     }
     fn shard_keys() -> Vec<&'static str> {
@@ -290,10 +290,17 @@ impl Shard for ParallelStaticShard {
         state: StateHandle<'_, ParallelStaticShard>,
         _: &mut ShardCtx<'_>,
     ) -> Result<(), ShardError> {
+        let key: &'static str = match state.as_str() {
+            "a" => "a",
+            "b" => "b",
+            "c" => "c",
+            "d" => "d",
+            _ => "?",
+        };
         parallel_observed()
             .lock()
             .unwrap()
-            .entry(*state)
+            .entry(key)
             .or_default()
             .push(input);
         Ok(())
@@ -364,28 +371,32 @@ fn static_partitions_dispatch_independently() {
 
 // ----- Per-relay namespace isolation -----
 
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct CountingState {
+    n: usize,
+}
+
 #[derive(Default)]
 struct CountingShard;
 impl Shard for CountingShard {
     type Input = String;
     type Output = String;
-    type State = AtomicUsize;
+    type State = CountingState;
     type Change = NoChange;
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
         "counting_shard"
     }
-    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) -> AtomicUsize {
-        AtomicUsize::new(0)
+    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) -> CountingState {
+        CountingState::default()
     }
     fn run(
         &mut self,
         _: String,
-        state: StateHandle<'_, CountingShard>,
+        _state: StateHandle<'_, CountingShard>,
         _: &mut ShardCtx<'_>,
     ) -> Result<(), ShardError> {
-        state.fetch_add(1, Ordering::AcqRel);
         Ok(())
     }
 }

@@ -4,7 +4,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::channel::builder::{PartitionBuilder, PartitionForFn};
+use crate::channel::builder::{
+    DeserializeStateFn, PartitionBuilder, PartitionForFn, SerializeStateFn,
+};
 use crate::channel::{ChannelDescriptor, ChannelId, ShardId};
 
 /// One Shard's slot in the topology. Pre-resolved channel ids so the
@@ -28,6 +30,15 @@ pub struct ShardDescriptor {
     pub mailbox_capacity_overridden: bool,
     pub build_partition: PartitionBuilder,
     pub partition_for_erased: PartitionForFn,
+    /// JSON-serialize a Partition's typed state via the per-Shard fn
+    /// pointer captured at registration time. Used by `PartitionState`
+    /// and `MigrationSerialization` to produce the Decision-10 wire blob.
+    pub serialize_state: SerializeStateFn,
+    /// Deserialize a per-Shard JSON value into the type-erased state
+    /// payload that `PartitionSlot::state` holds. Used by
+    /// `apply_init_values` (and `MigrationDeserialization`) to seed
+    /// Partitions from the controller-supplied JSON blob.
+    pub deserialize_state: DeserializeStateFn,
 }
 
 pub struct RelayTopology {

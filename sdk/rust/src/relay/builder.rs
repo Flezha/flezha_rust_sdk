@@ -116,6 +116,8 @@ pub fn build_topology_with_persistence(
             mailbox_capacity_overridden: entry.mailbox_capacity_overridden,
             build_partition: entry.build_partition,
             partition_for_erased: entry.partition_for_erased,
+            serialize_state: entry.serialize_state,
+            deserialize_state: entry.deserialize_state,
         });
     }
 
