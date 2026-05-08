@@ -1,10 +1,10 @@
-//! `RelayInstance`: per-`AddProcessor` runtime state.
+//! `RelayInstance`: per-`AddRelay` runtime state.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Weak};
 
 use crate::channel::builder::BuildPartitionArgs;
-use crate::compute_engine::work_stealing_pool::WorkStealingPool;
+use crate::executor::work_stealing_pool::WorkStealingPool;
 use crate::partition::PartitionSlot;
 use crate::relay::persistence::resolve_persistence_enabled;
 use crate::relay::topology::RelayTopology;
@@ -20,15 +20,15 @@ pub struct RelayInstance {
     /// partition index. Empty for single-mode shards.
     pub partition_key_to_idx: Vec<HashMap<&'static str, usize>>,
     /// Frozen-at-instance-start persistence flag. Resolved from the
-    /// Relay class const + operator override; propagated to every
-    /// `PartitionSlot`. Subsequent operator config changes do not
+    /// Relay class const + executor override; propagated to every
+    /// `PartitionSlot`. Subsequent executor config changes do not
     /// affect this instance — only `stop_relay` + `start_relay` cycles
     /// pick up new values.
     persistence_enabled: bool,
 }
 
 impl RelayInstance {
-    /// Construct a fresh `RelayInstance` with no operator persistence
+    /// Construct a fresh `RelayInstance` with no executor persistence
     /// override. Equivalent to
     /// `RelayInstance::with_persistence_override(.., None)`.
     pub fn new(
@@ -39,8 +39,8 @@ impl RelayInstance {
         Self::with_persistence_override(topology, instance_id, pool, None)
     }
 
-    /// Construct a fresh `RelayInstance` with an explicit operator
-    /// override for `relay_persistence.<RelayClass>`. The operator
+    /// Construct a fresh `RelayInstance` with an explicit executor
+    /// override for `relay_persistence.<RelayClass>`. The executor
     /// override (when `Some`) wins over the class const.
     pub fn with_persistence_override(
         topology: Arc<RelayTopology>,

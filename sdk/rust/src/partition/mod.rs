@@ -34,8 +34,8 @@ use crossbeam::sync::{Parker, Unparker};
 use flz_transport::transport::FlezhaStream;
 
 use crate::channel::ShardId;
-use crate::compute_engine::mailbox::Mailbox;
-use crate::compute_engine::work_stealing_pool::WorkStealingPool;
+use crate::executor::mailbox::Mailbox;
+use crate::executor::work_stealing_pool::WorkStealingPool;
 
 /// Erased payload moving through the inter-shard mailbox. The `value`
 /// is `Arc<dyn Any + Send + Sync>` (the consumer downcasts to its own
@@ -154,17 +154,17 @@ pub struct PartitionSlot {
     pub flush_buffer: Arc<Mutex<Box<dyn flusher::FlushableBuffer>>>,
     /// Frozen-at-instance-start persistence flag. Resolved by
     /// `relay::persistence::resolve_persistence_enabled` from the
-    /// operator override + Relay class const at `RelayInstance::new`
+    /// executor override + Relay class const at `RelayInstance::new`
     /// time and propagated here.
     pub persistence_enabled: bool,
     /// Per-Partition WAL seq counter. The flusher fetches-and-adds once
     /// per drained record; `send_frame` failures decrement to preserve
-    /// monotonicity (no gaps in the agent's WAL view).
+    /// monotonicity (no gaps in the controller's WAL view).
     pub change_seq: Arc<std::sync::atomic::AtomicU64>,
     /// Stable per-Partition identity (`(relay_class, shard_id, partition_key)`)
     /// encoded for the wire by `flusher::encode_partition_identity`. The
     /// flusher reads this verbatim into each frame's
-    /// `partition_id_bytes` field; the agent decodes the same structure
+    /// `partition_id_bytes` field; the controller decodes the same structure
     /// to route the frame to the right per-Partition WAL.
     pub partition_identity: Arc<Vec<u8>>,
 }

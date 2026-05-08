@@ -19,17 +19,17 @@ use crate::channel::ChannelBuilder;
 /// State persistence (added by `relay-state-persistence-rust`):
 ///
 /// - [`Self::PERSISTENCE_ENABLED`] — frozen-at-instance-start toggle.
-///   Default `true`. The operator can override via the relay-start
+///   Default `true`. The executor can override via the relay-start
 ///   metadata key `relay_persistence.<RelayClass>`. When `false`, the
 ///   per-Process flusher drains-and-discards Changes for this Relay's
-///   Partitions (no wire I/O, no agent contact).
+///   Partitions (no wire I/O, no controller contact).
 ///
 /// The runtime calls `R::channels(...)` once at `register_relay::<R>()`
 /// time and freezes the resulting topology in an `Arc<RelayTopology>`
 /// shared by every `RelayInstance` of this class.
 pub trait Relay: Send + Sync + 'static {
-    /// Stable name. Used as the agent-facing factory identifier — the
-    /// agent's `flz processor start <factory_id>` looks this up.
+    /// Stable name. Used as the controller-facing factory identifier — the
+    /// controller's `flz relay start <factory_id>` looks this up.
     fn factory_id() -> &'static str;
 
     /// One-shot topology declaration.
@@ -37,7 +37,7 @@ pub trait Relay: Send + Sync + 'static {
 
     /// Class-level persistence toggle. The runtime resolves the final
     /// value at instance start by checking the relay-start metadata
-    /// (operator override) first; if no override is present, this const
+    /// (executor override) first; if no override is present, this const
     /// is used. Frozen on the `RelayInstance` at construction; runtime
     /// changes only take effect on the next `stop_relay` + `start_relay`
     /// cycle.

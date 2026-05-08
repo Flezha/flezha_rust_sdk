@@ -1,4 +1,4 @@
-//! Rust SDK for the Flezha compute-engine platform.
+//! Rust SDK for the Flezha executor platform.
 //!
 //! # Dispatch model
 //!
@@ -12,10 +12,10 @@
 //! # Worked example (sticky ordering, with persistent state)
 //!
 //! ```no_run
-//! use flezha_compute_engine::{
+//! use flezha_executor::{
 //!     register_relay, ChannelBuilder, Relay, Shard, ShardCtx, ShardError,
 //! };
-//! use flezha_compute_engine::state::{
+//! use flezha_executor::state::{
 //!     Change, NoChange, RestoreInitPayload, StateHandle, WallClock,
 //! };
 //! use serde::{Deserialize, Serialize};
@@ -63,7 +63,7 @@
 //! }
 //!
 //! register_relay::<AppendRelay>();
-//! let _ = flezha_compute_engine::new("my_namespace".to_string());
+//! let _ = flezha_executor::new("my_namespace".to_string());
 //! # fn _ref() -> Option<NoChange> { None }
 //! ```
 //!
@@ -75,10 +75,10 @@
 //! # Reconnect & idempotency
 //!
 //! The SDK's reconnect loop runs forever with capped exponential
-//! backoff. On every successful reconnect the agent re-issues
-//! `AddProcessor` for every Relay instance ProcessHub still has tagged
-//! to this operator's profile. The handler is idempotent on duplicate
-//! `processor_id`: if the local registry already contains the instance
+//! backoff. On every successful reconnect the controller re-issues
+//! `AddRelay` for every Relay instance ProcessHub still has tagged
+//! to this executor's profile. The handler is idempotent on duplicate
+//! `relay_id`: if the local registry already contains the instance
 //! it logs and returns without re-registering, so the existing
 //! per-Partition state is preserved across the reconnect.
 //!
@@ -91,7 +91,7 @@
 
 pub mod channel;
 mod command;
-mod compute_engine;
+mod executor;
 pub mod partition;
 pub mod relay;
 pub mod shard;
@@ -102,7 +102,7 @@ pub mod testing;
 
 /// One-stop import path for the `relay-state-persistence-rust` trait
 /// surface. Bring everything into scope with
-/// `use flezha_compute_engine::state::*;` to write Shards that declare
+/// `use flezha_executor::state::*;` to write Shards that declare
 /// `Change` types and route mutations through `state.apply(...)`.
 pub mod state {
     pub use crate::partition::restore::{RestoreError, RestoreInitPayload};
@@ -127,7 +127,7 @@ pub use shard::{
 };
 
 use crate::{
-    compute_engine::{ClientResponseMessage, ComputeEngineMessage},
+    executor::{ClientResponseMessage, ExecutorMessage},
     relay::instance::RelayInstance,
     shutdown::ShutdownBridge,
 };
@@ -137,16 +137,16 @@ pub use flz_transport::service;
 
 pub mod pb {
     #[cfg(not(rust_analyzer))]
-    include!("generated/compute_engine_commands.rs");
+    include!("generated/executor_commands.rs");
     #[cfg(rust_analyzer)]
-    include!("generated/compute_engine_commands.rs");
+    include!("generated/executor_commands.rs");
 }
 
 /// Register a Relay class with the SDK. Calls `R::channels(...)` once,
 /// freezes the resulting topology in the global class registry, and
-/// makes the class spawnable via the agent's `flz processor start
+/// makes the class spawnable via the controller's `flz relay start
 /// <factory_id>` command (which routes to `start_relay` on the
-/// `ComputeEngineNode`).
+/// `ExecutorNode`).
 ///
 /// Idempotent on the same `factory_id` — re-registration overwrites
 /// the prior topology. Panics if `R::channels` produced an invalid
@@ -160,15 +160,15 @@ pub fn register_relay<R: Relay>() {
 
 pub struct Flezha {
     id: String,
-    compute_engine_tx: Arc<Mutex<crossbeam::channel::Sender<ComputeEngineMessage>>>,
+    executor_tx: Arc<Mutex<crossbeam::channel::Sender<ExecutorMessage>>>,
     client_rx: Arc<Mutex<crossbeam::channel::Receiver<ClientResponseMessage>>>,
-    _compute_engine_thread: Option<std::thread::JoinHandle<()>>,
+    _executor_thread: Option<std::thread::JoinHandle<()>>,
     shutdown_bridge: Arc<ShutdownBridge>,
 }
 
 impl Flezha {
     fn new(id: String) -> Flezha {
-        let (otx, orx): (Sender<ComputeEngineMessage>, Receiver<ComputeEngineMessage>) =
+        let (otx, orx): (Sender<ExecutorMessage>, Receiver<ExecutorMessage>) =
             crossbeam::channel::unbounded();
         let (ctx, irx): (
             Sender<ClientResponseMessage>,
@@ -178,7 +178,7 @@ impl Flezha {
         let shutdown_bridge = ShutdownBridge::new();
         shutdown::register_bridge(Arc::clone(&shutdown_bridge));
 
-        let compute_engine_thread = compute_engine::start(
+        let executor_thread = executor::start(
             id.clone(),
             (otx.clone(), orx),
             ctx,
@@ -189,15 +189,15 @@ impl Flezha {
             .recv()
             .expect("Failed to receive namespace confirmation")
         {
-            ClientResponseMessage::ComputeEngineIdConfirmation => {}
+            ClientResponseMessage::ExecutorIdConfirmation => {}
             _ => panic!("Unexpected message type received"),
         }
 
         Flezha {
             id: id.clone(),
-            compute_engine_tx: Arc::new(Mutex::new(otx)),
+            executor_tx: Arc::new(Mutex::new(otx)),
             client_rx: Arc::new(Mutex::new(irx)),
-            _compute_engine_thread: Some(compute_engine_thread),
+            _executor_thread: Some(executor_thread),
             shutdown_bridge,
         }
     }
@@ -212,26 +212,26 @@ impl Flezha {
     }
 
     /// Snapshot of the live Relay-instance registry. Returned shape
-    /// mirrors the pre-`relay-mvp-rust` `get_processors` for backward
+    /// mirrors the pre-`relay-mvp-rust` `get_relays` for backward
     /// compatibility.
-    pub fn get_processors(
+    pub fn get_relays(
         &self,
     ) -> Arc<RwLock<HashMap<String, Arc<Mutex<Arc<RelayInstance>>>>>> {
-        self.compute_engine_tx
+        self.executor_tx
             .lock()
             .unwrap()
-            .send(ComputeEngineMessage::ReturnProcessors)
-            .expect("Failed to send ReturnProcessors message");
+            .send(ExecutorMessage::ReturnRelays)
+            .expect("Failed to send ReturnRelays message");
 
         let response = self
             .client_rx
             .lock()
             .unwrap()
             .recv()
-            .expect("Failed to receive processors");
+            .expect("Failed to receive relays");
 
         match response {
-            ClientResponseMessage::ReturnProcessors(processors) => processors,
+            ClientResponseMessage::ReturnRelays(relays) => relays,
             _ => panic!("Unexpected message type received"),
         }
     }
@@ -258,7 +258,7 @@ impl Drop for Flezha {
 #[cfg(feature = "bench-internals")]
 #[doc(hidden)]
 pub mod __dispatch_internals {
-    pub use crate::compute_engine::fast::RelayDispatchHandle;
-    pub use crate::compute_engine::mailbox::Mailbox;
-    pub use crate::compute_engine::work_stealing_pool::WorkStealingPool;
+    pub use crate::executor::fast::RelayDispatchHandle;
+    pub use crate::executor::mailbox::Mailbox;
+    pub use crate::executor::work_stealing_pool::WorkStealingPool;
 }

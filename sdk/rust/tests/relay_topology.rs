@@ -8,11 +8,11 @@
 
 use std::sync::Arc;
 
-use flezha_compute_engine::channel::ChannelBuilder;
-use flezha_compute_engine::relay::builder::build_topology_for;
-use flezha_compute_engine::shard::{Shard, ShardCtx, ShardError};
-use flezha_compute_engine::state::{Change, NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_compute_engine::Relay;
+use flezha_executor::channel::ChannelBuilder;
+use flezha_executor::relay::builder::build_topology_for;
+use flezha_executor::shard::{Shard, ShardCtx, ShardError};
+use flezha_executor::state::{Change, NoChange, RestoreInitPayload, StateHandle, WallClock};
+use flezha_executor::Relay;
 
 #[derive(Default)]
 struct EchoShard;
@@ -312,10 +312,10 @@ fn default_capacity_is_1024_in_topology() {
 
 #[test]
 fn relay_instance_creates_partitions() {
-    use flezha_compute_engine::__dispatch_internals as bi;
+    use flezha_executor::__dispatch_internals as bi;
     let topology = build_topology_for::<StaticRelay>().expect("topology");
     let pool = Arc::new(bi::WorkStealingPool::with_size(2));
-    let instance = flezha_compute_engine::relay::RelayInstance::new(
+    let instance = flezha_executor::relay::RelayInstance::new(
         topology,
         Arc::from("instance-id"),
         pool,

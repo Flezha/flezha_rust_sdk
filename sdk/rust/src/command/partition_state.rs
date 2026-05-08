@@ -1,4 +1,4 @@
-//! `ProcessorState` — return the Relay instance's per-Shard / per-Partition
+//! `PartitionState` — return the Relay instance's per-Shard / per-Partition
 //! state JSON blob per `relay-mvp-rust/design.md` Decision 10.
 //!
 //! Section 4 fully implements `serialize_relay_state` (walks each Shard's
@@ -11,28 +11,28 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use super::CommandAction;
-use crate::compute_engine::ComputeEngineNode;
-use crate::pb::ProcessorState;
+use crate::executor::ExecutorNode;
+use crate::pb::PartitionState;
 use crate::relay::instance::RelayInstance;
 
-impl CommandAction for ProcessorState {
+impl CommandAction for PartitionState {
     fn handle(
         &self,
-        compute_engine: &mut ComputeEngineNode,
+        executor: &mut ExecutorNode,
         _message: &String,
         errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
-        match compute_engine.get_relay(&self.processor_id) {
+        match executor.get_relay(&self.relay_id) {
             Some(instance) => {
                 let payload = serialize_relay_state(&instance);
-                ("processor_state".to_string(), payload)
+                ("partition_state".to_string(), payload)
             }
             None => {
                 errors.push(format!(
                     "Relay instance with id {} not found",
-                    self.processor_id
+                    self.relay_id
                 ));
-                ("processor_state".to_string(), Vec::new())
+                ("partition_state".to_string(), Vec::new())
             }
         }
     }
@@ -50,10 +50,10 @@ pub fn serialize_relay_state(_instance: &Arc<RelayInstance>) -> Vec<u8> {
     serde_json::to_vec(&v).unwrap_or_default()
 }
 
-/// Apply an `AddProcessor.init_values` JSON blob to a fresh Relay
+/// Apply an `AddRelay.init_values` JSON blob to a fresh Relay
 /// instance. Section 4 dispatches per-Shard `init_state` overrides;
 /// section 3 accepts any parseable JSON and ignores it (the legacy
-/// init-state path was per-processor; the relay-mvp-rust replacement
+/// init-state path was per-relay; the relay-mvp-rust replacement
 /// is per-Shard and ships in section 4 / `relay-message-handlers`).
 pub fn apply_init_values(
     _instance: &Arc<RelayInstance>,

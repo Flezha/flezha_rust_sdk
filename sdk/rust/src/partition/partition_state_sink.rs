@@ -5,7 +5,7 @@
 //! one of the secondary `FlezhaStream`s. The flusher fetches the
 //! installed sink at registration time (or every drain pass via the
 //! atomic-pointer load) and uses it to ship `partition_state_change` /
-//! `partition_state_snapshot` frames to the agent.
+//! `partition_state_snapshot` frames to the controller.
 //!
 //! When no sink is installed (e.g. unit tests not touching the
 //! transport), [`current_send_frame_fn`] returns

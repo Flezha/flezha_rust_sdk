@@ -17,7 +17,7 @@ use serde::{de::DeserializeOwned, Serialize};
 
 /// Persistent state-mutation record. Implementors describe one logical
 /// change applied to `Shard::State`; the per-Partition flusher serializes
-/// these records and hands the bytes to the agent's WAL. Implementations
+/// these records and hands the bytes to the controller's WAL. Implementations
 /// MUST be deterministic against `Shard::apply_change` — replay equality
 /// is verified by `ShardTestHarness::replay_equals`.
 pub trait Change: Serialize + DeserializeOwned + Send + Sync + 'static {

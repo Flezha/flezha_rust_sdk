@@ -1,4 +1,4 @@
-//! Per-processor mailbox: bounded lock-free FIFO + inflight flag + counters.
+//! Per-relay mailbox: bounded lock-free FIFO + inflight flag + counters.
 //!
 //! Invariants:
 //!
@@ -39,11 +39,11 @@ use crossbeam::queue::ArrayQueue;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use crate::compute_engine::work_stealing_pool::{Task, WorkStealingPool};
+use crate::executor::work_stealing_pool::{Task, WorkStealingPool};
 use crate::partition::PartitionCounters;
 
-/// A single item on the wire for a processor — the work the drain loop will
-/// hand to `processor::executor::exec_agent`. The wrapper keeps the queue
+/// A single item on the wire for a relay — the work the drain loop will
+/// hand to `relay::executor::exec_agent`. The wrapper keeps the queue
 /// type opaque to the rest of the SDK and lets us recover the rejected
 /// payload from a failed `ArrayQueue::push` without an extra clone.
 pub struct WorkItem<Payload> {
@@ -127,13 +127,13 @@ impl<Payload: Send + 'static> Mailbox<Payload> {
     ///
     /// `drain_fn` receives a scratch `&mut BatchContext<Payload>` and is
     /// expected to call `ctx.next()` in a loop to pull items, doing per-item
-    /// work (e.g. running the processor), and then flushing any accumulated
-    /// side effects (e.g. one big `write_all` back to the agent) before
+    /// work (e.g. running the relay), and then flushing any accumulated
+    /// side effects (e.g. one big `write_all` back to the controller) before
     /// returning. Between calls to `drain_fn`, the mailbox performs the
     /// same missed-wake guard as the per-item variant.
     ///
     /// This is what the fast-dispatch hot path uses so 10k messages hitting
-    /// one processor during a burst produce ONE syscall, not 10k. Returns
+    /// one relay during a burst produce ONE syscall, not 10k. Returns
     /// `Err(BackpressureError { payload })` when the bounded queue rejects
     /// the push.
     pub fn push_and_maybe_submit_batched<F>(

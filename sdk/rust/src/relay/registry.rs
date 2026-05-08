@@ -2,11 +2,11 @@
 //!
 //! `RelayClassRegistry`: process-global; one entry per Relay class. Holds
 //! the immutable `Arc<RelayTopology>` produced by `register_relay::<R>()`.
-//! Looked up by agent-facing `factory_id` when `AddProcessor` arrives.
+//! Looked up by controller-facing `factory_id` when `AddRelay` arrives.
 //!
-//! `RelayInstanceRegistry`: per-`ComputeEngineNode`; one entry per
-//! `AddProcessor` (instance_id). Reuses the DashMap pattern from the
-//! pre-change `ProcessorRegistry` so concurrent reader/writer access is
+//! `RelayInstanceRegistry`: per-`ExecutorNode`; one entry per
+//! `AddRelay` (instance_id). Reuses the DashMap pattern from the
+//! pre-change `RelayRegistry` so concurrent reader/writer access is
 //! sharded.
 
 use lazy_static::lazy_static;
@@ -87,13 +87,13 @@ impl Default for RelayInstanceRegistry {
     }
 }
 
-/// Public-API view that mirrors today's `Flezha::get_processors()` shape.
+/// Public-API view that mirrors today's `Flezha::get_relays()` shape.
 /// Returned as `Arc<RwLock<HashMap<String, Arc<Mutex<…>>>>>` so external
 /// consumers (test apps, observability wrappers) can iterate without
 /// touching DashMap internals. The inner Mutex is a placeholder kept for
 /// API compatibility — `RelayInstance` is itself shared via Arc and does
 /// not require a Mutex on the read path.
-pub fn snapshot_as_processor_view(
+pub fn snapshot_as_relay_view(
     registry: &RelayInstanceRegistry,
 ) -> Arc<RwLock<HashMap<String, Arc<Mutex<Arc<RelayInstance>>>>>> {
     let snapshot = registry.snapshot();

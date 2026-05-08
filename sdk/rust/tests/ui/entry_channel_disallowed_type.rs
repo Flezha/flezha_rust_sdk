@@ -1,7 +1,7 @@
 // `c.input::<RawTrade>("...")` where RawTrade is not Vec<u8> or String.
 // Should fail with the sealed `EntryChannelType` trait-bound error.
 
-use flezha_compute_engine::channel::ChannelBuilder;
+use flezha_executor::channel::ChannelBuilder;
 
 struct RawTrade;
 

@@ -2,9 +2,9 @@
 // Candle. Should fail with a clear "expected TradeMsg, found Candle"
 // trait-bound error pointing at the `.into::<ConsumesCandle>()` call.
 
-use flezha_compute_engine::channel::ChannelBuilder;
-use flezha_compute_engine::shard::{Shard, ShardCtx, ShardError};
-use flezha_compute_engine::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
+use flezha_executor::channel::ChannelBuilder;
+use flezha_executor::shard::{Shard, ShardCtx, ShardError};
+use flezha_executor::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
 
 #[derive(Clone)]
 struct TradeMsg;

@@ -13,25 +13,25 @@ use crate::relay::instance::RelayInstance;
 /// bypasses this channel entirely (per-Partition mailboxes are pushed
 /// directly by the stream readers); only control-plane traffic flows
 /// through here.
-pub enum ComputeEngineMessage {
+pub enum ExecutorMessage {
     HandleCommandAction(String, Vec<u8>, HashMap<String, String>),
-    ReturnProcessors,
+    ReturnRelays,
     Reconnect,
 }
 
-pub enum ComputeEngineStatus {
+pub enum ExecutorStatus {
     Starting,
     Running,
     Stopped,
 }
 
 pub enum ClientResponseMessage {
-    ComputeEngineIdConfirmation,
-    /// Snapshot of live Relay instances. Returned to `Flezha::get_processors()`
+    ExecutorIdConfirmation,
+    /// Snapshot of live Relay instances. Returned to `Flezha::get_relays()`
     /// callers — the public-API shape is preserved for backward
     /// compatibility, but each entry is now an `Arc<RelayInstance>` rather
-    /// than `Arc<Mutex<ProcessorBox>>`.
-    ReturnProcessors(Arc<RwLock<HashMap<String, Arc<Mutex<Arc<RelayInstance>>>>>>),
+    /// than `Arc<Mutex<RelayBox>>`.
+    ReturnRelays(Arc<RwLock<HashMap<String, Arc<Mutex<Arc<RelayInstance>>>>>>),
 }
 
-pub use fast::{start, ComputeEngineNode};
+pub use fast::{start, ExecutorNode};

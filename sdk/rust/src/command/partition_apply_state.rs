@@ -1,30 +1,30 @@
-//! Inverse of `processor_state`. Section 4 routes the state binary
+//! Inverse of `partition_state`. Section 4 routes the state binary
 //! through the dispatcher's per-Shard / per-Partition apply path.
 //! Section 3 ships the wiring stub: any `bin_apply_state` request
 //! returns the canonical `apply_state_not_supported` token until the
 //! dispatcher exposes its apply hook.
 
 use super::CommandAction;
-use crate::compute_engine::ComputeEngineNode;
-use crate::pb::ProcessorApplyState;
+use crate::executor::ExecutorNode;
+use crate::pb::PartitionApplyState;
 
-impl CommandAction for ProcessorApplyState {
+impl CommandAction for PartitionApplyState {
     fn handle(
         &self,
-        compute_engine: &mut ComputeEngineNode,
+        executor: &mut ExecutorNode,
         _message: &String,
         errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
-        if !compute_engine.has_relay(&self.processor_id) {
+        if !executor.has_relay(&self.relay_id) {
             errors.push(format!(
                 "Relay instance with id {} not found",
-                self.processor_id
+                self.relay_id
             ));
-            return ("processor_apply_state".to_string(), Vec::new());
+            return ("partition_apply_state".to_string(), Vec::new());
         }
 
         // Section 4: invoke the dispatcher's apply entry point.
         errors.push("apply_state_not_supported".to_string());
-        ("processor_apply_state".to_string(), Vec::new())
+        ("partition_apply_state".to_string(), Vec::new())
     }
 }

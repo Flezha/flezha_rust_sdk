@@ -1,27 +1,27 @@
-//! Section 5.4 — regression test: `ProcessorMessage` always returns the
+//! Section 5.4 — regression test: `RelayMessage` always returns the
 //! canonical "unsupported" error per `relay-mvp-rust/design.md` Decision 9.
 //!
 //! `relay-message-handlers` re-enables per-Shard `handle_message`. Until
-//! then, every `ProcessorMessage` request the SDK receives is answered
-//! with `ProcessorMessageResponse{ payload: "", error: "processor does
+//! then, every `RelayMessage` request the SDK receives is answered
+//! with `RelayMessageResponse{ payload: "", error: "relay does
 //! not support handle_message" }`.
 
 use prost::Message;
 
 #[test]
-fn processor_message_always_returns_unsupported() {
-    use flezha_compute_engine::pb::ProcessorMessageResponse;
+fn relay_message_always_returns_unsupported() {
+    use flezha_executor::pb::RelayMessageResponse;
 
     // Synthesize the byte response the handler would write.
-    // (Constructing ComputeEngineNode requires the full SDK boot path;
-    //  the handler doesn't read it for ProcessorMessage anymore, so a
+    // (Constructing ExecutorNode requires the full SDK boot path;
+    //  the handler doesn't read it for RelayMessage anymore, so a
     //  unit-level check on the response shape is sufficient.)
-    let canonical = ProcessorMessageResponse {
+    let canonical = RelayMessageResponse {
         payload: Vec::new(),
-        error: "processor does not support handle_message".to_string(),
+        error: "relay does not support handle_message".to_string(),
     };
     let bytes = canonical.encode_to_vec();
-    let decoded = ProcessorMessageResponse::decode(bytes.as_slice()).expect("decode");
+    let decoded = RelayMessageResponse::decode(bytes.as_slice()).expect("decode");
     assert_eq!(decoded.payload, Vec::<u8>::new());
-    assert_eq!(decoded.error, "processor does not support handle_message");
+    assert_eq!(decoded.error, "relay does not support handle_message");
 }

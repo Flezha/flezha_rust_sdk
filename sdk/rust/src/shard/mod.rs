@@ -47,7 +47,7 @@ pub const DEFAULT_SHARD_APPLY_CHANGE_PANIC_MESSAGE: &str =
 /// - [`Self::apply_change`] — fold a Change into the State; MUST be
 ///   deterministic; verified by `ShardTestHarness::replay_equals`.
 /// - [`Self::compact_after_bytes`] — per-Partition WAL compaction
-///   threshold reported to the agent at relay-start time. Default 64 MiB.
+///   threshold reported to the controller at relay-start time. Default 64 MiB.
 /// - [`Self::from_config`] — constructor from typed Config. Default
 ///   `Self::default()` for `Config = ()`.
 pub trait Shard: Send + Sync + 'static + Default {
@@ -112,9 +112,9 @@ pub trait Shard: Send + Sync + 'static + Default {
         panic!("{}", DEFAULT_SHARD_APPLY_CHANGE_PANIC_MESSAGE);
     }
 
-    /// Per-Partition WAL size threshold reported to the agent. The
-    /// runtime never compacts on the SDK side — compaction is agent-
-    /// driven per `relay-state-persistence-agent`. Default 64 MiB.
+    /// Per-Partition WAL size threshold reported to the controller. The
+    /// runtime never compacts on the SDK side — compaction is controller-
+    /// driven per `relay-state-persistence-controller`. Default 64 MiB.
     fn compact_after_bytes() -> usize {
         64 * 1024 * 1024
     }

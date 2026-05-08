@@ -5,22 +5,22 @@
 //! wiring so the wire command continues to round-trip.
 
 use super::CommandAction;
-use crate::compute_engine::ComputeEngineNode;
+use crate::executor::ExecutorNode;
 use crate::pb::MigrationDeserialization;
 
 impl CommandAction for MigrationDeserialization {
     fn handle(
         &self,
-        compute_engine: &mut ComputeEngineNode,
+        executor: &mut ExecutorNode,
         _message: &String,
         errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
-        match compute_engine.start_relay(self.factory_id.clone(), self.processor_id.clone()) {
+        match executor.start_relay(self.factory_id.clone(), self.relay_id.clone()) {
             Some(_instance) => {
                 // Section 4 consumes self.serialized_state and applies
                 // per-Shard / per-Partition state via the dispatcher's
                 // State-erasure layer. Until then we accept the bytes
-                // and discard them so the agent's migration handshake
+                // and discard them so the controller's migration handshake
                 // completes; the new instance starts with init_state.
                 ("migration_deserialization".to_string(), Vec::new())
             }

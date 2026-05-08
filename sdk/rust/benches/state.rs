@@ -8,7 +8,7 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use serde::{Deserialize, Serialize};
 
-use flezha_compute_engine::state::{Change, CoalesceKey};
+use flezha_executor::state::{Change, CoalesceKey};
 
 #[derive(Serialize, Deserialize, Clone)]
 struct SmallChange {

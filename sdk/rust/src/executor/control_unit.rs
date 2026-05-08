@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use serde::Serialize;
 
-use crate::compute_engine::ComputeEngineMessage;
+use crate::executor::ExecutorMessage;
 use crate::relay::registry::class_factory_ids;
 use flz_transport::service::payloader;
 use flz_transport::transport::config::{get_transport_type, TransportType};
@@ -35,7 +35,7 @@ struct ControlInitMessage {
 pub fn open(
     namespace: String,
     itx: Arc<Mutex<Sender<ClientResponseMessage>>>,
-    otx: Arc<Mutex<Sender<ComputeEngineMessage>>>,
+    otx: Arc<Mutex<Sender<ExecutorMessage>>>,
 ) -> (thread::JoinHandle<()>, Arc<FlezhaStream>, Option<Arc<QuicClient>>) {
     let (handle, stream, quic_client) =
         open_with_retry(namespace, Some(itx), otx);
@@ -45,7 +45,7 @@ pub fn open(
 /// Reconnection entry point — no startup confirmation sent.
 pub fn open_reconnect(
     namespace: String,
-    otx: Arc<Mutex<Sender<ComputeEngineMessage>>>,
+    otx: Arc<Mutex<Sender<ExecutorMessage>>>,
 ) -> (thread::JoinHandle<()>, Arc<FlezhaStream>, Option<Arc<QuicClient>>) {
     open_with_retry(namespace, None, otx)
 }
@@ -53,7 +53,7 @@ pub fn open_reconnect(
 fn open_with_retry(
     namespace: String,
     itx: Option<Arc<Mutex<Sender<ClientResponseMessage>>>>,
-    otx: Arc<Mutex<Sender<ComputeEngineMessage>>>,
+    otx: Arc<Mutex<Sender<ExecutorMessage>>>,
 ) -> (thread::JoinHandle<()>, Arc<FlezhaStream>, Option<Arc<QuicClient>>) {
     let mut attempt = 0u32;
     let max_backoff = Duration::from_secs(30);
@@ -85,7 +85,7 @@ fn open_with_retry(
 fn try_open(
     namespace: String,
     itx: Option<Arc<Mutex<Sender<ClientResponseMessage>>>>,
-    otx: Arc<Mutex<Sender<ComputeEngineMessage>>>,
+    otx: Arc<Mutex<Sender<ExecutorMessage>>>,
 ) -> Result<(thread::JoinHandle<()>, Arc<FlezhaStream>, Option<Arc<QuicClient>>), String> {
     match get_transport_type() {
         TransportType::Uds => {
@@ -99,7 +99,7 @@ fn try_open(
 fn try_open_uds(
     namespace: String,
     itx: Option<Arc<Mutex<Sender<ClientResponseMessage>>>>,
-    otx: Arc<Mutex<Sender<ComputeEngineMessage>>>,
+    otx: Arc<Mutex<Sender<ExecutorMessage>>>,
 ) -> Result<(thread::JoinHandle<()>, Arc<FlezhaStream>), String> {
     let socket_path = path_helper::control_socket_path();
 
@@ -114,7 +114,7 @@ fn try_open_uds(
 fn try_open_quic(
     namespace: String,
     itx: Option<Arc<Mutex<Sender<ClientResponseMessage>>>>,
-    otx: Arc<Mutex<Sender<ComputeEngineMessage>>>,
+    otx: Arc<Mutex<Sender<ExecutorMessage>>>,
 ) -> Result<(thread::JoinHandle<()>, Arc<FlezhaStream>, Option<Arc<QuicClient>>), String> {
     let address = flz_transport::transport::config::quic_address();
     let ca_cert_path = flz_transport::transport::config::ca_cert_path();
@@ -139,7 +139,7 @@ fn sock_conn(
     namespace: String,
     stream_box: Arc<FlezhaStream>,
     itx: Option<Arc<Mutex<Sender<ClientResponseMessage>>>>,
-    otx: Arc<Mutex<Sender<ComputeEngineMessage>>>,
+    otx: Arc<Mutex<Sender<ExecutorMessage>>>,
 ) -> (thread::JoinHandle<()>, Arc<FlezhaStream>) {
     let stream_clone = Arc::clone(&stream_box);
 
@@ -150,7 +150,7 @@ fn sock_conn(
         if let Some(itx) = itx {
             itx.lock()
                 .unwrap()
-                .send(ClientResponseMessage::ComputeEngineIdConfirmation)
+                .send(ClientResponseMessage::ExecutorIdConfirmation)
                 .unwrap();
         }
 
@@ -159,7 +159,7 @@ fn sock_conn(
                 Ok((payload_id, message, metadata)) => {
                     otx.lock()
                         .unwrap()
-                        .send(ComputeEngineMessage::HandleCommandAction(
+                        .send(ExecutorMessage::HandleCommandAction(
                             payload_id, message, metadata,
                         ))
                         .unwrap();
@@ -170,17 +170,17 @@ fn sock_conn(
                         continue;
                     }
                     _ => {
-                        // Disconnects are expected during graceful agent
+                        // Disconnects are expected during graceful controller
                         // shutdown / test teardown. Surfacing them via
-                        // `FLEZHA_LOG=debug` keeps the agent's stdout
-                        // clean while still allowing operators to opt in.
+                        // `FLEZHA_LOG=debug` keeps the controller's stdout
+                        // clean while still allowing executors to opt in.
                         if std::env::var("FLEZHA_LOG").as_deref() == Ok("debug") {
                             eprintln!("[flezha] Control channel disconnected: {}", e);
                         }
                         let _ = otx
                             .lock()
                             .unwrap()
-                            .send(ComputeEngineMessage::Reconnect);
+                            .send(ExecutorMessage::Reconnect);
                         break;
                     }
                 },

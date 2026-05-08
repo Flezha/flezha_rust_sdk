@@ -26,7 +26,7 @@ use std::sync::atomic::Ordering;
 
 use crate::channel::builder::BuildPartitionArgs;
 use crate::channel::{ChannelId, ChannelKind, OverflowPolicy, ShardId};
-use crate::compute_engine::mailbox::Mailbox;
+use crate::executor::mailbox::Mailbox;
 use crate::partition::flusher::{
     current_send_frame_fn, encode_partition_identity, FlushableBuffer, PartitionFlusher,
     TypedBuffer,
@@ -386,7 +386,7 @@ pub fn drain_partition(slot: &Arc<PartitionSlot>) {
 /// partition at relay-instance startup.
 pub fn build_partition_slot<S: Shard>(args: BuildPartitionArgs<'_>) -> Arc<PartitionSlot> {
     let shard = S::default();
-    // v1 cold-start path: `init_payload` is `None`. The agent change
+    // v1 cold-start path: `init_payload` is `None`. The controller change
     // wires the warm-restart path through `init_partition_with_payload`
     // and calls a richer constructor.
     let state = S::init_state(args.shard_key, None);

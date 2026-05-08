@@ -7,7 +7,7 @@ use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use crate::compute_engine::ComputeEngineNode;
+use crate::executor::ExecutorNode;
 use crate::partition::flusher::{SendError, SendFrameFn};
 use crate::partition::partition_state_sink;
 use flz_transport::service::payloader;
@@ -16,35 +16,35 @@ use flz_transport::transport::protocol;
 use flz_transport::transport::FlezhaStream;
 use flz_transport::utility::path_helper;
 
-use crate::compute_engine::fast::RelayDispatchHandle;
+use crate::executor::fast::RelayDispatchHandle;
 
 impl CommandAction for ConnectSocket {
     fn handle(
         &self,
-        compute_engine: &mut ComputeEngineNode,
+        executor: &mut ExecutorNode,
         _message: &String,
         _errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
         match get_transport_type() {
-            TransportType::Uds => handle_uds(self, compute_engine),
-            TransportType::Quic => handle_quic(self, compute_engine),
+            TransportType::Uds => handle_uds(self, executor),
+            TransportType::Quic => handle_quic(self, executor),
         }
     }
 }
 
-fn handle_uds(cmd: &ConnectSocket, compute_engine: &mut ComputeEngineNode) -> (String, Vec<u8>) {
-    let io_streams = compute_engine.get_io_streams();
-    let compute_engine_id = compute_engine.get_compute_engine_id();
+fn handle_uds(cmd: &ConnectSocket, executor: &mut ExecutorNode) -> (String, Vec<u8>) {
+    let io_streams = executor.get_io_streams();
+    let executor_id = executor.get_executor_id();
 
     // Pair each primary with its secondary explicitly. Agent→SDK reads
-    // on primary; SDK→agent writes on secondary. Putting reads + writes
+    // on primary; SDK→controller writes on secondary. Putting reads + writes
     // on the same FD hurts throughput ~4× (Java SDK writes on the
     // secondary; matching that here keeps the throughput floor).
     let mut stream_pairs: Vec<(FlezhaStream, Arc<FlezhaStream>)> = Vec::new();
 
     for key in 0..cmd.sockets_count {
-        let primary = connect_unix(&compute_engine_id, "primary".to_string());
-        let secondary = connect_unix(&compute_engine_id, "secondary".to_string());
+        let primary = connect_unix(&executor_id, "primary".to_string());
+        let secondary = connect_unix(&executor_id, "secondary".to_string());
 
         let secondary_for_store = FlezhaStream::Unix(secondary.try_clone().unwrap());
         io_streams.write().unwrap().insert(key, secondary_for_store);
@@ -54,14 +54,14 @@ fn handle_uds(cmd: &ConnectSocket, compute_engine: &mut ComputeEngineNode) -> (S
     }
 
     install_partition_state_sink_from_pairs(&stream_pairs);
-    spawn_listener_uds(compute_engine, stream_pairs);
+    spawn_listener_uds(executor, stream_pairs);
     ("connect_sockets".to_string(), Vec::new())
 }
 
-fn handle_quic(cmd: &ConnectSocket, compute_engine: &mut ComputeEngineNode) -> (String, Vec<u8>) {
-    let io_streams = compute_engine.get_io_streams();
+fn handle_quic(cmd: &ConnectSocket, executor: &mut ExecutorNode) -> (String, Vec<u8>) {
+    let io_streams = executor.get_io_streams();
 
-    let quic_client = compute_engine
+    let quic_client = executor
         .get_quic_client()
         .expect("QUIC client not available");
 
@@ -90,7 +90,7 @@ fn handle_quic(cmd: &ConnectSocket, compute_engine: &mut ComputeEngineNode) -> (
     }
 
     install_partition_state_sink_from_pairs(&stream_pairs);
-    spawn_listener_quic(compute_engine, stream_pairs);
+    spawn_listener_quic(executor, stream_pairs);
     ("connect_sockets".to_string(), Vec::new())
 }
 
@@ -98,7 +98,7 @@ fn handle_quic(cmd: &ConnectSocket, compute_engine: &mut ComputeEngineNode) -> (
 /// secondary stream from the freshly-connected pairs. The flusher uses
 /// this sink to ship `partition_state_change` and
 /// `partition_state_snapshot` frames; one secondary is enough because
-/// the WAL is single-writer per partition and the agent serializes the
+/// the WAL is single-writer per partition and the controller serializes the
 /// per-Partition writes server-side.
 fn install_partition_state_sink_from_pairs(
     pairs: &Vec<(FlezhaStream, Arc<FlezhaStream>)>,
@@ -124,18 +124,18 @@ fn install_partition_state_sink_from_pairs(
 }
 
 fn spawn_listener_uds(
-    compute_engine: &ComputeEngineNode,
+    executor: &ExecutorNode,
     pairs: Vec<(FlezhaStream, Arc<FlezhaStream>)>,
 ) {
-    let handle = compute_engine.relay_dispatch_handle();
+    let handle = executor.relay_dispatch_handle();
     let _ = thread::spawn(move || listen_incoming_uds(pairs, handle));
 }
 
 fn spawn_listener_quic(
-    compute_engine: &ComputeEngineNode,
+    executor: &ExecutorNode,
     pairs: Vec<(FlezhaStream, Arc<FlezhaStream>)>,
 ) {
-    let handle = compute_engine.relay_dispatch_handle();
+    let handle = executor.relay_dispatch_handle();
     let _ = thread::spawn(move || listen_incoming_quic(pairs, handle));
 }
 
@@ -201,8 +201,8 @@ fn listen_incoming_quic(
     }
 }
 
-fn connect_unix(compute_engine_id: &String, stream_type: String) -> UnixStream {
-    let socket_path = path_helper::stream_socket_path(compute_engine_id, stream_type);
+fn connect_unix(executor_id: &String, stream_type: String) -> UnixStream {
+    let socket_path = path_helper::stream_socket_path(executor_id, stream_type);
 
     UnixStream::connect(socket_path.clone()).expect(&format!(
         "Failed to connect to the socket: {}",

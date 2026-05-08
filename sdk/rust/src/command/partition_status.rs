@@ -1,4 +1,4 @@
-//! Inbound `PartitionMailboxStatus`: agent → SDK back-pressure signal.
+//! Inbound `PartitionMailboxStatus`: controller → SDK back-pressure signal.
 //!
 //! `status` is `"full"` (high watermark crossed) or `"open"` (drain
 //! below low watermark). The handler updates the global mailbox-status
@@ -7,17 +7,17 @@
 //! callers.
 //!
 //! No `CommandResponse` payload — this is a one-way notification. The
-//! agent issues it via the async `send_control_async` path, so it
+//! controller issues it via the async `send_control_async` path, so it
 //! never blocks waiting for a reply.
 
 use super::CommandAction;
-use crate::compute_engine::ComputeEngineNode;
+use crate::executor::ExecutorNode;
 use crate::pb::PartitionMailboxStatus;
 
 impl CommandAction for PartitionMailboxStatus {
     fn handle(
         &self,
-        _compute_engine: &mut ComputeEngineNode,
+        _executor: &mut ExecutorNode,
         _message: &String,
         errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {

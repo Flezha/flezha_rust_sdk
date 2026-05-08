@@ -7,7 +7,7 @@
 //! iterate registered Partitions, drain non-empty buffers, build wire
 //! frames, hand them to the per-Partition `send_frame` fn pointer.
 //!
-//! Frame layout (matches agent `Flezha.State.Wire.decode_frame/1`):
+//! Frame layout (matches controller `Flezha.State.Wire.decode_frame/1`):
 //!
 //! ```text
 //! [partition_id_len: u16 BE]
@@ -20,10 +20,10 @@
 //! ```
 //!
 //! The structured `partition_id_bytes` carries `(relay_class, shard_id,
-//! partition_key)` so the agent can route the record to the right
+//! partition_key)` so the controller can route the record to the right
 //! per-Partition WAL file without a side-table mapping. Header is the
 //! 16-byte `HeaderTemplate::stamp` output (per Decision 8); the trailing
-//! CRC32 covers the body so the agent can validate framing without
+//! CRC32 covers the body so the controller can validate framing without
 //! re-decoding the header.
 
 use std::any::Any;
@@ -43,7 +43,7 @@ use crate::shard::change::{Change, CoalesceKey};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FlusherEntryId(u64);
 
-/// Errors returned from the wire stub or its agent-wired replacement.
+/// Errors returned from the wire stub or its controller-wired replacement.
 #[derive(Debug, thiserror::Error)]
 pub enum SendError {
     #[error("transport down: {0}")]
@@ -65,7 +65,7 @@ struct FlusherEntry {
 }
 
 /// Encode `(relay_class, shard_id, partition_key)` into the wire-format
-/// `partition_id_bytes` consumed by the agent's `decode_partition_id`.
+/// `partition_id_bytes` consumed by the controller's `decode_partition_id`.
 pub fn encode_partition_identity(
     relay_class: &str,
     shard_id: &str,
@@ -341,7 +341,7 @@ impl PartitionFlusher {
                     );
                     // Decrement seq so the next drain re-sends from the
                     // right point. v1 only logs and stops the batch
-                    // here; the agent change wires retransmit.
+                    // here; the controller change wires retransmit.
                     entry.change_seq.fetch_sub(1, Ordering::Relaxed);
                     break;
                 }

@@ -2,20 +2,20 @@
 //!
 //! On graceful shutdown — SIGTERM (Kubernetes pre-stop), `Drop` of the SDK
 //! handle, or an explicit `disconnect()` — the SDK serializes each
-//! currently-running processor's state via the same per-driver path used
+//! currently-running relay's state via the same per-driver path used
 //! for `MigrationSerialization` and emits one
-//! `OperatorShutdownNotification` per processor on the control channel.
-//! The agent overwrites its `Overwatch.state.snapshot` with the supplied
-//! binary so the next reconnecting operator picks up the operator's true
+//! `ExecutorShutdownNotification` per relay on the control channel.
+//! The controller overwrites its `Overwatch.state.snapshot` with the supplied
+//! binary so the next reconnecting executor picks up the executor's true
 //! final state — see ship-fresh-state-on-sdk-shutdown.
 //!
 //! ## Timing contract
 //!
-//! - The SDK awaits `OperatorShutdownAck` per processor with a **2 s
-//!   per-processor timeout**, parallelised across processors so total
+//! - The SDK awaits `ExecutorShutdownAck` per relay with a **2 s
+//!   per-relay timeout**, parallelised across relays so total
 //!   wait is bounded by 2 s (not 2N s).
-//! - The per-processor serializer step is capped at the agent's
-//!   `cross_node_request_timeout` ceiling (**10 s**). Concrete `Processor`
+//! - The per-relay serializer step is capped at the controller's
+//!   `cross_node_request_timeout` ceiling (**10 s**). Concrete `Relay`
 //!   impls with multi-second serializers should override `bin_apply_state`
 //!   to keep below that cap.
 //! - On timeout the SDK exits unconditionally and SHALL NOT block its
@@ -23,7 +23,7 @@
 //!
 //! ## SIGKILL is out of scope
 //!
-//! `kill -9` (SIGKILL) bypasses this handler by definition. The agent's
+//! `kill -9` (SIGKILL) bypasses this handler by definition. The controller's
 //! `Overwatch.state.snapshot` falls back to the most recent periodic
 //! snapshot, exactly as today.
 
@@ -42,27 +42,27 @@ use flz_transport::transport::FlezhaStream;
 
 use crate::pb;
 
-/// Per-processor ack wait. Kubernetes default
+/// Per-relay ack wait. Kubernetes default
 /// `terminationGracePeriodSeconds` is 30 s; with parallel acks this
-/// bounds the total ack wait at 2 s regardless of processor count.
+/// bounds the total ack wait at 2 s regardless of relay count.
 const ACK_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Per-processor serializer ceiling — matches the agent's
+/// Per-relay serializer ceiling — matches the controller's
 /// `cross_node_request_timeout`. Implementors with slow serializers
 /// should refactor before this cap matters in production.
 #[allow(dead_code)]
 pub const SERIALIZER_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Wire-level payload_id reused from the existing agent -> SDK
+/// Wire-level payload_id reused from the existing controller -> SDK
 /// `CommandRequest` flow. The `CommandRequest` envelope is
-/// bidirectional; the agent's `ControlChannel` peeks at the oneof tag
+/// bidirectional; the controller's `ControlChannel` peeks at the oneof tag
 /// to dispatch SDK-initiated variants vs `CommandResponse`s.
 const SHUTDOWN_PAYLOAD_ID: &str = "control_command";
 
 /// Returns `(instance_id, serialized_state_bytes)` per live Relay
 /// instance. The closure is responsible for walking the live registry
-/// and serializing each instance via `processor_state::serialize_relay_state`.
-pub type ProcessorSnapshotFn =
+/// and serializing each instance via `partition_state::serialize_relay_state`.
+pub type RelaySnapshotFn =
     Box<dyn Fn() -> Vec<(String, Vec<u8>)> + Send + Sync>;
 
 /// Bridge between the user-facing `Flezha` handle and the per-instance
@@ -78,10 +78,10 @@ pub struct ShutdownBridge {
     control_stream: Mutex<Option<Arc<FlezhaStream>>>,
 
     /// Closure that returns a point-in-time snapshot of currently-running
-    /// processors. Populated by the coordinator at startup; the closure
+    /// relays. Populated by the coordinator at startup; the closure
     /// captures an `Arc` to the backend's registry so the bridge can be
     /// agnostic to legacy vs fast-dispatch.
-    snapshot_fn: Mutex<Option<ProcessorSnapshotFn>>,
+    snapshot_fn: Mutex<Option<RelaySnapshotFn>>,
 
     /// Single-shot guard: a graceful shutdown runs at most once per
     /// bridge so SIGTERM + `Drop` racing each other does not double-emit
@@ -102,7 +102,7 @@ impl ShutdownBridge {
         *self.control_stream.lock().unwrap() = stream;
     }
 
-    pub fn set_snapshot_fn(&self, snapshot_fn: ProcessorSnapshotFn) {
+    pub fn set_snapshot_fn(&self, snapshot_fn: RelaySnapshotFn) {
         *self.snapshot_fn.lock().unwrap() = Some(snapshot_fn);
     }
 
@@ -124,22 +124,22 @@ impl ShutdownBridge {
             }
         };
 
-        let processors = match self.snapshot_fn.lock().unwrap().as_ref() {
+        let relays = match self.snapshot_fn.lock().unwrap().as_ref() {
             Some(f) => f(),
             None => return,
         };
 
-        if processors.is_empty() {
+        if relays.is_empty() {
             return;
         }
 
-        let mut wait_handles = Vec::with_capacity(processors.len());
+        let mut wait_handles = Vec::with_capacity(relays.len());
 
-        for (processor_id, serialized_state) in processors {
+        for (relay_id, serialized_state) in relays {
 
             let reference_id = format!(
                 "shutdown-{}-{}",
-                processor_id,
+                relay_id,
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_nanos())
@@ -148,9 +148,9 @@ impl ShutdownBridge {
 
             let request = pb::CommandRequest {
                 reference_id: reference_id.clone(),
-                command: Some(pb::command_request::Command::OperatorShutdownNotification(
-                    pb::OperatorShutdownNotification {
-                        processor_id: processor_id.clone(),
+                command: Some(pb::command_request::Command::ExecutorShutdownNotification(
+                    pb::ExecutorShutdownNotification {
+                        relay_id: relay_id.clone(),
                         serialized_state,
                     },
                 )),
@@ -164,21 +164,21 @@ impl ShutdownBridge {
 
             if let Err(e) = (&*stream).write_all(&payload) {
                 eprintln!(
-                    "[flezha] Failed to write OperatorShutdownNotification for {}: {}",
-                    processor_id, e
+                    "[flezha] Failed to write ExecutorShutdownNotification for {}: {}",
+                    relay_id, e
                 );
                 drop_pending_ack(&reference_id);
                 continue;
             }
 
-            let processor_id_for_thread = processor_id;
+            let relay_id_for_thread = relay_id;
             let reference_id_for_thread = reference_id;
             wait_handles.push(thread::spawn(move || match rx.recv_timeout(ACK_TIMEOUT) {
                 Ok(()) => {}
                 Err(_) => {
                     eprintln!(
-                        "[flezha] OperatorShutdownAck timeout for {}",
-                        processor_id_for_thread
+                        "[flezha] ExecutorShutdownAck timeout for {}",
+                        relay_id_for_thread
                     );
                     drop_pending_ack(&reference_id_for_thread);
                 }
@@ -194,10 +194,10 @@ impl ShutdownBridge {
 // ---------------------------------------------------------------------------
 // Process-global registries.
 //
-// `PENDING_ACKS` lets the agent->SDK `OperatorShutdownAck` command handler
-// (in `command::operator_shutdown_ack`) signal a per-processor wait
+// `PENDING_ACKS` lets the controller->SDK `ExecutorShutdownAck` command handler
+// (in `command::executor_shutdown_ack`) signal a per-relay wait
 // channel without needing access to the originating bridge — handlers
-// only see `&mut ComputeEngineNode`, so a global keyed by reference_id is
+// only see `&mut ExecutorNode`, so a global keyed by reference_id is
 // the simplest plumbing.
 //
 // `BRIDGES` lets a single SIGTERM handler thread drive shutdown across
@@ -220,8 +220,8 @@ fn drop_pending_ack(reference_id: &str) {
     pending_acks_map().lock().unwrap().remove(reference_id);
 }
 
-/// Called from the agent->SDK `OperatorShutdownAck` command handler. Wakes
-/// the per-processor wait channel registered by `run_graceful_shutdown`.
+/// Called from the controller->SDK `ExecutorShutdownAck` command handler. Wakes
+/// the per-relay wait channel registered by `run_graceful_shutdown`.
 /// A missing entry is logged and ignored — this happens after the wait
 /// already timed out and dropped its registration.
 pub fn signal_ack(reference_id: &str) {
@@ -232,7 +232,7 @@ pub fn signal_ack(reference_id: &str) {
         }
         None => {
             eprintln!(
-                "[flezha] OperatorShutdownAck for unknown reference_id {} — \
+                "[flezha] ExecutorShutdownAck for unknown reference_id {} — \
                  either timed out already or never registered.",
                 reference_id
             );
@@ -285,7 +285,7 @@ fn install_sigterm_handler() {
 #[cfg(test)]
 mod tests {
     //! Bridge mechanics tests. Drive `run_graceful_shutdown` against a
-    //! `UnixStream::pair()` standing in for the agent's control channel,
+    //! `UnixStream::pair()` standing in for the controller's control channel,
     //! then decode the captured frame and assert protocol shape.
     //!
     //! The full SIGTERM-from-Kubernetes path is exercised in the
@@ -299,8 +299,8 @@ mod tests {
     use std::os::unix::net::UnixStream;
     use std::time::Instant;
 
-    fn build_bridge_with_processor(
-        processor_id: &str,
+    fn build_bridge_with_relay(
+        relay_id: &str,
         snapshot: Vec<u8>,
     ) -> (Arc<ShutdownBridge>, UnixStream) {
         let (sdk_side, agent_side) = UnixStream::pair().expect("UnixStream::pair");
@@ -308,7 +308,7 @@ mod tests {
         let bridge = ShutdownBridge::new();
         bridge.set_control_stream(Some(Arc::new(FlezhaStream::Unix(sdk_side))));
 
-        let pid = processor_id.to_string();
+        let pid = relay_id.to_string();
         let snap = snapshot.clone();
         bridge.set_snapshot_fn(Box::new(move || vec![(pid.clone(), snap.clone())]));
 
@@ -336,13 +336,13 @@ mod tests {
     }
 
     #[test]
-    fn graceful_shutdown_emits_framed_operator_shutdown_notification() {
+    fn graceful_shutdown_emits_framed_executor_shutdown_notification() {
         let snapshot = b"final-state-bytes".to_vec();
-        let (bridge, mut agent_side) = build_bridge_with_processor("p1", snapshot.clone());
+        let (bridge, mut agent_side) = build_bridge_with_relay("p1", snapshot.clone());
 
         let bridge_for_run = Arc::clone(&bridge);
         // run_graceful_shutdown blocks waiting for an ack we never send;
-        // off-thread it so we can drive the agent side and bound the wait.
+        // off-thread it so we can drive the controller side and bound the wait.
         let run_handle = std::thread::spawn(move || bridge_for_run.run_graceful_shutdown());
 
         // Read the frame the SDK emitted. UnixStream is blocking — the
@@ -359,16 +359,16 @@ mod tests {
             .expect("decode CommandRequest from shutdown frame");
 
         let notif = match request.command.expect("oneof command set") {
-            pb::command_request::Command::OperatorShutdownNotification(n) => n,
-            other => panic!("expected OperatorShutdownNotification, got {:?}", other),
+            pb::command_request::Command::ExecutorShutdownNotification(n) => n,
+            other => panic!("expected ExecutorShutdownNotification, got {:?}", other),
         };
 
-        assert_eq!(notif.processor_id, "p1");
+        assert_eq!(notif.relay_id, "p1");
         assert_eq!(notif.serialized_state, snapshot);
         assert!(!request.reference_id.is_empty());
 
         // Now signal the ack so the wait thread releases. Closing the
-        // socket on the agent side without acking would also work but
+        // socket on the controller side without acking would also work but
         // we exercise the happy path explicitly.
         signal_ack(&request.reference_id);
         run_handle.join().expect("shutdown thread joins");
@@ -377,13 +377,13 @@ mod tests {
     #[test]
     fn graceful_shutdown_returns_within_2s_when_ack_never_arrives() {
         let (bridge, _agent_side) =
-            build_bridge_with_processor("p_timeout", b"unused".to_vec());
+            build_bridge_with_relay("p_timeout", b"unused".to_vec());
 
         let started = Instant::now();
         bridge.run_graceful_shutdown();
         let elapsed = started.elapsed();
 
-        // Timeout is 2 s per processor; allow a small slack for thread
+        // Timeout is 2 s per relay; allow a small slack for thread
         // spawn + join. The Kubernetes default grace period is 30 s, so
         // anything significantly above 2.5 s here would mean we have a
         // bug that could blow past the grace period.
@@ -410,7 +410,7 @@ mod tests {
     #[test]
     fn run_graceful_shutdown_is_idempotent() {
         let (bridge, _agent_side) =
-            build_bridge_with_processor("p_idem", b"x".to_vec());
+            build_bridge_with_relay("p_idem", b"x".to_vec());
 
         // First run — exercises the timeout path. Second run sees
         // shutdown_started == true and returns immediately.

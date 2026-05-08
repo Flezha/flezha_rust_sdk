@@ -1,17 +1,17 @@
 //! Persistence-toggle resolution per `relay-state-persistence-rust/design.md`
-//! and the umbrella spec scenario "Operator-side runtime override".
+//! and the umbrella spec scenario "Executor-side runtime override".
 //!
 //! Three-way precedence:
-//!   1. Operator override (`relay_persistence.<RelayClass>` in relay-start
+//!   1. Executor override (`relay_persistence.<RelayClass>` in relay-start
 //!      metadata) wins if present.
 //!   2. Otherwise, the Relay's class const `Relay::PERSISTENCE_ENABLED`.
 //!   3. The trait default of the const is `true`.
 //!
 //! Frozen at instance start: the resolved value is bound on
-//! `RelayInstance` at construction; subsequent operator config changes
+//! `RelayInstance` at construction; subsequent executor config changes
 //! only take effect on the next `stop_relay` + `start_relay` cycle.
 
-/// Resolve the persistence flag for a Relay instance. The agent's
+/// Resolve the persistence flag for a Relay instance. The controller's
 /// runtime config is parsed by upstream code into a `Option<bool>` keyed
 /// by `relay_persistence.<RelayClass>`; the present value wins
 /// regardless of the class const.

@@ -13,14 +13,14 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use flezha_compute_engine::__dispatch_internals as bi;
-use flezha_compute_engine::channel::ChannelBuilder;
-use flezha_compute_engine::relay::builder::build_topology_for;
-use flezha_compute_engine::relay::registry::RelayInstanceRegistry;
-use flezha_compute_engine::relay::RelayInstance;
-use flezha_compute_engine::shard::{Shard, ShardCtx, ShardError};
-use flezha_compute_engine::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_compute_engine::{OverflowPolicy, Relay};
+use flezha_executor::__dispatch_internals as bi;
+use flezha_executor::channel::ChannelBuilder;
+use flezha_executor::relay::builder::build_topology_for;
+use flezha_executor::relay::registry::RelayInstanceRegistry;
+use flezha_executor::relay::RelayInstance;
+use flezha_executor::shard::{Shard, ShardCtx, ShardError};
+use flezha_executor::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
+use flezha_executor::{OverflowPolicy, Relay};
 use flz_transport::transport::FlezhaStream;
 use bi::RelayDispatchHandle;
 

@@ -1,5 +1,5 @@
 [package]
-name = "flezha_compute_engine"
+name = "flezha_executor"
 version = "0.1.0"
 edition = "2021"
 
@@ -9,7 +9,7 @@ default = []
 # constructors) for the crate's own benches/tests. NOT a stable public API.
 # Only enabled by the `[[bench]]` targets via `required-features`.
 bench-internals = []
-# Exposes `flezha_compute_engine::testing::ShardTestHarness` for downstream
+# Exposes `flezha_executor::testing::ShardTestHarness` for downstream
 # crates that want to write replay-equality tests. Test code in this crate
 # also compiles the surface under `cfg(test)` regardless of the feature.
 testing = []

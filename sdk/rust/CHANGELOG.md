@@ -1,4 +1,4 @@
-# Changelog — `flezha_compute_engine` (Rust SDK)
+# Changelog — `flezha_executor` (Rust SDK)
 
 All notable changes to the Rust SDK crate.
 
@@ -7,13 +7,13 @@ All notable changes to the Rust SDK crate.
 ### Performance
 
 - **Dispatch core rewritten behind the `fast-dispatch` cargo feature.** The
-  single-coordinator dispatch loop is replaced with per-processor lock-free
+  single-coordinator dispatch loop is replaced with per-relay lock-free
   mailboxes (`crossbeam::queue::SegQueue` + `AtomicBool inflight`) drained
   by a Chase-Lev work-stealing pool (built on `crossbeam-deque`). The live
-  processor registry is backed by `DashMap` instead of
+  relay registry is backed by `DashMap` instead of
   `RwLock<HashMap>`. Per-message dispatch-overhead drops from ~9 to ≤3
   synchronization operations on the hot path.
-  - Criterion dispatch micro-bench (100 processors × 10k messages, pure
+  - Criterion dispatch micro-bench (100 relays × 10k messages, pure
     dispatch): ~862k–907k msg/s on a 16-core dev box (baseline: ~90k msg/s).
   - End-to-end `mix bench --runtime rust -n 100 -m 10000`: improvement
     scales with hardware parallelism; see
@@ -26,28 +26,28 @@ All notable changes to the Rust SDK crate.
 
 ### Preserved invariants (no observable behavior change)
 
-- Sticky per-processor ordering under `ProcessorRunner::ThreadPool`: two
-  invocations of the same processor's `process(...)` never overlap, inputs
+- Sticky per-relay ordering under `RelayRunner::ThreadPool`: two
+  invocations of the same relay's `process(...)` never overlap, inputs
   are observed in arrival order.
-- `ProcessorRunner::ThreadSpawn`: per-invocation OS thread spawn retained.
+- `RelayRunner::ThreadSpawn`: per-invocation OS thread spawn retained.
 - Reconnect semantics: exponential backoff (200 ms → 30 s cap), state
-  reset on unexpected drop, no reconnect on `ComputeEngineDisconnect`.
-- Command dispatch (`AssignComputeEngineId`, `ConnectSocket`,
-  `AddProcessor`, `RemProcessor`, `ProcessorState`,
+  reset on unexpected drop, no reconnect on `ExecutorDisconnect`.
+- Command dispatch (`AssignExecutorId`, `ConnectSocket`,
+  `AddRelay`, `RemRelay`, `PartitionState`,
   `MigrationSerialization`, `MigrationDeserialization`,
-  `ComputeEngineDisconnect`) produces byte-identical `CommandResponse`
+  `ExecutorDisconnect`) produces byte-identical `CommandResponse`
   bytes.
 - Public API surface unchanged: `new`, `Flezha`, `register_factory`,
-  `ProcessorHandler`, `ProcessorInput` / `ProcessorOutput` /
-  `ProcessorResult`, `ProcessorSettings`, `FactoryMetadata` keep the same
+  `RelayHandler`, `RelayInput` / `RelayOutput` /
+  `RelayResult`, `RelaySettings`, `FactoryMetadata` keep the same
   signatures.
 
 ### Added (internal)
 
-- `compute_engine/mailbox.rs`, `compute_engine/work_stealing_pool.rs`,
-  `compute_engine/fast.rs` — the fast-dispatch internals.
-- `processor::factory_registry::ProcessorRegistry` /
-  `ProcessorSlot` — DashMap-backed live registry.
+- `executor/mailbox.rs`, `executor/work_stealing_pool.rs`,
+  `executor/fast.rs` — the fast-dispatch internals.
+- `relay::factory_registry::RelayRegistry` /
+  `RelaySlot` — DashMap-backed live registry.
 - `benches/dispatch.rs` — Criterion throughput + latency micro-benches.
 - `benches/correctness.rs` — contention-adder, sticky-ordering, thread-spawn
   invariant checks.

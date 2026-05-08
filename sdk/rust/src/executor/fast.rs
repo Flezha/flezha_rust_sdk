@@ -1,6 +1,6 @@
 //! Per-Partition mailboxes backed by a DashMap registry and a Chase-Lev
 //! work-stealing pool. The coordinator thread still exists for control-plane
-//! traffic (`HandleCommandAction`, `ReturnProcessors`, `Reconnect`) but
+//! traffic (`HandleCommandAction`, `ReturnRelays`, `Reconnect`) but
 //! data-plane traffic bypasses it entirely — stream readers push directly
 //! into the targeted Relay instance's partition mailboxes.
 
@@ -18,11 +18,11 @@ use crate::relay::registry::{get_class as get_relay_class, RelayInstanceRegistry
 use crate::shutdown::ShutdownBridge;
 
 use super::work_stealing_pool::WorkStealingPool;
-use super::{ClientResponseMessage, ComputeEngineMessage, ComputeEngineStatus};
+use super::{ClientResponseMessage, ExecutorMessage, ExecutorStatus};
 use super::control_unit;
 
-pub struct ComputeEngineNode {
-    compute_engine_id: String,
+pub struct ExecutorNode {
+    executor_id: String,
     _namespace: String,
     relay_registry: Arc<RelayInstanceRegistry>,
     pool: Arc<WorkStealingPool>,
@@ -30,33 +30,33 @@ pub struct ComputeEngineNode {
     /// Control-plane channel kept for parity with the public API surface;
     /// data-plane traffic does not go through this channel.
     #[allow(dead_code)]
-    compute_engine_channel: Arc<Mutex<Sender<ComputeEngineMessage>>>,
+    executor_channel: Arc<Mutex<Sender<ExecutorMessage>>>,
     quic_client: Option<Arc<QuicClient>>,
-    status: ComputeEngineStatus,
+    status: ExecutorStatus,
 }
 
-impl ComputeEngineNode {
-    pub fn new(namespace: String, otx: Sender<ComputeEngineMessage>) -> ComputeEngineNode {
+impl ExecutorNode {
+    pub fn new(namespace: String, otx: Sender<ExecutorMessage>) -> ExecutorNode {
         let relay_registry = Arc::new(RelayInstanceRegistry::new());
         let pool = Arc::new(WorkStealingPool::new());
         let shared_io_streams = Arc::new(RwLock::new(HashMap::new()));
         let otx_arc = Arc::new(Mutex::new(otx));
 
-        ComputeEngineNode {
-            compute_engine_id: "undefined".to_string(),
+        ExecutorNode {
+            executor_id: "undefined".to_string(),
             _namespace: namespace,
             relay_registry,
             pool,
             shared_io_streams,
-            compute_engine_channel: otx_arc,
+            executor_channel: otx_arc,
             quic_client: None,
-            status: ComputeEngineStatus::Starting,
+            status: ExecutorStatus::Starting,
         }
     }
 
     /// Spawn a Relay instance from a registered Relay class. `factory_id`
     /// is looked up in the global class registry; `instance_id` is what
-    /// the wire calls `processor_id`. Idempotent on duplicate
+    /// the wire calls `relay_id`. Idempotent on duplicate
     /// `instance_id`: returns the existing instance.
     pub fn start_relay(
         &self,
@@ -103,33 +103,33 @@ impl ComputeEngineNode {
     }
 
     /// Public-API view: snapshot of live Relay instances. Mirrors the
-    /// pre-`relay-mvp-rust` `Flezha::get_processors()` shape so external
+    /// pre-`relay-mvp-rust` `Flezha::get_relays()` shape so external
     /// inspectors that walk the registry continue to work.
-    pub fn get_processors(
+    pub fn get_relays(
         &self,
     ) -> Arc<RwLock<HashMap<String, Arc<Mutex<Arc<RelayInstance>>>>>> {
-        crate::relay::registry::snapshot_as_processor_view(&self.relay_registry)
+        crate::relay::registry::snapshot_as_relay_view(&self.relay_registry)
     }
 
     pub fn get_io_streams(&self) -> Arc<RwLock<HashMap<u32, FlezhaStream>>> {
         Arc::clone(&self.shared_io_streams)
     }
 
-    pub fn get_compute_engine_id(&self) -> String {
-        self.compute_engine_id.clone()
+    pub fn get_executor_id(&self) -> String {
+        self.executor_id.clone()
     }
 
-    pub fn assign_compute_engine_id(&mut self, compute_engine_id: String) {
-        self.compute_engine_id = compute_engine_id;
+    pub fn assign_executor_id(&mut self, executor_id: String) {
+        self.executor_id = executor_id;
     }
 
-    pub fn set_status(&mut self, status: ComputeEngineStatus) {
+    pub fn set_status(&mut self, status: ExecutorStatus) {
         self.status = status;
     }
 
     #[allow(dead_code)]
-    pub fn get_compute_engine_channel(&self) -> Arc<Mutex<Sender<ComputeEngineMessage>>> {
-        Arc::clone(&self.compute_engine_channel)
+    pub fn get_executor_channel(&self) -> Arc<Mutex<Sender<ExecutorMessage>>> {
+        Arc::clone(&self.executor_channel)
     }
 
     pub fn get_quic_client(&self) -> Option<Arc<QuicClient>> {
@@ -143,25 +143,25 @@ impl ComputeEngineNode {
 
 pub fn start(
     namespace: String,
-    (otx, orx): (Sender<ComputeEngineMessage>, Receiver<ComputeEngineMessage>),
+    (otx, orx): (Sender<ExecutorMessage>, Receiver<ExecutorMessage>),
     ctx: Sender<ClientResponseMessage>,
     shutdown_bridge: Arc<ShutdownBridge>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
-        let mut compute_engine = ComputeEngineNode::new(namespace.clone(), otx.clone());
+        let mut executor = ExecutorNode::new(namespace.clone(), otx.clone());
 
         // Capture a registry snapshot closure now so the shutdown bridge
         // can enumerate live Relay instances without going through the
         // coordinator channel. Survives reconnects since the registry
         // Arc is stable.
         {
-            let registry = Arc::clone(&compute_engine.relay_registry);
+            let registry = Arc::clone(&executor.relay_registry);
             shutdown_bridge.set_snapshot_fn(Box::new(move || {
                 registry
                     .snapshot()
                     .into_iter()
                     .map(|(k, instance)| {
-                        (k, crate::command::processor_state::serialize_relay_state(&instance))
+                        (k, crate::command::partition_state::serialize_relay_state(&instance))
                     })
                     .collect()
             }));
@@ -171,30 +171,30 @@ pub fn start(
         let otx_arc = Arc::new(Mutex::new(otx));
         let (_control_thread, mut control_stream, quic_client) =
             control_unit::open(namespace.clone(), ctx_arc.clone(), otx_arc.clone());
-        compute_engine.set_quic_client(quic_client);
+        executor.set_quic_client(quic_client);
         shutdown_bridge.set_control_stream(Some(Arc::clone(&control_stream)));
 
         loop {
             let message = orx.recv().expect("Failed to receive coordinator message");
 
             match message {
-                ComputeEngineMessage::HandleCommandAction(payload_id, message, _metadata) => {
+                ExecutorMessage::HandleCommandAction(payload_id, message, _metadata) => {
                     command::handle_command(
-                        &mut compute_engine,
+                        &mut executor,
                         &control_stream,
                         &payload_id,
                         &message,
                     );
                 }
-                ComputeEngineMessage::ReturnProcessors => {
-                    return_processors(&compute_engine, ctx_arc.clone());
+                ExecutorMessage::ReturnRelays => {
+                    return_relays(&executor, ctx_arc.clone());
                 }
-                ComputeEngineMessage::Reconnect => {
-                    if matches!(compute_engine.status, ComputeEngineStatus::Stopped) {
+                ExecutorMessage::Reconnect => {
+                    if matches!(executor.status, ExecutorStatus::Stopped) {
                         continue;
                     }
                     handle_reconnect(
-                        &mut compute_engine,
+                        &mut executor,
                         &mut control_stream,
                         &namespace,
                         &otx_arc,
@@ -206,35 +206,35 @@ pub fn start(
     })
 }
 
-fn return_processors(
-    compute_engine: &ComputeEngineNode,
+fn return_relays(
+    executor: &ExecutorNode,
     ctx_arc: Arc<Mutex<Sender<ClientResponseMessage>>>,
 ) {
-    let processors = compute_engine.get_processors();
+    let relays = executor.get_relays();
     ctx_arc
         .lock()
         .unwrap()
-        .send(ClientResponseMessage::ReturnProcessors(processors))
-        .expect("Failed to send processors response");
+        .send(ClientResponseMessage::ReturnRelays(relays))
+        .expect("Failed to send relays response");
 }
 
 fn handle_reconnect(
-    compute_engine: &mut ComputeEngineNode,
+    executor: &mut ExecutorNode,
     control_stream: &mut Arc<FlezhaStream>,
     namespace: &str,
-    otx_arc: &Arc<Mutex<Sender<ComputeEngineMessage>>>,
+    otx_arc: &Arc<Mutex<Sender<ExecutorMessage>>>,
 ) {
-    compute_engine.set_status(ComputeEngineStatus::Stopped);
+    executor.set_status(ExecutorStatus::Stopped);
 
-    compute_engine.shared_io_streams.write().unwrap().clear();
-    compute_engine.relay_registry.clear();
-    compute_engine.assign_compute_engine_id("undefined".to_string());
+    executor.shared_io_streams.write().unwrap().clear();
+    executor.relay_registry.clear();
+    executor.assign_executor_id("undefined".to_string());
 
     let (_, new_stream, new_quic) =
         control_unit::open_reconnect(namespace.to_string(), otx_arc.clone());
 
     *control_stream = new_stream;
-    compute_engine.set_quic_client(new_quic);
+    executor.set_quic_client(new_quic);
 }
 
 /// Stream-reader handle for the Relay model. Cheap to clone; carries a

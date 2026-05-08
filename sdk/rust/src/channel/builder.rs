@@ -77,7 +77,7 @@ pub struct BuildPartitionArgs<'a> {
     /// `persistence_enabled` field; the per-process flusher inspects it
     /// at drain time to decide whether to call `send_frame`.
     pub persistence_enabled: bool,
-    pub pool: Arc<crate::compute_engine::work_stealing_pool::WorkStealingPool>,
+    pub pool: Arc<crate::executor::work_stealing_pool::WorkStealingPool>,
 }
 
 /// Internal channel record used during topology construction.
@@ -159,7 +159,7 @@ impl ChannelBuilder {
         }
     }
 
-    /// Declare an entry channel fed by the agent. T is restricted to
+    /// Declare an entry channel fed by the controller. T is restricted to
     /// `Vec<u8>` or `String` by the sealed `EntryChannelType` trait.
     pub fn input<T: EntryChannelType + EntryPayloadWrap>(
         &mut self,
@@ -265,7 +265,7 @@ pub(crate) fn default_policy_for_kind(kind: ChannelKind) -> OverflowPolicy {
 }
 
 /// Entry-channel declaration. Only exposes `.into::<X>()` to wire a
-/// consumer Shard; entry channels are fed by the agent so there is no
+/// consumer Shard; entry channels are fed by the controller so there is no
 /// `.from(...)`.
 pub struct EntryChannel<'b, T> {
     builder: &'b mut ChannelBuilder,
@@ -380,7 +380,7 @@ impl<'b, T: 'static + Send + Sync> ChannelDeclWithProducer<'b, T> {
         self
     }
 
-    /// Mark this channel as plugin-bound. The agent's plugin layer
+    /// Mark this channel as plugin-bound. The controller's plugin layer
     /// receives the values. v1 requires `T: AsRef<[u8]>` (`Vec<u8>` /
     /// `String`); the producer Shard is responsible for serializing
     /// typed messages to bytes before emit.

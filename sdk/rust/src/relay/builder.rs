@@ -157,7 +157,7 @@ pub fn build_topology_for<R: crate::relay::Relay>() -> Result<Arc<RelayTopology>
 /// override on the Shard wins over `FLEZHA_MAILBOX_CAPACITY`, which wins
 /// over the built-in default. Out-of-range values fail registration with
 /// the offending Shard's name; an unparseable env var falls through to
-/// the default rather than failing (operators tolerate typos in env
+/// the default rather than failing (executors tolerate typos in env
 /// values during development).
 pub(crate) fn resolve_mailbox_capacity(
     shard_name: &'static str,

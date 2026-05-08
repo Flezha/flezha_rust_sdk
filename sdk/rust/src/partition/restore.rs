@@ -17,20 +17,20 @@ pub struct RestoreInitPayload<'a> {
     /// Snapshot bytes from the latest snapshot file. Empty if no
     /// snapshot has been written for this Partition. The body is the
     /// postcard-encoded `S::State` exactly as the SDK shipped it via
-    /// `partition_state_snapshot`. The agent strips its on-disk header
+    /// `partition_state_snapshot`. The controller strips its on-disk header
     /// before shipping, so this slice does NOT include the 16-byte
     /// header — it is the raw State payload.
     pub snapshot_bytes: &'a [u8],
     /// Change-log bytes (concatenated WAL records). Each record is
     /// framed `[seq: u64 BE][len: u32 BE][header: 16B][change_bytes][crc32: u32 BE]`
     /// where `len = 16 + change_bytes.len()` and `crc32` covers
-    /// `header + change_bytes`. This matches the agent's on-disk WAL
+    /// `header + change_bytes`. This matches the controller's on-disk WAL
     /// record format (`Flezha.State.WalWriter.encode_record/3`).
     pub change_log_bytes: &'a [u8],
 }
 
 /// Reasons restoration can fail. The runtime surfaces these from the
-/// agent-facing relay-start path; the user's `init_state` does not see
+/// controller-facing relay-start path; the user's `init_state` does not see
 /// them directly.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum RestoreError {
@@ -69,7 +69,7 @@ where
     let mut state = S::init_state(shard_key, payload.copied_view());
     if let Some(p) = payload {
         if !p.snapshot_bytes.is_empty() {
-            // The agent strips the snapshot file's header before shipping;
+            // The controller strips the snapshot file's header before shipping;
             // the body here is the raw postcard-encoded `S::State`.
             state = postcard::from_bytes(p.snapshot_bytes)
                 .map_err(|e| RestoreError::SnapshotDecode(e.to_string()))?;
@@ -96,7 +96,7 @@ where
     Ok(state)
 }
 
-/// One framed WAL record as produced by the agent's
+/// One framed WAL record as produced by the controller's
 /// `Flezha.State.WalWriter.encode_record/3`. Field-borrowed against the
 /// source byte buffer. `change_bytes` excludes the leading 16-byte
 /// header (which is exposed separately as `header`).
@@ -108,7 +108,7 @@ pub(crate) struct ChangeLogRecord<'a> {
     pub trailing_crc: u32,
 }
 
-/// Iterate concatenated WAL records using the agent on-disk framing
+/// Iterate concatenated WAL records using the controller on-disk framing
 /// `[seq: u64 BE][len: u32 BE][header: 16B][change_bytes][crc32: u32 BE]`
 /// where `len = 16 + change_bytes.len()` and `crc32` covers
 /// `header + change_bytes`.
