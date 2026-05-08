@@ -12,17 +12,14 @@
 //! the per-partition `(S, S::State)` is safely accessible behind a
 //! `Mutex` lock that is always uncontended in practice.
 
-use std::any::Any;
-use std::any::TypeId;
+use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::io::Write;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use flz_transport::service::payloader;
 use flz_transport::transport::FlezhaStream;
-
-use std::sync::atomic::Ordering;
 
 use crate::channel::builder::BuildPartitionArgs;
 use crate::channel::{ChannelId, ChannelKind, OverflowPolicy, ShardId};
@@ -62,8 +59,7 @@ pub(crate) fn build_state_fns<S: Shard>() -> (
             let typed = state
                 .downcast_ref::<PartitionState<S>>()
                 .ok_or_else(|| "serialize_state: state type mismatch".to_string())?;
-            serde_json::to_value(&typed.state)
-                .map_err(|e| format!("serialize_state: {}", e))
+            serde_json::to_value(&typed.state).map_err(|e| format!("serialize_state: {}", e))
         },
     );
     let deserialize: crate::channel::builder::DeserializeStateFn = Arc::new(
@@ -180,39 +176,41 @@ struct PartitionEmitSink<'a> {
 }
 
 impl<'a> EmitSink for PartitionEmitSink<'a> {
-    fn emit_inter_shard(
-        &mut self,
-        value: Arc<dyn Any + Send + Sync>,
-    ) -> Result<(), ShardError> {
-        let cid = self.output_channel_id.ok_or_else(|| ShardError::UnknownChannel {
-            channel: self
-                .output_channel_name
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| "<unknown>".to_string()),
-        })?;
-        let instance = self.instance.as_ref().ok_or_else(|| ShardError::UnknownChannel {
-            channel: self
-                .output_channel_name
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| "<unknown>".to_string()),
-        })?;
+    fn emit_inter_shard(&mut self, value: Arc<dyn Any + Send + Sync>) -> Result<(), ShardError> {
+        let cid = self
+            .output_channel_id
+            .ok_or_else(|| ShardError::UnknownChannel {
+                channel: self
+                    .output_channel_name
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "<unknown>".to_string()),
+            })?;
+        let instance = self
+            .instance
+            .as_ref()
+            .ok_or_else(|| ShardError::UnknownChannel {
+                channel: self
+                    .output_channel_name
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "<unknown>".to_string()),
+            })?;
 
-        let descriptor = instance.topology.channel(cid).ok_or_else(|| {
-            ShardError::UnknownChannel {
-                channel: format!("<channel id {}>", cid),
-            }
-        })?;
+        let descriptor =
+            instance
+                .topology
+                .channel(cid)
+                .ok_or_else(|| ShardError::UnknownChannel {
+                    channel: format!("<channel id {}>", cid),
+                })?;
 
         let policy = descriptor.overflow_policy;
 
         for &consumer_shard_id in &descriptor.consumers {
-            let consumer_shard =
-                instance
-                    .topology
-                    .shard(consumer_shard_id)
-                    .ok_or_else(|| ShardError::UnknownChannel {
-                        channel: format!("<shard id {}>", consumer_shard_id),
-                    })?;
+            let consumer_shard = instance.topology.shard(consumer_shard_id).ok_or_else(|| {
+                ShardError::UnknownChannel {
+                    channel: format!("<shard id {}>", consumer_shard_id),
+                }
+            })?;
 
             let partitions = match instance.partitions.get(consumer_shard_id as usize) {
                 Some(p) => p,
@@ -224,8 +222,9 @@ impl<'a> EmitSink for PartitionEmitSink<'a> {
                     enqueue(slot, payload_for(&value, &self.stream), policy);
                 }
             } else {
-                let key_to_idx =
-                    instance.partition_key_to_idx.get(consumer_shard_id as usize);
+                let key_to_idx = instance
+                    .partition_key_to_idx
+                    .get(consumer_shard_id as usize);
                 let keys = (consumer_shard.partition_for_erased)(&*value);
                 for key in keys {
                     if let Some(map) = key_to_idx {
@@ -246,17 +245,24 @@ impl<'a> EmitSink for PartitionEmitSink<'a> {
         value: Arc<dyn Any + Send + Sync>,
         meta: Option<HashMap<String, String>>,
     ) -> Result<(), ShardError> {
-        let cid = self.output_channel_id.ok_or_else(|| ShardError::UnknownChannel {
-            channel: self.channel_name().to_string(),
-        })?;
-        let instance = self.instance.as_ref().ok_or_else(|| ShardError::UnknownChannel {
-            channel: self.channel_name().to_string(),
-        })?;
-        let descriptor = instance.topology.channel(cid).ok_or_else(|| {
-            ShardError::UnknownChannel {
-                channel: format!("<channel id {}>", cid),
-            }
-        })?;
+        let cid = self
+            .output_channel_id
+            .ok_or_else(|| ShardError::UnknownChannel {
+                channel: self.channel_name().to_string(),
+            })?;
+        let instance = self
+            .instance
+            .as_ref()
+            .ok_or_else(|| ShardError::UnknownChannel {
+                channel: self.channel_name().to_string(),
+            })?;
+        let descriptor =
+            instance
+                .topology
+                .channel(cid)
+                .ok_or_else(|| ShardError::UnknownChannel {
+                    channel: format!("<channel id {}>", cid),
+                })?;
 
         let serialize = descriptor.plugin_serializer.as_ref().ok_or_else(|| {
             ShardError::Custom(format!(
@@ -312,8 +318,7 @@ pub(crate) fn enqueue(
                     .fetch_add(1, Ordering::Relaxed);
                 if slot.mailbox.try_mark_inflight() {
                     let cloned = Arc::clone(slot);
-                    slot.pool
-                        .submit(Box::new(move || drain_partition(&cloned)));
+                    slot.pool.submit(Box::new(move || drain_partition(&cloned)));
                 }
                 return;
             }
@@ -342,8 +347,7 @@ pub(crate) fn enqueue(
                         .fetch_add(1, Ordering::Relaxed);
                     if slot.mailbox.try_mark_inflight() {
                         let cloned = Arc::clone(slot);
-                        slot.pool
-                            .submit(Box::new(move || drain_partition(&cloned)));
+                        slot.pool.submit(Box::new(move || drain_partition(&cloned)));
                     }
                     return;
                 }
@@ -352,10 +356,7 @@ pub(crate) fn enqueue(
     }
 }
 
-fn payload_for(
-    value: &Arc<dyn Any + Send + Sync>,
-    stream: &Arc<FlezhaStream>,
-) -> PartitionPayload {
+fn payload_for(value: &Arc<dyn Any + Send + Sync>, stream: &Arc<FlezhaStream>) -> PartitionPayload {
     PartitionPayload {
         value: Arc::clone(value),
         stream: Arc::clone(stream),
@@ -368,8 +369,7 @@ fn send_plugin_frame(
     bytes: &[u8],
     metadata: &HashMap<String, String>,
 ) {
-    let frame =
-        payloader::build_from_binary(instance_id, bytes, metadata.clone());
+    let frame = payloader::build_from_binary(instance_id, bytes, metadata.clone());
     if let Err(e) = (&**stream).write_all(&frame) {
         eprintln!(
             "[flezha] plugin emit: failed to write {} bytes for {}: {}",
@@ -393,12 +393,8 @@ pub fn drain_partition(slot: &Arc<PartitionSlot>) {
                 Err(poisoned) => poisoned.into_inner(),
             };
             let instance_weak = Weak::clone(&slot.instance);
-            slot.dispatcher.dispatch(
-                payload,
-                &mut state_guard,
-                &mut buffer_guard,
-                &instance_weak,
-            );
+            slot.dispatcher
+                .dispatch(payload, &mut state_guard, &mut buffer_guard, &instance_weak);
         }
         slot.mailbox.release_inflight();
         if slot.mailbox.is_empty() {
@@ -441,9 +437,10 @@ pub fn build_partition_slot<S: Shard>(args: BuildPartitionArgs<'_>) -> Arc<Parti
             .map(|c| Arc::clone(&c.name)),
     )) as Arc<dyn ShardDispatcher>;
 
-    let flush_buffer: Arc<Mutex<Box<dyn FlushableBuffer>>> = Arc::new(Mutex::new(
-        Box::new(TypedBuffer::<S>::default()) as Box<dyn FlushableBuffer>,
-    ));
+    let flush_buffer: Arc<Mutex<Box<dyn FlushableBuffer>>> = Arc::new(Mutex::new(Box::new(
+        TypedBuffer::<S>::default(),
+    )
+        as Box<dyn FlushableBuffer>));
 
     let change_seq = Arc::new(AtomicU64::new(0));
     let partition_identity = Arc::new(encode_partition_identity(

@@ -13,7 +13,8 @@
 
 use std::hash::{Hash, Hasher};
 
-use serde::{de::DeserializeOwned, Serialize};
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 
 /// Persistent state-mutation record. Implementors describe one logical
 /// change applied to `Shard::State`; the per-Partition flusher serializes

@@ -6,9 +6,8 @@
 //! "Vec::push only" hot-path commitment.
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use serde::{Deserialize, Serialize};
-
 use flezha_executor::state::{Change, CoalesceKey};
+use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Clone)]
 struct SmallChange {
@@ -101,25 +100,35 @@ fn state_apply_throughput(c: &mut Criterion) {
     run_dimension::<LargeChange>(
         c,
         "large_no_key_no_prealloc",
-        LargeChange { payload: vec![0u8; 1024] },
+        LargeChange {
+            payload: vec![0u8; 1024],
+        },
         None,
     );
     run_dimension::<LargeChange>(
         c,
         "large_no_key_prealloc_1024",
-        LargeChange { payload: vec![0u8; 1024] },
+        LargeChange {
+            payload: vec![0u8; 1024],
+        },
         Some(1024),
     );
     run_dimension::<LargeChangeKeyed>(
         c,
         "large_keyed_no_prealloc",
-        LargeChangeKeyed { payload: vec![0u8; 1024], key: 7 },
+        LargeChangeKeyed {
+            payload: vec![0u8; 1024],
+            key: 7,
+        },
         None,
     );
     run_dimension::<LargeChangeKeyed>(
         c,
         "large_keyed_prealloc_1024",
-        LargeChangeKeyed { payload: vec![0u8; 1024], key: 7 },
+        LargeChangeKeyed {
+            payload: vec![0u8; 1024],
+            key: 7,
+        },
         Some(1024),
     );
 }

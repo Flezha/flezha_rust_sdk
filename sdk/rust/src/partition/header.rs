@@ -131,10 +131,21 @@ fn validate_common<S: crate::shard::Shard>(header: &DecodedHeader) -> Result<(),
 /// "0.1.0-pre.42" suffixes).
 pub fn parse_pkg_version() -> u32 {
     let raw = env!("CARGO_PKG_VERSION");
-    let mut parts = raw.split(|c: char| !c.is_ascii_digit()).filter(|s| !s.is_empty());
-    let major = parts.next().and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
-    let minor = parts.next().and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
-    let patch = parts.next().and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+    let mut parts = raw
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|s| !s.is_empty());
+    let major = parts
+        .next()
+        .and_then(|s| s.parse::<u32>().ok())
+        .unwrap_or(0);
+    let minor = parts
+        .next()
+        .and_then(|s| s.parse::<u32>().ok())
+        .unwrap_or(0);
+    let patch = parts
+        .next()
+        .and_then(|s| s.parse::<u32>().ok())
+        .unwrap_or(0);
     (major.min(0xFF) << 16) | (minor.min(0xFF) << 8) | patch.min(0xFF)
 }
 

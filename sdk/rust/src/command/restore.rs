@@ -8,11 +8,12 @@
 //! control-channel surface that returns the SDK's terminal seq once the
 //! restore has been applied to the live `PartitionSlot`.
 
+use prost::Message;
+
 use super::CommandAction;
 use crate::executor::ExecutorNode;
 use crate::partition::restore::iter_change_log_records;
 use crate::pb::{RestoreInitState, RestoreInitStateResponse};
-use prost::Message;
 
 impl CommandAction for RestoreInitState {
     fn handle(

@@ -1,8 +1,6 @@
 use super::CommandAction;
-use crate::{
-    executor::{ExecutorNode, ExecutorStatus},
-    pb::ExecutorDisconnect,
-};
+use crate::executor::{ExecutorNode, ExecutorStatus};
+use crate::pb::ExecutorDisconnect;
 
 impl CommandAction for ExecutorDisconnect {
     fn handle(

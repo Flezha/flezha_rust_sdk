@@ -4,22 +4,20 @@
 //! data-plane traffic bypasses it entirely — stream readers push directly
 //! into the targeted Relay instance's partition mailboxes.
 
-use crossbeam::channel::{Receiver, Sender};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread::{self, JoinHandle};
 
-use flz_transport::transport::FlezhaStream;
+use crossbeam::channel::{Receiver, Sender};
 use flz_transport::transport::quic::QuicClient;
+use flz_transport::transport::FlezhaStream;
 
+use super::work_stealing_pool::WorkStealingPool;
+use super::{control_unit, ClientResponseMessage, ExecutorMessage, ExecutorStatus};
 use crate::command;
 use crate::relay::instance::RelayInstance;
 use crate::relay::registry::{get_class as get_relay_class, RelayInstanceRegistry};
 use crate::shutdown::ShutdownBridge;
-
-use super::work_stealing_pool::WorkStealingPool;
-use super::{ClientResponseMessage, ExecutorMessage, ExecutorStatus};
-use super::control_unit;
 
 pub struct ExecutorNode {
     executor_id: String,
@@ -96,9 +94,7 @@ impl ExecutorNode {
     /// inspectors that walk the registry continue to work.
     // reason: returned shape is the public API; splitting it would break external inspectors
     #[allow(clippy::type_complexity)]
-    pub fn get_relays(
-        &self,
-    ) -> Arc<RwLock<HashMap<String, Arc<Mutex<Arc<RelayInstance>>>>>> {
+    pub fn get_relays(&self) -> Arc<RwLock<HashMap<String, Arc<Mutex<Arc<RelayInstance>>>>>> {
         crate::relay::registry::snapshot_as_relay_view(&self.relay_registry)
     }
 
@@ -147,7 +143,10 @@ pub fn start(
                     .snapshot()
                     .into_iter()
                     .map(|(k, instance)| {
-                        (k, crate::command::partition_state::serialize_relay_state(&instance))
+                        (
+                            k,
+                            crate::command::partition_state::serialize_relay_state(&instance),
+                        )
                     })
                     .collect()
             }));
@@ -165,12 +164,7 @@ pub fn start(
 
             match message {
                 ExecutorMessage::HandleCommandAction(payload_id, message, _metadata) => {
-                    command::handle_command(
-                        &mut executor,
-                        &control_stream,
-                        &payload_id,
-                        &message,
-                    );
+                    command::handle_command(&mut executor, &control_stream, &payload_id, &message);
                 }
                 ExecutorMessage::ReturnRelays => {
                     return_relays(&executor, ctx_arc.clone());
@@ -179,12 +173,7 @@ pub fn start(
                     if matches!(executor.status, ExecutorStatus::Stopped) {
                         continue;
                     }
-                    handle_reconnect(
-                        &mut executor,
-                        &mut control_stream,
-                        &namespace,
-                        &otx_arc,
-                    );
+                    handle_reconnect(&mut executor, &mut control_stream, &namespace, &otx_arc);
                     shutdown_bridge.set_control_stream(Some(Arc::clone(&control_stream)));
                 }
             }
@@ -192,10 +181,7 @@ pub fn start(
     })
 }
 
-fn return_relays(
-    executor: &ExecutorNode,
-    ctx_arc: Arc<Mutex<Sender<ClientResponseMessage>>>,
-) {
+fn return_relays(executor: &ExecutorNode, ctx_arc: Arc<Mutex<Sender<ClientResponseMessage>>>) {
     let relays = executor.get_relays();
     ctx_arc
         .lock()
@@ -259,10 +245,7 @@ impl RelayDispatchHandle {
             Some(name) => match topology.lookup_channel_id(name) {
                 Some(id) => id,
                 None => {
-                    eprintln!(
-                        "[flezha] relay {} has no channel `{}`",
-                        instance_id, name
-                    );
+                    eprintln!("[flezha] relay {} has no channel `{}`", instance_id, name);
                     return;
                 }
             },
@@ -274,10 +257,7 @@ impl RelayDispatchHandle {
                 {
                     Some(idx) => idx as u32,
                     None => {
-                        eprintln!(
-                            "[flezha] relay {} has no entry channels",
-                            instance_id
-                        );
+                        eprintln!("[flezha] relay {} has no entry channels", instance_id);
                         return;
                     }
                 }
@@ -329,8 +309,9 @@ impl RelayDispatchHandle {
                     );
                 }
             } else {
-                let key_to_idx =
-                    instance.partition_key_to_idx.get(consumer_shard_id as usize);
+                let key_to_idx = instance
+                    .partition_key_to_idx
+                    .get(consumer_shard_id as usize);
                 let keys = (consumer.partition_for_erased)(&*typed_payload);
                 for key in keys {
                     if let Some(map) = key_to_idx {

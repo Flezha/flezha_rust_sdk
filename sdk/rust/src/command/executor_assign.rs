@@ -1,8 +1,6 @@
 use super::CommandAction;
-use crate::{
-    executor::{ExecutorNode, ExecutorStatus},
-    pb::AssignExecutorId,
-};
+use crate::executor::{ExecutorNode, ExecutorStatus};
+use crate::pb::AssignExecutorId;
 
 impl CommandAction for AssignExecutorId {
     fn handle(

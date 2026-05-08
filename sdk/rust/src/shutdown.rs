@@ -30,15 +30,13 @@
 use std::collections::HashMap;
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
-use std::sync::{Arc, Mutex, Once, OnceLock};
+use std::sync::{mpsc, Arc, Mutex, Once, OnceLock};
 use std::thread;
 use std::time::Duration;
 
-use prost::Message;
-
 use flz_transport::service::payloader;
 use flz_transport::transport::FlezhaStream;
+use prost::Message;
 
 use crate::pb;
 
@@ -56,8 +54,7 @@ const SHUTDOWN_PAYLOAD_ID: &str = "control_command";
 /// Returns `(instance_id, serialized_state_bytes)` per live Relay
 /// instance. The closure is responsible for walking the live registry
 /// and serializing each instance via `partition_state::serialize_relay_state`.
-pub type RelaySnapshotFn =
-    Box<dyn Fn() -> Vec<(String, Vec<u8>)> + Send + Sync>;
+pub type RelaySnapshotFn = Box<dyn Fn() -> Vec<(String, Vec<u8>)> + Send + Sync>;
 
 /// Bridge between the user-facing `Flezha` handle and the per-instance
 /// runtime state required for a graceful shutdown sequence.
@@ -130,7 +127,6 @@ impl ShutdownBridge {
         let mut wait_handles = Vec::with_capacity(relays.len());
 
         for (relay_id, serialized_state) in relays {
-
             let reference_id = format!(
                 "shutdown-{}-{}",
                 relay_id,
@@ -286,12 +282,14 @@ mod tests {
     //! dev-compose state-freshness scenario (§6 of
     //! ship-fresh-state-on-sdk-shutdown); here we cover the unit
     //! contract: notification correctly framed + bounded ack wait.
-    use super::*;
-    use crate::pb;
-    use prost::Message;
     use std::io::Read;
     use std::os::unix::net::UnixStream;
     use std::time::Instant;
+
+    use prost::Message;
+
+    use super::*;
+    use crate::pb;
 
     fn build_bridge_with_relay(
         relay_id: &str,
@@ -370,8 +368,7 @@ mod tests {
 
     #[test]
     fn graceful_shutdown_returns_within_2s_when_ack_never_arrives() {
-        let (bridge, _controller_side) =
-            build_bridge_with_relay("p_timeout", b"unused".to_vec());
+        let (bridge, _controller_side) = build_bridge_with_relay("p_timeout", b"unused".to_vec());
 
         let started = Instant::now();
         bridge.run_graceful_shutdown();
@@ -403,8 +400,7 @@ mod tests {
 
     #[test]
     fn run_graceful_shutdown_is_idempotent() {
-        let (bridge, _controller_side) =
-            build_bridge_with_relay("p_idem", b"x".to_vec());
+        let (bridge, _controller_side) = build_bridge_with_relay("p_idem", b"x".to_vec());
 
         // First run — exercises the timeout path. Second run sees
         // shutdown_started == true and returns immediately.

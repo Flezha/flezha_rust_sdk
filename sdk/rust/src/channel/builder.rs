@@ -66,21 +66,16 @@ pub(crate) struct ShardEntry {
     pub deserialize_state: DeserializeStateFn,
 }
 
-pub(crate) type PartitionForFn =
-    Arc<dyn Fn(&dyn Any) -> Vec<&'static str> + Send + Sync + 'static>;
+pub(crate) type PartitionForFn = Arc<dyn Fn(&dyn Any) -> Vec<&'static str> + Send + Sync + 'static>;
 
 pub(crate) type SerializeStateFn =
     Arc<dyn Fn(&Box<dyn Any + Send>) -> Result<serde_json::Value, String> + Send + Sync + 'static>;
 
-pub(crate) type DeserializeStateFn = Arc<
-    dyn Fn(&serde_json::Value) -> Result<Box<dyn Any + Send>, String> + Send + Sync + 'static,
->;
+pub(crate) type DeserializeStateFn =
+    Arc<dyn Fn(&serde_json::Value) -> Result<Box<dyn Any + Send>, String> + Send + Sync + 'static>;
 
 pub(crate) type PartitionBuilder = Box<
-    dyn Fn(BuildPartitionArgs<'_>) -> Arc<crate::partition::PartitionSlot>
-        + Send
-        + Sync
-        + 'static,
+    dyn Fn(BuildPartitionArgs<'_>) -> Arc<crate::partition::PartitionSlot> + Send + Sync + 'static,
 >;
 
 pub struct BuildPartitionArgs<'a> {
@@ -145,9 +140,7 @@ pub enum BuildTopologyError {
     #[error("shard `{name}` registered with conflicting input/output types")]
     TypeMismatch { name: &'static str },
 
-    #[error(
-        "shard `{shard}` declared mailbox_capacity = 0; capacity must be in 1..=1_048_576"
-    )]
+    #[error("shard `{shard}` declared mailbox_capacity = 0; capacity must be in 1..=1_048_576")]
     MailboxCapacityZero { shard: &'static str },
 
     #[error(
@@ -196,10 +189,7 @@ impl ChannelBuilder {
 
     /// Declare an inter-shard or plugin-bound channel. The returned
     /// `ChannelDecl` requires `.from::<S>()` to identify a producer.
-    pub fn channel<T: 'static + Send + Sync>(
-        &mut self,
-        name: &'static str,
-    ) -> ChannelDecl<'_, T> {
+    pub fn channel<T: 'static + Send + Sync>(&mut self, name: &'static str) -> ChannelDecl<'_, T> {
         let id = self.declare_channel(name, ChannelKind::InterShard);
         ChannelDecl {
             builder: self,
@@ -244,13 +234,13 @@ impl ChannelBuilder {
             S::partition_for(typed)
         });
 
-        let build_partition: PartitionBuilder =
-            Box::new(|args: BuildPartitionArgs<'_>| -> Arc<crate::partition::PartitionSlot> {
+        let build_partition: PartitionBuilder = Box::new(
+            |args: BuildPartitionArgs<'_>| -> Arc<crate::partition::PartitionSlot> {
                 crate::partition::build_partition_slot::<S>(args)
-            });
+            },
+        );
 
-        let (serialize_state, deserialize_state) =
-            crate::relay::dispatcher::build_state_fns::<S>();
+        let (serialize_state, deserialize_state) = crate::relay::dispatcher::build_state_fns::<S>();
 
         self.shards.push(ShardEntry {
             name: S::name(),

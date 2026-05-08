@@ -27,7 +27,12 @@ impl Shard for EchoShard {
         "echo_shard"
     }
     fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(&mut self, _: String, _: StateHandle<'_, Self>, _: &mut ShardCtx<'_>) -> Result<(), ShardError> {
+    fn run(
+        &mut self,
+        _: String,
+        _: StateHandle<'_, Self>,
+        _: &mut ShardCtx<'_>,
+    ) -> Result<(), ShardError> {
         Ok(())
     }
 }
@@ -135,7 +140,12 @@ impl Shard for DynamicOnlyShard {
     fn shard_key(_input: &String) -> Option<String> {
         Some("k".to_string())
     }
-    fn run(&mut self, _: String, _: StateHandle<'_, Self>, _: &mut ShardCtx<'_>) -> Result<(), ShardError> {
+    fn run(
+        &mut self,
+        _: String,
+        _: StateHandle<'_, Self>,
+        _: &mut ShardCtx<'_>,
+    ) -> Result<(), ShardError> {
         Ok(())
     }
 }
@@ -183,7 +193,12 @@ impl Shard for UnannotatedStaticShard {
     fn partition_for(_: &String) -> Vec<&'static str> {
         vec!["a"]
     }
-    fn run(&mut self, _: String, _: StateHandle<'_, Self>, _: &mut ShardCtx<'_>) -> Result<(), ShardError> {
+    fn run(
+        &mut self,
+        _: String,
+        _: StateHandle<'_, Self>,
+        _: &mut ShardCtx<'_>,
+    ) -> Result<(), ShardError> {
         Ok(())
     }
 }
@@ -229,7 +244,12 @@ impl Shard for ZeroCapacityShard {
         0
     }
     const MAILBOX_CAPACITY_OVERRIDDEN: bool = true;
-    fn run(&mut self, _: String, _: StateHandle<'_, Self>, _: &mut ShardCtx<'_>) -> Result<(), ShardError> {
+    fn run(
+        &mut self,
+        _: String,
+        _: StateHandle<'_, Self>,
+        _: &mut ShardCtx<'_>,
+    ) -> Result<(), ShardError> {
         Ok(())
     }
 }
@@ -279,7 +299,12 @@ impl Shard for ExplicitCapShard {
         4096
     }
     const MAILBOX_CAPACITY_OVERRIDDEN: bool = true;
-    fn run(&mut self, _: String, _: StateHandle<'_, Self>, _: &mut ShardCtx<'_>) -> Result<(), ShardError> {
+    fn run(
+        &mut self,
+        _: String,
+        _: StateHandle<'_, Self>,
+        _: &mut ShardCtx<'_>,
+    ) -> Result<(), ShardError> {
         Ok(())
     }
 }
@@ -315,11 +340,8 @@ fn relay_instance_creates_partitions() {
     use flezha_executor::__dispatch_internals as bi;
     let topology = build_topology_for::<StaticRelay>().expect("topology");
     let pool = Arc::new(bi::WorkStealingPool::with_size(2));
-    let instance = flezha_executor::relay::RelayInstance::new(
-        topology,
-        Arc::from("instance-id"),
-        pool,
-    );
+    let instance =
+        flezha_executor::relay::RelayInstance::new(topology, Arc::from("instance-id"), pool);
     assert_eq!(instance.partitions.len(), 1);
     assert_eq!(instance.partitions[0].len(), 3);
     assert_eq!(instance.partition_key_to_idx[0].get("a"), Some(&0));

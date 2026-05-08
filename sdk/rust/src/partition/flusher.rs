@@ -74,7 +74,10 @@ pub fn encode_partition_identity(
     let rc = relay_class.as_bytes();
     let sh = shard_id.as_bytes();
     let pk = partition_key.as_bytes();
-    assert!(rc.len() <= 255 && sh.len() <= 255, "relay_class / shard_id ≤ 255 bytes");
+    assert!(
+        rc.len() <= 255 && sh.len() <= 255,
+        "relay_class / shard_id ≤ 255 bytes"
+    );
     assert!(pk.len() <= 0xFFFF, "partition_key ≤ 65535 bytes");
     let mut out = Vec::with_capacity(1 + rc.len() + 1 + sh.len() + 2 + pk.len());
     out.push(rc.len() as u8);
@@ -138,12 +141,7 @@ impl<S: crate::shard::Shard> FlushableBuffer for TypedBuffer<S> {
             .into_iter()
             .map(|c| {
                 let seq = change_seq.fetch_add(1, Ordering::Relaxed);
-                build_partition_state_change_frame::<S::Change>(
-                    partition_identity,
-                    seq,
-                    header,
-                    &c,
-                )
+                build_partition_state_change_frame::<S::Change>(partition_identity, seq, header, &c)
             })
             .collect();
         let count = frames.len();
@@ -211,8 +209,7 @@ pub fn build_partition_frame(
 ) -> Vec<u8> {
     let crc = crc32fast::hash(body);
     let pid_len = partition_identity.len();
-    let mut frame =
-        Vec::with_capacity(2 + pid_len + 8 + 16 + 4 + body.len() + 4);
+    let mut frame = Vec::with_capacity(2 + pid_len + 8 + 16 + 4 + body.len() + 4);
     frame.extend_from_slice(&(pid_len as u16).to_be_bytes());
     frame.extend_from_slice(partition_identity);
     frame.extend_from_slice(&seq.to_be_bytes());
@@ -369,8 +366,9 @@ pub fn current_send_frame_fn() -> SendFrameFn {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use serde::{Deserialize, Serialize};
+
+    use super::*;
 
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
     struct TestChange {
@@ -418,11 +416,31 @@ mod tests {
     #[test]
     fn coalesce_mixed_no_key_and_keyed() {
         let buf = vec![
-            TestChange { key: None, ts: 1, value: 1 }, // A: kept
-            TestChange { key: Some(1), ts: 2, value: 2 }, // B: collapsed
-            TestChange { key: Some(1), ts: 3, value: 3 }, // C: kept
-            TestChange { key: None, ts: 4, value: 4 }, // D: kept
-            TestChange { key: Some(2), ts: 5, value: 5 }, // E: kept
+            TestChange {
+                key: None,
+                ts: 1,
+                value: 1,
+            }, // A: kept
+            TestChange {
+                key: Some(1),
+                ts: 2,
+                value: 2,
+            }, // B: collapsed
+            TestChange {
+                key: Some(1),
+                ts: 3,
+                value: 3,
+            }, // C: kept
+            TestChange {
+                key: None,
+                ts: 4,
+                value: 4,
+            }, // D: kept
+            TestChange {
+                key: Some(2),
+                ts: 5,
+                value: 5,
+            }, // E: kept
         ];
         let out = coalesce(buf);
         let ts: Vec<u64> = out.iter().map(|c| c.ts).collect();
@@ -432,9 +450,14 @@ mod tests {
     #[test]
     fn frame_layout_matches_controller_decode_format() {
         let template = HeaderTemplate::new(0x010203, 1);
-        let change = TestChange { key: None, ts: 0, value: 42 };
+        let change = TestChange {
+            key: None,
+            ts: 0,
+            value: 42,
+        };
         let identity = encode_partition_identity("MarketRelay", "OhlcShard", "M1");
-        let frame = build_partition_state_change_frame::<TestChange>(&identity, 99, &template, &change);
+        let frame =
+            build_partition_state_change_frame::<TestChange>(&identity, 99, &template, &change);
 
         let body_bytes = postcard::to_allocvec(&change).unwrap();
 
@@ -454,7 +477,10 @@ mod tests {
             &frame[body_len_off..body_len_off + 4],
             &(body_bytes.len() as u32).to_be_bytes(),
         );
-        assert_eq!(&frame[body_off..body_off + body_bytes.len()], body_bytes.as_slice());
+        assert_eq!(
+            &frame[body_off..body_off + body_bytes.len()],
+            body_bytes.as_slice()
+        );
         let crc_off = body_off + body_bytes.len();
         assert_eq!(
             &frame[crc_off..crc_off + 4],

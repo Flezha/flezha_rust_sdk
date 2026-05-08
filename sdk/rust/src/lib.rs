@@ -111,29 +111,22 @@ pub mod state {
     pub use crate::shard::state_handle::StateHandle;
 }
 
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex, RwLock},
-};
-
-use crossbeam::channel::{Receiver, Sender};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, RwLock};
 
 pub use channel::{Channel, ChannelBuilder, OverflowPolicy};
+use crossbeam::channel::{Receiver, Sender};
+pub use flz_transport::{service, transport};
 pub use partition::{RestoreError, RestoreInitPayload};
 pub use relay::Relay;
 pub use shard::{
-    Change, Clock, CoalesceKey, EventTimeFrom, LogicalClock, NoChange, Shard, ShardCtx,
-    ShardError, StateHandle, WallClock,
+    Change, Clock, CoalesceKey, EventTimeFrom, LogicalClock, NoChange, Shard, ShardCtx, ShardError,
+    StateHandle, WallClock,
 };
 
-use crate::{
-    executor::{ClientResponseMessage, ExecutorMessage},
-    relay::instance::RelayInstance,
-    shutdown::ShutdownBridge,
-};
-
-pub use flz_transport::transport;
-pub use flz_transport::service;
+use crate::executor::{ClientResponseMessage, ExecutorMessage};
+use crate::relay::instance::RelayInstance;
+use crate::shutdown::ShutdownBridge;
 
 pub mod pb {
     #[cfg(not(rust_analyzer))]
@@ -153,8 +146,8 @@ pub mod pb {
 /// topology (duplicate channel names, unwired channels, missing
 /// `partition_for` overrides, etc.).
 pub fn register_relay<R: Relay>() {
-    let topology = relay::builder::build_topology_for::<R>()
-        .expect("register_relay: invalid topology");
+    let topology =
+        relay::builder::build_topology_for::<R>().expect("register_relay: invalid topology");
     relay::registry::register_class(R::factory_id(), topology);
 }
 
@@ -216,9 +209,7 @@ impl Flezha {
     /// compatibility.
     // reason: public API; refactor would break external callers (test apps, observability)
     #[allow(clippy::type_complexity)]
-    pub fn get_relays(
-        &self,
-    ) -> Arc<RwLock<HashMap<String, Arc<Mutex<Arc<RelayInstance>>>>>> {
+    pub fn get_relays(&self) -> Arc<RwLock<HashMap<String, Arc<Mutex<Arc<RelayInstance>>>>>> {
         self.executor_tx
             .lock()
             .unwrap()
@@ -264,4 +255,3 @@ pub mod __dispatch_internals {
     pub use crate::executor::mailbox::Mailbox;
     pub use crate::executor::work_stealing_pool::WorkStealingPool;
 }
-

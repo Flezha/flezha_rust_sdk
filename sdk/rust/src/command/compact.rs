@@ -10,10 +10,11 @@
 //! the live `PartitionSlot` snapshot path is wired in the same
 //! follow-up that exposes the dispatcher's compact entry point.
 
+use prost::Message;
+
 use super::CommandAction;
 use crate::executor::ExecutorNode;
 use crate::pb::{CompactPartition, CompactPartitionResponse};
-use prost::Message;
 
 impl CommandAction for CompactPartition {
     fn handle(

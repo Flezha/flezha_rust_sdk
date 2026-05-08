@@ -10,15 +10,13 @@ pub mod state_handle;
 
 pub use change::{Change, CoalesceKey, NoChange};
 pub use clock::{Clock, EventTimeFrom, LogicalClock, WallClock};
-pub use ctx::ShardCtx;
-pub use error::ShardError;
-pub use state_handle::StateHandle;
-
 #[allow(unused_imports)]
 pub(crate) use ctx::EmitSink;
-
+pub use ctx::ShardCtx;
+pub use error::ShardError;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+pub use state_handle::StateHandle;
 
 use crate::partition::restore::RestoreInitPayload;
 

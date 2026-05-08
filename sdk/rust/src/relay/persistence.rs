@@ -15,10 +15,7 @@
 /// runtime config is parsed by upstream code into a `Option<bool>` keyed
 /// by `relay_persistence.<RelayClass>`; the present value wins
 /// regardless of the class const.
-pub fn resolve_persistence_enabled(
-    class_const: bool,
-    operator_override: Option<bool>,
-) -> bool {
+pub fn resolve_persistence_enabled(class_const: bool, operator_override: Option<bool>) -> bool {
     operator_override.unwrap_or(class_const)
 }
 

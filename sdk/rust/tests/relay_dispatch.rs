@@ -13,16 +13,15 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use flezha_executor::__dispatch_internals as bi;
+use bi::RelayDispatchHandle;
 use flezha_executor::channel::ChannelBuilder;
 use flezha_executor::relay::builder::build_topology_for;
 use flezha_executor::relay::registry::RelayInstanceRegistry;
 use flezha_executor::relay::RelayInstance;
 use flezha_executor::shard::{Shard, ShardCtx, ShardError};
 use flezha_executor::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_executor::{OverflowPolicy, Relay};
+use flezha_executor::{__dispatch_internals as bi, OverflowPolicy, Relay};
 use flz_transport::transport::FlezhaStream;
-use bi::RelayDispatchHandle;
 
 // ----- Test utilities -----
 
@@ -87,8 +86,7 @@ fn per_partition_input_order_preserved() {
     let pool = Arc::new(bi::WorkStealingPool::with_size(8));
     let registry = Arc::new(RelayInstanceRegistry::new());
 
-    let instance =
-        RelayInstance::new(topology, Arc::from("append-instance"), Arc::clone(&pool));
+    let instance = RelayInstance::new(topology, Arc::from("append-instance"), Arc::clone(&pool));
     registry.register(instance);
 
     let handle = RelayDispatchHandle {
@@ -187,8 +185,7 @@ fn same_partition_never_runs_concurrently() {
     let topology = build_topology_for::<ConcurrencyProbeRelay>().expect("topology");
     let pool = Arc::new(bi::WorkStealingPool::with_size(8));
     let registry = Arc::new(RelayInstanceRegistry::new());
-    let instance =
-        RelayInstance::new(topology, Arc::from("conc-instance"), Arc::clone(&pool));
+    let instance = RelayInstance::new(topology, Arc::from("conc-instance"), Arc::clone(&pool));
     registry.register(instance);
     let handle = RelayDispatchHandle {
         registry: Arc::clone(&registry),
@@ -220,8 +217,7 @@ fn same_partition_never_runs_concurrently() {
 
     // Wait for drain.
     assert!(wait_until(
-        || APPEND_CONCURRENT.load(Ordering::Acquire) == 0
-            && pool_idle(&pool),
+        || APPEND_CONCURRENT.load(Ordering::Acquire) == 0 && pool_idle(&pool),
         Duration::from_secs(10)
     ));
 
@@ -261,7 +257,10 @@ impl Shard for ParallelStaticShard {
     fn name() -> &'static str {
         "parallel_static_shard"
     }
-    fn init_state(shard_key: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) -> String {
+    fn init_state(
+        shard_key: Option<&str>,
+        _init_payload: Option<RestoreInitPayload<'_>>,
+    ) -> String {
         match shard_key {
             Some("a") => "a".to_string(),
             Some("b") => "b".to_string(),
@@ -321,8 +320,7 @@ fn static_partitions_dispatch_independently() {
     let topology = build_topology_for::<ParallelRelay>().expect("topology");
     let pool = Arc::new(bi::WorkStealingPool::with_size(8));
     let registry = Arc::new(RelayInstanceRegistry::new());
-    let instance =
-        RelayInstance::new(topology, Arc::from("parallel-instance"), Arc::clone(&pool));
+    let instance = RelayInstance::new(topology, Arc::from("parallel-instance"), Arc::clone(&pool));
     registry.register(instance);
     let handle = RelayDispatchHandle {
         registry: Arc::clone(&registry),
@@ -347,11 +345,9 @@ fn static_partitions_dispatch_independently() {
     assert!(wait_until(
         || {
             let map = parallel_observed().lock().unwrap();
-            prefixes.iter().all(|k| {
-                map.get(*k)
-                    .map(|v| v.len() == per_prefix)
-                    .unwrap_or(false)
-            })
+            prefixes
+                .iter()
+                .all(|k| map.get(*k).map(|v| v.len() == per_prefix).unwrap_or(false))
         },
         Duration::from_secs(5)
     ));
@@ -480,7 +476,12 @@ impl Shard for MetaConsumerShard {
         "meta_consumer_shard"
     }
     fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
-    fn run(&mut self, _: String, _: StateHandle<'_, MetaConsumerShard>, _: &mut ShardCtx<'_>) -> Result<(), ShardError> {
+    fn run(
+        &mut self,
+        _: String,
+        _: StateHandle<'_, MetaConsumerShard>,
+        _: &mut ShardCtx<'_>,
+    ) -> Result<(), ShardError> {
         Ok(())
     }
 }
@@ -504,8 +505,7 @@ fn emit_with_meta_rejected_on_inter_shard() {
     let topology = build_topology_for::<MetaRejectRelay>().expect("topology");
     let pool = Arc::new(bi::WorkStealingPool::with_size(2));
     let registry = Arc::new(RelayInstanceRegistry::new());
-    let instance =
-        RelayInstance::new(topology, Arc::from("meta-instance"), Arc::clone(&pool));
+    let instance = RelayInstance::new(topology, Arc::from("meta-instance"), Arc::clone(&pool));
     registry.register(instance);
     let handle = RelayDispatchHandle {
         registry: Arc::clone(&registry),
@@ -514,12 +514,7 @@ fn emit_with_meta_rejected_on_inter_shard() {
 
     let mut md = HashMap::new();
     md.insert("channel".to_string(), "input".to_string());
-    handle.dispatch(
-        "meta-instance",
-        b"hello".to_vec(),
-        &md,
-        Arc::clone(&stream),
-    );
+    handle.dispatch("meta-instance", b"hello".to_vec(), &md, Arc::clone(&stream));
 
     assert!(wait_until(
         || META_REJECT_OBSERVED.lock().unwrap().is_some(),
@@ -617,12 +612,7 @@ fn block_stress_100_producers_no_loss() {
                 let mut md = HashMap::new();
                 md.insert("channel".to_string(), "input".to_string());
                 let payload = format!("{tid}-{i}").into_bytes();
-                handle.dispatch(
-                    "block-stress-instance",
-                    payload,
-                    &md,
-                    Arc::clone(&stream),
-                );
+                handle.dispatch("block-stress-instance", payload, &md, Arc::clone(&stream));
             }
         }));
     }
@@ -646,7 +636,10 @@ fn block_stress_100_producers_no_loss() {
     // and at least one park event bumps `pushes_blocked_total`.
     let slot = &instance.partitions[0][0];
     let counters = slot.counters();
-    assert_eq!(counters.pushes_total.load(Ordering::Relaxed) as usize, total);
+    assert_eq!(
+        counters.pushes_total.load(Ordering::Relaxed) as usize,
+        total
+    );
     assert_eq!(counters.drops_newest_total.load(Ordering::Relaxed), 0);
     assert_eq!(counters.drops_oldest_total.load(Ordering::Relaxed), 0);
     assert!(
@@ -734,12 +727,7 @@ fn drop_newest_discards_when_full_and_only_bumps_newest_counter() {
 
     // First two pushes succeed and saturate the capacity-2 mailbox.
     for tag in [b"a".to_vec(), b"b".to_vec()] {
-        handle.dispatch(
-            "drop-newest-instance",
-            tag,
-            &md,
-            Arc::clone(&stream),
-        );
+        handle.dispatch("drop-newest-instance", tag, &md, Arc::clone(&stream));
     }
     assert_eq!(slot.mailbox.len(), 2, "mailbox should be saturated");
 
@@ -843,14 +831,13 @@ fn drop_oldest_evicts_head_and_bumps_oldest_counter() {
     let mut md = HashMap::new();
     md.insert("channel".to_string(), "input".to_string());
 
-    for label in [b"old".to_vec(), b"mid".to_vec(), b"new1".to_vec(), b"new2".to_vec()]
-    {
-        handle.dispatch(
-            "drop-oldest-instance",
-            label,
-            &md,
-            Arc::clone(&stream),
-        );
+    for label in [
+        b"old".to_vec(),
+        b"mid".to_vec(),
+        b"new1".to_vec(),
+        b"new2".to_vec(),
+    ] {
+        handle.dispatch("drop-oldest-instance", label, &md, Arc::clone(&stream));
     }
 
     // After 4 pushes into a cap-2 mailbox under DropOldest:
@@ -1085,7 +1072,10 @@ fn sticky_ordering_holds_under_bounded_block() {
     );
 
     let counters = instance.partitions[0][0].counters();
-    assert_eq!(counters.pushes_total.load(Ordering::Relaxed) as usize, total);
+    assert_eq!(
+        counters.pushes_total.load(Ordering::Relaxed) as usize,
+        total
+    );
     assert_eq!(counters.drops_newest_total.load(Ordering::Relaxed), 0);
     assert_eq!(counters.drops_oldest_total.load(Ordering::Relaxed), 0);
 }
@@ -1199,16 +1189,8 @@ fn default_entry_policy_does_not_stall_sibling_relays() {
 
     let topology_a = build_topology_for::<WireRelayADefault>().expect("topology a");
     let topology_b = build_topology_for::<WireRelayB>().expect("topology b");
-    let instance_a = RelayInstance::new(
-        topology_a,
-        Arc::from("wire-a-default"),
-        Arc::clone(&pool),
-    );
-    let instance_b = RelayInstance::new(
-        topology_b,
-        Arc::from("wire-b-default"),
-        Arc::clone(&pool),
-    );
+    let instance_a = RelayInstance::new(topology_a, Arc::from("wire-a-default"), Arc::clone(&pool));
+    let instance_b = RelayInstance::new(topology_b, Arc::from("wire-b-default"), Arc::clone(&pool));
     registry.register(Arc::clone(&instance_a));
     registry.register(Arc::clone(&instance_b));
 
@@ -1280,16 +1262,8 @@ fn opt_in_entry_block_stalls_sibling_relays() {
 
     let topology_a = build_topology_for::<WireRelayABlock>().expect("topology a");
     let topology_b = build_topology_for::<WireRelayB>().expect("topology b");
-    let instance_a = RelayInstance::new(
-        topology_a,
-        Arc::from("wire-a-block"),
-        Arc::clone(&pool),
-    );
-    let instance_b = RelayInstance::new(
-        topology_b,
-        Arc::from("wire-b-block"),
-        Arc::clone(&pool),
-    );
+    let instance_a = RelayInstance::new(topology_a, Arc::from("wire-a-block"), Arc::clone(&pool));
+    let instance_b = RelayInstance::new(topology_b, Arc::from("wire-b-block"), Arc::clone(&pool));
     registry.register(Arc::clone(&instance_a));
     registry.register(Arc::clone(&instance_b));
 
@@ -1356,11 +1330,13 @@ fn opt_in_entry_block_stalls_sibling_relays() {
     // dispatched. The drain we mimicked freed exactly one slot, so two
     // pushes-total entries record successfully (the first two), one is
     // pending in the cap-2 mailbox, and one was unparked + pushed.
-    assert!(slot_a
-        .counters()
-        .pushes_blocked_total
-        .load(Ordering::Relaxed)
-        >= 1);
+    assert!(
+        slot_a
+            .counters()
+            .pushes_blocked_total
+            .load(Ordering::Relaxed)
+            >= 1
+    );
     slot_a.mailbox.release_inflight();
 
     assert!(wait_until(
@@ -1377,8 +1353,7 @@ fn opt_in_entry_block_stalls_sibling_relays() {
 #[test]
 fn default_inter_shard_policy_is_block_and_pushes_total_increments() {
     INTER_SHARD_DOWNSTREAM.store(0, Ordering::Release);
-    let topology =
-        build_topology_for::<InterShardDefaultBlockRelay>().expect("topology");
+    let topology = build_topology_for::<InterShardDefaultBlockRelay>().expect("topology");
     let pool = Arc::new(bi::WorkStealingPool::with_size(4));
     let registry = Arc::new(RelayInstanceRegistry::new());
     let instance = RelayInstance::new(

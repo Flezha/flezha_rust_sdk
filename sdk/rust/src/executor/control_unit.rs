@@ -1,4 +1,3 @@
-use crossbeam::channel::Sender;
 use std::collections::HashMap;
 use std::io::{self, Write};
 use std::os::unix::net::UnixStream;
@@ -6,17 +5,17 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use serde::Serialize;
-
-use crate::executor::ExecutorMessage;
-use crate::relay::registry::class_factory_ids;
+use crossbeam::channel::Sender;
 use flz_transport::service::payloader;
 use flz_transport::transport::config::{get_transport_type, TransportType};
 use flz_transport::transport::quic::QuicClient;
 use flz_transport::transport::FlezhaStream;
 use flz_transport::utility::path_helper;
+use serde::Serialize;
 
 use super::ClientResponseMessage;
+use crate::executor::ExecutorMessage;
+use crate::relay::registry::class_factory_ids;
 
 #[derive(Serialize)]
 struct FactoryInfo {
@@ -36,9 +35,12 @@ pub fn open(
     namespace: String,
     itx: Arc<Mutex<Sender<ClientResponseMessage>>>,
     otx: Arc<Mutex<Sender<ExecutorMessage>>>,
-) -> (thread::JoinHandle<()>, Arc<FlezhaStream>, Option<Arc<QuicClient>>) {
-    let (handle, stream, quic_client) =
-        open_with_retry(namespace, Some(itx), otx);
+) -> (
+    thread::JoinHandle<()>,
+    Arc<FlezhaStream>,
+    Option<Arc<QuicClient>>,
+) {
+    let (handle, stream, quic_client) = open_with_retry(namespace, Some(itx), otx);
     (handle, stream, quic_client)
 }
 
@@ -46,7 +48,11 @@ pub fn open(
 pub fn open_reconnect(
     namespace: String,
     otx: Arc<Mutex<Sender<ExecutorMessage>>>,
-) -> (thread::JoinHandle<()>, Arc<FlezhaStream>, Option<Arc<QuicClient>>) {
+) -> (
+    thread::JoinHandle<()>,
+    Arc<FlezhaStream>,
+    Option<Arc<QuicClient>>,
+) {
     open_with_retry(namespace, None, otx)
 }
 
@@ -54,7 +60,11 @@ fn open_with_retry(
     namespace: String,
     itx: Option<Arc<Mutex<Sender<ClientResponseMessage>>>>,
     otx: Arc<Mutex<Sender<ExecutorMessage>>>,
-) -> (thread::JoinHandle<()>, Arc<FlezhaStream>, Option<Arc<QuicClient>>) {
+) -> (
+    thread::JoinHandle<()>,
+    Arc<FlezhaStream>,
+    Option<Arc<QuicClient>>,
+) {
     let mut attempt = 0u32;
     let max_backoff = Duration::from_secs(30);
 
@@ -88,7 +98,14 @@ fn try_open(
     namespace: String,
     itx: Option<Arc<Mutex<Sender<ClientResponseMessage>>>>,
     otx: Arc<Mutex<Sender<ExecutorMessage>>>,
-) -> Result<(thread::JoinHandle<()>, Arc<FlezhaStream>, Option<Arc<QuicClient>>), String> {
+) -> Result<
+    (
+        thread::JoinHandle<()>,
+        Arc<FlezhaStream>,
+        Option<Arc<QuicClient>>,
+    ),
+    String,
+> {
     match get_transport_type() {
         TransportType::Uds => {
             let (handle, stream) = try_open_uds(namespace, itx, otx)?;
@@ -119,7 +136,14 @@ fn try_open_quic(
     namespace: String,
     itx: Option<Arc<Mutex<Sender<ClientResponseMessage>>>>,
     otx: Arc<Mutex<Sender<ExecutorMessage>>>,
-) -> Result<(thread::JoinHandle<()>, Arc<FlezhaStream>, Option<Arc<QuicClient>>), String> {
+) -> Result<
+    (
+        thread::JoinHandle<()>,
+        Arc<FlezhaStream>,
+        Option<Arc<QuicClient>>,
+    ),
+    String,
+> {
     let address = flz_transport::transport::config::quic_address();
     let ca_cert_path = flz_transport::transport::config::ca_cert_path();
 
@@ -181,10 +205,7 @@ fn sock_conn(
                         if std::env::var("FLEZHA_LOG").as_deref() == Ok("debug") {
                             eprintln!("[flezha] Control channel disconnected: {}", e);
                         }
-                        let _ = otx
-                            .lock()
-                            .unwrap()
-                            .send(ExecutorMessage::Reconnect);
+                        let _ = otx.lock().unwrap().send(ExecutorMessage::Reconnect);
                         break;
                     }
                 },

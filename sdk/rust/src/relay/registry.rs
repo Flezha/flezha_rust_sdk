@@ -9,9 +9,10 @@
 //! pre-change `RelayRegistry` so concurrent reader/writer access is
 //! sharded.
 
-use lazy_static::lazy_static;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
+
+use lazy_static::lazy_static;
 
 use crate::relay::instance::RelayInstance;
 use crate::relay::topology::RelayTopology;
@@ -22,10 +23,7 @@ lazy_static! {
 }
 
 pub fn register_class(factory_id: &'static str, topology: Arc<RelayTopology>) {
-    CLASS_REGISTRY
-        .write()
-        .unwrap()
-        .insert(factory_id, topology);
+    CLASS_REGISTRY.write().unwrap().insert(factory_id, topology);
 }
 
 pub fn get_class(factory_id: &str) -> Option<Arc<RelayTopology>> {

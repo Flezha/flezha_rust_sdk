@@ -117,10 +117,7 @@ pub fn serialize_relay_state(instance: &Arc<RelayInstance>) -> Vec<u8> {
 /// Empty `init_values` is a no-op (the cold-start path uses `init_state`).
 /// Unknown top-level keys and unknown inner shard_key entries are logged
 /// and skipped per the spec.
-pub fn apply_init_values(
-    instance: &Arc<RelayInstance>,
-    init_values: &str,
-) -> Result<(), String> {
+pub fn apply_init_values(instance: &Arc<RelayInstance>, init_values: &str) -> Result<(), String> {
     if init_values.is_empty() {
         return Ok(());
     }
@@ -177,10 +174,7 @@ pub fn apply_init_values(
                     continue;
                 }
             };
-            let key_to_idx = match instance
-                .partition_key_to_idx
-                .get(shard_id as usize)
-            {
+            let key_to_idx = match instance.partition_key_to_idx.get(shard_id as usize) {
                 Some(m) => m,
                 None => continue,
             };

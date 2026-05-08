@@ -6,10 +6,11 @@
 //! `handle_message` over the new model and re-enables the disabled
 //! integration tests that this fallback parks.
 
+use prost::Message;
+
 use super::CommandAction;
 use crate::executor::ExecutorNode;
 use crate::pb::{RelayMessage, RelayMessageResponse};
-use prost::Message;
 
 const UNSUPPORTED_ERROR: &str = "relay does not support handle_message";
 

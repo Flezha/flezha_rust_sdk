@@ -35,9 +35,10 @@
 //! a successful push is observable to a subsequent `is_empty()` /  `pop()`
 //! on any thread.
 
-use crossbeam::queue::ArrayQueue;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+
+use crossbeam::queue::ArrayQueue;
 
 use crate::executor::work_stealing_pool::{Task, WorkStealingPool};
 use crate::partition::PartitionCounters;
@@ -106,7 +107,8 @@ impl<Payload: Send + 'static> Mailbox<Payload> {
     where
         F: Fn(Payload) + Send + Sync + 'static,
     {
-        self.try_push(payload).map_err(|payload| BackpressureError { payload })?;
+        self.try_push(payload)
+            .map_err(|payload| BackpressureError { payload })?;
 
         if self
             .inflight
@@ -145,7 +147,8 @@ impl<Payload: Send + 'static> Mailbox<Payload> {
     where
         F: Fn(&mut BatchContext<Payload>) + Send + Sync + 'static,
     {
-        self.try_push(payload).map_err(|payload| BackpressureError { payload })?;
+        self.try_push(payload)
+            .map_err(|payload| BackpressureError { payload })?;
 
         if self
             .inflight
@@ -299,10 +302,11 @@ impl<'a, Payload: Send + 'static> BatchContext<'a, Payload> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
+
+    use super::*;
 
     /// Capacity sized well above the test workload so the bounded queue
     /// never rejects in this pure ordering check; bounded-mailbox

@@ -31,15 +31,13 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use criterion::{criterion_group, criterion_main, Criterion};
-
-use flezha_executor::__dispatch_internals as bi;
 use flezha_executor::channel::ChannelBuilder;
 use flezha_executor::relay::builder::build_topology_for;
 use flezha_executor::relay::registry::RelayInstanceRegistry;
 use flezha_executor::relay::RelayInstance;
-use flezha_executor::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
 use flezha_executor::shard::{Shard, ShardCtx, ShardError};
-use flezha_executor::{OverflowPolicy, Relay};
+use flezha_executor::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
+use flezha_executor::{__dispatch_internals as bi, OverflowPolicy, Relay};
 use flz_transport::transport::FlezhaStream;
 
 // Helpers — duplicated from `dispatch.rs` per `relay-bench-harness/design.md`
@@ -283,5 +281,9 @@ fn throughput_static_fanout(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, throughput_single_partition, throughput_static_fanout);
+criterion_group!(
+    benches,
+    throughput_single_partition,
+    throughput_static_fanout
+);
 criterion_main!(benches);

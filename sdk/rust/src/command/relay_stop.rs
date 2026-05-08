@@ -1,5 +1,6 @@
 use super::CommandAction;
-use crate::{executor::ExecutorNode, pb::RemRelay};
+use crate::executor::ExecutorNode;
+use crate::pb::RemRelay;
 
 impl CommandAction for RemRelay {
     fn handle(

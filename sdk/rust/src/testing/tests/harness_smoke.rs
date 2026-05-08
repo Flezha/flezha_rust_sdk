@@ -63,7 +63,9 @@ fn deterministic_shard_replay_equals_succeeds() {
     let mut harness = ShardTestHarness::<CounterShard>::new();
     harness.apply_inputs(vec![1u32, 2, 3, 4]);
     assert_eq!(harness.state().sum, 10);
-    harness.replay_equals().expect("deterministic replay must equal");
+    harness
+        .replay_equals()
+        .expect("deterministic replay must equal");
 }
 
 #[test]

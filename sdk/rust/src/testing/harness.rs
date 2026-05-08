@@ -238,8 +238,7 @@ impl<S: Shard> ShardTestHarness<S> {
         S::State: serde::Serialize + serde::de::DeserializeOwned,
     {
         let initial: S::State = deserialize_snapshot::<S>(&self.initial_state_bytes);
-        let replayed =
-            <ShardTestHarness<S>>::replay(initial, &self.recorded_changes);
+        let replayed = <ShardTestHarness<S>>::replay(initial, &self.recorded_changes);
         let expected = serialize_snapshot(&self.state);
         let actual = serialize_snapshot(&replayed);
         if expected == actual {
@@ -277,10 +276,7 @@ struct RecordingEmitSink<'a> {
 }
 
 impl<'a> EmitSink for RecordingEmitSink<'a> {
-    fn emit_inter_shard(
-        &mut self,
-        value: Arc<dyn Any + Send + Sync>,
-    ) -> Result<(), ShardError> {
+    fn emit_inter_shard(&mut self, value: Arc<dyn Any + Send + Sync>) -> Result<(), ShardError> {
         self.emits.push(Emit { value, meta: None });
         Ok(())
     }

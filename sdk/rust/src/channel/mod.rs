@@ -92,5 +92,4 @@ pub struct ChannelDescriptor {
 pub type EntryWrapFn =
     Arc<dyn Fn(Vec<u8>) -> Result<Arc<dyn Any + Send + Sync>, String> + Send + Sync + 'static>;
 
-pub type PluginSerializeFn =
-    Arc<dyn Fn(&dyn Any) -> Vec<u8> + Send + Sync + 'static>;
+pub type PluginSerializeFn = Arc<dyn Fn(&dyn Any) -> Vec<u8> + Send + Sync + 'static>;

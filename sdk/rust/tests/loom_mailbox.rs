@@ -36,7 +36,6 @@ impl MiniMailbox {
             drained: Mutex::new(Vec::new()),
         }
     }
-
 }
 
 /// Mirror of `Mailbox::push_and_maybe_submit`. Instead of submitting to a

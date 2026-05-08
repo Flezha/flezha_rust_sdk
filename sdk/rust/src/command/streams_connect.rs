@@ -1,22 +1,20 @@
-use super::CommandAction;
-use crate::pb::ConnectSocket;
-
 use std::collections::HashMap;
 use std::io::Write;
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+use flz_transport::service::payloader;
+use flz_transport::transport::config::{get_transport_type, TransportType};
+use flz_transport::transport::{protocol, FlezhaStream};
+use flz_transport::utility::path_helper;
+
+use super::CommandAction;
+use crate::executor::fast::RelayDispatchHandle;
 use crate::executor::ExecutorNode;
 use crate::partition::flusher::{SendError, SendFrameFn};
 use crate::partition::partition_state_sink;
-use flz_transport::service::payloader;
-use flz_transport::transport::config::{get_transport_type, TransportType};
-use flz_transport::transport::protocol;
-use flz_transport::transport::FlezhaStream;
-use flz_transport::utility::path_helper;
-
-use crate::executor::fast::RelayDispatchHandle;
+use crate::pb::ConnectSocket;
 
 impl CommandAction for ConnectSocket {
     fn handle(
@@ -100,20 +98,15 @@ fn handle_quic(cmd: &ConnectSocket, executor: &mut ExecutorNode) -> (String, Vec
 /// `partition_state_snapshot` frames; one secondary is enough because
 /// the WAL is single-writer per partition and the controller serializes the
 /// per-Partition writes server-side.
-fn install_partition_state_sink_from_pairs(
-    pairs: &[(FlezhaStream, Arc<FlezhaStream>)],
-) {
+fn install_partition_state_sink_from_pairs(pairs: &[(FlezhaStream, Arc<FlezhaStream>)]) {
     if let Some((_, secondary)) = pairs.first() {
         let sink_stream = Arc::clone(secondary);
         // The Mutex serializes writes from the single flusher thread —
         // belt-and-braces given that the flusher has only one writer.
         let writer = Arc::new(Mutex::new(sink_stream));
         let send_fn: SendFrameFn = Arc::new(move |frame: Vec<u8>| -> Result<(), SendError> {
-            let payload = payloader::build_from_binary(
-                "partition_state_change",
-                &frame,
-                HashMap::new(),
-            );
+            let payload =
+                payloader::build_from_binary("partition_state_change", &frame, HashMap::new());
             let stream = writer.lock().map_err(|e| SendError::Other(e.to_string()))?;
             (&**stream)
                 .write_all(&payload)
@@ -123,26 +116,17 @@ fn install_partition_state_sink_from_pairs(
     }
 }
 
-fn spawn_listener_uds(
-    executor: &ExecutorNode,
-    pairs: Vec<(FlezhaStream, Arc<FlezhaStream>)>,
-) {
+fn spawn_listener_uds(executor: &ExecutorNode, pairs: Vec<(FlezhaStream, Arc<FlezhaStream>)>) {
     let handle = executor.relay_dispatch_handle();
     let _ = thread::spawn(move || listen_incoming_uds(pairs, handle));
 }
 
-fn spawn_listener_quic(
-    executor: &ExecutorNode,
-    pairs: Vec<(FlezhaStream, Arc<FlezhaStream>)>,
-) {
+fn spawn_listener_quic(executor: &ExecutorNode, pairs: Vec<(FlezhaStream, Arc<FlezhaStream>)>) {
     let handle = executor.relay_dispatch_handle();
     let _ = thread::spawn(move || listen_incoming_quic(pairs, handle));
 }
 
-fn listen_incoming_uds(
-    pairs: Vec<(FlezhaStream, Arc<FlezhaStream>)>,
-    handle: RelayDispatchHandle,
-) {
+fn listen_incoming_uds(pairs: Vec<(FlezhaStream, Arc<FlezhaStream>)>, handle: RelayDispatchHandle) {
     let mut handles = Vec::new();
     for (primary, secondary) in pairs {
         let handle = handle.clone();

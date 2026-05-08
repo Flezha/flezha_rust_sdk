@@ -3,17 +3,15 @@
 
 use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
-
-use flezha_executor::__dispatch_internals as bi;
 use flezha_executor::channel::ChannelBuilder;
 use flezha_executor::command::partition_state::{apply_init_values, serialize_relay_state};
 use flezha_executor::relay::builder::build_topology_for;
 use flezha_executor::relay::RelayInstance;
 use flezha_executor::shard::{Shard, ShardCtx, ShardError};
 use flezha_executor::state::{Change, NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_executor::Relay;
+use flezha_executor::{__dispatch_internals as bi, Relay};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 
 // ----- Single-mode Shard -----
 
@@ -148,10 +146,7 @@ fn static_mode_shard_serializes_under_keyed_object() {
 
     let bytes = serialize_relay_state(&instance);
     let v: Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(
-        v,
-        json!({"ohlc": {"1m": {"high": 0}, "1h": {"high": 0}}})
-    );
+    assert_eq!(v, json!({"ohlc": {"1m": {"high": 0}, "1h": {"high": 0}}}));
 }
 
 #[test]
@@ -168,10 +163,7 @@ fn apply_init_values_seeds_static_mode_shard_per_key() {
 
     let bytes = serialize_relay_state(&instance);
     let v: Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(
-        v,
-        json!({"ohlc": {"1m": {"high": 5}, "1h": {"high": 10}}})
-    );
+    assert_eq!(v, json!({"ohlc": {"1m": {"high": 5}, "1h": {"high": 10}}}));
 }
 
 #[test]
@@ -207,7 +199,11 @@ fn round_trip_static_mode_through_serialize_then_apply() {
     let topology = build_topology_for::<OhlcRelay>().expect("topology");
     let pool = Arc::new(bi::WorkStealingPool::with_size(1));
     let src = RelayInstance::new(Arc::clone(&topology), Arc::from("src"), Arc::clone(&pool));
-    apply_init_values(&src, "{\"ohlc\":{\"1m\":{\"high\":42},\"1h\":{\"high\":7}}}").unwrap();
+    apply_init_values(
+        &src,
+        "{\"ohlc\":{\"1m\":{\"high\":42},\"1h\":{\"high\":7}}}",
+    )
+    .unwrap();
 
     let bytes = serialize_relay_state(&src);
     let json_str = std::str::from_utf8(&bytes).unwrap();

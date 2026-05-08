@@ -48,10 +48,8 @@ impl RelayInstance {
         pool: Arc<WorkStealingPool>,
         operator_override: Option<bool>,
     ) -> Arc<Self> {
-        let persistence_enabled = resolve_persistence_enabled(
-            topology.persistence_enabled_const,
-            operator_override,
-        );
+        let persistence_enabled =
+            resolve_persistence_enabled(topology.persistence_enabled_const, operator_override);
         Arc::new_cyclic(|weak: &Weak<RelayInstance>| {
             let shard_count = topology.shards.len();
             let mut partitions: Vec<Vec<Arc<PartitionSlot>>> = Vec::with_capacity(shard_count);

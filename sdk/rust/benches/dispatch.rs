@@ -19,15 +19,13 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-
-use flezha_executor::__dispatch_internals as bi;
 use flezha_executor::channel::ChannelBuilder;
 use flezha_executor::relay::builder::build_topology_for;
 use flezha_executor::relay::registry::RelayInstanceRegistry;
 use flezha_executor::relay::RelayInstance;
-use flezha_executor::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
 use flezha_executor::shard::{Shard, ShardCtx, ShardError};
-use flezha_executor::{OverflowPolicy, Relay};
+use flezha_executor::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
+use flezha_executor::{__dispatch_internals as bi, OverflowPolicy, Relay};
 use flz_transport::transport::FlezhaStream;
 
 // ----- Shared bench helpers (Decision 10: duplicated locally per bench file) -----
@@ -113,9 +111,7 @@ fn regression_bench(c: &mut Criterion) {
     let topology = build_topology_for::<RegressionRelay>().expect("topology");
     let registry = Arc::new(RelayInstanceRegistry::new());
 
-    let instance_ids: Vec<String> = (0..n_relays)
-        .map(|i| format!("regression-{}", i))
-        .collect();
+    let instance_ids: Vec<String> = (0..n_relays).map(|i| format!("regression-{}", i)).collect();
     for id in &instance_ids {
         let inst = RelayInstance::new(
             Arc::clone(&topology),
@@ -145,12 +141,7 @@ fn regression_bench(c: &mut Criterion) {
                     for _ in 0..msgs_per_relay {
                         let mut md = HashMap::new();
                         md.insert("channel".to_string(), "input".to_string());
-                        handle.dispatch(
-                            id,
-                            payload.clone(),
-                            &md,
-                            Arc::clone(&stream),
-                        );
+                        handle.dispatch(id, payload.clone(), &md, Arc::clone(&stream));
                     }
                 }
                 let drained = wait_until(
@@ -354,10 +345,7 @@ fn partitioning_stress_bench(c: &mut Criterion) {
 
     let pool_sizes: Vec<usize> = match std::env::var("FLEZHA_BENCH_POOL_SIZES") {
         Ok(s) => {
-            let parsed: Vec<usize> = s
-                .split(',')
-                .filter_map(|p| p.trim().parse().ok())
-                .collect();
+            let parsed: Vec<usize> = s.split(',').filter_map(|p| p.trim().parse().ok()).collect();
             if parsed.is_empty() {
                 vec![pool_size_from_env_or_cpus()]
             } else {
@@ -407,12 +395,7 @@ fn partitioning_stress_bench(c: &mut Criterion) {
                             for _ in 0..msgs_per_relay {
                                 let mut md = HashMap::new();
                                 md.insert("channel".to_string(), "input".to_string());
-                                handle.dispatch(
-                                    id,
-                                    payload.clone(),
-                                    &md,
-                                    Arc::clone(&stream),
-                                );
+                                handle.dispatch(id, payload.clone(), &md, Arc::clone(&stream));
                             }
                         }
                         let drained = wait_until(

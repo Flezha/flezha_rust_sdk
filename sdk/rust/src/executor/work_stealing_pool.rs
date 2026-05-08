@@ -12,13 +12,13 @@
 //! exit their loop. Workers are joined implicitly via `JoinHandle::drop` is
 //! NOT a join — so we `join()` explicitly in `Drop` to avoid leaking threads.
 
-use crossbeam_deque::{Injector, Stealer, Worker};
-use std::env;
-use std::iter;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle, Thread};
 use std::time::Duration;
+use std::{env, iter};
+
+use crossbeam_deque::{Injector, Stealer, Worker};
 
 pub type Task = Box<dyn FnOnce() + Send + 'static>;
 
@@ -231,9 +231,10 @@ fn number_of_workers() -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Instant;
+
+    use super::*;
 
     #[test]
     fn submit_tasks_complete() {
@@ -252,7 +253,9 @@ mod tests {
         }
 
         for _ in 0..total {
-            done_rx.recv_timeout(Duration::from_secs(5)).expect("task drop");
+            done_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("task drop");
         }
         assert_eq!(counter.load(Ordering::Relaxed), total);
     }
@@ -274,7 +277,9 @@ mod tests {
             }));
         }
         for _ in 0..total {
-            done_rx.recv_timeout(Duration::from_secs(30)).expect("task drop");
+            done_rx
+                .recv_timeout(Duration::from_secs(30))
+                .expect("task drop");
         }
         let elapsed = start.elapsed();
         eprintln!(

@@ -1,24 +1,26 @@
+use std::collections::HashMap;
+use std::io::Write;
+use std::net::Shutdown;
+
+use flz_transport::service::payloader;
+use flz_transport::transport::FlezhaStream;
+use prost::Message;
+
 use crate::command;
 use crate::executor::ExecutorNode;
 use crate::pb::command_request::Command;
 use crate::pb::{CommandRequest, CommandResponse};
-use flz_transport::service::payloader;
-use flz_transport::transport::FlezhaStream;
-use prost::Message;
-use std::collections::HashMap;
-use std::io::Write;
-use std::net::Shutdown;
 
 mod compact;
 mod executor_assign;
 mod executor_disconnect;
 mod migration_deserialization;
 mod migration_serialization;
-mod partition_status;
 mod partition_apply_state;
+pub mod partition_state;
+mod partition_status;
 mod relay_message;
 mod relay_start;
-pub mod partition_state;
 mod relay_stop;
 mod restore;
 mod streams_connect;
@@ -77,9 +79,7 @@ pub fn get_handler(_payload_id: &str, message: &str) -> (CommandActionType, Stri
         Command::RestoreInitStateResponse(_) => CommandActionType::NotificationIgnore,
         Command::CompactPartition(proto_ch) => CommandActionType::Regular(Box::new(proto_ch)),
         Command::CompactPartitionResponse(_) => CommandActionType::NotificationIgnore,
-        Command::PartitionMailboxStatus(proto_ch) => {
-            CommandActionType::Regular(Box::new(proto_ch))
-        }
+        Command::PartitionMailboxStatus(proto_ch) => CommandActionType::Regular(Box::new(proto_ch)),
     };
 
     (command_handler, reference_id)

@@ -23,8 +23,6 @@ pub mod header;
 pub mod partition_state_sink;
 pub mod restore;
 
-pub use restore::{RestoreError, RestoreInitPayload};
-
 use std::any::Any;
 use std::collections::VecDeque;
 use std::sync::atomic::AtomicU64;
@@ -32,6 +30,7 @@ use std::sync::{Arc, Mutex, Weak};
 
 use crossbeam::sync::{Parker, Unparker};
 use flz_transport::transport::FlezhaStream;
+pub use restore::{RestoreError, RestoreInitPayload};
 
 use crate::channel::ShardId;
 use crate::executor::mailbox::Mailbox;
@@ -120,10 +119,7 @@ impl BlockParker {
     /// Number of currently parked waiters. Approximate under contention;
     /// exposed for diagnostics only.
     pub fn waiter_count(&self) -> usize {
-        self.waiters
-            .lock()
-            .map(|d| d.len())
-            .unwrap_or(0)
+        self.waiters.lock().map(|d| d.len()).unwrap_or(0)
     }
 }
 
@@ -200,9 +196,10 @@ pub fn build_partition_slot<S: crate::shard::Shard>(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::sync::atomic::Ordering;
     use std::time::{Duration, Instant};
+
+    use super::*;
 
     #[test]
     fn block_parker_unpark_releases_waiter() {

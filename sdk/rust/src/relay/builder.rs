@@ -189,10 +189,7 @@ pub(crate) fn resolve_mailbox_capacity_inner(
     validate_capacity(shard_name, resolved)
 }
 
-fn validate_capacity(
-    shard_name: &'static str,
-    value: usize,
-) -> Result<usize, BuildTopologyError> {
+fn validate_capacity(shard_name: &'static str, value: usize) -> Result<usize, BuildTopologyError> {
     if value == 0 {
         return Err(BuildTopologyError::MailboxCapacityZero { shard: shard_name });
     }
@@ -249,13 +246,8 @@ mod tests {
 
     #[test]
     fn capacity_above_maximum_is_rejected_with_shard_name() {
-        let err = resolve_mailbox_capacity_inner(
-            "ohlc",
-            MAX_MAILBOX_CAPACITY + 1,
-            true,
-            None,
-        )
-        .unwrap_err();
+        let err = resolve_mailbox_capacity_inner("ohlc", MAX_MAILBOX_CAPACITY + 1, true, None)
+            .unwrap_err();
         match err {
             BuildTopologyError::MailboxCapacityTooLarge { shard, value } => {
                 assert_eq!(shard, "ohlc");
@@ -269,8 +261,7 @@ mod tests {
     fn override_zero_overrides_env_var_and_fails() {
         // Even if env is valid, an explicit-but-invalid override fails
         // (override-flag-true wins precedence even into validation).
-        let err =
-            resolve_mailbox_capacity_inner("ohlc", 0, true, Some("4096")).unwrap_err();
+        let err = resolve_mailbox_capacity_inner("ohlc", 0, true, Some("4096")).unwrap_err();
         assert!(matches!(
             err,
             BuildTopologyError::MailboxCapacityZero { shard: "ohlc" }
@@ -285,13 +276,8 @@ mod tests {
 
     #[test]
     fn maximum_capacity_is_accepted() {
-        let cap = resolve_mailbox_capacity_inner(
-            "max_shard",
-            MAX_MAILBOX_CAPACITY,
-            true,
-            None,
-        )
-        .unwrap();
+        let cap =
+            resolve_mailbox_capacity_inner("max_shard", MAX_MAILBOX_CAPACITY, true, None).unwrap();
         assert_eq!(cap, MAX_MAILBOX_CAPACITY);
     }
 }
