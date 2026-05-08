@@ -186,6 +186,29 @@ fn listen_incoming_quic(
 fn connect_unix(executor_id: &str, stream_type: String) -> UnixStream {
     let socket_path = path_helper::stream_socket_path(executor_id, stream_type);
 
-    UnixStream::connect(&socket_path)
-        .unwrap_or_else(|_| panic!("Failed to connect to the socket: {}", socket_path))
+    // The controller binds the per-executor data sockets immediately before
+    // sending ConnectSocket, but bind+connect can race on busy CI. Retry with
+    // bounded backoff (up to ~3s) before giving up; matches the control
+    // channel's own open_with_retry pattern in `executor::control_unit`.
+    let mut attempt = 0u32;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        match UnixStream::connect(&socket_path) {
+            Ok(s) => return s,
+            Err(e) => {
+                if std::time::Instant::now() >= deadline {
+                    panic!(
+                        "Failed to connect to the socket {} after {} attempts: {}",
+                        socket_path, attempt, e
+                    );
+                }
+                attempt += 1;
+                let backoff = std::cmp::min(
+                    std::time::Duration::from_millis(10 * 2u64.pow(attempt.min(6))),
+                    std::time::Duration::from_millis(500),
+                );
+                std::thread::sleep(backoff);
+            }
+        }
+    }
 }

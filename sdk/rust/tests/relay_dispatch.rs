@@ -58,7 +58,7 @@ impl Shard for AppendShard {
     fn name() -> &'static str {
         "append_shard"
     }
-    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) -> () {}
+    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
     fn run(
         &mut self,
         input: String,
@@ -141,7 +141,7 @@ impl Shard for ConcurrencyProbeShard {
     fn name() -> &'static str {
         "concurrency_probe_shard"
     }
-    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) -> () {}
+    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
     fn run(
         &mut self,
         _: String,
@@ -450,7 +450,7 @@ impl Shard for MetaProducerShard {
     fn name() -> &'static str {
         "meta_producer_shard"
     }
-    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) -> () {}
+    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
     fn run(
         &mut self,
         input: String,
@@ -479,7 +479,7 @@ impl Shard for MetaConsumerShard {
     fn name() -> &'static str {
         "meta_consumer_shard"
     }
-    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) -> () {}
+    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
     fn run(&mut self, _: String, _: StateHandle<'_, MetaConsumerShard>, _: &mut ShardCtx<'_>) -> Result<(), ShardError> {
         Ok(())
     }

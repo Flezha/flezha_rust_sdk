@@ -56,9 +56,9 @@ pub enum RestoreError {
 /// Behavior:
 ///   1. If `payload.snapshot_bytes` is non-empty, decode + validate the
 ///      header and replace `state` with `postcard::from_bytes(rest)`.
-///   2. Iterate change-log records via [`iter_change_log_records`]; for
-///      each record, validate the header, deserialize the change body,
-///      and call `S::apply_change(&mut state, &change)`.
+///   2. Iterate change-log records via the internal `iter_change_log_records`
+///      helper; for each record, validate the header, deserialize the change
+///      body, and call `S::apply_change(&mut state, &change)`.
 pub fn init_partition_with_payload<S: crate::shard::Shard>(
     shard_key: Option<&str>,
     payload: Option<&RestoreInitPayload<'_>>,

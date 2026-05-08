@@ -127,7 +127,6 @@ fn regression_bench(c: &mut Criterion) {
 
     let handle = bi::RelayDispatchHandle {
         registry: Arc::clone(&registry),
-        pool: Arc::clone(&pool),
     };
     let stream = dummy_stream();
     let payload: Vec<u8> = b"x".repeat(64);
@@ -393,7 +392,6 @@ fn partitioning_stress_bench(c: &mut Criterion) {
         }
         let handle = bi::RelayDispatchHandle {
             registry: Arc::clone(&registry),
-            pool: Arc::clone(&pool),
         };
 
         group.bench_with_input(
