@@ -68,6 +68,15 @@ pub enum OverflowPolicy {
     DropOldest,
 }
 
+/// Hybrid plugin sink: the runtime form of `also_to_plugin_with(...)`.
+/// Lives alongside an `InterShard` channel's consumer fan-out so a
+/// single emit reaches both consumer mailboxes (typed) and the named
+/// plugin (serialized to bytes).
+pub struct PluginSink {
+    pub name: Arc<str>,
+    pub serializer: PluginSerializeFn,
+}
+
 pub struct ChannelDescriptor {
     pub name: Arc<str>,
     pub kind: ChannelKind,
@@ -79,9 +88,14 @@ pub struct ChannelDescriptor {
     /// arrive already typed via `ctx.emit`. For plugin-bound channels:
     /// `None` — handled by the producer-side serializer.
     pub wrap_input: Option<EntryWrapFn>,
-    /// For plugin-bound channels: serialize the typed payload to wire
-    /// bytes. For other kinds: `None`.
+    /// For pure `PluginBound` channels: serialize the typed payload to
+    /// wire bytes. For other kinds: `None`. Hybrid channels populate
+    /// `plugin_sink` instead.
     pub plugin_serializer: Option<PluginSerializeFn>,
+    /// For hybrid `InterShard` channels declared with
+    /// `also_to_plugin_with(...)`: the named plugin sink. Mutually
+    /// exclusive with `plugin_serializer` / `plugin_name`.
+    pub plugin_sink: Option<PluginSink>,
     /// Backpressure policy applied at the push site when the consumer's
     /// mailbox is full. Set at declaration time per channel kind, optionally
     /// overridden by `.on_full(...)`. Plugin-bound channels carry a

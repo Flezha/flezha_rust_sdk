@@ -94,6 +94,15 @@ pub struct BuildPartitionArgs<'a> {
     pub pool: Arc<crate::executor::work_stealing_pool::WorkStealingPool>,
 }
 
+/// Plugin sink attached to an `InterShard` channel via
+/// `also_to_plugin_with(...)`. The presence of this field flips the
+/// channel from pure inter-shard fan-out to hybrid (consumers + plugin
+/// wire) without changing `ChannelKind`.
+pub(crate) struct PluginSink {
+    pub name: &'static str,
+    pub serializer: crate::channel::PluginSerializeFn,
+}
+
 /// Internal channel record used during topology construction.
 pub(crate) struct ChannelEntry {
     pub name: &'static str,
@@ -103,6 +112,11 @@ pub(crate) struct ChannelEntry {
     pub plugin_name: Option<&'static str>,
     pub wrap_input: Option<crate::channel::EntryWrapFn>,
     pub plugin_serializer: Option<crate::channel::PluginSerializeFn>,
+    /// Hybrid plugin sink: populated by `also_to_plugin_with(...)` on
+    /// an `InterShard` channel. Mutually exclusive with
+    /// `plugin_name`/`plugin_serializer`, which are populated by
+    /// `to_plugin(...)` on a pure `PluginBound` channel.
+    pub plugin_sink: Option<PluginSink>,
     /// Backpressure policy applied at the push site when the consumer
     /// mailbox is full. Initialized at `declare_channel` time per
     /// channel kind (Entry → DropNewest, InterShard → Block); plugin-bound
@@ -147,6 +161,12 @@ pub enum BuildTopologyError {
         "shard `{shard}` declared mailbox_capacity = {value}; capacity must be in 1..=1_048_576"
     )]
     MailboxCapacityTooLarge { shard: &'static str, value: usize },
+
+    #[error(
+        "channel `{channel}` was declared with `also_to_plugin_with(...)` more than once; \
+         only one plugin sink per channel is allowed"
+    )]
+    DuplicatePluginSink { channel: &'static str },
 }
 
 /// Builder collected by `Relay::channels`. Internal state turns into a
@@ -212,6 +232,7 @@ impl ChannelBuilder {
             plugin_name: None,
             wrap_input: None,
             plugin_serializer: None,
+            plugin_sink: None,
             overflow_policy: default_policy_for_kind(kind),
         });
         self.name_to_id.insert(name, id);
@@ -387,6 +408,43 @@ impl<'b, T: 'static + Send + Sync> ChannelDeclWithProducer<'b, T> {
         entry.consumers.push(shard_id);
         let shard = &mut self.builder.shards[shard_id as usize];
         shard.input_channel_id = Some(self.channel_id);
+        self
+    }
+
+    /// Attach a plugin sink alongside inter-shard fan-out. The channel's
+    /// `kind` stays `InterShard`, further `.into::<S>()` consumer wiring
+    /// chains naturally, and a typed value emitted on this channel
+    /// reaches both the consumer mailboxes (typed) and the named plugin
+    /// (serialized to bytes via `serializer`). The serializer is invoked
+    /// once per emit regardless of consumer count.
+    ///
+    /// Calling `also_to_plugin_with` twice on the same channel is a
+    /// registration error (`BuildTopologyError::DuplicatePluginSink`);
+    /// the first call wins.
+    pub fn also_to_plugin_with<F>(self, plugin_name: &'static str, serializer: F) -> Self
+    where
+        F: Fn(&T) -> Vec<u8> + Send + Sync + 'static,
+    {
+        let entry = &mut self.builder.channels[self.channel_id as usize];
+        if entry.plugin_sink.is_some() {
+            self.builder
+                .errors
+                .push(BuildTopologyError::DuplicatePluginSink {
+                    channel: entry.name,
+                });
+            return self;
+        }
+        let serializer_erased: crate::channel::PluginSerializeFn =
+            Arc::new(move |val: &dyn Any| -> Vec<u8> {
+                let typed = val
+                    .downcast_ref::<T>()
+                    .expect("hybrid plugin serializer: type mismatch (build-time invariant)");
+                serializer(typed)
+            });
+        entry.plugin_sink = Some(PluginSink {
+            name: plugin_name,
+            serializer: serializer_erased,
+        });
         self
     }
 

@@ -62,3 +62,43 @@ pub use shard::WallClock;
 #       pub use harness::ShardTestHarness;
 #       pub use harness::ReplayMismatch;
 #   }
+
+# Items added by `relay-channel-fan-out-to-plugin`:
+#
+# Builder method (in `channel/builder.rs`):
+#
+#   impl<'b, T: 'static + Send + Sync> ChannelDeclWithProducer<'b, T> {
+#       pub fn also_to_plugin_with<F>(self, plugin_name: &'static str, serializer: F) -> Self
+#       where
+#           F: Fn(&T) -> Vec<u8> + Send + Sync + 'static;
+#   }
+#
+# New `BuildTopologyError` variant:
+#
+#   pub enum BuildTopologyError {
+#       /* existing variants unchanged */
+#       DuplicatePluginSink { channel: &'static str },
+#   }
+#
+# New `ShardError` variant:
+#
+#   pub enum ShardError {
+#       /* existing variants unchanged */
+#       PluginSerializerPanic { channel: String, message: String },
+#   }
+#
+# New runtime form on `ChannelDescriptor`:
+#
+#   pub struct ChannelDescriptor {
+#       /* existing fields unchanged */
+#       pub plugin_sink: Option<PluginSink>,
+#   }
+#
+#   pub struct PluginSink {
+#       pub name: Arc<str>,
+#       pub serializer: PluginSerializeFn,
+#   }
+#
+# Diff against the previous baseline is purely additive: no method
+# signatures changed, no fields removed, and no existing variants
+# renumbered.

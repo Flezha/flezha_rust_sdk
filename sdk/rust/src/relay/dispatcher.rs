@@ -175,8 +175,11 @@ struct PartitionEmitSink<'a> {
     stream: Arc<FlezhaStream>,
 }
 
-impl<'a> EmitSink for PartitionEmitSink<'a> {
-    fn emit_inter_shard(&mut self, value: Arc<dyn Any + Send + Sync>) -> Result<(), ShardError> {
+impl<'a> PartitionEmitSink<'a> {
+    /// Resolve the channel descriptor + RelayInstance for the cached
+    /// output channel. Returns `UnknownChannel` if either has been
+    /// dropped or is unset.
+    fn resolve_channel(&self) -> Result<(Arc<RelayInstance>, ChannelId), ShardError> {
         let cid = self
             .output_channel_id
             .ok_or_else(|| ShardError::UnknownChannel {
@@ -193,18 +196,21 @@ impl<'a> EmitSink for PartitionEmitSink<'a> {
                     .output_channel_name
                     .map(|s| s.to_string())
                     .unwrap_or_else(|| "<unknown>".to_string()),
-            })?;
+            })?
+            .clone();
+        Ok((instance, cid))
+    }
 
-        let descriptor =
-            instance
-                .topology
-                .channel(cid)
-                .ok_or_else(|| ShardError::UnknownChannel {
-                    channel: format!("<channel id {}>", cid),
-                })?;
-
+    /// Fan out a typed value to every inter-shard consumer's mailbox
+    /// per the channel's `OverflowPolicy`. Shared between hybrid and
+    /// pure-`InterShard` paths.
+    fn fan_out_to_consumers(
+        &self,
+        instance: &RelayInstance,
+        descriptor: &crate::channel::ChannelDescriptor,
+        value: &Arc<dyn Any + Send + Sync>,
+    ) -> Result<(), ShardError> {
         let policy = descriptor.overflow_policy;
-
         for &consumer_shard_id in &descriptor.consumers {
             let consumer_shard = instance.topology.shard(consumer_shard_id).ok_or_else(|| {
                 ShardError::UnknownChannel {
@@ -219,23 +225,106 @@ impl<'a> EmitSink for PartitionEmitSink<'a> {
 
             if consumer_shard.partition_keys.is_empty() {
                 if let Some(slot) = partitions.first() {
-                    enqueue(slot, payload_for(&value, &self.stream), policy);
+                    enqueue(slot, payload_for(value, &self.stream), policy);
                 }
             } else {
                 let key_to_idx = instance
                     .partition_key_to_idx
                     .get(consumer_shard_id as usize);
-                let keys = (consumer_shard.partition_for_erased)(&*value);
+                let keys = (consumer_shard.partition_for_erased)(value.as_ref());
                 for key in keys {
                     if let Some(map) = key_to_idx {
                         if let Some(&idx) = map.get(key) {
                             if let Some(slot) = partitions.get(idx) {
-                                enqueue(slot, payload_for(&value, &self.stream), policy);
+                                enqueue(slot, payload_for(value, &self.stream), policy);
                             }
                         }
                     }
                 }
             }
+        }
+        Ok(())
+    }
+
+    /// Hybrid plugin-sink tail: serialize once inside `catch_unwind`
+    /// and forward the bytes through the existing plugin-wire framing
+    /// path. A serializer panic surfaces as
+    /// `ShardError::PluginSerializerPanic` to the producing Shard;
+    /// the dispatcher thread is unaffected.
+    fn emit_plugin_sink(
+        &self,
+        instance: &RelayInstance,
+        descriptor: &crate::channel::ChannelDescriptor,
+        sink: &crate::channel::PluginSink,
+        value: &Arc<dyn Any + Send + Sync>,
+        meta: Option<HashMap<String, String>>,
+    ) -> Result<(), ShardError> {
+        let serializer = Arc::clone(&sink.serializer);
+        let value_for_panic = Arc::clone(value);
+        let bytes_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            (serializer)(value_for_panic.as_ref())
+        }));
+        let bytes = match bytes_result {
+            Ok(b) => b,
+            Err(panic) => {
+                return Err(ShardError::PluginSerializerPanic {
+                    channel: descriptor.name.to_string(),
+                    message: crate::shard::error::format_panic(panic),
+                });
+            }
+        };
+
+        let mut metadata: HashMap<String, String> = match meta {
+            Some(mut m) => {
+                m.remove("channel");
+                m
+            }
+            None => HashMap::new(),
+        };
+        metadata.insert("channel".to_string(), descriptor.name.to_string());
+
+        // `sink.name` is informational on the SDK side (the wire frame
+        // routes by `channel: String`); kept for parity with
+        // `to_plugin(...)` semantics and useful for diagnostics.
+        let _plugin_name = &sink.name;
+        send_plugin_frame(&self.stream, &instance.instance_id, &bytes, &metadata);
+        Ok(())
+    }
+}
+
+impl<'a> EmitSink for PartitionEmitSink<'a> {
+    fn emit_inter_shard(&mut self, value: Arc<dyn Any + Send + Sync>) -> Result<(), ShardError> {
+        let (instance, cid) = self.resolve_channel()?;
+        let descriptor =
+            instance
+                .topology
+                .channel(cid)
+                .ok_or_else(|| ShardError::UnknownChannel {
+                    channel: format!("<channel id {}>", cid),
+                })?;
+        self.fan_out_to_consumers(&instance, descriptor, &value)?;
+        if let Some(sink) = descriptor.plugin_sink.as_ref() {
+            self.emit_plugin_sink(&instance, descriptor, sink, &value, None)?;
+        }
+        Ok(())
+    }
+
+    fn emit_inter_shard_with_meta(
+        &mut self,
+        value: Arc<dyn Any + Send + Sync>,
+        meta: Option<HashMap<String, String>>,
+    ) -> Result<(), ShardError> {
+        let (instance, cid) = self.resolve_channel()?;
+        let descriptor =
+            instance
+                .topology
+                .channel(cid)
+                .ok_or_else(|| ShardError::UnknownChannel {
+                    channel: format!("<channel id {}>", cid),
+                })?;
+        self.fan_out_to_consumers(&instance, descriptor, &value)?;
+        if let Some(sink) = descriptor.plugin_sink.as_ref() {
+            self.emit_plugin_sink(&instance, descriptor, sink, &value, meta)?;
         }
         Ok(())
     }
@@ -295,6 +384,21 @@ impl<'a> EmitSink for PartitionEmitSink<'a> {
 
     fn is_plugin_bound(&self) -> bool {
         matches!(self.output_channel_kind, ChannelKind::PluginBound)
+    }
+
+    fn has_plugin_sink(&self) -> bool {
+        // Resolving the descriptor each time keeps the trait surface
+        // small. The cached `output_channel_kind` is used for the
+        // pure-plugin fast path; hybrid detection is rare on the hot
+        // path (a single `Option::is_some()` after a topology lookup).
+        self.instance
+            .as_ref()
+            .and_then(|inst| {
+                self.output_channel_id
+                    .and_then(|cid| inst.topology.channel(cid))
+            })
+            .map(|d| d.plugin_sink.is_some())
+            .unwrap_or(false)
     }
 }
 

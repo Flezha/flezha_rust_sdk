@@ -59,6 +59,11 @@ required-features = ["bench-internals"]
 name = "state"
 harness = false
 
+[[bench]]
+name = "hybrid_channel_throughput"
+harness = false
+required-features = ["bench-internals"]
+
 [[test]]
 name = "relay_dispatch"
 required-features = ["bench-internals"]
@@ -69,6 +74,10 @@ required-features = ["bench-internals"]
 
 [[test]]
 name = "state_serialize"
+required-features = ["bench-internals"]
+
+[[test]]
+name = "hybrid_channel"
 required-features = ["bench-internals"]
 
 [lints.rust]

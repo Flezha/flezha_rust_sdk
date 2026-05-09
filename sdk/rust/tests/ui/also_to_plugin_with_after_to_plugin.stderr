@@ -1,0 +1,11 @@
+error[E0599]: no method named `also_to_plugin_with` found for struct `Channel<T>` in the current scope
+  --> tests/ui/also_to_plugin_with_after_to_plugin.rs:30:10
+   |
+27 | /     c.channel::<Vec<u8>>("p")
+28 | |         .from::<PluginProducer>()
+   | |          ------------------------ method `also_to_plugin_with` is available on `ChannelDeclWithProducer<'_, Vec<u8>>`
+29 | |         .to_plugin("k")
+30 | |         .also_to_plugin_with("k2", |_v: &Vec<u8>| Vec::new());
+   | |         -^^^^^^^^^^^^^^^^^^^ method not found in `Channel<Vec<u8>>`
+   | |_________|
+   |

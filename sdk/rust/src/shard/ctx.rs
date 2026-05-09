@@ -25,9 +25,29 @@ pub(crate) trait EmitSink {
         meta: Option<HashMap<String, String>>,
     ) -> Result<(), ShardError>;
 
+    /// Hybrid emit: fan out to inter-shard consumers and (if a plugin
+    /// sink is configured) serialize the value once and forward bytes
+    /// to the plugin wire with the supplied metadata. Default
+    /// implementation routes through `emit_inter_shard` only — sinks
+    /// without a plugin attachment can ignore `meta`.
+    fn emit_inter_shard_with_meta(
+        &mut self,
+        value: Arc<dyn Any + Send + Sync>,
+        _meta: Option<HashMap<String, String>>,
+    ) -> Result<(), ShardError> {
+        self.emit_inter_shard(value)
+    }
+
     fn channel_name(&self) -> &str;
 
     fn is_plugin_bound(&self) -> bool;
+
+    /// True iff the channel is `InterShard` with a `plugin_sink`
+    /// attached via `also_to_plugin_with(...)`. Hybrid emits route
+    /// through `emit_inter_shard{,_with_meta}` rather than `emit_plugin`.
+    fn has_plugin_sink(&self) -> bool {
+        false
+    }
 }
 
 impl<'a> ShardCtx<'a> {
@@ -51,9 +71,10 @@ impl<'a> ShardCtx<'a> {
         }
     }
 
-    /// Emit with user-attached string-keyed metadata. Valid only on
-    /// plugin-bound channels; inter-shard emits return
-    /// `ShardError::MetadataNotAllowedOnInterShardChannel`.
+    /// Emit with user-attached string-keyed metadata. Valid on
+    /// plugin-bound channels and on hybrid (`InterShard` +
+    /// `also_to_plugin_with`) channels. Pure inter-shard channels with
+    /// no plugin sink return `MetadataNotAllowedOnInterShardChannel`.
     pub fn emit_with_meta<C>(
         &mut self,
         value: C,
@@ -62,12 +83,18 @@ impl<'a> ShardCtx<'a> {
     where
         C: 'static + Send + Sync,
     {
-        if !self.emitter.is_plugin_bound() {
+        let plugin_bound = self.emitter.is_plugin_bound();
+        let has_plugin_sink = self.emitter.has_plugin_sink();
+        if !plugin_bound && !has_plugin_sink {
             return Err(ShardError::MetadataNotAllowedOnInterShardChannel {
                 channel: self.emitter.channel_name().to_string(),
             });
         }
         let arc: Arc<dyn Any + Send + Sync> = Arc::new(value);
-        self.emitter.emit_plugin(arc, Some(meta))
+        if plugin_bound {
+            self.emitter.emit_plugin(arc, Some(meta))
+        } else {
+            self.emitter.emit_inter_shard_with_meta(arc, Some(meta))
+        }
     }
 }

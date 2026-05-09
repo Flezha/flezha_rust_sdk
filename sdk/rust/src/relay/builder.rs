@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::channel::builder::{BuildTopologyError, ChannelBuilder};
-use crate::channel::{ChannelDescriptor, ChannelKind};
+use crate::channel::{ChannelDescriptor, ChannelKind, PluginSink};
 use crate::relay::topology::{RelayTopology, ShardDescriptor};
 
 /// Built-in default per-Partition mailbox capacity used when a Shard does
@@ -68,6 +68,10 @@ pub fn build_topology_with_persistence(
         if entry.producer.is_none() && entry.kind != ChannelKind::Entry {
             errors.push(BuildTopologyError::UnwiredChannel { name: entry.name });
         }
+        let plugin_sink = entry.plugin_sink.map(|sink| PluginSink {
+            name: Arc::from(sink.name),
+            serializer: sink.serializer,
+        });
         channel_descs.push(ChannelDescriptor {
             name: Arc::from(entry.name),
             kind: entry.kind,
@@ -76,6 +80,7 @@ pub fn build_topology_with_persistence(
             plugin_name: entry.plugin_name.map(Arc::from),
             wrap_input: entry.wrap_input,
             plugin_serializer: entry.plugin_serializer,
+            plugin_sink,
             overflow_policy: entry.overflow_policy,
         });
     }
