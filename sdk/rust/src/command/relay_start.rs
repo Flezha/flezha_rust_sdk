@@ -19,10 +19,6 @@ impl CommandAction for AddRelay {
         // the existing per-Partition state intact and prevents
         // duplicate-init crashes.
         if executor.has_relay(&instance_id) {
-            eprintln!(
-                "[flezha] AddRelay: relay instance {} already registered, skipping",
-                instance_id
-            );
             return ("start_relay".to_string(), Vec::new());
         }
 
