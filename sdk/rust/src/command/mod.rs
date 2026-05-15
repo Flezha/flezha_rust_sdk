@@ -12,6 +12,7 @@ use crate::pb::command_request::Command;
 use crate::pb::{CommandRequest, CommandResponse};
 
 mod compact;
+mod ping;
 mod executor_assign;
 mod executor_disconnect;
 mod migration_deserialization;
@@ -128,6 +129,7 @@ pub fn get_handler(
         Some(Command::PartitionMailboxStatus(proto_ch)) => {
             CommandActionType::Regular(Box::new(proto_ch))
         }
+        Some(Command::Ping(proto_ch)) => CommandActionType::Regular(Box::new(proto_ch)),
         None => return Err(CommandDecodeError::EmptyCommand),
     };
 

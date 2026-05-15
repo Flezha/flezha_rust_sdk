@@ -5,7 +5,7 @@ pub struct CommandRequest {
     pub reference_id: ::prost::alloc::string::String,
     #[prost(
         oneof = "command_request::Command",
-        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18"
+        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19"
     )]
     pub command: ::core::option::Option<command_request::Command>,
 }
@@ -47,6 +47,8 @@ pub mod command_request {
         CompactPartitionResponse(super::CompactPartitionResponse),
         #[prost(message, tag = "18")]
         PartitionMailboxStatus(super::PartitionMailboxStatus),
+        #[prost(message, tag = "19")]
+        Ping(super::Ping),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -224,4 +226,20 @@ pub struct PartitionMailboxStatus {
     pub partition_id: ::prost::alloc::vec::Vec<u8>,
     #[prost(string, tag = "2")]
     pub status: ::prost::alloc::string::String,
+}
+/// End-to-end control-channel health probe issued by the Controller before
+/// `AddRelay`. The SDK responds immediately with a `CommandResponse{status:
+/// "success", raw_data: PingResponse}`; the round-trip proves the
+/// control channel is bound, the SDK is listening, and the reply path is
+/// intact. SDKs without the handler MUST log and ignore the unknown variant
+/// (existing protobuf-decoder behaviour).
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Ping {
+    #[prost(string, tag = "1")]
+    pub nonce: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PingResponse {
+    #[prost(string, tag = "1")]
+    pub nonce: ::prost::alloc::string::String,
 }
