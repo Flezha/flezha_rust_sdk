@@ -72,11 +72,19 @@ pub struct PartitionCounters {
 ///
 /// Implementation: `Mutex<VecDeque<Unparker>>` per Decision 3's note. A
 /// producer parks by creating a fresh `Parker`, pushing its `Unparker`
-/// to the back of the deque, **dropping the lock**, and then calling
-/// `parker.park()`. A consumer pops one waiter from the front under the
-/// lock and unparks it. The lock is never held across `park()`, so the
-/// deque mutation window is short and uncontended on the consumer side
-/// (the inflight CAS guarantees a single drainer per slot).
+/// to the back of the deque, **dropping the lock**, **re-checking that
+/// the mailbox is still full**, and only then calling `parker.park()`.
+/// A consumer pops one waiter from the front under the lock and unparks
+/// it. The lock is never held across `park()`, so the deque mutation
+/// window is short and uncontended on the consumer side (the inflight
+/// CAS guarantees a single drainer per slot).
+///
+/// The post-register recheck closes the window where drain could pop
+/// every item and exit between the producer's failed `try_push` and the
+/// deque push. Without it, a producer that loses that race parks into a
+/// deque that no future drain will read, and only the next external
+/// push to the same partition would rescue it — which never happens in
+/// the steady-state burst case where every producer is mid-`wait_one`.
 ///
 /// FIFO ordering at the API level is best-effort once threads start
 /// observing their own wakeups; thread scheduling can reorder which
@@ -92,14 +100,26 @@ impl BlockParker {
         }
     }
 
-    /// Park the calling thread on this slot's wait list. The lock is
-    /// dropped before [`Parker::park`] so a consumer pop can unpark us.
-    pub fn wait_one(&self) {
+    /// Register on this slot's wait list and park the calling thread.
+    /// The lock is dropped before [`Parker::park`] so a consumer pop can
+    /// unpark us.
+    ///
+    /// After registering, the producer **rechecks** `mailbox.is_full()`.
+    /// If a drain freed a slot (or fully drained and exited) between the
+    /// caller's failed `try_push` and our deque push, the recheck observes
+    /// `!is_full()` and we return immediately without parking; the outer
+    /// `enqueue` loop will retry `try_push`. Without this recheck, a
+    /// producer that loses that race parks forever — see the missed-wake
+    /// note on [`BlockParker`].
+    pub fn wait_one<P: Send + 'static>(&self, mailbox: &Mailbox<P>) {
         let parker = Parker::new();
         let unparker = parker.unparker().clone();
         {
             let mut deque = self.waiters.lock().expect("BlockParker mutex poisoned");
             deque.push_back(unparker);
+        }
+        if !mailbox.is_full() {
+            return;
         }
         parker.park();
     }
@@ -201,15 +221,26 @@ mod tests {
 
     use super::*;
 
+    /// Build a capacity-1 mailbox pre-filled so `is_full()` reports true.
+    /// Required because [`BlockParker::wait_one`] rechecks the mailbox
+    /// after registering and returns without parking when it isn't full.
+    fn saturated_mailbox() -> Arc<Mailbox<u8>> {
+        let mbox = Arc::new(Mailbox::<u8>::with_capacity(1));
+        mbox.try_push(0).expect("pre-fill");
+        mbox
+    }
+
     #[test]
     fn block_parker_unpark_releases_waiter() {
         let parker = Arc::new(BlockParker::new());
+        let mbox = saturated_mailbox();
         let p = Arc::clone(&parker);
+        let m = Arc::clone(&mbox);
         let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let s = Arc::clone(&started);
         let t = std::thread::spawn(move || {
             s.store(true, Ordering::Release);
-            p.wait_one();
+            p.wait_one(&m);
         });
         // Wait for the thread to register itself before unparking, so we
         // exercise the wake-after-park path rather than the no-op
@@ -249,6 +280,7 @@ mod tests {
         // A, B, C. Test the deque-level ordering only — once threads
         // observe their wakeups, scheduling can reorder them.
         let parker = BlockParker::new();
+        let mbox = saturated_mailbox();
         // Use the internal API by parking three threads serialized via
         // sleeps so we can assert the wait_count grows monotonically.
         let p = Arc::new(parker);
@@ -256,9 +288,10 @@ mod tests {
         let mut threads = Vec::new();
         for tag in [b'A', b'B', b'C'] {
             let p = Arc::clone(&p);
+            let m = Arc::clone(&mbox);
             let order = Arc::clone(&order);
             threads.push(std::thread::spawn(move || {
-                p.wait_one();
+                p.wait_one(&m);
                 order.lock().unwrap().push(tag);
             }));
             // Sequence the parkers so they enter the deque in order.
@@ -281,5 +314,29 @@ mod tests {
         }
         let observed = order.lock().unwrap().clone();
         assert_eq!(observed, vec![b'A', b'B', b'C']);
+    }
+
+    /// Regression for the missed-wake deadlock: if drain pops every item
+    /// and exits between a producer's failed `try_push` and its deque
+    /// push inside `wait_one`, the producer must NOT block forever. The
+    /// fix re-checks `mailbox.is_full()` after registering and returns
+    /// immediately when the mailbox has space.
+    #[test]
+    fn wait_one_does_not_block_when_mailbox_has_space() {
+        let parker = BlockParker::new();
+        let mbox = Arc::new(Mailbox::<u8>::with_capacity(2));
+        // Mailbox has 2 free slots — wait_one must NOT park.
+        let start = Instant::now();
+        parker.wait_one(&mbox);
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < Duration::from_millis(50),
+            "wait_one parked despite non-full mailbox; elapsed = {:?}",
+            elapsed
+        );
+        // The unparker we registered is still in the deque; harmless,
+        // a future drain pops it and unparks a Parker that's already
+        // been dropped.
+        assert_eq!(parker.waiter_count(), 1);
     }
 }

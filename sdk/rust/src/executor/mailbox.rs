@@ -230,6 +230,15 @@ impl<Payload: Send + 'static> Mailbox<Payload> {
         self.queue.is_empty()
     }
 
+    /// True when the bounded queue is at capacity. Used by Block-policy
+    /// producers to recheck saturation after registering on the parker's
+    /// wait list, closing the missed-wake window between a failed
+    /// `try_push` and the deque push inside `BlockParker::wait_one`.
+    #[inline]
+    pub fn is_full(&self) -> bool {
+        self.queue.len() >= self.queue.capacity()
+    }
+
     /// Per-Partition counter set. Producer-side enqueue paths bump these
     /// on push success / block / drop events; readers (future metrics
     /// export) use [`Ordering::Relaxed`] loads.

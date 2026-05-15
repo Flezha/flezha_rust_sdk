@@ -433,7 +433,7 @@ pub(crate) fn enqueue(
                         .pushes_blocked_total
                         .fetch_add(1, Ordering::Relaxed);
                     next = returned;
-                    slot.block_parker.wait_one();
+                    slot.block_parker.wait_one(&slot.mailbox);
                 }
                 OverflowPolicy::DropNewest => {
                     slot.mailbox
