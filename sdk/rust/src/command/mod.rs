@@ -12,7 +12,6 @@ use crate::pb::command_request::Command;
 use crate::pb::{CommandRequest, CommandResponse};
 
 mod compact;
-mod ping;
 mod executor_assign;
 mod executor_disconnect;
 mod migration_deserialization;
@@ -20,6 +19,7 @@ mod migration_serialization;
 mod partition_apply_state;
 pub mod partition_state;
 mod partition_status;
+mod ping;
 mod relay_message;
 mod relay_start;
 mod relay_stop;
@@ -80,26 +80,20 @@ pub enum CommandDecodeError {
     EmptyCommand,
 }
 
-pub fn get_handler(
-    _payload_id: &str,
-    message: &[u8],
-) -> Result<FrameOutcome, CommandDecodeError> {
+pub fn get_handler(_payload_id: &str, message: &[u8]) -> Result<FrameOutcome, CommandDecodeError> {
     if message.is_empty() {
         return Ok(FrameOutcome::PeerClosed);
     }
 
-    let wrapper_command = CommandRequest::decode(message).map_err(|e| {
-        CommandDecodeError::Malformed {
+    let wrapper_command =
+        CommandRequest::decode(message).map_err(|e| CommandDecodeError::Malformed {
             stack: format!("{:?}", e),
-        }
-    })?;
+        })?;
 
     let reference_id = wrapper_command.reference_id;
 
     let command_handler = match wrapper_command.command {
-        Some(Command::AssignExecutorId(proto_ch)) => {
-            CommandActionType::Regular(Box::new(proto_ch))
-        }
+        Some(Command::AssignExecutorId(proto_ch)) => CommandActionType::Regular(Box::new(proto_ch)),
         Some(Command::ConnectSocket(proto_ch)) => CommandActionType::Regular(Box::new(proto_ch)),
         Some(Command::AddRelay(proto_ch)) => CommandActionType::Regular(Box::new(proto_ch)),
         Some(Command::RemRelay(proto_ch)) => CommandActionType::Regular(Box::new(proto_ch)),
@@ -175,16 +169,14 @@ pub fn handle_command(
 
     match handler_type {
         CommandActionType::Regular(handler) => {
-            let reply =
-                command::exec_control(executor, handler, payload_id, message, reference_id);
+            let reply = command::exec_control(executor, handler, payload_id, message, reference_id);
             if let Err(e) = (&*stream).write_all(&reply) {
                 eprintln!("[flezha] Failed to write command response: {}", e);
             }
         }
 
         CommandActionType::ExecutorDisconnect(handler) => {
-            let reply =
-                command::exec_control(executor, handler, payload_id, message, reference_id);
+            let reply = command::exec_control(executor, handler, payload_id, message, reference_id);
             if let Err(e) = (&*stream).write_all(&reply) {
                 eprintln!("[flezha] Failed to write disconnect response: {}", e);
             }
@@ -241,8 +233,9 @@ fn exec_control(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use prost::Message;
+
+    use super::*;
 
     #[test]
     fn empty_bytes_signal_peer_closed() {
@@ -283,9 +276,11 @@ mod tests {
     fn well_formed_request_returns_command_variant() {
         let request = CommandRequest {
             reference_id: "ref-shutdown".to_string(),
-            command: Some(Command::ExecutorShutdownAck(crate::pb::ExecutorShutdownAck {
+            command: Some(Command::ExecutorShutdownAck(
+                crate::pb::ExecutorShutdownAck {
                     relay_id: "".to_string(),
-                })),
+                },
+            )),
         };
 
         let bytes = request.encode_to_vec();
@@ -309,9 +304,11 @@ mod tests {
 
         let valid_request = CommandRequest {
             reference_id: "y".to_string(),
-            command: Some(Command::ExecutorShutdownAck(crate::pb::ExecutorShutdownAck {
-                relay_id: "".to_string(),
-            })),
+            command: Some(Command::ExecutorShutdownAck(
+                crate::pb::ExecutorShutdownAck {
+                    relay_id: "".to_string(),
+                },
+            )),
         }
         .encode_to_vec();
 

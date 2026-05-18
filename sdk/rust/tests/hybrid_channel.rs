@@ -21,7 +21,7 @@ use flezha_executor::relay::registry::RelayInstanceRegistry;
 use flezha_executor::relay::RelayInstance;
 use flezha_executor::shard::{Shard, ShardCtx, ShardError};
 use flezha_executor::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_executor::{Relay, __dispatch_internals as bi};
+use flezha_executor::{__dispatch_internals as bi, Relay};
 use flz_transport::service::payloader;
 use flz_transport::transport::FlezhaStream;
 

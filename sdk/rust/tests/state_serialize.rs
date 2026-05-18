@@ -9,7 +9,7 @@ use flezha_executor::relay::builder::build_topology_for;
 use flezha_executor::relay::RelayInstance;
 use flezha_executor::shard::{Shard, ShardCtx, ShardError};
 use flezha_executor::state::{Change, NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_executor::{Relay, __dispatch_internals as bi};
+use flezha_executor::{__dispatch_internals as bi, Relay};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 

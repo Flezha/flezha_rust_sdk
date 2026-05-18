@@ -25,7 +25,7 @@ use flezha_executor::relay::registry::RelayInstanceRegistry;
 use flezha_executor::relay::RelayInstance;
 use flezha_executor::shard::{Shard, ShardCtx, ShardError};
 use flezha_executor::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_executor::{OverflowPolicy, Relay, __dispatch_internals as bi};
+use flezha_executor::{__dispatch_internals as bi, OverflowPolicy, Relay};
 use flz_transport::transport::FlezhaStream;
 
 // ----- Shared bench helpers (Decision 10: duplicated locally per bench file) -----
@@ -334,7 +334,14 @@ impl Relay for PartitioningStressBenchRelay {
 
 fn partitioning_stress_bench(c: &mut Criterion) {
     let n_relays = 8usize;
-    let msgs_per_relay = 20_000usize;
+    let msgs_per_relay = std::env::var("FLEZHA_BENCH_MSGS_PER_RELAY")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(20_000usize);
+    let measurement_secs = std::env::var("FLEZHA_BENCH_MEASUREMENT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(30u64);
     let inputs_total = n_relays * msgs_per_relay;
     let fan_out = STRESS_KEYS.len();
     let shards = 4usize;
@@ -360,7 +367,7 @@ fn partitioning_stress_bench(c: &mut Criterion) {
     let stream = dummy_stream();
 
     let mut group = c.benchmark_group("partitioning_stress_8x4x8x20k");
-    group.measurement_time(Duration::from_secs(30));
+    group.measurement_time(Duration::from_secs(measurement_secs));
     group.sample_size(10);
     group.throughput(criterion::Throughput::Elements(expected_runs as u64));
 
