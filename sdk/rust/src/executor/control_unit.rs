@@ -163,6 +163,20 @@ fn try_open_quic(
     Ok((handle, stream, Some(client)))
 }
 
+/// Maximum wait for the controller's first frame (the assign-executor-id ack)
+/// after opening a control channel. A controller mid-shutdown accepts the
+/// socket but rejects registration without closing it, so without this bound
+/// the reader blocks forever and the executor never reaches the live
+/// controller. Overridable via `FLEZHA_CONTROL_ACK_TIMEOUT_MS`.
+fn connect_ack_timeout() -> Duration {
+    std::env::var("FLEZHA_CONTROL_ACK_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|&ms| ms > 0)
+        .map(Duration::from_millis)
+        .unwrap_or(Duration::from_millis(10_000))
+}
+
 fn sock_conn(
     namespace: String,
     stream_box: Arc<FlezhaStream>,
@@ -172,7 +186,19 @@ fn sock_conn(
     let stream_clone = Arc::clone(&stream_box);
 
     let handle = thread::spawn(move || {
-        send_init_msg(namespace, stream_clone.clone());
+        // Bound the read until the controller acknowledges the handshake, then
+        // read indefinitely. Catches a controller that accepts the socket but
+        // never registers us (the warm-restart hang).
+        let ack_timeout = connect_ack_timeout();
+        let _ = stream_clone.set_read_timeout(Some(ack_timeout));
+
+        if let Err(e) = send_init_msg(namespace, stream_clone.clone()) {
+            if std::env::var("FLEZHA_LOG").as_deref() == Ok("debug") {
+                eprintln!("[flezha] Control-channel init send failed: {}", e);
+            }
+            let _ = otx.lock().unwrap().send(ExecutorMessage::Reconnect);
+            return;
+        }
 
         // Send startup confirmation only on initial connection
         if let Some(itx) = itx {
@@ -182,9 +208,15 @@ fn sock_conn(
                 .unwrap();
         }
 
+        let mut acked = false;
+
         loop {
             match payloader::extract_payload(&*stream_clone.clone()) {
                 Ok((payload_id, message, metadata)) => {
+                    if !acked {
+                        acked = true;
+                        let _ = stream_clone.set_read_timeout(None);
+                    }
                     otx.lock()
                         .unwrap()
                         .send(ExecutorMessage::HandleCommandAction(
@@ -193,8 +225,22 @@ fn sock_conn(
                         .unwrap();
                 }
                 Err(e) => match e.kind() {
-                    io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted => {
-                        thread::sleep(Duration::from_millis(10));
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut if !acked => {
+                        // No controller traffic within the ack window — the
+                        // registration handshake never completed. Reconnect so
+                        // the executor lands on a live controller.
+                        if std::env::var("FLEZHA_LOG").as_deref() == Ok("debug") {
+                            eprintln!(
+                                "[flezha] Controller did not acknowledge within {:?}; reconnecting",
+                                ack_timeout
+                            );
+                        }
+                        let _ = otx.lock().unwrap().send(ExecutorMessage::Reconnect);
+                        break;
+                    }
+                    io::ErrorKind::WouldBlock
+                    | io::ErrorKind::TimedOut
+                    | io::ErrorKind::Interrupted => {
                         continue;
                     }
                     _ => {
@@ -216,7 +262,7 @@ fn sock_conn(
     (handle, stream_box)
 }
 
-fn send_init_msg(namespace: String, stream_clone: Arc<FlezhaStream>) {
+fn send_init_msg(namespace: String, stream_clone: Arc<FlezhaStream>) -> io::Result<()> {
     let factory_ids: Vec<String> = class_factory_ids().iter().map(|s| s.to_string()).collect();
     let factories: Vec<FactoryInfo> = factory_ids
         .iter()
@@ -227,7 +273,7 @@ fn send_init_msg(namespace: String, stream_clone: Arc<FlezhaStream>) {
         .collect();
 
     let control_init_message = ControlInitMessage {
-        namespace: namespace.clone(),
+        namespace,
         factory_ids,
         factories,
     };
@@ -236,5 +282,63 @@ fn send_init_msg(namespace: String, stream_clone: Arc<FlezhaStream>) {
     let payload =
         payloader::build_from_str("connect_control_channel", &control_message, HashMap::new());
 
-    (&*stream_clone).write_all(&payload).unwrap();
+    // A failed init write means the peer vanished between connect and write
+    // (e.g. a controller that died mid-handshake); surface it so the caller
+    // drives a reconnect instead of panicking the reader thread.
+    (&*stream_clone).write_all(&payload)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Read;
+    use std::os::unix::net::UnixStream;
+
+    use crossbeam::channel::unbounded;
+
+    use super::*;
+
+    // fails when: the executor connects to a controller that accepts the
+    // control socket but never sends the assign-executor-id ack (a controller
+    // mid-shutdown / being replaced), and the SDK blocks the control reader
+    // forever instead of reconnecting. This is the production warm-restart
+    // hang: the executor stayed "Connected" to the draining controller, never
+    // reached the new one, so no relay was ever re-registered.
+    #[test]
+    fn reconnects_when_controller_never_acknowledges() {
+        std::env::set_var("FLEZHA_CONTROL_ACK_TIMEOUT_MS", "600");
+
+        let (sdk_end, ctrl_end) = UnixStream::pair().unwrap();
+
+        // Fake non-servicing controller: drain the init frame, then hold the
+        // connection open and stay silent — never acknowledges the executor.
+        let ctrl = thread::spawn(move || {
+            let mut ctrl_end = ctrl_end;
+            let mut buf = [0u8; 1024];
+            let _ = ctrl_end.read(&mut buf);
+            thread::sleep(Duration::from_secs(3));
+        });
+
+        let (itx, _irx) = unbounded();
+        let (otx, orx) = unbounded();
+        let stream = Arc::new(FlezhaStream::Unix(sdk_end));
+
+        let _ = sock_conn(
+            "test_ns".to_string(),
+            stream,
+            Some(Arc::new(Mutex::new(itx))),
+            Arc::new(Mutex::new(otx)),
+        );
+
+        let reconnected = matches!(
+            orx.recv_timeout(Duration::from_secs(2)),
+            Ok(ExecutorMessage::Reconnect)
+        );
+        assert!(
+            reconnected,
+            "SDK must post Reconnect when the controller accepts the socket but never \
+             acknowledges within the ack window"
+        );
+
+        ctrl.join().ok();
+    }
 }
