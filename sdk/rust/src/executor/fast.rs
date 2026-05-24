@@ -159,6 +159,12 @@ pub fn start(
         executor.set_quic_client(quic_client);
         shutdown_bridge.set_control_stream(Some(Arc::clone(&control_stream)));
 
+        // Jittered control-channel keepalive. The timer only signals this
+        // coordinator (it never writes the stream), so it survives reconnects
+        // and always pings the current control stream — single-threaded with
+        // command replies, so writes never interleave.
+        let _keepalive = control_unit::spawn_keepalive(otx_arc.clone());
+
         loop {
             let message = orx.recv().expect("Failed to receive coordinator message");
 
@@ -175,6 +181,12 @@ pub fn start(
                     }
                     handle_reconnect(&mut executor, &mut control_stream, &namespace, &otx_arc);
                     shutdown_bridge.set_control_stream(Some(Arc::clone(&control_stream)));
+                }
+                ExecutorMessage::SendControlKeepalive => {
+                    // A failed keepalive write means the control stream died;
+                    // the reader loop detects the same and drives reconnect, so
+                    // just drop this tick.
+                    let _ = control_unit::send_keepalive_ping(&control_stream);
                 }
             }
         }

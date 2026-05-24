@@ -8,13 +8,16 @@ use std::time::Duration;
 use crossbeam::channel::Sender;
 use flz_transport::service::payloader;
 use flz_transport::transport::config::{get_transport_type, TransportType};
+use flz_transport::transport::liveness::{self, ControlLiveness, ReadAction};
 use flz_transport::transport::quic::QuicClient;
 use flz_transport::transport::FlezhaStream;
 use flz_transport::utility::path_helper;
+use prost::Message;
 use serde::Serialize;
 
 use super::ClientResponseMessage;
 use crate::executor::ExecutorMessage;
+use crate::pb::Ping;
 use crate::relay::registry::class_factory_ids;
 
 #[derive(Serialize)]
@@ -78,10 +81,14 @@ fn open_with_retry(
             }
             Err(e) => {
                 attempt += 1;
-                let backoff = std::cmp::min(
+                // Full jitter on the exponential backoff so a controller
+                // restart that drops the whole fleet doesn't produce a
+                // synchronized reconnect storm (shared with the Java SDK via
+                // the same `liveness::jittered` schedule).
+                let backoff = liveness::jittered(std::cmp::min(
                     Duration::from_millis(100 * 2u64.pow(attempt.min(8))),
                     max_backoff,
-                );
+                ));
                 eprintln!(
                     "[flezha] Connection attempt {} failed: {}. Retrying in {:?}...",
                     attempt, e, backoff
@@ -163,20 +170,6 @@ fn try_open_quic(
     Ok((handle, stream, Some(client)))
 }
 
-/// Maximum wait for the controller's first frame (the assign-executor-id ack)
-/// after opening a control channel. A controller mid-shutdown accepts the
-/// socket but rejects registration without closing it, so without this bound
-/// the reader blocks forever and the executor never reaches the live
-/// controller. Overridable via `FLEZHA_CONTROL_ACK_TIMEOUT_MS`.
-fn connect_ack_timeout() -> Duration {
-    std::env::var("FLEZHA_CONTROL_ACK_TIMEOUT_MS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .filter(|&ms| ms > 0)
-        .map(Duration::from_millis)
-        .unwrap_or(Duration::from_millis(10_000))
-}
-
 fn sock_conn(
     namespace: String,
     stream_box: Arc<FlezhaStream>,
@@ -186,11 +179,12 @@ fn sock_conn(
     let stream_clone = Arc::clone(&stream_box);
 
     let handle = thread::spawn(move || {
-        // Bound the read until the controller acknowledges the handshake, then
-        // read indefinitely. Catches a controller that accepts the socket but
-        // never registers us (the warm-restart hang).
-        let ack_timeout = connect_ack_timeout();
-        let _ = stream_clone.set_read_timeout(Some(ack_timeout));
+        // Shared (Rust + Java) control-channel liveness: an ack-deadline until
+        // the controller's first frame, then a steady-state idle watchdog that
+        // re-arms on every frame. Catches both the warm-restart "accept but
+        // never ack" hang and a controller that wedges after the handshake.
+        let mut live = ControlLiveness::new();
+        let _ = stream_clone.set_read_timeout(Some(live.current_deadline()));
 
         if let Err(e) = send_init_msg(namespace, stream_clone.clone()) {
             if std::env::var("FLEZHA_LOG").as_deref() == Ok("debug") {
@@ -208,15 +202,13 @@ fn sock_conn(
                 .unwrap();
         }
 
-        let mut acked = false;
-
         loop {
             match payloader::extract_payload(&*stream_clone.clone()) {
                 Ok((payload_id, message, metadata)) => {
-                    if !acked {
-                        acked = true;
-                        let _ = stream_clone.set_read_timeout(None);
-                    }
+                    live.note_frame();
+                    // Re-arm the idle watchdog on every frame; a live channel
+                    // is therefore never flagged while traffic is flowing.
+                    let _ = stream_clone.set_read_timeout(Some(live.current_deadline()));
                     otx.lock()
                         .unwrap()
                         .send(ExecutorMessage::HandleCommandAction(
@@ -224,32 +216,21 @@ fn sock_conn(
                         ))
                         .unwrap();
                 }
-                Err(e) => match e.kind() {
-                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut if !acked => {
-                        // No controller traffic within the ack window — the
-                        // registration handshake never completed. Reconnect so
-                        // the executor lands on a live controller.
+                Err(e) => match live.classify_error(&e) {
+                    ReadAction::Retry => continue,
+                    ReadAction::Reconnect => {
                         if std::env::var("FLEZHA_LOG").as_deref() == Ok("debug") {
-                            eprintln!(
-                                "[flezha] Controller did not acknowledge within {:?}; reconnecting",
-                                ack_timeout
-                            );
-                        }
-                        let _ = otx.lock().unwrap().send(ExecutorMessage::Reconnect);
-                        break;
-                    }
-                    io::ErrorKind::WouldBlock
-                    | io::ErrorKind::TimedOut
-                    | io::ErrorKind::Interrupted => {
-                        continue;
-                    }
-                    _ => {
-                        // Disconnects are expected during graceful controller
-                        // shutdown / test teardown. Surfacing them via
-                        // `FLEZHA_LOG=debug` keeps the controller's stdout
-                        // clean while still allowing executors to opt in.
-                        if std::env::var("FLEZHA_LOG").as_deref() == Ok("debug") {
-                            eprintln!("[flezha] Control channel disconnected: {}", e);
+                            if !live.acked() {
+                                eprintln!(
+                                    "[flezha] Controller did not acknowledge within {:?}; reconnecting",
+                                    live.current_deadline()
+                                );
+                            } else {
+                                eprintln!(
+                                    "[flezha] Control channel went silent / disconnected ({}); reconnecting",
+                                    e
+                                );
+                            }
                         }
                         let _ = otx.lock().unwrap().send(ExecutorMessage::Reconnect);
                         break;
@@ -260,6 +241,55 @@ fn sock_conn(
     });
 
     (handle, stream_box)
+}
+
+/// Build a control-channel keepalive ping frame: a bare `Ping` on the
+/// dedicated `control_ping` payload. The controller echoes it (re-arming the
+/// executor's steady-state idle watchdog); on a wedged controller no echo
+/// arrives and the watchdog fires. Pure so it is unit-testable.
+fn build_keepalive_ping() -> Vec<u8> {
+    let ping = Ping {
+        nonce: format!("ka-{}", nonce_suffix()),
+    };
+    payloader::build_from_binary(
+        liveness::CONTROL_PING_PAYLOAD_ID,
+        &ping.encode_to_vec(),
+        HashMap::new(),
+    )
+}
+
+/// Write a keepalive ping on the current control stream. Routed through the
+/// coordinator (see `ExecutorMessage::SendControlKeepalive`) so control writes
+/// stay single-threaded and never interleave with command replies.
+pub(crate) fn send_keepalive_ping(stream: &FlezhaStream) -> io::Result<()> {
+    let frame = build_keepalive_ping();
+    (&*stream).write_all(&frame)
+}
+
+/// Spawn the keepalive timer. It only signals the coordinator (it never writes
+/// the stream itself), so it can live for the executor's whole lifetime and
+/// always pings whatever the current control stream is. Jittered so a fleet
+/// does not ping in lockstep.
+pub(crate) fn spawn_keepalive(otx: Arc<Mutex<Sender<ExecutorMessage>>>) -> thread::JoinHandle<()> {
+    thread::spawn(move || loop {
+        thread::sleep(liveness::jittered(liveness::control_keepalive_interval()));
+        if otx
+            .lock()
+            .unwrap()
+            .send(ExecutorMessage::SendControlKeepalive)
+            .is_err()
+        {
+            // Coordinator gone (executor shutting down) — stop the timer.
+            break;
+        }
+    })
+}
+
+fn nonce_suffix() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0)
 }
 
 fn send_init_msg(namespace: String, stream_clone: Arc<FlezhaStream>) -> io::Result<()> {
@@ -292,10 +322,15 @@ fn send_init_msg(namespace: String, stream_clone: Arc<FlezhaStream>) -> io::Resu
 mod tests {
     use std::io::Read;
     use std::os::unix::net::UnixStream;
+    use std::sync::Mutex as StdMutex;
 
     use crossbeam::channel::unbounded;
 
     use super::*;
+
+    // The liveness env knobs are process-global, so the reader tests that set
+    // them must not run concurrently.
+    static ENV_LOCK: StdMutex<()> = StdMutex::new(());
 
     // fails when: the executor connects to a controller that accepts the
     // control socket but never sends the assign-executor-id ack (a controller
@@ -305,7 +340,9 @@ mod tests {
     // reached the new one, so no relay was ever re-registered.
     #[test]
     fn reconnects_when_controller_never_acknowledges() {
+        let _guard = ENV_LOCK.lock().unwrap();
         std::env::set_var("FLEZHA_CONTROL_ACK_TIMEOUT_MS", "600");
+        std::env::set_var("FLEZHA_CONTROL_IDLE_TIMEOUT_MS", "60000");
 
         let (sdk_end, ctrl_end) = UnixStream::pair().unwrap();
 
@@ -339,6 +376,86 @@ mod tests {
              acknowledges within the ack window"
         );
 
+        std::env::remove_var("FLEZHA_CONTROL_ACK_TIMEOUT_MS");
+        std::env::remove_var("FLEZHA_CONTROL_IDLE_TIMEOUT_MS");
         ctrl.join().ok();
+    }
+
+    // fails when: the control channel completes its handshake (first frame
+    // acked) but the controller then wedges (half-open / hung) without a clean
+    // close — the pre-change reader cleared its deadline (`set_read_timeout
+    // (None)`) and blocked forever, so the executor sat "Connected" to a dead
+    // controller. The steady-state idle watchdog must drive reconnect.
+    #[test]
+    fn reconnects_when_controller_wedges_after_handshake() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("FLEZHA_CONTROL_ACK_TIMEOUT_MS", "5000");
+        std::env::set_var("FLEZHA_CONTROL_IDLE_TIMEOUT_MS", "500");
+
+        let (sdk_end, ctrl_end) = UnixStream::pair().unwrap();
+
+        // Fake controller: drain the init frame, send ONE control frame (the
+        // ack), then go silent forever — the post-handshake wedge.
+        let ctrl = thread::spawn(move || {
+            let mut ctrl_end = ctrl_end;
+            let mut buf = [0u8; 1024];
+            let _ = ctrl_end.read(&mut buf);
+            let ack = payloader::build_from_binary("control_command", b"\x08\x01", HashMap::new());
+            let _ = ctrl_end.write_all(&ack);
+            thread::sleep(Duration::from_secs(3));
+        });
+
+        let (itx, _irx) = unbounded();
+        let (otx, orx) = unbounded();
+        let stream = Arc::new(FlezhaStream::Unix(sdk_end));
+
+        let _ = sock_conn(
+            "test_ns".to_string(),
+            stream,
+            Some(Arc::new(Mutex::new(itx))),
+            Arc::new(Mutex::new(otx)),
+        );
+
+        // First the acked frame is forwarded, then — after the idle window —
+        // a Reconnect must arrive.
+        let mut saw_command = false;
+        let mut reconnected = false;
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            match orx.recv_timeout(Duration::from_millis(200)) {
+                Ok(ExecutorMessage::HandleCommandAction(..)) => saw_command = true,
+                Ok(ExecutorMessage::Reconnect) => {
+                    reconnected = true;
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        assert!(saw_command, "the acked first frame must be forwarded");
+        assert!(
+            reconnected,
+            "SDK must post Reconnect when the controller wedges after the handshake \
+             (idle watchdog past FLEZHA_CONTROL_IDLE_TIMEOUT_MS)"
+        );
+
+        std::env::remove_var("FLEZHA_CONTROL_ACK_TIMEOUT_MS");
+        std::env::remove_var("FLEZHA_CONTROL_IDLE_TIMEOUT_MS");
+        ctrl.join().ok();
+    }
+
+    // `send_keepalive_ping` (the coordinator's write path) must put a bare
+    // `Ping` on the dedicated control_ping payload, so the controller recognizes
+    // it without entering command dispatch.
+    #[test]
+    fn keepalive_ping_is_a_bare_ping_on_control_ping_payload() {
+        let (sdk_end, ctrl_end) = UnixStream::pair().unwrap();
+        send_keepalive_ping(&FlezhaStream::Unix(sdk_end)).unwrap();
+
+        let ctrl: FlezhaStream = FlezhaStream::Unix(ctrl_end);
+        let (payload_id, message, _meta) = payloader::extract_payload(&ctrl).unwrap();
+        assert_eq!(payload_id, liveness::CONTROL_PING_PAYLOAD_ID);
+        let ping = Ping::decode(message.as_slice()).expect("ping decodes");
+        assert!(ping.nonce.starts_with("ka-"));
     }
 }

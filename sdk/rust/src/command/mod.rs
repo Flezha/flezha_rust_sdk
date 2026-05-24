@@ -136,6 +136,13 @@ pub fn handle_command(
     payload_id: &str,
     message: &[u8],
 ) {
+    // Controller's keepalive echo (see flz_transport liveness): the inbound
+    // read already re-armed the steady-state idle watchdog, and the frame
+    // carries a bare PingResponse on its own payload — nothing to dispatch.
+    if payload_id == flz_transport::transport::liveness::CONTROL_PING_PAYLOAD_ID {
+        return;
+    }
+
     let outcome = match command::get_handler(payload_id, message) {
         Ok(o) => o,
         Err(CommandDecodeError::Malformed { stack }) => {

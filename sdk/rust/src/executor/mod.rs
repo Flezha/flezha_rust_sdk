@@ -17,6 +17,10 @@ pub enum ExecutorMessage {
     HandleCommandAction(String, Vec<u8>, HashMap<String, String>),
     ReturnRelays,
     Reconnect,
+    /// Tick from the keepalive timer: write a control-channel ping on the
+    /// current control stream. Routed through the coordinator so control
+    /// writes stay single-threaded (no interleave with command replies).
+    SendControlKeepalive,
 }
 
 pub enum ExecutorStatus {
