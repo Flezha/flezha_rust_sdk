@@ -16,7 +16,12 @@ use crate::relay::instance::RelayInstance;
 pub enum ExecutorMessage {
     HandleCommandAction(String, Vec<u8>, HashMap<String, String>),
     ReturnRelays,
-    Reconnect,
+    /// Drive a reconnect with a structured reason for the observer log
+    /// and the `ExecutorReconnected` control frame the controller now
+    /// expects on the first byte of the new stream. Reason is one of
+    /// `control_stream_broken | read_error | write_error |
+    /// keepalive_timeout | controller_requested`.
+    Reconnect(&'static str),
     /// Tick from the keepalive timer: write a control-channel ping on the
     /// current control stream. Routed through the coordinator so control
     /// writes stay single-threaded (no interleave with command replies).

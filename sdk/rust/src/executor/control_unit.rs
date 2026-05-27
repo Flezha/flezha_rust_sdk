@@ -190,7 +190,7 @@ fn sock_conn(
             if std::env::var("FLEZHA_LOG").as_deref() == Ok("debug") {
                 eprintln!("[flezha] Control-channel init send failed: {}", e);
             }
-            let _ = otx.lock().unwrap().send(ExecutorMessage::Reconnect);
+            let _ = otx.lock().unwrap().send(ExecutorMessage::Reconnect("write_error"));
             return;
         }
 
@@ -232,7 +232,8 @@ fn sock_conn(
                                 );
                             }
                         }
-                        let _ = otx.lock().unwrap().send(ExecutorMessage::Reconnect);
+                        let reason = classify_reconnect_reason(&e, live.acked());
+                        let _ = otx.lock().unwrap().send(ExecutorMessage::Reconnect(reason));
                         break;
                     }
                 },
@@ -285,6 +286,27 @@ pub(crate) fn spawn_keepalive(otx: Arc<Mutex<Sender<ExecutorMessage>>>) -> threa
     })
 }
 
+/// Map a control-stream read error to one of the five `reason` strings
+/// the controller-side `[:flezha, :executor, :reconnected]` telemetry
+/// expects. A post-ack timeout means the keepalive watchdog tripped; a
+/// pre-ack timeout means the channel was never registered. Anything
+/// non-timeout is treated as a stream break.
+fn classify_reconnect_reason(e: &io::Error, acked: bool) -> &'static str {
+    match e.kind() {
+        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => {
+            if acked {
+                "keepalive_timeout"
+            } else {
+                "control_stream_broken"
+            }
+        }
+        io::ErrorKind::UnexpectedEof
+        | io::ErrorKind::ConnectionReset
+        | io::ErrorKind::BrokenPipe => "control_stream_broken",
+        _ => "read_error",
+    }
+}
+
 fn nonce_suffix() -> u128 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -328,6 +350,40 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn classify_reconnect_reason_maps_kinds_to_canonical_strings() {
+        let acked = true;
+        let pre_ack = false;
+
+        let timeout = io::Error::new(io::ErrorKind::TimedOut, "");
+        assert_eq!(classify_reconnect_reason(&timeout, acked), "keepalive_timeout");
+        assert_eq!(
+            classify_reconnect_reason(&timeout, pre_ack),
+            "control_stream_broken"
+        );
+
+        let would_block = io::Error::new(io::ErrorKind::WouldBlock, "");
+        assert_eq!(
+            classify_reconnect_reason(&would_block, acked),
+            "keepalive_timeout"
+        );
+
+        let eof = io::Error::new(io::ErrorKind::UnexpectedEof, "");
+        assert_eq!(classify_reconnect_reason(&eof, acked), "control_stream_broken");
+
+        let pipe = io::Error::new(io::ErrorKind::BrokenPipe, "");
+        assert_eq!(classify_reconnect_reason(&pipe, acked), "control_stream_broken");
+
+        let reset = io::Error::new(io::ErrorKind::ConnectionReset, "");
+        assert_eq!(
+            classify_reconnect_reason(&reset, acked),
+            "control_stream_broken"
+        );
+
+        let other = io::Error::new(io::ErrorKind::Other, "x");
+        assert_eq!(classify_reconnect_reason(&other, acked), "read_error");
+    }
+
     // The liveness env knobs are process-global, so the reader tests that set
     // them must not run concurrently.
     static ENV_LOCK: StdMutex<()> = StdMutex::new(());
@@ -368,7 +424,7 @@ mod tests {
 
         let reconnected = matches!(
             orx.recv_timeout(Duration::from_secs(2)),
-            Ok(ExecutorMessage::Reconnect)
+            Ok(ExecutorMessage::Reconnect(_))
         );
         assert!(
             reconnected,
@@ -424,7 +480,7 @@ mod tests {
         while std::time::Instant::now() < deadline {
             match orx.recv_timeout(Duration::from_millis(200)) {
                 Ok(ExecutorMessage::HandleCommandAction(..)) => saw_command = true,
-                Ok(ExecutorMessage::Reconnect) => {
+                Ok(ExecutorMessage::Reconnect(_)) => {
                     reconnected = true;
                     break;
                 }

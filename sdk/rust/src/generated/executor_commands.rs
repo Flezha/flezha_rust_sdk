@@ -5,7 +5,7 @@ pub struct CommandRequest {
     pub reference_id: ::prost::alloc::string::String,
     #[prost(
         oneof = "command_request::Command",
-        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19"
+        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21"
     )]
     pub command: ::core::option::Option<command_request::Command>,
 }
@@ -49,6 +49,10 @@ pub mod command_request {
         PartitionMailboxStatus(super::PartitionMailboxStatus),
         #[prost(message, tag = "19")]
         Ping(super::Ping),
+        #[prost(message, tag = "20")]
+        ExecutorReconnected(super::ExecutorReconnected),
+        #[prost(message, tag = "21")]
+        ReassignExecutorId(super::ReassignExecutorId),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -242,4 +246,26 @@ pub struct Ping {
 pub struct PingResponse {
     #[prost(string, tag = "1")]
     pub nonce: ::prost::alloc::string::String,
+}
+/// SDK -> Controller, emitted as the FIRST frame on every newly-established
+/// control stream after `handle_reconnect` runs. Preserves the executor's
+/// identity across the reconnect so the Controller can compute a binding
+/// delta instead of re-issuing every relay.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ExecutorReconnected {
+    #[prost(string, tag = "1")]
+    pub previous_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub new_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub reason: ::prost::alloc::string::String,
+}
+/// Controller -> SDK. Issued only when the Controller has reassigned the
+/// SDK's bindings to a different executor session during the disconnect
+/// window. The SDK updates its in-memory `executor_id` in place; subsequent
+/// `ExecutorReconnected` emissions carry the new id.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ReassignExecutorId {
+    #[prost(string, tag = "1")]
+    pub new_id: ::prost::alloc::string::String,
 }

@@ -20,6 +20,7 @@ mod partition_apply_state;
 pub mod partition_state;
 mod partition_status;
 mod ping;
+mod reassign_executor;
 mod relay_message;
 mod relay_start;
 mod relay_stop;
@@ -124,6 +125,14 @@ pub fn get_handler(_payload_id: &str, message: &[u8]) -> Result<FrameOutcome, Co
             CommandActionType::Regular(Box::new(proto_ch))
         }
         Some(Command::Ping(proto_ch)) => CommandActionType::Regular(Box::new(proto_ch)),
+        // SDK is the SENDER for ExecutorReconnected — receiving it is
+        // a protocol bug from a buggy controller. Drop and log,
+        // matching the `ExecutorShutdownNotification` direction-
+        // mistake convention.
+        Some(Command::ExecutorReconnected(_)) => CommandActionType::NotificationIgnore,
+        Some(Command::ReassignExecutorId(proto_ch)) => {
+            CommandActionType::Regular(Box::new(proto_ch))
+        }
         None => return Err(CommandDecodeError::EmptyCommand),
     };
 
