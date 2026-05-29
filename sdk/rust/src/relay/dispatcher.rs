@@ -160,6 +160,42 @@ impl<S: Shard> ShardDispatcher for ShardDispatcherImpl<S> {
     fn shard_id(&self) -> ShardId {
         self.shard_id
     }
+
+    fn restore_state(
+        &self,
+        state: &mut Box<dyn Any + Send>,
+        snapshot_bytes: &[u8],
+        change_log_bytes: &[u8],
+        shard_key: Option<&str>,
+    ) -> Result<u64, crate::partition::restore::RestoreError> {
+        use crate::partition::restore::{
+            init_partition_with_payload, iter_change_log_records, RestoreInitPayload,
+        };
+
+        let payload = RestoreInitPayload {
+            snapshot_bytes,
+            change_log_bytes,
+        };
+
+        // Rebuild the typed state from snapshot + change-log replay. This runs
+        // the same path as cold-start `init_state` + `apply_change`, so a
+        // counter that summed to N comes back at N rather than 0.
+        let new_state = init_partition_with_payload::<S>(shard_key, Some(&payload))?;
+
+        let typed = state
+            .downcast_mut::<PartitionState<S>>()
+            .expect("restore_state: state type mismatch for shard");
+        typed.state = new_state;
+
+        // Terminal seq = highest WAL seq applied, so the caller can re-arm the
+        // partition's change_seq and post-restore appends continue contiguously
+        // (no controller-side epoch realign / truncation).
+        let mut terminal: u64 = 0;
+        for record in iter_change_log_records(change_log_bytes) {
+            terminal = terminal.max(record?.seq);
+        }
+        Ok(terminal)
+    }
 }
 
 /// Per-invocation emit sink, constructed fresh inside each `dispatch`
@@ -546,8 +582,10 @@ pub fn build_partition_slot<S: Shard>(args: BuildPartitionArgs<'_>) -> Arc<Parti
         as Box<dyn FlushableBuffer>));
 
     let change_seq = Arc::new(AtomicU64::new(0));
+    // Key the on-disk WAL identity by the relay INSTANCE id, not the factory
+    // id: two relays of the same factory must not share one Partition WAL.
     let partition_identity = Arc::new(encode_partition_identity(
-        topology.factory_id,
+        args.instance_id.as_ref(),
         shard_desc.name.as_ref(),
         args.shard_key.unwrap_or(""),
     ));

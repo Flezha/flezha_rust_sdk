@@ -62,6 +62,7 @@ impl RelayInstance {
                     let slot = (shard_desc.build_partition)(BuildPartitionArgs {
                         topology: Arc::clone(&topology),
                         instance: Weak::clone(weak),
+                        instance_id: Arc::clone(&instance_id),
                         shard_id: shard_id_u32,
                         shard_key: None,
                         partition_index: 0,
@@ -77,6 +78,7 @@ impl RelayInstance {
                         let slot = (shard_desc.build_partition)(BuildPartitionArgs {
                             topology: Arc::clone(&topology),
                             instance: Weak::clone(weak),
+                            instance_id: Arc::clone(&instance_id),
                             shard_id: shard_id_u32,
                             shard_key: Some(key),
                             partition_index: idx,

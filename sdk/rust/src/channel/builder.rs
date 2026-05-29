@@ -81,6 +81,10 @@ pub(crate) type PartitionBuilder = Box<
 pub struct BuildPartitionArgs<'a> {
     pub topology: Arc<crate::relay::topology::RelayTopology>,
     pub instance: std::sync::Weak<crate::relay::instance::RelayInstance>,
+    /// The relay INSTANCE id (controller-assigned relay_id). The on-disk WAL
+    /// is keyed by this, not the factory id, so two relays of the same factory
+    /// keep independent per-Partition state instead of colliding on one WAL.
+    pub instance_id: Arc<str>,
     pub shard_id: ShardId,
     pub shard_key: Option<&'a str>,
     /// Zero-based partition index within the Shard. `0` for single-mode

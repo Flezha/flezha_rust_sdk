@@ -206,6 +206,20 @@ pub trait ShardDispatcher: Send + Sync + 'static {
     );
 
     fn shard_id(&self) -> ShardId;
+
+    /// Warm-restart: rebuild the type-erased partition `state` in place from a
+    /// persisted `RestoreInitState` payload (snapshot + WAL change-log),
+    /// returning the terminal seq applied. Type-erased entry point so the
+    /// control-channel `RestoreInitState` handler — which has no `S` — can
+    /// re-seed a live partition after an executor restart. Mirrors the
+    /// downcast pattern used by `dispatch`.
+    fn restore_state(
+        &self,
+        state: &mut Box<dyn Any + Send>,
+        snapshot_bytes: &[u8],
+        change_log_bytes: &[u8],
+        shard_key: Option<&str>,
+    ) -> Result<u64, crate::partition::restore::RestoreError>;
 }
 
 /// Forward to the section-2 dispatcher implementation.
