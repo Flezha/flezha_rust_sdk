@@ -160,6 +160,10 @@ pub fn start(
         }
 
         let ctx_arc = Arc::new(Mutex::new(ctx));
+        // Expose the coordinator channel process-globally so the
+        // partition-state sink can drive a reconnect on a broken-pipe
+        // flood without a handle threaded through every layer.
+        super::install_reconnect_trigger(otx.clone());
         let otx_arc = Arc::new(Mutex::new(otx));
         let (_control_thread, mut control_stream, quic_client) =
             control_unit::open(namespace.clone(), ctx_arc.clone(), otx_arc.clone());
@@ -521,6 +525,13 @@ mod reconnect_tests {
         use crate::command::CommandAction;
         use crate::pb::ReassignExecutorId;
 
+        // The handler persists the id; point it at a temp path so the test
+        // never touches the production hostPath.
+        let mut idp = std::env::temp_dir();
+        idp.push(format!("flezha-reassign-test-{}", std::process::id()));
+        idp.push("id");
+        std::env::set_var("FLEZHA_EXECUTOR_ID_PATH", &idp);
+
         let mut executor = ExecutorNode::new("ns".to_string());
         executor.assign_executor_id("old".to_string());
 
@@ -533,5 +544,8 @@ mod reconnect_tests {
         assert_eq!(payload_id, "reassign_executor_id");
         assert!(errors.is_empty());
         assert_eq!(executor.get_executor_id(), "new");
+
+        std::env::remove_var("FLEZHA_EXECUTOR_ID_PATH");
+        let _ = std::fs::remove_dir_all(idp.parent().unwrap());
     }
 }

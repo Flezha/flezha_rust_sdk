@@ -52,7 +52,7 @@ pub enum SendError {
     Other(String),
 }
 
-pub type SendFrameFn = Arc<dyn Fn(Vec<u8>) -> Result<(), SendError> + Send + Sync + 'static>;
+pub type SendFrameFn = Arc<dyn Fn(&[u8]) -> Result<(), SendError> + Send + Sync + 'static>;
 
 /// Per-Partition entry registered with the flusher.
 struct FlusherEntry {
@@ -60,7 +60,6 @@ struct FlusherEntry {
     buffer: Arc<Mutex<Box<dyn FlushableBuffer>>>,
     persistence_enabled: bool,
     change_seq: Arc<AtomicU64>,
-    send_frame: SendFrameFn,
     header: HeaderTemplate,
 }
 
@@ -271,7 +270,6 @@ impl PartitionFlusher {
         buffer: Arc<Mutex<Box<dyn FlushableBuffer>>>,
         persistence_enabled: bool,
         change_seq: Arc<AtomicU64>,
-        send_frame: SendFrameFn,
         header: HeaderTemplate,
     ) -> FlusherEntryId {
         let id = FlusherEntryId(self.next_entry_id.fetch_add(1, Ordering::Relaxed));
@@ -282,7 +280,6 @@ impl PartitionFlusher {
                 buffer,
                 persistence_enabled,
                 change_seq,
-                send_frame,
                 header,
             },
         );
@@ -329,39 +326,15 @@ impl PartitionFlusher {
                 );
                 continue;
             }
+            // Ship through the live global sink. It resolves the current
+            // secondary stream each call (so a reconnect's freshly-wired
+            // stream is used without re-registering this partition) and
+            // buffers frames in its reconnect ring when the stream is down.
             for frame in frames {
-                if let Err(e) = (entry.send_frame)(frame) {
-                    tracing::warn!(
-                        target: "flezha::flusher",
-                        "send_frame failed: {}",
-                        e,
-                    );
-                    // Decrement seq so the next drain re-sends from the
-                    // right point. v1 only logs and stops the batch
-                    // here; the controller change wires retransmit.
-                    entry.change_seq.fetch_sub(1, Ordering::Relaxed);
-                    break;
-                }
+                crate::partition::partition_state_sink::send(frame);
             }
         }
     }
-}
-
-/// Send-frame fn used until the SDK boot wires
-/// `partition_state_sink::install_global_sink`. Returns `TransportDown`
-/// so the flusher decrements seq and retries on the next drain pass.
-pub fn fallback_send_frame(_bytes: Vec<u8>) -> Result<(), SendError> {
-    Err(SendError::TransportDown(
-        "partition_state_sink not installed".into(),
-    ))
-}
-
-/// Returns the currently-installed global send-frame fn. Used by the
-/// dispatcher when it constructs each `FlusherEntry`. Falls back to
-/// `fallback_send_frame` when the SDK has not yet wired the sink (e.g.
-/// during unit tests).
-pub fn current_send_frame_fn() -> SendFrameFn {
-    crate::partition::partition_state_sink::current_send_frame_fn()
 }
 
 #[cfg(test)]

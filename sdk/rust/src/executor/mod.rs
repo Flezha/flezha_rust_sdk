@@ -2,12 +2,36 @@ mod control_unit;
 
 pub(crate) mod fast;
 pub(crate) mod mailbox;
+pub(crate) mod persistent_id;
 pub(crate) mod work_stealing_pool;
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
+
+use crossbeam::channel::Sender;
 
 use crate::relay::instance::RelayInstance;
+
+/// Process-global handle to the coordinator's message channel, installed
+/// once by `fast::start`. Lets components outside the coordinator (e.g.
+/// the partition-state sink on a broken-pipe flood) request a control
+/// reconnect without threading the `Sender` through every layer.
+static RECONNECT_TRIGGER: OnceLock<Mutex<Sender<ExecutorMessage>>> = OnceLock::new();
+
+pub(crate) fn install_reconnect_trigger(otx: Sender<ExecutorMessage>) {
+    let _ = RECONNECT_TRIGGER.set(Mutex::new(otx));
+}
+
+/// Ask the coordinator to drive a control-channel reconnect. No-op when
+/// the trigger is not installed (e.g. unit tests). `reason` is one of the
+/// canonical strings documented on [`ExecutorMessage::Reconnect`].
+pub(crate) fn request_reconnect(reason: &'static str) {
+    if let Some(lock) = RECONNECT_TRIGGER.get() {
+        if let Ok(tx) = lock.lock() {
+            let _ = tx.send(ExecutorMessage::Reconnect(reason));
+        }
+    }
+}
 
 /// Messages routed through the coordinator channel. Data-plane traffic
 /// bypasses this channel entirely (per-Partition mailboxes are pushed
@@ -20,7 +44,7 @@ pub enum ExecutorMessage {
     /// and the `ExecutorReconnected` control frame the controller now
     /// expects on the first byte of the new stream. Reason is one of
     /// `control_stream_broken | read_error | write_error |
-    /// keepalive_timeout | controller_requested`.
+    /// keepalive_timeout | controller_requested | broken_pipe_flood`.
     Reconnect(&'static str),
     /// Tick from the keepalive timer: write a control-channel ping on the
     /// current control stream. Routed through the coordinator so control

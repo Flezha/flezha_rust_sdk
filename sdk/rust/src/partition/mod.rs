@@ -174,8 +174,9 @@ pub struct PartitionSlot {
     /// time and propagated here.
     pub persistence_enabled: bool,
     /// Per-Partition WAL seq counter. The flusher fetches-and-adds once
-    /// per drained record; `send_frame` failures decrement to preserve
-    /// monotonicity (no gaps in the controller's WAL view).
+    /// per drained record; the seq is baked into the frame before it is
+    /// handed to the sink, so a frame buffered during a reconnect replays
+    /// with its original seq — the controller's WAL view stays gap-free.
     pub change_seq: Arc<std::sync::atomic::AtomicU64>,
     /// Stable per-Partition identity (`(relay_class, shard_id, partition_key)`)
     /// encoded for the wire by `flusher::encode_partition_identity`. The

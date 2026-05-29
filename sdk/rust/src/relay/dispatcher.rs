@@ -25,8 +25,7 @@ use crate::channel::builder::BuildPartitionArgs;
 use crate::channel::{ChannelId, ChannelKind, OverflowPolicy, ShardId};
 use crate::executor::mailbox::Mailbox;
 use crate::partition::flusher::{
-    current_send_frame_fn, encode_partition_identity, FlushableBuffer, PartitionFlusher,
-    TypedBuffer,
+    encode_partition_identity, FlushableBuffer, PartitionFlusher, TypedBuffer,
 };
 use crate::partition::header::HeaderTemplate;
 use crate::partition::{PartitionPayload, PartitionSlot, ShardDispatcher};
@@ -566,7 +565,6 @@ pub fn build_partition_slot<S: Shard>(args: BuildPartitionArgs<'_>) -> Arc<Parti
             Arc::clone(&flush_buffer),
             args.persistence_enabled,
             Arc::clone(&change_seq),
-            current_send_frame_fn(),
             HeaderTemplate::for_shard::<S>(),
         );
     }

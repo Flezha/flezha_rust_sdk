@@ -1,5 +1,5 @@
 use super::CommandAction;
-use crate::executor::ExecutorNode;
+use crate::executor::{persistent_id, ExecutorNode};
 use crate::pb::ReassignExecutorId;
 
 /// Controller -> SDK. Issued when the controller has reassigned this
@@ -15,6 +15,7 @@ impl CommandAction for ReassignExecutorId {
         _errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
         executor.assign_executor_id(self.new_id.clone());
+        persistent_id::persist(&self.new_id);
         ("reassign_executor_id".to_string(), Vec::new())
     }
 }

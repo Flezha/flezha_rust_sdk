@@ -104,9 +104,9 @@ fn install_partition_state_sink_from_pairs(pairs: &[(FlezhaStream, Arc<FlezhaStr
         // The Mutex serializes writes from the single flusher thread —
         // belt-and-braces given that the flusher has only one writer.
         let writer = Arc::new(Mutex::new(sink_stream));
-        let send_fn: SendFrameFn = Arc::new(move |frame: Vec<u8>| -> Result<(), SendError> {
+        let send_fn: SendFrameFn = Arc::new(move |frame: &[u8]| -> Result<(), SendError> {
             let payload =
-                payloader::build_from_binary("partition_state_change", &frame, HashMap::new());
+                payloader::build_from_binary("partition_state_change", frame, HashMap::new());
             let stream = writer.lock().map_err(|e| SendError::Other(e.to_string()))?;
             (&**stream)
                 .write_all(&payload)

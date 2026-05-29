@@ -31,6 +31,12 @@ struct ControlInitMessage {
     namespace: String,
     factory_ids: Vec<String>,
     factories: Vec<FactoryInfo>,
+    /// The id this process was assigned before it last died, read from the
+    /// node-local hostPath. Present only on the initial connect of a fresh
+    /// process; the controller evicts this stale binding before binding the
+    /// new id. Omitted (and so a no-op) on reconnects and first-ever boots.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    previous_executor_id: Option<String>,
 }
 
 /// Initial connection with retry and startup confirmation.
@@ -186,7 +192,17 @@ fn sock_conn(
         let mut live = ControlLiveness::new();
         let _ = stream_clone.set_read_timeout(Some(live.current_deadline()));
 
-        if let Err(e) = send_init_msg(namespace, stream_clone.clone()) {
+        // Only an initial connect (`itx` present) announces a persisted id
+        // from a prior process; a reconnect already preserves identity via
+        // the `ExecutorReconnected` frame, so re-announcing it here would
+        // make the controller evict the binding we are restoring.
+        let previous_executor_id = if itx.is_some() {
+            crate::executor::persistent_id::load()
+        } else {
+            None
+        };
+
+        if let Err(e) = send_init_msg(namespace, previous_executor_id, stream_clone.clone()) {
             if std::env::var("FLEZHA_LOG").as_deref() == Ok("debug") {
                 eprintln!("[flezha] Control-channel init send failed: {}", e);
             }
@@ -314,7 +330,11 @@ fn nonce_suffix() -> u128 {
         .unwrap_or(0)
 }
 
-fn send_init_msg(namespace: String, stream_clone: Arc<FlezhaStream>) -> io::Result<()> {
+fn send_init_msg(
+    namespace: String,
+    previous_executor_id: Option<String>,
+    stream_clone: Arc<FlezhaStream>,
+) -> io::Result<()> {
     let factory_ids: Vec<String> = class_factory_ids().iter().map(|s| s.to_string()).collect();
     let factories: Vec<FactoryInfo> = factory_ids
         .iter()
@@ -328,6 +348,7 @@ fn send_init_msg(namespace: String, stream_clone: Arc<FlezhaStream>) -> io::Resu
         namespace,
         factory_ids,
         factories,
+        previous_executor_id,
     };
 
     let control_message = serde_json::to_string(&control_init_message).unwrap();
@@ -498,6 +519,81 @@ mod tests {
         std::env::remove_var("FLEZHA_CONTROL_ACK_TIMEOUT_MS");
         std::env::remove_var("FLEZHA_CONTROL_IDLE_TIMEOUT_MS");
         ctrl.join().ok();
+    }
+
+    // On an INITIAL connect (itx present) the SDK reads its node-local
+    // persisted id and announces it as `previous_executor_id` in the
+    // connect_control_channel JSON, so the controller can evict the stale
+    // binding before re-binding. Absent on reconnects (itx == None).
+    #[test]
+    fn initial_connect_announces_persisted_previous_executor_id() {
+        let _guard = ENV_LOCK.lock().unwrap();
+
+        // Persist an id at a temp path and point the SDK at it.
+        let mut idp = std::env::temp_dir();
+        idp.push(format!("flezha-prevexec-test-{}", std::process::id()));
+        std::fs::create_dir_all(&idp).unwrap();
+        idp.push("id");
+        std::fs::write(&idp, b"exec-prev-9").unwrap();
+        std::env::set_var("FLEZHA_EXECUTOR_ID_PATH", &idp);
+
+        let (sdk_end, ctrl_end) = UnixStream::pair().unwrap();
+        let (itx, _irx) = unbounded();
+        let (otx, _orx) = unbounded();
+        let stream = Arc::new(FlezhaStream::Unix(sdk_end));
+
+        // Some(itx) marks this as an initial connect.
+        let _ = sock_conn(
+            "test_ns".to_string(),
+            stream,
+            Some(Arc::new(Mutex::new(itx))),
+            Arc::new(Mutex::new(otx)),
+        );
+
+        let ctrl: FlezhaStream = FlezhaStream::Unix(ctrl_end);
+        let (payload_id, message, _meta) = payloader::extract_payload(&ctrl).unwrap();
+        assert_eq!(payload_id, "connect_control_channel");
+        let json = String::from_utf8(message).unwrap();
+        assert!(
+            json.contains("\"previous_executor_id\":\"exec-prev-9\""),
+            "initial connect must announce the persisted id, got: {json}"
+        );
+
+        std::env::remove_var("FLEZHA_EXECUTOR_ID_PATH");
+        let _ = std::fs::remove_dir_all(idp.parent().unwrap());
+    }
+
+    // A reconnect (itx == None) must NOT announce a previous_executor_id even
+    // when one is persisted — identity is preserved via ExecutorReconnected,
+    // so re-announcing would make the controller evict the live binding.
+    #[test]
+    fn reconnect_omits_previous_executor_id() {
+        let _guard = ENV_LOCK.lock().unwrap();
+
+        let mut idp = std::env::temp_dir();
+        idp.push(format!("flezha-prevexec-recon-{}", std::process::id()));
+        std::fs::create_dir_all(&idp).unwrap();
+        idp.push("id");
+        std::fs::write(&idp, b"exec-prev-9").unwrap();
+        std::env::set_var("FLEZHA_EXECUTOR_ID_PATH", &idp);
+
+        let (sdk_end, ctrl_end) = UnixStream::pair().unwrap();
+        let (otx, _orx) = unbounded();
+        let stream = Arc::new(FlezhaStream::Unix(sdk_end));
+
+        // None marks this as a reconnect.
+        let _ = sock_conn("test_ns".to_string(), stream, None, Arc::new(Mutex::new(otx)));
+
+        let ctrl: FlezhaStream = FlezhaStream::Unix(ctrl_end);
+        let (_payload_id, message, _meta) = payloader::extract_payload(&ctrl).unwrap();
+        let json = String::from_utf8(message).unwrap();
+        assert!(
+            !json.contains("previous_executor_id"),
+            "reconnect must omit previous_executor_id, got: {json}"
+        );
+
+        std::env::remove_var("FLEZHA_EXECUTOR_ID_PATH");
+        let _ = std::fs::remove_dir_all(idp.parent().unwrap());
     }
 
     // `send_keepalive_ping` (the coordinator's write path) must put a bare
