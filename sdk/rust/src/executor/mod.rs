@@ -33,6 +33,19 @@ pub(crate) fn request_reconnect(reason: &'static str) {
     }
 }
 
+/// Serializes every test that mutates the process-global executor env vars
+/// (`FLEZHA_EXECUTOR_ID_PATH`, `FLEZHA_CONTROL_*`). These knobs are shared
+/// across the whole crate, so the lock lives here (not in one child module)
+/// and is poison-tolerant: a failed assertion inside one holder must not
+/// cascade-fail the unrelated tests that merely share the lock.
+#[cfg(test)]
+static ENV_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+#[cfg(test)]
+pub(crate) fn env_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    ENV_TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// Messages routed through the coordinator channel. Data-plane traffic
 /// bypasses this channel entirely (per-Partition mailboxes are pushed
 /// directly by the stream readers); only control-plane traffic flows

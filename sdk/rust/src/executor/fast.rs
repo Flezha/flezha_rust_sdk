@@ -525,6 +525,10 @@ mod reconnect_tests {
         use crate::command::CommandAction;
         use crate::pb::ReassignExecutorId;
 
+        // Mutates the process-global FLEZHA_EXECUTOR_ID_PATH, so serialize
+        // against the control_unit env tests on the crate-wide lock.
+        let _env_guard = crate::executor::env_test_guard();
+
         // The handler persists the id; point it at a temp path so the test
         // never touches the production hostPath.
         let mut idp = std::env::temp_dir();

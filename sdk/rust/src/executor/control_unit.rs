@@ -405,9 +405,11 @@ mod tests {
         assert_eq!(classify_reconnect_reason(&other, acked), "read_error");
     }
 
-    // The liveness env knobs are process-global, so the reader tests that set
-    // them must not run concurrently.
-    static ENV_LOCK: StdMutex<()> = StdMutex::new(());
+    // The liveness env knobs are process-global; tests that set them
+    // serialize on the crate-wide poison-tolerant lock so a failure in one
+    // never cascades into the others (and so they also serialize against
+    // the `fast` tests that touch FLEZHA_EXECUTOR_ID_PATH).
+    use crate::executor::env_test_guard;
 
     // fails when: the executor connects to a controller that accepts the
     // control socket but never sends the assign-executor-id ack (a controller
@@ -417,7 +419,7 @@ mod tests {
     // reached the new one, so no relay was ever re-registered.
     #[test]
     fn reconnects_when_controller_never_acknowledges() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = env_test_guard();
         std::env::set_var("FLEZHA_CONTROL_ACK_TIMEOUT_MS", "600");
         std::env::set_var("FLEZHA_CONTROL_IDLE_TIMEOUT_MS", "60000");
 
@@ -465,7 +467,7 @@ mod tests {
     // controller. The steady-state idle watchdog must drive reconnect.
     #[test]
     fn reconnects_when_controller_wedges_after_handshake() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = env_test_guard();
         std::env::set_var("FLEZHA_CONTROL_ACK_TIMEOUT_MS", "5000");
         std::env::set_var("FLEZHA_CONTROL_IDLE_TIMEOUT_MS", "500");
 
@@ -527,7 +529,7 @@ mod tests {
     // binding before re-binding. Absent on reconnects (itx == None).
     #[test]
     fn initial_connect_announces_persisted_previous_executor_id() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = env_test_guard();
 
         // Persist an id at a temp path and point the SDK at it.
         let mut idp = std::env::temp_dir();
@@ -568,7 +570,7 @@ mod tests {
     // so re-announcing would make the controller evict the live binding.
     #[test]
     fn reconnect_omits_previous_executor_id() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = env_test_guard();
 
         let mut idp = std::env::temp_dir();
         idp.push(format!("flezha-prevexec-recon-{}", std::process::id()));
