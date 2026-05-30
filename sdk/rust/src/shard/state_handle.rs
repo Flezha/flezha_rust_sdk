@@ -8,6 +8,7 @@
 //! invariant: direct field mutation is impossible without going through
 //! `apply` because the user never holds a `&mut Self::State`.
 
+use std::cell::RefCell;
 use std::ops::Deref;
 
 use crate::shard::Shard;
@@ -15,9 +16,15 @@ use crate::shard::Shard;
 /// Mutation chokepoint passed into `Shard::run` in place of
 /// `&mut Self::State`. Reads via `Deref<Target = S::State>`; mutates only
 /// via [`StateHandle::apply`].
+///
+/// The flush buffer is shared via `&RefCell` rather than `&mut` so that
+/// the emit sink can drain just-applied changes onto the durable WAL path
+/// *before* the matching output frame is written (flush-before-emit). Both
+/// `apply` and that drain run on the same single dispatch thread inside one
+/// `Shard::run`, so the `RefCell` borrows never overlap.
 pub struct StateHandle<'a, S: Shard> {
     state: &'a mut S::State,
-    buffer: &'a mut Vec<S::Change>,
+    buffer: &'a RefCell<Vec<S::Change>>,
 }
 
 impl<'a, S: Shard> StateHandle<'a, S> {
@@ -25,7 +32,7 @@ impl<'a, S: Shard> StateHandle<'a, S> {
     /// Internal: only the dispatcher and the test harness should
     /// instantiate this directly.
     #[doc(hidden)]
-    pub fn new(state: &'a mut S::State, buffer: &'a mut Vec<S::Change>) -> Self {
+    pub fn new(state: &'a mut S::State, buffer: &'a RefCell<Vec<S::Change>>) -> Self {
         Self { state, buffer }
     }
 
@@ -36,7 +43,7 @@ impl<'a, S: Shard> StateHandle<'a, S> {
     /// regardless of `Relay::PERSISTENCE_ENABLED`.
     pub fn apply(&mut self, change: S::Change) {
         S::apply_change(self.state, &change);
-        self.buffer.push(change);
+        self.buffer.borrow_mut().push(change);
     }
 }
 

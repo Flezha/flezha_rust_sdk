@@ -303,37 +303,55 @@ impl PartitionFlusher {
     fn drain_pass(&self) {
         for entry_ref in self.entries.iter() {
             let entry = entry_ref.value();
-            let frames = {
-                let mut guard = match entry.buffer.lock() {
-                    Ok(g) => g,
-                    Err(poisoned) => poisoned.into_inner(),
-                };
-                if guard.is_empty() {
-                    continue;
-                }
-                let (_count, frames) = guard.drain_to_frames(
-                    entry.partition_identity.as_slice(),
-                    &entry.change_seq,
-                    &entry.header,
-                );
-                frames
+            let mut guard = match entry.buffer.lock() {
+                Ok(g) => g,
+                Err(poisoned) => poisoned.into_inner(),
             };
-            if !entry.persistence_enabled {
-                tracing::trace!(
-                    target: "flezha::flusher",
-                    "drain-and-discard {} frames (persistence_enabled = false)",
-                    frames.len(),
-                );
-                continue;
-            }
-            // Ship through the live global sink. It resolves the current
-            // secondary stream each call (so a reconnect's freshly-wired
-            // stream is used without re-registering this partition) and
-            // buffers frames in its reconnect ring when the stream is down.
-            for frame in frames {
-                crate::partition::partition_state_sink::send(frame);
-            }
+            flush_one(
+                &mut **guard,
+                &entry.partition_identity,
+                &entry.change_seq,
+                &entry.header,
+                entry.persistence_enabled,
+            );
         }
+    }
+}
+
+/// Drain ONE partition's buffer to frames and ship them through the live
+/// global sink. Shared between the background `drain_pass` (one call per
+/// registered entry per linger tick) and the synchronous flush-before-emit
+/// path on the dispatch thread. The caller holds the buffer lock; this
+/// function does not re-lock, so it cannot self-deadlock against the
+/// singleton flusher thread.
+///
+/// The sink resolves the current secondary stream each call (so a
+/// reconnect's freshly-wired stream is used without re-registering this
+/// partition) and buffers frames in its reconnect ring when the stream is
+/// down. Frames carry seq values fetched from the same `change_seq`, so
+/// concurrent background + inline drains stay gap-free and never duplicate
+/// a record (each change is moved out of the buffer exactly once).
+pub fn flush_one(
+    buffer: &mut dyn FlushableBuffer,
+    partition_identity: &[u8],
+    change_seq: &AtomicU64,
+    header: &HeaderTemplate,
+    persistence_enabled: bool,
+) {
+    if buffer.is_empty() {
+        return;
+    }
+    let (_count, frames) = buffer.drain_to_frames(partition_identity, change_seq, header);
+    if !persistence_enabled {
+        tracing::trace!(
+            target: "flezha::flusher",
+            "drain-and-discard {} frames (persistence_enabled = false)",
+            frames.len(),
+        );
+        return;
+    }
+    for frame in frames {
+        crate::partition::partition_state_sink::send(frame);
     }
 }
 

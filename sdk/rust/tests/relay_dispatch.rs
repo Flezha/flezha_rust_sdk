@@ -1395,3 +1395,133 @@ fn default_inter_shard_policy_is_block_and_pushes_total_increments() {
     assert_eq!(counters.drops_newest_total.load(Ordering::Relaxed), 0);
     assert_eq!(counters.drops_oldest_total.load(Ordering::Relaxed), 0);
 }
+
+// ----- Flush-before-emit ordering (durability fix) -----
+//
+// A persistence-enabled Shard applies a Change then emits. The change's
+// WAL frame must reach the durable sink BEFORE the output frame is
+// written, so a hard kill can never lose a change whose output already
+// shipped. Both signals are recorded on this single ordered log; the WAL
+// `send` and the plugin serializer run on the same dispatch thread inside
+// one `run`, so the recorded order is deterministic.
+
+static FLUSH_ORDER_LOG: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct AddChange(i64);
+impl flezha_executor::state::Change for AddChange {}
+
+#[derive(Default)]
+struct FlushOrderShard;
+impl Shard for FlushOrderShard {
+    type Input = String;
+    type Output = String;
+    type State = i64;
+    type Change = AddChange;
+    type Clock = WallClock;
+    type Config = ();
+    fn name() -> &'static str {
+        "flush_order_shard"
+    }
+    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> i64 {
+        0
+    }
+    fn apply_change(state: &mut i64, change: &AddChange) {
+        *state += change.0;
+    }
+    fn run(
+        &mut self,
+        _: String,
+        mut state: StateHandle<'_, FlushOrderShard>,
+        ctx: &mut ShardCtx<'_>,
+    ) -> Result<(), ShardError> {
+        state.apply(AddChange(1));
+        let total = *state;
+        ctx.emit::<String>(format!("{total}"))?;
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct FlushOrderSinkShard;
+impl Shard for FlushOrderSinkShard {
+    type Input = String;
+    type Output = ();
+    type State = ();
+    type Change = NoChange;
+    type Clock = WallClock;
+    type Config = ();
+    fn name() -> &'static str {
+        "flush_order_sink_shard"
+    }
+    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
+    fn run(
+        &mut self,
+        _: String,
+        _: StateHandle<'_, FlushOrderSinkShard>,
+        _: &mut ShardCtx<'_>,
+    ) -> Result<(), ShardError> {
+        Ok(())
+    }
+}
+
+struct FlushOrderRelay;
+impl Relay for FlushOrderRelay {
+    fn factory_id() -> &'static str {
+        "flush_order_relay"
+    }
+    fn channels(c: &mut ChannelBuilder) {
+        c.input::<String>("input").into::<FlushOrderShard>();
+        c.channel::<String>("out")
+            .from::<FlushOrderShard>()
+            .also_to_plugin_with("probe", |_v: &String| {
+                FLUSH_ORDER_LOG.lock().unwrap().push("emit");
+                Vec::new()
+            })
+            .into::<FlushOrderSinkShard>();
+    }
+}
+
+#[test]
+fn change_is_flushed_before_output_is_emitted() {
+    use flezha_executor::partition::flusher::{SendError, SendFrameFn};
+    use flezha_executor::partition::partition_state_sink;
+
+    FLUSH_ORDER_LOG.lock().unwrap().clear();
+    // WAL sink records every shipped change frame on the shared log.
+    let sink: SendFrameFn = Arc::new(|_frame: &[u8]| -> Result<(), SendError> {
+        FLUSH_ORDER_LOG.lock().unwrap().push("wal");
+        Ok(())
+    });
+    partition_state_sink::install_global_sink(sink);
+
+    let topology = build_topology_for::<FlushOrderRelay>().expect("topology");
+    let pool = Arc::new(bi::WorkStealingPool::with_size(2));
+    let registry = Arc::new(RelayInstanceRegistry::new());
+    let instance =
+        RelayInstance::new(topology, Arc::from("flush-order-instance"), Arc::clone(&pool));
+    assert!(instance.persistence_enabled(), "relay must be persistent");
+    registry.register(instance);
+    let handle = RelayDispatchHandle {
+        registry: Arc::clone(&registry),
+    };
+    let stream = dummy_stream();
+
+    let mut md = HashMap::new();
+    md.insert("channel".to_string(), "input".to_string());
+    handle.dispatch("flush-order-instance", b"go".to_vec(), &md, Arc::clone(&stream));
+
+    assert!(
+        wait_until(
+            || FLUSH_ORDER_LOG.lock().unwrap().len() == 2,
+            Duration::from_secs(5)
+        ),
+        "expected both wal+emit signals, got {:?}",
+        FLUSH_ORDER_LOG.lock().unwrap().clone()
+    );
+    assert_eq!(
+        FLUSH_ORDER_LOG.lock().unwrap().clone(),
+        vec!["wal", "emit"],
+        "change must reach the WAL path before the output frame is written"
+    );
+}

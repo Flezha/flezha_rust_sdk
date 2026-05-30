@@ -13,6 +13,7 @@
 //! `Mutex` lock that is always uncontended in practice.
 
 use std::any::{Any, TypeId};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -82,21 +83,37 @@ pub struct ShardDispatcherImpl<S: Shard> {
     output_channel_id: Option<ChannelId>,
     output_channel_kind: ChannelKind,
     output_channel_name: Option<Arc<str>>,
+    /// Flush-before-emit wiring, mirrored from the owning `PartitionSlot`
+    /// so the emit sink can drain this partition's just-applied changes to
+    /// the durable WAL path before its output frame is written.
+    flush: FlushWiring,
     _phantom: std::marker::PhantomData<fn() -> S>,
 }
 
+/// Per-partition state the dispatcher needs to drive flush-before-emit.
+/// Cloned cheaply (Arc handles + a Copy header) into the emit sink.
+#[derive(Clone)]
+struct FlushWiring {
+    partition_identity: Arc<Vec<u8>>,
+    change_seq: Arc<AtomicU64>,
+    header: HeaderTemplate,
+    persistence_enabled: bool,
+}
+
 impl<S: Shard> ShardDispatcherImpl<S> {
-    pub fn new(
+    fn new(
         shard_id: ShardId,
         output_channel_id: Option<ChannelId>,
         output_channel_kind: ChannelKind,
         output_channel_name: Option<Arc<str>>,
+        flush: FlushWiring,
     ) -> Self {
         Self {
             shard_id,
             output_channel_id,
             output_channel_kind,
             output_channel_name,
+            flush,
             _phantom: std::marker::PhantomData,
         }
     }
@@ -141,20 +158,55 @@ impl<S: Shard> ShardDispatcher for ShardDispatcherImpl<S> {
             .downcast_mut::<TypedBuffer<S>>()
             .expect("dispatcher: flush buffer type mismatch for shard");
 
+        // Share the change buffer between `StateHandle::apply` and the
+        // flush-before-emit hook. Both run on this single dispatch thread
+        // inside one `Shard::run`, so the `RefCell` borrows never overlap.
+        let buffer_cell = RefCell::new(std::mem::take(&mut typed_buffer.inner));
+
+        // Flush-before-emit: drain this partition's pending changes to the
+        // durable WAL path before the sink writes the matching output
+        // frame, so change N reaches the controller's WAL before N's
+        // output reaches Kafka. Gated on `persistence_enabled` (and the
+        // `FLEZHA_FLUSH_BEFORE_EMIT` knob) so `NoChange` / non-persistent
+        // relays keep the zero-cost inline emit.
+        let flush_before_emit: Option<FlushBeforeEmit> =
+            if self.flush.persistence_enabled && flush_before_emit_enabled() {
+                let identity = Arc::clone(&self.flush.partition_identity);
+                let seq = Arc::clone(&self.flush.change_seq);
+                let header = self.flush.header;
+                let cell = &buffer_cell;
+                Some(Box::new(move || {
+                    let mut buf = TypedBuffer::<S> {
+                        inner: std::mem::take(&mut *cell.borrow_mut()),
+                    };
+                    crate::partition::flusher::flush_one(&mut buf, &identity, &seq, &header, true);
+                }))
+            } else {
+                None
+            };
+
         let mut sink = PartitionEmitSink {
             output_channel_id: self.output_channel_id,
             output_channel_kind: self.output_channel_kind,
             output_channel_name: self.output_channel_name.as_deref(),
             instance: instance.upgrade(),
             stream: Arc::clone(&stream),
+            flush_before_emit,
         };
 
         let mut ctx = ShardCtx::new(&mut sink);
-        let handle = StateHandle::<S>::new(&mut typed_state.state, &mut typed_buffer.inner);
+        let handle = StateHandle::<S>::new(&mut typed_state.state, &buffer_cell);
 
         if let Err(err) = typed_state.shard.run(input, handle, &mut ctx) {
             eprintln!("[flezha] shard {} run error: {}", S::name(), err);
         }
+
+        drop(sink);
+        // Return any changes not yet drained by flush-before-emit (or all
+        // of them when the hook is disabled) to the buffer the background
+        // flusher drains. `change_seq` and the move-out drain guarantee
+        // each change is shipped exactly once.
+        typed_buffer.inner = buffer_cell.into_inner();
     }
 
     fn shard_id(&self) -> ShardId {
@@ -198,6 +250,10 @@ impl<S: Shard> ShardDispatcher for ShardDispatcherImpl<S> {
     }
 }
 
+/// Synchronous drain of the producing partition's pending changes onto
+/// the durable WAL path, invoked before each output frame is written.
+type FlushBeforeEmit<'a> = Box<dyn FnMut() + 'a>;
+
 /// Per-invocation emit sink, constructed fresh inside each `dispatch`
 /// call. Holds an upgraded `Arc<RelayInstance>` for the duration of the
 /// run; if the instance has been dropped, every emit returns
@@ -208,9 +264,21 @@ struct PartitionEmitSink<'a> {
     output_channel_name: Option<&'a str>,
     instance: Option<Arc<RelayInstance>>,
     stream: Arc<FlezhaStream>,
+    /// `Some` for persistence-enabled partitions with the flush-before-emit
+    /// knob on. Called at the top of every emit so this run's just-applied
+    /// changes are durably shipped before the output frame leaves.
+    flush_before_emit: Option<FlushBeforeEmit<'a>>,
 }
 
 impl<'a> PartitionEmitSink<'a> {
+    /// Drain pending changes onto the WAL path before an output frame is
+    /// written. No-op for non-persistent / `NoChange` relays.
+    fn flush_pending(&mut self) {
+        if let Some(flush) = self.flush_before_emit.as_mut() {
+            flush();
+        }
+    }
+
     /// Resolve the channel descriptor + RelayInstance for the cached
     /// output channel. Returns `UnknownChannel` if either has been
     /// dropped or is unset.
@@ -329,6 +397,7 @@ impl<'a> PartitionEmitSink<'a> {
 
 impl<'a> EmitSink for PartitionEmitSink<'a> {
     fn emit_inter_shard(&mut self, value: Arc<dyn Any + Send + Sync>) -> Result<(), ShardError> {
+        self.flush_pending();
         let (instance, cid) = self.resolve_channel()?;
         let descriptor =
             instance
@@ -349,6 +418,7 @@ impl<'a> EmitSink for PartitionEmitSink<'a> {
         value: Arc<dyn Any + Send + Sync>,
         meta: Option<HashMap<String, String>>,
     ) -> Result<(), ShardError> {
+        self.flush_pending();
         let (instance, cid) = self.resolve_channel()?;
         let descriptor =
             instance
@@ -369,6 +439,7 @@ impl<'a> EmitSink for PartitionEmitSink<'a> {
         value: Arc<dyn Any + Send + Sync>,
         meta: Option<HashMap<String, String>>,
     ) -> Result<(), ShardError> {
+        self.flush_pending();
         let cid = self
             .output_channel_id
             .ok_or_else(|| ShardError::UnknownChannel {
@@ -502,6 +573,21 @@ fn payload_for(value: &Arc<dyn Any + Send + Sync>, stream: &Arc<FlezhaStream>) -
     }
 }
 
+const ENV_FLUSH_BEFORE_EMIT: &str = "FLEZHA_FLUSH_BEFORE_EMIT";
+
+/// Whether flush-before-emit is enabled for persistence-enabled partitions.
+/// Defaults to ON (durability over latency); set `FLEZHA_FLUSH_BEFORE_EMIT`
+/// to `0`/`false`/`off`/`no` to revert to the inline-emit fast path.
+fn flush_before_emit_enabled() -> bool {
+    match std::env::var(ENV_FLUSH_BEFORE_EMIT) {
+        Ok(v) => !matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "off" | "no"
+        ),
+        Err(_) => true,
+    }
+}
+
 fn send_plugin_frame(
     stream: &Arc<FlezhaStream>,
     instance_id: &str,
@@ -562,20 +648,6 @@ pub fn build_partition_slot<S: Shard>(args: BuildPartitionArgs<'_>) -> Arc<Parti
         .shard(args.shard_id)
         .expect("build_partition_slot: shard id missing in topology");
 
-    let dispatcher = Arc::new(ShardDispatcherImpl::<S>::new(
-        args.shard_id,
-        shard_desc.output_channel_id,
-        shard_desc
-            .output_channel_id
-            .and_then(|id| topology.channel(id))
-            .map(|c| c.kind)
-            .unwrap_or(ChannelKind::InterShard),
-        shard_desc
-            .output_channel_id
-            .and_then(|id| topology.channel(id))
-            .map(|c| Arc::clone(&c.name)),
-    )) as Arc<dyn ShardDispatcher>;
-
     let flush_buffer: Arc<Mutex<Box<dyn FlushableBuffer>>> = Arc::new(Mutex::new(Box::new(
         TypedBuffer::<S>::default(),
     )
@@ -589,6 +661,26 @@ pub fn build_partition_slot<S: Shard>(args: BuildPartitionArgs<'_>) -> Arc<Parti
         shard_desc.name.as_ref(),
         args.shard_key.unwrap_or(""),
     ));
+
+    let dispatcher = Arc::new(ShardDispatcherImpl::<S>::new(
+        args.shard_id,
+        shard_desc.output_channel_id,
+        shard_desc
+            .output_channel_id
+            .and_then(|id| topology.channel(id))
+            .map(|c| c.kind)
+            .unwrap_or(ChannelKind::InterShard),
+        shard_desc
+            .output_channel_id
+            .and_then(|id| topology.channel(id))
+            .map(|c| Arc::clone(&c.name)),
+        FlushWiring {
+            partition_identity: Arc::clone(&partition_identity),
+            change_seq: Arc::clone(&change_seq),
+            header: HeaderTemplate::for_shard::<S>(),
+            persistence_enabled: args.persistence_enabled,
+        },
+    )) as Arc<dyn ShardDispatcher>;
 
     // Skip flusher registration entirely for `Change == NoChange` Shards
     // per `design.md` Open Question 2 (TypeId comparison at registration

@@ -16,6 +16,7 @@
 //! actual states for hex-diff inspection.
 
 use std::any::Any;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -141,13 +142,14 @@ impl<S: Shard> ShardTestHarness<S> {
     /// harness; mutations on the harness's owned state are visible
     /// after the call.
     pub fn apply_inputs(&mut self, inputs: impl IntoIterator<Item = S::Input>) -> &mut Self {
+        let recorded = RefCell::new(std::mem::take(&mut self.recorded_changes));
         for input in inputs {
             let mut sink = RecordingEmitSink {
                 emits: &mut self.recorded_emits,
                 channel_name: "<harness>",
             };
             let mut ctx = ShardCtx::new(&mut sink);
-            let handle = StateHandle::<S>::new(&mut self.state, &mut self.recorded_changes);
+            let handle = StateHandle::<S>::new(&mut self.state, &recorded);
             // Errors are surfaced as panics in the harness; tests that
             // want to exercise the error path should drive `S::run`
             // directly.
@@ -155,6 +157,7 @@ impl<S: Shard> ShardTestHarness<S> {
                 panic!("ShardTestHarness: Shard::run returned Err: {e}");
             }
         }
+        self.recorded_changes = recorded.into_inner();
         self
     }
 
