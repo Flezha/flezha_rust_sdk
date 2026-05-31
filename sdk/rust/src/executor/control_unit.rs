@@ -365,7 +365,6 @@ fn send_init_msg(
 mod tests {
     use std::io::Read;
     use std::os::unix::net::UnixStream;
-    use std::sync::Mutex as StdMutex;
 
     use crossbeam::channel::unbounded;
 
