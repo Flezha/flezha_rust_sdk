@@ -127,14 +127,8 @@ impl ShutdownBridge {
         let mut wait_handles = Vec::with_capacity(relays.len());
 
         for (relay_id, serialized_state) in relays {
-            let reference_id = format!(
-                "shutdown-{}-{}",
-                relay_id,
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_nanos())
-                    .unwrap_or(0)
-            );
+            let reference_id =
+                format!("shutdown-{}-{}", relay_id, crate::util::nonce_suffix());
 
             let request = pb::CommandRequest {
                 reference_id: reference_id.clone(),

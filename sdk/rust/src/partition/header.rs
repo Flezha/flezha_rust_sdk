@@ -9,6 +9,7 @@
 //!  - 12:16 `crc32: u32 BE` = `crc32fast::hash(&change_bytes)`
 
 use crate::partition::restore::RestoreError;
+use crate::util::read_u32_be;
 
 /// Compiled-in language tag stamped at byte 0 of the persistence header.
 pub const SDK_LANG_RUST: u8 = 1;
@@ -78,9 +79,9 @@ pub fn decode_header(bytes: &[u8]) -> Result<DecodedHeader, RestoreError> {
     if bytes.len() < 16 {
         return Err(RestoreError::HeaderInvalid);
     }
-    let sdk_version = u32::from_be_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]);
-    let schema_version = u32::from_be_bytes([bytes[5], bytes[6], bytes[7], bytes[8]]);
-    let crc32 = u32::from_be_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]);
+    let sdk_version = read_u32_be(bytes, 1);
+    let schema_version = read_u32_be(bytes, 5);
+    let crc32 = read_u32_be(bytes, 12);
     Ok(DecodedHeader {
         sdk_lang: bytes[0],
         sdk_version,

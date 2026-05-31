@@ -9,7 +9,6 @@
 //!   `shard_keys()` per `design.md` Open Question 1 (resolved via the
 //!   `PARTITION_FOR_OVERRIDDEN` const sentinel on the `Shard` trait)
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::channel::builder::{BuildTopologyError, ChannelBuilder};
@@ -130,20 +129,11 @@ pub fn build_topology_with_persistence(
         return Err(TopologyBuildError { errors });
     }
 
-    let mut name_to_id_static: HashMap<&'static str, u32> = HashMap::new();
-    for (k, v) in name_to_id {
-        name_to_id_static.insert(k, v);
-    }
-    let mut shard_name_to_id_static: HashMap<&'static str, u32> = HashMap::new();
-    for (k, v) in shard_name_to_id {
-        shard_name_to_id_static.insert(k, v);
-    }
-
     Ok(Arc::new(RelayTopology {
         channels: channel_descs,
-        name_to_id: name_to_id_static,
+        name_to_id,
         shards: shard_descs,
-        shard_name_to_id: shard_name_to_id_static,
+        shard_name_to_id,
         factory_id,
         persistence_enabled_const,
     }))

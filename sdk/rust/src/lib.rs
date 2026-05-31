@@ -96,6 +96,7 @@ pub mod partition;
 pub mod relay;
 pub mod shard;
 mod shutdown;
+mod util;
 
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;

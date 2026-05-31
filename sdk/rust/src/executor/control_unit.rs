@@ -19,6 +19,15 @@ use super::ClientResponseMessage;
 use crate::executor::ExecutorMessage;
 use crate::pb::Ping;
 use crate::relay::registry::class_factory_ids;
+use crate::util::nonce_suffix;
+
+/// Reader-thread handle + write stream + optional QUIC client returned by
+/// every control-channel open path.
+type ControlConn = (
+    thread::JoinHandle<()>,
+    Arc<FlezhaStream>,
+    Option<Arc<QuicClient>>,
+);
 
 #[derive(Serialize)]
 struct FactoryInfo {
@@ -44,11 +53,7 @@ pub fn open(
     namespace: String,
     itx: Arc<Mutex<Sender<ClientResponseMessage>>>,
     otx: Arc<Mutex<Sender<ExecutorMessage>>>,
-) -> (
-    thread::JoinHandle<()>,
-    Arc<FlezhaStream>,
-    Option<Arc<QuicClient>>,
-) {
+) -> ControlConn {
     open_with_retry(namespace, Some(itx), otx)
 }
 
@@ -56,11 +61,7 @@ pub fn open(
 pub fn open_reconnect(
     namespace: String,
     otx: Arc<Mutex<Sender<ExecutorMessage>>>,
-) -> (
-    thread::JoinHandle<()>,
-    Arc<FlezhaStream>,
-    Option<Arc<QuicClient>>,
-) {
+) -> ControlConn {
     open_with_retry(namespace, None, otx)
 }
 
@@ -68,11 +69,7 @@ fn open_with_retry(
     namespace: String,
     itx: Option<Arc<Mutex<Sender<ClientResponseMessage>>>>,
     otx: Arc<Mutex<Sender<ExecutorMessage>>>,
-) -> (
-    thread::JoinHandle<()>,
-    Arc<FlezhaStream>,
-    Option<Arc<QuicClient>>,
-) {
+) -> ControlConn {
     let mut attempt = 0u32;
     let max_backoff = Duration::from_secs(30);
 
@@ -104,20 +101,11 @@ fn open_with_retry(
     }
 }
 
-// reason: tuple bundles per-transport handles needed by the caller; refactoring would split the QUIC path's QuicClient out behind another wrapper
-#[allow(clippy::type_complexity)]
 fn try_open(
     namespace: String,
     itx: Option<Arc<Mutex<Sender<ClientResponseMessage>>>>,
     otx: Arc<Mutex<Sender<ExecutorMessage>>>,
-) -> Result<
-    (
-        thread::JoinHandle<()>,
-        Arc<FlezhaStream>,
-        Option<Arc<QuicClient>>,
-    ),
-    String,
-> {
+) -> Result<ControlConn, String> {
     match get_transport_type() {
         TransportType::Uds => {
             let (handle, stream) = try_open_uds(namespace, itx, otx)?;
@@ -142,20 +130,11 @@ fn try_open_uds(
     Ok(sock_conn(namespace, stream_box, itx, otx))
 }
 
-// reason: same wire shape as try_open; QuicClient handle is part of the return contract
-#[allow(clippy::type_complexity)]
 fn try_open_quic(
     namespace: String,
     itx: Option<Arc<Mutex<Sender<ClientResponseMessage>>>>,
     otx: Arc<Mutex<Sender<ExecutorMessage>>>,
-) -> Result<
-    (
-        thread::JoinHandle<()>,
-        Arc<FlezhaStream>,
-        Option<Arc<QuicClient>>,
-    ),
-    String,
-> {
+) -> Result<ControlConn, String> {
     let address = flz_transport::transport::config::quic_address();
     let ca_cert_path = flz_transport::transport::config::ca_cert_path();
 
@@ -320,13 +299,6 @@ fn classify_reconnect_reason(e: &io::Error, acked: bool) -> &'static str {
         | io::ErrorKind::BrokenPipe => "control_stream_broken",
         _ => "read_error",
     }
-}
-
-fn nonce_suffix() -> u128 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0)
 }
 
 fn send_init_msg(

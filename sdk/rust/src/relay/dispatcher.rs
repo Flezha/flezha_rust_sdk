@@ -29,12 +29,13 @@ use crate::partition::flusher::{
     encode_partition_identity, FlushableBuffer, PartitionFlusher, TypedBuffer,
 };
 use crate::partition::header::HeaderTemplate;
-use crate::partition::{PartitionPayload, PartitionSlot, ShardDispatcher};
+use crate::partition::{make_partition_payload, PartitionPayload, PartitionSlot, ShardDispatcher};
 use crate::relay::instance::RelayInstance;
 use crate::shard::change::NoChange;
 use crate::shard::ctx::EmitSink;
 use crate::shard::state_handle::StateHandle;
 use crate::shard::{Shard, ShardCtx, ShardError};
+use crate::util::LockRecover;
 
 /// Per-partition holder for a typed Shard instance + its State. Boxed and
 /// type-erased into `PartitionSlot.state`.
@@ -312,39 +313,13 @@ impl<'a> PartitionEmitSink<'a> {
         descriptor: &crate::channel::ChannelDescriptor,
         value: &Arc<dyn Any + Send + Sync>,
     ) -> Result<(), ShardError> {
-        let policy = descriptor.overflow_policy;
-        for &consumer_shard_id in &descriptor.consumers {
-            let consumer_shard = instance.topology.shard(consumer_shard_id).ok_or_else(|| {
-                ShardError::UnknownChannel {
-                    channel: format!("<shard id {}>", consumer_shard_id),
-                }
-            })?;
-
-            let partitions = match instance.partitions.get(consumer_shard_id as usize) {
-                Some(p) => p,
-                None => continue,
-            };
-
-            if consumer_shard.partition_keys.is_empty() {
-                if let Some(slot) = partitions.first() {
-                    enqueue(slot, payload_for(value, &self.stream), policy);
-                }
-            } else {
-                let key_to_idx = instance
-                    .partition_key_to_idx
-                    .get(consumer_shard_id as usize);
-                let keys = (consumer_shard.partition_for_erased)(value.as_ref());
-                for key in keys {
-                    if let Some(map) = key_to_idx {
-                        if let Some(&idx) = map.get(key) {
-                            if let Some(slot) = partitions.get(idx) {
-                                enqueue(slot, payload_for(value, &self.stream), policy);
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        route_to_consumers(
+            instance,
+            &descriptor.consumers,
+            descriptor.overflow_policy,
+            value,
+            &self.stream,
+        );
         Ok(())
     }
 
@@ -538,10 +513,41 @@ pub(crate) fn enqueue(
     }
 }
 
-fn payload_for(value: &Arc<dyn Any + Send + Sync>, stream: &Arc<FlezhaStream>) -> PartitionPayload {
-    PartitionPayload {
-        value: Arc::clone(value),
-        stream: Arc::clone(stream),
+/// Fan a typed value out to every consumer Shard's partition mailbox per
+/// the channel's `OverflowPolicy`. Shared by the inter-shard emit path
+/// (`PartitionEmitSink`) and the inbound wire-dispatch path
+/// (`RelayDispatchHandle`). Single-mode shards route to partition 0;
+/// static-mode shards route by `partition_for_erased` key lookup.
+pub(crate) fn route_to_consumers(
+    instance: &RelayInstance,
+    consumer_ids: &[ShardId],
+    policy: OverflowPolicy,
+    value: &Arc<dyn Any + Send + Sync>,
+    stream: &Arc<FlezhaStream>,
+) {
+    for &consumer_shard_id in consumer_ids {
+        let consumer = match instance.topology.shard(consumer_shard_id) {
+            Some(s) => s,
+            None => continue,
+        };
+        let partitions = match instance.partitions.get(consumer_shard_id as usize) {
+            Some(p) => p,
+            None => continue,
+        };
+        if consumer.partition_keys.is_empty() {
+            if let Some(slot) = partitions.first() {
+                enqueue(slot, make_partition_payload(value, stream), policy);
+            }
+            continue;
+        }
+        let key_to_idx = instance.partition_key_to_idx.get(consumer_shard_id as usize);
+        for key in (consumer.partition_for_erased)(value.as_ref()) {
+            if let Some(&idx) = key_to_idx.and_then(|m| m.get(key)) {
+                if let Some(slot) = partitions.get(idx) {
+                    enqueue(slot, make_partition_payload(value, stream), policy);
+                }
+            }
+        }
     }
 }
 
@@ -594,10 +600,7 @@ pub fn drain_partition(slot: &Arc<PartitionSlot>) {
             // to re-attempt its push.
             slot.block_parker.unpark_one();
             let mut state_guard = slot.state.lock().unwrap();
-            let mut buffer_guard = match slot.flush_buffer.lock() {
-                Ok(g) => g,
-                Err(poisoned) => poisoned.into_inner(),
-            };
+            let mut buffer_guard = slot.flush_buffer.lock_recover();
             let instance_weak = Weak::clone(&slot.instance);
             slot.dispatcher
                 .dispatch(payload, &mut state_guard, &mut buffer_guard, &instance_weak);

@@ -22,6 +22,7 @@ use crate::pb::{
 use crate::relay::instance::RelayInstance;
 use crate::relay::registry::{get_class as get_relay_class, RelayInstanceRegistry};
 use crate::shutdown::ShutdownBridge;
+use crate::util::nonce_suffix;
 use flz_transport::service::payloader;
 use prost::Message;
 use tracing::warn;
@@ -304,13 +305,6 @@ fn build_executor_reconnected_frame(
     )
 }
 
-fn nonce_suffix() -> u128 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0)
-}
-
 /// Stream-reader handle for the Relay model. Cheap to clone; carries a
 /// reference to the live Relay-instance registry. Per-Partition drain
 /// scheduling uses the pool held by `PartitionSlot`.
@@ -391,55 +385,13 @@ impl RelayDispatchHandle {
             }
         };
 
-        let policy = channel.overflow_policy;
-
-        for &consumer_shard_id in &channel.consumers {
-            let consumer = match topology.shard(consumer_shard_id) {
-                Some(s) => s,
-                None => continue,
-            };
-            let partitions = match instance.partitions.get(consumer_shard_id as usize) {
-                Some(p) => p,
-                None => continue,
-            };
-            if consumer.partition_keys.is_empty() {
-                if let Some(slot) = partitions.first() {
-                    crate::relay::dispatcher::enqueue(
-                        slot,
-                        build_payload(&typed_payload, &stream),
-                        policy,
-                    );
-                }
-            } else {
-                let key_to_idx = instance
-                    .partition_key_to_idx
-                    .get(consumer_shard_id as usize);
-                let keys = (consumer.partition_for_erased)(&*typed_payload);
-                for key in keys {
-                    if let Some(map) = key_to_idx {
-                        if let Some(&idx) = map.get(key) {
-                            if let Some(slot) = partitions.get(idx) {
-                                crate::relay::dispatcher::enqueue(
-                                    slot,
-                                    build_payload(&typed_payload, &stream),
-                                    policy,
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn build_payload(
-    value: &Arc<dyn std::any::Any + Send + Sync>,
-    stream: &Arc<FlezhaStream>,
-) -> crate::partition::PartitionPayload {
-    crate::partition::PartitionPayload {
-        value: Arc::clone(value),
-        stream: Arc::clone(stream),
+        crate::relay::dispatcher::route_to_consumers(
+            &instance,
+            &channel.consumers,
+            channel.overflow_policy,
+            &typed_payload,
+            &stream,
+        );
     }
 }
 

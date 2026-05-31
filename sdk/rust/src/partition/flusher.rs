@@ -37,6 +37,7 @@ use dashmap::DashMap;
 
 use crate::partition::header::HeaderTemplate;
 use crate::shard::change::{Change, CoalesceKey};
+use crate::util::LockRecover;
 
 /// Global identifier for a registered Partition entry. Assigned at
 /// flusher-registration time; opaque to callers.
@@ -241,10 +242,7 @@ impl PartitionFlusher {
     pub fn instance() -> Arc<PartitionFlusher> {
         FLUSHER
             .get_or_init(|| {
-                let linger_ms = std::env::var(ENV_LINGER_MS)
-                    .ok()
-                    .and_then(|s| s.parse::<u64>().ok())
-                    .unwrap_or(DEFAULT_LINGER_MS);
+                let linger_ms = crate::util::env_parse(ENV_LINGER_MS, DEFAULT_LINGER_MS);
                 let flusher = Arc::new(PartitionFlusher {
                     entries: Arc::new(DashMap::new()),
                     next_entry_id: AtomicU64::new(0),
@@ -303,10 +301,7 @@ impl PartitionFlusher {
     fn drain_pass(&self) {
         for entry_ref in self.entries.iter() {
             let entry = entry_ref.value();
-            let mut guard = match entry.buffer.lock() {
-                Ok(g) => g,
-                Err(poisoned) => poisoned.into_inner(),
-            };
+            let mut guard = entry.buffer.lock_recover();
             flush_one(
                 &mut **guard,
                 &entry.partition_identity,

@@ -46,6 +46,18 @@ pub struct PartitionPayload {
     pub stream: Arc<FlezhaStream>,
 }
 
+/// Construct a [`PartitionPayload`], cloning both shared handles. Shared by
+/// the inter-shard emit path and the inbound wire-dispatch path.
+pub fn make_partition_payload(
+    value: &Arc<dyn Any + Send + Sync>,
+    stream: &Arc<FlezhaStream>,
+) -> PartitionPayload {
+    PartitionPayload {
+        value: Arc::clone(value),
+        stream: Arc::clone(stream),
+    }
+}
+
 pub type PartitionMailbox = Arc<Mailbox<PartitionPayload>>;
 
 /// Producer-side observability for one Partition. All counters are

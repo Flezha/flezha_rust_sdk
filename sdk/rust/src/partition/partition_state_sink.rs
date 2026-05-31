@@ -90,26 +90,15 @@ impl SinkState {
 static STATE: Mutex<SinkState> = Mutex::new(SinkState::new());
 
 fn ring_capacity() -> usize {
-    env_usize(ENV_RING_CAPACITY, DEFAULT_RING_CAPACITY)
+    crate::util::env_parse_positive(ENV_RING_CAPACITY, DEFAULT_RING_CAPACITY)
 }
 
 fn flood_threshold() -> usize {
-    env_usize(ENV_FLOOD_THRESHOLD, DEFAULT_FLOOD_THRESHOLD)
+    crate::util::env_parse_positive(ENV_FLOOD_THRESHOLD, DEFAULT_FLOOD_THRESHOLD)
 }
 
 fn flood_window_ms() -> u64 {
-    std::env::var(ENV_FLOOD_WINDOW_MS)
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(DEFAULT_FLOOD_WINDOW_MS)
-}
-
-fn env_usize(key: &str, default: usize) -> usize {
-    std::env::var(key)
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .filter(|&n| n > 0)
-        .unwrap_or(default)
+    crate::util::env_parse(ENV_FLOOD_WINDOW_MS, DEFAULT_FLOOD_WINDOW_MS)
 }
 
 /// Ship one frame to the controller. Resolves the live sink each call. On

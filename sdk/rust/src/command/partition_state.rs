@@ -15,6 +15,7 @@ use super::CommandAction;
 use crate::executor::ExecutorNode;
 use crate::pb::PartitionState;
 use crate::relay::instance::RelayInstance;
+use crate::util::LockRecover;
 
 impl CommandAction for PartitionState {
     fn handle(
@@ -63,10 +64,7 @@ pub fn serialize_relay_state(instance: &Arc<RelayInstance>) -> Vec<u8> {
                 Some(s) => s,
                 None => continue,
             };
-            let state_guard = match slot.state.lock() {
-                Ok(g) => g,
-                Err(poisoned) => poisoned.into_inner(),
-            };
+            let state_guard = slot.state.lock_recover();
             match (shard_desc.serialize_state)(&state_guard) {
                 Ok(v) => {
                     top.insert(shard_name, v);
@@ -211,11 +209,7 @@ fn apply_one(
 ) {
     match (shard_desc.deserialize_state)(value) {
         Ok(new_state) => {
-            let mut guard = match slot.state.lock() {
-                Ok(g) => g,
-                Err(poisoned) => poisoned.into_inner(),
-            };
-            *guard = new_state;
+            *slot.state.lock_recover() = new_state;
         }
         Err(e) => match shard_key {
             Some(k) => eprintln!(

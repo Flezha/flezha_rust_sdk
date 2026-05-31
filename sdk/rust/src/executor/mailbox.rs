@@ -43,17 +43,8 @@ use crossbeam::queue::ArrayQueue;
 use crate::executor::work_stealing_pool::{Task, WorkStealingPool};
 use crate::partition::PartitionCounters;
 
-/// A single item on the wire for a relay — the work the drain loop will
-/// dispatch via the partition's `Dispatcher`. The wrapper keeps the queue
-/// type opaque to the rest of the SDK and lets us recover the rejected
-/// payload from a failed `ArrayQueue::push` without an extra clone.
-pub struct WorkItem<Payload> {
-    pub payload: Payload,
-}
-
-/// Returned by the convenience `push_and_maybe_submit*` helpers when the
-/// underlying bounded queue rejects the push. The caller can recover the
-/// payload from the wrapper.
+/// Returned by `push_and_maybe_submit` when the bounded queue rejects the
+/// push; the caller can recover the payload from the wrapper.
 #[derive(Debug)]
 pub struct BackpressureError<Payload> {
     pub payload: Payload,
@@ -67,13 +58,13 @@ impl<Payload> std::fmt::Display for BackpressureError<Payload> {
 
 impl<Payload: std::fmt::Debug> std::error::Error for BackpressureError<Payload> {}
 
-/// Per-Partition mailbox: a bounded `ArrayQueue<WorkItem<Payload>>` plus an
+/// Per-Partition mailbox: a bounded `ArrayQueue<Payload>` plus an
 /// `AtomicBool` inflight flag and a [`PartitionCounters`] block.
 ///
 /// `Payload` is the user-defined work item shape. For Flezha, it's
 /// [`crate::partition::PartitionPayload`].
 pub struct Mailbox<Payload: Send + 'static> {
-    queue: ArrayQueue<WorkItem<Payload>>,
+    queue: ArrayQueue<Payload>,
     inflight: AtomicBool,
     counters: PartitionCounters,
 }
@@ -125,77 +116,14 @@ impl<Payload: Send + 'static> Mailbox<Payload> {
         Ok(())
     }
 
-    /// Enqueue an item and, if nobody is draining, submit a BATCH drain.
-    ///
-    /// `drain_fn` receives a scratch `&mut BatchContext<Payload>` and is
-    /// expected to call `ctx.next()` in a loop to pull items, doing per-item
-    /// work (e.g. running the relay), and then flushing any accumulated
-    /// side effects (e.g. one big `write_all` back to the controller) before
-    /// returning. Between calls to `drain_fn`, the mailbox performs the
-    /// same missed-wake guard as the per-item variant.
-    ///
-    /// This is what the fast-dispatch hot path uses so 10k messages hitting
-    /// one relay during a burst produce ONE syscall, not 10k. Returns
-    /// `Err(BackpressureError { payload })` when the bounded queue rejects
-    /// the push.
-    pub fn push_and_maybe_submit_batched<F>(
-        self: &Arc<Self>,
-        payload: Payload,
-        pool: &WorkStealingPool,
-        drain_fn: F,
-    ) -> Result<(), BackpressureError<Payload>>
-    where
-        F: Fn(&mut BatchContext<Payload>) + Send + Sync + 'static,
-    {
-        self.try_push(payload)
-            .map_err(|payload| BackpressureError { payload })?;
-
-        if self
-            .inflight
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-        {
-            let this = Arc::clone(self);
-            let drain = Arc::new(drain_fn);
-            let task: Task = Box::new(move || {
-                this.run_drain_batched(&*drain);
-            });
-            pool.submit(task);
-        }
-        Ok(())
-    }
-
     fn run_drain<F>(self: Arc<Self>, drain_fn: &F)
     where
         F: Fn(Payload) + Send + Sync + 'static,
     {
         loop {
-            while let Some(item) = self.queue.pop() {
-                drain_fn(item.payload);
+            while let Some(payload) = self.queue.pop() {
+                drain_fn(payload);
             }
-            self.inflight.store(false, Ordering::Release);
-            if self.queue.is_empty() {
-                return;
-            }
-            if self
-                .inflight
-                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                .is_ok()
-            {
-                continue;
-            }
-            return;
-        }
-    }
-
-    fn run_drain_batched<F>(self: Arc<Self>, drain_fn: &F)
-    where
-        F: Fn(&mut BatchContext<Payload>) + Send + Sync + 'static,
-    {
-        loop {
-            let mut ctx = BatchContext { mbox: &self };
-            drain_fn(&mut ctx);
-
             self.inflight.store(false, Ordering::Release);
             if self.queue.is_empty() {
                 return;
@@ -256,9 +184,7 @@ impl<Payload: Send + 'static> Mailbox<Payload> {
     /// drop-oldest via [`Self::force_push`]).
     #[inline]
     pub fn try_push(&self, payload: Payload) -> Result<(), Payload> {
-        self.queue
-            .push(WorkItem { payload })
-            .map_err(|item| item.payload)
+        self.queue.push(payload)
     }
 
     /// Atomically pop the oldest item if the queue is full, then push the
@@ -267,9 +193,7 @@ impl<Payload: Send + 'static> Mailbox<Payload> {
     /// under MPMC contention per Decision 9.
     #[inline]
     pub fn force_push(&self, payload: Payload) -> Option<Payload> {
-        self.queue
-            .force_push(WorkItem { payload })
-            .map(|item| item.payload)
+        self.queue.force_push(payload)
     }
 
     /// CAS inflight false→true. Returns true on success (caller owns the
@@ -291,21 +215,7 @@ impl<Payload: Send + 'static> Mailbox<Payload> {
     /// Pop the next item. Returns None if empty.
     #[inline]
     pub fn pop(&self) -> Option<Payload> {
-        self.queue.pop().map(|item| item.payload)
-    }
-}
-
-/// Handle to a currently-draining mailbox. The drain closure pulls items
-/// via `next()` until `None`, does per-item work + a single flush of any
-/// accumulated bytes before returning.
-pub struct BatchContext<'a, Payload: Send + 'static> {
-    mbox: &'a Mailbox<Payload>,
-}
-
-impl<'a, Payload: Send + 'static> BatchContext<'a, Payload> {
-    #[inline]
-    pub fn next(&mut self) -> Option<Payload> {
-        self.mbox.queue.pop().map(|item| item.payload)
+        self.queue.pop()
     }
 }
 

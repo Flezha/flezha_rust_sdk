@@ -9,6 +9,7 @@
 //! decode them.
 
 use crate::partition::header::{decode_header, validate_header_for_change};
+use crate::util::{read_u32_be, read_u64_be};
 
 /// Snapshot + change-log bytes handed to `Shard::init_state` on a warm
 /// restore. Borrowed (`&[u8]`) so the runtime owns the underlying buffers
@@ -66,7 +67,13 @@ pub fn init_partition_with_payload<S: crate::shard::Shard>(
 where
     S::State: serde::de::DeserializeOwned,
 {
-    let mut state = S::init_state(shard_key, payload.copied_view());
+    let mut state = S::init_state(
+        shard_key,
+        payload.map(|p| RestoreInitPayload {
+            snapshot_bytes: p.snapshot_bytes,
+            change_log_bytes: p.change_log_bytes,
+        }),
+    );
     if let Some(p) = payload {
         if !p.snapshot_bytes.is_empty() {
             // The controller strips the snapshot file's header before shipping;
@@ -79,10 +86,10 @@ where
             let header = decode_header(record.header)?;
             validate_header_for_change::<S>(&header)?;
             // The trailing crc32 in the WAL covers header + change_bytes.
-            let mut crc_input = Vec::with_capacity(16 + record.change_bytes.len());
-            crc_input.extend_from_slice(record.header);
-            crc_input.extend_from_slice(record.change_bytes);
-            if crc32fast::hash(&crc_input) != record.trailing_crc {
+            let mut hasher = crc32fast::Hasher::new();
+            hasher.update(record.header);
+            hasher.update(record.change_bytes);
+            if hasher.finalize() != record.trailing_crc {
                 return Err(RestoreError::CrcMismatch {
                     partition: 0,
                     seq: record.seq,
@@ -133,22 +140,8 @@ impl<'a> Iterator for ChangeLogIter<'a> {
         if self.remaining.len() < 32 {
             return Some(Err(RestoreError::HeaderInvalid));
         }
-        let seq = u64::from_be_bytes([
-            self.remaining[0],
-            self.remaining[1],
-            self.remaining[2],
-            self.remaining[3],
-            self.remaining[4],
-            self.remaining[5],
-            self.remaining[6],
-            self.remaining[7],
-        ]);
-        let len = u32::from_be_bytes([
-            self.remaining[8],
-            self.remaining[9],
-            self.remaining[10],
-            self.remaining[11],
-        ]) as usize;
+        let seq = read_u64_be(self.remaining, 0);
+        let len = read_u32_be(self.remaining, 8) as usize;
         if len < 16 {
             return Some(Err(RestoreError::HeaderInvalid));
         }
@@ -162,12 +155,7 @@ impl<'a> Iterator for ChangeLogIter<'a> {
         }
         let header = &self.remaining[header_start..header_end];
         let change_bytes = &self.remaining[change_start..change_end];
-        let trailing_crc = u32::from_be_bytes([
-            self.remaining[change_end],
-            self.remaining[change_end + 1],
-            self.remaining[change_end + 2],
-            self.remaining[change_end + 3],
-        ]);
+        let trailing_crc = read_u32_be(self.remaining, change_end);
         let record = ChangeLogRecord {
             seq,
             header,
@@ -176,22 +164,6 @@ impl<'a> Iterator for ChangeLogIter<'a> {
         };
         self.remaining = &self.remaining[frame_end..];
         Some(Ok(record))
-    }
-}
-
-/// Helper trait that lets `init_partition_with_payload` hand a fresh
-/// borrow of the payload to user `init_state`. Implemented for
-/// `Option<&RestoreInitPayload<'_>>` so callers do not have to clone.
-trait CopiedView<'a> {
-    fn copied_view(&self) -> Option<RestoreInitPayload<'a>>;
-}
-
-impl<'a> CopiedView<'a> for Option<&RestoreInitPayload<'a>> {
-    fn copied_view(&self) -> Option<RestoreInitPayload<'a>> {
-        self.map(|p| RestoreInitPayload {
-            snapshot_bytes: p.snapshot_bytes,
-            change_log_bytes: p.change_log_bytes,
-        })
     }
 }
 
