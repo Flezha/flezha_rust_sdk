@@ -17,8 +17,6 @@ use std::time::Duration;
 use bi::RelayDispatchHandle;
 use flezha_executor::channel::ChannelBuilder;
 use flezha_executor::relay::builder::build_topology_for;
-use flezha_executor::shard::{Shard, ShardCtx, ShardError};
-use flezha_executor::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
 use flezha_executor::{__dispatch_internals as bi, Relay};
 use flz_transport::service::payloader;
 use flz_transport::transport::FlezhaStream;
@@ -72,53 +70,15 @@ fn single_consumer_observed() -> &'static Mutex<Vec<u32>> {
     CELL.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-#[derive(Default)]
-struct SingleProducer;
-impl Shard for SingleProducer {
-    type Input = String;
-    type Output = u32;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "hybrid_single_producer"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: String,
-        _: StateHandle<'_, Self>,
-        ctx: &mut ShardCtx<'_>,
-    ) -> Result<(), ShardError> {
-        let n: u32 = input.parse().unwrap_or(0);
-        ctx.emit::<u32>(n)
-    }
-}
+test_shard!(SingleProducer, "hybrid_single_producer", String => u32, (), |input, _state, ctx| {
+    let n: u32 = input.parse().unwrap_or(0);
+    ctx.emit::<u32>(n)
+});
 
-#[derive(Default)]
-struct SingleConsumer;
-impl Shard for SingleConsumer {
-    type Input = u32;
-    type Output = ();
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "hybrid_single_consumer"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: u32,
-        _: StateHandle<'_, Self>,
-        _: &mut ShardCtx<'_>,
-    ) -> Result<(), ShardError> {
-        single_consumer_observed().lock().unwrap().push(input);
-        Ok(())
-    }
-}
+test_shard!(SingleConsumer, "hybrid_single_consumer", u32 => (), (), |input, _state, _ctx| {
+    single_consumer_observed().lock().unwrap().push(input);
+    Ok(())
+});
 
 struct SingleHybridRelay;
 impl Relay for SingleHybridRelay {
@@ -176,61 +136,23 @@ fn three_consumer_observed_c() -> &'static Mutex<Vec<u32>> {
     C.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-#[derive(Default)]
-struct ThreeProducer;
-impl Shard for ThreeProducer {
-    type Input = String;
-    type Output = u32;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "hybrid_three_producer"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: String,
-        _: StateHandle<'_, Self>,
-        ctx: &mut ShardCtx<'_>,
-    ) -> Result<(), ShardError> {
-        let n: u32 = input.parse().unwrap_or(0);
-        ctx.emit::<u32>(n)
-    }
-}
+test_shard!(ThreeProducer, "hybrid_three_producer", String => u32, (), |input, _state, ctx| {
+    let n: u32 = input.parse().unwrap_or(0);
+    ctx.emit::<u32>(n)
+});
 
-macro_rules! consumer {
-    ($name:ident, $static_name:literal, $sink:path) => {
-        #[derive(Default)]
-        struct $name;
-        impl Shard for $name {
-            type Input = u32;
-            type Output = ();
-            type State = ();
-            type Change = NoChange;
-            type Clock = WallClock;
-            type Config = ();
-            fn name() -> &'static str {
-                $static_name
-            }
-            fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-            fn run(
-                &mut self,
-                input: u32,
-                _: StateHandle<'_, Self>,
-                _: &mut ShardCtx<'_>,
-            ) -> Result<(), ShardError> {
-                $sink().lock().unwrap().push(input);
-                Ok(())
-            }
-        }
-    };
-}
-
-consumer!(ThreeConsumerA, "hybrid_three_a", three_consumer_observed_a);
-consumer!(ThreeConsumerB, "hybrid_three_b", three_consumer_observed_b);
-consumer!(ThreeConsumerC, "hybrid_three_c", three_consumer_observed_c);
+test_shard!(ThreeConsumerA, "hybrid_three_a", u32 => (), (), |input, _state, _ctx| {
+    three_consumer_observed_a().lock().unwrap().push(input);
+    Ok(())
+});
+test_shard!(ThreeConsumerB, "hybrid_three_b", u32 => (), (), |input, _state, _ctx| {
+    three_consumer_observed_b().lock().unwrap().push(input);
+    Ok(())
+});
+test_shard!(ThreeConsumerC, "hybrid_three_c", u32 => (), (), |input, _state, _ctx| {
+    three_consumer_observed_c().lock().unwrap().push(input);
+    Ok(())
+});
 
 struct ThreeHybridRelay;
 impl Relay for ThreeHybridRelay {
@@ -296,55 +218,17 @@ fn panic_emit_results() -> &'static Mutex<Vec<Result<(), String>>> {
     C.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-#[derive(Default)]
-struct PanicProducer;
-impl Shard for PanicProducer {
-    type Input = String;
-    type Output = u32;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "hybrid_panic_producer"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: String,
-        _: StateHandle<'_, Self>,
-        ctx: &mut ShardCtx<'_>,
-    ) -> Result<(), ShardError> {
-        let n: u32 = input.parse().unwrap_or(0);
-        let outcome = ctx.emit::<u32>(n).map_err(|e| format!("{e}"));
-        panic_emit_results().lock().unwrap().push(outcome);
-        Ok(())
-    }
-}
+test_shard!(PanicProducer, "hybrid_panic_producer", String => u32, (), |input, _state, ctx| {
+    let n: u32 = input.parse().unwrap_or(0);
+    let outcome = ctx.emit::<u32>(n).map_err(|e| format!("{e}"));
+    panic_emit_results().lock().unwrap().push(outcome);
+    Ok(())
+});
 
-#[derive(Default)]
-struct PanicConsumer;
-impl Shard for PanicConsumer {
-    type Input = u32;
-    type Output = ();
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "hybrid_panic_consumer"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: u32,
-        _: StateHandle<'_, Self>,
-        _: &mut ShardCtx<'_>,
-    ) -> Result<(), ShardError> {
-        panic_consumer_observed().lock().unwrap().push(input);
-        Ok(())
-    }
-}
+test_shard!(PanicConsumer, "hybrid_panic_consumer", u32 => (), (), |input, _state, _ctx| {
+    panic_consumer_observed().lock().unwrap().push(input);
+    Ok(())
+});
 
 struct PanicHybridRelay;
 impl Relay for PanicHybridRelay {
@@ -416,28 +300,9 @@ fn hybrid_serializer_panic_is_caught() {
 
 // ---------- 2.8: duplicate also_to_plugin_with rejected at registration ----------
 
-#[derive(Default)]
-struct DupProducer;
-impl Shard for DupProducer {
-    type Input = String;
-    type Output = u32;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "hybrid_dup_producer"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        _: String,
-        _: StateHandle<'_, Self>,
-        _: &mut ShardCtx<'_>,
-    ) -> Result<(), ShardError> {
-        Ok(())
-    }
-}
+test_shard!(DupProducer, "hybrid_dup_producer", String => u32, (), |_input, _state, _ctx| {
+    Ok(())
+});
 
 struct DupHybridRelay;
 impl Relay for DupHybridRelay {
@@ -474,58 +339,20 @@ fn meta_consumer_observed() -> &'static Mutex<Vec<u32>> {
     C.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-#[derive(Default)]
-struct MetaProducer;
-impl Shard for MetaProducer {
-    type Input = String;
-    type Output = u32;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "hybrid_meta_producer"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: String,
-        _: StateHandle<'_, Self>,
-        ctx: &mut ShardCtx<'_>,
-    ) -> Result<(), ShardError> {
-        let n: u32 = input.parse().unwrap_or(0);
-        let mut meta = HashMap::new();
-        meta.insert("trace_id".to_string(), "abc123".to_string());
-        // Reserved key: must be silently dropped from user-supplied
-        // metadata and replaced by the real channel name.
-        meta.insert("channel".to_string(), "spoof".to_string());
-        ctx.emit_with_meta::<u32>(n, meta)
-    }
-}
+test_shard!(MetaProducer, "hybrid_meta_producer", String => u32, (), |input, _state, ctx| {
+    let n: u32 = input.parse().unwrap_or(0);
+    let mut meta = HashMap::new();
+    meta.insert("trace_id".to_string(), "abc123".to_string());
+    // Reserved key: must be silently dropped from user-supplied
+    // metadata and replaced by the real channel name.
+    meta.insert("channel".to_string(), "spoof".to_string());
+    ctx.emit_with_meta::<u32>(n, meta)
+});
 
-#[derive(Default)]
-struct MetaConsumer;
-impl Shard for MetaConsumer {
-    type Input = u32;
-    type Output = ();
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "hybrid_meta_consumer"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: u32,
-        _: StateHandle<'_, Self>,
-        _: &mut ShardCtx<'_>,
-    ) -> Result<(), ShardError> {
-        meta_consumer_observed().lock().unwrap().push(input);
-        Ok(())
-    }
-}
+test_shard!(MetaConsumer, "hybrid_meta_consumer", u32 => (), (), |input, _state, _ctx| {
+    meta_consumer_observed().lock().unwrap().push(input);
+    Ok(())
+});
 
 struct MetaHybridRelay;
 impl Relay for MetaHybridRelay {
@@ -586,59 +413,21 @@ fn pure_emit_results() -> &'static Mutex<Vec<Result<(), String>>> {
     C.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-#[derive(Default)]
-struct PureProducer;
-impl Shard for PureProducer {
-    type Input = String;
-    type Output = u32;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "hybrid_pure_producer"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: String,
-        _: StateHandle<'_, Self>,
-        ctx: &mut ShardCtx<'_>,
-    ) -> Result<(), ShardError> {
-        let n: u32 = input.parse().unwrap_or(0);
-        let mut meta = HashMap::new();
-        meta.insert("trace_id".to_string(), "abc123".to_string());
-        let outcome = ctx
-            .emit_with_meta::<u32>(n, meta)
-            .map_err(|e| format!("{e}"));
-        pure_emit_results().lock().unwrap().push(outcome);
-        Ok(())
-    }
-}
+test_shard!(PureProducer, "hybrid_pure_producer", String => u32, (), |input, _state, ctx| {
+    let n: u32 = input.parse().unwrap_or(0);
+    let mut meta = HashMap::new();
+    meta.insert("trace_id".to_string(), "abc123".to_string());
+    let outcome = ctx
+        .emit_with_meta::<u32>(n, meta)
+        .map_err(|e| format!("{e}"));
+    pure_emit_results().lock().unwrap().push(outcome);
+    Ok(())
+});
 
-#[derive(Default)]
-struct PureConsumer;
-impl Shard for PureConsumer {
-    type Input = u32;
-    type Output = ();
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "hybrid_pure_consumer"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: u32,
-        _: StateHandle<'_, Self>,
-        _: &mut ShardCtx<'_>,
-    ) -> Result<(), ShardError> {
-        pure_consumer_observed().lock().unwrap().push(input);
-        Ok(())
-    }
-}
+test_shard!(PureConsumer, "hybrid_pure_consumer", u32 => (), (), |input, _state, _ctx| {
+    pure_consumer_observed().lock().unwrap().push(input);
+    Ok(())
+});
 
 struct PureRelay;
 impl Relay for PureRelay {
