@@ -8,7 +8,6 @@
 //! - `emit_with_meta` rejection on inter-shard channels
 
 use std::collections::HashMap;
-use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -23,23 +22,8 @@ use flezha_executor::state::{NoChange, RestoreInitPayload, StateHandle, WallCloc
 use flezha_executor::{__dispatch_internals as bi, OverflowPolicy, Relay};
 use flz_transport::transport::FlezhaStream;
 
-// ----- Test utilities -----
-
-fn dummy_stream() -> Arc<FlezhaStream> {
-    let (a, _b) = UnixStream::pair().expect("UnixStream::pair");
-    Arc::new(FlezhaStream::Unix(a))
-}
-
-fn wait_until<F: Fn() -> bool>(predicate: F, timeout: Duration) -> bool {
-    let start = Instant::now();
-    while !predicate() {
-        if start.elapsed() > timeout {
-            return false;
-        }
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    true
-}
+mod common;
+use common::{dispatch_input, dummy_stream, setup, wait_until};
 
 // ----- Per-partition ordering (single mode) -----
 
@@ -82,28 +66,12 @@ impl Relay for AppendRelay {
 #[test]
 fn per_partition_input_order_preserved() {
     APPEND_OBSERVED.lock().unwrap().clear();
-    let topology = build_topology_for::<AppendRelay>().expect("topology");
-    let pool = Arc::new(bi::WorkStealingPool::with_size(8));
-    let registry = Arc::new(RelayInstanceRegistry::new());
-
-    let instance = RelayInstance::new(topology, Arc::from("append-instance"), Arc::clone(&pool));
-    registry.register(instance);
-
-    let handle = RelayDispatchHandle {
-        registry: Arc::clone(&registry),
-    };
+    let (handle, _instance) = setup::<AppendRelay>("append-instance", 8);
     let stream = dummy_stream();
 
     let n = 1000usize;
     for i in 0..n {
-        let mut md = HashMap::new();
-        md.insert("channel".to_string(), "input".to_string());
-        handle.dispatch(
-            "append-instance",
-            format!("{}", i).into_bytes(),
-            &md,
-            Arc::clone(&stream),
-        );
+        dispatch_input(&handle, "append-instance", "input", format!("{}", i).into_bytes(), &stream);
     }
 
     assert!(
@@ -317,27 +285,19 @@ impl Relay for ParallelRelay {
 #[test]
 fn static_partitions_dispatch_independently() {
     parallel_observed().lock().unwrap().clear();
-    let topology = build_topology_for::<ParallelRelay>().expect("topology");
-    let pool = Arc::new(bi::WorkStealingPool::with_size(8));
-    let registry = Arc::new(RelayInstanceRegistry::new());
-    let instance = RelayInstance::new(topology, Arc::from("parallel-instance"), Arc::clone(&pool));
-    registry.register(instance);
-    let handle = RelayDispatchHandle {
-        registry: Arc::clone(&registry),
-    };
+    let (handle, _instance) = setup::<ParallelRelay>("parallel-instance", 8);
     let stream = dummy_stream();
 
     let prefixes = ["a", "b", "c", "d"];
     let per_prefix = 100usize;
     for &p in &prefixes {
         for i in 0..per_prefix {
-            let mut md = HashMap::new();
-            md.insert("channel".to_string(), "input".to_string());
-            handle.dispatch(
+            dispatch_input(
+                &handle,
                 "parallel-instance",
+                "input",
                 format!("{}{}", p, i).into_bytes(),
-                &md,
-                Arc::clone(&stream),
+                &stream,
             );
         }
     }
@@ -502,14 +462,7 @@ impl Relay for MetaRejectRelay {
 #[test]
 fn emit_with_meta_rejected_on_inter_shard() {
     *META_REJECT_OBSERVED.lock().unwrap() = None;
-    let topology = build_topology_for::<MetaRejectRelay>().expect("topology");
-    let pool = Arc::new(bi::WorkStealingPool::with_size(2));
-    let registry = Arc::new(RelayInstanceRegistry::new());
-    let instance = RelayInstance::new(topology, Arc::from("meta-instance"), Arc::clone(&pool));
-    registry.register(instance);
-    let handle = RelayDispatchHandle {
-        registry: Arc::clone(&registry),
-    };
+    let (handle, _instance) = setup::<MetaRejectRelay>("meta-instance", 2);
     let stream = dummy_stream();
 
     let mut md = HashMap::new();
@@ -585,18 +538,7 @@ impl Relay for BlockStressRelay {
 #[test]
 fn block_stress_100_producers_no_loss() {
     BLOCK_STRESS_RECEIVED.store(0, Ordering::Release);
-    let topology = build_topology_for::<BlockStressRelay>().expect("topology");
-    let pool = Arc::new(bi::WorkStealingPool::with_size(4));
-    let registry = Arc::new(RelayInstanceRegistry::new());
-    let instance = RelayInstance::new(
-        topology,
-        Arc::from("block-stress-instance"),
-        Arc::clone(&pool),
-    );
-    registry.register(Arc::clone(&instance));
-    let handle = RelayDispatchHandle {
-        registry: Arc::clone(&registry),
-    };
+    let (handle, instance) = setup::<BlockStressRelay>("block-stress-instance", 4);
     let stream = dummy_stream();
 
     let producers = 100usize;
@@ -867,13 +809,7 @@ fn drop_oldest_evicts_head_and_bumps_oldest_counter() {
 /// exposes a counters() accessor with all four atomics at 0.
 #[test]
 fn fresh_partition_counters_start_at_zero() {
-    let topology = build_topology_for::<DropOldestRelay>().expect("topology");
-    let pool = Arc::new(bi::WorkStealingPool::with_size(1));
-    let instance = RelayInstance::new(
-        topology,
-        Arc::from("counters-fresh-instance"),
-        Arc::clone(&pool),
-    );
+    let (_handle, instance) = setup::<DropOldestRelay>("counters-fresh-instance", 1);
     let counters = instance.partitions[0][0].counters();
     assert_eq!(counters.pushes_total.load(Ordering::Relaxed), 0);
     assert_eq!(counters.pushes_blocked_total.load(Ordering::Relaxed), 0);
@@ -1021,18 +957,7 @@ fn sticky_ordering_holds_under_bounded_block() {
     STICKY_BOUNDED_MAX_CONCURRENT.store(0, Ordering::Release);
     STICKY_BOUNDED_DELIVERED.store(0, Ordering::Release);
 
-    let topology = build_topology_for::<StickyBoundedRelay>().expect("topology");
-    let pool = Arc::new(bi::WorkStealingPool::with_size(8));
-    let registry = Arc::new(RelayInstanceRegistry::new());
-    let instance = RelayInstance::new(
-        topology,
-        Arc::from("sticky-bounded-instance"),
-        Arc::clone(&pool),
-    );
-    registry.register(Arc::clone(&instance));
-    let handle = RelayDispatchHandle {
-        registry: Arc::clone(&registry),
-    };
+    let (handle, instance) = setup::<StickyBoundedRelay>("sticky-bounded-instance", 8);
     let stream = dummy_stream();
 
     let producers = 4usize;
@@ -1353,18 +1278,7 @@ fn opt_in_entry_block_stalls_sibling_relays() {
 #[test]
 fn default_inter_shard_policy_is_block_and_pushes_total_increments() {
     INTER_SHARD_DOWNSTREAM.store(0, Ordering::Release);
-    let topology = build_topology_for::<InterShardDefaultBlockRelay>().expect("topology");
-    let pool = Arc::new(bi::WorkStealingPool::with_size(4));
-    let registry = Arc::new(RelayInstanceRegistry::new());
-    let instance = RelayInstance::new(
-        topology,
-        Arc::from("inter-shard-default-instance"),
-        Arc::clone(&pool),
-    );
-    registry.register(Arc::clone(&instance));
-    let handle = RelayDispatchHandle {
-        registry: Arc::clone(&registry),
-    };
+    let (handle, instance) = setup::<InterShardDefaultBlockRelay>("inter-shard-default-instance", 4);
     let stream = dummy_stream();
 
     let n = 200usize;
@@ -1495,16 +1409,8 @@ fn change_is_flushed_before_output_is_emitted() {
     });
     partition_state_sink::install_global_sink(sink);
 
-    let topology = build_topology_for::<FlushOrderRelay>().expect("topology");
-    let pool = Arc::new(bi::WorkStealingPool::with_size(2));
-    let registry = Arc::new(RelayInstanceRegistry::new());
-    let instance =
-        RelayInstance::new(topology, Arc::from("flush-order-instance"), Arc::clone(&pool));
+    let (handle, instance) = setup::<FlushOrderRelay>("flush-order-instance", 2);
     assert!(instance.persistence_enabled(), "relay must be persistent");
-    registry.register(instance);
-    let handle = RelayDispatchHandle {
-        registry: Arc::clone(&registry),
-    };
     let stream = dummy_stream();
 
     let mut md = HashMap::new();
