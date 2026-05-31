@@ -641,15 +641,7 @@ impl Relay for DropNewestRelay {
 #[test]
 fn drop_newest_discards_when_full_and_only_bumps_newest_counter() {
     DROP_NEWEST_RECEIVED.store(0, Ordering::Release);
-    let topology = build_topology_for::<DropNewestRelay>().expect("topology");
-    let pool = Arc::new(bi::WorkStealingPool::with_size(1));
-    let registry = Arc::new(RelayInstanceRegistry::new());
-    let instance = RelayInstance::new(
-        topology,
-        Arc::from("drop-newest-instance"),
-        Arc::clone(&pool),
-    );
-    registry.register(Arc::clone(&instance));
+    let (handle, instance) = setup::<DropNewestRelay>("drop-newest-instance", 1);
     let slot = Arc::clone(&instance.partitions[0][0]);
 
     // Pre-acquire inflight: subsequent enqueue paths skip submit_drain
@@ -660,9 +652,6 @@ fn drop_newest_discards_when_full_and_only_bumps_newest_counter() {
         "fresh slot must yield inflight ownership"
     );
 
-    let handle = RelayDispatchHandle {
-        registry: Arc::clone(&registry),
-    };
     let stream = dummy_stream();
     let mut md = HashMap::new();
     md.insert("channel".to_string(), "input".to_string());
@@ -751,24 +740,13 @@ impl Relay for DropOldestRelay {
 #[test]
 fn drop_oldest_evicts_head_and_bumps_oldest_counter() {
     DROP_OLDEST_OBSERVED.lock().unwrap().clear();
-    let topology = build_topology_for::<DropOldestRelay>().expect("topology");
-    let pool = Arc::new(bi::WorkStealingPool::with_size(1));
-    let registry = Arc::new(RelayInstanceRegistry::new());
-    let instance = RelayInstance::new(
-        topology,
-        Arc::from("drop-oldest-instance"),
-        Arc::clone(&pool),
-    );
-    registry.register(Arc::clone(&instance));
+    let (handle, instance) = setup::<DropOldestRelay>("drop-oldest-instance", 1);
     let slot = Arc::clone(&instance.partitions[0][0]);
 
     // Pre-acquire inflight so no drain runs during the deterministic
     // push sequence below; pop / dispatch happens after the assertions.
     assert!(slot.mailbox.try_mark_inflight());
 
-    let handle = RelayDispatchHandle {
-        registry: Arc::clone(&registry),
-    };
     let stream = dummy_stream();
     let mut md = HashMap::new();
     md.insert("channel".to_string(), "input".to_string());
