@@ -12,13 +12,11 @@ use std::io::Read;
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use bi::RelayDispatchHandle;
 use flezha_executor::channel::ChannelBuilder;
 use flezha_executor::relay::builder::build_topology_for;
-use flezha_executor::relay::registry::RelayInstanceRegistry;
-use flezha_executor::relay::RelayInstance;
 use flezha_executor::shard::{Shard, ShardCtx, ShardError};
 use flezha_executor::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
 use flezha_executor::{__dispatch_internals as bi, Relay};
@@ -27,16 +25,8 @@ use flz_transport::transport::FlezhaStream;
 
 // ---------- shared scaffolding ----------
 
-fn wait_until<F: Fn() -> bool>(predicate: F, timeout: Duration) -> bool {
-    let start = Instant::now();
-    while !predicate() {
-        if start.elapsed() > timeout {
-            return false;
-        }
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    true
-}
+mod common;
+use common::{setup, wait_until};
 
 type ReceivedFrame = (String, Vec<u8>, HashMap<String, String>);
 
@@ -147,14 +137,7 @@ impl Relay for SingleHybridRelay {
 #[test]
 fn hybrid_single_consumer_receives_typed_and_plugin_bytes() {
     single_consumer_observed().lock().unwrap().clear();
-    let topology = build_topology_for::<SingleHybridRelay>().expect("topology");
-    let pool = Arc::new(bi::WorkStealingPool::with_size(4));
-    let registry = Arc::new(RelayInstanceRegistry::new());
-    let instance = RelayInstance::new(topology, Arc::from("hyb-single"), Arc::clone(&pool));
-    registry.register(instance);
-    let handle = RelayDispatchHandle {
-        registry: Arc::clone(&registry),
-    };
+    let (handle, _instance) = setup::<SingleHybridRelay>("hyb-single", 4);
     let (stream, received) = duplex_stream_with_reader();
 
     dispatch_input(&handle, "hyb-single", &stream, "42");
@@ -275,14 +258,7 @@ fn hybrid_three_consumers_single_serializer_call() {
     three_consumer_observed_c().lock().unwrap().clear();
     SERIALIZER_CALLS.store(0, Ordering::SeqCst);
 
-    let topology = build_topology_for::<ThreeHybridRelay>().expect("topology");
-    let pool = Arc::new(bi::WorkStealingPool::with_size(4));
-    let registry = Arc::new(RelayInstanceRegistry::new());
-    let instance = RelayInstance::new(topology, Arc::from("hyb-three"), Arc::clone(&pool));
-    registry.register(instance);
-    let handle = RelayDispatchHandle {
-        registry: Arc::clone(&registry),
-    };
+    let (handle, _instance) = setup::<ThreeHybridRelay>("hyb-three", 4);
     let (stream, received) = duplex_stream_with_reader();
 
     dispatch_input(&handle, "hyb-three", &stream, "7");
@@ -394,14 +370,7 @@ fn hybrid_serializer_panic_is_caught() {
     panic_consumer_observed().lock().unwrap().clear();
     panic_emit_results().lock().unwrap().clear();
 
-    let topology = build_topology_for::<PanicHybridRelay>().expect("topology");
-    let pool = Arc::new(bi::WorkStealingPool::with_size(4));
-    let registry = Arc::new(RelayInstanceRegistry::new());
-    let instance = RelayInstance::new(topology, Arc::from("hyb-panic"), Arc::clone(&pool));
-    registry.register(instance);
-    let handle = RelayDispatchHandle {
-        registry: Arc::clone(&registry),
-    };
+    let (handle, _instance) = setup::<PanicHybridRelay>("hyb-panic", 4);
     let (stream, received) = duplex_stream_with_reader();
 
     // First emit panics in the serializer.
@@ -575,14 +544,7 @@ impl Relay for MetaHybridRelay {
 #[test]
 fn emit_with_meta_on_hybrid_channel_forwards_meta_to_plugin_only() {
     meta_consumer_observed().lock().unwrap().clear();
-    let topology = build_topology_for::<MetaHybridRelay>().expect("topology");
-    let pool = Arc::new(bi::WorkStealingPool::with_size(4));
-    let registry = Arc::new(RelayInstanceRegistry::new());
-    let instance = RelayInstance::new(topology, Arc::from("hyb-meta"), Arc::clone(&pool));
-    registry.register(instance);
-    let handle = RelayDispatchHandle {
-        registry: Arc::clone(&registry),
-    };
+    let (handle, _instance) = setup::<MetaHybridRelay>("hyb-meta", 4);
     let (stream, received) = duplex_stream_with_reader();
 
     dispatch_input(&handle, "hyb-meta", &stream, "9");
@@ -696,14 +658,7 @@ fn emit_with_meta_on_pure_inter_shard_channel_is_rejected() {
     pure_consumer_observed().lock().unwrap().clear();
     pure_emit_results().lock().unwrap().clear();
 
-    let topology = build_topology_for::<PureRelay>().expect("topology");
-    let pool = Arc::new(bi::WorkStealingPool::with_size(4));
-    let registry = Arc::new(RelayInstanceRegistry::new());
-    let instance = RelayInstance::new(topology, Arc::from("hyb-pure"), Arc::clone(&pool));
-    registry.register(instance);
-    let handle = RelayDispatchHandle {
-        registry: Arc::clone(&registry),
-    };
+    let (handle, _instance) = setup::<PureRelay>("hyb-pure", 4);
     let (stream, received) = duplex_stream_with_reader();
 
     dispatch_input(&handle, "hyb-pure", &stream, "1");
