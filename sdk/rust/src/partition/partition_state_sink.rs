@@ -8,8 +8,7 @@
 //! resolves the *live* sink (so a reconnect's freshly-wired stream is
 //! picked up without re-registering partitions).
 //!
-//! Two reliability behaviours live here (Phase D of
-//! `unified-convergence-loop`):
+//! Two reliability behaviours live here:
 //!
 //!   * **Reconnect ring** — while no sink is installed (reconnect window)
 //!     or a write fails, frames are held in a bounded ring (default

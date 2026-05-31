@@ -5,7 +5,7 @@
 //! the same node can present it as `previous_executor_id` in its
 //! `connect_control_channel` handshake. The controller then evicts the
 //! stale binding before re-binding instead of leaving a corpse the
-//! takeover rebinds onto (Phase D of `unified-convergence-loop`).
+//! takeover rebinds onto.
 //!
 //! Best-effort: a write failure never disrupts the executor — it only
 //! forfeits the reconnect optimisation. The path must live on a
