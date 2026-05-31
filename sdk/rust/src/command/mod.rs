@@ -40,10 +40,9 @@ pub enum CommandActionType {
     Regular(Box<dyn CommandAction>),
     ExecutorDisconnect(Box<dyn CommandAction>),
     /// Controller -> SDK `ExecutorShutdownAck`. Wake the corresponding
-    /// per-relay wait channel registered by the SDK's graceful-
-    /// shutdown routine. No `CommandResponse` is written — the controller
-    /// sent this as its own `CommandRequest`, not in reply to one we
-    /// sent. See ship-fresh-state-on-sdk-shutdown.
+    /// per-relay wait channel registered by the SDK's graceful-shutdown
+    /// routine. No `CommandResponse` is written — the controller sent
+    /// this as its own `CommandRequest`, not in reply to one we sent.
     AckSignal,
     /// Defensive: SDK should never receive `ExecutorShutdownNotification`
     /// (it's the SDK->controller direction). Logged and dropped if a buggy
@@ -125,10 +124,8 @@ pub fn get_handler(_payload_id: &str, message: &[u8]) -> Result<FrameOutcome, Co
             CommandActionType::Regular(Box::new(proto_ch))
         }
         Some(Command::Ping(proto_ch)) => CommandActionType::Regular(Box::new(proto_ch)),
-        // SDK is the SENDER for ExecutorReconnected — receiving it is
-        // a protocol bug from a buggy controller. Drop and log,
-        // matching the `ExecutorShutdownNotification` direction-
-        // mistake convention.
+        // SDK is the SENDER for ExecutorReconnected — receiving it is a
+        // protocol bug. Drop and log, like `ExecutorShutdownNotification`.
         Some(Command::ExecutorReconnected(_)) => CommandActionType::NotificationIgnore,
         Some(Command::ReassignExecutorId(proto_ch)) => {
             CommandActionType::Regular(Box::new(proto_ch))
