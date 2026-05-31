@@ -14,28 +14,11 @@ use flezha_executor::shard::{Shard, ShardCtx, ShardError};
 use flezha_executor::state::{Change, NoChange, RestoreInitPayload, StateHandle, WallClock};
 use flezha_executor::Relay;
 
-#[derive(Default)]
-struct EchoShard;
-impl Shard for EchoShard {
-    type Input = String;
-    type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "echo_shard"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        _: String,
-        _: StateHandle<'_, Self>,
-        _: &mut ShardCtx<'_>,
-    ) -> Result<(), ShardError> {
-        Ok(())
-    }
-}
+mod common;
+
+test_shard!(EchoShard, "echo_shard", String => String, (), |_input, _state, _ctx| {
+    Ok(())
+});
 
 struct SingleRelay;
 impl Relay for SingleRelay {
@@ -225,34 +208,11 @@ fn unannotated_static_mode_rejection() {
     );
 }
 
-/// Shard whose `mailbox_capacity()` returns 0; `build_topology` must
-/// reject the relay with the offending Shard's name.
-#[derive(Default)]
-struct ZeroCapacityShard;
-impl Shard for ZeroCapacityShard {
-    type Input = String;
-    type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "zero_capacity_shard"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn mailbox_capacity() -> usize {
-        0
-    }
-    const MAILBOX_CAPACITY_OVERRIDDEN: bool = true;
-    fn run(
-        &mut self,
-        _: String,
-        _: StateHandle<'_, Self>,
-        _: &mut ShardCtx<'_>,
-    ) -> Result<(), ShardError> {
-        Ok(())
-    }
-}
+// Shard whose `mailbox_capacity()` returns 0; `build_topology` must
+// reject the relay with the offending Shard's name.
+test_shard!(ZeroCapacityShard, "zero_capacity_shard", String => String, (), cap 0, |_input, _state, _ctx| {
+    Ok(())
+});
 
 struct ZeroCapacityRelay;
 impl Relay for ZeroCapacityRelay {
@@ -280,34 +240,11 @@ fn capacity_zero_is_rejected_at_relay_startup() {
     );
 }
 
-/// Shard with explicit override of 4096 — the resolved capacity must
-/// equal that value when threaded through `build_topology`.
-#[derive(Default)]
-struct ExplicitCapShard;
-impl Shard for ExplicitCapShard {
-    type Input = String;
-    type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "explicit_cap_shard"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn mailbox_capacity() -> usize {
-        4096
-    }
-    const MAILBOX_CAPACITY_OVERRIDDEN: bool = true;
-    fn run(
-        &mut self,
-        _: String,
-        _: StateHandle<'_, Self>,
-        _: &mut ShardCtx<'_>,
-    ) -> Result<(), ShardError> {
-        Ok(())
-    }
-}
+// Shard with explicit override of 4096 — the resolved capacity must
+// equal that value when threaded through `build_topology`.
+test_shard!(ExplicitCapShard, "explicit_cap_shard", String => String, (), cap 4096, |_input, _state, _ctx| {
+    Ok(())
+});
 
 struct ExplicitCapRelay;
 impl Relay for ExplicitCapRelay {
