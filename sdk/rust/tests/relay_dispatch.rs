@@ -20,7 +20,6 @@ use flezha_executor::relay::RelayInstance;
 use flezha_executor::shard::{Shard, ShardCtx, ShardError};
 use flezha_executor::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
 use flezha_executor::{__dispatch_internals as bi, OverflowPolicy, Relay};
-use flz_transport::transport::FlezhaStream;
 
 mod common;
 use common::{dispatch_input, dummy_stream, setup, wait_until};
@@ -29,29 +28,10 @@ use common::{dispatch_input, dummy_stream, setup, wait_until};
 
 static APPEND_OBSERVED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-#[derive(Default)]
-struct AppendShard;
-impl Shard for AppendShard {
-    type Input = String;
-    type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "append_shard"
-    }
-    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: String,
-        _: StateHandle<'_, AppendShard>,
-        _: &mut ShardCtx<'_>,
-    ) -> Result<(), ShardError> {
-        APPEND_OBSERVED.lock().unwrap().push(input);
-        Ok(())
-    }
-}
+test_shard!(AppendShard, "append_shard", String => String, (), |input, _state, _ctx| {
+    APPEND_OBSERVED.lock().unwrap().push(input);
+    Ok(())
+});
 
 struct AppendRelay;
 impl Relay for AppendRelay {
@@ -95,45 +75,26 @@ fn per_partition_input_order_preserved() {
 static APPEND_CONCURRENT: AtomicUsize = AtomicUsize::new(0);
 static APPEND_MAX_CONCURRENT: AtomicUsize = AtomicUsize::new(0);
 
-#[derive(Default)]
-struct ConcurrencyProbeShard;
-impl Shard for ConcurrencyProbeShard {
-    type Input = String;
-    type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "concurrency_probe_shard"
-    }
-    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        _: String,
-        _: StateHandle<'_, ConcurrencyProbeShard>,
-        _: &mut ShardCtx<'_>,
-    ) -> Result<(), ShardError> {
-        let cur = APPEND_CONCURRENT.fetch_add(1, Ordering::AcqRel) + 1;
-        let mut prev = APPEND_MAX_CONCURRENT.load(Ordering::Acquire);
-        while cur > prev {
-            match APPEND_MAX_CONCURRENT.compare_exchange_weak(
-                prev,
-                cur,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => break,
-                Err(p) => prev = p,
-            }
+test_shard!(ConcurrencyProbeShard, "concurrency_probe_shard", String => String, (), |_input, _state, _ctx| {
+    let cur = APPEND_CONCURRENT.fetch_add(1, Ordering::AcqRel) + 1;
+    let mut prev = APPEND_MAX_CONCURRENT.load(Ordering::Acquire);
+    while cur > prev {
+        match APPEND_MAX_CONCURRENT.compare_exchange_weak(
+            prev,
+            cur,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => break,
+            Err(p) => prev = p,
         }
-        for _ in 0..50 {
-            std::hint::spin_loop();
-        }
-        APPEND_CONCURRENT.fetch_sub(1, Ordering::AcqRel);
-        Ok(())
     }
-}
+    for _ in 0..50 {
+        std::hint::spin_loop();
+    }
+    APPEND_CONCURRENT.fetch_sub(1, Ordering::AcqRel);
+    Ok(())
+});
 
 struct ConcurrencyProbeRelay;
 impl Relay for ConcurrencyProbeRelay {
@@ -329,30 +290,9 @@ struct CountingState {
     n: usize,
 }
 
-#[derive(Default)]
-struct CountingShard;
-impl Shard for CountingShard {
-    type Input = String;
-    type Output = String;
-    type State = CountingState;
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "counting_shard"
-    }
-    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) -> CountingState {
-        CountingState::default()
-    }
-    fn run(
-        &mut self,
-        _: String,
-        _state: StateHandle<'_, CountingShard>,
-        _: &mut ShardCtx<'_>,
-    ) -> Result<(), ShardError> {
-        Ok(())
-    }
-}
+test_shard!(CountingShard, "counting_shard", String => String, CountingState, |_input, _state, _ctx| {
+    Ok(())
+});
 
 struct RelayA;
 impl Relay for RelayA {
@@ -394,57 +334,19 @@ fn per_relay_namespace_isolation() {
 
 static META_REJECT_OBSERVED: Mutex<Option<String>> = Mutex::new(None);
 
-#[derive(Default)]
-struct MetaProducerShard;
-impl Shard for MetaProducerShard {
-    type Input = String;
-    type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "meta_producer_shard"
+test_shard!(MetaProducerShard, "meta_producer_shard", String => String, (), |input, _state, ctx| {
+    let mut meta = HashMap::new();
+    meta.insert("k".to_string(), "v".to_string());
+    let res = ctx.emit_with_meta::<String>(input, meta);
+    if let Err(err) = res {
+        *META_REJECT_OBSERVED.lock().unwrap() = Some(err.to_string());
     }
-    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: String,
-        _: StateHandle<'_, MetaProducerShard>,
-        ctx: &mut ShardCtx<'_>,
-    ) -> Result<(), ShardError> {
-        let mut meta = HashMap::new();
-        meta.insert("k".to_string(), "v".to_string());
-        let res = ctx.emit_with_meta::<String>(input, meta);
-        if let Err(err) = res {
-            *META_REJECT_OBSERVED.lock().unwrap() = Some(err.to_string());
-        }
-        Ok(())
-    }
-}
+    Ok(())
+});
 
-#[derive(Default)]
-struct MetaConsumerShard;
-impl Shard for MetaConsumerShard {
-    type Input = String;
-    type Output = ();
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "meta_consumer_shard"
-    }
-    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        _: String,
-        _: StateHandle<'_, MetaConsumerShard>,
-        _: &mut ShardCtx<'_>,
-    ) -> Result<(), ShardError> {
-        Ok(())
-    }
-}
+test_shard!(MetaConsumerShard, "meta_consumer_shard", String => (), (), |_input, _state, _ctx| {
+    Ok(())
+});
 
 struct MetaRejectRelay;
 impl Relay for MetaRejectRelay {
@@ -484,38 +386,15 @@ fn emit_with_meta_rejected_on_inter_shard() {
 
 static BLOCK_STRESS_RECEIVED: AtomicUsize = AtomicUsize::new(0);
 
-#[derive(Default)]
-struct BlockStressShard;
-impl Shard for BlockStressShard {
-    type Input = Vec<u8>;
-    type Output = ();
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "block_stress_shard"
+test_shard!(BlockStressShard, "block_stress_shard", Vec<u8> => (), (), cap 16, |_input, _state, _ctx| {
+    // Tiny pause so producers actually get to park rather than
+    // repeatedly winning the push race uncontested.
+    for _ in 0..32 {
+        std::hint::spin_loop();
     }
-    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
-    fn mailbox_capacity() -> usize {
-        16
-    }
-    const MAILBOX_CAPACITY_OVERRIDDEN: bool = true;
-    fn run(
-        &mut self,
-        _: Vec<u8>,
-        _: StateHandle<'_, BlockStressShard>,
-        _: &mut ShardCtx<'_>,
-    ) -> Result<(), ShardError> {
-        // Tiny pause so producers actually get to park rather than
-        // repeatedly winning the push race uncontested.
-        for _ in 0..32 {
-            std::hint::spin_loop();
-        }
-        BLOCK_STRESS_RECEIVED.fetch_add(1, Ordering::Relaxed);
-        Ok(())
-    }
-}
+    BLOCK_STRESS_RECEIVED.fetch_add(1, Ordering::Relaxed);
+    Ok(())
+});
 
 struct BlockStressRelay;
 impl Relay for BlockStressRelay {
@@ -595,33 +474,10 @@ fn block_stress_100_producers_no_loss() {
 
 static DROP_NEWEST_RECEIVED: AtomicUsize = AtomicUsize::new(0);
 
-#[derive(Default)]
-struct DropNewestShard;
-impl Shard for DropNewestShard {
-    type Input = Vec<u8>;
-    type Output = ();
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "drop_newest_shard"
-    }
-    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
-    fn mailbox_capacity() -> usize {
-        2
-    }
-    const MAILBOX_CAPACITY_OVERRIDDEN: bool = true;
-    fn run(
-        &mut self,
-        _: Vec<u8>,
-        _: StateHandle<'_, DropNewestShard>,
-        _: &mut ShardCtx<'_>,
-    ) -> Result<(), ShardError> {
-        DROP_NEWEST_RECEIVED.fetch_add(1, Ordering::Relaxed);
-        Ok(())
-    }
-}
+test_shard!(DropNewestShard, "drop_newest_shard", Vec<u8> => (), (), cap 2, |_input, _state, _ctx| {
+    DROP_NEWEST_RECEIVED.fetch_add(1, Ordering::Relaxed);
+    Ok(())
+});
 
 struct DropNewestRelay;
 impl Relay for DropNewestRelay {
@@ -694,33 +550,10 @@ fn drop_newest_discards_when_full_and_only_bumps_newest_counter() {
 
 static DROP_OLDEST_OBSERVED: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
 
-#[derive(Default)]
-struct DropOldestShard;
-impl Shard for DropOldestShard {
-    type Input = Vec<u8>;
-    type Output = ();
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "drop_oldest_shard"
-    }
-    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
-    fn mailbox_capacity() -> usize {
-        2
-    }
-    const MAILBOX_CAPACITY_OVERRIDDEN: bool = true;
-    fn run(
-        &mut self,
-        input: Vec<u8>,
-        _: StateHandle<'_, DropOldestShard>,
-        _: &mut ShardCtx<'_>,
-    ) -> Result<(), ShardError> {
-        DROP_OLDEST_OBSERVED.lock().unwrap().push(input);
-        Ok(())
-    }
-}
+test_shard!(DropOldestShard, "drop_oldest_shard", Vec<u8> => (), (), cap 2, |input, _state, _ctx| {
+    DROP_OLDEST_OBSERVED.lock().unwrap().push(input);
+    Ok(())
+});
 
 struct DropOldestRelay;
 impl Relay for DropOldestRelay {
@@ -799,53 +632,15 @@ fn fresh_partition_counters_start_at_zero() {
 
 static INTER_SHARD_DOWNSTREAM: AtomicUsize = AtomicUsize::new(0);
 
-#[derive(Default)]
-struct InterShardProducer;
-impl Shard for InterShardProducer {
-    type Input = String;
-    type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "inter_shard_producer"
-    }
-    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: String,
-        _: StateHandle<'_, InterShardProducer>,
-        ctx: &mut ShardCtx<'_>,
-    ) -> Result<(), ShardError> {
-        ctx.emit::<String>(input)?;
-        Ok(())
-    }
-}
+test_shard!(InterShardProducer, "inter_shard_producer", String => String, (), |input, _state, ctx| {
+    ctx.emit::<String>(input)?;
+    Ok(())
+});
 
-#[derive(Default)]
-struct InterShardConsumer;
-impl Shard for InterShardConsumer {
-    type Input = String;
-    type Output = ();
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "inter_shard_consumer"
-    }
-    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        _: String,
-        _: StateHandle<'_, InterShardConsumer>,
-        _: &mut ShardCtx<'_>,
-    ) -> Result<(), ShardError> {
-        INTER_SHARD_DOWNSTREAM.fetch_add(1, Ordering::Relaxed);
-        Ok(())
-    }
-}
+test_shard!(InterShardConsumer, "inter_shard_consumer", String => (), (), |_input, _state, _ctx| {
+    INTER_SHARD_DOWNSTREAM.fetch_add(1, Ordering::Relaxed);
+    Ok(())
+});
 
 struct InterShardDefaultBlockRelay;
 impl Relay for InterShardDefaultBlockRelay {
@@ -867,50 +662,27 @@ static STICKY_BOUNDED_CONCURRENT: AtomicUsize = AtomicUsize::new(0);
 static STICKY_BOUNDED_MAX_CONCURRENT: AtomicUsize = AtomicUsize::new(0);
 static STICKY_BOUNDED_DELIVERED: AtomicUsize = AtomicUsize::new(0);
 
-#[derive(Default)]
-struct StickyBoundedShard;
-impl Shard for StickyBoundedShard {
-    type Input = Vec<u8>;
-    type Output = ();
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "sticky_bounded_shard"
-    }
-    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
-    fn mailbox_capacity() -> usize {
-        16
-    }
-    const MAILBOX_CAPACITY_OVERRIDDEN: bool = true;
-    fn run(
-        &mut self,
-        _: Vec<u8>,
-        _: StateHandle<'_, StickyBoundedShard>,
-        _: &mut ShardCtx<'_>,
-    ) -> Result<(), ShardError> {
-        let cur = STICKY_BOUNDED_CONCURRENT.fetch_add(1, Ordering::AcqRel) + 1;
-        let mut prev = STICKY_BOUNDED_MAX_CONCURRENT.load(Ordering::Acquire);
-        while cur > prev {
-            match STICKY_BOUNDED_MAX_CONCURRENT.compare_exchange_weak(
-                prev,
-                cur,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => break,
-                Err(p) => prev = p,
-            }
+test_shard!(StickyBoundedShard, "sticky_bounded_shard", Vec<u8> => (), (), cap 16, |_input, _state, _ctx| {
+    let cur = STICKY_BOUNDED_CONCURRENT.fetch_add(1, Ordering::AcqRel) + 1;
+    let mut prev = STICKY_BOUNDED_MAX_CONCURRENT.load(Ordering::Acquire);
+    while cur > prev {
+        match STICKY_BOUNDED_MAX_CONCURRENT.compare_exchange_weak(
+            prev,
+            cur,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => break,
+            Err(p) => prev = p,
         }
-        for _ in 0..32 {
-            std::hint::spin_loop();
-        }
-        STICKY_BOUNDED_CONCURRENT.fetch_sub(1, Ordering::AcqRel);
-        STICKY_BOUNDED_DELIVERED.fetch_add(1, Ordering::Relaxed);
-        Ok(())
     }
-}
+    for _ in 0..32 {
+        std::hint::spin_loop();
+    }
+    STICKY_BOUNDED_CONCURRENT.fetch_sub(1, Ordering::AcqRel);
+    STICKY_BOUNDED_DELIVERED.fetch_add(1, Ordering::Relaxed);
+    Ok(())
+});
 
 struct StickyBoundedRelay;
 impl Relay for StickyBoundedRelay {
@@ -993,57 +765,15 @@ static WIRE_TEST_LOCK: Mutex<()> = Mutex::new(());
 static WIRE_A_DELIVERED: AtomicUsize = AtomicUsize::new(0);
 static WIRE_B_DELIVERED: AtomicUsize = AtomicUsize::new(0);
 
-#[derive(Default)]
-struct WireSlowAShard;
-impl Shard for WireSlowAShard {
-    type Input = Vec<u8>;
-    type Output = ();
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "wire_slow_a_shard"
-    }
-    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
-    fn mailbox_capacity() -> usize {
-        2
-    }
-    const MAILBOX_CAPACITY_OVERRIDDEN: bool = true;
-    fn run(
-        &mut self,
-        _: Vec<u8>,
-        _: StateHandle<'_, WireSlowAShard>,
-        _: &mut ShardCtx<'_>,
-    ) -> Result<(), ShardError> {
-        WIRE_A_DELIVERED.fetch_add(1, Ordering::Relaxed);
-        Ok(())
-    }
-}
+test_shard!(WireSlowAShard, "wire_slow_a_shard", Vec<u8> => (), (), cap 2, |_input, _state, _ctx| {
+    WIRE_A_DELIVERED.fetch_add(1, Ordering::Relaxed);
+    Ok(())
+});
 
-#[derive(Default)]
-struct WireFastBShard;
-impl Shard for WireFastBShard {
-    type Input = Vec<u8>;
-    type Output = ();
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "wire_fast_b_shard"
-    }
-    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        _: Vec<u8>,
-        _: StateHandle<'_, WireFastBShard>,
-        _: &mut ShardCtx<'_>,
-    ) -> Result<(), ShardError> {
-        WIRE_B_DELIVERED.fetch_add(1, Ordering::Relaxed);
-        Ok(())
-    }
-}
+test_shard!(WireFastBShard, "wire_fast_b_shard", Vec<u8> => (), (), |_input, _state, _ctx| {
+    WIRE_B_DELIVERED.fetch_add(1, Ordering::Relaxed);
+    Ok(())
+});
 
 struct WireRelayADefault;
 impl Relay for WireRelayADefault {
@@ -1334,28 +1064,9 @@ impl Shard for FlushOrderShard {
     }
 }
 
-#[derive(Default)]
-struct FlushOrderSinkShard;
-impl Shard for FlushOrderSinkShard {
-    type Input = String;
-    type Output = ();
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "flush_order_sink_shard"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        _: String,
-        _: StateHandle<'_, FlushOrderSinkShard>,
-        _: &mut ShardCtx<'_>,
-    ) -> Result<(), ShardError> {
-        Ok(())
-    }
-}
+test_shard!(FlushOrderSinkShard, "flush_order_sink_shard", String => (), (), |_input, _state, _ctx| {
+    Ok(())
+});
 
 struct FlushOrderRelay;
 impl Relay for FlushOrderRelay {

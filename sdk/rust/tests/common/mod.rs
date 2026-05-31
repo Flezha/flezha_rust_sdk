@@ -44,6 +44,67 @@ pub fn setup<R: Relay>(id: &str, pool_size: usize) -> (RelayDispatchHandle, Arc<
     (RelayDispatchHandle { registry }, instance)
 }
 
+/// Declare a trivial test Shard: `State` built via `Default`, no partition
+/// keys / change type. The run body sees `(input, state, ctx)`. Use the
+/// `cap N` form to set a non-default mailbox capacity.
+#[macro_export]
+macro_rules! test_shard {
+    ($shard:ident, $name:literal, $input:ty => $output:ty, $state:ty,
+     |$inp:tt, $st:tt, $ctx:tt| $body:block) => {
+        #[derive(Default)]
+        struct $shard;
+        impl flezha_executor::shard::Shard for $shard {
+            type Input = $input;
+            type Output = $output;
+            type State = $state;
+            type Change = flezha_executor::state::NoChange;
+            type Clock = flezha_executor::state::WallClock;
+            type Config = ();
+            fn name() -> &'static str { $name }
+            fn init_state(
+                _: ::std::option::Option<&str>,
+                _: ::std::option::Option<flezha_executor::state::RestoreInitPayload<'_>>,
+            ) -> $state {
+                ::std::default::Default::default()
+            }
+            fn run(
+                &mut self,
+                $inp: $input,
+                $st: flezha_executor::shard::StateHandle<'_, Self>,
+                $ctx: &mut flezha_executor::shard::ShardCtx<'_>,
+            ) -> ::std::result::Result<(), flezha_executor::shard::ShardError> $body
+        }
+    };
+    ($shard:ident, $name:literal, $input:ty => $output:ty, $state:ty, cap $cap:literal,
+     |$inp:tt, $st:tt, $ctx:tt| $body:block) => {
+        #[derive(Default)]
+        struct $shard;
+        impl flezha_executor::shard::Shard for $shard {
+            type Input = $input;
+            type Output = $output;
+            type State = $state;
+            type Change = flezha_executor::state::NoChange;
+            type Clock = flezha_executor::state::WallClock;
+            type Config = ();
+            fn name() -> &'static str { $name }
+            fn init_state(
+                _: ::std::option::Option<&str>,
+                _: ::std::option::Option<flezha_executor::state::RestoreInitPayload<'_>>,
+            ) -> $state {
+                ::std::default::Default::default()
+            }
+            fn mailbox_capacity() -> usize { $cap }
+            const MAILBOX_CAPACITY_OVERRIDDEN: bool = true;
+            fn run(
+                &mut self,
+                $inp: $input,
+                $st: flezha_executor::shard::StateHandle<'_, Self>,
+                $ctx: &mut flezha_executor::shard::ShardCtx<'_>,
+            ) -> ::std::result::Result<(), flezha_executor::shard::ShardError> $body
+        }
+    };
+}
+
 /// Dispatch one wire frame to `relay_id` on `channel`.
 pub fn dispatch_input(
     handle: &RelayDispatchHandle,
