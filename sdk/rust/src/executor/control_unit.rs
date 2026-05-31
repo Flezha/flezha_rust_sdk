@@ -49,8 +49,7 @@ pub fn open(
     Arc<FlezhaStream>,
     Option<Arc<QuicClient>>,
 ) {
-    let (handle, stream, quic_client) = open_with_retry(namespace, Some(itx), otx);
-    (handle, stream, quic_client)
+    open_with_retry(namespace, Some(itx), otx)
 }
 
 /// Reconnection entry point — no startup confirmation sent.

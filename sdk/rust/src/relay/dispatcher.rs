@@ -279,27 +279,26 @@ impl<'a> PartitionEmitSink<'a> {
         }
     }
 
+    /// `UnknownChannel` carrying the cached output channel name (or
+    /// `<unknown>` when unset), for the resolve failure paths.
+    fn unknown_channel(&self) -> ShardError {
+        ShardError::UnknownChannel {
+            channel: self
+                .output_channel_name
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "<unknown>".to_string()),
+        }
+    }
+
     /// Resolve the channel descriptor + RelayInstance for the cached
     /// output channel. Returns `UnknownChannel` if either has been
     /// dropped or is unset.
     fn resolve_channel(&self) -> Result<(Arc<RelayInstance>, ChannelId), ShardError> {
-        let cid = self
-            .output_channel_id
-            .ok_or_else(|| ShardError::UnknownChannel {
-                channel: self
-                    .output_channel_name
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| "<unknown>".to_string()),
-            })?;
+        let cid = self.output_channel_id.ok_or_else(|| self.unknown_channel())?;
         let instance = self
             .instance
             .as_ref()
-            .ok_or_else(|| ShardError::UnknownChannel {
-                channel: self
-                    .output_channel_name
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| "<unknown>".to_string()),
-            })?
+            .ok_or_else(|| self.unknown_channel())?
             .clone();
         Ok((instance, cid))
     }
@@ -377,14 +376,7 @@ impl<'a> PartitionEmitSink<'a> {
             }
         };
 
-        let mut metadata: HashMap<String, String> = match meta {
-            Some(mut m) => {
-                m.remove("channel");
-                m
-            }
-            None => HashMap::new(),
-        };
-        metadata.insert("channel".to_string(), descriptor.name.to_string());
+        let metadata = channel_metadata(meta, &descriptor.name);
 
         // `sink.name` is informational on the SDK side (the wire frame
         // routes by `channel: String`); kept for parity with
@@ -397,20 +389,7 @@ impl<'a> PartitionEmitSink<'a> {
 
 impl<'a> EmitSink for PartitionEmitSink<'a> {
     fn emit_inter_shard(&mut self, value: Arc<dyn Any + Send + Sync>) -> Result<(), ShardError> {
-        self.flush_pending();
-        let (instance, cid) = self.resolve_channel()?;
-        let descriptor =
-            instance
-                .topology
-                .channel(cid)
-                .ok_or_else(|| ShardError::UnknownChannel {
-                    channel: format!("<channel id {}>", cid),
-                })?;
-        self.fan_out_to_consumers(&instance, descriptor, &value)?;
-        if let Some(sink) = descriptor.plugin_sink.as_ref() {
-            self.emit_plugin_sink(&instance, descriptor, sink, &value, None)?;
-        }
-        Ok(())
+        self.emit_inter_shard_with_meta(value, None)
     }
 
     fn emit_inter_shard_with_meta(
@@ -469,16 +448,9 @@ impl<'a> EmitSink for PartitionEmitSink<'a> {
 
         let bytes = serialize(&*value);
 
-        let mut metadata: HashMap<String, String> = match meta {
-            Some(mut m) => {
-                // Reserved key: drop any user-supplied "channel" entry
-                // per umbrella's "ShardCtx emit semantics" requirement.
-                m.remove("channel");
-                m
-            }
-            None => HashMap::new(),
-        };
-        metadata.insert("channel".to_string(), descriptor.name.to_string());
+        // Reserved key: any caller-supplied "channel" entry is dropped per
+        // ShardCtx emit semantics, then the real channel name is stamped.
+        let metadata = channel_metadata(meta, &descriptor.name);
 
         send_plugin_frame(&self.stream, &instance.instance_id, &bytes, &metadata);
         Ok(())
@@ -573,6 +545,15 @@ fn payload_for(value: &Arc<dyn Any + Send + Sync>, stream: &Arc<FlezhaStream>) -
     }
 }
 
+/// Build the emit wire metadata: drop any caller-supplied reserved
+/// `channel` key, then stamp the descriptor's channel name.
+fn channel_metadata(meta: Option<HashMap<String, String>>, channel: &str) -> HashMap<String, String> {
+    let mut metadata = meta.unwrap_or_default();
+    metadata.remove("channel");
+    metadata.insert("channel".to_string(), channel.to_string());
+    metadata
+}
+
 const ENV_FLUSH_BEFORE_EMIT: &str = "FLEZHA_FLUSH_BEFORE_EMIT";
 
 /// Whether flush-before-emit is enabled for persistence-enabled partitions.
@@ -662,18 +643,16 @@ pub fn build_partition_slot<S: Shard>(args: BuildPartitionArgs<'_>) -> Arc<Parti
         args.shard_key.unwrap_or(""),
     ));
 
+    let output_channel = shard_desc
+        .output_channel_id
+        .and_then(|id| topology.channel(id));
     let dispatcher = Arc::new(ShardDispatcherImpl::<S>::new(
         args.shard_id,
         shard_desc.output_channel_id,
-        shard_desc
-            .output_channel_id
-            .and_then(|id| topology.channel(id))
+        output_channel
             .map(|c| c.kind)
             .unwrap_or(ChannelKind::InterShard),
-        shard_desc
-            .output_channel_id
-            .and_then(|id| topology.channel(id))
-            .map(|c| Arc::clone(&c.name)),
+        output_channel.map(|c| Arc::clone(&c.name)),
         FlushWiring {
             partition_identity: Arc::clone(&partition_identity),
             change_seq: Arc::clone(&change_seq),
