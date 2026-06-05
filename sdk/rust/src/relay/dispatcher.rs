@@ -198,8 +198,17 @@ impl<S: Shard> ShardDispatcher for ShardDispatcherImpl<S> {
         let mut ctx = ShardCtx::new(&mut sink);
         let handle = StateHandle::<S>::new(&mut typed_state.state, &buffer_cell);
 
-        if let Err(err) = typed_state.shard.run(input, handle, &mut ctx) {
-            eprintln!("[flezha] shard {} run error: {}", S::name(), err);
+        // Contain a shard panic so it can't poison the held `state` lock.
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            typed_state.shard.run(input, handle, &mut ctx)
+        }));
+
+        match outcome {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => eprintln!("[flezha] shard {} run error: {}", S::name(), err),
+            Err(_) => {
+                eprintln!("[flezha] shard {} run panicked; partition continues", S::name())
+            }
         }
 
         drop(sink);
@@ -599,7 +608,7 @@ pub fn drain_partition(slot: &Arc<PartitionSlot>) {
             // the popped slot is now available for the unparked producer
             // to re-attempt its push.
             slot.block_parker.unpark_one();
-            let mut state_guard = slot.state.lock().unwrap();
+            let mut state_guard = slot.state.lock_recover();
             let mut buffer_guard = slot.flush_buffer.lock_recover();
             let instance_weak = Weak::clone(&slot.instance);
             slot.dispatcher

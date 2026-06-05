@@ -1120,3 +1120,46 @@ fn change_is_flushed_before_output_is_emitted() {
         "change must reach the WAL path before the output frame is written"
     );
 }
+
+static PANIC_AFTER: AtomicUsize = AtomicUsize::new(0);
+
+test_shard!(PanicShard, "panic_shard", String => (), (), |input, _state, _ctx| {
+    if input == "boom" {
+        panic!("induced shard panic");
+    }
+    PANIC_AFTER.fetch_add(1, Ordering::Relaxed);
+    Ok(())
+});
+
+struct PanicRelay;
+impl Relay for PanicRelay {
+    fn factory_id() -> &'static str {
+        "panic_relay"
+    }
+    fn channels(c: &mut ChannelBuilder) {
+        c.input::<String>("input").into::<PanicShard>();
+    }
+}
+
+#[test]
+fn shard_panic_does_not_wedge_the_partition() {
+    PANIC_AFTER.store(0, Ordering::Release);
+    let (handle, instance) = setup::<PanicRelay>("panic-instance", 4);
+    let stream = dummy_stream();
+
+    dispatch_input(&handle, "panic-instance", "input", b"boom".to_vec(), &stream);
+    dispatch_input(&handle, "panic-instance", "input", b"after".to_vec(), &stream);
+
+    assert!(
+        wait_until(
+            || PANIC_AFTER.load(Ordering::Acquire) == 1,
+            Duration::from_secs(5)
+        ),
+        "partition wedged after a shard panic: 'after' was never processed"
+    );
+
+    assert!(
+        instance.partitions[0][0].state.lock().is_ok(),
+        "partition state mutex was poisoned by the shard panic"
+    );
+}
