@@ -126,17 +126,44 @@ fn spawn_listener_quic(executor: &ExecutorNode, pairs: Vec<(FlezhaStream, Arc<Fl
     let _ = thread::spawn(move || listen_incoming_quic(pairs, handle));
 }
 
+fn run_data_reader(
+    transport: &'static str,
+    key: u32,
+    primary: Arc<FlezhaStream>,
+    secondary: Arc<FlezhaStream>,
+    handle: RelayDispatchHandle,
+) {
+    let mut reader = std::io::BufReader::with_capacity(64 * 1024, &*primary);
+    let mut frames: u64 = 0;
+    let exit_reason;
+    loop {
+        match payloader::extract_payload(&mut reader) {
+            Ok((instance_id, payload, metadata)) => {
+                frames += 1;
+                handle.dispatch(&instance_id, payload, &metadata, Arc::clone(&secondary));
+            }
+            Err(e) => {
+                exit_reason = e;
+                break;
+            }
+        }
+    }
+    tracing::warn!(
+        target: "flezha::transport",
+        transport, stream_key = key, frames_seen = frames,
+        kind = ?exit_reason.kind(),
+        "data stream reader exiting: {}",
+        exit_reason
+    );
+}
+
 fn listen_incoming_uds(pairs: Vec<(FlezhaStream, Arc<FlezhaStream>)>, handle: RelayDispatchHandle) {
     let mut handles = Vec::new();
-    for (primary, secondary) in pairs {
+    for (key, (primary, secondary)) in pairs.into_iter().enumerate() {
         let handle = handle.clone();
         let primary = Arc::new(primary);
         let h = thread::spawn(move || {
-            let mut reader = std::io::BufReader::with_capacity(64 * 1024, &*primary);
-            while let Ok((instance_id, payload, metadata)) = payloader::extract_payload(&mut reader)
-            {
-                handle.dispatch(&instance_id, payload, &metadata, Arc::clone(&secondary));
-            }
+            run_data_reader("uds", key as u32, primary, secondary, handle);
         });
         handles.push(h);
     }
@@ -150,15 +177,11 @@ fn listen_incoming_quic(
     handle: RelayDispatchHandle,
 ) {
     let mut handles = Vec::new();
-    for (primary, secondary) in pairs.drain(..) {
+    for (key, (primary, secondary)) in pairs.drain(..).enumerate() {
         let handle = handle.clone();
         let primary = Arc::new(primary);
         let h = thread::spawn(move || {
-            let mut reader = std::io::BufReader::with_capacity(64 * 1024, &*primary);
-            while let Ok((instance_id, payload, metadata)) = payloader::extract_payload(&mut reader)
-            {
-                handle.dispatch(&instance_id, payload, &metadata, Arc::clone(&secondary));
-            }
+            run_data_reader("quic", key as u32, primary, secondary, handle);
         });
         handles.push(h);
     }

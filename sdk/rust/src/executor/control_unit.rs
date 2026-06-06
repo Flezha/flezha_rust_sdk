@@ -181,9 +181,12 @@ fn sock_conn(
         };
 
         if let Err(e) = send_init_msg(namespace, previous_executor_id, stream_clone.clone()) {
-            if std::env::var("FLEZHA_LOG").as_deref() == Ok("debug") {
-                eprintln!("[flezha] Control-channel init send failed: {}", e);
-            }
+            tracing::warn!(
+                target: "flezha::transport",
+                kind = ?e.kind(),
+                "control channel init send failed (peer vanished mid-handshake); reconnecting: {}",
+                e
+            );
             let _ = otx.lock().unwrap().send(ExecutorMessage::Reconnect("write_error"));
             return;
         }
@@ -213,20 +216,22 @@ fn sock_conn(
                 Err(e) => match live.classify_error(&e) {
                     ReadAction::Retry => continue,
                     ReadAction::Reconnect => {
-                        if std::env::var("FLEZHA_LOG").as_deref() == Ok("debug") {
-                            if !live.acked() {
-                                eprintln!(
-                                    "[flezha] Controller did not acknowledge within {:?}; reconnecting",
-                                    live.current_deadline()
-                                );
-                            } else {
-                                eprintln!(
-                                    "[flezha] Control channel went silent / disconnected ({}); reconnecting",
-                                    e
-                                );
-                            }
-                        }
                         let reason = classify_reconnect_reason(&e, live.acked());
+                        if !live.acked() {
+                            tracing::warn!(
+                                target: "flezha::transport",
+                                reason, idle_deadline = ?live.current_deadline(),
+                                "control channel: controller never acknowledged within ack window; reconnecting: {}",
+                                e
+                            );
+                        } else {
+                            tracing::warn!(
+                                target: "flezha::transport",
+                                reason, kind = ?e.kind(),
+                                "control channel went silent / disconnected; reconnecting: {}",
+                                e
+                            );
+                        }
                         let _ = otx.lock().unwrap().send(ExecutorMessage::Reconnect(reason));
                         break;
                     }
@@ -258,7 +263,14 @@ fn build_keepalive_ping() -> Vec<u8> {
 /// stay single-threaded and never interleave with command replies.
 pub(crate) fn send_keepalive_ping(stream: &FlezhaStream) -> io::Result<()> {
     let frame = build_keepalive_ping();
-    (&*stream).write_all(&frame)
+    (&*stream).write_all(&frame).map_err(|e| {
+        tracing::warn!(
+            target: "flezha::transport",
+            kind = ?e.kind(),
+            "control keepalive ping write failed: {}", e
+        );
+        e
+    })
 }
 
 /// Spawn the keepalive timer. It only signals the coordinator (it never writes

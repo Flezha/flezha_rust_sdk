@@ -111,7 +111,15 @@ pub fn send(frame: Vec<u8>) {
         let outcome = st.sink.as_ref().map(|f| f(&frame));
         match outcome {
             Some(Ok(())) => false,
-            Some(Err(_)) => {
+            Some(Err(ref e)) => {
+                if st.broken_pipe_at.is_empty() {
+                    tracing::warn!(
+                        target: "flezha::transport",
+                        ring_len = st.ring.len() + 1,
+                        "outbound partition-state write failed; buffering into reconnect ring: {}",
+                        e
+                    );
+                }
                 st.push_ring(frame);
                 st.note_broken_pipe(Instant::now())
             }
@@ -124,6 +132,11 @@ pub fn send(frame: Vec<u8>) {
         }
     };
     if should_reconnect {
+        tracing::warn!(
+            target: "flezha::transport",
+            reason = RECONNECT_REASON,
+            "outbound write-failure flood crossed threshold; requesting control reconnect"
+        );
         crate::executor::request_reconnect(RECONNECT_REASON);
     }
 }
