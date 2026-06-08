@@ -292,6 +292,27 @@ pub(crate) fn spawn_keepalive(otx: Arc<Mutex<Sender<ExecutorMessage>>>) -> threa
     })
 }
 
+/// Spawn the data-channel heartbeat timer. Mirrors `spawn_keepalive`: it only
+/// signals the coordinator (which holds the secondary streams), so it survives
+/// reconnects and stops when the coordinator channel closes. Jittered so a
+/// fleet does not heartbeat in lockstep.
+pub(crate) fn spawn_data_heartbeat(
+    otx: Arc<Mutex<Sender<ExecutorMessage>>>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || loop {
+        thread::sleep(liveness::jittered(liveness::data_heartbeat_interval()));
+        if otx
+            .lock()
+            .unwrap()
+            .send(ExecutorMessage::SendDataHeartbeat)
+            .is_err()
+        {
+            // Coordinator gone (executor shutting down) — stop the timer.
+            break;
+        }
+    })
+}
+
 /// Map a control-stream read error to one of the five `reason` strings
 /// the controller-side `[:flezha, :executor, :reconnected]` telemetry
 /// expects. A post-ack timeout means the keepalive watchdog tripped; a

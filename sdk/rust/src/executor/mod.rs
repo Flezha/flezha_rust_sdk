@@ -63,6 +63,10 @@ pub enum ExecutorMessage {
     /// current control stream. Routed through the coordinator so control
     /// writes stay single-threaded (no interleave with command replies).
     SendControlKeepalive,
+    /// Tick from the data-heartbeat timer: write a heartbeat frame on every
+    /// secondary stream. Routed through the coordinator for the same
+    /// single-threaded-write reason as `SendControlKeepalive`.
+    SendDataHeartbeat,
 }
 
 pub enum ExecutorStatus {

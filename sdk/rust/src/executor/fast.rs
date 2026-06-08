@@ -11,7 +11,7 @@ use std::thread::{self, JoinHandle};
 
 use crossbeam::channel::{Receiver, Sender};
 use flz_transport::transport::quic::QuicClient;
-use flz_transport::transport::FlezhaStream;
+use flz_transport::transport::{liveness, FlezhaStream};
 
 use super::work_stealing_pool::WorkStealingPool;
 use super::{control_unit, ClientResponseMessage, ExecutorMessage, ExecutorStatus};
@@ -177,6 +177,12 @@ pub fn start(
         // command replies, so writes never interleave.
         let _keepalive = control_unit::spawn_keepalive(otx_arc.clone());
 
+        // Jittered data-channel heartbeat. Like the keepalive it only signals
+        // this coordinator, which writes every secondary stream — so an
+        // idle-but-healthy relay keeps the controller's per-channel liveness
+        // clock fresh without producing real output.
+        let _data_heartbeat = control_unit::spawn_data_heartbeat(otx_arc.clone());
+
         loop {
             let message = orx.recv().expect("Failed to receive coordinator message");
 
@@ -206,9 +212,24 @@ pub fn start(
                     // just drop this tick.
                     let _ = control_unit::send_keepalive_ping(&control_stream);
                 }
+                ExecutorMessage::SendDataHeartbeat => {
+                    send_data_heartbeat(&executor.shared_io_streams);
+                }
             }
         }
     })
+}
+
+/// Write a data-channel heartbeat on every secondary stream. Best-effort: a
+/// dead secondary is repopulated by the next `ConnectSocket`. The frame is a
+/// bare payload-id with no body, small enough to write atomically.
+fn send_data_heartbeat(io_streams: &RwLock<HashMap<u32, FlezhaStream>>) {
+    let frame = payloader::build_from_binary(liveness::DATA_HEARTBEAT_PAYLOAD_ID, &[], HashMap::new());
+    let streams = io_streams.read().unwrap();
+    for stream in streams.values() {
+        let mut w: &FlezhaStream = stream;
+        let _ = w.write_all(&frame);
+    }
 }
 
 fn return_relays(executor: &ExecutorNode, ctx_arc: Arc<Mutex<Sender<ClientResponseMessage>>>) {
