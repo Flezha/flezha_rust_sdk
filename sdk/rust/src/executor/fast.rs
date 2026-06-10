@@ -224,7 +224,19 @@ pub fn start(
 /// dead secondary is repopulated by the next `ConnectSocket`. The frame is a
 /// bare payload-id with no body, small enough to write atomically.
 fn send_data_heartbeat(io_streams: &RwLock<HashMap<u32, FlezhaStream>>) {
-    let frame = payloader::build_from_binary(liveness::DATA_HEARTBEAT_PAYLOAD_ID, &[], HashMap::new());
+    // Dispatch-progress self-report: the heartbeat thread stays alive even
+    // when the dispatch pool is wedged, so the controller needs these
+    // counters to tell "alive but frozen" apart from "healthy".
+    let mut metadata = HashMap::new();
+    metadata.insert(
+        "dispatches".to_string(),
+        crate::partition::dispatches_completed().to_string(),
+    );
+    metadata.insert(
+        "blocked_parks".to_string(),
+        crate::partition::blocked_park_episodes().to_string(),
+    );
+    let frame = payloader::build_from_binary(liveness::DATA_HEARTBEAT_PAYLOAD_ID, &[], metadata);
     let streams = io_streams.read().unwrap();
     for stream in streams.values() {
         let mut w: &FlezhaStream = stream;
@@ -306,11 +318,7 @@ fn handle_reconnect(
 /// `ExecutorReconnected` frame. Extracted from `handle_reconnect` so
 /// the frame format stays unit-testable independently of the
 /// reconnect network path.
-fn build_executor_reconnected_frame(
-    previous_id: &str,
-    new_id: &str,
-    reason: &str,
-) -> Vec<u8> {
+fn build_executor_reconnected_frame(previous_id: &str, new_id: &str, reason: &str) -> Vec<u8> {
     let request = CommandRequest {
         reference_id: format!("reconnect-{}", nonce_suffix()),
         command: Some(Command::ExecutorReconnected(PbExecutorReconnected {
@@ -319,11 +327,7 @@ fn build_executor_reconnected_frame(
             reason: reason.to_string(),
         })),
     };
-    payloader::build_from_binary(
-        "control_command",
-        &request.encode_to_vec(),
-        HashMap::new(),
-    )
+    payloader::build_from_binary("control_command", &request.encode_to_vec(), HashMap::new())
 }
 
 /// Stream-reader handle for the Relay model. Cheap to clone; carries a

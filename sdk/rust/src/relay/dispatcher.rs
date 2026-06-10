@@ -207,7 +207,10 @@ impl<S: Shard> ShardDispatcher for ShardDispatcherImpl<S> {
             Ok(Ok(())) => {}
             Ok(Err(err)) => eprintln!("[flezha] shard {} run error: {}", S::name(), err),
             Err(_) => {
-                eprintln!("[flezha] shard {} run panicked; partition continues", S::name())
+                eprintln!(
+                    "[flezha] shard {} run panicked; partition continues",
+                    S::name()
+                )
             }
         }
 
@@ -304,7 +307,9 @@ impl<'a> PartitionEmitSink<'a> {
     /// output channel. Returns `UnknownChannel` if either has been
     /// dropped or is unset.
     fn resolve_channel(&self) -> Result<(Arc<RelayInstance>, ChannelId), ShardError> {
-        let cid = self.output_channel_id.ok_or_else(|| self.unknown_channel())?;
+        let cid = self
+            .output_channel_id
+            .ok_or_else(|| self.unknown_channel())?;
         let instance = self
             .instance
             .as_ref()
@@ -469,12 +474,23 @@ impl<'a> EmitSink for PartitionEmitSink<'a> {
 /// outcome and submits a drain task on success / DropOldest. On Block,
 /// parks the calling thread on the slot's `BlockParker` and retries
 /// until the push succeeds (Decision 3).
+/// Bounded park per Block-policy retry; progress is re-checked (and the
+/// inline drain re-attempted) on every wakeup.
+const BLOCK_PARK_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// One throttled warning per blocked episode once it exceeds this — a full
+/// mailbox holding a producer this long means a consumer shard is wedged or
+/// severely behind, and silence here is how the 2026-06-10 freeze hid.
+const BLOCK_WARN_AFTER: std::time::Duration = std::time::Duration::from_secs(5);
+
 pub(crate) fn enqueue(
     slot: &Arc<PartitionSlot>,
     payload: PartitionPayload,
     policy: OverflowPolicy,
 ) {
     let mut next = payload;
+    let mut blocked_since: Option<std::time::Instant> = None;
+    let mut block_warned = false;
     loop {
         match slot.mailbox.try_push(next) {
             Ok(()) => {
@@ -495,7 +511,36 @@ pub(crate) fn enqueue(
                         .pushes_blocked_total
                         .fetch_add(1, Ordering::Relaxed);
                     next = returned;
-                    slot.block_parker.wait_one(&slot.mailbox);
+                    if blocked_since.is_none() {
+                        blocked_since = Some(std::time::Instant::now());
+                        crate::partition::BLOCKED_PARK_EPISODES.fetch_add(1, Ordering::Relaxed);
+                    }
+                    // Drain the full slot inline rather than parking on it:
+                    // the slot's drain may exist only as a queued pool task,
+                    // and a parked pool worker can be the lone thread able to
+                    // run it (a one-worker pool self-deadlocks; prod
+                    // 2026-06-10). The drain_active gate in drain_partition
+                    // keeps this race-safe and order-preserving.
+                    drain_partition(slot);
+                    if slot.mailbox.is_full() {
+                        // A live drainer on another thread owns progress;
+                        // bounded park so even a lost wake degrades to a
+                        // retry loop instead of a permanent freeze.
+                        slot.block_parker
+                            .wait_one_timeout(&slot.mailbox, BLOCK_PARK_TIMEOUT);
+                    }
+                    if !block_warned
+                        && blocked_since.is_some_and(|t| t.elapsed() >= BLOCK_WARN_AFTER)
+                    {
+                        block_warned = true;
+                        tracing::warn!(
+                            target: "flezha::mailbox",
+                            shard_id = slot.shard_id,
+                            shard_key = ?slot.shard_key,
+                            "Block-policy producer stalled >{:?} on a full partition mailbox; consumer shard wedged or far behind",
+                            BLOCK_WARN_AFTER
+                        );
+                    }
                 }
                 OverflowPolicy::DropNewest => {
                     slot.mailbox
@@ -549,7 +594,9 @@ pub(crate) fn route_to_consumers(
             }
             continue;
         }
-        let key_to_idx = instance.partition_key_to_idx.get(consumer_shard_id as usize);
+        let key_to_idx = instance
+            .partition_key_to_idx
+            .get(consumer_shard_id as usize);
         for key in (consumer.partition_for_erased)(value.as_ref()) {
             if let Some(&idx) = key_to_idx.and_then(|m| m.get(key)) {
                 if let Some(slot) = partitions.get(idx) {
@@ -562,7 +609,10 @@ pub(crate) fn route_to_consumers(
 
 /// Build the emit wire metadata: drop any caller-supplied reserved
 /// `channel` key, then stamp the descriptor's channel name.
-fn channel_metadata(meta: Option<HashMap<String, String>>, channel: &str) -> HashMap<String, String> {
+fn channel_metadata(
+    meta: Option<HashMap<String, String>>,
+    channel: &str,
+) -> HashMap<String, String> {
     let mut metadata = meta.unwrap_or_default();
     metadata.remove("channel");
     metadata.insert("channel".to_string(), channel.to_string());
@@ -602,6 +652,12 @@ fn send_plugin_frame(
 }
 
 pub fn drain_partition(slot: &Arc<PartitionSlot>) {
+    // Single-ACTIVE-drainer gate. The queued pool task and a Block-policy
+    // producer draining inline may both arrive here; the loser leaves and the
+    // winner owns the pop loop, so per-slot dispatch order is preserved.
+    if slot.drain_active.swap(true, Ordering::AcqRel) {
+        return;
+    }
     loop {
         while let Some(payload) = slot.mailbox.pop() {
             // Free one waiter (if any) before running the dispatcher;
@@ -613,12 +669,21 @@ pub fn drain_partition(slot: &Arc<PartitionSlot>) {
             let instance_weak = Weak::clone(&slot.instance);
             slot.dispatcher
                 .dispatch(payload, &mut state_guard, &mut buffer_guard, &instance_weak);
+            crate::partition::DISPATCHES_COMPLETED.fetch_add(1, Ordering::Relaxed);
         }
+        // Drop the active gate BEFORE releasing inflight so a producer that
+        // observes inflight=false can immediately become the next drainer.
+        slot.drain_active.store(false, Ordering::Release);
         slot.mailbox.release_inflight();
         if slot.mailbox.is_empty() {
             return;
         }
         if !slot.mailbox.try_mark_inflight() {
+            return;
+        }
+        if slot.drain_active.swap(true, Ordering::AcqRel) {
+            // Another thread became the active drainer for the round we just
+            // marked; it releases the inflight token when it finishes.
             return;
         }
     }
@@ -700,6 +765,7 @@ pub fn build_partition_slot<S: Shard>(args: BuildPartitionArgs<'_>) -> Arc<Parti
         instance: args.instance,
         topology,
         block_parker: crate::partition::BlockParker::new(),
+        drain_active: std::sync::atomic::AtomicBool::new(false),
         flush_buffer,
         persistence_enabled: args.persistence_enabled,
         change_seq,

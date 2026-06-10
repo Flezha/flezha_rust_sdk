@@ -25,8 +25,9 @@ pub mod restore;
 
 use std::any::Any;
 use std::collections::VecDeque;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
+use std::time::Duration;
 
 use crossbeam::sync::{Parker, Unparker};
 use flz_transport::transport::FlezhaStream;
@@ -136,6 +137,22 @@ impl BlockParker {
         parker.park();
     }
 
+    /// [`wait_one`] with a bounded park. Used by `Block`-policy producers
+    /// so that even an unforeseen lost-wake degrades to a retry loop with
+    /// warnings instead of a permanent silent freeze.
+    pub fn wait_one_timeout<P: Send + 'static>(&self, mailbox: &Mailbox<P>, timeout: Duration) {
+        let parker = Parker::new();
+        let unparker = parker.unparker().clone();
+        {
+            let mut deque = self.waiters.lock().expect("BlockParker mutex poisoned");
+            deque.push_back(unparker);
+        }
+        if !mailbox.is_full() {
+            return;
+        }
+        parker.park_timeout(timeout);
+    }
+
     /// Wake the oldest waiter, if any. Called by the consumer's drain
     /// loop after a successful pop.
     pub fn unpark_one(&self) {
@@ -161,6 +178,25 @@ impl Default for BlockParker {
     }
 }
 
+/// Process-global count of payloads dispatched through `drain_partition`.
+/// Shipped in every `data_heartbeat` frame's metadata so the controller can
+/// tell "executor alive but dispatch wedged" apart from "executor healthy" —
+/// the 2026-06-10 freeze was invisible to every heartbeat-level signal.
+pub static DISPATCHES_COMPLETED: AtomicU64 = AtomicU64::new(0);
+
+/// Process-global count of Block-policy park episodes (producer found a full
+/// mailbox with an active drainer elsewhere). Also shipped in heartbeat
+/// metadata; a climbing value flags sustained backpressure.
+pub static BLOCKED_PARK_EPISODES: AtomicU64 = AtomicU64::new(0);
+
+pub fn dispatches_completed() -> u64 {
+    DISPATCHES_COMPLETED.load(Ordering::Relaxed)
+}
+
+pub fn blocked_park_episodes() -> u64 {
+    BLOCKED_PARK_EPISODES.load(Ordering::Relaxed)
+}
+
 pub struct PartitionSlot {
     pub state: Mutex<Box<dyn Any + Send>>,
     pub mailbox: PartitionMailbox,
@@ -174,6 +210,14 @@ pub struct PartitionSlot {
     /// mailbox. Drained one entry at a time by `drain_partition` after
     /// every successful pop.
     pub block_parker: BlockParker,
+    /// Single-ACTIVE-drainer gate. `mailbox`'s inflight flag means "a drain
+    /// is scheduled or running" (it is held by a queued pool task that may
+    /// not be running yet); this flag is true only while a thread is inside
+    /// `drain_partition`'s pop loop. Block-policy producers use it to drain
+    /// a full slot inline instead of parking — a parked pool worker can be
+    /// the only thread able to run the slot's queued drain task, which is a
+    /// permanent self-deadlock on a one-worker pool.
+    pub drain_active: AtomicBool,
     /// Per-Partition flush buffer holding `Vec<S::Change>` behind the
     /// type-erased `FlushableBuffer` trait object. The dispatcher locks
     /// this Mutex for the duration of `Shard::run` and constructs a

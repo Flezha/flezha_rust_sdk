@@ -19,7 +19,7 @@ use flezha_executor::relay::registry::RelayInstanceRegistry;
 use flezha_executor::relay::RelayInstance;
 use flezha_executor::shard::{Shard, ShardCtx, ShardError};
 use flezha_executor::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_executor::{__dispatch_internals as bi, OverflowPolicy, Relay};
+use flezha_executor::{OverflowPolicy, Relay, __dispatch_internals as bi};
 
 mod common;
 use common::{dispatch_input, dummy_stream, setup, wait_until};
@@ -51,7 +51,13 @@ fn per_partition_input_order_preserved() {
 
     let n = 1000usize;
     for i in 0..n {
-        dispatch_input(&handle, "append-instance", "input", format!("{}", i).into_bytes(), &stream);
+        dispatch_input(
+            &handle,
+            "append-instance",
+            "input",
+            format!("{}", i).into_bytes(),
+            &stream,
+        );
     }
 
     assert!(
@@ -880,12 +886,15 @@ fn default_entry_policy_does_not_stall_sibling_relays() {
     assert_eq!(counters_a.pushes_blocked_total.load(Ordering::Relaxed), 0);
 }
 
-/// Spec scenario "Opt-in entry Block opts into co-tenancy hazard":
-/// when Relay A explicitly declares `OverflowPolicy::Block` on its
-/// entry channel and saturates, the simulated wire-reader thread parks
-/// — sibling Relay B's frames stop arriving until A drains.
+/// Spec scenario "Opt-in entry Block drains inline instead of stalling":
+/// when Relay A's explicit `OverflowPolicy::Block` entry channel
+/// saturates while A's drain exists only as a scheduled-but-not-running
+/// pool task (inflight marked, no active drainer), the wire-reader
+/// thread drains A inline rather than parking — sibling Relay B keeps
+/// flowing and no frame is lost. Parking here was the 2026-06-10 prod
+/// self-deadlock.
 #[test]
-fn opt_in_entry_block_stalls_sibling_relays() {
+fn opt_in_entry_block_drains_inline_without_stalling_siblings() {
     let _serial = WIRE_TEST_LOCK.lock().unwrap();
     WIRE_A_DELIVERED.store(0, Ordering::Release);
     WIRE_B_DELIVERED.store(0, Ordering::Release);
@@ -900,6 +909,8 @@ fn opt_in_entry_block_stalls_sibling_relays() {
     registry.register(Arc::clone(&instance_a));
     registry.register(Arc::clone(&instance_b));
 
+    // Phantom drain: inflight held but no thread is draining, so only the
+    // producer itself can free the full mailbox.
     let slot_a = Arc::clone(&instance_a.partitions[0][0]);
     assert!(slot_a.mailbox.try_mark_inflight());
 
@@ -908,18 +919,13 @@ fn opt_in_entry_block_stalls_sibling_relays() {
     };
     let stream = dummy_stream();
 
-    // Spawn the wire-reader thread; it dispatches A, A, A → third A
-    // parks because A's cap-2 mailbox is full + Block.
-    let reader_started = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let reader_completed = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let started_clone = Arc::clone(&reader_started);
     let completed_clone = Arc::clone(&reader_completed);
     let handle_clone = handle.clone();
     let stream_clone = Arc::clone(&stream);
     let reader = std::thread::spawn(move || {
         let mut md = HashMap::new();
         md.insert("channel".to_string(), "input".to_string());
-        started_clone.store(true, Ordering::Release);
         for _ in 0..3 {
             handle_clone.dispatch(
                 "wire-a-block",
@@ -928,7 +934,6 @@ fn opt_in_entry_block_stalls_sibling_relays() {
                 Arc::clone(&stream_clone),
             );
         }
-        // After A's three frames complete, dispatch one to B.
         handle_clone.dispatch(
             "wire-b-block",
             b"b-frame".to_vec(),
@@ -938,31 +943,18 @@ fn opt_in_entry_block_stalls_sibling_relays() {
         completed_clone.store(true, Ordering::Release);
     });
 
-    // Wait for the reader to start; the third A push should park.
-    while !reader_started.load(Ordering::Acquire) {
-        std::hint::spin_loop();
-    }
-    std::thread::sleep(Duration::from_millis(100));
+    // The reader must complete on its own: the third A push finds the
+    // cap-2 mailbox full and drains it inline instead of parking.
     assert!(
-        !reader_completed.load(Ordering::Acquire),
-        "wire reader did not park on A's saturated Block mailbox"
+        wait_until(
+            || reader_completed.load(Ordering::Acquire),
+            Duration::from_secs(5)
+        ),
+        "wire reader stalled on A's saturated Block mailbox"
     );
-    assert_eq!(
-        WIRE_B_DELIVERED.load(Ordering::Acquire),
-        0,
-        "B should have received nothing while reader is parked on A"
-    );
-
-    // Now drain A by manually popping; each pop unparks one waiter.
-    slot_a.mailbox.pop();
-    slot_a.block_parker.unpark_one();
-
     reader.join().expect("reader thread panicked");
 
-    // After unparking, the third A push completed and B's frame was
-    // dispatched. The drain we mimicked freed exactly one slot, so two
-    // pushes-total entries record successfully (the first two), one is
-    // pending in the cap-2 mailbox, and one was unparked + pushed.
+    // The full push was recorded as blocked, then every frame landed.
     assert!(
         slot_a
             .counters()
@@ -970,10 +962,11 @@ fn opt_in_entry_block_stalls_sibling_relays() {
             .load(Ordering::Relaxed)
             >= 1
     );
-    slot_a.mailbox.release_inflight();
-
     assert!(wait_until(
-        || WIRE_B_DELIVERED.load(Ordering::Acquire) == 1,
+        || {
+            WIRE_A_DELIVERED.load(Ordering::Acquire) == 3
+                && WIRE_B_DELIVERED.load(Ordering::Acquire) == 1
+        },
         Duration::from_secs(5)
     ));
 }
@@ -986,7 +979,8 @@ fn opt_in_entry_block_stalls_sibling_relays() {
 #[test]
 fn default_inter_shard_policy_is_block_and_pushes_total_increments() {
     INTER_SHARD_DOWNSTREAM.store(0, Ordering::Release);
-    let (handle, instance) = setup::<InterShardDefaultBlockRelay>("inter-shard-default-instance", 4);
+    let (handle, instance) =
+        setup::<InterShardDefaultBlockRelay>("inter-shard-default-instance", 4);
     let stream = dummy_stream();
 
     let n = 200usize;
@@ -1104,7 +1098,12 @@ fn change_is_flushed_before_output_is_emitted() {
 
     let mut md = HashMap::new();
     md.insert("channel".to_string(), "input".to_string());
-    handle.dispatch("flush-order-instance", b"go".to_vec(), &md, Arc::clone(&stream));
+    handle.dispatch(
+        "flush-order-instance",
+        b"go".to_vec(),
+        &md,
+        Arc::clone(&stream),
+    );
 
     assert!(
         wait_until(
@@ -1147,8 +1146,20 @@ fn shard_panic_does_not_wedge_the_partition() {
     let (handle, instance) = setup::<PanicRelay>("panic-instance", 4);
     let stream = dummy_stream();
 
-    dispatch_input(&handle, "panic-instance", "input", b"boom".to_vec(), &stream);
-    dispatch_input(&handle, "panic-instance", "input", b"after".to_vec(), &stream);
+    dispatch_input(
+        &handle,
+        "panic-instance",
+        "input",
+        b"boom".to_vec(),
+        &stream,
+    );
+    dispatch_input(
+        &handle,
+        "panic-instance",
+        "input",
+        b"after".to_vec(),
+        &stream,
+    );
 
     assert!(
         wait_until(
@@ -1161,5 +1172,65 @@ fn shard_panic_does_not_wedge_the_partition() {
     assert!(
         instance.partitions[0][0].state.lock().is_ok(),
         "partition state mutex was poisoned by the shard panic"
+    );
+}
+
+// ----- Block-policy producer on a one-worker pool must not self-deadlock -----
+//
+// The single pool worker, mid-producer-dispatch, emits into a full Block
+// consumer mailbox whose drain task sits queued behind the producer's own
+// task. Parking the worker there is a permanent self-deadlock (the freeze
+// that took prod down on 2026-06-10); the Block arm must drain the full
+// slot inline instead.
+
+static BLOCKED_CONSUMED: AtomicUsize = AtomicUsize::new(0);
+
+test_shard!(BlockProducerShard, "block_producer_shard", String => String, (), |_input, _state, ctx| {
+    for i in 0..8 {
+        ctx.emit(format!("v{}", i))?;
+    }
+    Ok(())
+});
+
+test_shard!(BlockedConsumerShard, "blocked_consumer_shard", String => String, (), cap 1, |_input, _state, _ctx| {
+    BLOCKED_CONSUMED.fetch_add(1, Ordering::AcqRel);
+    Ok(())
+});
+
+struct BlockDeadlockRelay;
+impl Relay for BlockDeadlockRelay {
+    fn factory_id() -> &'static str {
+        "block_deadlock_relay"
+    }
+    fn channels(c: &mut ChannelBuilder) {
+        c.input::<String>("input").into::<BlockProducerShard>();
+        // Inter-shard channel: OverflowPolicy defaults to Block.
+        c.channel::<String>("blocked_out")
+            .from::<BlockProducerShard>()
+            .into::<BlockedConsumerShard>();
+    }
+}
+
+#[test]
+fn block_policy_emit_on_single_worker_pool_does_not_deadlock() {
+    BLOCKED_CONSUMED.store(0, Ordering::Release);
+    let (handle, _instance) = setup::<BlockDeadlockRelay>("block-deadlock-instance", 1);
+    let stream = dummy_stream();
+
+    dispatch_input(
+        &handle,
+        "block-deadlock-instance",
+        "input",
+        b"go".to_vec(),
+        &stream,
+    );
+
+    assert!(
+        wait_until(
+            || BLOCKED_CONSUMED.load(Ordering::Acquire) == 8,
+            Duration::from_secs(10)
+        ),
+        "Block-policy emit deadlocked the one-worker pool: {} of 8 consumed",
+        BLOCKED_CONSUMED.load(Ordering::Acquire)
     );
 }
