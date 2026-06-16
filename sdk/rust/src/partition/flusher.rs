@@ -259,9 +259,17 @@ impl PartitionFlusher {
             .clone()
     }
 
+    /// Drop a Partition's flusher entry. Called when a dynamic-mode
+    /// Partition is evicted by the reaper so its (now-orphaned) flush
+    /// buffer stops being drained every linger tick. Idempotent — a
+    /// missing id is a no-op.
+    pub fn deregister(&self, id: FlusherEntryId) {
+        self.entries.remove(&id);
+    }
+
     /// Register a Partition with the flusher. Returns an opaque id used
-    /// to deregister at Partition teardown (not yet wired in v1; the
-    /// flusher lives for the duration of the process).
+    /// to deregister at Partition teardown (dynamic-mode eviction calls
+    /// [`Self::deregister`]; static Partitions live for the process).
     pub fn register(
         &self,
         partition_identity: Arc<Vec<u8>>,

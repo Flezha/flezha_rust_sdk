@@ -498,6 +498,11 @@ pub(crate) fn enqueue(
                     .counters()
                     .pushes_total
                     .fetch_add(1, Ordering::Relaxed);
+                // Activity stamp for the dynamic-mode reaper (one atomic
+                // store; inert for single/static Partitions that are never
+                // reaped).
+                slot.last_activity_at
+                    .store(crate::partition::dynamic::now_millis(), Ordering::Relaxed);
                 if slot.mailbox.try_mark_inflight() {
                     let cloned = Arc::clone(slot);
                     slot.pool.submit(Box::new(move || drain_partition(&cloned)));
@@ -571,7 +576,9 @@ pub(crate) fn enqueue(
 /// the channel's `OverflowPolicy`. Shared by the inter-shard emit path
 /// (`PartitionEmitSink`) and the inbound wire-dispatch path
 /// (`RelayDispatchHandle`). Single-mode shards route to partition 0;
-/// static-mode shards route by `partition_for_erased` key lookup.
+/// static-mode shards route by `partition_for_erased` key lookup;
+/// dynamic-mode shards derive a key via `shard_key` and lazily create the
+/// Partition through the per-Shard `DynamicPartitionRegistry`.
 pub(crate) fn route_to_consumers(
     instance: &RelayInstance,
     consumer_ids: &[ShardId],
@@ -579,28 +586,63 @@ pub(crate) fn route_to_consumers(
     value: &Arc<dyn Any + Send + Sync>,
     stream: &Arc<FlezhaStream>,
 ) {
+    use crate::relay::topology::PartitioningMode;
     for &consumer_shard_id in consumer_ids {
         let consumer = match instance.topology.shard(consumer_shard_id) {
             Some(s) => s,
             None => continue,
         };
-        let partitions = match instance.partitions.get(consumer_shard_id as usize) {
-            Some(p) => p,
-            None => continue,
-        };
-        if consumer.partition_keys.is_empty() {
-            if let Some(slot) = partitions.first() {
-                enqueue(slot, make_partition_payload(value, stream), policy);
+        match consumer.mode {
+            PartitioningMode::Dynamic => {
+                let registry = match instance
+                    .dynamic_registries
+                    .get(consumer_shard_id as usize)
+                    .and_then(|r| r.as_ref())
+                {
+                    Some(r) => r,
+                    None => continue,
+                };
+                let key = match consumer
+                    .shard_key_erased
+                    .as_ref()
+                    .and_then(|f| f(value.as_ref()))
+                {
+                    Some(k) => k,
+                    None => {
+                        registry
+                            .counters
+                            .inputs_dropped_no_key_total
+                            .fetch_add(1, Ordering::Relaxed);
+                        continue;
+                    }
+                };
+                if let Ok(slot) = registry.get_or_create(&key) {
+                    enqueue(&slot, make_partition_payload(value, stream), policy);
+                }
             }
-            continue;
-        }
-        let key_to_idx = instance
-            .partition_key_to_idx
-            .get(consumer_shard_id as usize);
-        for key in (consumer.partition_for_erased)(value.as_ref()) {
-            if let Some(&idx) = key_to_idx.and_then(|m| m.get(key)) {
-                if let Some(slot) = partitions.get(idx) {
+            PartitioningMode::Single => {
+                if let Some(slot) = instance
+                    .partitions
+                    .get(consumer_shard_id as usize)
+                    .and_then(|p| p.first())
+                {
                     enqueue(slot, make_partition_payload(value, stream), policy);
+                }
+            }
+            PartitioningMode::Static => {
+                let partitions = match instance.partitions.get(consumer_shard_id as usize) {
+                    Some(p) => p,
+                    None => continue,
+                };
+                let key_to_idx = instance
+                    .partition_key_to_idx
+                    .get(consumer_shard_id as usize);
+                for key in (consumer.partition_for_erased)(value.as_ref()) {
+                    if let Some(&idx) = key_to_idx.and_then(|m| m.get(key)) {
+                        if let Some(slot) = partitions.get(idx) {
+                            enqueue(slot, make_partition_payload(value, stream), policy);
+                        }
+                    }
                 }
             }
         }
@@ -744,16 +786,18 @@ pub fn build_partition_slot<S: Shard>(args: BuildPartitionArgs<'_>) -> Arc<Parti
     // buffer so the dispatcher can construct a `StateHandle<'_, S>`
     // uniformly for all Shards; only the per-process flusher registry
     // is conditional.
-    if TypeId::of::<S::Change>() != TypeId::of::<NoChange>() {
+    let flusher_entry_id = if TypeId::of::<S::Change>() != TypeId::of::<NoChange>() {
         let flusher = PartitionFlusher::instance();
-        flusher.register(
+        Some(flusher.register(
             Arc::clone(&partition_identity),
             Arc::clone(&flush_buffer),
             args.persistence_enabled,
             Arc::clone(&change_seq),
             HeaderTemplate::for_shard::<S>(),
-        );
-    }
+        ))
+    } else {
+        None
+    };
 
     Arc::new(PartitionSlot {
         state: std::sync::Mutex::new(Box::new(typed_state)),
@@ -770,5 +814,9 @@ pub fn build_partition_slot<S: Shard>(args: BuildPartitionArgs<'_>) -> Arc<Parti
         persistence_enabled: args.persistence_enabled,
         change_seq,
         partition_identity,
+        last_activity_at: std::sync::atomic::AtomicI64::new(
+            crate::partition::dynamic::now_millis(),
+        ),
+        flusher_entry_id,
     })
 }

@@ -3,11 +3,26 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::channel::builder::{
-    DeserializeStateFn, PartitionBuilder, PartitionForFn, SerializeStateFn,
+    DeserializeStateFn, PartitionBuilder, PartitionForFn, ShardKeyFn, SerializeStateFn,
 };
 use crate::channel::{ChannelDescriptor, ChannelId, ShardId};
+
+/// How a Shard maps inputs to Partitions. Resolved once at registration
+/// from `(shard_keys().is_empty(), SHARD_KEY_OVERRIDDEN)`:
+/// `(true, false)` → `Single`, `(false, _)` → `Static`,
+/// `(true, true)` → `Dynamic`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PartitioningMode {
+    /// One Partition per Shard; `shard_key()` / `shard_keys()` unused.
+    Single,
+    /// Fixed keyset declared by `shard_keys()`; routed by `partition_for`.
+    Static,
+    /// Unbounded keyset; Partitions created lazily by `shard_key()`.
+    Dynamic,
+}
 
 /// One Shard's slot in the topology. Pre-resolved channel ids so the
 /// hot path needs zero name lookups.
@@ -16,6 +31,19 @@ pub struct ShardDescriptor {
     pub partition_keys: Vec<&'static str>,
     pub partition_for_overridden: bool,
     pub shard_key_overridden: bool,
+    /// Partitioning mode resolved at registration. Drives whether the
+    /// dispatch path routes by static key, single slot, or the dynamic
+    /// registry.
+    pub mode: PartitioningMode,
+    /// Dynamic-mode idle-TTL eviction window (`Shard::partition_idle_ttl`).
+    /// `None` (the default) means no eviction; meaningful only when
+    /// `mode == Dynamic`.
+    pub idle_ttl: Option<Duration>,
+    /// Dynamic-mode soft cap on live Partitions (`Shard::max_partitions`).
+    pub max_partitions: usize,
+    /// Type-erased `Shard::shard_key`. `Some` only for dynamic-mode
+    /// Shards; the dispatch path calls it to derive the partition key.
+    pub shard_key_erased: Option<ShardKeyFn>,
     pub input_channel_id: Option<ChannelId>,
     pub output_channel_id: Option<ChannelId>,
     pub input_type_id: std::any::TypeId,

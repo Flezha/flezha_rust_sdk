@@ -53,6 +53,19 @@ pub(crate) struct ShardEntry {
     /// then routes everything to partition index 0.
     pub partition_for_erased: PartitionForFn,
 
+    /// `Shard::shard_key` captured statically and type-erased. `Some`
+    /// only for dynamic-mode Shards (`SHARD_KEY_OVERRIDDEN = true` with
+    /// empty `shard_keys()`); the dispatch path calls it per input to
+    /// derive the dynamic partition key.
+    pub shard_key_erased: Option<ShardKeyFn>,
+
+    /// Dynamic-mode knobs captured at registration (`Shard::partition_idle_ttl`,
+    /// `max_partitions`). Carried through to the `ShardDescriptor` for the
+    /// reaper / registry; inert for non-dynamic Shards. `idle_ttl == None`
+    /// means no eviction.
+    pub idle_ttl: Option<std::time::Duration>,
+    pub max_partitions: usize,
+
     /// Serialize a Partition's typed state to JSON. Captures S statically
     /// so the closure downcasts the type-erased `Box<dyn Any + Send>`
     /// stored in `PartitionSlot::state` and produces a `serde_json::Value`
@@ -67,6 +80,8 @@ pub(crate) struct ShardEntry {
 }
 
 pub(crate) type PartitionForFn = Arc<dyn Fn(&dyn Any) -> Vec<&'static str> + Send + Sync + 'static>;
+
+pub(crate) type ShardKeyFn = Arc<dyn Fn(&dyn Any) -> Option<String> + Send + Sync + 'static>;
 
 pub(crate) type SerializeStateFn =
     Arc<dyn Fn(&Box<dyn Any + Send>) -> Result<serde_json::Value, String> + Send + Sync + 'static>;
@@ -149,11 +164,10 @@ pub enum BuildTopologyError {
     PartitionForMissing { name: &'static str },
 
     #[error(
-        "shard `{name}` overrides shard_key() (dynamic-mode marker) without declaring \
-         shard_keys(); dynamic mode is reserved for `relay-dynamic-partitioning` and \
-         rejected in v1"
+        "shard `{name}` declares both shard_keys() (static mode) and overrides shard_key() \
+         (dynamic mode); a Shard declares one OR the other, not both"
     )]
-    DynamicModeOnly { name: &'static str },
+    StaticAndDynamic { name: &'static str },
 
     #[error("shard `{name}` registered with conflicting input/output types")]
     TypeMismatch { name: &'static str },
@@ -259,6 +273,22 @@ impl ChannelBuilder {
             S::partition_for(typed)
         });
 
+        // Dynamic mode = overrides shard_key() with an empty shard_keys().
+        // The erased shard_key closure is captured only for that shape;
+        // build_topology classifies the mode and validates the
+        // declare-one-or-the-other rule.
+        let shard_key_erased: Option<ShardKeyFn> =
+            if S::SHARD_KEY_OVERRIDDEN && S::shard_keys().is_empty() {
+                Some(Arc::new(|input: &dyn Any| {
+                    let typed = input
+                        .downcast_ref::<S::Input>()
+                        .expect("shard_key: input type mismatch");
+                    S::shard_key(typed)
+                }))
+            } else {
+                None
+            };
+
         let build_partition: PartitionBuilder = Box::new(
             |args: BuildPartitionArgs<'_>| -> Arc<crate::partition::PartitionSlot> {
                 crate::partition::build_partition_slot::<S>(args)
@@ -280,6 +310,9 @@ impl ChannelBuilder {
             mailbox_capacity_overridden: S::MAILBOX_CAPACITY_OVERRIDDEN,
             build_partition,
             partition_for_erased,
+            shard_key_erased,
+            idle_ttl: S::partition_idle_ttl(),
+            max_partitions: S::max_partitions(),
             serialize_state,
             deserialize_state,
         });

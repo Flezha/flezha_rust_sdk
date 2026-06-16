@@ -100,6 +100,8 @@ fn handle_quic(cmd: &ConnectSocket, executor: &mut ExecutorNode) -> (String, Vec
 /// per-Partition writes server-side.
 fn install_partition_state_sink_from_pairs(pairs: &[(FlezhaStream, Arc<FlezhaStream>)]) {
     if let Some((_, secondary)) = pairs.first() {
+        // Mirror the secondary stream for the reaper's one-shot delete send.
+        partition_state_sink::set_secondary_stream(Some(Arc::clone(secondary)));
         let sink_stream = Arc::clone(secondary);
         // The Mutex serializes writes from the single flusher thread —
         // belt-and-braces given that the flusher has only one writer.

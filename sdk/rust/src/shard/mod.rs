@@ -155,19 +155,37 @@ pub trait Shard: Send + Sync + 'static + Default {
     /// startup and rejects mismatched declarations.
     const PARTITION_FOR_OVERRIDDEN: bool = false;
 
-    /// Reserved for `relay-dynamic-partitioning`. v1 SHALL NOT call this
-    /// on the hot path; the runtime rejects a Relay whose Shard
-    /// overrides this without also setting `shard_keys()`.
+    /// Dynamic-mode partition routing. Called per input; the returned key
+    /// selects (lazily creating) the Partition, `None` drops the input. A
+    /// dynamic-mode Shard overrides this AND sets `SHARD_KEY_OVERRIDDEN =
+    /// true` with empty `shard_keys()`; declaring both modes is a
+    /// registration error.
     fn shard_key(_input: &Self::Input) -> Option<String> {
         None
     }
 
-    /// Override-detection sentinel for `shard_key`. Default `false`;
-    /// implementors that declare dynamic-mode partitioning MUST set
-    /// this to `true` AND populate `shard_keys()`. The topology builder
-    /// rejects `SHARD_KEY_OVERRIDDEN = true` with empty `shard_keys()`
-    /// per umbrella Decision 7.
+    /// Override-detection sentinel for [`Self::shard_key`] (dynamic mode).
     const SHARD_KEY_OVERRIDDEN: bool = false;
+
+    /// Dynamic-mode idle eviction window. `None` (default) = no eviction:
+    /// Partitions live as long as the Relay, like static ones. `Some(ttl)`
+    /// opts a per-Shard reaper in; eviction is destructive (in-memory slot +
+    /// on-disk WAL/snapshot dropped) and a later input cold-starts fresh —
+    /// no restore-from-disk. Ignored for single/static Shards.
+    fn partition_idle_ttl() -> Option<std::time::Duration> {
+        None
+    }
+
+    /// Dynamic-mode soft cap on live Partitions per Shard. At the cap,
+    /// new-key inputs are dropped (`inputs_dropped_capped_total`); existing
+    /// keys are unaffected. Bounds memory against a runaway `shard_key`, not
+    /// admission — no error path back to the controller.
+    fn max_partitions() -> usize {
+        100_000
+    }
+
+    /// Override-detection sentinel for [`Self::max_partitions`].
+    const MAX_PARTITIONS_OVERRIDDEN: bool = false;
 
     /// Per-Partition mailbox capacity. The consumer Partition allocates
     /// one bounded ring buffer of this size at relay startup. Static-mode

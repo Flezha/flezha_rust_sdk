@@ -76,6 +76,11 @@ name = "hybrid_channel_throughput"
 harness = false
 required-features = ["bench-internals"]
 
+[[bench]]
+name = "dynamic_partition_steady_state"
+harness = false
+required-features = ["bench-internals"]
+
 [[test]]
 name = "relay_dispatch"
 required-features = ["bench-internals"]

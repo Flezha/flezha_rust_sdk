@@ -18,6 +18,7 @@
 //! AtomicU64` counter. The per-process [`flusher::PartitionFlusher`]
 //! drains all registered buffers on its linger cadence.
 
+pub mod dynamic;
 pub mod flusher;
 pub mod header;
 pub mod partition_state_sink;
@@ -25,7 +26,7 @@ pub mod restore;
 
 use std::any::Any;
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
@@ -240,6 +241,15 @@ pub struct PartitionSlot {
     /// `partition_id_bytes` field; the controller decodes the same structure
     /// to route the frame to the right per-Partition WAL.
     pub partition_identity: Arc<Vec<u8>>,
+    /// Monotonic millis-since-process-start of the last successful push
+    /// (`dynamic::now_millis`). Read by the dynamic-mode reaper to decide
+    /// idle eviction; inert for single- and static-mode Partitions.
+    pub last_activity_at: AtomicI64,
+    /// Flusher registration id, captured when this Partition's flush
+    /// buffer was registered (`Some` iff `Change != NoChange`). The
+    /// dynamic-mode reaper passes it to `PartitionFlusher::deregister` on
+    /// eviction so an evicted Partition's buffer is no longer drained.
+    pub flusher_entry_id: Option<crate::partition::flusher::FlusherEntryId>,
 }
 
 impl PartitionSlot {

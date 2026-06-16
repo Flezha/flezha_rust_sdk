@@ -76,7 +76,13 @@ impl ExecutorNode {
     }
 
     pub fn stop_relay(&self, instance_id: &str) -> bool {
-        self.relay_registry.remove(instance_id).is_some()
+        match self.relay_registry.remove(instance_id) {
+            Some(instance) => {
+                instance.shutdown_reapers();
+                true
+            }
+            None => false,
+        }
     }
 
     pub fn has_relay(&self, instance_id: &str) -> bool {

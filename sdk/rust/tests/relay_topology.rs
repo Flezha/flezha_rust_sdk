@@ -2,7 +2,7 @@
 //! creation. Covers the umbrella scenarios:
 //! - "Single partition for a Shard with no partitioning declared"
 //! - "Static partitions created at relay startup"
-//! - "Dynamic-mode-only declaration is rejected in v1"
+//! - "Dynamic-mode declaration is accepted and classified Dynamic"
 //! - "Entry channel of arbitrary type fails at startup" (compile-time
 //!   covered by tests/ui/entry_channel_disallowed_type.rs)
 
@@ -104,8 +104,9 @@ fn static_mode_partition_creation() {
     assert!(topology.shards[0].partition_for_overridden);
 }
 
-/// Dynamic-mode-only Shard: overrides `shard_key` without declaring
-/// `shard_keys`. v1 rejects this at build_topology time.
+/// Dynamic-mode Shard: overrides `shard_key` with an empty `shard_keys`.
+/// `relay-dynamic-partitioning` accepts this and classifies it as
+/// `PartitioningMode::Dynamic`.
 #[derive(Default)]
 struct DynamicOnlyShard;
 impl Shard for DynamicOnlyShard {
@@ -144,15 +145,13 @@ impl Relay for DynamicOnlyRelay {
 }
 
 #[test]
-fn dynamic_mode_only_rejection() {
-    let err = build_topology_for::<DynamicOnlyRelay>()
-        .err()
-        .expect("expected dynamic-mode-only rejection");
-    let msg = format!("{:?}", err.errors);
-    assert!(
-        msg.contains("DynamicModeOnly"),
-        "expected DynamicModeOnly error, got {msg}"
-    );
+fn dynamic_mode_is_accepted_and_classified() {
+    use flezha_executor::relay::topology::PartitioningMode;
+    let topology = build_topology_for::<DynamicOnlyRelay>().expect("dynamic mode accepted");
+    assert_eq!(topology.shards.len(), 1);
+    assert_eq!(topology.shards[0].mode, PartitioningMode::Dynamic);
+    assert!(topology.shards[0].partition_keys.is_empty());
+    assert!(topology.shards[0].shard_key_erased.is_some());
 }
 
 /// Static-mode shard whose `partition_for` override is missing the

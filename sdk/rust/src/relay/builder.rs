@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use crate::channel::builder::{BuildTopologyError, ChannelBuilder};
 use crate::channel::{ChannelDescriptor, ChannelKind, PluginSink};
-use crate::relay::topology::{RelayTopology, ShardDescriptor};
+use crate::relay::topology::{PartitioningMode, RelayTopology, ShardDescriptor};
 
 /// Built-in default per-Partition mailbox capacity used when a Shard does
 /// not override `mailbox_capacity()` and `FLEZHA_MAILBOX_CAPACITY` is
@@ -90,9 +90,15 @@ pub fn build_topology_with_persistence(
         if !entry.partition_keys.is_empty() && !entry.partition_for_overridden {
             errors.push(BuildTopologyError::PartitionForMissing { name: entry.name });
         }
-        if entry.shard_key_overridden && entry.partition_keys.is_empty() {
-            errors.push(BuildTopologyError::DynamicModeOnly { name: entry.name });
+        // A Shard declares static keys OR dynamic shard_key(), never both.
+        if entry.shard_key_overridden && !entry.partition_keys.is_empty() {
+            errors.push(BuildTopologyError::StaticAndDynamic { name: entry.name });
         }
+        let mode = match (entry.partition_keys.is_empty(), entry.shard_key_overridden) {
+            (false, _) => PartitioningMode::Static,
+            (true, true) => PartitioningMode::Dynamic,
+            (true, false) => PartitioningMode::Single,
+        };
         let resolved_capacity = match resolve_mailbox_capacity(
             entry.name,
             entry.mailbox_capacity,
@@ -112,6 +118,10 @@ pub fn build_topology_with_persistence(
             partition_keys: entry.partition_keys,
             partition_for_overridden: entry.partition_for_overridden,
             shard_key_overridden: entry.shard_key_overridden,
+            mode,
+            idle_ttl: entry.idle_ttl,
+            max_partitions: entry.max_partitions,
+            shard_key_erased: entry.shard_key_erased,
             input_channel_id: entry.input_channel_id,
             output_channel_id: entry.output_channel_id,
             input_type_id: entry.input_type_id,

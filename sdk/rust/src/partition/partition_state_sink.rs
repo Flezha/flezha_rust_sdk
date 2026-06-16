@@ -22,10 +22,18 @@
 //!     handshake and rebuilds the data streams).
 
 use std::collections::VecDeque;
-use std::sync::Mutex;
+use std::io::Write;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use flz_transport::transport::FlezhaStream;
+
 use crate::partition::flusher::SendFrameFn;
+
+/// Data-stream payload-id for the dynamic-mode hard-delete RPC
+/// (SDK → controller). The body is the structured `partition_id` bytes;
+/// the controller routes it to the per-Partition file lifecycle.
+pub const DELETE_PARTITION_STATE_PAYLOAD_ID: &str = "delete_partition_state";
 
 const ENV_RING_CAPACITY: &str = "FLEZHA_RECONNECT_RING_CAPACITY";
 const DEFAULT_RING_CAPACITY: usize = 1024;
@@ -88,6 +96,26 @@ impl SinkState {
 }
 
 static STATE: Mutex<SinkState> = Mutex::new(SinkState::new());
+
+/// Live secondary stream, mirrored from the sink install. Used by the
+/// reaper's fire-and-forget `delete_partition_state` send — no reconnect
+/// ring, no flood detection; a failed write is dropped.
+static SECONDARY_STREAM: Mutex<Option<Arc<FlezhaStream>>> = Mutex::new(None);
+
+/// Set/clear the secondary stream used by [`send_oneshot`]. Called from the
+/// streams-connect path alongside [`install_global_sink`].
+pub fn set_secondary_stream(stream: Option<Arc<FlezhaStream>>) {
+    *SECONDARY_STREAM.lock().expect("secondary stream lock poisoned") = stream;
+}
+
+/// Best-effort one-shot write of a pre-built frame to the current secondary
+/// stream. `false` if no stream is installed or the write fails (no retry).
+pub fn send_oneshot(frame: &[u8]) -> bool {
+    match SECONDARY_STREAM.lock().expect("secondary stream lock poisoned").as_ref() {
+        Some(stream) => (&**stream).write_all(frame).is_ok(),
+        None => false,
+    }
+}
 
 fn ring_capacity() -> usize {
     crate::util::env_parse_positive(ENV_RING_CAPACITY, DEFAULT_RING_CAPACITY)
