@@ -1,0 +1,5 @@
+error: #[flezha::shard] expects exactly one by-value input parameter before the optional `&mut State`
+ --> tests/ui/shard_many_inputs.rs:2:17
+  |
+2 | fn f(a: String, b: String) -> Vec<u8> {
+  |                 ^^^^^^^^^

@@ -8,7 +8,7 @@ pub mod ctx;
 pub mod error;
 pub mod state_handle;
 
-pub use change::{Change, CoalesceKey, NoChange};
+pub use change::{Change, CoalesceKey, DerivedState, NoChange};
 pub use clock::{Clock, EventTimeFrom, LogicalClock, WallClock};
 #[allow(unused_imports)]
 pub(crate) use ctx::EmitSink;

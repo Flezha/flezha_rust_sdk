@@ -1,0 +1,160 @@
+//! `flezha::relay! { id: "...", pipeline: input::<T> -> A -> B -> plugin::<U>("k") }`
+//! — lowers a strictly linear pipeline to a `channels()` body + inventory
+//! auto-registration. Fan-out / multi-input is rejected with a message
+//! pointing at an explicit `channels()`. See `docs/sdk_authoring_contract.md`
+//! §5 and design D6.
+
+use proc_macro2::TokenStream;
+use quote::{format_ident, quote};
+use syn::parse::{Parse, ParseStream};
+use syn::{Ident, LitStr, Path, Token, Type};
+
+use crate::util::snake_to_pascal;
+
+struct RelayDef {
+    id: String,
+    input_ty: Type,
+    shards: Vec<Path>,
+    plugin_ty: Type,
+    plugin_name: String,
+}
+
+impl Parse for RelayDef {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        // `id: "..."`,
+        let id_kw: Ident = input.parse()?;
+        if id_kw != "id" {
+            return Err(syn::Error::new_spanned(id_kw, "expected `id:`"));
+        }
+        input.parse::<Token![:]>()?;
+        let id: LitStr = input.parse()?;
+        input.parse::<Token![,]>()?;
+
+        // `pipeline:`
+        let pipe_kw: Ident = input.parse()?;
+        if pipe_kw != "pipeline" {
+            return Err(syn::Error::new_spanned(pipe_kw, "expected `pipeline:`"));
+        }
+        input.parse::<Token![:]>()?;
+
+        // `input::<T>`
+        let input_kw: Ident = input.parse()?;
+        if input_kw != "input" {
+            return Err(syn::Error::new_spanned(
+                input_kw,
+                "pipeline must start with `input::<T>`",
+            ));
+        }
+        input.parse::<Token![::]>()?;
+        input.parse::<Token![<]>()?;
+        let input_ty: Type = input.parse()?;
+        input.parse::<Token![>]>()?;
+
+        // `-> shard -> shard -> ... -> plugin::<U>("name")`
+        let mut shards: Vec<Path> = Vec::new();
+        let mut plugin: Option<(Type, String)> = None;
+        while input.peek(Token![->]) {
+            input.parse::<Token![->]>()?;
+            let ahead = input.fork();
+            let is_plugin = ahead.parse::<Ident>().map(|i| i == "plugin").unwrap_or(false);
+            if is_plugin {
+                input.parse::<Ident>()?; // plugin
+                input.parse::<Token![::]>()?;
+                input.parse::<Token![<]>()?;
+                let ty: Type = input.parse()?;
+                input.parse::<Token![>]>()?;
+                let content;
+                syn::parenthesized!(content in input);
+                let name: LitStr = content.parse()?;
+                plugin = Some((ty, name.value()));
+                break;
+            }
+            shards.push(input.parse::<Path>()?);
+        }
+
+        if !input.is_empty() {
+            return Err(syn::Error::new(
+                input.span(),
+                "fan-out / multi-input pipelines are not supported by `flezha::relay!`; \
+                 declare the topology with an explicit `channels()` body",
+            ));
+        }
+
+        let (plugin_ty, plugin_name) = plugin.ok_or_else(|| {
+            syn::Error::new(
+                input_kw.span(),
+                "pipeline must end with `-> plugin::<U>(\"name\")`",
+            )
+        })?;
+
+        if shards.is_empty() {
+            return Err(syn::Error::new(
+                input_kw.span(),
+                "pipeline must contain at least one shard between `input` and `plugin`",
+            ));
+        }
+
+        Ok(RelayDef {
+            id: id.value(),
+            input_ty,
+            shards,
+            plugin_ty,
+            plugin_name,
+        })
+    }
+}
+
+pub fn expand(item: TokenStream) -> syn::Result<TokenStream> {
+    let def: RelayDef = syn::parse2(item)?;
+
+    let id = &def.id;
+    let input_ty = &def.input_ty;
+    let plugin_ty = &def.plugin_ty;
+    let plugin_name = &def.plugin_name;
+    let first_shard = &def.shards[0];
+    let last_shard = def.shards.last().unwrap();
+
+    let relay_ident = format_ident!("__FlezhaRelay_{}", sanitize_ident(&def.id));
+
+    // Inter-shard hops carry the producer's `Output` type.
+    let hops = def.shards.windows(2).enumerate().map(|(i, pair)| {
+        let prod = &pair[0];
+        let cons = &pair[1];
+        let hop_name = format!("__hop{}", i + 1);
+        quote! {
+            c.channel::<<#prod as ::flezha_executor::Shard>::Output>(#hop_name)
+                .from::<#prod>()
+                .into::<#cons>();
+        }
+    });
+
+    Ok(quote! {
+        #[doc(hidden)]
+        struct #relay_ident;
+        impl ::flezha_executor::Relay for #relay_ident {
+            fn factory_id() -> &'static str { #id }
+            fn channels(c: &mut ::flezha_executor::ChannelBuilder) {
+                c.input::<#input_ty>("input").into::<#first_shard>();
+                #(#hops)*
+                c.channel::<#plugin_ty>(#plugin_name)
+                    .from::<#last_shard>()
+                    .to_plugin(#plugin_name);
+            }
+        }
+        ::flezha_executor::inventory::submit! {
+            ::flezha_executor::AutoRelay::new(
+                <#relay_ident as ::flezha_executor::Relay>::factory_id,
+                || ::flezha_executor::register_relay::<#relay_ident>(),
+            )
+        }
+    })
+}
+
+/// Make a struct-name suffix from a factory id string.
+fn sanitize_ident(id: &str) -> String {
+    let cleaned: String = id
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '_' })
+        .collect();
+    snake_to_pascal(&cleaned)
+}

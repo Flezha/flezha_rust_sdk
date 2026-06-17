@@ -121,9 +121,57 @@ pub use flz_transport::{service, transport};
 pub use partition::{RestoreError, RestoreInitPayload};
 pub use relay::Relay;
 pub use shard::{
-    Change, Clock, CoalesceKey, EventTimeFrom, LogicalClock, NoChange, Shard, ShardCtx, ShardError,
-    StateHandle, WallClock,
+    Change, Clock, CoalesceKey, DerivedState, EventTimeFrom, LogicalClock, NoChange, Shard,
+    ShardCtx, ShardError, StateHandle, WallClock,
 };
+
+/// Authoring sugar. `#[flezha::shard]`, `#[derive(flezha::State)]`, and
+/// `flezha::relay!` expand to the trait surface above; see
+/// `docs/sdk_authoring_contract.md`.
+pub use flezha_macros::{relay, shard, State};
+
+/// Re-exported so macro-generated code can `submit!` into the auto-relay
+/// collection without the user adding an `inventory` dependency.
+pub use inventory;
+
+/// A relay the single-shard auto-wire path (`#[flezha::shard(sink = …)]`) or
+/// `flezha::relay!` registers without an explicit `register_relay` call.
+/// Generated code `submit!`s one of these; [`register_inventory_relays`]
+/// harvests them at startup.
+pub struct AutoRelay {
+    /// The class's controller-facing factory id (for duplicate detection).
+    pub factory_id: fn() -> &'static str,
+    /// Registers the class topology (`register_relay::<R>()`).
+    pub register: fn(),
+}
+
+impl AutoRelay {
+    pub const fn new(factory_id: fn() -> &'static str, register: fn()) -> Self {
+        Self {
+            factory_id,
+            register,
+        }
+    }
+}
+
+inventory::collect!(AutoRelay);
+
+/// Harvest every auto-registered relay (single-shard auto-wire +
+/// `flezha::relay!`) into the class registry. Called once at startup. Panics
+/// on a duplicate `factory_id` — across two auto-registered relays or against
+/// a relay already registered manually via [`register_relay`].
+pub fn register_inventory_relays() {
+    for auto in inventory::iter::<AutoRelay> {
+        let factory_id = (auto.factory_id)();
+        if relay::registry::get_class(factory_id).is_some() {
+            panic!(
+                "flezha: duplicate factory_id `{factory_id}`: an auto-registered relay collides \
+                 with another auto-registered or manually-registered relay"
+            );
+        }
+        (auto.register)();
+    }
+}
 
 use crate::executor::{ClientResponseMessage, ExecutorMessage};
 use crate::relay::instance::RelayInstance;
@@ -162,6 +210,10 @@ pub struct Flezha {
 
 impl Flezha {
     fn new(id: String) -> Flezha {
+        // Harvest single-shard auto-wire + `relay!` relays before the executor
+        // starts so the class registry is complete by the time AddRelay arrives.
+        register_inventory_relays();
+
         let (otx, orx): (Sender<ExecutorMessage>, Receiver<ExecutorMessage>) =
             crossbeam::channel::unbounded();
         let (ctx, irx): (

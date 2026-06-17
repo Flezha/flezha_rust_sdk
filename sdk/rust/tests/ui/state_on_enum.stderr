@@ -1,0 +1,5 @@
+error: #[derive(flezha::State)] can only be applied to a struct; a mutation that is conditional, multi-field-atomic, or computed needs a hand-written `Change`
+ --> tests/ui/state_on_enum.rs:2:6
+  |
+2 | enum E {
+  |      ^

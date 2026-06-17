@@ -1,0 +1,5 @@
+error: #[flezha::shard] static keys (`keys`/`partition_for`) and dynamic `shard_key` are mutually exclusive (composite mode is not supported)
+ --> tests/ui/shard_static_and_dynamic.rs:2:1
+  |
+2 | fn f(a: String) -> Vec<u8> {
+  | ^^

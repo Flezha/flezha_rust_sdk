@@ -1,0 +1,5 @@
+error: #[derive(flezha::State)] requires a struct with named fields; hand-write a `Change` for anything richer
+ --> tests/ui/state_on_tuple_struct.rs:2:8
+  |
+2 | struct T(u32);
+  |        ^
