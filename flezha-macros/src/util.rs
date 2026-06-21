@@ -19,6 +19,26 @@ pub fn first_generic_arg<'a>(ty: &'a Type, name: &str) -> Option<&'a Type> {
     })
 }
 
+/// If `ty` is `HashMap<K, V>` (matching the last path segment named
+/// `HashMap`), return `(K, V)`.
+pub fn map_kv(ty: &Type) -> Option<(&Type, &Type)> {
+    let Type::Path(tp) = ty else { return None };
+    let seg = tp.path.segments.last()?;
+    if seg.ident != "HashMap" {
+        return None;
+    }
+    let PathArguments::AngleBracketed(args) = &seg.arguments else {
+        return None;
+    };
+    let mut tys = args.args.iter().filter_map(|a| match a {
+        GenericArgument::Type(t) => Some(t),
+        _ => None,
+    });
+    let k = tys.next()?;
+    let v = tys.next()?;
+    Some((k, v))
+}
+
 /// `do_nothing` → `DoNothing`. Used for the generated shard type name and for
 /// `Set<Field>` / `Push<Field>` change-variant names.
 pub fn snake_ident_to_pascal(ident: &Ident) -> Ident {

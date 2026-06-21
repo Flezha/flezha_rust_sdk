@@ -1,0 +1,5 @@
+error: #[derive(flezha::State)]: a map field needs a `#[journal(map_set | map_vec | map_deque)]` annotation to derive its per-key journaling mutators; hand-write a `Change` for anything richer
+ --> tests/ui/state_map_without_journal.rs:5:5
+  |
+5 |     m: HashMap<String, f64>,
+  |     ^^^^^^^^^^^^^^^^^^^^^^^

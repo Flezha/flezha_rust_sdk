@@ -234,22 +234,29 @@ impl<S: Shard> ShardTestHarness<S> {
     }
 
     /// Determinism gate: replay the recorded change log against a
-    /// re-constructed initial state and assert byte-equality with the
-    /// harness's terminal state via `serde::Serialize` round-trip.
+    /// re-constructed initial state and assert equality with the harness's
+    /// terminal state via a canonical-JSON round-trip.
+    ///
+    /// Comparison is canonical JSON (`serde_json::Value` orders map keys via
+    /// `BTreeMap` and preserves array order) rather than raw bytes, so a
+    /// `HashMap`-keyed state — whose iteration order is hash-seed dependent per
+    /// instance — does not produce false divergences. Collection ordering
+    /// inside arrays (`Vec` / `VecDeque`) is still significant and a genuine
+    /// replay divergence still differs.
     pub fn replay_equals(&self) -> Result<(), ReplayMismatch>
     where
         S::State: serde::Serialize + serde::de::DeserializeOwned,
     {
         let initial: S::State = deserialize_snapshot::<S>(&self.initial_state_bytes);
         let replayed = <ShardTestHarness<S>>::replay(initial, &self.recorded_changes);
-        let expected = serialize_snapshot(&self.state);
-        let actual = serialize_snapshot(&replayed);
+        let expected = canonical_json(&self.state);
+        let actual = canonical_json(&replayed);
         if expected == actual {
             Ok(())
         } else {
             Err(ReplayMismatch {
-                expected_serialized: expected,
-                actual_serialized: actual,
+                expected_serialized: expected.into_bytes(),
+                actual_serialized: actual.into_bytes(),
             })
         }
     }
@@ -262,6 +269,14 @@ impl<S: Shard> ShardTestHarness<S> {
 
 fn serialize_snapshot<T: serde::Serialize>(value: &T) -> Vec<u8> {
     postcard::to_allocvec(value).expect("serialize_snapshot: postcard failed")
+}
+
+/// Canonical JSON for order-insensitive state comparison: `serde_json::Value`
+/// keys are `BTreeMap`-ordered, so `HashMap` iteration order does not leak in.
+fn canonical_json<T: serde::Serialize>(value: &T) -> String {
+    let v: serde_json::Value =
+        serde_json::to_value(value).expect("canonical_json: serde_json failed");
+    v.to_string()
 }
 
 fn deserialize_snapshot<S: Shard>(bytes: &[u8]) -> S::State

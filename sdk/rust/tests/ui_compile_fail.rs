@@ -23,7 +23,14 @@ fn ui_compile_fail() {
     t.compile_fail("tests/ui/shard_sink_unit_return.rs");
     t.compile_fail("tests/ui/shard_static_and_dynamic.rs");
     t.compile_fail("tests/ui/shard_keys_without_partition_for.rs");
+    t.compile_fail("tests/ui/shard_init_without_state.rs");
     t.compile_fail("tests/ui/state_on_enum.rs");
     t.compile_fail("tests/ui/state_on_tuple_struct.rs");
     t.compile_fail("tests/ui/relay_fan_out.rs");
+
+    // Keyed/collection journaling (`expressive-state-journaling`).
+    t.compile_fail("tests/ui/state_map_without_journal.rs");
+    t.compile_fail("tests/ui/state_journal_type_mismatch.rs");
+    t.compile_fail("tests/ui/state_journal_unknown_mode.rs");
+    t.pass("tests/ui/shard_option_output.rs");
 }

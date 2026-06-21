@@ -28,7 +28,7 @@ pub fn shard(attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 /// `#[derive(flezha::State)]` derive macro. See module docs.
-#[proc_macro_derive(State)]
+#[proc_macro_derive(State, attributes(journal))]
 pub fn derive_state(item: TokenStream) -> TokenStream {
     state::expand(item.into())
         .unwrap_or_else(syn::Error::into_compile_error)

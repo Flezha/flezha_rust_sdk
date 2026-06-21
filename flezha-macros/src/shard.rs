@@ -16,6 +16,7 @@ use crate::util::{first_generic_arg, snake_ident_to_pascal};
 struct ShardArgs {
     id: Option<String>,
     sink: Option<String>,
+    init: Option<syn::Path>,
     keys: Option<Vec<Expr>>,
     partition_for: Option<syn::Path>,
     shard_key: Option<syn::Path>,
@@ -96,13 +97,20 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             "#[flezha::shard] static partitioning requires both `keys = [..]` and `partition_for = fn`",
         ));
     }
+    if args.init.is_some() && state_param.is_none() {
+        return Err(syn::Error::new(
+            sig.span(),
+            "#[flezha::shard] `init` requires a `&mut State` parameter; a stateless shard has no \
+             state to initialize",
+        ));
+    }
 
     // --- Names. ---
     let struct_ident = snake_ident_to_pascal(fn_ident);
     let shard_name = args.id.clone().unwrap_or_else(|| fn_ident.to_string());
 
     // --- State / Change wiring. ---
-    let (state_ty_tokens, change_ty_tokens, init_state_expr, apply_change_item, state_binding, mut_use) =
+    let (state_ty_tokens, change_ty_tokens, apply_change_item, state_binding, mut_use) =
         match &state_param {
             Some((pat, ty)) => {
                 let handle_bind = quote! { mut #pat: ::flezha_executor::StateHandle<'_, Self> };
@@ -110,7 +118,6 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                 (
                     quote! { #ty },
                     quote! { <#ty as ::flezha_executor::DerivedState>::Change },
-                    quote! { <#ty as ::core::default::Default>::default() },
                     quote! {
                         fn apply_change(state: &mut Self::State, change: &Self::Change) {
                             <#ty as ::flezha_executor::DerivedState>::apply_change(state, change);
@@ -123,14 +130,43 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             None => (
                 quote! { () },
                 quote! { ::flezha_executor::NoChange },
-                // Empty body: a `-> ()` fn returns unit without a bare `()` expr
-                // (which clippy::unused_unit would flag).
-                quote! {},
                 quote! {},
                 quote! { _: ::flezha_executor::StateHandle<'_, Self> },
                 quote! {},
             ),
         };
+
+    // --- init_state: `init = fn` maps the shard key to the initial state
+    // (per-partition config from the static partition key); otherwise the
+    // state defaults. The payload is auto-applied by the runtime after this
+    // returns, so the init fn never sees it.
+    let init_state_fn = match (&state_param, &args.init) {
+        (Some(_), Some(init_path)) => quote! {
+            fn init_state(
+                __flezha_shard_key: ::core::option::Option<&str>,
+                _: ::core::option::Option<::flezha_executor::RestoreInitPayload<'_>>,
+            ) -> Self::State {
+                #init_path(__flezha_shard_key)
+            }
+        },
+        (Some((_, ty)), None) => quote! {
+            fn init_state(
+                _: ::core::option::Option<&str>,
+                _: ::core::option::Option<::flezha_executor::RestoreInitPayload<'_>>,
+            ) -> Self::State {
+                <#ty as ::core::default::Default>::default()
+            }
+        },
+        // Stateless: `-> ()` returns unit without a bare `()` expr (which
+        // clippy::unused_unit would flag). `init` is rejected above.
+        (None, _) => quote! {
+            fn init_state(
+                _: ::core::option::Option<&str>,
+                _: ::core::option::Option<::flezha_executor::RestoreInitPayload<'_>>,
+            ) -> Self::State {
+            }
+        },
+    };
 
     // --- Clock. ---
     let clock_ty = match &args.clock {
@@ -158,6 +194,28 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             quote! {
                 let __flezha_out: Self::Output = (#user_body)?;
                 __flezha_ctx.emit::<Self::Output>(__flezha_out)
+            },
+        ),
+        // The body is wrapped in a `move ||` so the author's `?` / `return None`
+        // resolve against `Option<Output>`, not the `Result`-typed `run`.
+        Output::OptionValue(ty) => (
+            quote! { #ty },
+            quote! {
+                let __flezha_out: ::core::option::Option<Self::Output> = (move || #user_body)();
+                match __flezha_out {
+                    ::core::option::Option::Some(__v) => __flezha_ctx.emit::<Self::Output>(__v),
+                    ::core::option::Option::None => ::core::result::Result::Ok(()),
+                }
+            },
+        ),
+        Output::ResultOptionValue(ty) => (
+            quote! { #ty },
+            quote! {
+                let __flezha_out: ::core::option::Option<Self::Output> = (move || #user_body)()?;
+                match __flezha_out {
+                    ::core::option::Option::Some(__v) => __flezha_ctx.emit::<Self::Output>(__v),
+                    ::core::option::Option::None => ::core::result::Result::Ok(()),
+                }
             },
         ),
     };
@@ -264,12 +322,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
 
             fn name() -> &'static str { #shard_name }
 
-            fn init_state(
-                _: ::core::option::Option<&str>,
-                _: ::core::option::Option<::flezha_executor::RestoreInitPayload<'_>>,
-            ) -> Self::State {
-                #init_state_expr
-            }
+            #init_state_fn
 
             #apply_change_item
             #partition_items
@@ -296,11 +349,19 @@ enum Output {
     ResultUnit,
     Value(Type),
     ResultValue(Type),
+    OptionValue(Type),
+    ResultOptionValue(Type),
 }
 
 impl Output {
     fn emits(&self) -> bool {
-        matches!(self, Output::Value(_) | Output::ResultValue(_))
+        matches!(
+            self,
+            Output::Value(_)
+                | Output::ResultValue(_)
+                | Output::OptionValue(_)
+                | Output::ResultOptionValue(_)
+        )
     }
 }
 
@@ -313,11 +374,18 @@ fn infer_output(ret: &ReturnType) -> syn::Result<Output> {
         return Ok(Output::Unit);
     }
     if let Some(inner) = first_generic_arg(ty, "Result") {
-        return Ok(if is_unit(inner) {
-            Output::ResultUnit
-        } else {
-            Output::ResultValue(inner.clone())
-        });
+        if is_unit(inner) {
+            return Ok(Output::ResultUnit);
+        }
+        // `Result<Option<T>, _>` emits on `Some`, skips on `None`.
+        if let Some(opt_inner) = first_generic_arg(inner, "Option") {
+            return Ok(Output::ResultOptionValue(opt_inner.clone()));
+        }
+        return Ok(Output::ResultValue(inner.clone()));
+    }
+    // `Option<T>` emits on `Some`, skips on `None`.
+    if let Some(opt_inner) = first_generic_arg(ty, "Option") {
+        return Ok(Output::OptionValue(opt_inner.clone()));
     }
     Ok(Output::Value((**ty).clone()))
 }
@@ -374,6 +442,7 @@ fn parse_args(attr: TokenStream) -> syn::Result<ShardArgs> {
         match key.as_str() {
             "id" => args.id = Some(expect_str(&value)?),
             "sink" => args.sink = Some(expect_str(&value)?),
+            "init" => args.init = Some(expect_path(&value)?),
             "keys" => args.keys = Some(expect_array(&value)?),
             "partition_for" => args.partition_for = Some(expect_path(&value)?),
             "shard_key" => args.shard_key = Some(expect_path(&value)?),

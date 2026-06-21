@@ -1,0 +1,5 @@
+error: #[flezha::shard] `init` requires a `&mut State` parameter; a stateless shard has no state to initialize
+ --> tests/ui/shard_init_without_state.rs:2:1
+  |
+2 | fn f(a: String) -> Vec<u8> {
+  | ^^
