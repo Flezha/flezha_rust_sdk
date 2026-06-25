@@ -130,6 +130,9 @@ pub fn get_handler(_payload_id: &str, message: &[u8]) -> Result<FrameOutcome, Co
         Some(Command::ReassignExecutorId(proto_ch)) => {
             CommandActionType::Regular(Box::new(proto_ch))
         }
+        // SDK is the SENDER for TaskCompleted — receiving it is a protocol
+        // bug. Drop and log, like `ExecutorShutdownNotification`.
+        Some(Command::TaskCompleted(_)) => CommandActionType::NotificationIgnore,
         None => return Err(CommandDecodeError::EmptyCommand),
     };
 

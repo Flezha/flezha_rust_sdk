@@ -7,7 +7,9 @@
 //! `RelayInstanceRegistry`: per-`ExecutorNode`; one entry per
 //! `AddRelay` (instance_id). Reuses the DashMap pattern from the
 //! pre-change `RelayRegistry` so concurrent reader/writer access is
-//! sharded.
+//! sharded. Values are a sealed [`UnitInstance`] — relay or task — so the
+//! dispatch boundary resolves the variant once per frame; the `Arc` keeps
+//! map values pointer-sized.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
@@ -16,6 +18,15 @@ use lazy_static::lazy_static;
 
 use crate::relay::instance::RelayInstance;
 use crate::relay::topology::RelayTopology;
+
+/// A control-plane-managed unit instance. Sealed two-variant enum: a new kind
+/// must be handled at every match, and the 2-variant match keeps the relay hot
+/// path branch-predictable rather than devirtualizing a single variant. A task
+/// carries only its instance id — it has no per-instance runtime state.
+pub enum UnitInstance {
+    Relay(Arc<RelayInstance>),
+    Task(Arc<str>),
+}
 
 lazy_static! {
     static ref CLASS_REGISTRY: RwLock<HashMap<&'static str, Arc<RelayTopology>>> =
@@ -35,7 +46,7 @@ pub fn class_factory_ids() -> Vec<&'static str> {
 }
 
 pub struct RelayInstanceRegistry {
-    inner: dashmap::DashMap<String, Arc<RelayInstance>>,
+    inner: dashmap::DashMap<String, Arc<UnitInstance>>,
 }
 
 impl RelayInstanceRegistry {
@@ -45,17 +56,36 @@ impl RelayInstanceRegistry {
         }
     }
 
-    pub fn register(&self, instance: Arc<RelayInstance>) -> Arc<RelayInstance> {
+    pub fn register_relay(&self, instance: Arc<RelayInstance>) -> Arc<RelayInstance> {
         let id = instance.instance_id.to_string();
-        self.inner.insert(id, Arc::clone(&instance));
+        self.inner
+            .insert(id, Arc::new(UnitInstance::Relay(Arc::clone(&instance))));
         instance
     }
 
-    pub fn get(&self, instance_id: &str) -> Option<Arc<RelayInstance>> {
+    pub fn register_task(&self, instance_id: Arc<str>) {
+        self.inner.insert(
+            instance_id.to_string(),
+            Arc::new(UnitInstance::Task(instance_id)),
+        );
+    }
+
+    /// Resolve the unit variant for `instance_id` — the per-frame dispatch
+    /// lookup.
+    pub fn get_unit(&self, instance_id: &str) -> Option<Arc<UnitInstance>> {
         self.inner.get(instance_id).map(|r| Arc::clone(r.value()))
     }
 
-    pub fn remove(&self, instance_id: &str) -> Option<Arc<RelayInstance>> {
+    /// Resolve `instance_id` only when it is a relay; `None` for a task or
+    /// an absent id.
+    pub fn get_relay(&self, instance_id: &str) -> Option<Arc<RelayInstance>> {
+        self.inner.get(instance_id).and_then(|r| match &**r.value() {
+            UnitInstance::Relay(ri) => Some(Arc::clone(ri)),
+            UnitInstance::Task(_) => None,
+        })
+    }
+
+    pub fn remove(&self, instance_id: &str) -> Option<Arc<UnitInstance>> {
         self.inner.remove(instance_id).map(|(_, v)| v)
     }
 
@@ -63,10 +93,15 @@ impl RelayInstanceRegistry {
         self.inner.contains_key(instance_id)
     }
 
-    pub fn snapshot(&self) -> HashMap<String, Arc<RelayInstance>> {
+    /// Snapshot of the relay instances only — tasks carry no serializable
+    /// state, so the shutdown snapshot and `get_relays` view skip them.
+    pub fn snapshot_relays(&self) -> HashMap<String, Arc<RelayInstance>> {
         self.inner
             .iter()
-            .map(|r| (r.key().clone(), Arc::clone(r.value())))
+            .filter_map(|r| match &**r.value() {
+                UnitInstance::Relay(ri) => Some((r.key().clone(), Arc::clone(ri))),
+                UnitInstance::Task(_) => None,
+            })
             .collect()
     }
 
@@ -100,7 +135,7 @@ impl Default for RelayInstanceRegistry {
 pub fn snapshot_as_relay_view(
     registry: &RelayInstanceRegistry,
 ) -> Arc<RwLock<HashMap<String, Arc<Mutex<Arc<RelayInstance>>>>>> {
-    let snapshot = registry.snapshot();
+    let snapshot = registry.snapshot_relays();
     let mapped: HashMap<String, Arc<Mutex<Arc<RelayInstance>>>> = snapshot
         .into_iter()
         .map(|(k, v)| (k, Arc::new(Mutex::new(v))))

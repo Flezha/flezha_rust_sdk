@@ -5,7 +5,7 @@ pub struct CommandRequest {
     pub reference_id: ::prost::alloc::string::String,
     #[prost(
         oneof = "command_request::Command",
-        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21"
+        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22"
     )]
     pub command: ::core::option::Option<command_request::Command>,
 }
@@ -53,6 +53,8 @@ pub mod command_request {
         ExecutorReconnected(super::ExecutorReconnected),
         #[prost(message, tag = "21")]
         ReassignExecutorId(super::ReassignExecutorId),
+        #[prost(message, tag = "22")]
+        TaskCompleted(super::TaskCompleted),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -84,6 +86,11 @@ pub struct AddRelay {
     pub factory_id: ::prost::alloc::string::String,
     #[prost(string, tag = "3")]
     pub init_values: ::prost::alloc::string::String,
+    /// Compute-unit kind for this unit (e.g. "relay", "task"). Empty/absent
+    /// is interpreted as "relay" so pre-change SDKs and old wire frames stay
+    /// backward-compatible. Populated by the Controller from the relay's :kind.
+    #[prost(string, tag = "4")]
+    pub kind: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RemRelay {
@@ -250,7 +257,11 @@ pub struct PingResponse {
 /// SDK -> Controller, emitted as the FIRST frame on every newly-established
 /// control stream after `handle_reconnect` runs. Preserves the executor's
 /// identity across the reconnect so the Controller can compute a binding
-/// delta instead of re-issuing every relay.
+/// delta instead of re-issuing every relay. `reason` is one of
+/// `control_stream_broken | read_error | write_error | keepalive_timeout
+/// | controller_requested`. Old Controllers that do not recognise this
+/// variant silently skip it; new SDKs against an old Controller therefore
+/// degrade to the pre-change "re-issue everything" behaviour.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecutorReconnected {
     #[prost(string, tag = "1")]
@@ -262,10 +273,28 @@ pub struct ExecutorReconnected {
 }
 /// Controller -> SDK. Issued only when the Controller has reassigned the
 /// SDK's bindings to a different executor session during the disconnect
-/// window. The SDK updates its in-memory `executor_id` in place; subsequent
+/// window (i.e. `bindings_for_executor(previous_id)` is empty). The SDK
+/// updates its in-memory `executor_id` in place; subsequent
 /// `ExecutorReconnected` emissions carry the new id.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ReassignExecutorId {
     #[prost(string, tag = "1")]
     pub new_id: ::prost::alloc::string::String,
+}
+/// SDK -> Controller. Emitted by a task-kind unit when its run-once function
+/// returns. `status` is "ok" on success or "error" on failure (with `error`
+/// describing it). The Controller drives the same stop/teardown path as an
+/// explicit stop (deregister-on-completion) so a finished task is removed
+/// from the durable registry and never replayed on boot or misjudged by
+/// convergence. Direction is reversed like ExecutorShutdownNotification:
+/// SDK -> Controller over the "control_command" payload_id; old Controllers
+/// ignore the unknown variant via Protox unknown-field handling.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct TaskCompleted {
+    #[prost(string, tag = "1")]
+    pub relay_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub status: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub error: ::prost::alloc::string::String,
 }

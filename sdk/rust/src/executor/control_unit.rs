@@ -339,7 +339,11 @@ fn send_init_msg(
     previous_executor_id: Option<String>,
     stream_clone: Arc<FlezhaStream>,
 ) -> io::Result<()> {
-    let factory_ids: Vec<String> = class_factory_ids().iter().map(|s| s.to_string()).collect();
+    let factory_ids: Vec<String> = class_factory_ids()
+        .iter()
+        .chain(crate::task::registry::task_factory_ids().iter())
+        .map(|s| s.to_string())
+        .collect();
     let factories: Vec<FactoryInfo> = factory_ids
         .iter()
         .map(|id| FactoryInfo {

@@ -22,21 +22,48 @@ impl CommandAction for AddRelay {
             return ("start_relay".to_string(), Vec::new());
         }
 
-        match executor.start_relay(factory_id.clone(), instance_id.clone()) {
-            Some(instance) => {
-                if !self.init_values.is_empty() {
-                    if let Err(e) = crate::command::partition_state::apply_init_values(
-                        &instance,
-                        &self.init_values,
-                    ) {
-                        errors.push(e);
-                    }
+        // Empty kind ⇒ `relay`, keeping pre-kind wire frames backward-compatible.
+        let kind = if self.kind.is_empty() {
+            "relay"
+        } else {
+            self.kind.as_str()
+        };
+
+        match kind {
+            "task" => {
+                if !executor.start_task(
+                    factory_id.clone(),
+                    instance_id.clone(),
+                    self.init_values.clone(),
+                ) {
+                    errors.push(format!(
+                        "Task class with factory_id {} is not registered",
+                        factory_id
+                    ));
                 }
             }
-            None => {
+            "relay" => match executor.start_relay(factory_id.clone(), instance_id.clone()) {
+                Some(instance) => {
+                    if !self.init_values.is_empty() {
+                        if let Err(e) = crate::command::partition_state::apply_init_values(
+                            &instance,
+                            &self.init_values,
+                        ) {
+                            errors.push(e);
+                        }
+                    }
+                }
+                None => {
+                    errors.push(format!(
+                        "Relay class with factory_id {} is not registered",
+                        factory_id
+                    ));
+                }
+            },
+            other => {
                 errors.push(format!(
-                    "Relay class with factory_id {} is not registered",
-                    factory_id
+                    "unknown compute-unit kind '{}' for unit {}",
+                    other, instance_id
                 ));
             }
         }

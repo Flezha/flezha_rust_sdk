@@ -18,9 +18,10 @@ use super::{control_unit, ClientResponseMessage, ExecutorMessage, ExecutorStatus
 use crate::command;
 use crate::pb::{
     command_request::Command, CommandRequest, ExecutorReconnected as PbExecutorReconnected,
+    TaskCompleted as PbTaskCompleted,
 };
 use crate::relay::instance::RelayInstance;
-use crate::relay::registry::{get_class as get_relay_class, RelayInstanceRegistry};
+use crate::relay::registry::{get_class as get_relay_class, RelayInstanceRegistry, UnitInstance};
 use crate::shutdown::ShutdownBridge;
 use crate::util::nonce_suffix;
 use flz_transport::service::payloader;
@@ -63,7 +64,7 @@ impl ExecutorNode {
         factory_id: String,
         instance_id: String,
     ) -> Option<Arc<RelayInstance>> {
-        if let Some(existing) = self.relay_registry.get(&instance_id) {
+        if let Some(existing) = self.relay_registry.get_relay(&instance_id) {
             return Some(existing);
         }
         let topology = get_relay_class(&factory_id)?;
@@ -72,13 +73,47 @@ impl ExecutorNode {
             Arc::from(instance_id.as_str()),
             Arc::clone(&self.pool),
         );
-        Some(self.relay_registry.register(instance))
+        Some(self.relay_registry.register_relay(instance))
+    }
+
+    /// Spawn a task-kind unit: register it (idempotent on a duplicate id) and
+    /// schedule its `run` once on the work pool with `args` from `init_values`.
+    /// On return the task emits `TaskCompleted` (a panic becomes an "error"
+    /// completion, so a failing task neither kills a pool worker nor lingers
+    /// in the registry). Returns `false` when no task class is registered.
+    pub fn start_task(&self, factory_id: String, instance_id: String, args: String) -> bool {
+        if self.relay_registry.contains(&instance_id) {
+            return true;
+        }
+        let run = match crate::task::registry::get_class(&factory_id) {
+            Some(run) => run,
+            None => return false,
+        };
+
+        let id: Arc<str> = Arc::from(instance_id.as_str());
+        self.relay_registry.register_task(Arc::clone(&id));
+
+        self.pool.submit(Box::new(move || {
+            let mut ctx = crate::task::TaskCtx::new(Arc::clone(&id));
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                run(&mut ctx, &args)
+            }));
+            let (status, error) = match outcome {
+                Ok(Ok(())) => ("ok".to_string(), String::new()),
+                Ok(Err(e)) => ("error".to_string(), e.to_string()),
+                Err(panic) => ("error".to_string(), crate::shard::error::format_panic(panic)),
+            };
+            crate::executor::emit_task_completed(id.to_string(), status, error);
+        }));
+        true
     }
 
     pub fn stop_relay(&self, instance_id: &str) -> bool {
         match self.relay_registry.remove(instance_id) {
-            Some(instance) => {
-                instance.shutdown_reapers();
+            Some(unit) => {
+                if let UnitInstance::Relay(instance) = &*unit {
+                    instance.shutdown_reapers();
+                }
                 true
             }
             None => false,
@@ -90,7 +125,7 @@ impl ExecutorNode {
     }
 
     pub fn get_relay(&self, instance_id: &str) -> Option<Arc<RelayInstance>> {
-        self.relay_registry.get(instance_id)
+        self.relay_registry.get_relay(instance_id)
     }
 
     pub fn relay_dispatch_handle(&self) -> RelayDispatchHandle {
@@ -154,7 +189,7 @@ pub fn start(
             let registry = Arc::clone(&executor.relay_registry);
             shutdown_bridge.set_snapshot_fn(Box::new(move || {
                 registry
-                    .snapshot()
+                    .snapshot_relays()
                     .into_iter()
                     .map(|(k, instance)| {
                         (
@@ -221,9 +256,63 @@ pub fn start(
                 ExecutorMessage::SendDataHeartbeat => {
                     send_data_heartbeat(&executor.shared_io_streams);
                 }
+                ExecutorMessage::EmitTaskOutput { relay_id, payload } => {
+                    write_task_output(&executor.shared_io_streams, &relay_id, &payload);
+                }
+                ExecutorMessage::EmitTaskCompleted {
+                    relay_id,
+                    status,
+                    error,
+                } => {
+                    let frame = control_command_frame(
+                        "task-completed",
+                        Command::TaskCompleted(PbTaskCompleted {
+                            relay_id: relay_id.clone(),
+                            status,
+                            error,
+                        }),
+                    );
+                    if let Err(e) = (&*control_stream).write_all(&frame) {
+                        warn!(
+                            target: "flezha",
+                            "[flezha] TaskCompleted write failed for {}: {}", relay_id, e
+                        );
+                    }
+                }
             }
         }
     })
+}
+
+/// Write a task's output payload on a secondary stream, tagged with its
+/// `relay_id` so the controller routes it to the unit's bound plugins. The
+/// controller keys output fan-out on the payload id, so any one secondary
+/// stream suffices; best-effort like the data heartbeat.
+fn write_task_output(io_streams: &RwLock<HashMap<u32, FlezhaStream>>, relay_id: &str, payload: &[u8]) {
+    let frame = payloader::build_from_binary(relay_id, payload, HashMap::new());
+    let streams = io_streams.read().unwrap();
+    match streams.values().next() {
+        Some(stream) => {
+            let mut w: &FlezhaStream = stream;
+            if let Err(e) = w.write_all(&frame) {
+                eprintln!("[flezha] task {} output write failed: {}", relay_id, e);
+            }
+        }
+        None => eprintln!(
+            "[flezha] task {} output dropped: no secondary stream available",
+            relay_id
+        ),
+    }
+}
+
+/// Build an SDK -> Controller `control_command` frame for one oneof command,
+/// stamping a `<ref_prefix>-<nonce>` reference id.
+fn control_command_frame(ref_prefix: &str, command: Command) -> Vec<u8> {
+    let request = CommandRequest {
+        reference_id: format!("{ref_prefix}-{}", nonce_suffix()),
+        command: Some(command),
+    };
+    payloader::build_from_binary("control_command", &request.encode_to_vec(), HashMap::new())
 }
 
 /// Write a data-channel heartbeat on every secondary stream. Best-effort: a
@@ -320,20 +409,18 @@ fn handle_reconnect(
     }
 }
 
-/// Build the wire payload for the SDK -> Controller
-/// `ExecutorReconnected` frame. Extracted from `handle_reconnect` so
-/// the frame format stays unit-testable independently of the
-/// reconnect network path.
+/// Build the SDK -> Controller `ExecutorReconnected` frame. Extracted from
+/// `handle_reconnect` so the frame format stays unit-testable independently of
+/// the reconnect network path.
 fn build_executor_reconnected_frame(previous_id: &str, new_id: &str, reason: &str) -> Vec<u8> {
-    let request = CommandRequest {
-        reference_id: format!("reconnect-{}", nonce_suffix()),
-        command: Some(Command::ExecutorReconnected(PbExecutorReconnected {
+    control_command_frame(
+        "reconnect",
+        Command::ExecutorReconnected(PbExecutorReconnected {
             previous_id: previous_id.to_string(),
             new_id: new_id.to_string(),
             reason: reason.to_string(),
-        })),
-    };
-    payloader::build_from_binary("control_command", &request.encode_to_vec(), HashMap::new())
+        }),
+    )
 }
 
 /// Stream-reader handle for the Relay model. Cheap to clone; carries a
@@ -358,8 +445,19 @@ impl RelayDispatchHandle {
         metadata: &HashMap<String, String>,
         stream: Arc<FlezhaStream>,
     ) {
-        let instance = match self.registry.get(instance_id) {
-            Some(i) => i,
+        let instance = match self.registry.get_unit(instance_id) {
+            Some(unit) => match &*unit {
+                UnitInstance::Relay(ri) => Arc::clone(ri),
+                // A task has no input channel — it is fed only its start
+                // args, never wire frames. Drop and log.
+                UnitInstance::Task(_) => {
+                    eprintln!(
+                        "[flezha] data frame for task unit {} dropped (tasks have no input channel)",
+                        instance_id
+                    );
+                    return;
+                }
+            },
             None => {
                 eprintln!("[flezha] relay instance {} not found", instance_id);
                 return;

@@ -121,7 +121,7 @@ fn same_partition_never_runs_concurrently() {
     let pool = Arc::new(bi::WorkStealingPool::with_size(8));
     let registry = Arc::new(RelayInstanceRegistry::new());
     let instance = RelayInstance::new(topology, Arc::from("conc-instance"), Arc::clone(&pool));
-    registry.register(instance);
+    registry.register_relay(instance);
     let handle = RelayDispatchHandle {
         registry: Arc::clone(&registry),
     };
@@ -830,8 +830,8 @@ fn default_entry_policy_does_not_stall_sibling_relays() {
     let topology_b = build_topology_for::<WireRelayB>().expect("topology b");
     let instance_a = RelayInstance::new(topology_a, Arc::from("wire-a-default"), Arc::clone(&pool));
     let instance_b = RelayInstance::new(topology_b, Arc::from("wire-b-default"), Arc::clone(&pool));
-    registry.register(Arc::clone(&instance_a));
-    registry.register(Arc::clone(&instance_b));
+    registry.register_relay(Arc::clone(&instance_a));
+    registry.register_relay(Arc::clone(&instance_b));
 
     // Saturate A's mailbox; pre-acquire inflight so A's drain does not
     // make room for new frames during the test.
@@ -906,8 +906,8 @@ fn opt_in_entry_block_drains_inline_without_stalling_siblings() {
     let topology_b = build_topology_for::<WireRelayB>().expect("topology b");
     let instance_a = RelayInstance::new(topology_a, Arc::from("wire-a-block"), Arc::clone(&pool));
     let instance_b = RelayInstance::new(topology_b, Arc::from("wire-b-block"), Arc::clone(&pool));
-    registry.register(Arc::clone(&instance_a));
-    registry.register(Arc::clone(&instance_b));
+    registry.register_relay(Arc::clone(&instance_a));
+    registry.register_relay(Arc::clone(&instance_b));
 
     // Phantom drain: inflight held but no thread is draining, so only the
     // producer itself can free the full mailbox.

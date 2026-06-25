@@ -40,7 +40,7 @@ pub fn setup<R: Relay>(id: &str, pool_size: usize) -> (RelayDispatchHandle, Arc<
     let pool = Arc::new(WorkStealingPool::with_size(pool_size));
     let registry = Arc::new(RelayInstanceRegistry::new());
     let instance = RelayInstance::new(topology, Arc::from(id), pool);
-    registry.register(Arc::clone(&instance));
+    registry.register_relay(Arc::clone(&instance));
     (RelayDispatchHandle { registry }, instance)
 }
 

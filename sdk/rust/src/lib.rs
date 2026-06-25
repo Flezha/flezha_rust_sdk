@@ -95,6 +95,7 @@ mod executor;
 pub mod partition;
 pub mod relay;
 pub mod shard;
+pub mod task;
 mod shutdown;
 mod util;
 
@@ -120,6 +121,7 @@ use crossbeam::channel::{Receiver, Sender};
 pub use flz_transport::{service, transport};
 pub use partition::{RestoreError, RestoreInitPayload};
 pub use relay::Relay;
+pub use task::{Task, TaskCtx, TaskError};
 pub use shard::{
     Change, Clock, CoalesceKey, DerivedState, EventTimeFrom, LogicalClock, NoChange, Shard,
     ShardCtx, ShardError, StateHandle, WallClock,
@@ -198,6 +200,14 @@ pub fn register_relay<R: Relay>() {
     let topology =
         relay::builder::build_topology_for::<R>().expect("register_relay: invalid topology");
     relay::registry::register_class(R::factory_id(), topology);
+}
+
+/// Register a task class with the SDK. Sibling of [`register_relay`]: makes
+/// the class spawnable via `flz relay start <factory_id> --kind task`.
+/// Idempotent on the same `factory_id` — re-registration overwrites the
+/// prior entrypoint.
+pub fn register_task<T: Task>() {
+    task::registry::register_class(T::factory_id(), T::run as task::TaskRunFn);
 }
 
 pub struct Flezha {

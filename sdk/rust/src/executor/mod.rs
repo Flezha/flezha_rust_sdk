@@ -22,15 +22,33 @@ pub(crate) fn install_reconnect_trigger(otx: Sender<ExecutorMessage>) {
     let _ = RECONNECT_TRIGGER.set(Mutex::new(otx));
 }
 
-/// Ask the coordinator to drive a control-channel reconnect. No-op when
-/// the trigger is not installed (e.g. unit tests). `reason` is one of the
-/// canonical strings documented on [`ExecutorMessage::Reconnect`].
-pub(crate) fn request_reconnect(reason: &'static str) {
+/// Send a message to the coordinator from outside its thread, so control- and
+/// secondary-stream writes stay single-threaded. No-op when the trigger is not
+/// installed (e.g. unit tests).
+pub(crate) fn coordinator_send(msg: ExecutorMessage) {
     if let Some(lock) = RECONNECT_TRIGGER.get() {
         if let Ok(tx) = lock.lock() {
-            let _ = tx.send(ExecutorMessage::Reconnect(reason));
+            let _ = tx.send(msg);
         }
     }
+}
+
+/// Ask the coordinator to drive a control-channel reconnect. `reason` is one of
+/// the canonical strings documented on [`ExecutorMessage::Reconnect`].
+pub(crate) fn request_reconnect(reason: &'static str) {
+    coordinator_send(ExecutorMessage::Reconnect(reason));
+}
+
+/// Route a task's output to the coordinator (written on a secondary stream
+/// tagged with `relay_id`; the controller fans it out to the unit's plugins).
+pub(crate) fn emit_task_output(relay_id: String, payload: Vec<u8>) {
+    coordinator_send(ExecutorMessage::EmitTaskOutput { relay_id, payload });
+}
+
+/// Route a task's completion to the coordinator (written as a `TaskCompleted`
+/// control frame so the controller deregisters the unit).
+pub(crate) fn emit_task_completed(relay_id: String, status: String, error: String) {
+    coordinator_send(ExecutorMessage::EmitTaskCompleted { relay_id, status, error });
 }
 
 /// Serializes every test that mutates the process-global executor env vars
@@ -67,6 +85,12 @@ pub enum ExecutorMessage {
     /// secondary stream. Routed through the coordinator for the same
     /// single-threaded-write reason as `SendControlKeepalive`.
     SendDataHeartbeat,
+    /// A task emitted output; the coordinator writes it on a secondary stream
+    /// tagged with `relay_id` for the controller to fan out to the unit's plugins.
+    EmitTaskOutput { relay_id: String, payload: Vec<u8> },
+    /// A task's `run` returned; the coordinator writes a `TaskCompleted` frame
+    /// so the controller deregisters the unit.
+    EmitTaskCompleted { relay_id: String, status: String, error: String },
 }
 
 pub enum ExecutorStatus {
