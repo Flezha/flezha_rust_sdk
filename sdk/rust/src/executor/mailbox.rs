@@ -1,4 +1,4 @@
-//! Per-relay mailbox: bounded lock-free FIFO + inflight flag + counters.
+//! Per-operative mailbox: bounded lock-free FIFO + inflight flag + counters.
 //!
 //! Invariants:
 //!
@@ -41,7 +41,7 @@ use std::sync::Arc;
 use crossbeam::queue::ArrayQueue;
 
 use crate::executor::work_stealing_pool::{Task, WorkStealingPool};
-use crate::partition::PartitionCounters;
+use crate::segment::SegmentCounters;
 
 /// Returned by `push_and_maybe_submit` when the bounded queue rejects the
 /// push; the caller can recover the payload from the wrapper.
@@ -58,27 +58,27 @@ impl<Payload> std::fmt::Display for BackpressureError<Payload> {
 
 impl<Payload: std::fmt::Debug> std::error::Error for BackpressureError<Payload> {}
 
-/// Per-Partition mailbox: a bounded `ArrayQueue<Payload>` plus an
-/// `AtomicBool` inflight flag and a [`PartitionCounters`] block.
+/// Per-Segment mailbox: a bounded `ArrayQueue<Payload>` plus an
+/// `AtomicBool` inflight flag and a [`SegmentCounters`] block.
 ///
 /// `Payload` is the user-defined work item shape. For Flezha, it's
-/// [`crate::partition::PartitionPayload`].
+/// [`crate::segment::SegmentPayload`].
 pub struct Mailbox<Payload: Send + 'static> {
     queue: ArrayQueue<Payload>,
     inflight: AtomicBool,
-    counters: PartitionCounters,
+    counters: SegmentCounters,
 }
 
 impl<Payload: Send + 'static> Mailbox<Payload> {
     /// Allocate a bounded mailbox with the given capacity. Capacity must
     /// be `>= 1`; the `ArrayQueue` constructor panics on 0, so callers
-    /// (i.e. `relay::builder::resolve_mailbox_capacity`) must validate
+    /// (i.e. `operative::builder::resolve_mailbox_capacity`) must validate
     /// the value before calling here.
     pub fn with_capacity(capacity: usize) -> Self {
         Mailbox {
             queue: ArrayQueue::new(capacity),
             inflight: AtomicBool::new(false),
-            counters: PartitionCounters::default(),
+            counters: SegmentCounters::default(),
         }
     }
 
@@ -167,11 +167,11 @@ impl<Payload: Send + 'static> Mailbox<Payload> {
         self.queue.len() >= self.queue.capacity()
     }
 
-    /// Per-Partition counter set. Producer-side enqueue paths bump these
+    /// Per-Segment counter set. Producer-side enqueue paths bump these
     /// on push success / block / drop events; readers (future metrics
     /// export) use [`Ordering::Relaxed`] loads.
     #[inline]
-    pub fn counters(&self) -> &PartitionCounters {
+    pub fn counters(&self) -> &SegmentCounters {
         &self.counters
     }
 
@@ -230,7 +230,7 @@ mod tests {
     /// Capacity sized well above the test workload so the bounded queue
     /// never rejects in this pure ordering check; bounded-mailbox
     /// behavior under saturation has its own scenario tests in
-    /// `tests/relay_dispatch.rs`.
+    /// `tests/operative_dispatch.rs`.
     const TEST_CAPACITY: usize = 8192;
 
     #[test]

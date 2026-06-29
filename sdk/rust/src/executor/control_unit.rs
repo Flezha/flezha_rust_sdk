@@ -18,7 +18,7 @@ use serde::Serialize;
 use super::ClientResponseMessage;
 use crate::executor::ExecutorMessage;
 use crate::pb::Ping;
-use crate::relay::registry::class_factory_ids;
+use crate::operative::registry::class_factory_ids;
 use crate::util::nonce_suffix;
 
 /// Reader-thread handle + write stream + optional QUIC client returned by
@@ -341,7 +341,7 @@ fn send_init_msg(
 ) -> io::Result<()> {
     let factory_ids: Vec<String> = class_factory_ids()
         .iter()
-        .chain(crate::task::registry::task_factory_ids().iter())
+        .chain(crate::bounded::registry::bounded_factory_ids().iter())
         .map(|s| s.to_string())
         .collect();
     let factories: Vec<FactoryInfo> = factory_ids
@@ -423,7 +423,7 @@ mod tests {
     // mid-shutdown / being replaced), and the SDK blocks the control reader
     // forever instead of reconnecting. This is the production warm-restart
     // hang: the executor stayed "Connected" to the draining controller, never
-    // reached the new one, so no relay was ever re-registered.
+    // reached the new one, so no operative was ever re-registered.
     #[test]
     fn reconnects_when_controller_never_acknowledges() {
         let _guard = env_test_guard();

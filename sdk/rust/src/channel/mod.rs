@@ -1,9 +1,9 @@
-//! Channel runtime — typed end-to-end with per-relay namespacing.
+//! Channel runtime — typed end-to-end with per-operative namespacing.
 //!
-//! Hot-path uses interned `u32` channel IDs from a `RelayTopology`; the
+//! Hot-path uses interned `u32` channel IDs from a `OperativeTopology`; the
 //! `Channel<T>` handle is phantom-typed so wiring errors fire at compile
 //! time. Channel names are de-duplicated and assigned sequential IDs at
-//! `register_relay::<R>()` time and frozen for the process lifetime.
+//! `register_continuous::<R>()` time and frozen for the process lifetime.
 
 use std::any::Any;
 use std::marker::PhantomData;
@@ -16,10 +16,10 @@ pub use builder::{ChannelBuilder, ChannelDecl, ChannelDeclWithProducer, EntryCha
 pub use entry_type::EntryChannelType;
 
 pub type ChannelId = u32;
-pub type ShardId = u32;
+pub type OperationId = u32;
 
 /// Phantom-typed channel handle. The `id` is the index into
-/// `RelayTopology::channels`; the `T` parameter exists only for
+/// `OperativeTopology::channels`; the `T` parameter exists only for
 /// compile-time wiring checks via the builder methods.
 pub struct Channel<T> {
     pub id: ChannelId,
@@ -46,14 +46,14 @@ impl<T> Copy for Channel<T> {}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChannelKind {
     Entry,
-    InterShard,
+    InterOperation,
     PluginBound,
 }
 
 /// Per-channel backpressure policy applied at the producer-side push
 /// site when the consumer's bounded mailbox is full. Declared via
 /// `.on_full(...)` on the channel builder; defaults to `DropNewest` for
-/// entry channels and `Block` for inter-shard channels. Plugin-bound
+/// entry channels and `Block` for inter-operation channels. Plugin-bound
 /// channels have no SDK-side mailbox and ignore this value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OverflowPolicy {
@@ -69,7 +69,7 @@ pub enum OverflowPolicy {
 }
 
 /// Hybrid plugin sink: the runtime form of `also_to_plugin_with(...)`.
-/// Lives alongside an `InterShard` channel's consumer fan-out so a
+/// Lives alongside an `InterOperation` channel's consumer fan-out so a
 /// single emit reaches both consumer mailboxes (typed) and the named
 /// plugin (serialized to bytes).
 pub struct PluginSink {
@@ -80,11 +80,11 @@ pub struct PluginSink {
 pub struct ChannelDescriptor {
     pub name: Arc<str>,
     pub kind: ChannelKind,
-    pub producer: Option<ShardId>,
-    pub consumers: Vec<ShardId>,
+    pub producer: Option<OperationId>,
+    pub consumers: Vec<OperationId>,
     pub plugin_name: Option<Arc<str>>,
     /// For entry channels: convert wire bytes into the typed payload
-    /// (`Arc<S::Input>`). For inter-shard channels: `None` — payloads
+    /// (`Arc<S::Input>`). For inter-operation channels: `None` — payloads
     /// arrive already typed via `ctx.emit`. For plugin-bound channels:
     /// `None` — handled by the producer-side serializer.
     pub wrap_input: Option<EntryWrapFn>,
@@ -92,7 +92,7 @@ pub struct ChannelDescriptor {
     /// wire bytes. For other kinds: `None`. Hybrid channels populate
     /// `plugin_sink` instead.
     pub plugin_serializer: Option<PluginSerializeFn>,
-    /// For hybrid `InterShard` channels declared with
+    /// For hybrid `InterOperation` channels declared with
     /// `also_to_plugin_with(...)`: the named plugin sink. Mutually
     /// exclusive with `plugin_serializer` / `plugin_name`.
     pub plugin_sink: Option<PluginSink>,

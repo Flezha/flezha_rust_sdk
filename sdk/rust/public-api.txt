@@ -1,69 +1,66 @@
-# Public API surface — flezha_compute_engine
+# Public API surface — flezha_executor
 #
-# This file is a human-curated baseline of the crate's public surface
-# captured at `relay-state-persistence-rust` merge time. To re-record it
-# after a public-API change:
+# This file is a human-curated baseline of the crate's public surface.
+# To re-record it after a public-API change:
 #
 #   cargo install cargo-public-api
-#   cargo public-api -p flezha_compute_engine > sdk/rust/public-api.txt
+#   cargo public-api -p flezha_executor > sdk/rust/public-api.txt
 #
 # CI may diff this file against a fresh `cargo public-api` invocation
 # in a follow-up change; until then this file is informational and a
 # pointer for code reviewers.
-#
-# Items added by `relay-state-persistence-rust`:
 
 pub mod state {
-    pub use crate::partition::restore::RestoreError;
-    pub use crate::partition::restore::RestoreInitPayload;
-    pub use crate::shard::change::Change;
-    pub use crate::shard::change::CoalesceKey;
-    pub use crate::shard::change::NoChange;
-    pub use crate::shard::clock::Clock;
-    pub use crate::shard::clock::EventTimeFrom;
-    pub use crate::shard::clock::LogicalClock;
-    pub use crate::shard::clock::WallClock;
-    pub use crate::shard::state_handle::StateHandle;
+    pub use crate::segment::restore::RestoreError;
+    pub use crate::segment::restore::RestoreInitPayload;
+    pub use crate::operation::change::Change;
+    pub use crate::operation::change::CoalesceKey;
+    pub use crate::operation::change::NoChange;
+    pub use crate::operation::clock::Clock;
+    pub use crate::operation::clock::EventTimeFrom;
+    pub use crate::operation::clock::LogicalClock;
+    pub use crate::operation::clock::WallClock;
+    pub use crate::operation::state_handle::StateHandle;
 }
 
-pub use partition::RestoreError;
-pub use partition::RestoreInitPayload;
-pub use shard::Change;
-pub use shard::Clock;
-pub use shard::CoalesceKey;
-pub use shard::EventTimeFrom;
-pub use shard::LogicalClock;
-pub use shard::NoChange;
-pub use shard::Shard;
-pub use shard::ShardCtx;
-pub use shard::ShardError;
-pub use shard::StateHandle;
-pub use shard::WallClock;
+pub use segment::RestoreError;
+pub use segment::RestoreInitPayload;
+pub use operation::Change;
+pub use operation::Clock;
+pub use operation::CoalesceKey;
+pub use operation::EventTimeFrom;
+pub use operation::LogicalClock;
+pub use operation::NoChange;
+pub use operation::Operation;
+pub use operation::OperationCtx;
+pub use operation::OperationError;
+pub use operation::StateHandle;
+pub use operation::WallClock;
 
-# Trait surface evolution on `Shard`:
+# Trait surface on `Operation`:
 #
 #   type Change: Change;
 #   type Clock: Clock;
 #   type Config: DeserializeOwned + Send + Sync + 'static;
 #   const SCHEMA_VERSION: u32 = 1;
-#   fn init_state(shard_key: Option<&str>, init_payload: Option<RestoreInitPayload<'_>>) -> Self::State;
+#   fn init_state(segment_key: Option<&str>, init_payload: Option<RestoreInitPayload<'_>>) -> Self::State;
 #   fn apply_change(state: &mut Self::State, change: &Self::Change);
 #   fn compact_after_bytes() -> usize;
 #   fn from_config(cfg: Self::Config) -> Self;
-#   fn run(&mut self, input, state: StateHandle<'_, Self>, ctx: &mut ShardCtx<'_>) -> Result<(), ShardError>;
+#   fn run(&mut self, input, state: StateHandle<'_, Self>, ctx: &mut OperationCtx<'_>) -> Result<(), OperationError>;
 #
-# Trait surface evolution on `Relay`:
+# Trait surface on `ContinuousOperative`:
 #
 #   const PERSISTENCE_ENABLED: bool = true;
 #
 # Test harness (gated behind `cfg(any(test, feature = "testing"))`):
 #
 #   pub mod testing {
-#       pub use harness::ShardTestHarness;
+#       pub use harness::OperationTestHarness;
 #       pub use harness::ReplayMismatch;
 #   }
 
-# Items added by `relay-channel-fan-out-to-plugin`:
+# Channel fan-out-to-plugin surface:
 #
 # Builder method (in `channel/builder.rs`):
 #
@@ -73,21 +70,21 @@ pub use shard::WallClock;
 #           F: Fn(&T) -> Vec<u8> + Send + Sync + 'static;
 #   }
 #
-# New `BuildTopologyError` variant:
+# `BuildTopologyError` variant:
 #
 #   pub enum BuildTopologyError {
 #       /* existing variants unchanged */
 #       DuplicatePluginSink { channel: &'static str },
 #   }
 #
-# New `ShardError` variant:
+# `OperationError` variant:
 #
-#   pub enum ShardError {
+#   pub enum OperationError {
 #       /* existing variants unchanged */
 #       PluginSerializerPanic { channel: String, message: String },
 #   }
 #
-# New runtime form on `ChannelDescriptor`:
+# Runtime form on `ChannelDescriptor`:
 #
 #   pub struct ChannelDescriptor {
 #       /* existing fields unchanged */
@@ -98,7 +95,3 @@ pub use shard::WallClock;
 #       pub name: Arc<str>,
 #       pub serializer: PluginSerializeFn,
 #   }
-#
-# Diff against the previous baseline is purely additive: no method
-# signatures changed, no fields removed, and no existing variants
-# renumbered.

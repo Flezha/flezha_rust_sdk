@@ -1,5 +1,0 @@
-error: #[flezha::shard] static partitioning requires both `keys = [..]` and `partition_for = fn`
- --> tests/ui/shard_keys_without_partition_for.rs:2:1
-  |
-2 | fn f(a: String) -> Vec<u8> {
-  | ^^

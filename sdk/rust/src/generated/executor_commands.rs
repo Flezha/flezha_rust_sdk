@@ -18,21 +18,21 @@ pub mod command_request {
         #[prost(message, tag = "3")]
         ConnectSocket(super::ConnectSocket),
         #[prost(message, tag = "4")]
-        AddRelay(super::AddRelay),
+        AddOperative(super::AddOperative),
         #[prost(message, tag = "5")]
-        RemRelay(super::RemRelay),
+        RemOperative(super::RemOperative),
         #[prost(message, tag = "6")]
         MigrationSerialization(super::MigrationSerialization),
         #[prost(message, tag = "7")]
         MigrationDeserialization(super::MigrationDeserialization),
         #[prost(message, tag = "8")]
-        PartitionState(super::PartitionState),
+        SegmentState(super::SegmentState),
         #[prost(message, tag = "9")]
         ExecutorDisconnect(super::ExecutorDisconnect),
         #[prost(message, tag = "10")]
-        RelayMessage(super::RelayMessage),
+        OperationMessage(super::OperationMessage),
         #[prost(message, tag = "11")]
-        PartitionApplyState(super::PartitionApplyState),
+        SegmentApplyState(super::SegmentApplyState),
         #[prost(message, tag = "12")]
         ExecutorShutdownNotification(super::ExecutorShutdownNotification),
         #[prost(message, tag = "13")]
@@ -42,11 +42,11 @@ pub mod command_request {
         #[prost(message, tag = "15")]
         RestoreInitStateResponse(super::RestoreInitStateResponse),
         #[prost(message, tag = "16")]
-        CompactPartition(super::CompactPartition),
+        CompactSegment(super::CompactSegment),
         #[prost(message, tag = "17")]
-        CompactPartitionResponse(super::CompactPartitionResponse),
+        CompactSegmentResponse(super::CompactSegmentResponse),
         #[prost(message, tag = "18")]
-        PartitionMailboxStatus(super::PartitionMailboxStatus),
+        SegmentMailboxStatus(super::SegmentMailboxStatus),
         #[prost(message, tag = "19")]
         Ping(super::Ping),
         #[prost(message, tag = "20")]
@@ -54,7 +54,7 @@ pub mod command_request {
         #[prost(message, tag = "21")]
         ReassignExecutorId(super::ReassignExecutorId),
         #[prost(message, tag = "22")]
-        TaskCompleted(super::TaskCompleted),
+        BoundedCompleted(super::BoundedCompleted),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -79,79 +79,80 @@ pub struct ConnectSocket {
     pub sockets_count: u32,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct AddRelay {
+pub struct AddOperative {
     #[prost(string, tag = "1")]
-    pub relay_id: ::prost::alloc::string::String,
+    pub operative_id: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
     pub factory_id: ::prost::alloc::string::String,
     #[prost(string, tag = "3")]
     pub init_values: ::prost::alloc::string::String,
-    /// Compute-unit kind for this unit (e.g. "relay", "task"). Empty/absent
-    /// is interpreted as "relay" so pre-change SDKs and old wire frames stay
-    /// backward-compatible. Populated by the Controller from the relay's :kind.
+    /// Operative kind for this unit: "continuous" or "bounded". Default
+    /// (when populated by the Controller from the operative's :kind) is
+    /// "continuous".
     #[prost(string, tag = "4")]
     pub kind: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct RemRelay {
+pub struct RemOperative {
     #[prost(string, tag = "1")]
-    pub relay_id: ::prost::alloc::string::String,
+    pub operative_id: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct MigrationSerialization {
     #[prost(string, tag = "1")]
-    pub relay_id: ::prost::alloc::string::String,
+    pub operative_id: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct MigrationDeserialization {
     #[prost(string, tag = "1")]
-    pub relay_id: ::prost::alloc::string::String,
+    pub operative_id: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
     pub factory_id: ::prost::alloc::string::String,
     #[prost(bytes = "vec", tag = "3")]
     pub serialized_state: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct PartitionState {
+pub struct SegmentState {
     #[prost(string, tag = "1")]
-    pub relay_id: ::prost::alloc::string::String,
+    pub operative_id: ::prost::alloc::string::String,
 }
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct ExecutorDisconnect {}
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct RelayMessage {
+pub struct OperationMessage {
     #[prost(string, tag = "1")]
-    pub relay_id: ::prost::alloc::string::String,
+    pub operative_id: ::prost::alloc::string::String,
     #[prost(bytes = "vec", tag = "2")]
     pub payload: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct RelayMessageResponse {
+pub struct OperationMessageResponse {
     #[prost(bytes = "vec", tag = "1")]
     pub payload: ::prost::alloc::vec::Vec<u8>,
     #[prost(string, tag = "2")]
     pub error: ::prost::alloc::string::String,
 }
-/// Inverse of PartitionState. Sent by the Controller to an Executor SDK to
-/// prime a freshly-spawned Relay's GenServer/struct state from a
+/// Inverse of SegmentState. Sent by the Controller to an Executor SDK to
+/// prime a freshly-spawned Operative's GenServer/struct state from a
 /// previously-captured `state_binary`. Round-trips with the same opaque
-/// SDK-internal serialization used by PartitionState. SDKs that do not
+/// SDK-internal serialization used by SegmentState. SDKs that do not
 /// implement Apply respond with status="error" and error\[\] containing the
 /// canonical token "apply_state_not_supported".
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct PartitionApplyState {
+pub struct SegmentApplyState {
     #[prost(string, tag = "1")]
-    pub relay_id: ::prost::alloc::string::String,
+    pub operative_id: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
     pub factory_id: ::prost::alloc::string::String,
     #[prost(bytes = "vec", tag = "3")]
     pub state_binary: ::prost::alloc::vec::Vec<u8>,
 }
 /// Sent by the SDK to the Controller on graceful shutdown (SIGTERM, Drop of
-/// the SDK handle, explicit disconnect()) for each currently-running Relay.
-/// Carries the Executor's freshest in-memory state binary so the Controller
-/// can overwrite Overwatch.state.snapshot before the next AddRelay reissue
-/// (see executor-controller-connection-healing capability).
+/// the SDK handle, explicit disconnect()) for each currently-running
+/// Operative. Carries the Executor's freshest in-memory state binary so the
+/// Controller can overwrite Overwatch.state.snapshot before the next
+/// AddOperative reissue (see executor-controller-connection-healing
+/// capability).
 ///
 /// Direction is reversed compared to most CommandRequest variants: SDK -> Controller.
 /// Wire format reuses the same CommandRequest envelope and the
@@ -164,7 +165,7 @@ pub struct PartitionApplyState {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecutorShutdownNotification {
     #[prost(string, tag = "1")]
-    pub relay_id: ::prost::alloc::string::String,
+    pub operative_id: ::prost::alloc::string::String,
     #[prost(bytes = "vec", tag = "2")]
     pub serialized_state: ::prost::alloc::vec::Vec<u8>,
 }
@@ -174,26 +175,26 @@ pub struct ExecutorShutdownNotification {
 /// is enqueued on the Overwatch GenServer (not after the cast has been applied).
 ///
 /// Controller -> SDK direction at the wire level — same envelope as the
-/// notification. The SDK awaits this with a per-Relay 2 s timeout
-/// (parallelised across Relays) and exits regardless after the timeout.
+/// notification. The SDK awaits this with a per-Operative 2 s timeout
+/// (parallelised across Operatives) and exits regardless after the timeout.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecutorShutdownAck {
     #[prost(string, tag = "1")]
-    pub relay_id: ::prost::alloc::string::String,
+    pub operative_id: ::prost::alloc::string::String,
 }
-/// Per-Partition state restore handshake: Controller ships latest snapshot
-/// bytes plus tail-WAL bytes, SDK applies them to the partition's State
+/// Per-Segment state restore handshake: Controller ships latest snapshot
+/// bytes plus tail-WAL bytes, SDK applies them to the segment's State
 /// before any input is processed. See `relay-state-persistence` design.
 ///
-/// `partition_id` is the structured byte identifier
-/// `[relay_class_len: u8][relay_class][shard_id_len: u8][shard_id]
-///   [partition_key_len: u16 BE][partition_key]`. `change_log_bytes` is
+/// `segment_id` is the structured byte identifier
+/// `[operative_class_len: u8][operative_class][operation_id_len: u8][operation_id]
+///   [segment_key_len: u16 BE][segment_key]`. `change_log_bytes` is
 /// the tail of the WAL framed `[seq: u64 BE][len: u32 BE]
 /// [header: 16B][change_bytes][crc32: u32 BE]` records back-to-back.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RestoreInitState {
     #[prost(bytes = "vec", tag = "1")]
-    pub partition_id: ::prost::alloc::vec::Vec<u8>,
+    pub segment_id: ::prost::alloc::vec::Vec<u8>,
     #[prost(bytes = "vec", tag = "2")]
     pub snapshot_bytes: ::prost::alloc::vec::Vec<u8>,
     #[prost(bytes = "vec", tag = "3")]
@@ -201,45 +202,45 @@ pub struct RestoreInitState {
 }
 /// SDK acknowledgement after applying a `RestoreInitState`. `terminal_seq`
 /// is the highest WAL seq folded into State; the Controller expects the next
-/// `partition_state_change` to carry `seq = terminal_seq + 1`.
+/// `segment_state_change` to carry `seq = terminal_seq + 1`.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RestoreInitStateResponse {
     #[prost(bytes = "vec", tag = "1")]
-    pub partition_id: ::prost::alloc::vec::Vec<u8>,
+    pub segment_id: ::prost::alloc::vec::Vec<u8>,
     #[prost(uint64, tag = "2")]
     pub terminal_seq: u64,
 }
-/// Controller-issued compaction request. The SDK clones the partition's
+/// Controller-issued compaction request. The SDK clones the segment's
 /// `Self::State` under the sticky CAS, serializes it, and replies via
-/// `partition_state_snapshot` then `CompactPartitionResponse`.
+/// `segment_state_snapshot` then `CompactSegmentResponse`.
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct CompactPartition {
+pub struct CompactSegment {
     #[prost(bytes = "vec", tag = "1")]
-    pub partition_id: ::prost::alloc::vec::Vec<u8>,
+    pub segment_id: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct CompactPartitionResponse {
+pub struct CompactSegmentResponse {
     #[prost(bytes = "vec", tag = "1")]
-    pub partition_id: ::prost::alloc::vec::Vec<u8>,
+    pub segment_id: ::prost::alloc::vec::Vec<u8>,
     #[prost(uint64, tag = "2")]
     pub snapshot_seq: u64,
     #[prost(uint64, tag = "3")]
     pub snapshot_bytes_size: u64,
 }
-/// Back-pressure signal: the Controller's per-Partition WAL outbox is at the
+/// Back-pressure signal: the Controller's per-Segment WAL outbox is at the
 /// high watermark (`status = "full"`) or has drained below the low
-/// watermark (`status = "open"`). The SDK's per-Partition mailbox
+/// watermark (`status = "open"`). The SDK's per-Segment mailbox
 /// observer translates the signal into the channel's declared
 /// `OverflowPolicy`.
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct PartitionMailboxStatus {
+pub struct SegmentMailboxStatus {
     #[prost(bytes = "vec", tag = "1")]
-    pub partition_id: ::prost::alloc::vec::Vec<u8>,
+    pub segment_id: ::prost::alloc::vec::Vec<u8>,
     #[prost(string, tag = "2")]
     pub status: ::prost::alloc::string::String,
 }
 /// End-to-end control-channel health probe issued by the Controller before
-/// `AddRelay`. The SDK responds immediately with a `CommandResponse{status:
+/// `AddOperative`. The SDK responds immediately with a `CommandResponse{status:
 /// "success", raw_data: PingResponse}`; the round-trip proves the
 /// control channel is bound, the SDK is listening, and the reply path is
 /// intact. SDKs without the handler MUST log and ignore the unknown variant
@@ -257,7 +258,7 @@ pub struct PingResponse {
 /// SDK -> Controller, emitted as the FIRST frame on every newly-established
 /// control stream after `handle_reconnect` runs. Preserves the executor's
 /// identity across the reconnect so the Controller can compute a binding
-/// delta instead of re-issuing every relay. `reason` is one of
+/// delta instead of re-issuing every operative. `reason` is one of
 /// `control_stream_broken | read_error | write_error | keepalive_timeout
 /// | controller_requested`. Old Controllers that do not recognise this
 /// variant silently skip it; new SDKs against an old Controller therefore
@@ -281,18 +282,19 @@ pub struct ReassignExecutorId {
     #[prost(string, tag = "1")]
     pub new_id: ::prost::alloc::string::String,
 }
-/// SDK -> Controller. Emitted by a task-kind unit when its run-once function
-/// returns. `status` is "ok" on success or "error" on failure (with `error`
-/// describing it). The Controller drives the same stop/teardown path as an
-/// explicit stop (deregister-on-completion) so a finished task is removed
-/// from the durable registry and never replayed on boot or misjudged by
-/// convergence. Direction is reversed like ExecutorShutdownNotification:
-/// SDK -> Controller over the "control_command" payload_id; old Controllers
-/// ignore the unknown variant via Protox unknown-field handling.
+/// SDK -> Controller. Emitted by a bounded-kind operative when its run-once
+/// function returns. `status` is "ok" on success or "error" on failure (with
+/// `error` describing it). The Controller drives the same stop/teardown path
+/// as an explicit stop (deregister-on-completion) so a finished bounded
+/// operative is removed from the durable registry and never replayed on boot
+/// or misjudged by convergence. Direction is reversed like
+/// ExecutorShutdownNotification: SDK -> Controller over the "control_command"
+/// payload_id; old Controllers ignore the unknown variant via Protox
+/// unknown-field handling.
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct TaskCompleted {
+pub struct BoundedCompleted {
     #[prost(string, tag = "1")]
-    pub relay_id: ::prost::alloc::string::String,
+    pub operative_id: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
     pub status: ::prost::alloc::string::String,
     #[prost(string, tag = "3")]

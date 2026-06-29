@@ -1,15 +1,15 @@
-//! Inbound `RestoreInitState`: controller → SDK warm restart of a Partition.
+//! Inbound `RestoreInitState`: controller → SDK warm restart of a Segment.
 //!
 //! The controller ships the persisted snapshot + WAL change-log for a
-//! Partition after an executor restart / rebind. This handler locates the
-//! live `PartitionSlot` whose wire identity matches `partition_id` and
+//! Segment after an executor restart / rebind. This handler locates the
+//! live `SegmentSlot` whose wire identity matches `segment_id` and
 //! rebuilds its (type-erased) state in place via the dispatcher's
-//! `restore_state` — so a relay that summed to N comes back at N instead of
-//! starting empty. It then re-arms the partition's `change_seq` to
+//! `restore_state` — so a operative that summed to N comes back at N instead of
+//! starting empty. It then re-arms the segment's `change_seq` to
 //! `terminal_seq + 1` so the next produced frame is contiguous with the
 //! persisted history and the controller does not realign (truncate) the WAL.
 //!
-//! When no live slot matches yet (the relay has not been re-added), it falls
+//! When no live slot matches yet (the operative has not been re-added), it falls
 //! back to validating the change-log and acking the terminal seq.
 
 use std::sync::atomic::Ordering;
@@ -19,8 +19,8 @@ use prost::Message;
 
 use super::CommandAction;
 use crate::executor::ExecutorNode;
-use crate::partition::restore::iter_change_log_records;
-use crate::partition::PartitionSlot;
+use crate::segment::restore::iter_change_log_records;
+use crate::segment::SegmentSlot;
 use crate::pb::{RestoreInitState, RestoreInitStateResponse};
 
 impl CommandAction for RestoreInitState {
@@ -30,7 +30,7 @@ impl CommandAction for RestoreInitState {
         _message: &str,
         errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
-        let slot = find_partition_slot(executor, &self.partition_id);
+        let slot = find_segment_slot(executor, &self.segment_id);
 
         let mut terminal_seq: u64 = 0;
 
@@ -45,7 +45,7 @@ impl CommandAction for RestoreInitState {
                     &mut guard,
                     &self.snapshot_bytes,
                     &self.change_log_bytes,
-                    slot.shard_key.as_deref(),
+                    slot.operation_key.as_deref(),
                 ) {
                     Ok(t) => {
                         terminal_seq = t;
@@ -76,7 +76,7 @@ impl CommandAction for RestoreInitState {
         }
 
         let response = RestoreInitStateResponse {
-            partition_id: self.partition_id.clone(),
+            segment_id: self.segment_id.clone(),
             terminal_seq,
         };
 
@@ -84,13 +84,13 @@ impl CommandAction for RestoreInitState {
     }
 }
 
-/// Scan every live relay's partitions for the slot whose wire identity equals
-/// `partition_id`. The SDK encodes `partition_identity` with the same framing
-/// the controller uses for `partition_id` (`[rc_len][rc][sh_len][sh][pk_len][pk]`),
-/// so a byte-equal match is exact. Returns a cloned `Arc` so the relay-registry
+/// Scan every live operative's segments for the slot whose wire identity equals
+/// `segment_id`. The SDK encodes `segment_identity` with the same framing
+/// the controller uses for `segment_id` (`[rc_len][rc][sh_len][sh][pk_len][pk]`),
+/// so a byte-equal match is exact. Returns a cloned `Arc` so the operative-registry
 /// locks are released before the (potentially slow) state rebuild.
-fn find_partition_slot(executor: &ExecutorNode, partition_id: &[u8]) -> Option<Arc<PartitionSlot>> {
-    let view = executor.get_relays();
+fn find_segment_slot(executor: &ExecutorNode, segment_id: &[u8]) -> Option<Arc<SegmentSlot>> {
+    let view = executor.get_operatives();
     let guard = match view.read() {
         Ok(g) => g,
         Err(poisoned) => poisoned.into_inner(),
@@ -102,9 +102,9 @@ fn find_partition_slot(executor: &ExecutorNode, partition_id: &[u8]) -> Option<A
             Err(poisoned) => Arc::clone(&poisoned.into_inner()),
         };
 
-        for shard_partitions in instance.partitions.iter() {
-            for slot in shard_partitions.iter() {
-                if slot.partition_identity.as_slice() == partition_id {
+        for operation_segments in instance.segments.iter() {
+            for slot in operation_segments.iter() {
+                if slot.segment_identity.as_slice() == segment_id {
                     return Some(Arc::clone(slot));
                 }
             }

@@ -1,8 +1,8 @@
-//! Per-Partition mailboxes backed by a DashMap registry and a Chase-Lev
+//! Per-Segment mailboxes backed by a DashMap registry and a Chase-Lev
 //! work-stealing pool. The coordinator thread still exists for control-plane
-//! traffic (`HandleCommandAction`, `ReturnRelays`, `Reconnect`) but
+//! traffic (`HandleCommandAction`, `ReturnOperatives`, `Reconnect`) but
 //! data-plane traffic bypasses it entirely — stream readers push directly
-//! into the targeted Relay instance's partition mailboxes.
+//! into the targeted ContinuousOperative instance's segment mailboxes.
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -18,10 +18,10 @@ use super::{control_unit, ClientResponseMessage, ExecutorMessage, ExecutorStatus
 use crate::command;
 use crate::pb::{
     command_request::Command, CommandRequest, ExecutorReconnected as PbExecutorReconnected,
-    TaskCompleted as PbTaskCompleted,
+    BoundedCompleted as PbBoundedCompleted,
 };
-use crate::relay::instance::RelayInstance;
-use crate::relay::registry::{get_class as get_relay_class, RelayInstanceRegistry, UnitInstance};
+use crate::operative::instance::ContinuousInstance;
+use crate::operative::registry::{get_class as get_operative_class, OperativeRegistry, Operative};
 use crate::shutdown::ShutdownBridge;
 use crate::util::nonce_suffix;
 use flz_transport::service::payloader;
@@ -31,7 +31,7 @@ use tracing::warn;
 pub struct ExecutorNode {
     executor_id: String,
     _namespace: String,
-    relay_registry: Arc<RelayInstanceRegistry>,
+    operative_registry: Arc<OperativeRegistry>,
     pool: Arc<WorkStealingPool>,
     shared_io_streams: Arc<RwLock<HashMap<u32, FlezhaStream>>>,
     quic_client: Option<Arc<QuicClient>>,
@@ -40,14 +40,14 @@ pub struct ExecutorNode {
 
 impl ExecutorNode {
     pub fn new(namespace: String) -> ExecutorNode {
-        let relay_registry = Arc::new(RelayInstanceRegistry::new());
+        let operative_registry = Arc::new(OperativeRegistry::new());
         let pool = Arc::new(WorkStealingPool::new());
         let shared_io_streams = Arc::new(RwLock::new(HashMap::new()));
 
         ExecutorNode {
             executor_id: "undefined".to_string(),
             _namespace: namespace,
-            relay_registry,
+            operative_registry,
             pool,
             shared_io_streams,
             quic_client: None,
@@ -55,63 +55,63 @@ impl ExecutorNode {
         }
     }
 
-    /// Spawn a Relay instance from a registered Relay class. `factory_id`
+    /// Spawn a ContinuousOperative instance from a registered ContinuousOperative class. `factory_id`
     /// is looked up in the global class registry; `instance_id` is what
-    /// the wire calls `relay_id`. Idempotent on duplicate
+    /// the wire calls `operative_id`. Idempotent on duplicate
     /// `instance_id`: returns the existing instance.
-    pub fn start_relay(
+    pub fn start_operative(
         &self,
         factory_id: String,
         instance_id: String,
-    ) -> Option<Arc<RelayInstance>> {
-        if let Some(existing) = self.relay_registry.get_relay(&instance_id) {
+    ) -> Option<Arc<ContinuousInstance>> {
+        if let Some(existing) = self.operative_registry.get_continuous(&instance_id) {
             return Some(existing);
         }
-        let topology = get_relay_class(&factory_id)?;
-        let instance = RelayInstance::new(
+        let topology = get_operative_class(&factory_id)?;
+        let instance = ContinuousInstance::new(
             topology,
             Arc::from(instance_id.as_str()),
             Arc::clone(&self.pool),
         );
-        Some(self.relay_registry.register_relay(instance))
+        Some(self.operative_registry.register_continuous(instance))
     }
 
-    /// Spawn a task-kind unit: register it (idempotent on a duplicate id) and
+    /// Spawn a bounded-kind unit: register it (idempotent on a duplicate id) and
     /// schedule its `run` once on the work pool with `args` from `init_values`.
-    /// On return the task emits `TaskCompleted` (a panic becomes an "error"
-    /// completion, so a failing task neither kills a pool worker nor lingers
-    /// in the registry). Returns `false` when no task class is registered.
-    pub fn start_task(&self, factory_id: String, instance_id: String, args: String) -> bool {
-        if self.relay_registry.contains(&instance_id) {
+    /// On return the bounded emits `BoundedCompleted` (a panic becomes an "error"
+    /// completion, so a failing bounded neither kills a pool worker nor lingers
+    /// in the registry). Returns `false` when no bounded class is registered.
+    pub fn start_bounded(&self, factory_id: String, instance_id: String, args: String) -> bool {
+        if self.operative_registry.contains(&instance_id) {
             return true;
         }
-        let run = match crate::task::registry::get_class(&factory_id) {
+        let run = match crate::bounded::registry::get_class(&factory_id) {
             Some(run) => run,
             None => return false,
         };
 
         let id: Arc<str> = Arc::from(instance_id.as_str());
-        self.relay_registry.register_task(Arc::clone(&id));
+        self.operative_registry.register_bounded(Arc::clone(&id));
 
         self.pool.submit(Box::new(move || {
-            let mut ctx = crate::task::TaskCtx::new(Arc::clone(&id));
+            let mut ctx = crate::bounded::BoundedCtx::new(Arc::clone(&id));
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 run(&mut ctx, &args)
             }));
             let (status, error) = match outcome {
                 Ok(Ok(())) => ("ok".to_string(), String::new()),
                 Ok(Err(e)) => ("error".to_string(), e.to_string()),
-                Err(panic) => ("error".to_string(), crate::shard::error::format_panic(panic)),
+                Err(panic) => ("error".to_string(), crate::operation::error::format_panic(panic)),
             };
-            crate::executor::emit_task_completed(id.to_string(), status, error);
+            crate::executor::emit_bounded_completed(id.to_string(), status, error);
         }));
         true
     }
 
-    pub fn stop_relay(&self, instance_id: &str) -> bool {
-        match self.relay_registry.remove(instance_id) {
+    pub fn stop_operative(&self, instance_id: &str) -> bool {
+        match self.operative_registry.remove(instance_id) {
             Some(unit) => {
-                if let UnitInstance::Relay(instance) = &*unit {
+                if let Operative::Continuous(instance) = &*unit {
                     instance.shutdown_reapers();
                 }
                 true
@@ -120,17 +120,17 @@ impl ExecutorNode {
         }
     }
 
-    pub fn has_relay(&self, instance_id: &str) -> bool {
-        self.relay_registry.contains(instance_id)
+    pub fn has_operative(&self, instance_id: &str) -> bool {
+        self.operative_registry.contains(instance_id)
     }
 
-    pub fn get_relay(&self, instance_id: &str) -> Option<Arc<RelayInstance>> {
-        self.relay_registry.get_relay(instance_id)
+    pub fn get_continuous(&self, instance_id: &str) -> Option<Arc<ContinuousInstance>> {
+        self.operative_registry.get_continuous(instance_id)
     }
 
-    pub fn relay_dispatch_handle(&self) -> RelayDispatchHandle {
-        RelayDispatchHandle {
-            registry: Arc::clone(&self.relay_registry),
+    pub fn operative_dispatch_handle(&self) -> OperativeDispatchHandle {
+        OperativeDispatchHandle {
+            registry: Arc::clone(&self.operative_registry),
         }
     }
 
@@ -138,13 +138,13 @@ impl ExecutorNode {
         self._namespace.clone()
     }
 
-    /// Public-API view: snapshot of live Relay instances. Mirrors the
-    /// pre-`relay-mvp-rust` `Flezha::get_relays()` shape so external
+    /// Public-API view: snapshot of live ContinuousOperative instances. Mirrors the
+    /// pre-`operative-mvp-rust` `Flezha::get_operatives()` shape so external
     /// inspectors that walk the registry continue to work.
     // reason: returned shape is the public API; splitting it would break external inspectors
     #[allow(clippy::type_complexity)]
-    pub fn get_relays(&self) -> Arc<RwLock<HashMap<String, Arc<Mutex<Arc<RelayInstance>>>>>> {
-        crate::relay::registry::snapshot_as_relay_view(&self.relay_registry)
+    pub fn get_operatives(&self) -> Arc<RwLock<HashMap<String, Arc<Mutex<Arc<ContinuousInstance>>>>>> {
+        crate::operative::registry::snapshot_as_operative_view(&self.operative_registry)
     }
 
     pub fn get_io_streams(&self) -> Arc<RwLock<HashMap<u32, FlezhaStream>>> {
@@ -182,19 +182,19 @@ pub fn start(
         let mut executor = ExecutorNode::new(namespace.clone());
 
         // Capture a registry snapshot closure now so the shutdown bridge
-        // can enumerate live Relay instances without going through the
+        // can enumerate live ContinuousOperative instances without going through the
         // coordinator channel. Survives reconnects since the registry
         // Arc is stable.
         {
-            let registry = Arc::clone(&executor.relay_registry);
+            let registry = Arc::clone(&executor.operative_registry);
             shutdown_bridge.set_snapshot_fn(Box::new(move || {
                 registry
-                    .snapshot_relays()
+                    .snapshot_continuous()
                     .into_iter()
                     .map(|(k, instance)| {
                         (
                             k,
-                            crate::command::partition_state::serialize_relay_state(&instance),
+                            crate::command::segment_state::serialize_operative_state(&instance),
                         )
                     })
                     .collect()
@@ -203,7 +203,7 @@ pub fn start(
 
         let ctx_arc = Arc::new(Mutex::new(ctx));
         // Expose the coordinator channel process-globally so the
-        // partition-state sink can drive a reconnect on a broken-pipe
+        // segment-state sink can drive a reconnect on a broken-pipe
         // flood without a handle threaded through every layer.
         super::install_reconnect_trigger(otx.clone());
         let otx_arc = Arc::new(Mutex::new(otx));
@@ -220,7 +220,7 @@ pub fn start(
 
         // Jittered data-channel heartbeat. Like the keepalive it only signals
         // this coordinator, which writes every secondary stream — so an
-        // idle-but-healthy relay keeps the controller's per-channel liveness
+        // idle-but-healthy operative keeps the controller's per-channel liveness
         // clock fresh without producing real output.
         let _data_heartbeat = control_unit::spawn_data_heartbeat(otx_arc.clone());
 
@@ -231,8 +231,8 @@ pub fn start(
                 ExecutorMessage::HandleCommandAction(payload_id, message, _metadata) => {
                     command::handle_command(&mut executor, &control_stream, &payload_id, &message);
                 }
-                ExecutorMessage::ReturnRelays => {
-                    return_relays(&executor, ctx_arc.clone());
+                ExecutorMessage::ReturnOperatives => {
+                    return_operatives(&executor, ctx_arc.clone());
                 }
                 ExecutorMessage::Reconnect(reason) => {
                     if matches!(executor.status, ExecutorStatus::Stopped) {
@@ -256,18 +256,18 @@ pub fn start(
                 ExecutorMessage::SendDataHeartbeat => {
                     send_data_heartbeat(&executor.shared_io_streams);
                 }
-                ExecutorMessage::EmitTaskOutput { relay_id, payload } => {
-                    write_task_output(&executor.shared_io_streams, &relay_id, &payload);
+                ExecutorMessage::EmitBoundedOutput { operative_id, payload } => {
+                    write_bounded_output(&executor.shared_io_streams, &operative_id, &payload);
                 }
-                ExecutorMessage::EmitTaskCompleted {
-                    relay_id,
+                ExecutorMessage::EmitBoundedCompleted {
+                    operative_id,
                     status,
                     error,
                 } => {
                     let frame = control_command_frame(
-                        "task-completed",
-                        Command::TaskCompleted(PbTaskCompleted {
-                            relay_id: relay_id.clone(),
+                        "bounded-completed",
+                        Command::BoundedCompleted(PbBoundedCompleted {
+                            operative_id: operative_id.clone(),
                             status,
                             error,
                         }),
@@ -275,7 +275,7 @@ pub fn start(
                     if let Err(e) = (&*control_stream).write_all(&frame) {
                         warn!(
                             target: "flezha",
-                            "[flezha] TaskCompleted write failed for {}: {}", relay_id, e
+                            "[flezha] BoundedCompleted write failed for {}: {}", operative_id, e
                         );
                     }
                 }
@@ -284,23 +284,23 @@ pub fn start(
     })
 }
 
-/// Write a task's output payload on a secondary stream, tagged with its
-/// `relay_id` so the controller routes it to the unit's bound plugins. The
+/// Write a bounded's output payload on a secondary stream, tagged with its
+/// `operative_id` so the controller routes it to the unit's bound plugins. The
 /// controller keys output fan-out on the payload id, so any one secondary
 /// stream suffices; best-effort like the data heartbeat.
-fn write_task_output(io_streams: &RwLock<HashMap<u32, FlezhaStream>>, relay_id: &str, payload: &[u8]) {
-    let frame = payloader::build_from_binary(relay_id, payload, HashMap::new());
+fn write_bounded_output(io_streams: &RwLock<HashMap<u32, FlezhaStream>>, operative_id: &str, payload: &[u8]) {
+    let frame = payloader::build_from_binary(operative_id, payload, HashMap::new());
     let streams = io_streams.read().unwrap();
     match streams.values().next() {
         Some(stream) => {
             let mut w: &FlezhaStream = stream;
             if let Err(e) = w.write_all(&frame) {
-                eprintln!("[flezha] task {} output write failed: {}", relay_id, e);
+                eprintln!("[flezha] bounded {} output write failed: {}", operative_id, e);
             }
         }
         None => eprintln!(
-            "[flezha] task {} output dropped: no secondary stream available",
-            relay_id
+            "[flezha] bounded {} output dropped: no secondary stream available",
+            operative_id
         ),
     }
 }
@@ -325,11 +325,11 @@ fn send_data_heartbeat(io_streams: &RwLock<HashMap<u32, FlezhaStream>>) {
     let mut metadata = HashMap::new();
     metadata.insert(
         "dispatches".to_string(),
-        crate::partition::dispatches_completed().to_string(),
+        crate::segment::dispatches_completed().to_string(),
     );
     metadata.insert(
         "blocked_parks".to_string(),
-        crate::partition::blocked_park_episodes().to_string(),
+        crate::segment::blocked_park_episodes().to_string(),
     );
     let frame = payloader::build_from_binary(liveness::DATA_HEARTBEAT_PAYLOAD_ID, &[], metadata);
     let streams = io_streams.read().unwrap();
@@ -339,31 +339,31 @@ fn send_data_heartbeat(io_streams: &RwLock<HashMap<u32, FlezhaStream>>) {
     }
 }
 
-fn return_relays(executor: &ExecutorNode, ctx_arc: Arc<Mutex<Sender<ClientResponseMessage>>>) {
-    let relays = executor.get_relays();
+fn return_operatives(executor: &ExecutorNode, ctx_arc: Arc<Mutex<Sender<ClientResponseMessage>>>) {
+    let operatives = executor.get_operatives();
     ctx_arc
         .lock()
         .unwrap()
-        .send(ClientResponseMessage::ReturnRelays(relays))
-        .expect("Failed to send relays response");
+        .send(ClientResponseMessage::ReturnOperatives(operatives))
+        .expect("Failed to send operatives response");
 }
 
 /// Re-establish the control stream while preserving the SDK's
 /// in-memory state. The previous behaviour cleared
-/// `shared_io_streams`, `relay_registry`, and the `executor_id` —
+/// `shared_io_streams`, `operative_registry`, and the `executor_id` —
 /// that is what caused the May 25 silent freeze (executor sat empty
 /// while the controller still believed the binding was live). The
 /// `executor-controller-connection-healing` capability now requires:
 ///
-///   * `executor_id`, `relay_registry`, and `shared_io_streams` are
-///     retained across reconnect; in-flight per-Partition mailbox
+///   * `executor_id`, `operative_registry`, and `shared_io_streams` are
+///     retained across reconnect; in-flight per-Segment mailbox
 ///     work continues to drain.
 ///   * A `tracing::warn!` line is emitted with the upstream-derived
 ///     `reason` so kubectl logs surface every reconnect.
 ///   * The first frame on the freshly-established stream is a
 ///     `CommandRequest::ExecutorReconnected { previous_id, new_id,
 ///     reason }` so the controller can compute a binding delta
-///     instead of re-issuing every relay.
+///     instead of re-issuing every operative.
 fn handle_reconnect(
     executor: &mut ExecutorNode,
     control_stream: &mut Arc<FlezhaStream>,
@@ -388,7 +388,7 @@ fn handle_reconnect(
     executor.set_quic_client(new_quic);
 
     // Resume processing dispatch traffic against the preserved
-    // registry — without `set_status(Running)` the per-Partition
+    // registry — without `set_status(Running)` the per-Segment
     // mailboxes drain into a paused state and the controller sees
     // the SDK as a black hole even though its registry is intact.
     executor.set_status(ExecutorStatus::Running);
@@ -423,21 +423,21 @@ fn build_executor_reconnected_frame(previous_id: &str, new_id: &str, reason: &st
     )
 }
 
-/// Stream-reader handle for the Relay model. Cheap to clone; carries a
-/// reference to the live Relay-instance registry. Per-Partition drain
-/// scheduling uses the pool held by `PartitionSlot`.
+/// Stream-reader handle for the ContinuousOperative model. Cheap to clone; carries a
+/// reference to the live ContinuousOperative-instance registry. Per-Segment drain
+/// scheduling uses the pool held by `SegmentSlot`.
 #[derive(Clone)]
-pub struct RelayDispatchHandle {
-    pub registry: Arc<RelayInstanceRegistry>,
+pub struct OperativeDispatchHandle {
+    pub registry: Arc<OperativeRegistry>,
 }
 
-impl RelayDispatchHandle {
+impl OperativeDispatchHandle {
     /// Dispatch a frame from the wire. Resolves the entry channel by
-    /// `metadata["channel"]` (or the Relay's first declared input
+    /// `metadata["channel"]` (or the ContinuousOperative's first declared input
     /// channel as the documented default), wraps the payload bytes via
     /// the channel's `wrap_input`, and pushes the typed
-    /// `Arc<dyn Any + Send + Sync>` onto every consumer Shard's
-    /// partition mailbox.
+    /// `Arc<dyn Any + Send + Sync>` onto every consumer Operation's
+    /// segment mailbox.
     pub fn dispatch(
         &self,
         instance_id: &str,
@@ -445,21 +445,21 @@ impl RelayDispatchHandle {
         metadata: &HashMap<String, String>,
         stream: Arc<FlezhaStream>,
     ) {
-        let instance = match self.registry.get_unit(instance_id) {
+        let instance = match self.registry.get_operative(instance_id) {
             Some(unit) => match &*unit {
-                UnitInstance::Relay(ri) => Arc::clone(ri),
-                // A task has no input channel — it is fed only its start
+                Operative::Continuous(ri) => Arc::clone(ri),
+                // A bounded has no input channel — it is fed only its start
                 // args, never wire frames. Drop and log.
-                UnitInstance::Task(_) => {
+                Operative::Bounded(_) => {
                     eprintln!(
-                        "[flezha] data frame for task unit {} dropped (tasks have no input channel)",
+                        "[flezha] data frame for bounded unit {} dropped (bounded have no input channel)",
                         instance_id
                     );
                     return;
                 }
             },
             None => {
-                eprintln!("[flezha] relay instance {} not found", instance_id);
+                eprintln!("[flezha] operative instance {} not found", instance_id);
                 return;
             }
         };
@@ -470,7 +470,7 @@ impl RelayDispatchHandle {
             Some(name) => match topology.lookup_channel_id(name) {
                 Some(id) => id,
                 None => {
-                    eprintln!("[flezha] relay {} has no channel `{}`", instance_id, name);
+                    eprintln!("[flezha] operative {} has no channel `{}`", instance_id, name);
                     return;
                 }
             },
@@ -482,7 +482,7 @@ impl RelayDispatchHandle {
                 {
                     Some(idx) => idx as u32,
                     None => {
-                        eprintln!("[flezha] relay {} has no entry channels", instance_id);
+                        eprintln!("[flezha] operative {} has no entry channels", instance_id);
                         return;
                     }
                 }
@@ -499,7 +499,7 @@ impl RelayDispatchHandle {
                 Ok(p) => p,
                 Err(e) => {
                     eprintln!(
-                        "[flezha] relay {} channel `{}`: wrap_input failed: {}",
+                        "[flezha] operative {} channel `{}`: wrap_input failed: {}",
                         instance_id, channel.name, e
                     );
                     return;
@@ -507,14 +507,14 @@ impl RelayDispatchHandle {
             },
             None => {
                 eprintln!(
-                    "[flezha] relay {} channel `{}` has no entry wrapper",
+                    "[flezha] operative {} channel `{}` has no entry wrapper",
                     instance_id, channel.name
                 );
                 return;
             }
         };
 
-        crate::relay::dispatcher::route_to_consumers(
+        crate::operative::dispatcher::route_to_consumers(
             &instance,
             &channel.consumers,
             channel.overflow_policy,
@@ -530,7 +530,7 @@ mod reconnect_tests {
     //! `consume-recovery-mode-and-self-heal` §2:
     //!
     //!   * `executor_id` survives `handle_reconnect`,
-    //!   * the in-memory `relay_registry` is NOT cleared,
+    //!   * the in-memory `operative_registry` is NOT cleared,
     //!   * the SDK emits an `ExecutorReconnected` frame as the first
     //!     write on the freshly-opened control stream.
     //!
@@ -546,7 +546,7 @@ mod reconnect_tests {
     fn executor_id_and_registry_are_preserved_across_status_flap() {
         let mut executor = ExecutorNode::new("ns".to_string());
         executor.assign_executor_id("e-abc".to_string());
-        // ExecutorNode has no public `relay_registry.len()` so we drive
+        // ExecutorNode has no public `operative_registry.len()` so we drive
         // the state-preservation assertion through the public surface
         // that handle_reconnect uses: the executor_id and the
         // shared_io_streams handle pointer should be stable across the

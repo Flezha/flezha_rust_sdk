@@ -1,5 +1,0 @@
-error: #[flezha::shard] state parameter must be `&mut State`, not a shared reference
- --> tests/ui/shard_shared_ref_state.rs:2:17
-  |
-2 | fn f(a: String, s: &String) -> Vec<u8> {
-  |                 ^^^^^^^^^^

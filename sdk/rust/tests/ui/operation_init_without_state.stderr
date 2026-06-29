@@ -1,0 +1,5 @@
+error: #[flezha::operation] `init` requires a `&mut State` parameter; a stateless operation has no state to initialize
+ --> tests/ui/operation_init_without_state.rs:2:1
+  |
+2 | fn f(a: String) -> Vec<u8> {
+  | ^^

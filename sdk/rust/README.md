@@ -23,11 +23,11 @@ After any public-API-affecting change:
 
 - `bench-internals` — exposes internal dispatch types for the crate's
   own benches/tests. NOT a stable API.
-- `testing` — exposes `flezha_executor::testing::ShardTestHarness`
+- `testing` — exposes `flezha_executor::testing::OperationTestHarness`
   for downstream crates that want replay-equality tests.
 
 ## Architecture
 
-See `docs/relay_architecture.md` for the dispatch pipeline,
-`docs/relay_state_persistence.md` for the state-persistence trait
+See `docs/operative_architecture.md` for the dispatch pipeline,
+`docs/operative_state_persistence.md` for the state-persistence trait
 surface, and `docs/sdk_protocol_spec.md` for the wire format.

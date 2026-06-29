@@ -2,10 +2,10 @@
 //!
 //! # Dispatch model
 //!
-//! Stream readers push directly into per-Partition lock-free mailboxes
+//! Stream readers push directly into per-Segment lock-free mailboxes
 //! (`crossbeam::queue::SegQueue` + `AtomicBool inflight`). A Chase-Lev
 //! work-stealing pool drains the mailboxes. A `DashMap`-backed
-//! [`relay::registry::RelayInstanceRegistry`] holds live Relay
+//! [`operative::registry::OperativeRegistry`] holds live ContinuousOperative
 //! instances; the central coordinator runs but only handles
 //! control-plane traffic.
 //!
@@ -13,7 +13,7 @@
 //!
 //! ```no_run
 //! use flezha_executor::{
-//!     register_relay, ChannelBuilder, Relay, Shard, ShardCtx, ShardError,
+//!     register_continuous, ChannelBuilder, ContinuousOperative, Operation, OperationCtx, OperationError,
 //! };
 //! use flezha_executor::state::{
 //!     Change, NoChange, RestoreInitPayload, StateHandle, WallClock,
@@ -28,15 +28,15 @@
 //! impl Change for AppendChange {}
 //!
 //! #[derive(Default)]
-//! struct AppendShard;
-//! impl Shard for AppendShard {
+//! struct AppendOperation;
+//! impl Operation for AppendOperation {
 //!     type Input = String;
 //!     type Output = String;
 //!     type State = AppendState;
 //!     type Change = AppendChange;
 //!     type Clock = WallClock;
 //!     type Config = ();
-//!     fn name() -> &'static str { "append_shard" }
+//!     fn name() -> &'static str { "append_operation" }
 //!     fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> AppendState {
 //!         AppendState { seen: vec![] }
 //!     }
@@ -47,40 +47,40 @@
 //!         &mut self,
 //!         input: String,
 //!         mut state: StateHandle<'_, Self>,
-//!         _: &mut ShardCtx<'_>,
-//!     ) -> Result<(), ShardError> {
+//!         _: &mut OperationCtx<'_>,
+//!     ) -> Result<(), OperationError> {
 //!         state.apply(AppendChange(input));
 //!         Ok(())
 //!     }
 //! }
 //!
-//! struct AppendRelay;
-//! impl Relay for AppendRelay {
+//! struct AppendOperative;
+//! impl ContinuousOperative for AppendOperative {
 //!     fn factory_id() -> &'static str { "appender" }
 //!     fn channels(c: &mut ChannelBuilder) {
-//!         c.input::<String>("input").into::<AppendShard>();
+//!         c.input::<String>("input").into::<AppendOperation>();
 //!     }
 //! }
 //!
-//! register_relay::<AppendRelay>();
+//! register_continuous::<AppendOperative>();
 //! let _ = flezha_executor::new("my_namespace".to_string());
 //! # fn _ref() -> Option<NoChange> { None }
 //! ```
 //!
-//! When 10,000 messages targeting one `appender` Relay instance arrive
+//! When 10,000 messages targeting one `appender` ContinuousOperative instance arrive
 //! on the entry channel, the final `state.seen` vector contains those
-//! 10,000 inputs in arrival order — the per-Partition inflight CAS
-//! guarantees no two `Shard::run` calls overlap on the same partition.
+//! 10,000 inputs in arrival order — the per-Segment inflight CAS
+//! guarantees no two `Operation::run` calls overlap on the same segment.
 //!
 //! # Reconnect & idempotency
 //!
 //! The SDK's reconnect loop runs forever with capped exponential
 //! backoff. On every successful reconnect the controller re-issues
-//! `AddRelay` for every Relay instance ProcessHub still has tagged
+//! `AddOperative` for every ContinuousOperative instance ProcessHub still has tagged
 //! to this executor's profile. The handler is idempotent on duplicate
-//! `relay_id`: if the local registry already contains the instance
+//! `operative_id`: if the local registry already contains the instance
 //! it logs and returns without re-registering, so the existing
-//! per-Partition state is preserved across the reconnect.
+//! per-Segment state is preserved across the reconnect.
 //!
 //! # Tuning
 //!
@@ -92,25 +92,25 @@
 pub mod channel;
 pub mod command;
 mod executor;
-pub mod partition;
-pub mod relay;
-pub mod shard;
-pub mod task;
+pub mod segment;
+pub mod operative;
+pub mod operation;
+pub mod bounded;
 mod shutdown;
 mod util;
 
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 
-/// One-stop import path for the `relay-state-persistence-rust` trait
+/// One-stop import path for the `operative-state-persistence-rust` trait
 /// surface. Bring everything into scope with
-/// `use flezha_executor::state::*;` to write Shards that declare
+/// `use flezha_executor::state::*;` to write Operations that declare
 /// `Change` types and route mutations through `state.apply(...)`.
 pub mod state {
-    pub use crate::partition::restore::{RestoreError, RestoreInitPayload};
-    pub use crate::shard::change::{Change, CoalesceKey, NoChange};
-    pub use crate::shard::clock::{Clock, EventTimeFrom, LogicalClock, WallClock};
-    pub use crate::shard::state_handle::StateHandle;
+    pub use crate::segment::restore::{RestoreError, RestoreInitPayload};
+    pub use crate::operation::change::{Change, CoalesceKey, NoChange};
+    pub use crate::operation::clock::{Clock, EventTimeFrom, LogicalClock, WallClock};
+    pub use crate::operation::state_handle::StateHandle;
 }
 
 use std::collections::HashMap;
@@ -119,35 +119,35 @@ use std::sync::{Arc, Mutex, RwLock};
 pub use channel::{Channel, ChannelBuilder, OverflowPolicy};
 use crossbeam::channel::{Receiver, Sender};
 pub use flz_transport::{service, transport};
-pub use partition::{RestoreError, RestoreInitPayload};
-pub use relay::Relay;
-pub use task::{Task, TaskCtx, TaskError};
-pub use shard::{
-    Change, Clock, CoalesceKey, DerivedState, EventTimeFrom, LogicalClock, NoChange, Shard,
-    ShardCtx, ShardError, StateHandle, WallClock,
+pub use segment::{RestoreError, RestoreInitPayload};
+pub use operative::ContinuousOperative;
+pub use bounded::{BoundedOperative, BoundedCtx, BoundedError};
+pub use operation::{
+    Change, Clock, CoalesceKey, DerivedState, EventTimeFrom, LogicalClock, NoChange, Operation,
+    OperationCtx, OperationError, StateHandle, WallClock,
 };
 
-/// Authoring sugar. `#[flezha::shard]`, `#[derive(flezha::State)]`, and
-/// `flezha::relay!` expand to the trait surface above; see
+/// Authoring sugar. `#[flezha::operation]`, `#[derive(flezha::State)]`, and
+/// `flezha::operative!` expand to the trait surface above; see
 /// `docs/sdk_authoring_contract.md`.
-pub use flezha_macros::{relay, shard, State};
+pub use flezha_macros::{operative, operation, State};
 
-/// Re-exported so macro-generated code can `submit!` into the auto-relay
+/// Re-exported so macro-generated code can `submit!` into the auto-operative
 /// collection without the user adding an `inventory` dependency.
 pub use inventory;
 
-/// A relay the single-shard auto-wire path (`#[flezha::shard(sink = …)]`) or
-/// `flezha::relay!` registers without an explicit `register_relay` call.
-/// Generated code `submit!`s one of these; [`register_inventory_relays`]
+/// An operative using the single-operation auto-wire path (`#[flezha::operation(sink = …)]`) or
+/// `flezha::operative!` registers without an explicit `register_continuous` call.
+/// Generated code `submit!`s one of these; [`register_inventory_operatives`]
 /// harvests them at startup.
-pub struct AutoRelay {
+pub struct AutoOperative {
     /// The class's controller-facing factory id (for duplicate detection).
     pub factory_id: fn() -> &'static str,
-    /// Registers the class topology (`register_relay::<R>()`).
+    /// Registers the class topology (`register_continuous::<R>()`).
     pub register: fn(),
 }
 
-impl AutoRelay {
+impl AutoOperative {
     pub const fn new(factory_id: fn() -> &'static str, register: fn()) -> Self {
         Self {
             factory_id,
@@ -156,19 +156,19 @@ impl AutoRelay {
     }
 }
 
-inventory::collect!(AutoRelay);
+inventory::collect!(AutoOperative);
 
-/// Harvest every auto-registered relay (single-shard auto-wire +
-/// `flezha::relay!`) into the class registry. Called once at startup. Panics
-/// on a duplicate `factory_id` — across two auto-registered relays or against
-/// a relay already registered manually via [`register_relay`].
-pub fn register_inventory_relays() {
-    for auto in inventory::iter::<AutoRelay> {
+/// Harvest every auto-registered operative (single-operation auto-wire +
+/// `flezha::operative!`) into the class registry. Called once at startup. Panics
+/// on a duplicate `factory_id` — across two auto-registered operatives or against
+/// a operative already registered manually via [`register_continuous`].
+pub fn register_inventory_operatives() {
+    for auto in inventory::iter::<AutoOperative> {
         let factory_id = (auto.factory_id)();
-        if relay::registry::get_class(factory_id).is_some() {
+        if operative::registry::get_class(factory_id).is_some() {
             panic!(
-                "flezha: duplicate factory_id `{factory_id}`: an auto-registered relay collides \
-                 with another auto-registered or manually-registered relay"
+                "flezha: duplicate factory_id `{factory_id}`: an auto-registered operative collides \
+                 with another auto-registered or manually-registered operative"
             );
         }
         (auto.register)();
@@ -176,7 +176,7 @@ pub fn register_inventory_relays() {
 }
 
 use crate::executor::{ClientResponseMessage, ExecutorMessage};
-use crate::relay::instance::RelayInstance;
+use crate::operative::instance::ContinuousInstance;
 use crate::shutdown::ShutdownBridge;
 
 pub mod pb {
@@ -186,28 +186,28 @@ pub mod pb {
     include!("generated/executor_commands.rs");
 }
 
-/// Register a Relay class with the SDK. Calls `R::channels(...)` once,
+/// Register a ContinuousOperative class with the SDK. Calls `R::channels(...)` once,
 /// freezes the resulting topology in the global class registry, and
-/// makes the class spawnable via the controller's `flz relay start
-/// <factory_id>` command (which routes to `start_relay` on the
+/// makes the class spawnable via the controller's `flz operative start
+/// <factory_id>` command (which routes to `start_operative` on the
 /// `ExecutorNode`).
 ///
 /// Idempotent on the same `factory_id` — re-registration overwrites
 /// the prior topology. Panics if `R::channels` produced an invalid
 /// topology (duplicate channel names, unwired channels, missing
-/// `partition_for` overrides, etc.).
-pub fn register_relay<R: Relay>() {
+/// `segment_for` overrides, etc.).
+pub fn register_continuous<R: ContinuousOperative>() {
     let topology =
-        relay::builder::build_topology_for::<R>().expect("register_relay: invalid topology");
-    relay::registry::register_class(R::factory_id(), topology);
+        operative::builder::build_topology_for::<R>().expect("register_continuous: invalid topology");
+    operative::registry::register_class(R::factory_id(), topology);
 }
 
-/// Register a task class with the SDK. Sibling of [`register_relay`]: makes
-/// the class spawnable via `flz relay start <factory_id> --kind task`.
+/// Register a bounded class with the SDK. Sibling of [`register_continuous`]: makes
+/// the class spawnable via `flz operative start <factory_id> --kind bounded`.
 /// Idempotent on the same `factory_id` — re-registration overwrites the
 /// prior entrypoint.
-pub fn register_task<T: Task>() {
-    task::registry::register_class(T::factory_id(), T::run as task::TaskRunFn);
+pub fn register_bounded<T: BoundedOperative>() {
+    bounded::registry::register_class(T::factory_id(), T::run as bounded::BoundedRunFn);
 }
 
 pub struct Flezha {
@@ -220,9 +220,9 @@ pub struct Flezha {
 
 impl Flezha {
     fn new(id: String) -> Flezha {
-        // Harvest single-shard auto-wire + `relay!` relays before the executor
-        // starts so the class registry is complete by the time AddRelay arrives.
-        register_inventory_relays();
+        // Harvest single-operation auto-wire + `operative!` operatives before the executor
+        // starts so the class registry is complete by the time AddOperative arrives.
+        register_inventory_operatives();
 
         let (otx, orx): (Sender<ExecutorMessage>, Receiver<ExecutorMessage>) =
             crossbeam::channel::unbounded();
@@ -258,36 +258,36 @@ impl Flezha {
         }
     }
 
-    /// Convenience pass-through to the free [`register_relay`] function.
-    pub fn register_relay<R: Relay>(&self) {
-        register_relay::<R>()
+    /// Convenience pass-through to the free [`register_continuous`] function.
+    pub fn register_continuous<R: ContinuousOperative>(&self) {
+        register_continuous::<R>()
     }
 
     pub fn get_id(&self) -> &str {
         &self.id
     }
 
-    /// Snapshot of the live Relay-instance registry. Returned shape
-    /// mirrors the pre-`relay-mvp-rust` `get_relays` for backward
+    /// Snapshot of the live ContinuousOperative-instance registry. Returned shape
+    /// mirrors the pre-`operative-mvp-rust` `get_operatives` for backward
     /// compatibility.
     // reason: public API; refactor would break external callers (test apps, observability)
     #[allow(clippy::type_complexity)]
-    pub fn get_relays(&self) -> Arc<RwLock<HashMap<String, Arc<Mutex<Arc<RelayInstance>>>>>> {
+    pub fn get_operatives(&self) -> Arc<RwLock<HashMap<String, Arc<Mutex<Arc<ContinuousInstance>>>>>> {
         self.executor_tx
             .lock()
             .unwrap()
-            .send(ExecutorMessage::ReturnRelays)
-            .expect("Failed to send ReturnRelays message");
+            .send(ExecutorMessage::ReturnOperatives)
+            .expect("Failed to send ReturnOperatives message");
 
         let response = self
             .client_rx
             .lock()
             .unwrap()
             .recv()
-            .expect("Failed to receive relays");
+            .expect("Failed to receive operatives");
 
         match response {
-            ClientResponseMessage::ReturnRelays(relays) => relays,
+            ClientResponseMessage::ReturnOperatives(operatives) => operatives,
             _ => panic!("Unexpected message type received"),
         }
     }
@@ -314,7 +314,7 @@ impl Drop for Flezha {
 #[cfg(feature = "bench-internals")]
 #[doc(hidden)]
 pub mod __dispatch_internals {
-    pub use crate::executor::fast::RelayDispatchHandle;
+    pub use crate::executor::fast::OperativeDispatchHandle;
     pub use crate::executor::mailbox::Mailbox;
     pub use crate::executor::work_stealing_pool::WorkStealingPool;
 }

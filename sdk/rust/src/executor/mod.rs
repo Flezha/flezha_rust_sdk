@@ -10,11 +10,11 @@ use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use crossbeam::channel::Sender;
 
-use crate::relay::instance::RelayInstance;
+use crate::operative::instance::ContinuousInstance;
 
 /// Process-global handle to the coordinator's message channel, installed
 /// once by `fast::start`. Lets components outside the coordinator (e.g.
-/// the partition-state sink on a broken-pipe flood) request a control
+/// the segment-state sink on a broken-pipe flood) request a control
 /// reconnect without threading the `Sender` through every layer.
 static RECONNECT_TRIGGER: OnceLock<Mutex<Sender<ExecutorMessage>>> = OnceLock::new();
 
@@ -39,16 +39,16 @@ pub(crate) fn request_reconnect(reason: &'static str) {
     coordinator_send(ExecutorMessage::Reconnect(reason));
 }
 
-/// Route a task's output to the coordinator (written on a secondary stream
-/// tagged with `relay_id`; the controller fans it out to the unit's plugins).
-pub(crate) fn emit_task_output(relay_id: String, payload: Vec<u8>) {
-    coordinator_send(ExecutorMessage::EmitTaskOutput { relay_id, payload });
+/// Route a bounded's output to the coordinator (written on a secondary stream
+/// tagged with `operative_id`; the controller fans it out to the unit's plugins).
+pub(crate) fn emit_bounded_output(operative_id: String, payload: Vec<u8>) {
+    coordinator_send(ExecutorMessage::EmitBoundedOutput { operative_id, payload });
 }
 
-/// Route a task's completion to the coordinator (written as a `TaskCompleted`
+/// Route a bounded's completion to the coordinator (written as a `BoundedCompleted`
 /// control frame so the controller deregisters the unit).
-pub(crate) fn emit_task_completed(relay_id: String, status: String, error: String) {
-    coordinator_send(ExecutorMessage::EmitTaskCompleted { relay_id, status, error });
+pub(crate) fn emit_bounded_completed(operative_id: String, status: String, error: String) {
+    coordinator_send(ExecutorMessage::EmitBoundedCompleted { operative_id, status, error });
 }
 
 /// Serializes every test that mutates the process-global executor env vars
@@ -65,12 +65,12 @@ pub(crate) fn env_test_guard() -> std::sync::MutexGuard<'static, ()> {
 }
 
 /// Messages routed through the coordinator channel. Data-plane traffic
-/// bypasses this channel entirely (per-Partition mailboxes are pushed
+/// bypasses this channel entirely (per-Segment mailboxes are pushed
 /// directly by the stream readers); only control-plane traffic flows
 /// through here.
 pub enum ExecutorMessage {
     HandleCommandAction(String, Vec<u8>, HashMap<String, String>),
-    ReturnRelays,
+    ReturnOperatives,
     /// Drive a reconnect with a structured reason for the observer log
     /// and the `ExecutorReconnected` control frame the controller now
     /// expects on the first byte of the new stream. Reason is one of
@@ -85,12 +85,12 @@ pub enum ExecutorMessage {
     /// secondary stream. Routed through the coordinator for the same
     /// single-threaded-write reason as `SendControlKeepalive`.
     SendDataHeartbeat,
-    /// A task emitted output; the coordinator writes it on a secondary stream
-    /// tagged with `relay_id` for the controller to fan out to the unit's plugins.
-    EmitTaskOutput { relay_id: String, payload: Vec<u8> },
-    /// A task's `run` returned; the coordinator writes a `TaskCompleted` frame
+    /// A bounded emitted output; the coordinator writes it on a secondary stream
+    /// tagged with `operative_id` for the controller to fan out to the unit's plugins.
+    EmitBoundedOutput { operative_id: String, payload: Vec<u8> },
+    /// A bounded's `run` returned; the coordinator writes a `BoundedCompleted` frame
     /// so the controller deregisters the unit.
-    EmitTaskCompleted { relay_id: String, status: String, error: String },
+    EmitBoundedCompleted { operative_id: String, status: String, error: String },
 }
 
 pub enum ExecutorStatus {
@@ -99,15 +99,15 @@ pub enum ExecutorStatus {
     Stopped,
 }
 
-// reason: ReturnRelays carries the same public shape returned by Flezha::get_relays()
+// reason: ReturnOperatives carries the same public shape returned by Flezha::get_operatives()
 #[allow(clippy::type_complexity)]
 pub enum ClientResponseMessage {
     ExecutorIdConfirmation,
-    /// Snapshot of live Relay instances. Returned to `Flezha::get_relays()`
+    /// Snapshot of live ContinuousOperative instances. Returned to `Flezha::get_operatives()`
     /// callers — the public-API shape is preserved for backward
-    /// compatibility, but each entry is now an `Arc<RelayInstance>` rather
-    /// than `Arc<Mutex<RelayBox>>`.
-    ReturnRelays(Arc<RwLock<HashMap<String, Arc<Mutex<Arc<RelayInstance>>>>>>),
+    /// compatibility, but each entry is now an `Arc<ContinuousInstance>` rather
+    /// than `Arc<Mutex<OperativeBox>>`.
+    ReturnOperatives(Arc<RwLock<HashMap<String, Arc<Mutex<Arc<ContinuousInstance>>>>>>),
 }
 
 pub use fast::{start, ExecutorNode};

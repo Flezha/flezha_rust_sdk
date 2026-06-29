@@ -1,10 +1,10 @@
-//! `MigrationSerialization` — produces the per-Shard / per-Partition
-//! state blob per `relay-mvp-rust/design.md` Decision 10, then removes
-//! the Relay instance from the local registry (the controller is migrating
+//! `MigrationSerialization` — produces the per-Operation / per-Segment
+//! state blob per `operative-mvp-rust/design.md` Decision 10, then removes
+//! the ContinuousOperative instance from the local registry (the controller is migrating
 //! it elsewhere).
 
 use super::CommandAction;
-use crate::command::partition_state::serialize_relay_state;
+use crate::command::segment_state::serialize_operative_state;
 use crate::executor::ExecutorNode;
 use crate::pb::MigrationSerialization;
 
@@ -15,12 +15,12 @@ impl CommandAction for MigrationSerialization {
         _message: &str,
         _errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
-        let serialized_state = match executor.get_relay(&self.relay_id) {
-            Some(instance) => serialize_relay_state(&instance),
+        let serialized_state = match executor.get_continuous(&self.operative_id) {
+            Some(instance) => serialize_operative_state(&instance),
             None => Vec::new(),
         };
 
-        executor.stop_relay(&self.relay_id);
+        executor.stop_operative(&self.operative_id);
 
         ("migration_serialization".to_string(), serialized_state)
     }

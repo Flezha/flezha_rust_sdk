@@ -1,8 +1,8 @@
-//! `ShardTestHarness::<S>` — replay-equality test harness.
+//! `OperationTestHarness::<S>` — replay-equality test harness.
 //!
 //! Tests construct the harness with `new()` (requires `S: Default` and
 //! a `Self::State` derivable from `init_state(None, None)`),
-//! `with_initial_state(state)`, or `with_payload(shard_key, payload)`
+//! `with_initial_state(state)`, or `with_payload(operation_key, payload)`
 //! (replicates the runtime's snapshot + change-log restoration flow).
 //! The harness owns its state, drives `S::run` for each input via
 //! `apply_inputs`, and records emitted values + Changes for inspection.
@@ -11,7 +11,7 @@
 //! it folds the recorded change log against a fresh re-constructed
 //! initial state and asserts byte-equality with the harness's terminal
 //! state (via `serde::Serialize` round-trip). Panics from
-//! `Shard::apply_change` surface as test failures; non-determinism
+//! `Operation::apply_change` surface as test failures; non-determinism
 //! surfaces as a `ReplayMismatch` carrying serialized expected and
 //! actual states for hex-diff inspection.
 
@@ -20,14 +20,14 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::partition::restore::{init_partition_with_payload, RestoreError, RestoreInitPayload};
-use crate::shard::ctx::EmitSink;
-use crate::shard::{Shard, ShardCtx, ShardError, StateHandle};
+use crate::segment::restore::{init_segment_with_payload, RestoreError, RestoreInitPayload};
+use crate::operation::ctx::EmitSink;
+use crate::operation::{Operation, OperationCtx, OperationError, StateHandle};
 
 /// Recorded emit: type-erased value + optional plugin metadata.
 struct Emit {
     value: Arc<dyn Any + Send + Sync>,
-    // reason: meta is captured for replay-equality fixtures; tests assert through the public ShardTestHarness API which the compiler can't see at this struct level
+    // reason: meta is captured for replay-equality fixtures; tests assert through the public OperationTestHarness API which the compiler can't see at this struct level
     #[allow(dead_code)]
     meta: Option<HashMap<String, String>>,
 }
@@ -42,7 +42,7 @@ pub struct ReplayMismatch {
 
 impl std::fmt::Display for ReplayMismatch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "ShardTestHarness::replay_equals: state divergence")?;
+        writeln!(f, "OperationTestHarness::replay_equals: state divergence")?;
         writeln!(f, "  expected ({} bytes):", self.expected_serialized.len())?;
         write_hex(&self.expected_serialized, f)?;
         writeln!(f, "  actual   ({} bytes):", self.actual_serialized.len())?;
@@ -64,8 +64,8 @@ fn write_hex(bytes: &[u8], f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result 
     Ok(())
 }
 
-pub struct ShardTestHarness<S: Shard> {
-    shard: S,
+pub struct OperationTestHarness<S: Operation> {
+    operation: S,
     state: S::State,
     /// Snapshot of the initial state captured at construction time.
     /// Replayed against `recorded_changes` by [`Self::replay_equals`].
@@ -74,7 +74,7 @@ pub struct ShardTestHarness<S: Shard> {
     recorded_emits: Vec<Emit>,
 }
 
-impl<S: Shard> ShardTestHarness<S>
+impl<S: Operation> OperationTestHarness<S>
 where
     S::State: serde::Serialize + serde::de::DeserializeOwned,
 {
@@ -83,7 +83,7 @@ where
         let state = S::init_state(None, None);
         let initial_state_bytes = serialize_snapshot(&state);
         Self {
-            shard: S::default(),
+            operation: S::default(),
             state,
             initial_state_bytes,
             recorded_changes: Vec::new(),
@@ -92,7 +92,7 @@ where
     }
 }
 
-impl<S: Shard> Default for ShardTestHarness<S>
+impl<S: Operation> Default for OperationTestHarness<S>
 where
     S::State: serde::Serialize + serde::de::DeserializeOwned,
 {
@@ -101,7 +101,7 @@ where
     }
 }
 
-impl<S: Shard> ShardTestHarness<S> {
+impl<S: Operation> OperationTestHarness<S> {
     /// Construct a harness with an explicit initial state.
     pub fn with_initial_state(state: S::State) -> Self
     where
@@ -109,7 +109,7 @@ impl<S: Shard> ShardTestHarness<S> {
     {
         let initial_state_bytes = serialize_snapshot(&state);
         Self {
-            shard: S::default(),
+            operation: S::default(),
             state,
             initial_state_bytes,
             recorded_changes: Vec::new(),
@@ -121,16 +121,16 @@ impl<S: Shard> ShardTestHarness<S> {
     /// `RestoreInitPayload`, replicating the runtime's snapshot +
     /// change-log restoration flow.
     pub fn with_payload(
-        shard_key: Option<&str>,
+        operation_key: Option<&str>,
         payload: RestoreInitPayload<'_>,
     ) -> Result<Self, RestoreError>
     where
         S::State: serde::de::DeserializeOwned + serde::Serialize,
     {
-        let state = init_partition_with_payload::<S>(shard_key, Some(&payload))?;
+        let state = init_segment_with_payload::<S>(operation_key, Some(&payload))?;
         let initial_state_bytes = serialize_snapshot(&state);
         Ok(Self {
-            shard: S::default(),
+            operation: S::default(),
             state,
             initial_state_bytes,
             recorded_changes: Vec::new(),
@@ -148,13 +148,13 @@ impl<S: Shard> ShardTestHarness<S> {
                 emits: &mut self.recorded_emits,
                 channel_name: "<harness>",
             };
-            let mut ctx = ShardCtx::new(&mut sink);
+            let mut ctx = OperationCtx::new(&mut sink);
             let handle = StateHandle::<S>::new(&mut self.state, &recorded);
             // Errors are surfaced as panics in the harness; tests that
             // want to exercise the error path should drive `S::run`
             // directly.
-            if let Err(e) = self.shard.run(input, handle, &mut ctx) {
-                panic!("ShardTestHarness: Shard::run returned Err: {e}");
+            if let Err(e) = self.operation.run(input, handle, &mut ctx) {
+                panic!("OperationTestHarness: Operation::run returned Err: {e}");
             }
         }
         self.recorded_changes = recorded.into_inner();
@@ -174,7 +174,7 @@ impl<S: Shard> ShardTestHarness<S> {
         assert_eq!(
             self.recorded_changes.as_slice(),
             expected,
-            "ShardTestHarness::expect_changes: recorded changes diverge",
+            "OperationTestHarness::expect_changes: recorded changes diverge",
         );
         self
     }
@@ -196,7 +196,7 @@ impl<S: Shard> ShardTestHarness<S> {
         assert_eq!(
             observed.len(),
             expected.len(),
-            "ShardTestHarness::expect_emits: emits of type {} count diverges \
+            "OperationTestHarness::expect_emits: emits of type {} count diverges \
              (observed {}, expected {})",
             std::any::type_name::<C>(),
             observed.len(),
@@ -205,7 +205,7 @@ impl<S: Shard> ShardTestHarness<S> {
         for (i, (o, e)) in observed.iter().zip(expected.iter()).enumerate() {
             assert_eq!(
                 *o, e,
-                "ShardTestHarness::expect_emits: divergence at index {i}",
+                "OperationTestHarness::expect_emits: divergence at index {i}",
             );
         }
         self
@@ -218,7 +218,7 @@ impl<S: Shard> ShardTestHarness<S> {
     {
         assert_eq!(
             &self.state, expected,
-            "ShardTestHarness::expect_state: state diverges",
+            "OperationTestHarness::expect_state: state diverges",
         );
         self
     }
@@ -248,7 +248,7 @@ impl<S: Shard> ShardTestHarness<S> {
         S::State: serde::Serialize + serde::de::DeserializeOwned,
     {
         let initial: S::State = deserialize_snapshot::<S>(&self.initial_state_bytes);
-        let replayed = <ShardTestHarness<S>>::replay(initial, &self.recorded_changes);
+        let replayed = <OperationTestHarness<S>>::replay(initial, &self.recorded_changes);
         let expected = canonical_json(&self.state);
         let actual = canonical_json(&replayed);
         if expected == actual {
@@ -279,7 +279,7 @@ fn canonical_json<T: serde::Serialize>(value: &T) -> String {
     v.to_string()
 }
 
-fn deserialize_snapshot<S: Shard>(bytes: &[u8]) -> S::State
+fn deserialize_snapshot<S: Operation>(bytes: &[u8]) -> S::State
 where
     S::State: serde::de::DeserializeOwned,
 {
@@ -294,7 +294,7 @@ struct RecordingEmitSink<'a> {
 }
 
 impl<'a> EmitSink for RecordingEmitSink<'a> {
-    fn emit_inter_shard(&mut self, value: Arc<dyn Any + Send + Sync>) -> Result<(), ShardError> {
+    fn emit_inter_operation(&mut self, value: Arc<dyn Any + Send + Sync>) -> Result<(), OperationError> {
         self.emits.push(Emit { value, meta: None });
         Ok(())
     }
@@ -303,7 +303,7 @@ impl<'a> EmitSink for RecordingEmitSink<'a> {
         &mut self,
         value: Arc<dyn Any + Send + Sync>,
         meta: Option<HashMap<String, String>>,
-    ) -> Result<(), ShardError> {
+    ) -> Result<(), OperationError> {
         self.emits.push(Emit { value, meta });
         Ok(())
     }

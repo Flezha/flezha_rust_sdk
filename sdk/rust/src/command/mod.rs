@@ -16,14 +16,14 @@ mod executor_assign;
 mod executor_disconnect;
 mod migration_deserialization;
 mod migration_serialization;
-mod partition_apply_state;
-pub mod partition_state;
-mod partition_status;
+mod segment_apply_state;
+pub mod segment_state;
+mod segment_status;
 mod ping;
 mod reassign_executor;
-mod relay_message;
-mod relay_start;
-mod relay_stop;
+mod operation_message;
+mod operative_start;
+mod operative_stop;
 mod restore;
 mod streams_connect;
 
@@ -40,7 +40,7 @@ pub enum CommandActionType {
     Regular(Box<dyn CommandAction>),
     ExecutorDisconnect(Box<dyn CommandAction>),
     /// Controller -> SDK `ExecutorShutdownAck`. Wake the corresponding
-    /// per-relay wait channel registered by the SDK's graceful-shutdown
+    /// per-operative wait channel registered by the SDK's graceful-shutdown
     /// routine. No `CommandResponse` is written — the controller sent
     /// this as its own `CommandRequest`, not in reply to one we sent.
     AckSignal,
@@ -95,20 +95,20 @@ pub fn get_handler(_payload_id: &str, message: &[u8]) -> Result<FrameOutcome, Co
     let command_handler = match wrapper_command.command {
         Some(Command::AssignExecutorId(proto_ch)) => CommandActionType::Regular(Box::new(proto_ch)),
         Some(Command::ConnectSocket(proto_ch)) => CommandActionType::Regular(Box::new(proto_ch)),
-        Some(Command::AddRelay(proto_ch)) => CommandActionType::Regular(Box::new(proto_ch)),
-        Some(Command::RemRelay(proto_ch)) => CommandActionType::Regular(Box::new(proto_ch)),
+        Some(Command::AddOperative(proto_ch)) => CommandActionType::Regular(Box::new(proto_ch)),
+        Some(Command::RemOperative(proto_ch)) => CommandActionType::Regular(Box::new(proto_ch)),
         Some(Command::MigrationSerialization(proto_ch)) => {
             CommandActionType::Regular(Box::new(proto_ch))
         }
         Some(Command::MigrationDeserialization(proto_ch)) => {
             CommandActionType::Regular(Box::new(proto_ch))
         }
-        Some(Command::PartitionState(proto_ch)) => CommandActionType::Regular(Box::new(proto_ch)),
+        Some(Command::SegmentState(proto_ch)) => CommandActionType::Regular(Box::new(proto_ch)),
         Some(Command::ExecutorDisconnect(proto_ch)) => {
             CommandActionType::ExecutorDisconnect(Box::new(proto_ch))
         }
-        Some(Command::RelayMessage(proto_ch)) => CommandActionType::Regular(Box::new(proto_ch)),
-        Some(Command::PartitionApplyState(proto_ch)) => {
+        Some(Command::OperationMessage(proto_ch)) => CommandActionType::Regular(Box::new(proto_ch)),
+        Some(Command::SegmentApplyState(proto_ch)) => {
             CommandActionType::Regular(Box::new(proto_ch))
         }
         Some(Command::ExecutorShutdownNotification(_)) => CommandActionType::NotificationIgnore,
@@ -118,9 +118,9 @@ pub fn get_handler(_payload_id: &str, message: &[u8]) -> Result<FrameOutcome, Co
         // is a protocol bug. Drop the message, log it like the other
         // direction-mistake (`ExecutorShutdownNotification`).
         Some(Command::RestoreInitStateResponse(_)) => CommandActionType::NotificationIgnore,
-        Some(Command::CompactPartition(proto_ch)) => CommandActionType::Regular(Box::new(proto_ch)),
-        Some(Command::CompactPartitionResponse(_)) => CommandActionType::NotificationIgnore,
-        Some(Command::PartitionMailboxStatus(proto_ch)) => {
+        Some(Command::CompactSegment(proto_ch)) => CommandActionType::Regular(Box::new(proto_ch)),
+        Some(Command::CompactSegmentResponse(_)) => CommandActionType::NotificationIgnore,
+        Some(Command::SegmentMailboxStatus(proto_ch)) => {
             CommandActionType::Regular(Box::new(proto_ch))
         }
         Some(Command::Ping(proto_ch)) => CommandActionType::Regular(Box::new(proto_ch)),
@@ -130,9 +130,9 @@ pub fn get_handler(_payload_id: &str, message: &[u8]) -> Result<FrameOutcome, Co
         Some(Command::ReassignExecutorId(proto_ch)) => {
             CommandActionType::Regular(Box::new(proto_ch))
         }
-        // SDK is the SENDER for TaskCompleted — receiving it is a protocol
+        // SDK is the SENDER for BoundedCompleted — receiving it is a protocol
         // bug. Drop and log, like `ExecutorShutdownNotification`.
-        Some(Command::TaskCompleted(_)) => CommandActionType::NotificationIgnore,
+        Some(Command::BoundedCompleted(_)) => CommandActionType::NotificationIgnore,
         None => return Err(CommandDecodeError::EmptyCommand),
     };
 
@@ -294,7 +294,7 @@ mod tests {
             reference_id: "ref-shutdown".to_string(),
             command: Some(Command::ExecutorShutdownAck(
                 crate::pb::ExecutorShutdownAck {
-                    relay_id: "".to_string(),
+                    operative_id: "".to_string(),
                 },
             )),
         };
@@ -322,7 +322,7 @@ mod tests {
             reference_id: "y".to_string(),
             command: Some(Command::ExecutorShutdownAck(
                 crate::pb::ExecutorShutdownAck {
-                    relay_id: "".to_string(),
+                    operative_id: "".to_string(),
                 },
             )),
         }

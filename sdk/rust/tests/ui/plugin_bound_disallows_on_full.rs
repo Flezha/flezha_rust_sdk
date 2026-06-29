@@ -6,13 +6,13 @@
 // the call site.
 
 use flezha_executor::channel::ChannelBuilder;
-use flezha_executor::shard::{Shard, ShardCtx, ShardError};
+use flezha_executor::operation::{Operation, OperationCtx, OperationError};
 use flezha_executor::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
 use flezha_executor::OverflowPolicy;
 
 #[derive(Default)]
 struct PluginProducer;
-impl Shard for PluginProducer {
+impl Operation for PluginProducer {
     type Input = ();
     type Output = Vec<u8>;
     type State = ();
@@ -21,7 +21,7 @@ impl Shard for PluginProducer {
     type Config = ();
     fn name() -> &'static str { "plugin_producer" }
     fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(&mut self, _: (), _: StateHandle<'_, Self>, _: &mut ShardCtx<'_>) -> Result<(), ShardError> {
+    fn run(&mut self, _: (), _: StateHandle<'_, Self>, _: &mut OperationCtx<'_>) -> Result<(), OperationError> {
         Ok(())
     }
 }

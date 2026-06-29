@@ -3,7 +3,7 @@
 // trait-bound error pointing at the `.into::<ConsumesCandle>()` call.
 
 use flezha_executor::channel::ChannelBuilder;
-use flezha_executor::shard::{Shard, ShardCtx, ShardError};
+use flezha_executor::operation::{Operation, OperationCtx, OperationError};
 use flezha_executor::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
 
 #[derive(Clone)]
@@ -13,7 +13,7 @@ struct Candle;
 
 #[derive(Default)]
 struct ProducesTrade;
-impl Shard for ProducesTrade {
+impl Operation for ProducesTrade {
     type Input = ();
     type Output = TradeMsg;
     type State = ();
@@ -22,14 +22,14 @@ impl Shard for ProducesTrade {
     type Config = ();
     fn name() -> &'static str { "produces_trade" }
     fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(&mut self, _: (), _: StateHandle<'_, Self>, _: &mut ShardCtx<'_>) -> Result<(), ShardError> {
+    fn run(&mut self, _: (), _: StateHandle<'_, Self>, _: &mut OperationCtx<'_>) -> Result<(), OperationError> {
         Ok(())
     }
 }
 
 #[derive(Default)]
 struct ConsumesCandle;
-impl Shard for ConsumesCandle {
+impl Operation for ConsumesCandle {
     type Input = Candle;
     type Output = ();
     type State = ();
@@ -38,7 +38,7 @@ impl Shard for ConsumesCandle {
     type Config = ();
     fn name() -> &'static str { "consumes_candle" }
     fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(&mut self, _: Candle, _: StateHandle<'_, Self>, _: &mut ShardCtx<'_>) -> Result<(), ShardError> {
+    fn run(&mut self, _: Candle, _: StateHandle<'_, Self>, _: &mut OperationCtx<'_>) -> Result<(), OperationError> {
         Ok(())
     }
 }

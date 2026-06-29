@@ -1,18 +1,18 @@
 //! Per-emit cost of hybrid channels (`also_to_plugin_with`) vs. pure
-//! inter-shard and pure plugin-bound channels. Establishes that the
-//! hybrid path is `inter-shard fan-out + serializer call`, with the
+//! inter-operation and pure plugin-bound channels. Establishes that the
+//! hybrid path is `inter-operation fan-out + serializer call`, with the
 //! serializer paying the same fixed cost regardless of consumer count.
 //!
 //! Five bench configurations:
-//! - `pure_inter_shard_1c`  — pure inter-shard, 1 consumer
-//! - `pure_inter_shard_3c`  — pure inter-shard, 3 consumers
+//! - `pure_inter_operation_1c`  — pure inter-operation, 1 consumer
+//! - `pure_inter_operation_3c`  — pure inter-operation, 3 consumers
 //! - `pure_plugin_bound`    — pure `to_plugin(...)` channel
 //! - `hybrid_1c`            — hybrid, 1 consumer + plugin sink
 //! - `hybrid_3c`            — hybrid, 3 consumers + plugin sink
 //!
-//! Each iteration drives one emit per relay through the live
-//! dispatcher (`RelayDispatchHandle::dispatch` on a shared work-stealing
-//! pool). The consumer Shards count receipts atomically so `iter_custom`
+//! Each iteration drives one emit per operative through the live
+//! dispatcher (`OperativeDispatchHandle::dispatch` on a shared work-stealing
+//! pool). The consumer Operations count receipts atomically so `iter_custom`
 //! waits for full drain before stopping the timer.
 
 use std::collections::HashMap;
@@ -23,12 +23,12 @@ use std::time::{Duration, Instant};
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use flezha_executor::channel::ChannelBuilder;
-use flezha_executor::relay::builder::build_topology_for;
-use flezha_executor::relay::registry::RelayInstanceRegistry;
-use flezha_executor::relay::RelayInstance;
-use flezha_executor::shard::{Shard, ShardCtx, ShardError};
+use flezha_executor::operative::builder::build_topology_for;
+use flezha_executor::operative::registry::OperativeRegistry;
+use flezha_executor::operative::ContinuousInstance;
+use flezha_executor::operation::{Operation, OperationCtx, OperationError};
 use flezha_executor::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_executor::{__dispatch_internals as bi, OverflowPolicy, Relay};
+use flezha_executor::{__dispatch_internals as bi, OverflowPolicy, ContinuousOperative};
 use flz_transport::transport::FlezhaStream;
 
 // ----- shared bench helpers -----
@@ -70,11 +70,11 @@ static PLUGIN_BOUND_PRODUCE_COUNT: AtomicUsize = AtomicUsize::new(0);
 static HYBRID_1C_COUNT: AtomicUsize = AtomicUsize::new(0);
 static HYBRID_3C_COUNT: AtomicUsize = AtomicUsize::new(0);
 
-// ---------- pure inter-shard, 1 consumer ----------
+// ---------- pure inter-operation, 1 consumer ----------
 
 #[derive(Default)]
 struct Pure1Producer;
-impl Shard for Pure1Producer {
+impl Operation for Pure1Producer {
     type Input = Vec<u8>;
     type Output = u32;
     type State = ();
@@ -89,15 +89,15 @@ impl Shard for Pure1Producer {
         &mut self,
         _: Vec<u8>,
         _: StateHandle<'_, Self>,
-        ctx: &mut ShardCtx<'_>,
-    ) -> Result<(), ShardError> {
+        ctx: &mut OperationCtx<'_>,
+    ) -> Result<(), OperationError> {
         ctx.emit::<u32>(1)
     }
 }
 
 #[derive(Default)]
 struct Pure1Consumer;
-impl Shard for Pure1Consumer {
+impl Operation for Pure1Consumer {
     type Input = u32;
     type Output = ();
     type State = ();
@@ -112,17 +112,17 @@ impl Shard for Pure1Consumer {
         &mut self,
         _: u32,
         _: StateHandle<'_, Self>,
-        _: &mut ShardCtx<'_>,
-    ) -> Result<(), ShardError> {
+        _: &mut OperationCtx<'_>,
+    ) -> Result<(), OperationError> {
         PURE_1C_COUNT.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 }
 
 struct Pure1Relay;
-impl Relay for Pure1Relay {
+impl ContinuousOperative for Pure1Relay {
     fn factory_id() -> &'static str {
-        "bench_pure_inter_shard_1c"
+        "bench_pure_inter_operation_1c"
     }
     fn channels(c: &mut ChannelBuilder) {
         c.input::<Vec<u8>>("input")
@@ -134,11 +134,11 @@ impl Relay for Pure1Relay {
     }
 }
 
-// ---------- pure inter-shard, 3 consumers ----------
+// ---------- pure inter-operation, 3 consumers ----------
 
 #[derive(Default)]
 struct Pure3Producer;
-impl Shard for Pure3Producer {
+impl Operation for Pure3Producer {
     type Input = Vec<u8>;
     type Output = u32;
     type State = ();
@@ -153,8 +153,8 @@ impl Shard for Pure3Producer {
         &mut self,
         _: Vec<u8>,
         _: StateHandle<'_, Self>,
-        ctx: &mut ShardCtx<'_>,
-    ) -> Result<(), ShardError> {
+        ctx: &mut OperationCtx<'_>,
+    ) -> Result<(), OperationError> {
         ctx.emit::<u32>(1)
     }
 }
@@ -163,7 +163,7 @@ macro_rules! pure3_consumer {
     ($name:ident, $static:literal) => {
         #[derive(Default)]
         struct $name;
-        impl Shard for $name {
+        impl Operation for $name {
             type Input = u32;
             type Output = ();
             type State = ();
@@ -178,8 +178,8 @@ macro_rules! pure3_consumer {
                 &mut self,
                 _: u32,
                 _: StateHandle<'_, Self>,
-                _: &mut ShardCtx<'_>,
-            ) -> Result<(), ShardError> {
+                _: &mut OperationCtx<'_>,
+            ) -> Result<(), OperationError> {
                 PURE_3C_COUNT.fetch_add(1, Ordering::Relaxed);
                 Ok(())
             }
@@ -192,9 +192,9 @@ pure3_consumer!(Pure3ConsumerB, "pure3_b");
 pure3_consumer!(Pure3ConsumerC, "pure3_c");
 
 struct Pure3Relay;
-impl Relay for Pure3Relay {
+impl ContinuousOperative for Pure3Relay {
     fn factory_id() -> &'static str {
-        "bench_pure_inter_shard_3c"
+        "bench_pure_inter_operation_3c"
     }
     fn channels(c: &mut ChannelBuilder) {
         c.input::<Vec<u8>>("input")
@@ -212,7 +212,7 @@ impl Relay for Pure3Relay {
 
 #[derive(Default)]
 struct PluginBoundProducer;
-impl Shard for PluginBoundProducer {
+impl Operation for PluginBoundProducer {
     type Input = Vec<u8>;
     type Output = Vec<u8>;
     type State = ();
@@ -227,15 +227,15 @@ impl Shard for PluginBoundProducer {
         &mut self,
         _: Vec<u8>,
         _: StateHandle<'_, Self>,
-        ctx: &mut ShardCtx<'_>,
-    ) -> Result<(), ShardError> {
+        ctx: &mut OperationCtx<'_>,
+    ) -> Result<(), OperationError> {
         PLUGIN_BOUND_PRODUCE_COUNT.fetch_add(1, Ordering::Relaxed);
         ctx.emit::<Vec<u8>>(b"x".to_vec())
     }
 }
 
 struct PluginBoundRelay;
-impl Relay for PluginBoundRelay {
+impl ContinuousOperative for PluginBoundRelay {
     fn factory_id() -> &'static str {
         "bench_pure_plugin_bound"
     }
@@ -253,7 +253,7 @@ impl Relay for PluginBoundRelay {
 
 #[derive(Default)]
 struct Hybrid1Producer;
-impl Shard for Hybrid1Producer {
+impl Operation for Hybrid1Producer {
     type Input = Vec<u8>;
     type Output = u32;
     type State = ();
@@ -268,15 +268,15 @@ impl Shard for Hybrid1Producer {
         &mut self,
         _: Vec<u8>,
         _: StateHandle<'_, Self>,
-        ctx: &mut ShardCtx<'_>,
-    ) -> Result<(), ShardError> {
+        ctx: &mut OperationCtx<'_>,
+    ) -> Result<(), OperationError> {
         ctx.emit::<u32>(1)
     }
 }
 
 #[derive(Default)]
 struct Hybrid1Consumer;
-impl Shard for Hybrid1Consumer {
+impl Operation for Hybrid1Consumer {
     type Input = u32;
     type Output = ();
     type State = ();
@@ -291,15 +291,15 @@ impl Shard for Hybrid1Consumer {
         &mut self,
         _: u32,
         _: StateHandle<'_, Self>,
-        _: &mut ShardCtx<'_>,
-    ) -> Result<(), ShardError> {
+        _: &mut OperationCtx<'_>,
+    ) -> Result<(), OperationError> {
         HYBRID_1C_COUNT.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 }
 
 struct Hybrid1Relay;
-impl Relay for Hybrid1Relay {
+impl ContinuousOperative for Hybrid1Relay {
     fn factory_id() -> &'static str {
         "bench_hybrid_1c"
     }
@@ -318,7 +318,7 @@ impl Relay for Hybrid1Relay {
 
 #[derive(Default)]
 struct Hybrid3Producer;
-impl Shard for Hybrid3Producer {
+impl Operation for Hybrid3Producer {
     type Input = Vec<u8>;
     type Output = u32;
     type State = ();
@@ -333,8 +333,8 @@ impl Shard for Hybrid3Producer {
         &mut self,
         _: Vec<u8>,
         _: StateHandle<'_, Self>,
-        ctx: &mut ShardCtx<'_>,
-    ) -> Result<(), ShardError> {
+        ctx: &mut OperationCtx<'_>,
+    ) -> Result<(), OperationError> {
         ctx.emit::<u32>(1)
     }
 }
@@ -343,7 +343,7 @@ macro_rules! hybrid3_consumer {
     ($name:ident, $static:literal) => {
         #[derive(Default)]
         struct $name;
-        impl Shard for $name {
+        impl Operation for $name {
             type Input = u32;
             type Output = ();
             type State = ();
@@ -358,8 +358,8 @@ macro_rules! hybrid3_consumer {
                 &mut self,
                 _: u32,
                 _: StateHandle<'_, Self>,
-                _: &mut ShardCtx<'_>,
-            ) -> Result<(), ShardError> {
+                _: &mut OperationCtx<'_>,
+            ) -> Result<(), OperationError> {
                 HYBRID_3C_COUNT.fetch_add(1, Ordering::Relaxed);
                 Ok(())
             }
@@ -372,7 +372,7 @@ hybrid3_consumer!(Hybrid3ConsumerB, "hybrid3_b");
 hybrid3_consumer!(Hybrid3ConsumerC, "hybrid3_c");
 
 struct Hybrid3Relay;
-impl Relay for Hybrid3Relay {
+impl ContinuousOperative for Hybrid3Relay {
     fn factory_id() -> &'static str {
         "bench_hybrid_3c"
     }
@@ -391,7 +391,7 @@ impl Relay for Hybrid3Relay {
 
 // ----- bench harness -----
 
-fn run_bench<R: Relay>(
+fn run_bench<R: ContinuousOperative>(
     c: &mut Criterion,
     name: &'static str,
     instance_id: &'static str,
@@ -400,10 +400,10 @@ fn run_bench<R: Relay>(
 ) {
     let pool = Arc::new(bi::WorkStealingPool::with_size(pool_size_from_env_or_cpus()));
     let topology = build_topology_for::<R>().expect("topology");
-    let registry = Arc::new(RelayInstanceRegistry::new());
-    let inst = RelayInstance::new(topology, Arc::from(instance_id), Arc::clone(&pool));
-    registry.register(inst);
-    let handle = bi::RelayDispatchHandle {
+    let registry = Arc::new(OperativeRegistry::new());
+    let inst = ContinuousInstance::new(topology, Arc::from(instance_id), Arc::clone(&pool));
+    registry.register_continuous(inst);
+    let handle = bi::OperativeDispatchHandle {
         registry: Arc::clone(&registry),
     };
     let stream = dummy_stream();
@@ -443,12 +443,12 @@ fn run_bench<R: Relay>(
     group.finish();
 }
 
-fn pure_inter_shard_1c(c: &mut Criterion) {
-    run_bench::<Pure1Relay>(c, "pure_inter_shard_1c", "bench-pure-1c", &PURE_1C_COUNT, 1);
+fn pure_inter_operation_1c(c: &mut Criterion) {
+    run_bench::<Pure1Relay>(c, "pure_inter_operation_1c", "bench-pure-1c", &PURE_1C_COUNT, 1);
 }
 
-fn pure_inter_shard_3c(c: &mut Criterion) {
-    run_bench::<Pure3Relay>(c, "pure_inter_shard_3c", "bench-pure-3c", &PURE_3C_COUNT, 3);
+fn pure_inter_operation_3c(c: &mut Criterion) {
+    run_bench::<Pure3Relay>(c, "pure_inter_operation_3c", "bench-pure-3c", &PURE_3C_COUNT, 3);
 }
 
 fn pure_plugin_bound(c: &mut Criterion) {
@@ -471,8 +471,8 @@ fn hybrid_3c(c: &mut Criterion) {
 
 criterion_group!(
     benches,
-    pure_inter_shard_1c,
-    pure_inter_shard_3c,
+    pure_inter_operation_1c,
+    pure_inter_operation_3c,
     pure_plugin_bound,
     hybrid_1c,
     hybrid_3c,

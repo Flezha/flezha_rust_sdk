@@ -186,7 +186,7 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
 
         impl<'__sh, __S> #mut_trait_ident for ::flezha_executor::StateHandle<'__sh, __S>
         where
-            __S: ::flezha_executor::Shard<State = #state_ident, Change = #change_ident>,
+            __S: ::flezha_executor::Operation<State = #state_ident, Change = #change_ident>,
         {
             #(#mutator_impls)*
         }

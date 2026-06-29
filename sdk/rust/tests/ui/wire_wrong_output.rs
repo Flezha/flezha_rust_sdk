@@ -3,7 +3,7 @@
 // error pointing at the `.from::<ProducesCandle>()` call.
 
 use flezha_executor::channel::ChannelBuilder;
-use flezha_executor::shard::{Shard, ShardCtx, ShardError};
+use flezha_executor::operation::{Operation, OperationCtx, OperationError};
 use flezha_executor::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
 
 struct TradeMsg;
@@ -11,7 +11,7 @@ struct Candle;
 
 #[derive(Default)]
 struct ProducesCandle;
-impl Shard for ProducesCandle {
+impl Operation for ProducesCandle {
     type Input = ();
     type Output = Candle;
     type State = ();
@@ -20,7 +20,7 @@ impl Shard for ProducesCandle {
     type Config = ();
     fn name() -> &'static str { "produces_candle" }
     fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(&mut self, _: (), _: StateHandle<'_, Self>, _: &mut ShardCtx<'_>) -> Result<(), ShardError> {
+    fn run(&mut self, _: (), _: StateHandle<'_, Self>, _: &mut OperationCtx<'_>) -> Result<(), OperationError> {
         Ok(())
     }
 }

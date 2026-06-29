@@ -1,12 +1,12 @@
 //! Proc-macros realizing the Flezha SDK authoring contract for Rust.
 //!
-//! - `#[flezha::shard]` — attribute macro on a `run` function; infers the six
-//!   `Shard` associated types from the signature and generates the impl, the
-//!   PascalCase shard type, and (for the single-shard `input → sink` case) a
-//!   `Relay` impl plus inventory auto-registration.
+//! - `#[flezha::operation]` — attribute macro on a `run` function; infers the six
+//!   `Operation` associated types from the signature and generates the impl, the
+//!   PascalCase operation type, and (for the single-operation `input → sink` case) a
+//!   `ContinuousOperative` impl plus inventory auto-registration.
 //! - `#[derive(flezha::State)]` — generates a field-granular `Change` enum +
 //!   `apply_change` + journaling mutators on the state handle.
-//! - `flezha::relay!` — declarative macro lowering a strictly linear pipeline
+//! - `flezha::operative!` — declarative macro lowering a strictly linear pipeline
 //!   to a `channels()` body + auto-registration.
 //!
 //! Everything expands to the existing trait surface; see
@@ -14,15 +14,15 @@
 
 use proc_macro::TokenStream;
 
-mod relay;
-mod shard;
+mod operative;
+mod operation;
 mod state;
 mod util;
 
-/// `#[flezha::shard(...)]` attribute macro. See module docs.
+/// `#[flezha::operation(...)]` attribute macro. See module docs.
 #[proc_macro_attribute]
-pub fn shard(attr: TokenStream, item: TokenStream) -> TokenStream {
-    shard::expand(attr.into(), item.into())
+pub fn operation(attr: TokenStream, item: TokenStream) -> TokenStream {
+    operation::expand(attr.into(), item.into())
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
 }
@@ -35,10 +35,10 @@ pub fn derive_state(item: TokenStream) -> TokenStream {
         .into()
 }
 
-/// `flezha::relay! { id: "...", pipeline: ... }` declarative macro.
+/// `flezha::operative! { id: "...", pipeline: ... }` declarative macro.
 #[proc_macro]
-pub fn relay(item: TokenStream) -> TokenStream {
-    relay::expand(item.into())
+pub fn operative(item: TokenStream) -> TokenStream {
+    operative::expand(item.into())
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
 }

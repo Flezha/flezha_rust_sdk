@@ -1,11 +1,11 @@
-//! `MigrationDeserialization` — restore a Relay instance's per-Shard /
-//! per-Partition state from a snapshot blob and register it locally.
+//! `MigrationDeserialization` — restore a ContinuousOperative instance's per-Operation /
+//! per-Segment state from a snapshot blob and register it locally.
 //! Reuses `apply_init_values` for the state-application path so a
-//! migrated instance ends up with byte-identical Partition state to the
-//! source instance produced by `serialize_relay_state`.
+//! migrated instance ends up with byte-identical Segment state to the
+//! source instance produced by `serialize_operative_state`.
 
 use super::CommandAction;
-use crate::command::partition_state::apply_init_values;
+use crate::command::segment_state::apply_init_values;
 use crate::executor::ExecutorNode;
 use crate::pb::MigrationDeserialization;
 
@@ -16,7 +16,7 @@ impl CommandAction for MigrationDeserialization {
         _message: &str,
         errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
-        match executor.start_relay(self.factory_id.clone(), self.relay_id.clone()) {
+        match executor.start_operative(self.factory_id.clone(), self.operative_id.clone()) {
             Some(instance) => {
                 if !self.serialized_state.is_empty() {
                     let json_str = match std::str::from_utf8(&self.serialized_state) {
@@ -37,7 +37,7 @@ impl CommandAction for MigrationDeserialization {
             }
             None => {
                 errors.push(format!(
-                    "Relay class with factory_id {} is not registered",
+                    "ContinuousOperative class with factory_id {} is not registered",
                     self.factory_id
                 ));
                 ("migration_deserialization".to_string(), Vec::new())

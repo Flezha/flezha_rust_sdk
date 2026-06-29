@@ -10,10 +10,10 @@ use flz_transport::transport::{protocol, FlezhaStream};
 use flz_transport::utility::path_helper;
 
 use super::CommandAction;
-use crate::executor::fast::RelayDispatchHandle;
+use crate::executor::fast::OperativeDispatchHandle;
 use crate::executor::ExecutorNode;
-use crate::partition::flusher::{SendError, SendFrameFn};
-use crate::partition::partition_state_sink;
+use crate::segment::flusher::{SendError, SendFrameFn};
+use crate::segment::segment_state_sink;
 use crate::pb::ConnectSocket;
 
 impl CommandAction for ConnectSocket {
@@ -51,7 +51,7 @@ fn handle_uds(cmd: &ConnectSocket, executor: &mut ExecutorNode) -> (String, Vec<
         stream_pairs.push((FlezhaStream::Unix(primary), secondary_for_write));
     }
 
-    install_partition_state_sink_from_pairs(&stream_pairs);
+    install_segment_state_sink_from_pairs(&stream_pairs);
     spawn_listener_uds(executor, stream_pairs);
     ("connect_sockets".to_string(), Vec::new())
 }
@@ -87,44 +87,44 @@ fn handle_quic(cmd: &ConnectSocket, executor: &mut ExecutorNode) -> (String, Vec
         stream_pairs.push((FlezhaStream::Quic(primary), secondary_for_write));
     }
 
-    install_partition_state_sink_from_pairs(&stream_pairs);
+    install_segment_state_sink_from_pairs(&stream_pairs);
     spawn_listener_quic(executor, stream_pairs);
     ("connect_sockets".to_string(), Vec::new())
 }
 
-/// Install the global `partition_state_sink` wrapping the FIRST
+/// Install the global `segment_state_sink` wrapping the FIRST
 /// secondary stream from the freshly-connected pairs. The flusher uses
-/// this sink to ship `partition_state_change` and
-/// `partition_state_snapshot` frames; one secondary is enough because
-/// the WAL is single-writer per partition and the controller serializes the
-/// per-Partition writes server-side.
-fn install_partition_state_sink_from_pairs(pairs: &[(FlezhaStream, Arc<FlezhaStream>)]) {
+/// this sink to ship `segment_state_change` and
+/// `segment_state_snapshot` frames; one secondary is enough because
+/// the WAL is single-writer per segment and the controller serializes the
+/// per-Segment writes server-side.
+fn install_segment_state_sink_from_pairs(pairs: &[(FlezhaStream, Arc<FlezhaStream>)]) {
     if let Some((_, secondary)) = pairs.first() {
         // Mirror the secondary stream for the reaper's one-shot delete send.
-        partition_state_sink::set_secondary_stream(Some(Arc::clone(secondary)));
+        segment_state_sink::set_secondary_stream(Some(Arc::clone(secondary)));
         let sink_stream = Arc::clone(secondary);
         // The Mutex serializes writes from the single flusher thread —
         // belt-and-braces given that the flusher has only one writer.
         let writer = Arc::new(Mutex::new(sink_stream));
         let send_fn: SendFrameFn = Arc::new(move |frame: &[u8]| -> Result<(), SendError> {
             let payload =
-                payloader::build_from_binary("partition_state_change", frame, HashMap::new());
+                payloader::build_from_binary("segment_state_change", frame, HashMap::new());
             let stream = writer.lock().map_err(|e| SendError::Other(e.to_string()))?;
             (&**stream)
                 .write_all(&payload)
                 .map_err(|e| SendError::TransportDown(e.to_string()))
         });
-        partition_state_sink::install_global_sink(send_fn);
+        segment_state_sink::install_global_sink(send_fn);
     }
 }
 
 fn spawn_listener_uds(executor: &ExecutorNode, pairs: Vec<(FlezhaStream, Arc<FlezhaStream>)>) {
-    let handle = executor.relay_dispatch_handle();
+    let handle = executor.operative_dispatch_handle();
     let _ = thread::spawn(move || listen_incoming_uds(pairs, handle));
 }
 
 fn spawn_listener_quic(executor: &ExecutorNode, pairs: Vec<(FlezhaStream, Arc<FlezhaStream>)>) {
-    let handle = executor.relay_dispatch_handle();
+    let handle = executor.operative_dispatch_handle();
     let _ = thread::spawn(move || listen_incoming_quic(pairs, handle));
 }
 
@@ -133,7 +133,7 @@ fn run_data_reader(
     key: u32,
     primary: Arc<FlezhaStream>,
     secondary: Arc<FlezhaStream>,
-    handle: RelayDispatchHandle,
+    handle: OperativeDispatchHandle,
 ) {
     let mut reader = std::io::BufReader::with_capacity(64 * 1024, &*primary);
     let mut frames: u64 = 0;
@@ -159,7 +159,7 @@ fn run_data_reader(
     );
 }
 
-fn listen_incoming_uds(pairs: Vec<(FlezhaStream, Arc<FlezhaStream>)>, handle: RelayDispatchHandle) {
+fn listen_incoming_uds(pairs: Vec<(FlezhaStream, Arc<FlezhaStream>)>, handle: OperativeDispatchHandle) {
     let mut handles = Vec::new();
     for (key, (primary, secondary)) in pairs.into_iter().enumerate() {
         let handle = handle.clone();
@@ -176,7 +176,7 @@ fn listen_incoming_uds(pairs: Vec<(FlezhaStream, Arc<FlezhaStream>)>, handle: Re
 
 fn listen_incoming_quic(
     mut pairs: Vec<(FlezhaStream, Arc<FlezhaStream>)>,
-    handle: RelayDispatchHandle,
+    handle: OperativeDispatchHandle,
 ) {
     let mut handles = Vec::new();
     for (key, (primary, secondary)) in pairs.drain(..).enumerate() {

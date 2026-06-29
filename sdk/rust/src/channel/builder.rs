@@ -1,9 +1,9 @@
-//! Fluent channel builder per `relay-mvp-rust/design.md` Decision 2.
+//! Fluent channel builder per `operative-mvp-rust/design.md` Decision 2.
 //!
 //! Compile-time enforcement:
 //! - `c.channel::<T>(...)` returns a `ChannelDecl<T>`. `.from::<S>()` requires
-//!   `S: Shard<Output = T>` — type mismatch fires at the call site.
-//! - `.into::<S>()` requires `S: Shard<Input = T>` — same.
+//!   `S: Operation<Output = T>` — type mismatch fires at the call site.
+//! - `.into::<S>()` requires `S: Operation<Input = T>` — same.
 //! - `.from` returns `ChannelDeclWithProducer` which has no further `.from`
 //!   method, so multi-producer is a compile error.
 //! - Entry channels accept only `Vec<u8>` / `String` via the sealed
@@ -15,17 +15,17 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use crate::channel::entry_type::EntryChannelType;
-use crate::channel::{Channel, ChannelKind, OverflowPolicy, ShardId};
-use crate::shard::Shard;
+use crate::channel::{Channel, ChannelKind, OverflowPolicy, OperationId};
+use crate::operation::Operation;
 
-/// Type-erased dispatcher factory for one Shard. Stored on
-/// `ChannelBuilder::shards` and consumed by `build_topology` to produce
-/// per-partition slots in each `RelayInstance`.
-pub(crate) struct ShardEntry {
+/// Type-erased dispatcher factory for one Operation. Stored on
+/// `ChannelBuilder::operations` and consumed by `build_topology` to produce
+/// per-segment slots in each `ContinuousInstance`.
+pub(crate) struct OperationEntry {
     pub name: &'static str,
-    pub partition_keys: Vec<&'static str>,
-    pub partition_for_overridden: bool,
-    pub shard_key_overridden: bool,
+    pub segment_keys: Vec<&'static str>,
+    pub segment_for_overridden: bool,
+    pub operation_key_overridden: bool,
     pub input_channel_id: Option<u32>,
     pub output_channel_id: Option<u32>,
     /// Erased input-type marker: matches the consumer-edge's
@@ -34,54 +34,54 @@ pub(crate) struct ShardEntry {
     /// Erased output-type marker: matches the producer-edge's payload type.
     pub output_type_id: std::any::TypeId,
 
-    /// `Shard::mailbox_capacity()` captured at registration time. The
+    /// `Operation::mailbox_capacity()` captured at registration time. The
     /// resolved value (after applying env-var precedence in `build_topology`)
-    /// is the size of every Partition mailbox built for this Shard.
+    /// is the size of every Segment mailbox built for this Operation.
     pub mailbox_capacity: usize,
 
-    /// `Shard::MAILBOX_CAPACITY_OVERRIDDEN` captured at registration time.
+    /// `Operation::MAILBOX_CAPACITY_OVERRIDDEN` captured at registration time.
     /// Drives the precedence rule in `resolve_mailbox_capacity`.
     pub mailbox_capacity_overridden: bool,
 
-    /// Build a per-partition slot. The closure captures the Shard type
-    /// statically so the partition mailbox carries `Arc<S::Input>` items
-    /// and `Shard::run` is called with the typed signature.
-    pub build_partition: PartitionBuilder,
+    /// Build a per-segment slot. The closure captures the Operation type
+    /// statically so the segment mailbox carries `Arc<S::Input>` items
+    /// and `Operation::run` is called with the typed signature.
+    pub build_segment: SegmentBuilder,
 
-    /// Partition routing for inputs targeting this Shard. Returns the
-    /// partition keys. Single-mode shards return an empty vec; the runtime
-    /// then routes everything to partition index 0.
-    pub partition_for_erased: PartitionForFn,
+    /// Segment routing for inputs targeting this Operation. Returns the
+    /// segment keys. Single-mode operations return an empty vec; the runtime
+    /// then routes everything to segment index 0.
+    pub segment_for_erased: SegmentForFn,
 
-    /// `Shard::shard_key` captured statically and type-erased. `Some`
-    /// only for dynamic-mode Shards (`SHARD_KEY_OVERRIDDEN = true` with
-    /// empty `shard_keys()`); the dispatch path calls it per input to
-    /// derive the dynamic partition key.
-    pub shard_key_erased: Option<ShardKeyFn>,
+    /// `Operation::operation_key` captured statically and type-erased. `Some`
+    /// only for dynamic-mode Operations (`OPERATION_KEY_OVERRIDDEN = true` with
+    /// empty `operation_keys()`); the dispatch path calls it per input to
+    /// derive the dynamic segment key.
+    pub operation_key_erased: Option<OperationKeyFn>,
 
-    /// Dynamic-mode knobs captured at registration (`Shard::partition_idle_ttl`,
-    /// `max_partitions`). Carried through to the `ShardDescriptor` for the
-    /// reaper / registry; inert for non-dynamic Shards. `idle_ttl == None`
+    /// Dynamic-mode knobs captured at registration (`Operation::segment_idle_ttl`,
+    /// `max_segments`). Carried through to the `OperationDescriptor` for the
+    /// reaper / registry; inert for non-dynamic Operations. `idle_ttl == None`
     /// means no eviction.
     pub idle_ttl: Option<std::time::Duration>,
-    pub max_partitions: usize,
+    pub max_segments: usize,
 
-    /// Serialize a Partition's typed state to JSON. Captures S statically
+    /// Serialize a Segment's typed state to JSON. Captures S statically
     /// so the closure downcasts the type-erased `Box<dyn Any + Send>`
-    /// stored in `PartitionSlot::state` and produces a `serde_json::Value`
+    /// stored in `SegmentSlot::state` and produces a `serde_json::Value`
     /// via the `S::State: Serialize` bound on the trait.
     pub serialize_state: SerializeStateFn,
 
-    /// Deserialize a per-Shard JSON value into a fresh State and wrap
-    /// it as the typed-erased payload `PartitionSlot::state` expects
-    /// (a `Box<PartitionState<S>>`). Captures S statically; constructs
-    /// a fresh `S` via `Default` since the user's `Shard` is stateless.
+    /// Deserialize a per-Operation JSON value into a fresh State and wrap
+    /// it as the typed-erased payload `SegmentSlot::state` expects
+    /// (a `Box<SegmentState<S>>`). Captures S statically; constructs
+    /// a fresh `S` via `Default` since the user's `Operation` is stateless.
     pub deserialize_state: DeserializeStateFn,
 }
 
-pub(crate) type PartitionForFn = Arc<dyn Fn(&dyn Any) -> Vec<&'static str> + Send + Sync + 'static>;
+pub(crate) type SegmentForFn = Arc<dyn Fn(&dyn Any) -> Vec<&'static str> + Send + Sync + 'static>;
 
-pub(crate) type ShardKeyFn = Arc<dyn Fn(&dyn Any) -> Option<String> + Send + Sync + 'static>;
+pub(crate) type OperationKeyFn = Arc<dyn Fn(&dyn Any) -> Option<String> + Send + Sync + 'static>;
 
 pub(crate) type SerializeStateFn =
     Arc<dyn Fn(&Box<dyn Any + Send>) -> Result<serde_json::Value, String> + Send + Sync + 'static>;
@@ -89,33 +89,33 @@ pub(crate) type SerializeStateFn =
 pub(crate) type DeserializeStateFn =
     Arc<dyn Fn(&serde_json::Value) -> Result<Box<dyn Any + Send>, String> + Send + Sync + 'static>;
 
-pub(crate) type PartitionBuilder = Box<
-    dyn Fn(BuildPartitionArgs<'_>) -> Arc<crate::partition::PartitionSlot> + Send + Sync + 'static,
+pub(crate) type SegmentBuilder = Box<
+    dyn Fn(BuildSegmentArgs<'_>) -> Arc<crate::segment::SegmentSlot> + Send + Sync + 'static,
 >;
 
-pub struct BuildPartitionArgs<'a> {
-    pub topology: Arc<crate::relay::topology::RelayTopology>,
-    pub instance: std::sync::Weak<crate::relay::instance::RelayInstance>,
-    /// The relay INSTANCE id (controller-assigned relay_id). The on-disk WAL
-    /// is keyed by this, not the factory id, so two relays of the same factory
-    /// keep independent per-Partition state instead of colliding on one WAL.
+pub struct BuildSegmentArgs<'a> {
+    pub topology: Arc<crate::operative::topology::OperativeTopology>,
+    pub instance: std::sync::Weak<crate::operative::instance::ContinuousInstance>,
+    /// The operative INSTANCE id (controller-assigned operative_id). The on-disk WAL
+    /// is keyed by this, not the factory id, so two operatives of the same factory
+    /// keep independent per-Segment state instead of colliding on one WAL.
     pub instance_id: Arc<str>,
-    pub shard_id: ShardId,
-    pub shard_key: Option<&'a str>,
-    /// Zero-based partition index within the Shard. `0` for single-mode
-    /// shards; `0..shard_keys().len()` for static-mode shards.
-    pub partition_index: usize,
+    pub operation_id: OperationId,
+    pub operation_key: Option<&'a str>,
+    /// Zero-based segment index within the Operation. `0` for single-mode
+    /// operations; `0..operation_keys().len()` for static-mode operations.
+    pub segment_index: usize,
     /// Frozen-at-instance-start persistence flag, propagated from the
-    /// `RelayInstance`. The `PartitionSlot` carries this on its
+    /// `ContinuousInstance`. The `SegmentSlot` carries this on its
     /// `persistence_enabled` field; the per-process flusher inspects it
     /// at drain time to decide whether to call `send_frame`.
     pub persistence_enabled: bool,
     pub pool: Arc<crate::executor::work_stealing_pool::WorkStealingPool>,
 }
 
-/// Plugin sink attached to an `InterShard` channel via
+/// Plugin sink attached to an `InterOperation` channel via
 /// `also_to_plugin_with(...)`. The presence of this field flips the
-/// channel from pure inter-shard fan-out to hybrid (consumers + plugin
+/// channel from pure inter-operation fan-out to hybrid (consumers + plugin
 /// wire) without changing `ChannelKind`.
 pub(crate) struct PluginSink {
     pub name: &'static str,
@@ -126,29 +126,29 @@ pub(crate) struct PluginSink {
 pub(crate) struct ChannelEntry {
     pub name: &'static str,
     pub kind: ChannelKind,
-    pub producer: Option<ShardId>,
-    pub consumers: Vec<ShardId>,
+    pub producer: Option<OperationId>,
+    pub consumers: Vec<OperationId>,
     pub plugin_name: Option<&'static str>,
     pub wrap_input: Option<crate::channel::EntryWrapFn>,
     pub plugin_serializer: Option<crate::channel::PluginSerializeFn>,
     /// Hybrid plugin sink: populated by `also_to_plugin_with(...)` on
-    /// an `InterShard` channel. Mutually exclusive with
+    /// an `InterOperation` channel. Mutually exclusive with
     /// `plugin_name`/`plugin_serializer`, which are populated by
     /// `to_plugin(...)` on a pure `PluginBound` channel.
     pub plugin_sink: Option<PluginSink>,
     /// Backpressure policy applied at the push site when the consumer
     /// mailbox is full. Initialized at `declare_channel` time per
-    /// channel kind (Entry → DropNewest, InterShard → Block); plugin-bound
+    /// channel kind (Entry → DropNewest, InterOperation → Block); plugin-bound
     /// declarations carry a placeholder that is never consulted because
     /// `emit_plugin` writes straight to the wire. `.on_full(...)`
     /// overwrites this value.
     pub overflow_policy: OverflowPolicy,
 }
 
-/// Reasons `Relay::channels(c)` declarations fail at registration time.
+/// Reasons `ContinuousOperative::channels(c)` declarations fail at registration time.
 #[derive(Debug, thiserror::Error)]
 pub enum BuildTopologyError {
-    #[error("channel `{0}` declared more than once on this relay")]
+    #[error("channel `{0}` declared more than once on this operative")]
     DuplicateChannel(&'static str),
 
     #[error("channel `{name}` was declared but never wired with .from(...)")]
@@ -158,27 +158,27 @@ pub enum BuildTopologyError {
     MultiProducer { name: &'static str },
 
     #[error(
-        "shard `{name}` declares non-empty shard_keys() but does not override partition_for \
-         (set PARTITION_FOR_OVERRIDDEN = true)"
+        "operation `{name}` declares non-empty operation_keys() but does not override segment_for \
+         (set SEGMENT_FOR_OVERRIDDEN = true)"
     )]
-    PartitionForMissing { name: &'static str },
+    SegmentForMissing { name: &'static str },
 
     #[error(
-        "shard `{name}` declares both shard_keys() (static mode) and overrides shard_key() \
-         (dynamic mode); a Shard declares one OR the other, not both"
+        "operation `{name}` declares both operation_keys() (static mode) and overrides operation_key() \
+         (dynamic mode); a Operation declares one OR the other, not both"
     )]
     StaticAndDynamic { name: &'static str },
 
-    #[error("shard `{name}` registered with conflicting input/output types")]
+    #[error("operation `{name}` registered with conflicting input/output types")]
     TypeMismatch { name: &'static str },
 
-    #[error("shard `{shard}` declared mailbox_capacity = 0; capacity must be in 1..=1_048_576")]
-    MailboxCapacityZero { shard: &'static str },
+    #[error("operation `{operation}` declared mailbox_capacity = 0; capacity must be in 1..=1_048_576")]
+    MailboxCapacityZero { operation: &'static str },
 
     #[error(
-        "shard `{shard}` declared mailbox_capacity = {value}; capacity must be in 1..=1_048_576"
+        "operation `{operation}` declared mailbox_capacity = {value}; capacity must be in 1..=1_048_576"
     )]
-    MailboxCapacityTooLarge { shard: &'static str, value: usize },
+    MailboxCapacityTooLarge { operation: &'static str, value: usize },
 
     #[error(
         "channel `{channel}` was declared with `also_to_plugin_with(...)` more than once; \
@@ -187,13 +187,13 @@ pub enum BuildTopologyError {
     DuplicatePluginSink { channel: &'static str },
 }
 
-/// Builder collected by `Relay::channels`. Internal state turns into a
-/// frozen `RelayTopology` at `build_topology` time.
+/// Builder collected by `ContinuousOperative::channels`. Internal state turns into a
+/// frozen `OperativeTopology` at `build_topology` time.
 pub struct ChannelBuilder {
     pub(crate) channels: Vec<ChannelEntry>,
     pub(crate) name_to_id: HashMap<&'static str, u32>,
-    pub(crate) shards: Vec<ShardEntry>,
-    pub(crate) shard_name_to_id: HashMap<&'static str, u32>,
+    pub(crate) operations: Vec<OperationEntry>,
+    pub(crate) operation_name_to_id: HashMap<&'static str, u32>,
     pub(crate) errors: Vec<BuildTopologyError>,
 }
 
@@ -202,8 +202,8 @@ impl ChannelBuilder {
         Self {
             channels: Vec::new(),
             name_to_id: HashMap::new(),
-            shards: Vec::new(),
-            shard_name_to_id: HashMap::new(),
+            operations: Vec::new(),
+            operation_name_to_id: HashMap::new(),
             errors: Vec::new(),
         }
     }
@@ -225,10 +225,10 @@ impl ChannelBuilder {
         }
     }
 
-    /// Declare an inter-shard or plugin-bound channel. The returned
+    /// Declare an inter-operation or plugin-bound channel. The returned
     /// `ChannelDecl` requires `.from::<S>()` to identify a producer.
     pub fn channel<T: 'static + Send + Sync>(&mut self, name: &'static str) -> ChannelDecl<'_, T> {
-        let id = self.declare_channel(name, ChannelKind::InterShard);
+        let id = self.declare_channel(name, ChannelKind::InterOperation);
         ChannelDecl {
             builder: self,
             channel_id: id,
@@ -257,72 +257,72 @@ impl ChannelBuilder {
         id
     }
 
-    /// Register a Shard if it isn't already in the table. Returns its
-    /// ShardId. Idempotent — wiring a Shard as both consumer and producer
+    /// Register a Operation if it isn't already in the table. Returns its
+    /// OperationId. Idempotent — wiring a Operation as both consumer and producer
     /// across two channels reuses the same entry.
-    fn register_shard<S: Shard>(&mut self) -> u32 {
-        if let Some(&id) = self.shard_name_to_id.get(S::name()) {
+    fn register_operation<S: Operation>(&mut self) -> u32 {
+        if let Some(&id) = self.operation_name_to_id.get(S::name()) {
             return id;
         }
-        let id = self.shards.len() as u32;
+        let id = self.operations.len() as u32;
 
-        let partition_for_erased: PartitionForFn = Arc::new(|input: &dyn Any| {
+        let segment_for_erased: SegmentForFn = Arc::new(|input: &dyn Any| {
             let typed = input
                 .downcast_ref::<S::Input>()
-                .expect("partition_for: input type mismatch");
-            S::partition_for(typed)
+                .expect("segment_for: input type mismatch");
+            S::segment_for(typed)
         });
 
-        // Dynamic mode = overrides shard_key() with an empty shard_keys().
-        // The erased shard_key closure is captured only for that shape;
+        // Dynamic mode = overrides operation_key() with an empty operation_keys().
+        // The erased operation_key closure is captured only for that shape;
         // build_topology classifies the mode and validates the
         // declare-one-or-the-other rule.
-        let shard_key_erased: Option<ShardKeyFn> =
-            if S::SHARD_KEY_OVERRIDDEN && S::shard_keys().is_empty() {
+        let operation_key_erased: Option<OperationKeyFn> =
+            if S::OPERATION_KEY_OVERRIDDEN && S::operation_keys().is_empty() {
                 Some(Arc::new(|input: &dyn Any| {
                     let typed = input
                         .downcast_ref::<S::Input>()
-                        .expect("shard_key: input type mismatch");
-                    S::shard_key(typed)
+                        .expect("operation_key: input type mismatch");
+                    S::operation_key(typed)
                 }))
             } else {
                 None
             };
 
-        let build_partition: PartitionBuilder = Box::new(
-            |args: BuildPartitionArgs<'_>| -> Arc<crate::partition::PartitionSlot> {
-                crate::partition::build_partition_slot::<S>(args)
+        let build_segment: SegmentBuilder = Box::new(
+            |args: BuildSegmentArgs<'_>| -> Arc<crate::segment::SegmentSlot> {
+                crate::segment::build_segment_slot::<S>(args)
             },
         );
 
-        let (serialize_state, deserialize_state) = crate::relay::dispatcher::build_state_fns::<S>();
+        let (serialize_state, deserialize_state) = crate::operative::dispatcher::build_state_fns::<S>();
 
-        self.shards.push(ShardEntry {
+        self.operations.push(OperationEntry {
             name: S::name(),
-            partition_keys: S::shard_keys(),
-            partition_for_overridden: S::PARTITION_FOR_OVERRIDDEN,
-            shard_key_overridden: S::SHARD_KEY_OVERRIDDEN,
+            segment_keys: S::operation_keys(),
+            segment_for_overridden: S::SEGMENT_FOR_OVERRIDDEN,
+            operation_key_overridden: S::OPERATION_KEY_OVERRIDDEN,
             input_channel_id: None,
             output_channel_id: None,
             input_type_id: std::any::TypeId::of::<S::Input>(),
             output_type_id: std::any::TypeId::of::<S::Output>(),
             mailbox_capacity: S::mailbox_capacity(),
             mailbox_capacity_overridden: S::MAILBOX_CAPACITY_OVERRIDDEN,
-            build_partition,
-            partition_for_erased,
-            shard_key_erased,
-            idle_ttl: S::partition_idle_ttl(),
-            max_partitions: S::max_partitions(),
+            build_segment,
+            segment_for_erased,
+            operation_key_erased,
+            idle_ttl: S::segment_idle_ttl(),
+            max_segments: S::max_segments(),
             serialize_state,
             deserialize_state,
         });
-        self.shard_name_to_id.insert(S::name(), id);
+        self.operation_name_to_id.insert(S::name(), id);
         id
     }
 }
 
 /// Per-kind default for the channel's `OverflowPolicy`. Entry channels
-/// drop to keep the wire reader running; inter-shard channels block to
+/// drop to keep the wire reader running; inter-operation channels block to
 /// preserve ordering through stateful pipelines. Plugin-bound channels
 /// have no SDK mailbox and the value is never consulted; we still set
 /// `Block` so the field is always meaningful and to keep the descriptor
@@ -330,12 +330,12 @@ impl ChannelBuilder {
 pub(crate) fn default_policy_for_kind(kind: ChannelKind) -> OverflowPolicy {
     match kind {
         ChannelKind::Entry => OverflowPolicy::DropNewest,
-        ChannelKind::InterShard | ChannelKind::PluginBound => OverflowPolicy::Block,
+        ChannelKind::InterOperation | ChannelKind::PluginBound => OverflowPolicy::Block,
     }
 }
 
 /// Entry-channel declaration. Only exposes `.into::<X>()` to wire a
-/// consumer Shard; entry channels are fed by the controller so there is no
+/// consumer Operation; entry channels are fed by the controller so there is no
 /// `.from(...)`.
 pub struct EntryChannel<'b, T> {
     builder: &'b mut ChannelBuilder,
@@ -345,22 +345,22 @@ pub struct EntryChannel<'b, T> {
 }
 
 impl<'b, T: 'static + Send + Sync> EntryChannel<'b, T> {
-    /// Wire the entry-shard consumer. Compile-time bound: `S::Input == T`.
-    pub fn into<S: Shard<Input = T>>(self) -> Channel<T> {
-        let shard_id = self.builder.register_shard::<S>();
+    /// Wire the entry-operation consumer. Compile-time bound: `S::Input == T`.
+    pub fn into<S: Operation<Input = T>>(self) -> Channel<T> {
+        let operation_id = self.builder.register_operation::<S>();
         let entry = &mut self.builder.channels[self.channel_id as usize];
-        entry.consumers.push(shard_id);
+        entry.consumers.push(operation_id);
 
-        let shard = &mut self.builder.shards[shard_id as usize];
-        shard.input_channel_id = Some(self.channel_id);
+        let operation = &mut self.builder.operations[operation_id as usize];
+        operation.input_channel_id = Some(self.channel_id);
 
         Channel::new(self.channel_id)
     }
 
     /// Override the per-kind default `OverflowPolicy`. Entry channels
     /// default to `DropNewest`; declare `Block` here only if you accept
-    /// stalling the shared wire reader on this Relay's saturation (see
-    /// `docs/relay_architecture.md` for the co-tenancy hazard).
+    /// stalling the shared wire reader on this ContinuousOperative's saturation (see
+    /// `docs/operative_architecture.md` for the co-tenancy hazard).
     pub fn on_full(self, policy: OverflowPolicy) -> Self {
         self.builder.channels[self.channel_id as usize].overflow_policy = policy;
         self
@@ -372,7 +372,7 @@ impl<'b, T: 'static + Send + Sync> EntryChannel<'b, T> {
     }
 }
 
-/// Inter-shard / plugin-bound channel awaiting a producer.
+/// Inter-operation / plugin-bound channel awaiting a producer.
 pub struct ChannelDecl<'b, T> {
     builder: &'b mut ChannelBuilder,
     channel_id: u32,
@@ -382,7 +382,7 @@ pub struct ChannelDecl<'b, T> {
 
 impl<'b, T: 'static + Send + Sync> ChannelDecl<'b, T> {
     /// Override the per-kind default `OverflowPolicy` before wiring the
-    /// producer. Inter-shard channels default to `Block`; switch to
+    /// producer. Inter-operation channels default to `Block`; switch to
     /// `DropNewest` / `DropOldest` on a per-channel basis when ordering
     /// can be sacrificed for liveness.
     pub fn on_full(self, policy: OverflowPolicy) -> Self {
@@ -390,11 +390,11 @@ impl<'b, T: 'static + Send + Sync> ChannelDecl<'b, T> {
         self
     }
 
-    /// Wire the producer Shard. Compile-time bound: `S::Output == T`.
+    /// Wire the producer Operation. Compile-time bound: `S::Output == T`.
     /// Multi-producer is a compile error: this consumes `self` and returns
     /// `ChannelDeclWithProducer`, which has no `.from` method.
-    pub fn from<S: Shard<Output = T>>(self) -> ChannelDeclWithProducer<'b, T> {
-        let shard_id = self.builder.register_shard::<S>();
+    pub fn from<S: Operation<Output = T>>(self) -> ChannelDeclWithProducer<'b, T> {
+        let operation_id = self.builder.register_operation::<S>();
 
         // Defense-in-depth: detect attempts to set the producer twice
         // (the type system already prevents this on a single declaration
@@ -406,10 +406,10 @@ impl<'b, T: 'static + Send + Sync> ChannelDecl<'b, T> {
                 .errors
                 .push(BuildTopologyError::MultiProducer { name: self.name });
         } else {
-            entry.producer = Some(shard_id);
+            entry.producer = Some(operation_id);
         }
-        let shard = &mut self.builder.shards[shard_id as usize];
-        shard.output_channel_id = Some(self.channel_id);
+        let operation = &mut self.builder.operations[operation_id as usize];
+        operation.output_channel_id = Some(self.channel_id);
 
         ChannelDeclWithProducer {
             builder: self.builder,
@@ -420,7 +420,7 @@ impl<'b, T: 'static + Send + Sync> ChannelDecl<'b, T> {
 }
 
 /// Channel with a producer registered. Accepts zero or more `.into::<X>()`
-/// inter-shard consumers, or one `.to_plugin(...)` plugin destination.
+/// inter-operation consumers, or one `.to_plugin(...)` plugin destination.
 pub struct ChannelDeclWithProducer<'b, T> {
     builder: &'b mut ChannelBuilder,
     channel_id: u32,
@@ -437,19 +437,19 @@ impl<'b, T: 'static + Send + Sync> ChannelDeclWithProducer<'b, T> {
         self
     }
 
-    /// Wire an inter-shard consumer. Compile-time bound: `S::Input == T`.
+    /// Wire an inter-operation consumer. Compile-time bound: `S::Input == T`.
     /// Calling `.into` repeatedly is allowed (fan-out).
-    pub fn into<S: Shard<Input = T>>(self) -> Self {
-        let shard_id = self.builder.register_shard::<S>();
+    pub fn into<S: Operation<Input = T>>(self) -> Self {
+        let operation_id = self.builder.register_operation::<S>();
         let entry = &mut self.builder.channels[self.channel_id as usize];
-        entry.consumers.push(shard_id);
-        let shard = &mut self.builder.shards[shard_id as usize];
-        shard.input_channel_id = Some(self.channel_id);
+        entry.consumers.push(operation_id);
+        let operation = &mut self.builder.operations[operation_id as usize];
+        operation.input_channel_id = Some(self.channel_id);
         self
     }
 
-    /// Attach a plugin sink alongside inter-shard fan-out. The channel's
-    /// `kind` stays `InterShard`, further `.into::<S>()` consumer wiring
+    /// Attach a plugin sink alongside inter-operation fan-out. The channel's
+    /// `kind` stays `InterOperation`, further `.into::<S>()` consumer wiring
     /// chains naturally, and a typed value emitted on this channel
     /// reaches both the consumer mailboxes (typed) and the named plugin
     /// (serialized to bytes via `serializer`). The serializer is invoked
@@ -487,7 +487,7 @@ impl<'b, T: 'static + Send + Sync> ChannelDeclWithProducer<'b, T> {
 
     /// Mark this channel as plugin-bound. The controller's plugin layer
     /// receives the values. v1 requires `T: AsRef<[u8]>` (`Vec<u8>` /
-    /// `String`); the producer Shard is responsible for serializing
+    /// `String`); the producer Operation is responsible for serializing
     /// typed messages to bytes before emit.
     pub fn to_plugin(self, plugin_name: &'static str) -> Channel<T>
     where

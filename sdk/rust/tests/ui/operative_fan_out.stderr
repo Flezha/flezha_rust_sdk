@@ -1,0 +1,5 @@
+error: fan-out / multi-input pipelines are not supported by `flezha::operative!`; declare the topology with an explicit `channels()` body
+ --> tests/ui/operative_fan_out.rs:3:61
+  |
+3 |     pipeline: input::<String> -> A -> plugin::<Vec<u8>>("k"), input::<String> -> B -> plugin::<Vec<u8>>("k2")
+  |                                                             ^
