@@ -119,8 +119,8 @@ impl Operation for Pure1Consumer {
     }
 }
 
-struct Pure1Relay;
-impl ContinuousOperative for Pure1Relay {
+struct Pure1Operative;
+impl ContinuousOperative for Pure1Operative {
     fn factory_id() -> &'static str {
         "bench_pure_inter_operation_1c"
     }
@@ -191,8 +191,8 @@ pure3_consumer!(Pure3ConsumerA, "pure3_a");
 pure3_consumer!(Pure3ConsumerB, "pure3_b");
 pure3_consumer!(Pure3ConsumerC, "pure3_c");
 
-struct Pure3Relay;
-impl ContinuousOperative for Pure3Relay {
+struct Pure3Operative;
+impl ContinuousOperative for Pure3Operative {
     fn factory_id() -> &'static str {
         "bench_pure_inter_operation_3c"
     }
@@ -234,8 +234,8 @@ impl Operation for PluginBoundProducer {
     }
 }
 
-struct PluginBoundRelay;
-impl ContinuousOperative for PluginBoundRelay {
+struct PluginBoundOperative;
+impl ContinuousOperative for PluginBoundOperative {
     fn factory_id() -> &'static str {
         "bench_pure_plugin_bound"
     }
@@ -298,8 +298,8 @@ impl Operation for Hybrid1Consumer {
     }
 }
 
-struct Hybrid1Relay;
-impl ContinuousOperative for Hybrid1Relay {
+struct Hybrid1Operative;
+impl ContinuousOperative for Hybrid1Operative {
     fn factory_id() -> &'static str {
         "bench_hybrid_1c"
     }
@@ -371,8 +371,8 @@ hybrid3_consumer!(Hybrid3ConsumerA, "hybrid3_a");
 hybrid3_consumer!(Hybrid3ConsumerB, "hybrid3_b");
 hybrid3_consumer!(Hybrid3ConsumerC, "hybrid3_c");
 
-struct Hybrid3Relay;
-impl ContinuousOperative for Hybrid3Relay {
+struct Hybrid3Operative;
+impl ContinuousOperative for Hybrid3Operative {
     fn factory_id() -> &'static str {
         "bench_hybrid_3c"
     }
@@ -444,15 +444,15 @@ fn run_bench<R: ContinuousOperative>(
 }
 
 fn pure_inter_operation_1c(c: &mut Criterion) {
-    run_bench::<Pure1Relay>(c, "pure_inter_operation_1c", "bench-pure-1c", &PURE_1C_COUNT, 1);
+    run_bench::<Pure1Operative>(c, "pure_inter_operation_1c", "bench-pure-1c", &PURE_1C_COUNT, 1);
 }
 
 fn pure_inter_operation_3c(c: &mut Criterion) {
-    run_bench::<Pure3Relay>(c, "pure_inter_operation_3c", "bench-pure-3c", &PURE_3C_COUNT, 3);
+    run_bench::<Pure3Operative>(c, "pure_inter_operation_3c", "bench-pure-3c", &PURE_3C_COUNT, 3);
 }
 
 fn pure_plugin_bound(c: &mut Criterion) {
-    run_bench::<PluginBoundRelay>(
+    run_bench::<PluginBoundOperative>(
         c,
         "pure_plugin_bound",
         "bench-plugin-bound",
@@ -462,11 +462,11 @@ fn pure_plugin_bound(c: &mut Criterion) {
 }
 
 fn hybrid_1c(c: &mut Criterion) {
-    run_bench::<Hybrid1Relay>(c, "hybrid_1c", "bench-hybrid-1c", &HYBRID_1C_COUNT, 1);
+    run_bench::<Hybrid1Operative>(c, "hybrid_1c", "bench-hybrid-1c", &HYBRID_1C_COUNT, 1);
 }
 
 fn hybrid_3c(c: &mut Criterion) {
-    run_bench::<Hybrid3Relay>(c, "hybrid_3c", "bench-hybrid-3c", &HYBRID_3C_COUNT, 3);
+    run_bench::<Hybrid3Operative>(c, "hybrid_3c", "bench-hybrid-3c", &HYBRID_3C_COUNT, 3);
 }
 
 criterion_group!(

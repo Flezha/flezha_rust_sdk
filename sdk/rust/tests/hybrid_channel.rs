@@ -80,8 +80,8 @@ test_operation!(SingleConsumer, "hybrid_single_consumer", u32 => (), (), |input,
     Ok(())
 });
 
-struct SingleHybridRelay;
-impl ContinuousOperative for SingleHybridRelay {
+struct SingleHybridOperative;
+impl ContinuousOperative for SingleHybridOperative {
     fn factory_id() -> &'static str {
         "hybrid_single"
     }
@@ -97,7 +97,7 @@ impl ContinuousOperative for SingleHybridRelay {
 #[test]
 fn hybrid_single_consumer_receives_typed_and_plugin_bytes() {
     single_consumer_observed().lock().unwrap().clear();
-    let (handle, _instance) = setup::<SingleHybridRelay>("hyb-single", 4);
+    let (handle, _instance) = setup::<SingleHybridOperative>("hyb-single", 4);
     let (stream, received) = duplex_stream_with_reader();
 
     dispatch_input(&handle, "hyb-single", &stream, "42");
@@ -154,8 +154,8 @@ test_operation!(ThreeConsumerC, "hybrid_three_c", u32 => (), (), |input, _state,
     Ok(())
 });
 
-struct ThreeHybridRelay;
-impl ContinuousOperative for ThreeHybridRelay {
+struct ThreeHybridOperative;
+impl ContinuousOperative for ThreeHybridOperative {
     fn factory_id() -> &'static str {
         "hybrid_three"
     }
@@ -180,7 +180,7 @@ fn hybrid_three_consumers_single_serializer_call() {
     three_consumer_observed_c().lock().unwrap().clear();
     SERIALIZER_CALLS.store(0, Ordering::SeqCst);
 
-    let (handle, _instance) = setup::<ThreeHybridRelay>("hyb-three", 4);
+    let (handle, _instance) = setup::<ThreeHybridOperative>("hyb-three", 4);
     let (stream, received) = duplex_stream_with_reader();
 
     dispatch_input(&handle, "hyb-three", &stream, "7");
@@ -230,8 +230,8 @@ test_operation!(PanicConsumer, "hybrid_panic_consumer", u32 => (), (), |input, _
     Ok(())
 });
 
-struct PanicHybridRelay;
-impl ContinuousOperative for PanicHybridRelay {
+struct PanicHybridOperative;
+impl ContinuousOperative for PanicHybridOperative {
     fn factory_id() -> &'static str {
         "hybrid_panic"
     }
@@ -254,7 +254,7 @@ fn hybrid_serializer_panic_is_caught() {
     panic_consumer_observed().lock().unwrap().clear();
     panic_emit_results().lock().unwrap().clear();
 
-    let (handle, _instance) = setup::<PanicHybridRelay>("hyb-panic", 4);
+    let (handle, _instance) = setup::<PanicHybridOperative>("hyb-panic", 4);
     let (stream, received) = duplex_stream_with_reader();
 
     // First emit panics in the serializer.
@@ -304,8 +304,8 @@ test_operation!(DupProducer, "hybrid_dup_producer", String => u32, (), |_input, 
     Ok(())
 });
 
-struct DupHybridRelay;
-impl ContinuousOperative for DupHybridRelay {
+struct DupHybridOperative;
+impl ContinuousOperative for DupHybridOperative {
     fn factory_id() -> &'static str {
         "hybrid_dup"
     }
@@ -320,7 +320,7 @@ impl ContinuousOperative for DupHybridRelay {
 
 #[test]
 fn hybrid_duplicate_plugin_sink_is_rejected() {
-    let result = build_topology_for::<DupHybridRelay>();
+    let result = build_topology_for::<DupHybridOperative>();
     let err = match result {
         Ok(_) => panic!("expected topology error"),
         Err(e) => e,
@@ -354,8 +354,8 @@ test_operation!(MetaConsumer, "hybrid_meta_consumer", u32 => (), (), |input, _st
     Ok(())
 });
 
-struct MetaHybridRelay;
-impl ContinuousOperative for MetaHybridRelay {
+struct MetaHybridOperative;
+impl ContinuousOperative for MetaHybridOperative {
     fn factory_id() -> &'static str {
         "hybrid_meta"
     }
@@ -371,7 +371,7 @@ impl ContinuousOperative for MetaHybridRelay {
 #[test]
 fn emit_with_meta_on_hybrid_channel_forwards_meta_to_plugin_only() {
     meta_consumer_observed().lock().unwrap().clear();
-    let (handle, _instance) = setup::<MetaHybridRelay>("hyb-meta", 4);
+    let (handle, _instance) = setup::<MetaHybridOperative>("hyb-meta", 4);
     let (stream, received) = duplex_stream_with_reader();
 
     dispatch_input(&handle, "hyb-meta", &stream, "9");
@@ -429,8 +429,8 @@ test_operation!(PureConsumer, "hybrid_pure_consumer", u32 => (), (), |input, _st
     Ok(())
 });
 
-struct PureRelay;
-impl ContinuousOperative for PureRelay {
+struct PureOperative;
+impl ContinuousOperative for PureOperative {
     fn factory_id() -> &'static str {
         "hybrid_pure"
     }
@@ -447,7 +447,7 @@ fn emit_with_meta_on_pure_inter_operation_channel_is_rejected() {
     pure_consumer_observed().lock().unwrap().clear();
     pure_emit_results().lock().unwrap().clear();
 
-    let (handle, _instance) = setup::<PureRelay>("hyb-pure", 4);
+    let (handle, _instance) = setup::<PureOperative>("hyb-pure", 4);
     let (stream, received) = duplex_stream_with_reader();
 
     dispatch_input(&handle, "hyb-pure", &stream, "1");

@@ -79,8 +79,8 @@ impl Operation for SteadyDynOperation {
     }
 }
 
-struct SteadyDynRelay;
-impl ContinuousOperative for SteadyDynRelay {
+struct SteadyDynOperative;
+impl ContinuousOperative for SteadyDynOperative {
     fn factory_id() -> &'static str {
         "steady_dyn_operative"
     }
@@ -99,7 +99,7 @@ fn steady_state_bench(c: &mut Criterion) {
         .unwrap_or(200_000usize);
 
     let pool = Arc::new(bi::WorkStealingPool::with_size(pool_size_from_env_or_cpus()));
-    let topology = build_topology_for::<SteadyDynRelay>().expect("topology");
+    let topology = build_topology_for::<SteadyDynOperative>().expect("topology");
     let registry = Arc::new(OperativeRegistry::new());
     registry.register_continuous(ContinuousInstance::new(
         Arc::clone(&topology),

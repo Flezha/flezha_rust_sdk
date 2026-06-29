@@ -63,18 +63,18 @@ macro_rules! dyn_operation {
     };
 }
 
-dyn_operation!(DynOperation, DynRelay, "dyn_operation", "dyn_operative");
-dyn_operation!(CappedOperation, CappedRelay, "capped_operation", "capped_operative"
+dyn_operation!(DynOperation, DynOperative, "dyn_operation", "dyn_operative");
+dyn_operation!(CappedOperation, CappedOperative, "capped_operation", "capped_operative"
     fn max_segments() -> usize { 2 }
     const MAX_SEGMENTS_OVERRIDDEN: bool = true;
 );
-dyn_operation!(TtlOperation, TtlRelay, "ttl_operation", "ttl_operative"
+dyn_operation!(TtlOperation, TtlOperative, "ttl_operation", "ttl_operative"
     fn segment_idle_ttl() -> Option<Duration> { Some(Duration::from_millis(100)) }
 );
 
 static SLEEP_RUN_STARTED: AtomicBool = AtomicBool::new(false);
 static SLEEP_RUN_DONE: AtomicBool = AtomicBool::new(false);
-dyn_operation_base!(SleepOperation, SleepRelay, "sleep_operation", "sleep_operative", {
+dyn_operation_base!(SleepOperation, SleepOperative, "sleep_operation", "sleep_operative", {
     fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
     fn run(&mut self, _: String, _: StateHandle<'_, Self>, _: &mut OperationCtx<'_>) -> Result<(), OperationError> {
         SLEEP_RUN_STARTED.store(true, Ordering::Release);
@@ -85,7 +85,7 @@ dyn_operation_base!(SleepOperation, SleepRelay, "sleep_operation", "sleep_operat
 });
 
 static INIT_KEYS: Mutex<Vec<String>> = Mutex::new(Vec::new());
-dyn_operation_base!(InitTrackOperation, InitTrackRelay, "init_track_operation", "init_track_operative", {
+dyn_operation_base!(InitTrackOperation, InitTrackOperative, "init_track_operation", "init_track_operative", {
     fn init_state(key: Option<&str>, _: Option<RestoreInitPayload<'_>>) {
         if let Some(k) = key {
             INIT_KEYS.lock().unwrap().push(k.to_string());
@@ -110,7 +110,7 @@ fn evicted(reg: &DynamicSegmentRegistry) -> u64 {
 
 #[test]
 fn lazy_create_two_keys() {
-    let (handle, instance) = setup::<DynRelay>("dyn-2", 4);
+    let (handle, instance) = setup::<DynOperative>("dyn-2", 4);
     let stream = dummy_stream();
     dispatch_input(&handle, "dyn-2", "inp", b"a:1".to_vec(), &stream);
     dispatch_input(&handle, "dyn-2", "inp", b"b:2".to_vec(), &stream);
@@ -122,7 +122,7 @@ fn lazy_create_two_keys() {
 
 #[test]
 fn soft_cap_drops_overflow_key() {
-    let (handle, instance) = setup::<CappedRelay>("capped-1", 4);
+    let (handle, instance) = setup::<CappedOperative>("capped-1", 4);
     let stream = dummy_stream();
     for inp in [b"a:1", b"b:2", b"c:3"] {
         dispatch_input(&handle, "capped-1", "inp", inp.to_vec(), &stream);
@@ -139,7 +139,7 @@ fn soft_cap_drops_overflow_key() {
 
 #[test]
 fn none_key_inputs_are_dropped() {
-    let (handle, instance) = setup::<DynRelay>("dyn-nokey", 4);
+    let (handle, instance) = setup::<DynOperative>("dyn-nokey", 4);
     let stream = dummy_stream();
     // 10 inputs; 4 "drop" sentinels → 6 slot creations.
     for inp in ["a:1", "drop", "b:2", "drop", "c:3", "drop", "d:4", "drop", "e:5", "f:6"] {
@@ -158,7 +158,7 @@ fn idle_segment_is_reaped() {
     // after it goes idle. Generous deadline absorbs full-suite scheduling
     // starvation (the reaper retries every sweep).
     std::env::set_var("FLEZHA_REAP_INTERVAL_MS", "25");
-    let (handle, instance) = setup::<TtlRelay>("ttl-1", 4);
+    let (handle, instance) = setup::<TtlOperative>("ttl-1", 4);
     let stream = dummy_stream();
     dispatch_input(&handle, "ttl-1", "inp", b"K:1".to_vec(), &stream);
 
@@ -175,7 +175,7 @@ fn idle_segment_is_reaped() {
 fn reaper_skips_segment_with_active_run() {
     SLEEP_RUN_STARTED.store(false, Ordering::Release);
     SLEEP_RUN_DONE.store(false, Ordering::Release);
-    let (handle, instance) = setup::<SleepRelay>("sleep-1", 4);
+    let (handle, instance) = setup::<SleepOperative>("sleep-1", 4);
     let stream = dummy_stream();
     dispatch_input(&handle, "sleep-1", "inp", b"K:1".to_vec(), &stream);
     let reg = registry(&instance);
@@ -201,7 +201,7 @@ fn reaper_skips_segment_with_active_run() {
 #[test]
 fn recreate_after_evict_cold_starts_fresh() {
     INIT_KEYS.lock().unwrap().clear();
-    let (handle, instance) = setup::<InitTrackRelay>("recreate-1", 4);
+    let (handle, instance) = setup::<InitTrackOperative>("recreate-1", 4);
     let stream = dummy_stream();
     let reg = registry(&instance);
 
@@ -228,7 +228,7 @@ fn recreate_after_evict_cold_starts_fresh() {
 
 #[test]
 fn concurrent_producers_share_one_slot() {
-    let (handle, instance) = setup::<DynRelay>("dyn-concurrent", 8);
+    let (handle, instance) = setup::<DynOperative>("dyn-concurrent", 8);
     let reg = registry(&instance);
 
     const N: usize = 16;

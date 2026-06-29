@@ -102,8 +102,8 @@ test_operation!(ConcurrencyProbeOperation, "concurrency_probe_operation", String
     Ok(())
 });
 
-struct ConcurrencyProbeRelay;
-impl ContinuousOperative for ConcurrencyProbeRelay {
+struct ConcurrencyProbeOperative;
+impl ContinuousOperative for ConcurrencyProbeOperative {
     fn factory_id() -> &'static str {
         "concurrency_probe_operative"
     }
@@ -117,7 +117,7 @@ fn same_segment_never_runs_concurrently() {
     APPEND_CONCURRENT.store(0, Ordering::Release);
     APPEND_MAX_CONCURRENT.store(0, Ordering::Release);
 
-    let topology = build_topology_for::<ConcurrencyProbeRelay>().expect("topology");
+    let topology = build_topology_for::<ConcurrencyProbeOperative>().expect("topology");
     let pool = Arc::new(bi::WorkStealingPool::with_size(8));
     let registry = Arc::new(OperativeRegistry::new());
     let instance = ContinuousInstance::new(topology, Arc::from("conc-instance"), Arc::clone(&pool));
@@ -239,8 +239,8 @@ impl Operation for ParallelStaticOperation {
     }
 }
 
-struct ParallelRelay;
-impl ContinuousOperative for ParallelRelay {
+struct ParallelOperative;
+impl ContinuousOperative for ParallelOperative {
     fn factory_id() -> &'static str {
         "parallel_operative"
     }
@@ -252,7 +252,7 @@ impl ContinuousOperative for ParallelRelay {
 #[test]
 fn static_segments_dispatch_independently() {
     parallel_observed().lock().unwrap().clear();
-    let (handle, _instance) = setup::<ParallelRelay>("parallel-instance", 8);
+    let (handle, _instance) = setup::<ParallelOperative>("parallel-instance", 8);
     let stream = dummy_stream();
 
     let prefixes = ["a", "b", "c", "d"];
@@ -354,8 +354,8 @@ test_operation!(MetaConsumerOperation, "meta_consumer_operation", String => (), 
     Ok(())
 });
 
-struct MetaRejectRelay;
-impl ContinuousOperative for MetaRejectRelay {
+struct MetaRejectOperative;
+impl ContinuousOperative for MetaRejectOperative {
     fn factory_id() -> &'static str {
         "meta_reject_operative"
     }
@@ -370,7 +370,7 @@ impl ContinuousOperative for MetaRejectRelay {
 #[test]
 fn emit_with_meta_rejected_on_inter_operation() {
     *META_REJECT_OBSERVED.lock().unwrap() = None;
-    let (handle, _instance) = setup::<MetaRejectRelay>("meta-instance", 2);
+    let (handle, _instance) = setup::<MetaRejectOperative>("meta-instance", 2);
     let stream = dummy_stream();
 
     let mut md = HashMap::new();
@@ -402,8 +402,8 @@ test_operation!(BlockStressOperation, "block_stress_operation", Vec<u8> => (), (
     Ok(())
 });
 
-struct BlockStressRelay;
-impl ContinuousOperative for BlockStressRelay {
+struct BlockStressOperative;
+impl ContinuousOperative for BlockStressOperative {
     fn factory_id() -> &'static str {
         "block_stress_operative"
     }
@@ -423,7 +423,7 @@ impl ContinuousOperative for BlockStressRelay {
 #[test]
 fn block_stress_100_producers_no_loss() {
     BLOCK_STRESS_RECEIVED.store(0, Ordering::Release);
-    let (handle, instance) = setup::<BlockStressRelay>("block-stress-instance", 4);
+    let (handle, instance) = setup::<BlockStressOperative>("block-stress-instance", 4);
     let stream = dummy_stream();
 
     let producers = 100usize;
@@ -485,8 +485,8 @@ test_operation!(DropNewestOperation, "drop_newest_operation", Vec<u8> => (), (),
     Ok(())
 });
 
-struct DropNewestRelay;
-impl ContinuousOperative for DropNewestRelay {
+struct DropNewestOperative;
+impl ContinuousOperative for DropNewestOperative {
     fn factory_id() -> &'static str {
         "drop_newest_operative"
     }
@@ -503,7 +503,7 @@ impl ContinuousOperative for DropNewestRelay {
 #[test]
 fn drop_newest_discards_when_full_and_only_bumps_newest_counter() {
     DROP_NEWEST_RECEIVED.store(0, Ordering::Release);
-    let (handle, instance) = setup::<DropNewestRelay>("drop-newest-instance", 1);
+    let (handle, instance) = setup::<DropNewestOperative>("drop-newest-instance", 1);
     let slot = Arc::clone(&instance.segments[0][0]);
 
     // Pre-acquire inflight: subsequent enqueue paths skip submit_drain
@@ -561,8 +561,8 @@ test_operation!(DropOldestOperation, "drop_oldest_operation", Vec<u8> => (), (),
     Ok(())
 });
 
-struct DropOldestRelay;
-impl ContinuousOperative for DropOldestRelay {
+struct DropOldestOperative;
+impl ContinuousOperative for DropOldestOperative {
     fn factory_id() -> &'static str {
         "drop_oldest_operative"
     }
@@ -579,7 +579,7 @@ impl ContinuousOperative for DropOldestRelay {
 #[test]
 fn drop_oldest_evicts_head_and_bumps_oldest_counter() {
     DROP_OLDEST_OBSERVED.lock().unwrap().clear();
-    let (handle, instance) = setup::<DropOldestRelay>("drop-oldest-instance", 1);
+    let (handle, instance) = setup::<DropOldestOperative>("drop-oldest-instance", 1);
     let slot = Arc::clone(&instance.segments[0][0]);
 
     // Pre-acquire inflight so no drain runs during the deterministic
@@ -626,7 +626,7 @@ fn drop_oldest_evicts_head_and_bumps_oldest_counter() {
 /// exposes a counters() accessor with all four atomics at 0.
 #[test]
 fn fresh_segment_counters_start_at_zero() {
-    let (_handle, instance) = setup::<DropOldestRelay>("counters-fresh-instance", 1);
+    let (_handle, instance) = setup::<DropOldestOperative>("counters-fresh-instance", 1);
     let counters = instance.segments[0][0].counters();
     assert_eq!(counters.pushes_total.load(Ordering::Relaxed), 0);
     assert_eq!(counters.pushes_blocked_total.load(Ordering::Relaxed), 0);
@@ -648,8 +648,8 @@ test_operation!(InterOperationConsumer, "inter_operation_consumer", String => ()
     Ok(())
 });
 
-struct InterOperationDefaultBlockRelay;
-impl ContinuousOperative for InterOperationDefaultBlockRelay {
+struct InterOperationDefaultBlockOperative;
+impl ContinuousOperative for InterOperationDefaultBlockOperative {
     fn factory_id() -> &'static str {
         "inter_operation_default_block_operative"
     }
@@ -690,8 +690,8 @@ test_operation!(StickyBoundedOperation, "sticky_bounded_operation", Vec<u8> => (
     Ok(())
 });
 
-struct StickyBoundedRelay;
-impl ContinuousOperative for StickyBoundedRelay {
+struct StickyBoundedOperative;
+impl ContinuousOperative for StickyBoundedOperative {
     fn factory_id() -> &'static str {
         "sticky_bounded_operative"
     }
@@ -713,7 +713,7 @@ fn sticky_ordering_holds_under_bounded_block() {
     STICKY_BOUNDED_MAX_CONCURRENT.store(0, Ordering::Release);
     STICKY_BOUNDED_DELIVERED.store(0, Ordering::Release);
 
-    let (handle, instance) = setup::<StickyBoundedRelay>("sticky-bounded-instance", 8);
+    let (handle, instance) = setup::<StickyBoundedOperative>("sticky-bounded-instance", 8);
     let stream = dummy_stream();
 
     let producers = 4usize;
@@ -781,8 +781,8 @@ test_operation!(WireFastBOperation, "wire_fast_b_operation", Vec<u8> => (), (), 
     Ok(())
 });
 
-struct WireRelayADefault;
-impl ContinuousOperative for WireRelayADefault {
+struct WireOperativeADefault;
+impl ContinuousOperative for WireOperativeADefault {
     fn factory_id() -> &'static str {
         "wire_operative_a_default"
     }
@@ -791,8 +791,8 @@ impl ContinuousOperative for WireRelayADefault {
     }
 }
 
-struct WireRelayABlock;
-impl ContinuousOperative for WireRelayABlock {
+struct WireOperativeABlock;
+impl ContinuousOperative for WireOperativeABlock {
     fn factory_id() -> &'static str {
         "wire_operative_a_block"
     }
@@ -803,8 +803,8 @@ impl ContinuousOperative for WireRelayABlock {
     }
 }
 
-struct WireRelayB;
-impl ContinuousOperative for WireRelayB {
+struct WireOperativeB;
+impl ContinuousOperative for WireOperativeB {
     fn factory_id() -> &'static str {
         "wire_operative_b"
     }
@@ -826,8 +826,8 @@ fn default_entry_policy_does_not_stall_sibling_operatives() {
     let pool = Arc::new(bi::WorkStealingPool::with_size(2));
     let registry = Arc::new(OperativeRegistry::new());
 
-    let topology_a = build_topology_for::<WireRelayADefault>().expect("topology a");
-    let topology_b = build_topology_for::<WireRelayB>().expect("topology b");
+    let topology_a = build_topology_for::<WireOperativeADefault>().expect("topology a");
+    let topology_b = build_topology_for::<WireOperativeB>().expect("topology b");
     let instance_a = ContinuousInstance::new(topology_a, Arc::from("wire-a-default"), Arc::clone(&pool));
     let instance_b = ContinuousInstance::new(topology_b, Arc::from("wire-b-default"), Arc::clone(&pool));
     registry.register_continuous(Arc::clone(&instance_a));
@@ -902,8 +902,8 @@ fn opt_in_entry_block_drains_inline_without_stalling_siblings() {
     let pool = Arc::new(bi::WorkStealingPool::with_size(2));
     let registry = Arc::new(OperativeRegistry::new());
 
-    let topology_a = build_topology_for::<WireRelayABlock>().expect("topology a");
-    let topology_b = build_topology_for::<WireRelayB>().expect("topology b");
+    let topology_a = build_topology_for::<WireOperativeABlock>().expect("topology a");
+    let topology_b = build_topology_for::<WireOperativeB>().expect("topology b");
     let instance_a = ContinuousInstance::new(topology_a, Arc::from("wire-a-block"), Arc::clone(&pool));
     let instance_b = ContinuousInstance::new(topology_b, Arc::from("wire-b-block"), Arc::clone(&pool));
     registry.register_continuous(Arc::clone(&instance_a));
@@ -980,7 +980,7 @@ fn opt_in_entry_block_drains_inline_without_stalling_siblings() {
 fn default_inter_operation_policy_is_block_and_pushes_total_increments() {
     INTER_OPERATION_DOWNSTREAM.store(0, Ordering::Release);
     let (handle, instance) =
-        setup::<InterOperationDefaultBlockRelay>("inter-operation-default-instance", 4);
+        setup::<InterOperationDefaultBlockOperative>("inter-operation-default-instance", 4);
     let stream = dummy_stream();
 
     let n = 200usize;
@@ -1062,8 +1062,8 @@ test_operation!(FlushOrderSinkOperation, "flush_order_sink_operation", String =>
     Ok(())
 });
 
-struct FlushOrderRelay;
-impl ContinuousOperative for FlushOrderRelay {
+struct FlushOrderOperative;
+impl ContinuousOperative for FlushOrderOperative {
     fn factory_id() -> &'static str {
         "flush_order_operative"
     }
@@ -1092,7 +1092,7 @@ fn change_is_flushed_before_output_is_emitted() {
     });
     segment_state_sink::install_global_sink(sink);
 
-    let (handle, instance) = setup::<FlushOrderRelay>("flush-order-instance", 2);
+    let (handle, instance) = setup::<FlushOrderOperative>("flush-order-instance", 2);
     assert!(instance.persistence_enabled(), "operative must be persistent");
     let stream = dummy_stream();
 
@@ -1130,8 +1130,8 @@ test_operation!(PanicOperation, "panic_operation", String => (), (), |input, _st
     Ok(())
 });
 
-struct PanicRelay;
-impl ContinuousOperative for PanicRelay {
+struct PanicOperative;
+impl ContinuousOperative for PanicOperative {
     fn factory_id() -> &'static str {
         "panic_operative"
     }
@@ -1143,7 +1143,7 @@ impl ContinuousOperative for PanicRelay {
 #[test]
 fn operation_panic_does_not_wedge_the_segment() {
     PANIC_AFTER.store(0, Ordering::Release);
-    let (handle, instance) = setup::<PanicRelay>("panic-instance", 4);
+    let (handle, instance) = setup::<PanicOperative>("panic-instance", 4);
     let stream = dummy_stream();
 
     dispatch_input(
@@ -1197,8 +1197,8 @@ test_operation!(BlockedConsumerOperation, "blocked_consumer_operation", String =
     Ok(())
 });
 
-struct BlockDeadlockRelay;
-impl ContinuousOperative for BlockDeadlockRelay {
+struct BlockDeadlockOperative;
+impl ContinuousOperative for BlockDeadlockOperative {
     fn factory_id() -> &'static str {
         "block_deadlock_operative"
     }
@@ -1214,7 +1214,7 @@ impl ContinuousOperative for BlockDeadlockRelay {
 #[test]
 fn block_policy_emit_on_single_worker_pool_does_not_deadlock() {
     BLOCKED_CONSUMED.store(0, Ordering::Release);
-    let (handle, _instance) = setup::<BlockDeadlockRelay>("block-deadlock-instance", 1);
+    let (handle, _instance) = setup::<BlockDeadlockOperative>("block-deadlock-instance", 1);
     let stream = dummy_stream();
 
     dispatch_input(

@@ -184,7 +184,7 @@ pub struct ExecutorShutdownAck {
 }
 /// Per-Segment state restore handshake: Controller ships latest snapshot
 /// bytes plus tail-WAL bytes, SDK applies them to the segment's State
-/// before any input is processed. See `relay-state-persistence` design.
+/// before any input is processed. See the per-segment state persistence design.
 ///
 /// `segment_id` is the structured byte identifier
 /// `[operative_class_len: u8][operative_class][operation_id_len: u8][operation_id]

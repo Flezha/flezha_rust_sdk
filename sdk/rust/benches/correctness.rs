@@ -98,8 +98,8 @@ impl Operation for SingleSegmentOperation {
     }
 }
 
-struct SingleSegmentRelay;
-impl ContinuousOperative for SingleSegmentRelay {
+struct SingleSegmentOperative;
+impl ContinuousOperative for SingleSegmentOperative {
     fn factory_id() -> &'static str {
         "single_segment_operative"
     }
@@ -120,7 +120,7 @@ fn throughput_single_segment(c: &mut Criterion) {
     let msgs_per_iter = 100_000usize;
 
     let pool = Arc::new(bi::WorkStealingPool::with_size(pool_size_from_env_or_cpus()));
-    let topology = build_topology_for::<SingleSegmentRelay>().expect("topology");
+    let topology = build_topology_for::<SingleSegmentOperative>().expect("topology");
     let registry = Arc::new(OperativeRegistry::new());
     let instance = ContinuousInstance::new(
         Arc::clone(&topology),
@@ -210,8 +210,8 @@ impl Operation for FanoutOperation {
     }
 }
 
-struct StaticFanoutRelay;
-impl ContinuousOperative for StaticFanoutRelay {
+struct StaticFanoutOperative;
+impl ContinuousOperative for StaticFanoutOperative {
     fn factory_id() -> &'static str {
         "static_fanout_operative"
     }
@@ -228,7 +228,7 @@ fn throughput_static_fanout(c: &mut Criterion) {
     let expected_runs = inputs_per_iter * fan_out;
 
     let pool = Arc::new(bi::WorkStealingPool::with_size(pool_size_from_env_or_cpus()));
-    let topology = build_topology_for::<StaticFanoutRelay>().expect("topology");
+    let topology = build_topology_for::<StaticFanoutOperative>().expect("topology");
     let registry = Arc::new(OperativeRegistry::new());
     let instance = ContinuousInstance::new(
         Arc::clone(&topology),

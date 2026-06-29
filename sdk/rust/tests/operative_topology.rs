@@ -20,8 +20,8 @@ test_operation!(EchoOperation, "echo_operation", String => String, (), |_input, 
     Ok(())
 });
 
-struct SingleRelay;
-impl ContinuousOperative for SingleRelay {
+struct SingleOperative;
+impl ContinuousOperative for SingleOperative {
     fn factory_id() -> &'static str {
         "single_operative"
     }
@@ -32,7 +32,7 @@ impl ContinuousOperative for SingleRelay {
 
 #[test]
 fn single_mode_segment_creation() {
-    let topology = build_topology_for::<SingleRelay>().expect("build topology");
+    let topology = build_topology_for::<SingleOperative>().expect("build topology");
     assert_eq!(topology.operations.len(), 1);
     assert_eq!(topology.channels.len(), 1);
     assert!(topology.operations[0].segment_keys.is_empty());
@@ -86,8 +86,8 @@ impl Operation for StaticOperation {
     }
 }
 
-struct StaticRelay;
-impl ContinuousOperative for StaticRelay {
+struct StaticOperative;
+impl ContinuousOperative for StaticOperative {
     fn factory_id() -> &'static str {
         "static_operative"
     }
@@ -98,7 +98,7 @@ impl ContinuousOperative for StaticRelay {
 
 #[test]
 fn static_mode_segment_creation() {
-    let topology = build_topology_for::<StaticRelay>().expect("build topology");
+    let topology = build_topology_for::<StaticOperative>().expect("build topology");
     assert_eq!(topology.operations.len(), 1);
     assert_eq!(topology.operations[0].segment_keys, vec!["a", "b", "c"]);
     assert!(topology.operations[0].segment_for_overridden);
@@ -134,8 +134,8 @@ impl Operation for DynamicOnlyOperation {
     }
 }
 
-struct DynamicOnlyRelay;
-impl ContinuousOperative for DynamicOnlyRelay {
+struct DynamicOnlyOperative;
+impl ContinuousOperative for DynamicOnlyOperative {
     fn factory_id() -> &'static str {
         "dynamic_only_operative"
     }
@@ -147,7 +147,7 @@ impl ContinuousOperative for DynamicOnlyRelay {
 #[test]
 fn dynamic_mode_is_accepted_and_classified() {
     use flezha_executor::operative::topology::SegmentingMode;
-    let topology = build_topology_for::<DynamicOnlyRelay>().expect("dynamic mode accepted");
+    let topology = build_topology_for::<DynamicOnlyOperative>().expect("dynamic mode accepted");
     assert_eq!(topology.operations.len(), 1);
     assert_eq!(topology.operations[0].mode, SegmentingMode::Dynamic);
     assert!(topology.operations[0].segment_keys.is_empty());
@@ -185,8 +185,8 @@ impl Operation for UnannotatedStaticOperation {
     }
 }
 
-struct UnannotatedRelay;
-impl ContinuousOperative for UnannotatedRelay {
+struct UnannotatedOperative;
+impl ContinuousOperative for UnannotatedOperative {
     fn factory_id() -> &'static str {
         "unannotated_operative"
     }
@@ -197,7 +197,7 @@ impl ContinuousOperative for UnannotatedRelay {
 
 #[test]
 fn unannotated_static_mode_rejection() {
-    let err = build_topology_for::<UnannotatedRelay>()
+    let err = build_topology_for::<UnannotatedOperative>()
         .err()
         .expect("expected segment_for-missing rejection");
     let msg = format!("{:?}", err.errors);
@@ -213,8 +213,8 @@ test_operation!(ZeroCapacityOperation, "zero_capacity_operation", String => Stri
     Ok(())
 });
 
-struct ZeroCapacityRelay;
-impl ContinuousOperative for ZeroCapacityRelay {
+struct ZeroCapacityOperative;
+impl ContinuousOperative for ZeroCapacityOperative {
     fn factory_id() -> &'static str {
         "zero_capacity_operative"
     }
@@ -225,7 +225,7 @@ impl ContinuousOperative for ZeroCapacityRelay {
 
 #[test]
 fn capacity_zero_is_rejected_at_operative_startup() {
-    let err = build_topology_for::<ZeroCapacityRelay>()
+    let err = build_topology_for::<ZeroCapacityOperative>()
         .err()
         .expect("expected mailbox-capacity-zero rejection");
     let msg = format!("{:?}", err.errors);
@@ -245,8 +245,8 @@ test_operation!(ExplicitCapOperation, "explicit_cap_operation", String => String
     Ok(())
 });
 
-struct ExplicitCapRelay;
-impl ContinuousOperative for ExplicitCapRelay {
+struct ExplicitCapOperative;
+impl ContinuousOperative for ExplicitCapOperative {
     fn factory_id() -> &'static str {
         "explicit_cap_operative"
     }
@@ -257,7 +257,7 @@ impl ContinuousOperative for ExplicitCapRelay {
 
 #[test]
 fn explicit_capacity_threads_to_topology_descriptor() {
-    let topology = build_topology_for::<ExplicitCapRelay>().expect("topology");
+    let topology = build_topology_for::<ExplicitCapOperative>().expect("topology");
     assert_eq!(topology.operations.len(), 1);
     assert_eq!(topology.operations[0].mailbox_capacity, 4096);
     assert!(topology.operations[0].mailbox_capacity_overridden);
@@ -266,7 +266,7 @@ fn explicit_capacity_threads_to_topology_descriptor() {
 /// Default Operation inherits the 1024 default.
 #[test]
 fn default_capacity_is_1024_in_topology() {
-    let topology = build_topology_for::<SingleRelay>().expect("topology");
+    let topology = build_topology_for::<SingleOperative>().expect("topology");
     assert_eq!(topology.operations[0].mailbox_capacity, 1024);
     assert!(!topology.operations[0].mailbox_capacity_overridden);
 }
@@ -274,7 +274,7 @@ fn default_capacity_is_1024_in_topology() {
 #[test]
 fn operative_instance_creates_segments() {
     use flezha_executor::__dispatch_internals as bi;
-    let topology = build_topology_for::<StaticRelay>().expect("topology");
+    let topology = build_topology_for::<StaticOperative>().expect("topology");
     let pool = Arc::new(bi::WorkStealingPool::with_size(2));
     let instance =
         flezha_executor::operative::ContinuousInstance::new(topology, Arc::from("instance-id"), pool);

@@ -54,8 +54,8 @@ impl Operation for CounterOperation {
     }
 }
 
-struct CounterRelay;
-impl ContinuousOperative for CounterRelay {
+struct CounterOperative;
+impl ContinuousOperative for CounterOperative {
     fn factory_id() -> &'static str {
         "counter_operative"
     }
@@ -66,7 +66,7 @@ impl ContinuousOperative for CounterRelay {
 
 #[test]
 fn single_mode_operation_serializes_under_operation_name_key() {
-    let topology = build_topology_for::<CounterRelay>().expect("topology");
+    let topology = build_topology_for::<CounterOperative>().expect("topology");
     let pool = Arc::new(bi::WorkStealingPool::with_size(1));
     let instance = ContinuousInstance::new(topology, Arc::from("inst-1"), pool);
 
@@ -78,7 +78,7 @@ fn single_mode_operation_serializes_under_operation_name_key() {
 
 #[test]
 fn apply_init_values_seeds_single_mode_operation() {
-    let topology = build_topology_for::<CounterRelay>().expect("topology");
+    let topology = build_topology_for::<CounterOperative>().expect("topology");
     let pool = Arc::new(bi::WorkStealingPool::with_size(1));
     let instance = ContinuousInstance::new(topology, Arc::from("inst-2"), pool);
 
@@ -128,8 +128,8 @@ impl Operation for OhlcOperation {
     }
 }
 
-struct OhlcRelay;
-impl ContinuousOperative for OhlcRelay {
+struct OhlcOperative;
+impl ContinuousOperative for OhlcOperative {
     fn factory_id() -> &'static str {
         "ohlc_operative"
     }
@@ -140,7 +140,7 @@ impl ContinuousOperative for OhlcRelay {
 
 #[test]
 fn static_mode_operation_serializes_under_keyed_object() {
-    let topology = build_topology_for::<OhlcRelay>().expect("topology");
+    let topology = build_topology_for::<OhlcOperative>().expect("topology");
     let pool = Arc::new(bi::WorkStealingPool::with_size(1));
     let instance = ContinuousInstance::new(topology, Arc::from("inst-3"), pool);
 
@@ -151,7 +151,7 @@ fn static_mode_operation_serializes_under_keyed_object() {
 
 #[test]
 fn apply_init_values_seeds_static_mode_operation_per_key() {
-    let topology = build_topology_for::<OhlcRelay>().expect("topology");
+    let topology = build_topology_for::<OhlcOperative>().expect("topology");
     let pool = Arc::new(bi::WorkStealingPool::with_size(1));
     let instance = ContinuousInstance::new(topology, Arc::from("inst-4"), pool);
 
@@ -168,7 +168,7 @@ fn apply_init_values_seeds_static_mode_operation_per_key() {
 
 #[test]
 fn apply_init_values_empty_string_is_noop() {
-    let topology = build_topology_for::<CounterRelay>().expect("topology");
+    let topology = build_topology_for::<CounterOperative>().expect("topology");
     let pool = Arc::new(bi::WorkStealingPool::with_size(1));
     let instance = ContinuousInstance::new(topology, Arc::from("inst-5"), pool);
 
@@ -180,7 +180,7 @@ fn apply_init_values_empty_string_is_noop() {
 
 #[test]
 fn apply_init_values_unknown_operation_is_ignored() {
-    let topology = build_topology_for::<CounterRelay>().expect("topology");
+    let topology = build_topology_for::<CounterOperative>().expect("topology");
     let pool = Arc::new(bi::WorkStealingPool::with_size(1));
     let instance = ContinuousInstance::new(topology, Arc::from("inst-6"), pool);
 
@@ -196,7 +196,7 @@ fn apply_init_values_unknown_operation_is_ignored() {
 
 #[test]
 fn round_trip_static_mode_through_serialize_then_apply() {
-    let topology = build_topology_for::<OhlcRelay>().expect("topology");
+    let topology = build_topology_for::<OhlcOperative>().expect("topology");
     let pool = Arc::new(bi::WorkStealingPool::with_size(1));
     let src = ContinuousInstance::new(Arc::clone(&topology), Arc::from("src"), Arc::clone(&pool));
     apply_init_values(

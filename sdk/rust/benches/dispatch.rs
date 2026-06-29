@@ -85,8 +85,8 @@ impl Operation for RegressionOperation {
     }
 }
 
-struct RegressionRelay;
-impl ContinuousOperative for RegressionRelay {
+struct RegressionOperative;
+impl ContinuousOperative for RegressionOperative {
     fn factory_id() -> &'static str {
         "regression_bench_operative"
     }
@@ -108,7 +108,7 @@ fn regression_bench(c: &mut Criterion) {
     let total = n_operatives * msgs_per_operative;
 
     let pool = Arc::new(bi::WorkStealingPool::with_size(pool_size_from_env_or_cpus()));
-    let topology = build_topology_for::<RegressionRelay>().expect("topology");
+    let topology = build_topology_for::<RegressionOperative>().expect("topology");
     let registry = Arc::new(OperativeRegistry::new());
 
     let instance_ids: Vec<String> = (0..n_operatives).map(|i| format!("regression-{}", i)).collect();
@@ -307,8 +307,8 @@ impl Operation for StressBenchOperationD {
     }
 }
 
-struct SegmentingStressBenchRelay;
-impl ContinuousOperative for SegmentingStressBenchRelay {
+struct SegmentingStressBenchOperative;
+impl ContinuousOperative for SegmentingStressBenchOperative {
     fn factory_id() -> &'static str {
         "segmenting_stress_bench_operative"
     }
@@ -362,7 +362,7 @@ fn segmenting_stress_bench(c: &mut Criterion) {
         Err(_) => vec![pool_size_from_env_or_cpus()],
     };
 
-    let topology = build_topology_for::<SegmentingStressBenchRelay>().expect("topology");
+    let topology = build_topology_for::<SegmentingStressBenchOperative>().expect("topology");
     let payload: Vec<u8> = b"x".repeat(64);
     let stream = dummy_stream();
 
