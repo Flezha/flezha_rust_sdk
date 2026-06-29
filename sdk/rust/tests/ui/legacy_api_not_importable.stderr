@@ -1,5 +1,0 @@
-error[E0432]: unresolved import `flezha_executor::RelayHandler`
- --> tests/ui/legacy_api_not_importable.rs:5:5
-  |
-5 | use flezha_executor::RelayHandler;
-  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no `RelayHandler` in the root
