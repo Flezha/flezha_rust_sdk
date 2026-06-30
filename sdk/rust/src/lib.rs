@@ -121,7 +121,7 @@ use crossbeam::channel::{Receiver, Sender};
 pub use flz_transport::{service, transport};
 pub use segment::{RestoreError, RestoreInitPayload};
 pub use operative::ContinuousOperative;
-pub use bounded::{BoundedOperative, BoundedCtx, BoundedError};
+pub use bounded::{BoundedOperative, BoundedCtx, BoundedError, RollbackMode};
 pub use operation::{
     Change, Clock, CoalesceKey, DerivedState, EventTimeFrom, LogicalClock, NoChange, Operation,
     OperationCtx, OperationError, StateHandle, WallClock,

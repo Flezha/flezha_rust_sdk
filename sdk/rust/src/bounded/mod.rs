@@ -33,6 +33,7 @@
 //! flezha_executor::register_bounded::<Greet>();
 //! ```
 
+pub(crate) mod compensation;
 pub(crate) mod control;
 pub(crate) mod driver;
 pub mod registry;
@@ -95,6 +96,30 @@ pub trait BoundedOperative: Send + Sync + 'static {
     fn self_terminating() -> bool {
         true
     }
+
+    /// Saga rollback scope, applied when the operative terminates abnormally
+    /// after partial progress. Default [`RollbackMode::AllOrNothing`] undoes
+    /// every completed operation in reverse, back to the start;
+    /// [`RollbackMode::KeepProgress`] keeps each finished loop iteration and
+    /// undoes only the in-flight one. The mode is irrelevant for a single-pass
+    /// chain (where both behave all-or-nothing) and for an operative with no
+    /// compensation hooks.
+    fn rollback_mode() -> RollbackMode {
+        RollbackMode::AllOrNothing
+    }
+}
+
+/// Saga rollback scope chosen per bounded operative (see
+/// [`BoundedOperative::rollback_mode`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RollbackMode {
+    /// Any failure undoes **all** completed operations in reverse, back to the
+    /// start (the classic saga). The default.
+    AllOrNothing,
+    /// Each finished loop iteration commits (is kept); a failure undoes only the
+    /// in-flight iteration's completed operations. Within a single iteration —
+    /// or a no-loop pass — rollback is all-or-nothing.
+    KeepProgress,
 }
 
 /// Type-erased run-sugar entrypoint stored in the class spec. `T::run` coerces
@@ -233,7 +258,8 @@ impl BoundedCtx {
 mod tests {
     use super::*;
     use std::cell::Cell;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
     use crossbeam::channel::Receiver;
@@ -621,6 +647,330 @@ mod tests {
         }
     }
 
+    // ---- saga compensation operatives (Phase 2 §4) --------------------------
+
+    /// Process-global compensation observation log. The driver-observation test
+    /// owns it (like `EMIT_RUNS`); compensable operations append a marker so
+    /// rollback order and per-segment firing are assertable without wire
+    /// plumbing (a compensable inter-operation op's `ctx.emit` is collected, not
+    /// wired).
+    static COMPENSATION_LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    fn comp_log(entry: String) {
+        COMPENSATION_LOG.lock().unwrap().push(entry);
+    }
+
+    fn drain_comp_log() -> Vec<String> {
+        std::mem::take(&mut *COMPENSATION_LOG.lock().unwrap())
+    }
+
+    /// Forced-stop handshake: `StopReserve` signals it has started, then parks
+    /// until the test trips cancellation, so the "stop after partial progress"
+    /// path is deterministic (cancel is observed before the next stage's
+    /// pre-check rather than racing the fast chain).
+    static STAGE0_RAN: AtomicBool = AtomicBool::new(false);
+    static STAGE0_RELEASE: AtomicBool = AtomicBool::new(false);
+
+    /// Compensable: reserves (emits `reserved:<arg>`); undo logs `undo-reserve`.
+    #[derive(Default)]
+    struct SagaReserve;
+    impl Operation for SagaReserve {
+        type Input = String;
+        type Output = String;
+        type State = ();
+        type Change = NoChange;
+        type Clock = WallClock;
+        type Config = ();
+        fn name() -> &'static str {
+            "saga_reserve"
+        }
+        fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
+        fn run(
+            &mut self,
+            input: String,
+            _state: StateHandle<'_, Self>,
+            ctx: &mut OperationCtx<'_>,
+        ) -> Result<(), OperationError> {
+            ctx.emit(format!("reserved:{input}"))?;
+            Ok(())
+        }
+        const COMPENSATE_OVERRIDDEN: bool = true;
+        fn compensate(
+            &mut self,
+            completed_output: Vec<Arc<String>>,
+            _state: StateHandle<'_, Self>,
+            _ctx: &mut OperationCtx<'_>,
+        ) -> Result<(), OperationError> {
+            for out in &completed_output {
+                comp_log(format!("undo-reserve:{out}"));
+            }
+            Ok(())
+        }
+    }
+
+    /// Compensable: charges (emits `charged:<input>`); undo logs `undo-charge`.
+    #[derive(Default)]
+    struct SagaCharge;
+    impl Operation for SagaCharge {
+        type Input = String;
+        type Output = String;
+        type State = ();
+        type Change = NoChange;
+        type Clock = WallClock;
+        type Config = ();
+        fn name() -> &'static str {
+            "saga_charge"
+        }
+        fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
+        fn run(
+            &mut self,
+            input: String,
+            _state: StateHandle<'_, Self>,
+            ctx: &mut OperationCtx<'_>,
+        ) -> Result<(), OperationError> {
+            ctx.emit(format!("charged:{input}"))?;
+            Ok(())
+        }
+        const COMPENSATE_OVERRIDDEN: bool = true;
+        fn compensate(
+            &mut self,
+            completed_output: Vec<Arc<String>>,
+            _state: StateHandle<'_, Self>,
+            _ctx: &mut OperationCtx<'_>,
+        ) -> Result<(), OperationError> {
+            for out in &completed_output {
+                comp_log(format!("undo-charge:{out}"));
+            }
+            Ok(())
+        }
+    }
+
+    /// Terminal step that always fails — triggers reverse-order rollback of the
+    /// completed `reserve` + `charge`. Itself uncompleted ⇒ never compensated.
+    #[derive(Default)]
+    struct SagaShipFails;
+    impl Operation for SagaShipFails {
+        type Input = String;
+        type Output = String;
+        type State = ();
+        type Change = NoChange;
+        type Clock = WallClock;
+        type Config = ();
+        fn name() -> &'static str {
+            "saga_ship_fails"
+        }
+        fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
+        fn run(
+            &mut self,
+            _input: String,
+            _state: StateHandle<'_, Self>,
+            _ctx: &mut OperationCtx<'_>,
+        ) -> Result<(), OperationError> {
+            Err(OperationError::Custom("ship failed".into()))
+        }
+    }
+
+    /// Reserve → Charge → Ship(fails). Default all-or-nothing rollback.
+    struct SagaBounded;
+    impl BoundedOperative for SagaBounded {
+        fn factory_id() -> &'static str {
+            "test-saga-bounded"
+        }
+        fn operations(c: &mut ChannelBuilder) {
+            c.input::<String>("in").into::<SagaReserve>();
+            c.channel::<String>("c1").from::<SagaReserve>().into::<SagaCharge>();
+            c.channel::<String>("c2").from::<SagaCharge>().into::<SagaShipFails>();
+            c.channel::<String>("out").from::<SagaShipFails>().to_plugin("sink");
+        }
+    }
+
+    /// Same chain, keep-progress mode declared — for a single no-loop pass it
+    /// unwinds identically (the mode only diverges with committed iterations,
+    /// covered by the planner unit tests). Proves `rollback_mode()` is plumbed
+    /// through the registration → driver path.
+    struct KeepProgressSaga;
+    impl BoundedOperative for KeepProgressSaga {
+        fn factory_id() -> &'static str {
+            "test-keep-progress-saga"
+        }
+        fn rollback_mode() -> RollbackMode {
+            RollbackMode::KeepProgress
+        }
+        fn operations(c: &mut ChannelBuilder) {
+            c.input::<String>("in").into::<SagaReserve>();
+            c.channel::<String>("c1").from::<SagaReserve>().into::<SagaCharge>();
+            c.channel::<String>("c2").from::<SagaCharge>().into::<SagaShipFails>();
+            c.channel::<String>("out").from::<SagaShipFails>().to_plugin("sink");
+        }
+    }
+
+    /// Reserve → Charge → Echo(succeeds): a clean `ok` MUST NOT compensate.
+    struct CleanSaga;
+    impl BoundedOperative for CleanSaga {
+        fn factory_id() -> &'static str {
+            "test-clean-saga"
+        }
+        fn operations(c: &mut ChannelBuilder) {
+            c.input::<String>("in").into::<SagaReserve>();
+            c.channel::<String>("c1").from::<SagaReserve>().into::<SagaCharge>();
+            c.channel::<String>("c2").from::<SagaCharge>().into::<EchoOp>();
+            c.channel::<String>("out").from::<EchoOp>().to_plugin("sink");
+        }
+    }
+
+    /// Static-segmented compensable op: stores its segment key in state, emits
+    /// `<key>:<item>`, and compensates ONCE per segment (logs all that segment's
+    /// outputs together) so per-segment firing is assertable.
+    #[derive(Serialize, Deserialize, Clone, Default)]
+    struct FanKeyState {
+        key: String,
+    }
+    #[derive(Default)]
+    struct SagaFan;
+    impl Operation for SagaFan {
+        type Input = String;
+        type Output = String;
+        type State = FanKeyState;
+        type Change = NoChange;
+        type Clock = WallClock;
+        type Config = ();
+        fn name() -> &'static str {
+            "saga_fan"
+        }
+        fn operation_keys() -> Vec<&'static str> {
+            vec!["even", "odd"]
+        }
+        const SEGMENT_FOR_OVERRIDDEN: bool = true;
+        fn segment_for(input: &String) -> Vec<&'static str> {
+            if input.len().is_multiple_of(2) {
+                vec!["even"]
+            } else {
+                vec!["odd"]
+            }
+        }
+        fn init_state(operation_key: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> FanKeyState {
+            FanKeyState {
+                key: operation_key.unwrap_or("").to_string(),
+            }
+        }
+        fn run(
+            &mut self,
+            input: String,
+            state: StateHandle<'_, Self>,
+            ctx: &mut OperationCtx<'_>,
+        ) -> Result<(), OperationError> {
+            ctx.emit(format!("{}:{input}", state.key))?;
+            Ok(())
+        }
+        const COMPENSATE_OVERRIDDEN: bool = true;
+        fn compensate(
+            &mut self,
+            completed_output: Vec<Arc<String>>,
+            state: StateHandle<'_, Self>,
+            _ctx: &mut OperationCtx<'_>,
+        ) -> Result<(), OperationError> {
+            let items: Vec<String> = completed_output.iter().map(|o| o.to_string()).collect();
+            comp_log(format!("undo-fan:{}:[{}]", state.key, items.join(",")));
+            Ok(())
+        }
+    }
+
+    /// Terminal failing op for the per-segment rollback chain.
+    #[derive(Default)]
+    struct FailLast;
+    impl Operation for FailLast {
+        type Input = String;
+        type Output = String;
+        type State = ();
+        type Change = NoChange;
+        type Clock = WallClock;
+        type Config = ();
+        fn name() -> &'static str {
+            "saga_fail_last"
+        }
+        fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
+        fn run(
+            &mut self,
+            _input: String,
+            _state: StateHandle<'_, Self>,
+            _ctx: &mut OperationCtx<'_>,
+        ) -> Result<(), OperationError> {
+            Err(OperationError::Custom("fan ship failed".into()))
+        }
+    }
+
+    /// Split(hookless) → Fan(compensable, even/odd) → FailLast. The hookless
+    /// `SplitOp` is skipped during rollback; only `SagaFan` compensates, once
+    /// per segment.
+    struct FanSaga;
+    impl BoundedOperative for FanSaga {
+        fn factory_id() -> &'static str {
+            "test-fan-saga"
+        }
+        fn operations(c: &mut ChannelBuilder) {
+            c.input::<String>("in").into::<SplitOp>();
+            c.channel::<String>("mid").from::<SplitOp>().into::<SagaFan>();
+            c.channel::<String>("mid2").from::<SagaFan>().into::<FailLast>();
+            c.channel::<String>("out").from::<FailLast>().to_plugin("sink");
+        }
+    }
+
+    /// Compensable stage-0 op with a handshake so a cooperative stop lands after
+    /// it completes but before stage 1 (deterministic forced-stop rollback).
+    #[derive(Default)]
+    struct StopReserve;
+    impl Operation for StopReserve {
+        type Input = String;
+        type Output = String;
+        type State = ();
+        type Change = NoChange;
+        type Clock = WallClock;
+        type Config = ();
+        fn name() -> &'static str {
+            "saga_stop_reserve"
+        }
+        fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
+        fn run(
+            &mut self,
+            input: String,
+            _state: StateHandle<'_, Self>,
+            ctx: &mut OperationCtx<'_>,
+        ) -> Result<(), OperationError> {
+            STAGE0_RAN.store(true, Ordering::SeqCst);
+            while !STAGE0_RELEASE.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            ctx.emit(format!("reserved:{input}"))?;
+            Ok(())
+        }
+        const COMPENSATE_OVERRIDDEN: bool = true;
+        fn compensate(
+            &mut self,
+            completed_output: Vec<Arc<String>>,
+            _state: StateHandle<'_, Self>,
+            _ctx: &mut OperationCtx<'_>,
+        ) -> Result<(), OperationError> {
+            for out in &completed_output {
+                comp_log(format!("undo-stop-reserve:{out}"));
+            }
+            Ok(())
+        }
+    }
+
+    /// StopReserve → Echo. A cooperative stop after StopReserve completes
+    /// compensates only StopReserve; Echo never runs.
+    struct StopSaga;
+    impl BoundedOperative for StopSaga {
+        fn factory_id() -> &'static str {
+            "test-stop-saga"
+        }
+        fn operations(c: &mut ChannelBuilder) {
+            c.input::<String>("in").into::<StopReserve>();
+            c.channel::<String>("mid").from::<StopReserve>().into::<EchoOp>();
+            c.channel::<String>("out").from::<EchoOp>().to_plugin("sink");
+        }
+    }
+
     // ---- non-driver unit tests ----------------------------------------------
 
     #[test]
@@ -786,6 +1136,11 @@ mod tests {
         crate::register_bounded::<ChainBounded>();
         crate::register_bounded::<FanBounded>();
         crate::register_bounded::<HybridBounded>();
+        crate::register_bounded::<SagaBounded>();
+        crate::register_bounded::<KeepProgressSaga>();
+        crate::register_bounded::<CleanSaga>();
+        crate::register_bounded::<FanSaga>();
+        crate::register_bounded::<StopSaga>();
 
         let mut node = ExecutorNode::new("test-ns".to_string());
 
@@ -902,6 +1257,81 @@ mod tests {
         let mut hybrid_expected = vec![b"final:h:z".to_vec(), b"mid:h:z".to_vec()];
         hybrid_expected.sort();
         assert_eq!(hybrid_outs, hybrid_expected);
+
+        // --- §7b.1 saga: a failed step rolls back completed steps in reverse ---
+        let _ = drain_comp_log();
+        assert!(node.start_bounded("test-saga-bounded".into(), "saga-1".into(), "X".into()));
+        let (_o, done) = drain(&rx, "saga-1");
+        assert_eq!(done.0, "error", "a failed terminal step ⇒ status error");
+        assert!(done.1.contains("ship failed"));
+        // reserve → charge completed; ship failed (not compensated). Undo runs
+        // reverse: charge then reserve, each receiving its own output.
+        assert_eq!(
+            drain_comp_log(),
+            vec![
+                "undo-charge:charged:reserved:X".to_string(),
+                "undo-reserve:reserved:X".to_string(),
+            ],
+        );
+
+        // --- §7b.2 all-or-nothing: keep-progress unwinds an identical single
+        // pass (the mode only diverges with committed iterations) — proves
+        // rollback_mode() reaches the driver ---
+        let _ = drain_comp_log();
+        assert!(node.start_bounded("test-keep-progress-saga".into(), "saga-kp".into(), "Y".into()));
+        let (_o, done) = drain(&rx, "saga-kp");
+        assert_eq!(done.0, "error");
+        assert_eq!(
+            drain_comp_log(),
+            vec![
+                "undo-charge:charged:reserved:Y".to_string(),
+                "undo-reserve:reserved:Y".to_string(),
+            ],
+        );
+
+        // --- §7b.1 clean completion does NOT compensate ---
+        let _ = drain_comp_log();
+        assert!(node.start_bounded("test-clean-saga".into(), "saga-ok".into(), "Z".into()));
+        let (clean_outs, done) = drain(&rx, "saga-ok");
+        assert_eq!(done.0, "ok");
+        assert_eq!(clean_outs, vec![b"echo:charged:reserved:Z".to_vec()]);
+        assert!(drain_comp_log().is_empty(), "a clean ok must not compensate");
+
+        // --- §7b.1 per-segment compensation: once per segment that ran;
+        // hookless SplitOp is skipped ---
+        let _ = drain_comp_log();
+        assert!(node.start_bounded("test-fan-saga".into(), "fan-saga".into(), "a,bb,ccc".into()));
+        let (_o, done) = drain(&rx, "fan-saga");
+        assert_eq!(done.0, "error");
+        let mut fan_comp = drain_comp_log();
+        fan_comp.sort();
+        // odd segment ran "a","ccc"; even ran "bb"; the hook fires once per
+        // segment with that segment's own outputs. SplitOp (no hook) is skipped.
+        assert_eq!(
+            fan_comp,
+            vec![
+                "undo-fan:even:[even:bb]".to_string(),
+                "undo-fan:odd:[odd:a,odd:ccc]".to_string(),
+            ],
+        );
+
+        // --- §7b.1 forced-stop after partial progress compensates ---
+        let _ = drain_comp_log();
+        STAGE0_RAN.store(false, Ordering::SeqCst);
+        STAGE0_RELEASE.store(false, Ordering::SeqCst);
+        assert!(node.start_bounded("test-stop-saga".into(), "stop-saga".into(), "W".into()));
+        while !STAGE0_RAN.load(Ordering::SeqCst) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(control::cancel("stop-saga"), "live instance accepts cancel");
+        STAGE0_RELEASE.store(true, Ordering::SeqCst);
+        let (_o, done) = drain(&rx, "stop-saga");
+        assert_eq!(done.0, "cancelled", "cooperative stop ⇒ cancelled");
+        // StopReserve completed before the stop landed; Echo never ran.
+        assert_eq!(
+            drain_comp_log(),
+            vec!["undo-stop-reserve:reserved:W".to_string()],
+        );
 
         // --- AddOperative --kind bounded routes to the bounded path ---
         let add = AddOperative {

@@ -33,12 +33,34 @@ use crate::segment::flusher::SegmentFlusher;
 use crate::segment::SegmentSlot;
 use crate::util::LockRecover;
 
+use super::compensation::{plan_compensation, SegmentRun, StageRecord};
 use super::control::{self, BoundedControl};
 use super::spec::BoundedSpec;
-use super::{BoundedCollectSink, BoundedCtx, BoundedError, BoundedRunFn};
+use super::{BoundedCollectSink, BoundedCtx, BoundedError, BoundedRunFn, RollbackMode};
 
 /// Type-erased value moving between bounded stages.
 type Value = Arc<dyn Any + Send + Sync>;
+
+/// One stage's parallel-join result: the inter-operation `batch` released to the
+/// next stage, plus the per-segment record (which segments ran, with their
+/// collected outputs) retained for a possible saga rollback.
+struct StageOut {
+    batch: Vec<Value>,
+    segments: Vec<SegmentRun>,
+}
+
+/// Read-only context threaded through one structured chain run: the topology,
+/// the resolved chain order, the instance id, the work pool, the pre-built
+/// per-stage segments, and the rollback mode. Bundled so the chain driver and
+/// the compensator take it by reference instead of a long parameter list.
+struct ChainCtx<'a> {
+    topology: &'a Arc<OperativeTopology>,
+    chain: &'a [OperationId],
+    instance_id: &'a Arc<str>,
+    pool: &'a Arc<WorkStealingPool>,
+    stage_segments: &'a [Vec<Arc<SegmentSlot>>],
+    rollback_mode: RollbackMode,
+}
 
 /// Spawn the bounded driver for one instance on a dedicated thread.
 /// Fire-and-forget: the thread exits at terminal teardown. The control surface
@@ -98,7 +120,15 @@ fn run(
 
     let (status, error, result) = match spec.topology.as_ref() {
         None => run_sugar(spec.run, &instance_id, &args, &cancel, inbox_rx),
-        Some(topology) => run_structured(topology, &spec.chain, &instance_id, &args, &cancel, &pool),
+        Some(topology) => run_structured(
+            topology,
+            &spec.chain,
+            &instance_id,
+            &args,
+            &cancel,
+            &pool,
+            spec.rollback_mode,
+        ),
     };
 
     finished.store(true, Ordering::Release);
@@ -159,6 +189,7 @@ fn run_structured(
     args: &str,
     cancel: &Arc<AtomicBool>,
     pool: &Arc<WorkStealingPool>,
+    rollback_mode: RollbackMode,
 ) -> (String, String, Vec<u8>) {
     // Build each stage's segments up front (per-segment state lives for the
     // whole run). `instance` is a null Weak — the bounded collecting path never
@@ -172,15 +203,15 @@ fn run_structured(
         stage_segments.push(build_stage_segments(topology, instance_id, op_id, op, pool));
     }
 
-    let outcome = drive_chain(
+    let ctx = ChainCtx {
         topology,
         chain,
         instance_id,
-        args,
-        cancel,
         pool,
-        &stage_segments,
-    );
+        stage_segments: &stage_segments,
+        rollback_mode,
+    };
+    let outcome = drive_chain(&ctx, args, cancel);
 
     // Drop any per-segment flusher registrations created for this run so the
     // process-global flusher does not accumulate dead entries across jobs.
@@ -195,15 +226,8 @@ fn run_structured(
     outcome
 }
 
-fn drive_chain(
-    topology: &Arc<OperativeTopology>,
-    chain: &[OperationId],
-    instance_id: &Arc<str>,
-    args: &str,
-    cancel: &AtomicBool,
-    pool: &Arc<WorkStealingPool>,
-    stage_segments: &[Vec<Arc<SegmentSlot>>],
-) -> (String, String, Vec<u8>) {
+fn drive_chain(ctx: &ChainCtx, args: &str, cancel: &AtomicBool) -> (String, String, Vec<u8>) {
+    let topology = ctx.topology;
     // Seed the first operation from the spawn args via the entry channel's
     // typed wrapper.
     let entry = topology
@@ -226,26 +250,93 @@ fn drive_chain(
         }
     };
 
-    for (stage_idx, &op_id) in chain.iter().enumerate() {
+    // Completed stages of the current (and only, in v1) pass, recorded in
+    // completion order so an abnormal exit can roll them back in reverse.
+    let mut completed: Vec<StageRecord> = Vec::new();
+    // `Some` once the chain terminates abnormally (error / mid-chain stop),
+    // carrying the terminal status + error text.
+    let mut abnormal: Option<(String, String)> = None;
+
+    for (stage_idx, &op_id) in ctx.chain.iter().enumerate() {
+        // A cooperative stop before a stage starts is partial progress: stop
+        // advancing and roll back what completed.
         if cancel.load(Ordering::Acquire) {
-            return ("cancelled".to_string(), String::new(), Vec::new());
+            abnormal = Some(("cancelled".to_string(), String::new()));
+            break;
         }
         let op = topology
             .operation(op_id)
             .expect("chain operation present in topology");
-        let slots = &stage_segments[stage_idx];
+        let slots = &ctx.stage_segments[stage_idx];
         let partitioned = partition(op, slots.len(), &batch);
-        match run_stage_parallel(topology, instance_id, slots, partitioned, pool) {
-            Ok(outputs) => batch = outputs,
-            Err(e) => return ("error".to_string(), e.to_string(), Vec::new()),
+        match run_stage_parallel(topology, ctx.instance_id, slots, partitioned, ctx.pool) {
+            Ok(stage_out) => {
+                batch = stage_out.batch;
+                completed.push(StageRecord {
+                    stage_idx,
+                    segments: stage_out.segments,
+                });
+            }
+            Err(e) => {
+                abnormal = Some(("error".to_string(), e.to_string()));
+                break;
+            }
         }
     }
 
-    // Final cancellation check after the last barrier.
-    if cancel.load(Ordering::Acquire) {
-        return ("cancelled".to_string(), String::new(), Vec::new());
+    match abnormal {
+        // Clean run to quiescence: every stage completed, so there is nothing
+        // partial to undo — a clean `ok` never compensates.
+        None => ("ok".to_string(), String::new(), Vec::new()),
+        // Abnormal exit after partial progress: roll back the completed stages
+        // in the rollback mode's order, then report the terminal status.
+        Some((status, error)) => {
+            run_compensation(ctx, &completed);
+            (status, error, Vec::new())
+        }
     }
-    ("ok".to_string(), String::new(), Vec::new())
+}
+
+/// Roll back the completed stages of an abnormally-terminated chain. Completed
+/// operations are compensated in reverse order (per [`plan_compensation`]) and,
+/// within an operation, once per segment that ran. Operations without a
+/// `compensate` hook are skipped. Best-effort: a failing hook is logged and the
+/// remaining steps still run, so one broken undo cannot strand the rest.
+fn run_compensation(ctx: &ChainCtx, completed: &[StageRecord]) {
+    // v1 runs a single pass, so there are no committed iterations to keep; the
+    // structured-loop follow-up threads them in and `plan_compensation` already
+    // honours the mode difference.
+    let plan = plan_compensation(ctx.rollback_mode, &[], completed);
+    if plan.is_empty() {
+        return;
+    }
+    let mut sink = BoundedSegmentSink {
+        instance_id: Arc::clone(ctx.instance_id),
+        collected: Vec::new(),
+    };
+    for record in plan {
+        let op_id = ctx.chain[record.stage_idx];
+        let op = ctx
+            .topology
+            .operation(op_id)
+            .expect("chain operation present in topology");
+        // Hookless operations take no part in rollback.
+        if !op.compensate_overridden {
+            continue;
+        }
+        let slots = &ctx.stage_segments[record.stage_idx];
+        for seg_run in &record.segments {
+            let slot = &slots[seg_run.segment_index];
+            let outputs: Vec<Value> = seg_run.outputs.iter().map(Arc::clone).collect();
+            let mut state = slot.state.lock_recover();
+            if let Err(e) =
+                slot.dispatcher
+                    .compensate_collecting(outputs, &mut state, ctx.topology, &mut sink)
+            {
+                eprintln!("[flezha] bounded {} compensation error: {e}", ctx.instance_id);
+            }
+        }
+    }
 }
 
 /// Build the SegmentSlots for one stage: a single slot in Single mode, one per
@@ -322,10 +413,10 @@ fn run_stage_parallel(
     slots: &[Arc<SegmentSlot>],
     partitioned: Vec<Vec<Value>>,
     pool: &Arc<WorkStealingPool>,
-) -> Result<Vec<Value>, BoundedError> {
-    let (tx, rx) = unbounded::<Result<Vec<Value>, BoundedError>>();
+) -> Result<StageOut, BoundedError> {
+    let (tx, rx) = unbounded::<(usize, Result<Vec<Value>, BoundedError>)>();
     let mut spawned = 0usize;
-    for (slot, items) in slots.iter().zip(partitioned.into_iter()) {
+    for (seg_idx, (slot, items)) in slots.iter().zip(partitioned.into_iter()).enumerate() {
         if items.is_empty() {
             continue;
         }
@@ -335,19 +426,23 @@ fn run_stage_parallel(
         let tx = tx.clone();
         spawned += 1;
         pool.submit(Box::new(move || {
-            let _ = tx.send(run_segment(&topology, &instance_id, &slot, items));
+            let _ = tx.send((seg_idx, run_segment(&topology, &instance_id, &slot, items)));
         }));
     }
     drop(tx);
 
     // Wait for every segment (the barrier) before returning, even on failure,
-    // so no segment is mid-run when the stage completes.
-    let mut outputs: Vec<Value> = Vec::new();
+    // so no segment is mid-run when the stage completes. Each segment's outputs
+    // are kept under its index for both the next-stage batch and saga rollback.
+    let mut segments: Vec<SegmentRun> = Vec::new();
     let mut first_err: Option<BoundedError> = None;
     for _ in 0..spawned {
         match rx.recv() {
-            Ok(Ok(mut segment_out)) => outputs.append(&mut segment_out),
-            Ok(Err(e)) => {
+            Ok((seg_idx, Ok(outputs))) => segments.push(SegmentRun {
+                segment_index: seg_idx,
+                outputs,
+            }),
+            Ok((_, Err(e))) => {
                 first_err.get_or_insert(e);
             }
             Err(_) => {
@@ -355,10 +450,17 @@ fn run_stage_parallel(
             }
         }
     }
-    match first_err {
-        Some(e) => Err(e),
-        None => Ok(outputs),
+    if let Some(e) = first_err {
+        return Err(e);
     }
+    // Deterministic next-stage batch: segments in index order (each segment's
+    // own item order is preserved by `run_segment`).
+    segments.sort_by_key(|s| s.segment_index);
+    let batch: Vec<Value> = segments
+        .iter()
+        .flat_map(|s| s.outputs.iter().map(Arc::clone))
+        .collect();
+    Ok(StageOut { batch, segments })
 }
 
 /// Process one segment's items sequentially (per-segment ordering preserved),

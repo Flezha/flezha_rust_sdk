@@ -16,7 +16,7 @@ use crate::channel::{ChannelKind, OperationId};
 use crate::operative::builder::build_topology;
 use crate::operative::topology::{OperativeTopology, SegmentingMode};
 
-use super::{BoundedOperative, BoundedRunFn};
+use super::{BoundedOperative, BoundedRunFn, RollbackMode};
 
 /// Frozen per-class authoring result stored in the registry. `topology` is
 /// `None` for the run-sugar form; `Some` (with the ordered `chain`) for the
@@ -31,6 +31,8 @@ pub(crate) struct BoundedSpec {
     pub chain: Vec<OperationId>,
     /// Optional wall-clock backstop applied by the driver.
     pub max_duration: Option<Duration>,
+    /// Saga rollback scope applied on abnormal termination.
+    pub rollback_mode: RollbackMode,
 }
 
 // Manual: `OperativeTopology` holds closures and is not `Debug`. A summary is
@@ -41,6 +43,7 @@ impl std::fmt::Debug for BoundedSpec {
             .field("structured", &self.topology.is_some())
             .field("chain_len", &self.chain.len())
             .field("max_duration", &self.max_duration)
+            .field("rollback_mode", &self.rollback_mode)
             .finish()
     }
 }
@@ -114,6 +117,7 @@ pub(crate) fn build_spec<T: BoundedOperative>() -> Result<BoundedSpec, BuildBoun
             topology: None,
             chain: Vec::new(),
             max_duration: T::max_duration(),
+            rollback_mode: T::rollback_mode(),
         });
     }
 
@@ -128,6 +132,7 @@ pub(crate) fn build_spec<T: BoundedOperative>() -> Result<BoundedSpec, BuildBoun
         topology: Some(topology),
         chain,
         max_duration: T::max_duration(),
+        rollback_mode: T::rollback_mode(),
     })
 }
 

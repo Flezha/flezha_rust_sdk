@@ -281,6 +281,66 @@ impl<S: Operation> OperationDispatcher for OperationDispatcherImpl<S> {
         }
     }
 
+    fn compensate_collecting(
+        &self,
+        outputs: Vec<Arc<dyn Any + Send + Sync>>,
+        state: &mut Box<dyn Any + Send>,
+        topology: &OperativeTopology,
+        sink: &mut dyn BoundedCollectSink,
+    ) -> Result<(), BoundedError> {
+        // Recover the typed outputs the segment collected on its forward run.
+        let mut typed_outputs: Vec<Arc<S::Output>> = Vec::with_capacity(outputs.len());
+        for value in outputs {
+            match Arc::downcast::<S::Output>(value) {
+                Ok(out) => typed_outputs.push(out),
+                Err(_) => {
+                    return Err(BoundedError::from(format!(
+                        "compensate: collected output of the wrong type for operation {}",
+                        S::name()
+                    )))
+                }
+            }
+        }
+
+        let typed_state = state
+            .downcast_mut::<SegmentState<S>>()
+            .expect("compensate_collecting: state type mismatch for operation");
+
+        // Changes applied during compensation fold into in-memory state (P1);
+        // Phase-3 durability wires the WAL flush here, same as `run_collecting`.
+        let buffer: RefCell<Vec<S::Change>> = RefCell::new(Vec::new());
+
+        let mut collect_sink = BoundedCollectAdapter {
+            sink,
+            output_channel_id: self.output_channel_id,
+            output_channel_kind: self.output_channel_kind,
+            output_channel_name: self.output_channel_name.as_deref(),
+            topology,
+        };
+        let mut ctx = OperationCtx::new(&mut collect_sink);
+        let handle = StateHandle::<S>::new(&mut typed_state.state, &buffer);
+
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            typed_state
+                .operation
+                .compensate(typed_outputs, handle, &mut ctx)
+        }));
+
+        match outcome {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(err)) => Err(BoundedError::from(format!(
+                "compensation for operation {} failed: {}",
+                S::name(),
+                err
+            ))),
+            Err(panic) => Err(BoundedError::from(format!(
+                "compensation for operation {} panicked: {}",
+                S::name(),
+                crate::operation::error::format_panic(panic)
+            ))),
+        }
+    }
+
     fn restore_state(
         &self,
         state: &mut Box<dyn Any + Send>,

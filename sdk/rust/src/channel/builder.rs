@@ -26,6 +26,10 @@ pub(crate) struct OperationEntry {
     pub segment_keys: Vec<&'static str>,
     pub segment_for_overridden: bool,
     pub operation_key_overridden: bool,
+    /// `Operation::COMPENSATE_OVERRIDDEN` captured at registration time. The
+    /// bounded driver consults the resolved descriptor flag to fire saga
+    /// compensation only for operations that declared a `compensate` hook.
+    pub compensate_overridden: bool,
     pub input_channel_id: Option<u32>,
     pub output_channel_id: Option<u32>,
     /// Erased input-type marker: matches the consumer-edge's
@@ -302,6 +306,7 @@ impl ChannelBuilder {
             segment_keys: S::operation_keys(),
             segment_for_overridden: S::SEGMENT_FOR_OVERRIDDEN,
             operation_key_overridden: S::OPERATION_KEY_OVERRIDDEN,
+            compensate_overridden: S::COMPENSATE_OVERRIDDEN,
             input_channel_id: None,
             output_channel_id: None,
             input_type_id: std::any::TypeId::of::<S::Input>(),

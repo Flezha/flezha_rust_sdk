@@ -31,6 +31,10 @@ pub struct OperationDescriptor {
     pub segment_keys: Vec<&'static str>,
     pub segment_for_overridden: bool,
     pub operation_key_overridden: bool,
+    /// `Operation::COMPENSATE_OVERRIDDEN`, captured at registration. The bounded
+    /// saga driver fires compensation only for operations with this set; a
+    /// continuous operative never reads it.
+    pub compensate_overridden: bool,
     /// Segmenting mode resolved at registration. Drives whether the
     /// dispatch path routes by static key, single slot, or the dynamic
     /// registry.

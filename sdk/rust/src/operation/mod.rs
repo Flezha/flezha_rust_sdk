@@ -14,6 +14,8 @@ pub use clock::{Clock, EventTimeFrom, LogicalClock, WallClock};
 pub(crate) use ctx::EmitSink;
 pub use ctx::OperationCtx;
 pub use error::OperationError;
+use std::sync::Arc;
+
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 pub use state_handle::StateHandle;
@@ -226,6 +228,33 @@ pub trait Operation: Send + Sync + 'static + Default {
         state: StateHandle<'_, Self>,
         ctx: &mut OperationCtx<'_>,
     ) -> Result<(), OperationError>;
+
+    /// Optional saga **compensation** hook (bounded operatives only). An
+    /// operation whose `run` commits a reversible side effect declares this to
+    /// undo it. The bounded driver fires it ONLY during abnormal-termination
+    /// rollback — never on a clean `ok`, never for a continuous operative — once
+    /// per segment that ran, in reverse completion order, handing back that
+    /// segment's own collected outputs (zero-copy `Arc`s) and its
+    /// [`StateHandle`], so it can reverse precisely. Compensation MUST be
+    /// idempotent by author contract: a crash mid-rollback may re-invoke it.
+    ///
+    /// The default is a no-op; an operation that overrides this MUST also set
+    /// [`COMPENSATE_OVERRIDDEN`](Self::COMPENSATE_OVERRIDDEN) `= true` so the
+    /// bounded driver registers it as compensable (hookless operations are
+    /// skipped during rollback).
+    fn compensate(
+        &mut self,
+        _completed_output: Vec<Arc<Self::Output>>,
+        _state: StateHandle<'_, Self>,
+        _ctx: &mut OperationCtx<'_>,
+    ) -> Result<(), OperationError> {
+        Ok(())
+    }
+
+    /// Override-detection sentinel for [`Self::compensate`]. Default `false`; an
+    /// operation that overrides `compensate` MUST set this to `true` so the
+    /// bounded driver knows the operation participates in saga rollback.
+    const COMPENSATE_OVERRIDDEN: bool = false;
 }
 
 #[cfg(test)]

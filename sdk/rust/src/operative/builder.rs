@@ -118,6 +118,7 @@ pub fn build_topology_with_persistence(
             segment_keys: entry.segment_keys,
             segment_for_overridden: entry.segment_for_overridden,
             operation_key_overridden: entry.operation_key_overridden,
+            compensate_overridden: entry.compensate_overridden,
             mode,
             idle_ttl: entry.idle_ttl,
             max_segments: entry.max_segments,

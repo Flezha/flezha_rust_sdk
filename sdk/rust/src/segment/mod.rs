@@ -289,6 +289,20 @@ pub trait OperationDispatcher: Send + Sync + 'static {
         sink: &mut dyn crate::bounded::BoundedCollectSink,
     ) -> Result<(), crate::bounded::BoundedError>;
 
+    /// Bounded-saga rollback entry: invoke `Operation::compensate` once for this
+    /// segment against its type-erased `state`, handing back the `outputs` the
+    /// segment collected during its forward run (downcast to `Arc<S::Output>`)
+    /// and routing any compensation emit through `sink`. Used only by the
+    /// bounded driver's reverse-order rollback; continuous dispatch never calls
+    /// it. `topology` resolves the producer-edge channel's plugin serializer.
+    fn compensate_collecting(
+        &self,
+        outputs: Vec<Arc<dyn Any + Send + Sync>>,
+        state: &mut Box<dyn Any + Send>,
+        topology: &crate::operative::topology::OperativeTopology,
+        sink: &mut dyn crate::bounded::BoundedCollectSink,
+    ) -> Result<(), crate::bounded::BoundedError>;
+
     /// Warm-restart: rebuild the type-erased segment `state` in place from a
     /// persisted `RestoreInitState` payload (snapshot + WAL change-log),
     /// returning the terminal seq applied. Type-erased entry point so the
