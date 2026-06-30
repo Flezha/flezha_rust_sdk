@@ -42,13 +42,20 @@ pub(crate) fn request_reconnect(reason: &'static str) {
 /// Route a bounded's output to the coordinator (written on a secondary stream
 /// tagged with `operative_id`; the controller fans it out to the unit's plugins).
 pub(crate) fn emit_bounded_output(operative_id: String, payload: Vec<u8>) {
-    coordinator_send(ExecutorMessage::EmitBoundedOutput { operative_id, payload });
+    coordinator_send(ExecutorMessage::EmitBoundedOutput {
+        operative_id,
+        payload,
+    });
 }
 
 /// Route a bounded's completion to the coordinator (written as a `BoundedCompleted`
 /// control frame so the controller deregisters the unit).
 pub(crate) fn emit_bounded_completed(operative_id: String, status: String, error: String) {
-    coordinator_send(ExecutorMessage::EmitBoundedCompleted { operative_id, status, error });
+    coordinator_send(ExecutorMessage::EmitBoundedCompleted {
+        operative_id,
+        status,
+        error,
+    });
 }
 
 /// Serializes every test that mutates the process-global executor env vars
@@ -61,7 +68,9 @@ static ENV_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[cfg(test)]
 pub(crate) fn env_test_guard() -> std::sync::MutexGuard<'static, ()> {
-    ENV_TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    ENV_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Messages routed through the coordinator channel. Data-plane traffic
@@ -71,9 +80,9 @@ pub(crate) fn env_test_guard() -> std::sync::MutexGuard<'static, ()> {
 pub enum ExecutorMessage {
     HandleCommandAction(String, Vec<u8>, HashMap<String, String>),
     ReturnOperatives,
-    /// Drive a reconnect with a structured reason for the observer log
-    /// and the `ExecutorReconnected` control frame the controller now
-    /// expects on the first byte of the new stream. Reason is one of
+    /// Drive a reconnect with a structured reason for the observer log.
+    /// The re-opened control stream re-presents the executor's stable id in
+    /// its connect handshake (no separate reconnect frame). Reason is one of
     /// `control_stream_broken | read_error | write_error |
     /// keepalive_timeout | controller_requested | broken_pipe_flood`.
     Reconnect(&'static str),
@@ -87,10 +96,17 @@ pub enum ExecutorMessage {
     SendDataHeartbeat,
     /// A bounded emitted output; the coordinator writes it on a secondary stream
     /// tagged with `operative_id` for the controller to fan out to the unit's plugins.
-    EmitBoundedOutput { operative_id: String, payload: Vec<u8> },
+    EmitBoundedOutput {
+        operative_id: String,
+        payload: Vec<u8>,
+    },
     /// A bounded's `run` returned; the coordinator writes a `BoundedCompleted` frame
     /// so the controller deregisters the unit.
-    EmitBoundedCompleted { operative_id: String, status: String, error: String },
+    EmitBoundedCompleted {
+        operative_id: String,
+        status: String,
+        error: String,
+    },
 }
 
 pub enum ExecutorStatus {

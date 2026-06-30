@@ -10,23 +10,21 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::thread::{self, JoinHandle};
 
 use crossbeam::channel::{Receiver, Sender};
+use flz_transport::service::payloader;
 use flz_transport::transport::quic::QuicClient;
 use flz_transport::transport::{liveness, FlezhaStream};
+use prost::Message;
+use tracing::warn;
 
 use super::work_stealing_pool::WorkStealingPool;
 use super::{control_unit, ClientResponseMessage, ExecutorMessage, ExecutorStatus};
 use crate::command;
-use crate::pb::{
-    command_request::Command, CommandRequest, ExecutorReconnected as PbExecutorReconnected,
-    BoundedCompleted as PbBoundedCompleted,
-};
 use crate::operative::instance::ContinuousInstance;
-use crate::operative::registry::{get_class as get_operative_class, OperativeRegistry, Operative};
+use crate::operative::registry::{get_class as get_operative_class, Operative, OperativeRegistry};
+use crate::pb::command_request::Command;
+use crate::pb::{BoundedCompleted as PbBoundedCompleted, CommandRequest};
 use crate::shutdown::ShutdownBridge;
 use crate::util::nonce_suffix;
-use flz_transport::service::payloader;
-use prost::Message;
-use tracing::warn;
 
 pub struct ExecutorNode {
     executor_id: String,
@@ -95,13 +93,15 @@ impl ExecutorNode {
 
         self.pool.submit(Box::new(move || {
             let mut ctx = crate::bounded::BoundedCtx::new(Arc::clone(&id));
-            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                run(&mut ctx, &args)
-            }));
+            let outcome =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&mut ctx, &args)));
             let (status, error) = match outcome {
                 Ok(Ok(())) => ("ok".to_string(), String::new()),
                 Ok(Err(e)) => ("error".to_string(), e.to_string()),
-                Err(panic) => ("error".to_string(), crate::operation::error::format_panic(panic)),
+                Err(panic) => (
+                    "error".to_string(),
+                    crate::operation::error::format_panic(panic),
+                ),
             };
             crate::executor::emit_bounded_completed(id.to_string(), status, error);
         }));
@@ -143,7 +143,9 @@ impl ExecutorNode {
     /// inspectors that walk the registry continue to work.
     // reason: returned shape is the public API; splitting it would break external inspectors
     #[allow(clippy::type_complexity)]
-    pub fn get_operatives(&self) -> Arc<RwLock<HashMap<String, Arc<Mutex<Arc<ContinuousInstance>>>>>> {
+    pub fn get_operatives(
+        &self,
+    ) -> Arc<RwLock<HashMap<String, Arc<Mutex<Arc<ContinuousInstance>>>>>> {
         crate::operative::registry::snapshot_as_operative_view(&self.operative_registry)
     }
 
@@ -256,7 +258,10 @@ pub fn start(
                 ExecutorMessage::SendDataHeartbeat => {
                     send_data_heartbeat(&executor.shared_io_streams);
                 }
-                ExecutorMessage::EmitBoundedOutput { operative_id, payload } => {
+                ExecutorMessage::EmitBoundedOutput {
+                    operative_id,
+                    payload,
+                } => {
                     write_bounded_output(&executor.shared_io_streams, &operative_id, &payload);
                 }
                 ExecutorMessage::EmitBoundedCompleted {
@@ -288,14 +293,21 @@ pub fn start(
 /// `operative_id` so the controller routes it to the unit's bound plugins. The
 /// controller keys output fan-out on the payload id, so any one secondary
 /// stream suffices; best-effort like the data heartbeat.
-fn write_bounded_output(io_streams: &RwLock<HashMap<u32, FlezhaStream>>, operative_id: &str, payload: &[u8]) {
+fn write_bounded_output(
+    io_streams: &RwLock<HashMap<u32, FlezhaStream>>,
+    operative_id: &str,
+    payload: &[u8],
+) {
     let frame = payloader::build_from_binary(operative_id, payload, HashMap::new());
     let streams = io_streams.read().unwrap();
     match streams.values().next() {
         Some(stream) => {
             let mut w: &FlezhaStream = stream;
             if let Err(e) = w.write_all(&frame) {
-                eprintln!("[flezha] bounded {} output write failed: {}", operative_id, e);
+                eprintln!(
+                    "[flezha] bounded {} output write failed: {}",
+                    operative_id, e
+                );
             }
         }
         None => eprintln!(
@@ -355,15 +367,15 @@ fn return_operatives(executor: &ExecutorNode, ctx_arc: Arc<Mutex<Sender<ClientRe
 /// while the controller still believed the binding was live). The
 /// `executor-controller-connection-healing` capability now requires:
 ///
-///   * `executor_id`, `operative_registry`, and `shared_io_streams` are
-///     retained across reconnect; in-flight per-Segment mailbox
-///     work continues to drain.
+///   * `operative_registry` and `shared_io_streams` are retained across
+///     reconnect (in-flight per-Segment mailbox work keeps draining); the
+///     existing `executor_id` is kept until the controller assigns a fresh
+///     session token via `AssignExecutorId` on the re-opened stream.
 ///   * A `tracing::warn!` line is emitted with the upstream-derived
 ///     `reason` so kubectl logs surface every reconnect.
-///   * The first frame on the freshly-established stream is a
-///     `CommandRequest::ExecutorReconnected { previous_id, new_id,
-///     reason }` so the controller can compute a binding delta
-///     instead of re-issuing every operative.
+///   * The re-opened control stream re-presents the executor's stable id in
+///     its connect handshake, so the controller resolves the reconnect as a
+///     binding swap — there is no separate reconnect frame.
 fn handle_reconnect(
     executor: &mut ExecutorNode,
     control_stream: &mut Arc<FlezhaStream>,
@@ -392,35 +404,6 @@ fn handle_reconnect(
     // mailboxes drain into a paused state and the controller sees
     // the SDK as a black hole even though its registry is intact.
     executor.set_status(ExecutorStatus::Running);
-
-    // Emit `ExecutorReconnected` as the first frame on the new
-    // stream. Failure to write is non-fatal — the reader loop will
-    // observe the broken pipe and drive another reconnect, which is
-    // the same recovery path we are already in. `new_id` matches
-    // `previous_id` because we preserve identity; the controller
-    // rewrites it via `ReassignExecutorId` only when its binding
-    // for `previous_id` is empty.
-    let payload = build_executor_reconnected_frame(&previous_id, &previous_id, reason);
-    if let Err(e) = (&**control_stream).write_all(&payload) {
-        warn!(
-            target: "flezha",
-            "[flezha] ExecutorReconnected write failed: {}", e
-        );
-    }
-}
-
-/// Build the SDK -> Controller `ExecutorReconnected` frame. Extracted from
-/// `handle_reconnect` so the frame format stays unit-testable independently of
-/// the reconnect network path.
-fn build_executor_reconnected_frame(previous_id: &str, new_id: &str, reason: &str) -> Vec<u8> {
-    control_command_frame(
-        "reconnect",
-        Command::ExecutorReconnected(PbExecutorReconnected {
-            previous_id: previous_id.to_string(),
-            new_id: new_id.to_string(),
-            reason: reason.to_string(),
-        }),
-    )
 }
 
 /// Stream-reader handle for the ContinuousOperative model. Cheap to clone; carries a
@@ -470,7 +453,10 @@ impl OperativeDispatchHandle {
             Some(name) => match topology.lookup_channel_id(name) {
                 Some(id) => id,
                 None => {
-                    eprintln!("[flezha] operative {} has no channel `{}`", instance_id, name);
+                    eprintln!(
+                        "[flezha] operative {} has no channel `{}`",
+                        instance_id, name
+                    );
                     return;
                 }
             },
@@ -526,21 +512,14 @@ impl OperativeDispatchHandle {
 
 #[cfg(test)]
 mod reconnect_tests {
-    //! Exercises the reconnect-preservation contract introduced by
-    //! `consume-recovery-mode-and-self-heal` §2:
-    //!
-    //!   * `executor_id` survives `handle_reconnect`,
-    //!   * the in-memory `operative_registry` is NOT cleared,
-    //!   * the SDK emits an `ExecutorReconnected` frame as the first
-    //!     write on the freshly-opened control stream.
-    //!
-    //! The reconnect network path itself (`control_unit::open_reconnect`)
-    //! is exercised by the existing integration tests; the unit tests
-    //! here exercise the testable frame-builder + the state mutators
-    //! handle_reconnect calls.
+    //! Exercises the reconnect-preservation contract: `executor_id` and the
+    //! in-memory `operative_registry` survive `handle_reconnect`'s status flap
+    //! (the May 25 silent-freeze regression cleared them). The reconnect
+    //! re-presents the executor's stable id via the connect handshake — there
+    //! is no separate reconnect frame — so the controller resolves it as a
+    //! binding swap; that controller-side path is covered by the Elixir suite
+    //! and the cross-language matrix.
     use super::*;
-    use crate::pb::CommandRequest;
-    use prost::Message;
 
     #[test]
     fn executor_id_and_registry_are_preserved_across_status_flap() {
@@ -564,73 +543,5 @@ mod reconnect_tests {
             streams_before, streams_after,
             "shared_io_streams handle must survive handle_reconnect"
         );
-    }
-
-    #[test]
-    fn build_executor_reconnected_frame_decodes_to_expected_oneof() {
-        let frame = build_executor_reconnected_frame("prev-1", "prev-1", "control_stream_broken");
-
-        // Decode through the payloader to extract the protobuf payload.
-        use flz_transport::service::payloader;
-        let (payload_id, message, _meta) = payloader::extract_payload(&{
-            // Use a UnixStream pair as a transport: write the frame
-            // into one end and read it back via extract_payload.
-            use std::io::Write;
-            use std::os::unix::net::UnixStream;
-            let (a, b) = UnixStream::pair().unwrap();
-            (&a).write_all(&frame).unwrap();
-            drop(a);
-            FlezhaStream::Unix(b)
-        })
-        .expect("frame extracts");
-
-        assert_eq!(payload_id, "control_command");
-
-        let request = CommandRequest::decode(message.as_slice()).expect("CommandRequest decodes");
-        assert!(request.reference_id.starts_with("reconnect-"));
-
-        match request.command {
-            Some(crate::pb::command_request::Command::ExecutorReconnected(r)) => {
-                assert_eq!(r.previous_id, "prev-1");
-                assert_eq!(r.new_id, "prev-1");
-                assert_eq!(r.reason, "control_stream_broken");
-            }
-            other => panic!("expected ExecutorReconnected, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn reassign_executor_id_handler_updates_in_memory_id() {
-        // Direct unit test for the SDK-side `ReassignExecutorId`
-        // CommandAction (sdk/rust/src/command/reassign_executor.rs).
-        use crate::command::CommandAction;
-        use crate::pb::ReassignExecutorId;
-
-        // Mutates the process-global FLEZHA_EXECUTOR_ID_PATH, so serialize
-        // against the control_unit env tests on the crate-wide lock.
-        let _env_guard = crate::executor::env_test_guard();
-
-        // The handler persists the id; point it at a temp path so the test
-        // never touches the production hostPath.
-        let mut idp = std::env::temp_dir();
-        idp.push(format!("flezha-reassign-test-{}", std::process::id()));
-        idp.push("id");
-        std::env::set_var("FLEZHA_EXECUTOR_ID_PATH", &idp);
-
-        let mut executor = ExecutorNode::new("ns".to_string());
-        executor.assign_executor_id("old".to_string());
-
-        let cmd = ReassignExecutorId {
-            new_id: "new".to_string(),
-        };
-        let mut errors: Vec<String> = vec![];
-        let (payload_id, _bytes) = cmd.handle(&mut executor, "", &mut errors);
-
-        assert_eq!(payload_id, "reassign_executor_id");
-        assert!(errors.is_empty());
-        assert_eq!(executor.get_executor_id(), "new");
-
-        std::env::remove_var("FLEZHA_EXECUTOR_ID_PATH");
-        let _ = std::fs::remove_dir_all(idp.parent().unwrap());
     }
 }

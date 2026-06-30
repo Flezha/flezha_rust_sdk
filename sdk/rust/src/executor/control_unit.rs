@@ -17,8 +17,8 @@ use serde::Serialize;
 
 use super::ClientResponseMessage;
 use crate::executor::ExecutorMessage;
-use crate::pb::Ping;
 use crate::operative::registry::class_factory_ids;
+use crate::pb::Ping;
 use crate::util::nonce_suffix;
 
 /// Reader-thread handle + write stream + optional QUIC client returned by
@@ -40,12 +40,11 @@ struct ControlInitMessage {
     namespace: String,
     factory_ids: Vec<String>,
     factories: Vec<FactoryInfo>,
-    /// The id this process was assigned before it last died, read from the
-    /// node-local hostPath. Present only on the initial connect of a fresh
-    /// process; the controller evicts this stale binding before binding the
-    /// new id. Omitted (and so a no-op) on reconnects and first-ever boots.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    previous_executor_id: Option<String>,
+    /// The executor's self-owned **stable identity** (see `persistent_id`).
+    /// Present on EVERY connect — initial and reconnect alike — and trusted by
+    /// the controller as the operative-binding key. On reconnect the controller
+    /// re-points this identity's existing bindings onto the new session token.
+    stable_id: String,
 }
 
 /// Initial connection with retry and startup confirmation.
@@ -58,10 +57,7 @@ pub fn open(
 }
 
 /// Reconnection entry point — no startup confirmation sent.
-pub fn open_reconnect(
-    namespace: String,
-    otx: Arc<Mutex<Sender<ExecutorMessage>>>,
-) -> ControlConn {
+pub fn open_reconnect(namespace: String, otx: Arc<Mutex<Sender<ExecutorMessage>>>) -> ControlConn {
     open_with_retry(namespace, None, otx)
 }
 
@@ -170,24 +166,21 @@ fn sock_conn(
         let mut live = ControlLiveness::new();
         let _ = stream_clone.set_read_timeout(Some(live.current_deadline()));
 
-        // Only an initial connect (`itx` present) announces a persisted id
-        // from a prior process; a reconnect already preserves identity via
-        // the `ExecutorReconnected` frame, so re-announcing it here would
-        // make the controller evict the binding we are restoring.
-        let previous_executor_id = if itx.is_some() {
-            crate::executor::persistent_id::load()
-        } else {
-            None
-        };
-
-        if let Err(e) = send_init_msg(namespace, previous_executor_id, stream_clone.clone()) {
+        // Present the self-owned stable identity on every connect (initial and
+        // reconnect): the controller resolves a reconnect from the
+        // always-present stable id + the existing bindings (a binding swap), so
+        // there is no separate reconnect frame and no `itx`-gated behaviour.
+        if let Err(e) = send_init_msg(namespace, stream_clone.clone()) {
             tracing::warn!(
                 target: "flezha::transport",
                 kind = ?e.kind(),
                 "control channel init send failed (peer vanished mid-handshake); reconnecting: {}",
                 e
             );
-            let _ = otx.lock().unwrap().send(ExecutorMessage::Reconnect("write_error"));
+            let _ = otx
+                .lock()
+                .unwrap()
+                .send(ExecutorMessage::Reconnect("write_error"));
             return;
         }
 
@@ -334,11 +327,7 @@ fn classify_reconnect_reason(e: &io::Error, acked: bool) -> &'static str {
     }
 }
 
-fn send_init_msg(
-    namespace: String,
-    previous_executor_id: Option<String>,
-    stream_clone: Arc<FlezhaStream>,
-) -> io::Result<()> {
+fn send_init_msg(namespace: String, stream_clone: Arc<FlezhaStream>) -> io::Result<()> {
     let factory_ids: Vec<String> = class_factory_ids()
         .iter()
         .chain(crate::bounded::registry::bounded_factory_ids().iter())
@@ -352,11 +341,14 @@ fn send_init_msg(
         })
         .collect();
 
+    // Loaded once per process (cached); the controller binds operatives to it.
+    let stable_id = crate::executor::persistent_id::stable_id(&namespace, &factory_ids);
+
     let control_init_message = ControlInitMessage {
         namespace,
         factory_ids,
         factories,
-        previous_executor_id,
+        stable_id,
     };
 
     let control_message = serde_json::to_string(&control_init_message).unwrap();
@@ -384,7 +376,10 @@ mod tests {
         let pre_ack = false;
 
         let timeout = io::Error::new(io::ErrorKind::TimedOut, "");
-        assert_eq!(classify_reconnect_reason(&timeout, acked), "keepalive_timeout");
+        assert_eq!(
+            classify_reconnect_reason(&timeout, acked),
+            "keepalive_timeout"
+        );
         assert_eq!(
             classify_reconnect_reason(&timeout, pre_ack),
             "control_stream_broken"
@@ -397,10 +392,16 @@ mod tests {
         );
 
         let eof = io::Error::new(io::ErrorKind::UnexpectedEof, "");
-        assert_eq!(classify_reconnect_reason(&eof, acked), "control_stream_broken");
+        assert_eq!(
+            classify_reconnect_reason(&eof, acked),
+            "control_stream_broken"
+        );
 
         let pipe = io::Error::new(io::ErrorKind::BrokenPipe, "");
-        assert_eq!(classify_reconnect_reason(&pipe, acked), "control_stream_broken");
+        assert_eq!(
+            classify_reconnect_reason(&pipe, acked),
+            "control_stream_broken"
+        );
 
         let reset = io::Error::new(io::ErrorKind::ConnectionReset, "");
         assert_eq!(
@@ -530,21 +531,13 @@ mod tests {
         ctrl.join().ok();
     }
 
-    // On an INITIAL connect (itx present) the SDK reads its node-local
-    // persisted id and announces it as `previous_executor_id` in the
-    // connect_control_channel JSON, so the controller can evict the stale
-    // binding before re-binding. Absent on reconnects (itx == None).
+    // The handshake presents the self-owned stable identity on EVERY connect
+    // (initial and reconnect alike): the controller resolves a reconnect from
+    // the always-present stable id + existing bindings, so the retired
+    // `previous_executor_id` field is gone and there is no initial-only gate.
     #[test]
-    fn initial_connect_announces_persisted_previous_executor_id() {
+    fn handshake_presents_a_non_empty_stable_id_on_initial_connect() {
         let _guard = env_test_guard();
-
-        // Persist an id at a temp path and point the SDK at it.
-        let mut idp = std::env::temp_dir();
-        idp.push(format!("flezha-prevexec-test-{}", std::process::id()));
-        std::fs::create_dir_all(&idp).unwrap();
-        idp.push("id");
-        std::fs::write(&idp, b"exec-prev-9").unwrap();
-        std::env::set_var("FLEZHA_EXECUTOR_ID_PATH", &idp);
 
         let (sdk_end, ctrl_end) = UnixStream::pair().unwrap();
         let (itx, _irx) = unbounded();
@@ -564,45 +557,40 @@ mod tests {
         assert_eq!(payload_id, "connect_control_channel");
         let json = String::from_utf8(message).unwrap();
         assert!(
-            json.contains("\"previous_executor_id\":\"exec-prev-9\""),
-            "initial connect must announce the persisted id, got: {json}"
+            json.contains("\"stable_id\":\"") && !json.contains("\"stable_id\":\"\""),
+            "initial connect must present a non-empty stable_id, got: {json}"
         );
-
-        std::env::remove_var("FLEZHA_EXECUTOR_ID_PATH");
-        let _ = std::fs::remove_dir_all(idp.parent().unwrap());
+        assert!(
+            !json.contains("previous_executor_id"),
+            "the retired previous_executor_id field must be gone, got: {json}"
+        );
     }
 
-    // A reconnect (itx == None) must NOT announce a previous_executor_id even
-    // when one is persisted — identity is preserved via ExecutorReconnected,
-    // so re-announcing would make the controller evict the live binding.
+    // A reconnect (itx == None) must STILL present the stable id — identity is
+    // re-presented every connect so the controller can swap the binding.
     #[test]
-    fn reconnect_omits_previous_executor_id() {
+    fn handshake_presents_a_non_empty_stable_id_on_reconnect_too() {
         let _guard = env_test_guard();
-
-        let mut idp = std::env::temp_dir();
-        idp.push(format!("flezha-prevexec-recon-{}", std::process::id()));
-        std::fs::create_dir_all(&idp).unwrap();
-        idp.push("id");
-        std::fs::write(&idp, b"exec-prev-9").unwrap();
-        std::env::set_var("FLEZHA_EXECUTOR_ID_PATH", &idp);
 
         let (sdk_end, ctrl_end) = UnixStream::pair().unwrap();
         let (otx, _orx) = unbounded();
         let stream = Arc::new(FlezhaStream::Unix(sdk_end));
 
         // None marks this as a reconnect.
-        let _ = sock_conn("test_ns".to_string(), stream, None, Arc::new(Mutex::new(otx)));
+        let _ = sock_conn(
+            "test_ns".to_string(),
+            stream,
+            None,
+            Arc::new(Mutex::new(otx)),
+        );
 
         let ctrl: FlezhaStream = FlezhaStream::Unix(ctrl_end);
         let (_payload_id, message, _meta) = payloader::extract_payload(&ctrl).unwrap();
         let json = String::from_utf8(message).unwrap();
         assert!(
-            !json.contains("previous_executor_id"),
-            "reconnect must omit previous_executor_id, got: {json}"
+            json.contains("\"stable_id\":\"") && !json.contains("\"stable_id\":\"\""),
+            "reconnect must also present a non-empty stable_id, got: {json}"
         );
-
-        std::env::remove_var("FLEZHA_EXECUTOR_ID_PATH");
-        let _ = std::fs::remove_dir_all(idp.parent().unwrap());
     }
 
     // `send_keepalive_ping` (the coordinator's write path) must put a bare

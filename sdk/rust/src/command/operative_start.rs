@@ -42,24 +42,26 @@ impl CommandAction for AddOperative {
                     ));
                 }
             }
-            "operative" => match executor.start_operative(factory_id.clone(), instance_id.clone()) {
-                Some(instance) => {
-                    if !self.init_values.is_empty() {
-                        if let Err(e) = crate::command::segment_state::apply_init_values(
-                            &instance,
-                            &self.init_values,
-                        ) {
-                            errors.push(e);
+            "operative" => {
+                match executor.start_operative(factory_id.clone(), instance_id.clone()) {
+                    Some(instance) => {
+                        if !self.init_values.is_empty() {
+                            if let Err(e) = crate::command::segment_state::apply_init_values(
+                                &instance,
+                                &self.init_values,
+                            ) {
+                                errors.push(e);
+                            }
                         }
                     }
+                    None => {
+                        errors.push(format!(
+                            "ContinuousOperative class with factory_id {} is not registered",
+                            factory_id
+                        ));
+                    }
                 }
-                None => {
-                    errors.push(format!(
-                        "ContinuousOperative class with factory_id {} is not registered",
-                        factory_id
-                    ));
-                }
-            },
+            }
             other => {
                 errors.push(format!(
                     "unknown compute-unit kind '{}' for unit {}",

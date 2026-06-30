@@ -12,9 +12,9 @@ use flz_transport::utility::path_helper;
 use super::CommandAction;
 use crate::executor::fast::OperativeDispatchHandle;
 use crate::executor::ExecutorNode;
+use crate::pb::ConnectSocket;
 use crate::segment::flusher::{SendError, SendFrameFn};
 use crate::segment::segment_state_sink;
-use crate::pb::ConnectSocket;
 
 impl CommandAction for ConnectSocket {
     fn handle(
@@ -159,7 +159,10 @@ fn run_data_reader(
     );
 }
 
-fn listen_incoming_uds(pairs: Vec<(FlezhaStream, Arc<FlezhaStream>)>, handle: OperativeDispatchHandle) {
+fn listen_incoming_uds(
+    pairs: Vec<(FlezhaStream, Arc<FlezhaStream>)>,
+    handle: OperativeDispatchHandle,
+) {
     let mut handles = Vec::new();
     for (key, (primary, secondary)) in pairs.into_iter().enumerate() {
         let handle = handle.clone();

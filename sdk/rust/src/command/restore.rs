@@ -19,9 +19,9 @@ use prost::Message;
 
 use super::CommandAction;
 use crate::executor::ExecutorNode;
+use crate::pb::{RestoreInitState, RestoreInitStateResponse};
 use crate::segment::restore::iter_change_log_records;
 use crate::segment::SegmentSlot;
-use crate::pb::{RestoreInitState, RestoreInitStateResponse};
 
 impl CommandAction for RestoreInitState {
     fn handle(

@@ -16,15 +16,14 @@ mod executor_assign;
 mod executor_disconnect;
 mod migration_deserialization;
 mod migration_serialization;
-mod segment_apply_state;
-pub mod segment_state;
-mod segment_status;
-mod ping;
-mod reassign_executor;
 mod operation_message;
 mod operative_start;
 mod operative_stop;
+mod ping;
 mod restore;
+mod segment_apply_state;
+pub mod segment_state;
+mod segment_status;
 mod streams_connect;
 
 pub trait CommandAction {
@@ -124,12 +123,12 @@ pub fn get_handler(_payload_id: &str, message: &[u8]) -> Result<FrameOutcome, Co
             CommandActionType::Regular(Box::new(proto_ch))
         }
         Some(Command::Ping(proto_ch)) => CommandActionType::Regular(Box::new(proto_ch)),
-        // SDK is the SENDER for ExecutorReconnected — receiving it is a
-        // protocol bug. Drop and log, like `ExecutorShutdownNotification`.
+        // Retired reconnect machinery. The SDK no longer sends
+        // `ExecutorReconnected` (it re-presents its stable id every connect) and
+        // the controller no longer mints-and-reassigns ids (reconnect is a
+        // controller-side binding swap), so neither is handled — drop and log.
         Some(Command::ExecutorReconnected(_)) => CommandActionType::NotificationIgnore,
-        Some(Command::ReassignExecutorId(proto_ch)) => {
-            CommandActionType::Regular(Box::new(proto_ch))
-        }
+        Some(Command::ReassignExecutorId(_)) => CommandActionType::NotificationIgnore,
         // SDK is the SENDER for BoundedCompleted — receiving it is a protocol
         // bug. Drop and log, like `ExecutorShutdownNotification`.
         Some(Command::BoundedCompleted(_)) => CommandActionType::NotificationIgnore,
@@ -210,8 +209,8 @@ pub fn handle_command(
         CommandActionType::NotificationIgnore => {
             let _ = executor;
             eprintln!(
-                "[flezha] Received unexpected ExecutorShutdownNotification (ref={}); \
-                 ignoring — SDK is the SENDER, not the receiver.",
+                "[flezha] Received an unexpected controller->SDK command the SDK does \
+                 not handle (ref={}); ignoring.",
                 reference_id
             );
         }

@@ -13,8 +13,8 @@ use serde_json::{Map, Value};
 
 use super::CommandAction;
 use crate::executor::ExecutorNode;
-use crate::pb::SegmentState;
 use crate::operative::instance::ContinuousInstance;
+use crate::pb::SegmentState;
 use crate::util::LockRecover;
 
 impl CommandAction for SegmentState {
@@ -115,7 +115,10 @@ pub fn serialize_operative_state(instance: &Arc<ContinuousInstance>) -> Vec<u8> 
 /// Empty `init_values` is a no-op (the cold-start path uses `init_state`).
 /// Unknown top-level keys and unknown inner operation_key entries are logged
 /// and skipped per the spec.
-pub fn apply_init_values(instance: &Arc<ContinuousInstance>, init_values: &str) -> Result<(), String> {
+pub fn apply_init_values(
+    instance: &Arc<ContinuousInstance>,
+    init_values: &str,
+) -> Result<(), String> {
     if init_values.is_empty() {
         return Ok(());
     }
@@ -132,7 +135,11 @@ pub fn apply_init_values(instance: &Arc<ContinuousInstance>, init_values: &str) 
     };
 
     for (operation_name, operation_value) in top {
-        let operation_id = match instance.topology.operation_name_to_id.get(operation_name.as_str()) {
+        let operation_id = match instance
+            .topology
+            .operation_name_to_id
+            .get(operation_name.as_str())
+        {
             Some(&id) => id,
             None => {
                 eprintln!(
@@ -157,7 +164,13 @@ pub fn apply_init_values(instance: &Arc<ContinuousInstance>, init_values: &str) 
                 Some(s) => s,
                 None => continue,
             };
-            apply_one(operation_desc, slot, &operation_value, &operation_name, None);
+            apply_one(
+                operation_desc,
+                slot,
+                &operation_value,
+                &operation_name,
+                None,
+            );
         } else {
             // Static-mode: the value is `{operation_key: state, ...}`.
             let inner = match operation_value {
