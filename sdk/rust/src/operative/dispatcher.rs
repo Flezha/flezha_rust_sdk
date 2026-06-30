@@ -22,8 +22,10 @@ use std::sync::{Arc, Mutex, Weak};
 use flz_transport::service::payloader;
 use flz_transport::transport::FlezhaStream;
 
+use crate::bounded::{BoundedCollectSink, BoundedError};
 use crate::channel::builder::BuildSegmentArgs;
 use crate::channel::{ChannelId, ChannelKind, OverflowPolicy, OperationId};
+use crate::operative::topology::OperativeTopology;
 use crate::executor::mailbox::Mailbox;
 use crate::segment::flusher::{
     encode_segment_identity, FlushableBuffer, SegmentFlusher, TypedBuffer,
@@ -224,6 +226,59 @@ impl<S: Operation> OperationDispatcher for OperationDispatcherImpl<S> {
 
     fn operation_id(&self) -> OperationId {
         self.operation_id
+    }
+
+    fn run_collecting(
+        &self,
+        input: Arc<dyn Any + Send + Sync>,
+        state: &mut Box<dyn Any + Send>,
+        topology: &OperativeTopology,
+        sink: &mut dyn BoundedCollectSink,
+    ) -> Result<(), BoundedError> {
+        let input_arc = Arc::downcast::<S::Input>(input).map_err(|_| {
+            BoundedError::from(format!(
+                "bounded operation {} received an input of the wrong type",
+                S::name()
+            ))
+        })?;
+        let input: S::Input = Arc::unwrap_or_clone(input_arc);
+
+        let typed_state = state
+            .downcast_mut::<SegmentState<S>>()
+            .expect("run_collecting: state type mismatch for operation");
+
+        // Local change buffer: P1 bounded folds Changes into in-memory state
+        // via `apply_change` but does not persist them (durability is Phase 3,
+        // where the WAL flush wires in here).
+        let buffer: RefCell<Vec<S::Change>> = RefCell::new(Vec::new());
+
+        let mut collect_sink = BoundedCollectAdapter {
+            sink,
+            output_channel_id: self.output_channel_id,
+            output_channel_kind: self.output_channel_kind,
+            output_channel_name: self.output_channel_name.as_deref(),
+            topology,
+        };
+        let mut ctx = OperationCtx::new(&mut collect_sink);
+        let handle = StateHandle::<S>::new(&mut typed_state.state, &buffer);
+
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            typed_state.operation.run(input, handle, &mut ctx)
+        }));
+
+        match outcome {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(err)) => Err(BoundedError::from(format!(
+                "operation {} failed: {}",
+                S::name(),
+                err
+            ))),
+            Err(panic) => Err(BoundedError::from(format!(
+                "operation {} panicked: {}",
+                S::name(),
+                crate::operation::error::format_panic(panic)
+            ))),
+        }
     }
 
     fn restore_state(
@@ -464,6 +519,102 @@ impl<'a> EmitSink for SegmentEmitSink<'a> {
                 self.output_channel_id
                     .and_then(|cid| inst.topology.channel(cid))
             })
+            .map(|d| d.plugin_sink.is_some())
+            .unwrap_or(false)
+    }
+}
+
+/// Emit sink for the bounded sequential driver. Inter-operation output is
+/// **collected** for handoff to the next stage at the barrier; plugin-bound
+/// output is serialized and routed to the wire via the `BoundedCollectSink`.
+/// Constructed fresh per `run_collecting` call, so it never threads through
+/// the continuous push-dispatch mailbox path.
+struct BoundedCollectAdapter<'a> {
+    sink: &'a mut dyn BoundedCollectSink,
+    output_channel_id: Option<ChannelId>,
+    output_channel_kind: ChannelKind,
+    output_channel_name: Option<&'a str>,
+    topology: &'a OperativeTopology,
+}
+
+impl<'a> BoundedCollectAdapter<'a> {
+    fn unknown_channel(&self) -> OperationError {
+        OperationError::UnknownChannel {
+            channel: self
+                .output_channel_name
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "<unknown>".to_string()),
+        }
+    }
+
+    /// Serialize a plugin-bound value via the producer-edge channel's
+    /// serializer (pure `to_plugin`) or hybrid plugin sink
+    /// (`also_to_plugin_with`) and forward the bytes to the wire.
+    fn route_plugin(&mut self, value: &Arc<dyn Any + Send + Sync>) -> Result<(), OperationError> {
+        let cid = self.output_channel_id.ok_or_else(|| self.unknown_channel())?;
+        let descriptor = self
+            .topology
+            .channel(cid)
+            .ok_or_else(|| OperationError::UnknownChannel {
+                channel: format!("<channel id {}>", cid),
+            })?;
+        let serializer = descriptor
+            .plugin_serializer
+            .as_ref()
+            .or_else(|| descriptor.plugin_sink.as_ref().map(|s| &s.serializer))
+            .ok_or_else(|| {
+                OperationError::Custom(format!(
+                    "bounded plugin channel `{}` is missing a serializer",
+                    descriptor.name
+                ))
+            })?;
+        let bytes = serializer(&**value);
+        self.sink.emit_plugin_bytes(bytes);
+        Ok(())
+    }
+}
+
+impl<'a> EmitSink for BoundedCollectAdapter<'a> {
+    fn emit_inter_operation(
+        &mut self,
+        value: Arc<dyn Any + Send + Sync>,
+    ) -> Result<(), OperationError> {
+        self.emit_inter_operation_with_meta(value, None)
+    }
+
+    fn emit_inter_operation_with_meta(
+        &mut self,
+        value: Arc<dyn Any + Send + Sync>,
+        _meta: Option<HashMap<String, String>>,
+    ) -> Result<(), OperationError> {
+        // Hybrid `also_to_plugin_with`: collect for the next stage AND route
+        // a serialized copy to the plugin wire.
+        if self.has_plugin_sink() {
+            self.route_plugin(&value)?;
+        }
+        self.sink.collect(value);
+        Ok(())
+    }
+
+    fn emit_plugin(
+        &mut self,
+        value: Arc<dyn Any + Send + Sync>,
+        _meta: Option<HashMap<String, String>>,
+    ) -> Result<(), OperationError> {
+        self.route_plugin(&value)
+    }
+
+    fn channel_name(&self) -> &str {
+        self.output_channel_name.unwrap_or("<bounded>")
+    }
+
+    fn is_plugin_bound(&self) -> bool {
+        matches!(self.output_channel_kind, ChannelKind::PluginBound)
+    }
+
+    fn has_plugin_sink(&self) -> bool {
+        self.output_channel_id
+            .and_then(|cid| self.topology.channel(cid))
             .map(|d| d.plugin_sink.is_some())
             .unwrap_or(false)
     }

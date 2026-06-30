@@ -75,44 +75,36 @@ impl ExecutorNode {
     }
 
     /// Spawn a bounded-kind unit: register it (idempotent on a duplicate id) and
-    /// schedule its `run` once on the work pool with `args` from `init_values`.
-    /// On return the bounded emits `BoundedCompleted` (a panic becomes an "error"
-    /// completion, so a failing bounded neither kills a pool worker nor lingers
-    /// in the registry). Returns `false` when no bounded class is registered.
+    /// launch its sequential driver on a dedicated thread with `args` from
+    /// `init_values`. The driver runs the run-sugar body or the structured
+    /// linear chain, observes the lifecycle (inbox, loop, duration, external
+    /// stop), and converges on a single `BoundedCompleted` teardown. Returns
+    /// `false` when no bounded class is registered.
     pub fn start_bounded(&self, factory_id: String, instance_id: String, args: String) -> bool {
         if self.operative_registry.contains(&instance_id) {
             return true;
         }
-        let run = match crate::bounded::registry::get_class(&factory_id) {
-            Some(run) => run,
+        let spec = match crate::bounded::registry::get_class(&factory_id) {
+            Some(spec) => spec,
             None => return false,
         };
 
         let id: Arc<str> = Arc::from(instance_id.as_str());
         self.operative_registry.register_bounded(Arc::clone(&id));
-
-        self.pool.submit(Box::new(move || {
-            let mut ctx = crate::bounded::BoundedCtx::new(Arc::clone(&id));
-            let outcome =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&mut ctx, &args)));
-            let (status, error) = match outcome {
-                Ok(Ok(())) => ("ok".to_string(), String::new()),
-                Ok(Err(e)) => ("error".to_string(), e.to_string()),
-                Err(panic) => (
-                    "error".to_string(),
-                    crate::operation::error::format_panic(panic),
-                ),
-            };
-            crate::executor::emit_bounded_completed(id.to_string(), status, error);
-        }));
+        crate::bounded::driver::spawn(spec, id, args, Arc::clone(&self.pool));
         true
     }
 
     pub fn stop_operative(&self, instance_id: &str) -> bool {
         match self.operative_registry.remove(instance_id) {
             Some(unit) => {
-                if let Operative::Continuous(instance) = &*unit {
-                    instance.shutdown_reapers();
+                match &*unit {
+                    Operative::Continuous(instance) => instance.shutdown_reapers(),
+                    // Hard removal of a bounded: trip its cancellation token so
+                    // the driver thread unwinds and exits promptly.
+                    Operative::Bounded(_) => {
+                        crate::bounded::control::cancel(instance_id);
+                    }
                 }
                 true
             }
@@ -268,6 +260,7 @@ pub fn start(
                     operative_id,
                     status,
                     error,
+                    result,
                 } => {
                     let frame = control_command_frame(
                         "bounded-completed",
@@ -275,7 +268,7 @@ pub fn start(
                             operative_id: operative_id.clone(),
                             status,
                             error,
-                            result: Vec::new(),
+                            result,
                         }),
                     );
                     if let Err(e) = (&*control_stream).write_all(&frame) {
@@ -432,13 +425,16 @@ impl OperativeDispatchHandle {
         let instance = match self.registry.get_operative(instance_id) {
             Some(unit) => match &*unit {
                 Operative::Continuous(ri) => Arc::clone(ri),
-                // A bounded has no input channel — it is fed only its start
-                // args, never wire frames. Drop and log.
+                // Bounded inbox: route post-start input to the running driver's
+                // inbox instead of dropping it. Dropped only if the instance is
+                // not running / has no live inbox.
                 Operative::Bounded(_) => {
-                    eprintln!(
-                        "[flezha] data frame for bounded unit {} dropped (bounded have no input channel)",
-                        instance_id
-                    );
+                    if !crate::bounded::control::push_inbox(instance_id, payload) {
+                        eprintln!(
+                            "[flezha] inbox frame for bounded unit {} dropped (not running / no inbox)",
+                            instance_id
+                        );
+                    }
                     return;
                 }
             },

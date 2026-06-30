@@ -49,12 +49,19 @@ pub(crate) fn emit_bounded_output(operative_id: String, payload: Vec<u8>) {
 }
 
 /// Route a bounded's completion to the coordinator (written as a `BoundedCompleted`
-/// control frame so the controller deregisters the unit).
-pub(crate) fn emit_bounded_completed(operative_id: String, status: String, error: String) {
+/// control frame so the controller deregisters the unit). `result` is the
+/// terminal result/error payload from `ctx.complete` (empty when none was set).
+pub(crate) fn emit_bounded_completed(
+    operative_id: String,
+    status: String,
+    error: String,
+    result: Vec<u8>,
+) {
     coordinator_send(ExecutorMessage::EmitBoundedCompleted {
         operative_id,
         status,
         error,
+        result,
     });
 }
 
@@ -100,12 +107,14 @@ pub enum ExecutorMessage {
         operative_id: String,
         payload: Vec<u8>,
     },
-    /// A bounded's `run` returned; the coordinator writes a `BoundedCompleted` frame
-    /// so the controller deregisters the unit.
+    /// A bounded reached an exit trigger; the coordinator writes a
+    /// `BoundedCompleted` frame so the controller deregisters the unit.
+    /// `result` carries the terminal result/error payload (empty when none).
     EmitBoundedCompleted {
         operative_id: String,
         status: String,
         error: String,
+        result: Vec<u8>,
     },
 }
 

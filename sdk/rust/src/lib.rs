@@ -204,10 +204,16 @@ pub fn register_continuous<R: ContinuousOperative>() {
 
 /// Register a bounded class with the SDK. Sibling of [`register_continuous`]: makes
 /// the class spawnable via `flz operative start <factory_id> --kind bounded`.
-/// Idempotent on the same `factory_id` — re-registration overwrites the
-/// prior entrypoint.
+/// Builds and freezes the class spec — the run-sugar body or the structured
+/// linear chain declared via `BoundedOperative::operations` — and validates it
+/// (linear chain, no dynamic segments, terminable). Idempotent on the same
+/// `factory_id`. Panics if the authoring is invalid (mirrors
+/// [`register_continuous`]); use [`bounded::spec::build_spec`] to handle the
+/// error explicitly.
 pub fn register_bounded<T: BoundedOperative>() {
-    bounded::registry::register_class(T::factory_id(), T::run as bounded::BoundedRunFn);
+    let spec =
+        bounded::spec::build_spec::<T>().expect("register_bounded: invalid bounded operative");
+    bounded::registry::register_class(T::factory_id(), spec);
 }
 
 pub struct Flezha {

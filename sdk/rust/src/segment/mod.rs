@@ -273,6 +273,22 @@ pub trait OperationDispatcher: Send + Sync + 'static {
 
     fn operation_id(&self) -> OperationId;
 
+    /// Bounded-driver entry: run `Operation::run` once on `input` against the
+    /// type-erased segment `state`, collecting inter-operation output and
+    /// routing plugin-bound output through `sink` — instead of the continuous
+    /// push-dispatch mailbox path. Used only by the sequential bounded driver
+    /// (`crate::bounded`); continuous dispatch never calls it. `topology`
+    /// resolves the producer-edge channel's plugin serializer. Changes are
+    /// folded into in-memory state via `StateHandle::apply`; Phase-3 durability
+    /// wires the WAL flush here.
+    fn run_collecting(
+        &self,
+        input: Arc<dyn Any + Send + Sync>,
+        state: &mut Box<dyn Any + Send>,
+        topology: &crate::operative::topology::OperativeTopology,
+        sink: &mut dyn crate::bounded::BoundedCollectSink,
+    ) -> Result<(), crate::bounded::BoundedError>;
+
     /// Warm-restart: rebuild the type-erased segment `state` in place from a
     /// persisted `RestoreInitState` payload (snapshot + WAL change-log),
     /// returning the terminal seq applied. Type-erased entry point so the

@@ -11,6 +11,7 @@ use crate::executor::ExecutorNode;
 use crate::pb::command_request::Command;
 use crate::pb::{CommandRequest, CommandResponse};
 
+mod bounded_stop;
 mod compact;
 mod executor_assign;
 mod executor_disconnect;
@@ -132,8 +133,9 @@ pub fn get_handler(_payload_id: &str, message: &[u8]) -> Result<FrameOutcome, Co
         // SDK is the SENDER for BoundedCompleted — receiving it is a protocol
         // bug. Drop and log, like `ExecutorShutdownNotification`.
         Some(Command::BoundedCompleted(_)) => CommandActionType::NotificationIgnore,
-        // Cooperative external stop for a bounded operative (Controller -> SDK).
-        Some(Command::BoundedStop(_)) => CommandActionType::NotificationIgnore,
+        // Cooperative external stop for a bounded operative (Controller -> SDK):
+        // trip the driver's cancellation token via the BoundedStop handler.
+        Some(Command::BoundedStop(proto_ch)) => CommandActionType::Regular(Box::new(proto_ch)),
         None => return Err(CommandDecodeError::EmptyCommand),
     };
 

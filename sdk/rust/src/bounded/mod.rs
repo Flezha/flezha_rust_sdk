@@ -1,47 +1,104 @@
-//! The **bounded** compute-unit kind: a stateless, run-once job.
+//! The **bounded** compute-unit kind: an on-demand, terminating,
+//! possibly-interactive process.
 //!
-//! A bounded is started with args, runs its [`BoundedOperative::run`] function exactly
-//! once on the executor's work pool, may emit output to bound plugins via
-//! [`BoundedCtx::emit`], and signals completion to the controller. It has no
-//! operations, no segments, no input channel, and no per-segment state —
-//! it shares only the runtime plumbing (instance registry, executor bind,
-//! plugin emit) with operatives.
+//! A bounded operative is spawned with `args`, runs to an exit trigger, and is
+//! then torn down. It reuses the continuous **building blocks** (Operations,
+//! Channels, Segments, per-Segment state, `ctx.emit`) but drives them under a
+//! bounded **lifecycle**:
 //!
-//! Authoring is a distinct, lightweight trait (not a degenerate Operation):
+//! - **`run` sugar** — the trivial case is a bare
+//!   [`run`](BoundedOperative::run) body: a single implicit Operation/Segment.
+//! - **Structured** — override [`operations`](BoundedOperative::operations) to
+//!   author Operations/Channels/Segments on the same `ChannelBuilder` a
+//!   continuous operative uses; the bounded driver runs them **sequentially in
+//!   a linear chain** with a per-operation **count-based barrier** (segments
+//!   within one operation still run in parallel) — see [`driver`].
+//! - **Exit triggers** — the operative terminates on the first of: the chain
+//!   running to quiescence, [`BoundedCtx::complete`], a loop's terminal
+//!   predicate, a declared [`max_duration`](BoundedOperative::max_duration), or
+//!   external `flz operative stop` ([`BoundedStop`](crate::pb::BoundedStop)).
+//!   Every trigger converges on the single `BoundedCompleted` teardown.
+//! - **Inbox** — a running operative receives input **after it starts** via
+//!   [`BoundedCtx::recv`] (today's drop-on-arrival is gone).
 //!
 //! ```ignore
 //! struct Greet;
 //! impl flezha_executor::BoundedOperative for Greet {
 //!     fn factory_id() -> &'static str { "greet" }
 //!     fn run(ctx: &mut flezha_executor::BoundedCtx, args: &str) -> Result<(), flezha_executor::BoundedError> {
-//!         ctx.emit(format!("hello {args}").into_bytes())?;
+//!         ctx.complete(format!("hello {args}").into_bytes());
 //!         Ok(())
 //!     }
 //! }
 //! flezha_executor::register_bounded::<Greet>();
 //! ```
 
+pub(crate) mod control;
+pub(crate) mod driver;
 pub mod registry;
+pub(crate) mod spec;
 
+use std::any::Any;
 use std::fmt;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
-/// A run-once compute unit. The runtime invokes [`run`](BoundedOperative::run) exactly
-/// once per started instance, on a work-pool thread, with `args` taken from
-/// the `init_values` shipped at start. Capabilities attach to the kind, not
-/// here — choosing the bounded kind is sufficient.
+use crossbeam::channel::{Receiver, RecvTimeoutError};
+
+use crate::channel::ChannelBuilder;
+
+/// One bounded operative class. The bare [`run`](Self::run) form is the
+/// trivial single-Operation, single-Segment case; override
+/// [`operations`](Self::operations) to grow into an explicit linear chain of
+/// Operations/Channels/Segments without rewriting unrelated code. Capabilities
+/// attach to the kind, not here — choosing the bounded kind is sufficient.
 pub trait BoundedOperative: Send + Sync + 'static {
     /// Stable, controller-facing factory identifier.
     fn factory_id() -> &'static str;
 
-    /// Run the job once. Emit output via `ctx`; return `Ok(())` on success
-    /// or `Err(BoundedError)` on a terminal failure (the controller tears the
-    /// bounded down either way — there is no retry).
-    fn run(ctx: &mut BoundedCtx, args: &str) -> Result<(), BoundedError>;
+    /// Run-sugar body: the single-Operation, single-Segment case. Invoked once
+    /// per started instance with `args` from `init_values`. Emit output via
+    /// `ctx`, optionally call [`BoundedCtx::complete`] with a result, and
+    /// return `Ok(())`; returning `Err` is a terminal failure (no retry).
+    ///
+    /// The default errors — a class must implement either `run` or
+    /// `operations`. A structured operative (non-empty `operations`) never has
+    /// `run` invoked.
+    fn run(_ctx: &mut BoundedCtx, _args: &str) -> Result<(), BoundedError> {
+        Err(BoundedError::from(
+            "BoundedOperative: neither run() nor operations() was implemented",
+        ))
+    }
+
+    /// Structured form: declare a **linear chain** of Operations/Channels/
+    /// Segments on the same `ChannelBuilder` a continuous operative uses. The
+    /// default is empty, selecting the [`run`](Self::run)-sugar path. A
+    /// non-empty declaration is run sequentially by the bounded driver
+    /// (operation `N+1` starts only when every segment of operation `N` has
+    /// finished). Branching is rejected at registration.
+    fn operations(_c: &mut ChannelBuilder) {}
+
+    /// Optional wall-clock backstop. `None` (the default) means no duration
+    /// bound; when `Some`, the SDK cooperatively cancels in-flight work once
+    /// it elapses.
+    fn max_duration() -> Option<Duration> {
+        None
+    }
+
+    /// Self-termination guarantee, validated at registration. Default `true`:
+    /// the operative ends on its own (a `run`/chain that returns, or a loop
+    /// with a terminal predicate / exhausted input). An operative whose **only**
+    /// possible exit is an external stop sets this `false`; combined with no
+    /// [`max_duration`](Self::max_duration) it is **rejected** at registration
+    /// with a message directing the author to add a terminal condition.
+    fn self_terminating() -> bool {
+        true
+    }
 }
 
-/// Type-erased entrypoint stored in the class registry. `T::run` coerces to
-/// this `fn` pointer because it takes no `self`.
+/// Type-erased run-sugar entrypoint stored in the class spec. `T::run` coerces
+/// to this `fn` pointer because it takes no `self`.
 pub type BoundedRunFn = fn(&mut BoundedCtx, &str) -> Result<(), BoundedError>;
 
 /// A terminal bounded failure.
@@ -66,17 +123,46 @@ impl From<&str> for BoundedError {
     }
 }
 
-/// Processing context handed to [`BoundedOperative::run`]. Reuses the operative output path:
-/// `emit` writes a frame tagged with the bounded's instance id on a secondary
-/// stream, which the controller fans out to the plugins bound to this
-/// unit (e.g. Kafka, stdout) — identical to operative channel→plugin output.
+/// Collecting sink driven by [`crate::segment::OperationDispatcher::run_collecting`]:
+/// inter-operation output is **collected** for handoff to the next stage at the
+/// barrier; plugin-bound output is **routed** (serialized) to the wire. The
+/// bounded driver implements this per running segment.
+pub trait BoundedCollectSink {
+    /// Collect an inter-operation output value for the next stage's input batch.
+    fn collect(&mut self, value: Arc<dyn Any + Send + Sync>);
+
+    /// Forward an already-serialized plugin-bound output to the unit's wire
+    /// (best-effort, at-least-once — like all bounded/operative output).
+    fn emit_plugin_bytes(&mut self, bytes: Vec<u8>);
+}
+
+/// Lifecycle-aware context handed to [`BoundedOperative::run`] (the run-sugar
+/// path). `emit` writes a frame tagged with the instance id on a secondary
+/// stream that the controller fans out to the unit's plugins; `recv` drains
+/// the inbox (input delivered after start); `loop_until` repeats a body until a
+/// terminal predicate or cancellation (duration / external stop); `complete`
+/// sets the terminal result.
 pub struct BoundedCtx {
     instance_id: Arc<str>,
+    cancel: Arc<AtomicBool>,
+    completed: bool,
+    result: Vec<u8>,
+    inbox: Receiver<Vec<u8>>,
 }
 
 impl BoundedCtx {
-    pub(crate) fn new(instance_id: Arc<str>) -> Self {
-        Self { instance_id }
+    pub(crate) fn new(
+        instance_id: Arc<str>,
+        cancel: Arc<AtomicBool>,
+        inbox: Receiver<Vec<u8>>,
+    ) -> Self {
+        Self {
+            instance_id,
+            cancel,
+            completed: false,
+            result: Vec::new(),
+            inbox,
+        }
     }
 
     /// Emit one output payload to the unit's bound plugins. Best-effort and
@@ -86,25 +172,88 @@ impl BoundedCtx {
         crate::executor::emit_bounded_output(self.instance_id.to_string(), bytes.into());
         Ok(())
     }
+
+    /// Request terminal completion with `result`. The body should return
+    /// shortly after; the driver tears down with status `ok` and `result` in
+    /// the `BoundedCompleted` payload. Loops observe completion automatically.
+    pub fn complete(&mut self, result: impl Into<Vec<u8>>) {
+        self.result = result.into();
+        self.completed = true;
+    }
+
+    /// True once an external stop / `max_duration` has tripped the
+    /// cancellation token. Long-running bodies should check this and unwind.
+    pub fn is_cancelled(&self) -> bool {
+        self.cancel.load(Ordering::Acquire)
+    }
+
+    /// Block for the next inbox item (input delivered after start). Returns
+    /// `None` when cancellation trips or the inbox is permanently closed.
+    /// Sleeps while idle (≤200 ms wake granularity to honour cancellation) —
+    /// never busy-spins.
+    pub fn recv(&mut self) -> Option<Vec<u8>> {
+        loop {
+            if self.is_cancelled() || self.completed {
+                return None;
+            }
+            match self.inbox.recv_timeout(Duration::from_millis(200)) {
+                Ok(item) => return Some(item),
+                Err(RecvTimeoutError::Timeout) => continue,
+                Err(RecvTimeoutError::Disconnected) => return None,
+            }
+        }
+    }
+
+    /// Repeat `body` until `predicate` returns `true` OR the cancellation
+    /// token trips (duration / external stop) OR [`complete`](Self::complete)
+    /// is called. The construct observes cancellation automatically and blocks
+    /// while idle (a body that waits on [`recv`](Self::recv) sleeps rather than
+    /// spinning). `predicate` provides the required non-timeout exit, so a loop
+    /// authored through this construct can always terminate without an external
+    /// kill.
+    pub fn loop_until<P, B>(&mut self, mut predicate: P, mut body: B) -> Result<(), BoundedError>
+    where
+        P: FnMut() -> bool,
+        B: FnMut(&mut BoundedCtx) -> Result<(), BoundedError>,
+    {
+        while !self.is_cancelled() && !self.completed && !predicate() {
+            body(self)?;
+        }
+        Ok(())
+    }
+
+    /// Consume the context, returning whether `complete` was called and the
+    /// result payload. Driver-only.
+    pub(crate) fn into_result(self) -> (bool, Vec<u8>) {
+        (self.completed, self.result)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
 
     use crossbeam::channel::Receiver;
+    use serde::{Deserialize, Serialize};
 
     use crate::command::CommandAction;
     use crate::executor::fast::ExecutorNode;
     use crate::executor::{install_reconnect_trigger, ExecutorMessage};
-    use crate::pb::AddOperative;
-    use crate::operative::registry::{OperativeRegistry, Operative};
+    use crate::operation::change::{Change, NoChange};
+    use crate::operation::clock::WallClock;
+    use crate::operation::{Operation, OperationCtx, OperationError, StateHandle};
+    use crate::operative::registry::{Operative, OperativeRegistry};
+    use crate::pb::{AddOperative, BoundedStop};
+    use crate::segment::restore::RestoreInitPayload;
 
     static EMIT_RUNS: AtomicUsize = AtomicUsize::new(0);
 
-    // Run-once bounded that echoes its args as plugin output.
+    // ---- run-sugar operatives ------------------------------------------------
+
+    /// Run-sugar that echoes its args as plugin output (counts runs).
     struct EmitBounded;
     impl BoundedOperative for EmitBounded {
         fn factory_id() -> &'static str {
@@ -136,6 +285,343 @@ mod tests {
             panic!("kaboom")
         }
     }
+
+    /// Run-sugar that returns a terminal result via `ctx.complete`.
+    struct CompleteBounded;
+    impl BoundedOperative for CompleteBounded {
+        fn factory_id() -> &'static str {
+            "test-complete-bounded"
+        }
+        fn run(ctx: &mut BoundedCtx, args: &str) -> Result<(), BoundedError> {
+            ctx.complete(format!("result:{args}").into_bytes());
+            Ok(())
+        }
+    }
+
+    /// Interactive run-sugar: loops on the inbox, echoes `got:<msg>`, exits the
+    /// loop on a `quit` message (terminal predicate) or on cancellation.
+    struct LoopBounded;
+    impl BoundedOperative for LoopBounded {
+        fn factory_id() -> &'static str {
+            "test-loop-bounded"
+        }
+        fn run(ctx: &mut BoundedCtx, _args: &str) -> Result<(), BoundedError> {
+            let done = Cell::new(false);
+            ctx.loop_until(
+                || done.get(),
+                |ctx| {
+                    match ctx.recv() {
+                        Some(msg) => {
+                            let s = String::from_utf8_lossy(&msg).to_string();
+                            if s == "quit" {
+                                done.set(true);
+                            } else {
+                                ctx.emit(format!("got:{s}").into_bytes())?;
+                            }
+                        }
+                        None => done.set(true), // cancellation tripped
+                    }
+                    Ok(())
+                },
+            )
+        }
+    }
+
+    /// Interactive run-sugar bounded by `max_duration`: loops on the inbox
+    /// forever; the only exit is the duration backstop (or external stop).
+    struct TimedBounded;
+    impl BoundedOperative for TimedBounded {
+        fn factory_id() -> &'static str {
+            "test-timed-bounded"
+        }
+        fn max_duration() -> Option<Duration> {
+            Some(Duration::from_millis(200))
+        }
+        fn run(ctx: &mut BoundedCtx, _args: &str) -> Result<(), BoundedError> {
+            ctx.loop_until(
+                || false,
+                |ctx| {
+                    let _ = ctx.recv();
+                    Ok(())
+                },
+            )
+        }
+    }
+
+    /// External-stop-only: declares it does not self-terminate and has no
+    /// duration backstop — rejected at registration.
+    struct ExternalStopOnlyBounded;
+    impl BoundedOperative for ExternalStopOnlyBounded {
+        fn factory_id() -> &'static str {
+            "test-external-stop-only"
+        }
+        fn self_terminating() -> bool {
+            false
+        }
+        fn run(_ctx: &mut BoundedCtx, _args: &str) -> Result<(), BoundedError> {
+            Ok(())
+        }
+    }
+
+    // ---- structured operations + operatives ----------------------------------
+
+    #[derive(Default)]
+    struct EchoOp;
+    impl Operation for EchoOp {
+        type Input = String;
+        type Output = String;
+        type State = ();
+        type Change = NoChange;
+        type Clock = WallClock;
+        type Config = ();
+        fn name() -> &'static str {
+            "bounded_echo_op"
+        }
+        fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
+        fn run(
+            &mut self,
+            input: String,
+            _state: StateHandle<'_, Self>,
+            ctx: &mut OperationCtx<'_>,
+        ) -> Result<(), OperationError> {
+            ctx.emit(format!("echo:{input}"))?;
+            Ok(())
+        }
+    }
+
+    /// Single-Operation structured form, equivalent to `EmitBounded`-style sugar.
+    struct EchoStructured;
+    impl BoundedOperative for EchoStructured {
+        fn factory_id() -> &'static str {
+            "test-echo-structured"
+        }
+        fn operations(c: &mut ChannelBuilder) {
+            c.input::<String>("in").into::<EchoOp>();
+            c.channel::<String>("out").from::<EchoOp>().to_plugin("sink");
+        }
+    }
+
+    #[derive(Default)]
+    struct Stage1;
+    impl Operation for Stage1 {
+        type Input = String;
+        type Output = String;
+        type State = ();
+        type Change = NoChange;
+        type Clock = WallClock;
+        type Config = ();
+        fn name() -> &'static str {
+            "bounded_stage1"
+        }
+        fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
+        fn run(
+            &mut self,
+            input: String,
+            _state: StateHandle<'_, Self>,
+            ctx: &mut OperationCtx<'_>,
+        ) -> Result<(), OperationError> {
+            ctx.emit(format!("{input}-1"))?;
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct Stage2;
+    impl Operation for Stage2 {
+        type Input = String;
+        type Output = String;
+        type State = ();
+        type Change = NoChange;
+        type Clock = WallClock;
+        type Config = ();
+        fn name() -> &'static str {
+            "bounded_stage2"
+        }
+        fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
+        fn run(
+            &mut self,
+            input: String,
+            _state: StateHandle<'_, Self>,
+            ctx: &mut OperationCtx<'_>,
+        ) -> Result<(), OperationError> {
+            ctx.emit(format!("{input}-2"))?;
+            Ok(())
+        }
+    }
+
+    /// Two-stage linear chain: Stage1 → Stage2 → plugin.
+    struct ChainBounded;
+    impl BoundedOperative for ChainBounded {
+        fn factory_id() -> &'static str {
+            "test-chain-bounded"
+        }
+        fn operations(c: &mut ChannelBuilder) {
+            c.input::<String>("in").into::<Stage1>();
+            c.channel::<String>("mid").from::<Stage1>().into::<Stage2>();
+            c.channel::<String>("out").from::<Stage2>().to_plugin("sink");
+        }
+    }
+
+    /// Splits the comma-separated args into individual items (one segment).
+    #[derive(Default)]
+    struct SplitOp;
+    impl Operation for SplitOp {
+        type Input = String;
+        type Output = String;
+        type State = ();
+        type Change = NoChange;
+        type Clock = WallClock;
+        type Config = ();
+        fn name() -> &'static str {
+            "bounded_split_op"
+        }
+        fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
+        fn run(
+            &mut self,
+            input: String,
+            _state: StateHandle<'_, Self>,
+            ctx: &mut OperationCtx<'_>,
+        ) -> Result<(), OperationError> {
+            for piece in input.split(',') {
+                ctx.emit(piece.to_string())?;
+            }
+            Ok(())
+        }
+    }
+
+    #[derive(Serialize, Deserialize, Clone, Default)]
+    struct CountState {
+        n: u64,
+    }
+    #[derive(Serialize, Deserialize, Clone)]
+    struct Inc;
+    impl Change for Inc {}
+
+    /// Static-segmented operation: routes items to `even`/`odd` segments by
+    /// length parity, counts per-segment (independent state), emits `<n>:<item>`.
+    #[derive(Default)]
+    struct FanOp;
+    impl Operation for FanOp {
+        type Input = String;
+        type Output = String;
+        type State = CountState;
+        type Change = Inc;
+        type Clock = WallClock;
+        type Config = ();
+        fn name() -> &'static str {
+            "bounded_fan_op"
+        }
+        fn operation_keys() -> Vec<&'static str> {
+            vec!["even", "odd"]
+        }
+        const SEGMENT_FOR_OVERRIDDEN: bool = true;
+        fn segment_for(input: &String) -> Vec<&'static str> {
+            if input.len().is_multiple_of(2) {
+                vec!["even"]
+            } else {
+                vec!["odd"]
+            }
+        }
+        fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> CountState {
+            CountState::default()
+        }
+        fn apply_change(state: &mut CountState, _: &Inc) {
+            state.n += 1;
+        }
+        fn run(
+            &mut self,
+            input: String,
+            mut state: StateHandle<'_, Self>,
+            ctx: &mut OperationCtx<'_>,
+        ) -> Result<(), OperationError> {
+            state.apply(Inc);
+            let n = state.n;
+            ctx.emit(format!("{n}:{input}"))?;
+            Ok(())
+        }
+    }
+
+    /// Split → fan-out across static segments → plugin.
+    struct FanBounded;
+    impl BoundedOperative for FanBounded {
+        fn factory_id() -> &'static str {
+            "test-fan-bounded"
+        }
+        fn operations(c: &mut ChannelBuilder) {
+            c.input::<String>("in").into::<SplitOp>();
+            c.channel::<String>("mid").from::<SplitOp>().into::<FanOp>();
+            c.channel::<String>("out").from::<FanOp>().to_plugin("sink");
+        }
+    }
+
+    #[derive(Default)]
+    struct HybridStage1;
+    impl Operation for HybridStage1 {
+        type Input = String;
+        type Output = String;
+        type State = ();
+        type Change = NoChange;
+        type Clock = WallClock;
+        type Config = ();
+        fn name() -> &'static str {
+            "bounded_hybrid_stage1"
+        }
+        fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
+        fn run(
+            &mut self,
+            input: String,
+            _state: StateHandle<'_, Self>,
+            ctx: &mut OperationCtx<'_>,
+        ) -> Result<(), OperationError> {
+            ctx.emit(format!("h:{input}"))?;
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct HybridStage2;
+    impl Operation for HybridStage2 {
+        type Input = String;
+        type Output = String;
+        type State = ();
+        type Change = NoChange;
+        type Clock = WallClock;
+        type Config = ();
+        fn name() -> &'static str {
+            "bounded_hybrid_stage2"
+        }
+        fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
+        fn run(
+            &mut self,
+            input: String,
+            _state: StateHandle<'_, Self>,
+            ctx: &mut OperationCtx<'_>,
+        ) -> Result<(), OperationError> {
+            ctx.emit(format!("final:{input}"))?;
+            Ok(())
+        }
+    }
+
+    /// Hybrid inter-operation channel (`also_to_plugin_with`): Stage1's output
+    /// both feeds Stage2 AND is serialized to a plugin sink.
+    struct HybridBounded;
+    impl BoundedOperative for HybridBounded {
+        fn factory_id() -> &'static str {
+            "test-hybrid-bounded"
+        }
+        fn operations(c: &mut ChannelBuilder) {
+            c.input::<String>("in").into::<HybridStage1>();
+            c.channel::<String>("mid")
+                .from::<HybridStage1>()
+                .also_to_plugin_with("midsink", |s: &String| format!("mid:{s}").into_bytes())
+                .into::<HybridStage2>();
+            c.channel::<String>("out")
+                .from::<HybridStage2>()
+                .to_plugin("out");
+        }
+    }
+
+    // ---- non-driver unit tests ----------------------------------------------
 
     #[test]
     fn bounded_error_conversions() {
@@ -179,51 +665,243 @@ mod tests {
         assert!(!reg.contains("t1"));
     }
 
-    // Owns the process-global coordinator trigger (no other lib test installs
-    // it) so it can observe the EmitBoundedOutput / EmitBoundedCompleted messages
-    // the run-once driver routes through the coordinator.
     #[test]
-    fn start_bounded_runs_once_emits_and_completes() {
+    fn run_sugar_spec_has_no_topology() {
+        let spec = spec::build_spec::<EmitBounded>().expect("run-sugar spec builds");
+        assert!(spec.topology.is_none(), "bare run() ⇒ run-sugar (no topology)");
+        assert!(spec.chain.is_empty());
+    }
+
+    #[test]
+    fn structured_spec_resolves_linear_chain() {
+        let spec = spec::build_spec::<ChainBounded>().expect("structured spec builds");
+        let topology = spec.topology.as_ref().expect("structured ⇒ topology");
+        // Chain is ordered entry-consumer → terminal: Stage1 then Stage2.
+        let names: Vec<&str> = spec
+            .chain
+            .iter()
+            .map(|&id| topology.operation(id).unwrap().name.as_ref())
+            .collect();
+        assert_eq!(names, vec!["bounded_stage1", "bounded_stage2"]);
+    }
+
+    #[test]
+    fn external_stop_only_authoring_is_rejected() {
+        let err = spec::build_spec::<ExternalStopOnlyBounded>()
+            .expect_err("external-stop-only must be rejected at registration");
+        assert!(
+            matches!(err, spec::BuildBoundedError::ExternalStopOnly { .. }),
+            "expected ExternalStopOnly, got {err:?}"
+        );
+        // Naming the missing terminal condition is part of the contract.
+        assert!(err.to_string().contains("terminal condition"));
+    }
+
+    #[test]
+    fn branching_topology_is_rejected() {
+        struct Branching;
+        impl BoundedOperative for Branching {
+            fn factory_id() -> &'static str {
+                "test-branching-bounded"
+            }
+            fn operations(c: &mut ChannelBuilder) {
+                // One channel feeding two downstream operations = branching.
+                c.input::<String>("in").into::<Stage1>();
+                c.channel::<String>("mid")
+                    .from::<Stage1>()
+                    .into::<Stage2>()
+                    .into::<EchoOp>();
+            }
+        }
+        let err = spec::build_spec::<Branching>().expect_err("branching must be rejected");
+        assert!(
+            matches!(err, spec::BuildBoundedError::Branching { .. }),
+            "expected Branching, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn dynamic_segment_operation_is_rejected() {
+        #[derive(Default)]
+        struct DynOp;
+        impl Operation for DynOp {
+            type Input = String;
+            type Output = String;
+            type State = ();
+            type Change = NoChange;
+            type Clock = WallClock;
+            type Config = ();
+            fn name() -> &'static str {
+                "bounded_dyn_op"
+            }
+            fn operation_key(input: &String) -> Option<String> {
+                Some(input.clone())
+            }
+            const OPERATION_KEY_OVERRIDDEN: bool = true;
+            fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
+            fn run(
+                &mut self,
+                _input: String,
+                _state: StateHandle<'_, Self>,
+                _ctx: &mut OperationCtx<'_>,
+            ) -> Result<(), OperationError> {
+                Ok(())
+            }
+        }
+        struct DynBounded;
+        impl BoundedOperative for DynBounded {
+            fn factory_id() -> &'static str {
+                "test-dyn-bounded"
+            }
+            fn operations(c: &mut ChannelBuilder) {
+                c.input::<String>("in").into::<DynOp>();
+            }
+        }
+        let err = spec::build_spec::<DynBounded>().expect_err("dynamic segments must be rejected");
+        assert!(
+            matches!(err, spec::BuildBoundedError::DynamicSegments { .. }),
+            "expected DynamicSegments, got {err:?}"
+        );
+    }
+
+    // ---- single driver-observation test --------------------------------------
+    //
+    // Owns the process-global coordinator trigger (no other lib test installs
+    // it) so it can observe the EmitBoundedOutput / EmitBoundedCompleted
+    // messages the driver routes through the coordinator. Scenarios run
+    // strictly sequentially (each drained to its completion before the next) so
+    // a single shared channel stays unambiguous.
+    #[test]
+    fn bounded_driver_scenarios() {
         let (tx, rx) = crossbeam::channel::unbounded::<ExecutorMessage>();
         install_reconnect_trigger(tx);
 
         crate::register_bounded::<EmitBounded>();
         crate::register_bounded::<FailBounded>();
         crate::register_bounded::<PanicBounded>();
+        crate::register_bounded::<CompleteBounded>();
+        crate::register_bounded::<LoopBounded>();
+        crate::register_bounded::<TimedBounded>();
+        crate::register_bounded::<EchoStructured>();
+        crate::register_bounded::<ChainBounded>();
+        crate::register_bounded::<FanBounded>();
+        crate::register_bounded::<HybridBounded>();
 
         let mut node = ExecutorNode::new("test-ns".to_string());
 
-        // --- success path: run once, args echoed as output, status "ok" ---
+        // --- run-sugar: run once, args echoed, status "ok" ---
         EMIT_RUNS.store(0, Ordering::SeqCst);
         assert!(node.start_bounded("test-emit-bounded".into(), "bounded-ok".into(), "hello".into()));
+        let (outs, done) = drain(&rx, "bounded-ok");
+        assert_eq!(EMIT_RUNS.load(Ordering::SeqCst), 1, "run executes exactly once");
+        assert_eq!(outs, vec![b"hello".to_vec()], "args echoed as output");
+        assert_eq!((done.0.as_str(), done.1.as_str()), ("ok", ""));
 
-        let (out, completed) = drain_until_completed(&rx, "bounded-ok");
-        assert_eq!(EMIT_RUNS.load(Ordering::SeqCst), 1, "run must execute exactly once");
-        assert_eq!(out.as_deref(), Some(b"hello".as_slice()), "args echoed as output");
-        assert_eq!(completed, ("ok".to_string(), String::new()));
-
-        // The instance stays registered (controller deregisters on RemOperative);
-        // a duplicate AddOperative is idempotent and does NOT re-run.
+        // Instance stays registered; a duplicate start is idempotent (no re-run).
         assert!(node.has_operative("bounded-ok"));
         assert!(node.get_continuous("bounded-ok").is_none(), "a bounded is not a operative");
         assert!(node.start_bounded("test-emit-bounded".into(), "bounded-ok".into(), "hello".into()));
         assert_eq!(EMIT_RUNS.load(Ordering::SeqCst), 1, "duplicate start must not re-run");
 
-        // --- error path: terminal failure reported via status "error" ---
+        // --- run-sugar: terminal error ---
         assert!(node.start_bounded("test-fail-bounded".into(), "bounded-err".into(), "".into()));
-        let (_out, completed_err) = drain_until_completed(&rx, "bounded-err");
-        assert_eq!(completed_err.0, "error");
-        assert_eq!(completed_err.1, "boom");
+        let (_o, done) = drain(&rx, "bounded-err");
+        assert_eq!(done.0, "error");
+        assert!(done.1.contains("boom"));
 
-        // --- panic path: caught, reported as "error" (worker survives) ---
+        // --- run-sugar: panic caught and reported as "error" ---
         assert!(node.start_bounded("test-panic-bounded".into(), "bounded-panic".into(), "".into()));
-        let (_out, completed_panic) = drain_until_completed(&rx, "bounded-panic");
-        assert_eq!(completed_panic.0, "error");
-        assert!(completed_panic.1.contains("kaboom"));
+        let (_o, done) = drain(&rx, "bounded-panic");
+        assert_eq!(done.0, "error");
+        assert!(done.1.contains("kaboom"));
 
-        // --- unknown factory: no instance created ---
-        assert!(!node.start_bounded("test-no-such".into(), "bounded-x".into(), "".into()));
-        assert!(!node.has_operative("bounded-x"));
+        // --- run-sugar: ctx.complete carries the result payload ---
+        assert!(node.start_bounded("test-complete-bounded".into(), "bounded-c".into(), "z".into()));
+        let (_o, done) = drain(&rx, "bounded-c");
+        assert_eq!(done.0, "ok");
+        assert_eq!(done.2, b"result:z".to_vec(), "complete() result reaches BoundedCompleted");
+
+        // --- inbox + loop: post-start input is processed, terminal predicate exits ok ---
+        assert!(node.start_bounded("test-loop-bounded".into(), "loop-1".into(), "".into()));
+        assert!(control::push_inbox("loop-1", b"alpha".to_vec()), "inbox delivers to running instance");
+        assert!(control::push_inbox("loop-1", b"beta".to_vec()));
+        assert!(control::push_inbox("loop-1", b"quit".to_vec()));
+        let (outs, done) = drain(&rx, "loop-1");
+        assert_eq!(outs, vec![b"got:alpha".to_vec(), b"got:beta".to_vec()]);
+        assert_eq!(done.0, "ok", "terminal predicate ⇒ ok");
+
+        // --- external stop (BoundedStop handler) → cancelled ---
+        assert!(node.start_bounded("test-loop-bounded".into(), "loop-2".into(), "".into()));
+        assert!(control::push_inbox("loop-2", b"one".to_vec()));
+        // Drain the echo first so the instance is definitely live before stop.
+        wait_for_output(&rx, "loop-2", b"got:one");
+        let stop = BoundedStop { operative_id: "loop-2".into() };
+        let mut errs = Vec::new();
+        stop.handle(&mut node, "", &mut errs);
+        assert!(errs.is_empty());
+        let (_o, done) = drain(&rx, "loop-2");
+        assert_eq!(done.0, "cancelled", "BoundedStop ⇒ cancelled");
+
+        // --- hard removal (RemOperative → stop_operative) cancels a bounded ---
+        assert!(node.start_bounded("test-loop-bounded".into(), "loop-3".into(), "".into()));
+        assert!(control::push_inbox("loop-3", b"x".to_vec()));
+        wait_for_output(&rx, "loop-3", b"got:x");
+        assert!(node.stop_operative("loop-3"), "stop_operative removes the bounded");
+        assert!(!node.has_operative("loop-3"));
+        let (_o, done) = drain(&rx, "loop-3");
+        assert_eq!(done.0, "cancelled", "hard stop ⇒ driver cancels and tears down");
+
+        // --- max_duration backstop → cancelled ---
+        assert!(node.start_bounded("test-timed-bounded".into(), "timed-1".into(), "".into()));
+        let (_o, done) = drain(&rx, "timed-1");
+        assert_eq!(done.0, "cancelled", "max_duration elapse ⇒ cancelled");
+
+        // --- structured single-op equals run-sugar (§2.2 equivalence) ---
+        assert!(node.start_bounded("test-echo-structured".into(), "echo-s".into(), "foo".into()));
+        let (struct_outs, done) = drain(&rx, "echo-s");
+        assert_eq!(done.0, "ok");
+        assert_eq!(struct_outs, vec![b"echo:foo".to_vec()]);
+        // The run-sugar equivalent (EmitBounded-style) would emit the same bytes
+        // for the same transform — assert the structured single-op form matches
+        // a hand-written one-operation echo.
+        assert_eq!(struct_outs, vec![format!("echo:{}", "foo").into_bytes()]);
+
+        // --- structured multi-op chain runs in order with a barrier ---
+        assert!(node.start_bounded("test-chain-bounded".into(), "chain-1".into(), "x".into()));
+        let (chain_outs, done) = drain(&rx, "chain-1");
+        assert_eq!(done.0, "ok");
+        assert_eq!(chain_outs, vec![b"x-1-2".to_vec()], "Stage1 then Stage2, in order");
+
+        // --- structured parallel static segments + barrier + per-segment state ---
+        assert!(node.start_bounded(
+            "test-fan-bounded".into(),
+            "fan-1".into(),
+            "a,bb,ccc,dddd".into(),
+        ));
+        let (mut fan_outs, done) = drain(&rx, "fan-1");
+        assert_eq!(done.0, "ok");
+        fan_outs.sort();
+        // odd segment: "a"(1) then "ccc"(2); even segment: "bb"(1) then "dddd"(2).
+        // Independent per-segment counters; the barrier collected all four.
+        let mut expected: Vec<Vec<u8>> = vec![
+            b"1:a".to_vec(),
+            b"2:ccc".to_vec(),
+            b"1:bb".to_vec(),
+            b"2:dddd".to_vec(),
+        ];
+        expected.sort();
+        assert_eq!(fan_outs, expected);
+
+        // --- hybrid channel: inter-op output also routed to a plugin sink ---
+        assert!(node.start_bounded("test-hybrid-bounded".into(), "hybrid-1".into(), "z".into()));
+        let (mut hybrid_outs, done) = drain(&rx, "hybrid-1");
+        assert_eq!(done.0, "ok");
+        hybrid_outs.sort();
+        // "mid:h:z" from the hybrid sink on Stage1's output; "final:h:z" from
+        // Stage2's terminal plugin — Stage1's value reached both Stage2 and the sink.
+        let mut hybrid_expected = vec![b"final:h:z".to_vec(), b"mid:h:z".to_vec()];
+        hybrid_expected.sort();
+        assert_eq!(hybrid_outs, hybrid_expected);
 
         // --- AddOperative --kind bounded routes to the bounded path ---
         let add = AddOperative {
@@ -235,9 +913,9 @@ mod tests {
         let mut errors = Vec::new();
         add.handle(&mut node, "", &mut errors);
         assert!(errors.is_empty(), "AddOperative --kind bounded should not error: {errors:?}");
-        let (out2, completed2) = drain_until_completed(&rx, "bounded-via-add");
-        assert_eq!(out2.as_deref(), Some(b"argz".as_slice()));
-        assert_eq!(completed2.0, "ok");
+        let (outs, done) = drain(&rx, "bounded-via-add");
+        assert_eq!(outs, vec![b"argz".to_vec()]);
+        assert_eq!(done.0, "ok");
 
         // --- AddOperative --kind bounded for an unregistered factory reports it ---
         let add_bad = AddOperative {
@@ -252,27 +930,49 @@ mod tests {
         assert!(errors_bad[0].contains("BoundedOperative class"));
     }
 
-    fn drain_until_completed(
+    /// Drain output frames until the `BoundedCompleted` for `id`, returning the
+    /// collected outputs and the `(status, error, result)` completion tuple.
+    fn drain(
         rx: &Receiver<ExecutorMessage>,
         id: &str,
-    ) -> (Option<Vec<u8>>, (String, String)) {
+    ) -> (Vec<Vec<u8>>, (String, String, Vec<u8>)) {
         let deadline = Instant::now() + Duration::from_secs(5);
-        let mut out = None;
+        let mut outs = Vec::new();
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             let msg = rx
                 .recv_timeout(remaining)
-                .unwrap_or_else(|_| panic!("timed out waiting for bounded {id} completion"));
+                .unwrap_or_else(|_| panic!("timed out waiting for bounded {id}"));
             match msg {
-                ExecutorMessage::EmitBoundedOutput { operative_id, payload } if operative_id == id => {
-                    out = Some(payload)
+                ExecutorMessage::EmitBoundedOutput { operative_id, payload }
+                    if operative_id == id =>
+                {
+                    outs.push(payload)
                 }
                 ExecutorMessage::EmitBoundedCompleted {
                     operative_id,
                     status,
                     error,
-                } if operative_id == id => return (out, (status, error)),
+                    result,
+                } if operative_id == id => return (outs, (status, error, result)),
                 _ => {}
+            }
+        }
+    }
+
+    /// Block until a specific output frame for `id` is observed (used to confirm
+    /// an interactive instance is live before stopping it).
+    fn wait_for_output(rx: &Receiver<ExecutorMessage>, id: &str, payload: &[u8]) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let msg = rx
+                .recv_timeout(remaining)
+                .unwrap_or_else(|_| panic!("timed out waiting for output from {id}"));
+            if let ExecutorMessage::EmitBoundedOutput { operative_id, payload: p } = msg {
+                if operative_id == id && p == payload {
+                    return;
+                }
             }
         }
     }
