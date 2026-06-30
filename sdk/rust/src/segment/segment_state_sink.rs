@@ -35,6 +35,15 @@ use crate::segment::flusher::SendFrameFn;
 /// the controller routes it to the per-Segment file lifecycle.
 pub const DELETE_SEGMENT_STATE_PAYLOAD_ID: &str = "delete_segment_state";
 
+/// Data-stream payload-ids reserved for the bounded-operative saga compensation
+/// change-log (SDK → controller), same frame layout as `segment_state_change`.
+/// `compensation_intent` records an operation's completion; `compensation_done`
+/// records a compensation hook's completion.
+#[allow(dead_code)]
+pub const COMPENSATION_INTENT_PAYLOAD_ID: &str = "compensation_intent";
+#[allow(dead_code)]
+pub const COMPENSATION_DONE_PAYLOAD_ID: &str = "compensation_done";
+
 const ENV_RING_CAPACITY: &str = "FLEZHA_RECONNECT_RING_CAPACITY";
 const DEFAULT_RING_CAPACITY: usize = 1024;
 const ENV_FLOOD_THRESHOLD: &str = "FLEZHA_BROKEN_PIPE_RECONNECT_THRESHOLD";

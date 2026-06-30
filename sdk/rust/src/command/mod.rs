@@ -132,6 +132,8 @@ pub fn get_handler(_payload_id: &str, message: &[u8]) -> Result<FrameOutcome, Co
         // SDK is the SENDER for BoundedCompleted — receiving it is a protocol
         // bug. Drop and log, like `ExecutorShutdownNotification`.
         Some(Command::BoundedCompleted(_)) => CommandActionType::NotificationIgnore,
+        // Cooperative external stop for a bounded operative (Controller -> SDK).
+        Some(Command::BoundedStop(_)) => CommandActionType::NotificationIgnore,
         None => return Err(CommandDecodeError::EmptyCommand),
     };
 

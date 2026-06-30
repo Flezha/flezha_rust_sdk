@@ -5,7 +5,7 @@ pub struct CommandRequest {
     pub reference_id: ::prost::alloc::string::String,
     #[prost(
         oneof = "command_request::Command",
-        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22"
+        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23"
     )]
     pub command: ::core::option::Option<command_request::Command>,
 }
@@ -55,6 +55,8 @@ pub mod command_request {
         ReassignExecutorId(super::ReassignExecutorId),
         #[prost(message, tag = "22")]
         BoundedCompleted(super::BoundedCompleted),
+        #[prost(message, tag = "23")]
+        BoundedStop(super::BoundedStop),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -282,15 +284,17 @@ pub struct ReassignExecutorId {
     #[prost(string, tag = "1")]
     pub new_id: ::prost::alloc::string::String,
 }
-/// SDK -> Controller. Emitted by a bounded-kind operative when its run-once
-/// function returns. `status` is "ok" on success or "error" on failure (with
-/// `error` describing it). The Controller drives the same stop/teardown path
-/// as an explicit stop (deregister-on-completion) so a finished bounded
-/// operative is removed from the durable registry and never replayed on boot
-/// or misjudged by convergence. Direction is reversed like
-/// ExecutorShutdownNotification: SDK -> Controller over the "control_command"
-/// payload_id; old Controllers ignore the unknown variant via Protox
-/// unknown-field handling.
+/// SDK -> Controller. Emitted by a bounded operative when it reaches an exit
+/// trigger (chain complete, ctx.complete, loop terminal, duration, or external
+/// stop). `status` is "ok" on clean completion, "error" on failure (with
+/// `error` describing it), or "cancelled" on a cooperative external stop;
+/// `result` carries the terminal result/error payload. The Controller drives
+/// the same stop/teardown path as an explicit stop (deregister-on-completion)
+/// so a finished bounded operative is removed from the durable registry and
+/// never replayed on boot or misjudged by convergence. Direction is reversed
+/// like ExecutorShutdownNotification: SDK -> Controller over the
+/// "control_command" payload_id; old Controllers ignore the unknown variant via
+/// Protox unknown-field handling.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct BoundedCompleted {
     #[prost(string, tag = "1")]
@@ -299,4 +303,18 @@ pub struct BoundedCompleted {
     pub status: ::prost::alloc::string::String,
     #[prost(string, tag = "3")]
     pub error: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "4")]
+    pub result: ::prost::alloc::vec::Vec<u8>,
+}
+/// Controller -> SDK. Cooperative external stop for a bounded operative
+/// (`flz operative stop`), distinct from the hard `RemOperative` teardown: the
+/// SDK trips its cancellation token, lets in-flight work unwind, runs any saga
+/// compensation, then emits the normal `BoundedCompleted` (status "cancelled")
+/// that drives the single teardown path. Rides the "control_command" payload_id
+/// like other CommandRequest variants; SDKs that do not recognise it skip it via
+/// the protobuf decoder (degrading to no cooperative stop).
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct BoundedStop {
+    #[prost(string, tag = "1")]
+    pub operative_id: ::prost::alloc::string::String,
 }

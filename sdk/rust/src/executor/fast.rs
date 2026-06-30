@@ -275,6 +275,7 @@ pub fn start(
                             operative_id: operative_id.clone(),
                             status,
                             error,
+                            result: Vec::new(),
                         }),
                     );
                     if let Err(e) = (&*control_stream).write_all(&frame) {
