@@ -93,6 +93,14 @@ pub struct AddOperative {
     /// "continuous".
     #[prost(string, tag = "4")]
     pub kind: ::prost::alloc::string::String,
+    /// Number of persisted Segments the Controller will ship RestoreInitState
+    /// for on this (re)bind. Non-zero only when re-binding a durable bounded
+    /// operative that has WAL state on disk (crash-resume). A durable bounded
+    /// driver holds its first Operation until this many Segment restores have
+    /// landed, so a resumed run reads persisted state instead of cold-starting.
+    /// 0 for a fresh spawn, a continuous operative, or an opted-out bounded one.
+    #[prost(uint32, tag = "5")]
+    pub resume_segment_count: u32,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RemOperative {

@@ -34,8 +34,8 @@
 //! ```
 
 pub(crate) mod compensation;
-pub(crate) mod control;
 pub(crate) mod driver;
+pub mod instance;
 pub mod registry;
 pub(crate) mod spec;
 
@@ -1064,13 +1064,15 @@ mod tests {
     #[test]
     fn registry_holds_bounded_as_sealed_variant() {
         let reg = OperativeRegistry::new();
-        reg.register_bounded(Arc::from("t1"));
+        let (instance, _inbox_rx) =
+            crate::bounded::instance::BoundedInstance::new(Arc::from("t1"), Vec::new(), 0);
+        reg.register_bounded(instance);
 
         assert!(reg.contains("t1"));
         // A bounded is not a operative: the operative-only accessor returns None.
         assert!(reg.get_continuous("t1").is_none());
         match reg.get_operative("t1").as_deref() {
-            Some(Operative::Bounded(id)) => assert_eq!(&**id, "t1"),
+            Some(Operative::Bounded(inst)) => assert_eq!(&*inst.instance_id, "t1"),
             _ => panic!("expected a BoundedOperative variant"),
         }
 
@@ -1295,18 +1297,25 @@ mod tests {
         // --- inbox + loop: post-start input is processed, terminal predicate exits ok ---
         assert!(node.start_bounded("test-loop-bounded".into(), "loop-1".into(), "".into()));
         assert!(
-            control::push_inbox("loop-1", b"alpha".to_vec()),
+            node.get_bounded("loop-1")
+                .is_some_and(|i| i.push_inbox(b"alpha".to_vec())),
             "inbox delivers to running instance"
         );
-        assert!(control::push_inbox("loop-1", b"beta".to_vec()));
-        assert!(control::push_inbox("loop-1", b"quit".to_vec()));
+        assert!(node
+            .get_bounded("loop-1")
+            .is_some_and(|i| i.push_inbox(b"beta".to_vec())));
+        assert!(node
+            .get_bounded("loop-1")
+            .is_some_and(|i| i.push_inbox(b"quit".to_vec())));
         let (outs, done) = drain(&rx, "loop-1");
         assert_eq!(outs, vec![b"got:alpha".to_vec(), b"got:beta".to_vec()]);
         assert_eq!(done.0, "ok", "terminal predicate ⇒ ok");
 
         // --- external stop (BoundedStop handler) → cancelled ---
         assert!(node.start_bounded("test-loop-bounded".into(), "loop-2".into(), "".into()));
-        assert!(control::push_inbox("loop-2", b"one".to_vec()));
+        assert!(node
+            .get_bounded("loop-2")
+            .is_some_and(|i| i.push_inbox(b"one".to_vec())));
         // Drain the echo first so the instance is definitely live before stop.
         wait_for_output(&rx, "loop-2", b"got:one");
         let stop = BoundedStop {
@@ -1320,7 +1329,9 @@ mod tests {
 
         // --- hard removal (RemOperative → stop_operative) cancels a bounded ---
         assert!(node.start_bounded("test-loop-bounded".into(), "loop-3".into(), "".into()));
-        assert!(control::push_inbox("loop-3", b"x".to_vec()));
+        assert!(node
+            .get_bounded("loop-3")
+            .is_some_and(|i| i.push_inbox(b"x".to_vec())));
         wait_for_output(&rx, "loop-3", b"got:x");
         assert!(
             node.stop_operative("loop-3"),
@@ -1461,7 +1472,9 @@ mod tests {
         while !STAGE0_RAN.load(Ordering::SeqCst) {
             std::thread::sleep(Duration::from_millis(5));
         }
-        assert!(control::cancel("stop-saga"), "live instance accepts cancel");
+        node.get_bounded("stop-saga")
+            .expect("live instance accepts cancel")
+            .request_cancel();
         STAGE0_RELEASE.store(true, Ordering::SeqCst);
         let (_o, done) = drain(&rx, "stop-saga");
         assert_eq!(done.0, "cancelled", "cooperative stop ⇒ cancelled");
@@ -1477,6 +1490,7 @@ mod tests {
             factory_id: "test-emit-bounded".into(),
             init_values: "argz".into(),
             kind: "bounded".into(),
+            resume_segment_count: 0,
         };
         let mut errors = Vec::new();
         add.handle(&mut node, "", &mut errors);
@@ -1494,6 +1508,7 @@ mod tests {
             factory_id: "test-unregistered".into(),
             init_values: "".into(),
             kind: "bounded".into(),
+            resume_segment_count: 0,
         };
         let mut errors_bad = Vec::new();
         add_bad.handle(&mut node, "", &mut errors_bad);
@@ -1525,6 +1540,41 @@ mod tests {
         assert!(
             WAL_FRAMES.lock().unwrap().is_empty(),
             "an opt-out bounded operative writes nothing to the WAL"
+        );
+
+        // --- §5b.2 crash-resume gate: a durable structured bounded holds its
+        // first Operation until the Controller's Segment restores land, and its
+        // Segments are reachable by the restore handler via wire identity ---
+        WAL_FRAMES.lock().unwrap().clear();
+        // Spawn as a "respawn" expecting one Segment restore: the driver builds
+        // and registers its Segments, then parks on the resume gate — nothing
+        // runs yet because no restore has landed.
+        assert!(node.start_bounded_resumable(
+            "test-fan-bounded".into(),
+            "resume-inst".into(),
+            "a,bb".into(),
+            1,
+        ));
+        // The bounded Segments are now reachable by wire identity — the restore
+        // handler could not see them before this change (the continuous lookup
+        // only scans ContinuousInstance segments).
+        let even_id = crate::segment::flusher::encode_segment_identity(
+            "resume-inst",
+            "bounded_fan_op",
+            "even",
+        );
+        let (resume_instance, _slot) = node
+            .find_bounded_segment(&even_id)
+            .expect("a durable bounded Segment is reachable by the restore handler");
+        // Release one restore, exactly as the RestoreInitState handler does after
+        // applying a persisted Segment: the parked driver wakes and runs to
+        // completion (resume-not-cold-start is proven end-to-end in the Elixir
+        // integration test, which does the real WAL round-trip).
+        resume_instance.note_restored();
+        let (_o, done) = drain(&rx, "resume-inst");
+        assert_eq!(
+            done.0, "ok",
+            "the driver resumes once the expected Segment restore lands"
         );
     }
 

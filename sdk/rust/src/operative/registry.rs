@@ -16,16 +16,20 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use lazy_static::lazy_static;
 
+use crate::bounded::instance::BoundedInstance;
 use crate::operative::instance::ContinuousInstance;
 use crate::operative::topology::OperativeTopology;
+use crate::segment::SegmentSlot;
 
 /// A control-plane-managed unit instance. Sealed two-variant enum: a new kind
 /// must be handled at every match, and the 2-variant match keeps the operative hot
-/// path branch-predictable rather than devirtualizing a single variant. A bounded
-/// carries only its instance id — it has no per-instance runtime state.
+/// path branch-predictable rather than devirtualizing a single variant. Each
+/// variant carries its per-instance runtime state — a bounded operative's
+/// cancel/inbox/Segments live on its [`BoundedInstance`] (no bounded-specific
+/// process-global).
 pub enum Operative {
     Continuous(Arc<ContinuousInstance>),
-    Bounded(Arc<str>),
+    Bounded(Arc<BoundedInstance>),
 }
 
 lazy_static! {
@@ -66,10 +70,10 @@ impl OperativeRegistry {
         instance
     }
 
-    pub fn register_bounded(&self, instance_id: Arc<str>) {
+    pub fn register_bounded(&self, instance: Arc<BoundedInstance>) {
         self.inner.insert(
-            instance_id.to_string(),
-            Arc::new(Operative::Bounded(instance_id)),
+            instance.instance_id.to_string(),
+            Arc::new(Operative::Bounded(instance)),
         );
     }
 
@@ -88,6 +92,33 @@ impl OperativeRegistry {
                 Operative::Continuous(ri) => Some(Arc::clone(ri)),
                 Operative::Bounded(_) => None,
             })
+    }
+
+    /// Resolve `instance_id` only when it is a bounded operative; `None` for a
+    /// continuous or an absent id.
+    pub fn get_bounded(&self, instance_id: &str) -> Option<Arc<BoundedInstance>> {
+        self.inner
+            .get(instance_id)
+            .and_then(|r| match &**r.value() {
+                Operative::Bounded(bi) => Some(Arc::clone(bi)),
+                Operative::Continuous(_) => None,
+            })
+    }
+
+    /// Locate a live bounded Segment slot by its wire identity, for the inbound
+    /// `RestoreInitState` handler (the continuous scan does not see bounded
+    /// Segments). Returns the owning instance (to record the restore against its
+    /// gate) and the matched slot.
+    pub fn find_bounded_segment(
+        &self,
+        segment_id: &[u8],
+    ) -> Option<(Arc<BoundedInstance>, Arc<SegmentSlot>)> {
+        self.inner.iter().find_map(|r| match &**r.value() {
+            Operative::Bounded(bi) => bi
+                .segment_by_identity(segment_id)
+                .map(|slot| (Arc::clone(bi), slot)),
+            Operative::Continuous(_) => None,
+        })
     }
 
     pub fn remove(&self, instance_id: &str) -> Option<Arc<Operative>> {

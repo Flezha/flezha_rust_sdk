@@ -31,10 +31,11 @@ impl CommandAction for AddOperative {
 
         match kind {
             "bounded" => {
-                if !executor.start_bounded(
+                if !executor.start_bounded_resumable(
                     factory_id.clone(),
                     instance_id.clone(),
                     self.init_values.clone(),
+                    self.resume_segment_count,
                 ) {
                     errors.push(format!(
                         "BoundedOperative class with factory_id {} is not registered",

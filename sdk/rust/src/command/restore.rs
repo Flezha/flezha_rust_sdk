@@ -30,50 +30,31 @@ impl CommandAction for RestoreInitState {
         _message: &str,
         errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
-        let slot = find_segment_slot(executor, &self.segment_id);
-
-        let mut terminal_seq: u64 = 0;
-
-        match slot {
-            Some(slot) => {
-                let mut guard = match slot.state.lock() {
-                    Ok(g) => g,
-                    Err(poisoned) => poisoned.into_inner(),
-                };
-
-                match slot.dispatcher.restore_state(
-                    &mut guard,
-                    &self.snapshot_bytes,
-                    &self.change_log_bytes,
-                    slot.operation_key.as_deref(),
-                ) {
-                    Ok(t) => {
-                        terminal_seq = t;
-                        drop(guard);
-                        // Next produced frame must continue at terminal+1 so the
-                        // controller sees a contiguous seq and skips epoch realign.
-                        slot.change_seq.store(t + 1, Ordering::Release);
-                    }
+        let terminal_seq = if let Some(slot) = find_segment_slot(executor, &self.segment_id) {
+            restore_into_slot(&slot, self, errors)
+        } else if let Some((instance, slot)) = executor.find_bounded_segment(&self.segment_id) {
+            // Durable bounded Segment: rebuild its committed state in place and
+            // release one count on the driver's crash-resume gate. The frame
+            // landed regardless of apply success, so the gate never stalls on a
+            // corrupt record.
+            let t = restore_into_slot(&slot, self, errors);
+            instance.note_restored();
+            t
+        } else {
+            // No live slot — validate the change-log and ack the terminal seq
+            // (the controller still advances its handshake).
+            let mut terminal = 0u64;
+            for record in iter_change_log_records(&self.change_log_bytes) {
+                match record {
+                    Ok(r) => terminal = terminal.max(r.seq),
                     Err(e) => {
-                        errors.push(format!("restore_init_state: apply failed: {e}"));
+                        errors.push(format!("change_log decode error: {e}"));
+                        return ("restore_init_state".to_string(), Vec::new());
                     }
                 }
             }
-
-            None => {
-                // No live slot — validate the change-log and ack the terminal
-                // seq (the controller still advances its handshake).
-                for record in iter_change_log_records(&self.change_log_bytes) {
-                    match record {
-                        Ok(r) => terminal_seq = terminal_seq.max(r.seq),
-                        Err(e) => {
-                            errors.push(format!("change_log decode error: {e}"));
-                            return ("restore_init_state".to_string(), Vec::new());
-                        }
-                    }
-                }
-            }
-        }
+            terminal
+        };
 
         let response = RestoreInitStateResponse {
             segment_id: self.segment_id.clone(),
@@ -81,6 +62,37 @@ impl CommandAction for RestoreInitState {
         };
 
         ("restore_init_state".to_string(), response.encode_to_vec())
+    }
+}
+
+/// Rebuild one live Segment's typed state from the shipped snapshot + change-log
+/// and re-arm its `change_seq` so post-restore appends stay contiguous (the
+/// controller then skips epoch realign). Shared by the continuous and bounded
+/// restore paths. Returns the terminal WAL seq (0 on apply failure).
+fn restore_into_slot(
+    slot: &Arc<SegmentSlot>,
+    cmd: &RestoreInitState,
+    errors: &mut Vec<String>,
+) -> u64 {
+    let mut guard = match slot.state.lock() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    match slot.dispatcher.restore_state(
+        &mut guard,
+        &cmd.snapshot_bytes,
+        &cmd.change_log_bytes,
+        slot.operation_key.as_deref(),
+    ) {
+        Ok(t) => {
+            drop(guard);
+            slot.change_seq.store(t + 1, Ordering::Release);
+            t
+        }
+        Err(e) => {
+            errors.push(format!("restore_init_state: apply failed: {e}"));
+            0
+        }
     }
 }
 

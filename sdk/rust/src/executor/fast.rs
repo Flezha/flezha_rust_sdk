@@ -81,6 +81,22 @@ impl ExecutorNode {
     /// stop), and converges on a single `BoundedCompleted` teardown. Returns
     /// `false` when no bounded class is registered.
     pub fn start_bounded(&self, factory_id: String, instance_id: String, args: String) -> bool {
+        self.start_bounded_resumable(factory_id, instance_id, args, 0)
+    }
+
+    /// Spawn a bounded unit that may be **resuming** after a crash: a durable
+    /// structured driver holds its first Operation until `resume_segment_count`
+    /// per-Segment restores have landed (the Controller ships one
+    /// `RestoreInitState` per persisted Segment). `0` ⇒ a fresh spawn / a
+    /// run-sugar or opted-out class ⇒ run immediately. See
+    /// [`crate::bounded::instance`].
+    pub fn start_bounded_resumable(
+        &self,
+        factory_id: String,
+        instance_id: String,
+        args: String,
+        resume_segment_count: u32,
+    ) -> bool {
         if self.operative_registry.contains(&instance_id) {
             return true;
         }
@@ -89,9 +105,24 @@ impl ExecutorNode {
             None => return false,
         };
 
+        // Build the Segments (structured; empty for run-sugar) + the instance
+        // now — synchronously, before the AddOperative frame is ACKed — and
+        // register it so the Controller's RestoreInitState frames reach live
+        // slots and the driver holds its first Operation until the restores land.
         let id: Arc<str> = Arc::from(instance_id.as_str());
-        self.operative_registry.register_bounded(Arc::clone(&id));
-        crate::bounded::driver::spawn(spec, id, args, Arc::clone(&self.pool));
+        let stage_segments = spec
+            .topology
+            .as_ref()
+            .map(|_| crate::bounded::driver::build_all_stage_segments(&spec, &id, &self.pool))
+            .unwrap_or_default();
+        let (instance, inbox_rx) = crate::bounded::instance::BoundedInstance::new(
+            Arc::clone(&id),
+            stage_segments,
+            resume_segment_count as usize,
+        );
+        self.operative_registry
+            .register_bounded(Arc::clone(&instance));
+        crate::bounded::driver::spawn(spec, instance, inbox_rx, args, Arc::clone(&self.pool));
         true
     }
 
@@ -102,9 +133,7 @@ impl ExecutorNode {
                     Operative::Continuous(instance) => instance.shutdown_reapers(),
                     // Hard removal of a bounded: trip its cancellation token so
                     // the driver thread unwinds and exits promptly.
-                    Operative::Bounded(_) => {
-                        crate::bounded::control::cancel(instance_id);
-                    }
+                    Operative::Bounded(instance) => instance.request_cancel(),
                 }
                 true
             }
@@ -118,6 +147,26 @@ impl ExecutorNode {
 
     pub fn get_continuous(&self, instance_id: &str) -> Option<Arc<ContinuousInstance>> {
         self.operative_registry.get_continuous(instance_id)
+    }
+
+    /// Resolve a running bounded instance by id (cooperative `BoundedStop`).
+    pub(crate) fn get_bounded(
+        &self,
+        instance_id: &str,
+    ) -> Option<Arc<crate::bounded::instance::BoundedInstance>> {
+        self.operative_registry.get_bounded(instance_id)
+    }
+
+    /// Locate a live bounded Segment slot by wire identity, for the inbound
+    /// `RestoreInitState` handler.
+    pub(crate) fn find_bounded_segment(
+        &self,
+        segment_id: &[u8],
+    ) -> Option<(
+        Arc<crate::bounded::instance::BoundedInstance>,
+        Arc<crate::segment::SegmentSlot>,
+    )> {
+        self.operative_registry.find_bounded_segment(segment_id)
     }
 
     pub fn operative_dispatch_handle(&self) -> OperativeDispatchHandle {
@@ -428,8 +477,8 @@ impl OperativeDispatchHandle {
                 // Bounded inbox: route post-start input to the running driver's
                 // inbox instead of dropping it. Dropped only if the instance is
                 // not running / has no live inbox.
-                Operative::Bounded(_) => {
-                    if !crate::bounded::control::push_inbox(instance_id, payload) {
+                Operative::Bounded(instance) => {
+                    if !instance.push_inbox(payload) {
                         eprintln!(
                             "[flezha] inbox frame for bounded unit {} dropped (not running / no inbox)",
                             instance_id

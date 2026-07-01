@@ -7,9 +7,12 @@
 //! a one-worker pool would self-deadlock (the driver blocks on tasks only that
 //! same worker could run). The driver:
 //!
-//! - registers the instance's [`control`](super::control) surface (cancel token
-//!   and inbox) so `BoundedStop` / `RemOperative` / `max_duration` can cancel it
-//!   and the wire-dispatch path can deliver post-start input;
+//! - reads the [`BoundedInstance`](super::instance::BoundedInstance) that
+//!   `start_bounded_resumable` registered on the shared `OperativeRegistry`
+//!   before the driver started — its cancel token + inbox (so `BoundedStop` /
+//!   `RemOperative` / `max_duration` cancel it and the wire-dispatch path
+//!   delivers post-start input) and, for a structured durable class, the
+//!   crash-resume gate held until the Controller's Segment restores land;
 //! - runs the body — `run`-sugar ([`run_sugar`]) or the structured linear chain
 //!   ([`run_structured`], operations sequential, segments parallel within an
 //!   operation, count-based barrier between them);
@@ -26,7 +29,7 @@ use std::time::Duration;
 use crossbeam::channel::{unbounded, Receiver};
 
 use super::compensation::{plan_compensation, SegmentRun, StageRecord};
-use super::control::{self, BoundedControl};
+use super::instance::BoundedInstance;
 use super::spec::BoundedSpec;
 use super::{BoundedCollectSink, BoundedCtx, BoundedError, BoundedRunFn, RollbackMode};
 use crate::channel::builder::BuildSegmentArgs;
@@ -61,39 +64,32 @@ struct ChainCtx<'a> {
     rollback_mode: RollbackMode,
 }
 
-/// Spawn the bounded driver for one instance on a dedicated thread.
-/// Fire-and-forget: the thread exits at terminal teardown. The control surface
-/// (cancel token + inbox) is registered **synchronously** here, before the
-/// thread starts, so an inbox frame or `BoundedStop` arriving immediately after
-/// `AddOperative` is never lost to a startup race.
+/// Spawn the bounded driver for one already-registered instance on a dedicated
+/// thread. Fire-and-forget: the thread exits at terminal teardown. The caller
+/// ([`ExecutorNode::start_bounded_resumable`](crate::executor::ExecutorNode))
+/// builds + registers the [`BoundedInstance`] **synchronously**, before the
+/// `AddOperative` frame is ACKed, so an inbox frame / `BoundedStop` / restore
+/// arriving right after is never lost to a startup race.
 pub(crate) fn spawn(
     spec: Arc<BoundedSpec>,
-    instance_id: Arc<str>,
+    instance: Arc<BoundedInstance>,
+    inbox_rx: Receiver<Vec<u8>>,
     args: String,
     pool: Arc<WorkStealingPool>,
 ) {
-    let cancel = Arc::new(AtomicBool::new(false));
-    let (inbox_tx, inbox_rx) = unbounded::<Vec<u8>>();
-    control::register(
-        &instance_id,
-        BoundedControl {
-            cancel: Arc::clone(&cancel),
-            inbox_tx,
-        },
-    );
-
-    let name = format!("flezha-bounded-{instance_id}");
-    let thread_instance_id = Arc::clone(&instance_id);
+    let name = format!("flezha-bounded-{}", instance.instance_id);
+    let thread_instance = Arc::clone(&instance);
     let spawned = thread::Builder::new()
         .name(name)
-        .spawn(move || run(spec, thread_instance_id, args, pool, cancel, inbox_rx));
+        .spawn(move || run(spec, thread_instance, inbox_rx, args, pool));
 
     if let Err(e) = spawned {
-        // Spawn failed: tear down the just-registered control entry and report
-        // a terminal failure so the controller does not wait forever.
-        control::remove(&instance_id);
+        // Spawn failed: deregister this run's flusher entries and report a
+        // terminal failure so the controller does not wait forever. The registry
+        // entry is dropped by the controller's stop_operative on the completion.
+        deregister_flushers(&instance.stage_segments);
         crate::executor::emit_bounded_completed(
-            instance_id.to_string(),
+            instance.instance_id.to_string(),
             "error".to_string(),
             format!("failed to spawn bounded driver thread: {e}"),
             Vec::new(),
@@ -103,11 +99,10 @@ pub(crate) fn spawn(
 
 fn run(
     spec: Arc<BoundedSpec>,
-    instance_id: Arc<str>,
+    instance: Arc<BoundedInstance>,
+    inbox_rx: Receiver<Vec<u8>>,
     args: String,
     pool: Arc<WorkStealingPool>,
-    cancel: Arc<AtomicBool>,
-    inbox_rx: Receiver<Vec<u8>>,
 ) {
     let finished = Arc::new(AtomicBool::new(false));
 
@@ -115,20 +110,40 @@ fn run(
     // finished first.
     let watcher = spec
         .max_duration
-        .map(|d| spawn_duration_watcher(d, Arc::clone(&cancel), Arc::clone(&finished)));
+        .map(|d| spawn_duration_watcher(d, Arc::clone(&instance.cancel), Arc::clone(&finished)));
 
     let (status, error, result) = match spec.topology.as_ref() {
-        None => run_sugar(spec.run, &instance_id, &args, &cancel, inbox_rx),
-        Some(_) => run_structured(&spec, &instance_id, &args, &cancel, &pool),
+        // Structured: hold on the crash-resume gate until the Controller's
+        // Segment restores land, then drive the chain over the restored state.
+        Some(_) => {
+            instance.wait_for_restore();
+            run_structured(&spec, &instance, &args, &pool)
+        }
+        // Run-sugar: no Segments, no restore — a crash re-runs from the top.
+        None => run_sugar(
+            spec.run,
+            &instance.instance_id,
+            &args,
+            &instance.cancel,
+            inbox_rx,
+        ),
     };
 
     finished.store(true, Ordering::Release);
     if let Some(w) = watcher {
         let _ = w.join();
     }
-    control::remove(&instance_id);
+    // Deregister this run's per-Segment flusher entries. The registry entry
+    // itself stays until the controller's stop_operative teardown, so a
+    // duplicate AddOperative before then is idempotent (no re-run).
+    deregister_flushers(&instance.stage_segments);
 
-    crate::executor::emit_bounded_completed(instance_id.to_string(), status, error, result);
+    crate::executor::emit_bounded_completed(
+        instance.instance_id.to_string(),
+        status,
+        error,
+        result,
+    );
 }
 
 /// Run-sugar path: a single implicit Operation/Segment whose body is `run`.
@@ -175,23 +190,47 @@ fn classify(
 /// segments within an operation run in parallel on the pool.
 fn run_structured(
     spec: &BoundedSpec,
-    instance_id: &Arc<str>,
+    instance: &BoundedInstance,
     args: &str,
-    cancel: &Arc<AtomicBool>,
     pool: &Arc<WorkStealingPool>,
 ) -> (String, String, Vec<u8>) {
     let topology = spec
         .topology
         .as_ref()
         .expect("run_structured invoked only for a structured spec");
-    let chain: &[OperationId] = &spec.chain;
 
-    // Build each stage's segments up front (per-segment state lives for the
-    // whole run). `instance` is a null Weak — the bounded collecting path never
-    // routes through a ContinuousInstance. When the class is durable, each
-    // Segment's applied Changes are flushed to the WAL as they run.
-    let mut stage_segments: Vec<Vec<Arc<SegmentSlot>>> = Vec::with_capacity(chain.len());
-    for &op_id in chain {
+    // Segments were built + registered up front by `start_bounded_resumable`
+    // (so restore could reach them and the resume gate could hold); a durable
+    // class has them already restored by the Controller's `RestoreInitState`
+    // frames. The run's flusher entries are deregistered in `run`'s teardown.
+    let ctx = ChainCtx {
+        topology,
+        chain: &spec.chain,
+        instance_id: &instance.instance_id,
+        pool,
+        stage_segments: &instance.stage_segments,
+        rollback_mode: spec.rollback_mode,
+    };
+    drive_chain(&ctx, args, &instance.cancel)
+}
+
+/// Build every stage's Segments for a structured spec, in chain order. Called
+/// synchronously by `start_bounded_resumable` so the Segments are registered
+/// for restore and the resume gate is armed before the driver thread — or any
+/// restore frame — runs. `instance` on each slot is a null `Weak` — the bounded
+/// collecting path never routes through a `ContinuousInstance`. When the class
+/// is durable, each Segment's applied Changes are flushed to the WAL as they run.
+pub(crate) fn build_all_stage_segments(
+    spec: &BoundedSpec,
+    instance_id: &Arc<str>,
+    pool: &Arc<WorkStealingPool>,
+) -> Vec<Vec<Arc<SegmentSlot>>> {
+    let topology = spec
+        .topology
+        .as_ref()
+        .expect("build_all_stage_segments invoked only for a structured spec");
+    let mut stage_segments: Vec<Vec<Arc<SegmentSlot>>> = Vec::with_capacity(spec.chain.len());
+    for &op_id in &spec.chain {
         let op = topology
             .operation(op_id)
             .expect("chain operation present in topology");
@@ -204,28 +243,19 @@ fn run_structured(
             spec.persistence_enabled,
         ));
     }
+    stage_segments
+}
 
-    let ctx = ChainCtx {
-        topology,
-        chain,
-        instance_id,
-        pool,
-        stage_segments: &stage_segments,
-        rollback_mode: spec.rollback_mode,
-    };
-    let outcome = drive_chain(&ctx, args, cancel);
-
-    // Drop any per-segment flusher registrations created for this run so the
-    // process-global flusher does not accumulate dead entries across jobs.
-    for slots in &stage_segments {
+/// Deregister every per-Segment flusher entry created for a run so the
+/// process-global flusher does not accumulate dead entries across jobs.
+fn deregister_flushers(stage_segments: &[Vec<Arc<SegmentSlot>>]) {
+    for slots in stage_segments {
         for slot in slots {
             if let Some(id) = slot.flusher_entry_id {
                 SegmentFlusher::instance().deregister(id);
             }
         }
     }
-
-    outcome
 }
 
 fn drive_chain(ctx: &ChainCtx, args: &str, cancel: &AtomicBool) -> (String, String, Vec<u8>) {
