@@ -114,13 +114,19 @@ static SECONDARY_STREAM: Mutex<Option<Arc<FlezhaStream>>> = Mutex::new(None);
 /// Set/clear the secondary stream used by [`send_oneshot`]. Called from the
 /// streams-connect path alongside [`install_global_sink`].
 pub fn set_secondary_stream(stream: Option<Arc<FlezhaStream>>) {
-    *SECONDARY_STREAM.lock().expect("secondary stream lock poisoned") = stream;
+    *SECONDARY_STREAM
+        .lock()
+        .expect("secondary stream lock poisoned") = stream;
 }
 
 /// Best-effort one-shot write of a pre-built frame to the current secondary
 /// stream. `false` if no stream is installed or the write fails (no retry).
 pub fn send_oneshot(frame: &[u8]) -> bool {
-    match SECONDARY_STREAM.lock().expect("secondary stream lock poisoned").as_ref() {
+    match SECONDARY_STREAM
+        .lock()
+        .expect("secondary stream lock poisoned")
+        .as_ref()
+    {
         Some(stream) => (&**stream).write_all(frame).is_ok(),
         None => false,
     }
@@ -202,6 +208,11 @@ pub fn install_global_sink(send_fn: SendFrameFn) {
     }
 }
 
+/// Serializes every test that installs the process-global sink — the sink's own
+/// tests plus the bounded driver test — so they never clobber each other's sink.
+#[cfg(test)]
+pub(crate) static SINK_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -209,9 +220,6 @@ mod tests {
 
     use super::*;
     use crate::segment::flusher::SendError;
-
-    // STATE is process-global, so sink tests must not run concurrently.
-    static TEST_LOCK: StdMutex<()> = StdMutex::new(());
 
     fn reset_state() {
         let mut st = STATE.lock().unwrap();
@@ -239,7 +247,7 @@ mod tests {
 
     #[test]
     fn frames_with_no_sink_buffer_and_replay_on_install() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = super::SINK_TEST_LOCK.lock().unwrap();
         reset_state();
 
         send(b"a".to_vec());
@@ -258,7 +266,7 @@ mod tests {
 
     #[test]
     fn live_sink_sends_directly_without_buffering() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = super::SINK_TEST_LOCK.lock().unwrap();
         reset_state();
 
         let (sink, seen) = recording_sink(Arc::new(AtomicBool::new(false)));
@@ -266,13 +274,16 @@ mod tests {
         send(b"x".to_vec());
 
         assert_eq!(*seen.lock().unwrap(), vec![b"x".to_vec()]);
-        assert!(STATE.lock().unwrap().ring.is_empty(), "no buffering on success");
+        assert!(
+            STATE.lock().unwrap().ring.is_empty(),
+            "no buffering on success"
+        );
         reset_state();
     }
 
     #[test]
     fn failed_writes_buffer_then_replay_when_stream_recovers() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = super::SINK_TEST_LOCK.lock().unwrap();
         reset_state();
 
         let fail = Arc::new(AtomicBool::new(true));
@@ -294,7 +305,7 @@ mod tests {
 
     #[test]
     fn ring_drops_oldest_beyond_capacity() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = super::SINK_TEST_LOCK.lock().unwrap();
         std::env::set_var(ENV_RING_CAPACITY, "3");
         reset_state();
 
@@ -302,7 +313,11 @@ mod tests {
             send(vec![i]); // no sink → ring
         }
         let ring: Vec<Vec<u8>> = STATE.lock().unwrap().ring.iter().cloned().collect();
-        assert_eq!(ring, vec![vec![2u8], vec![3u8], vec![4u8]], "oldest dropped");
+        assert_eq!(
+            ring,
+            vec![vec![2u8], vec![3u8], vec![4u8]],
+            "oldest dropped"
+        );
 
         std::env::remove_var(ENV_RING_CAPACITY);
         reset_state();
@@ -310,7 +325,7 @@ mod tests {
 
     #[test]
     fn broken_pipe_flood_crosses_threshold_once_per_window() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = super::SINK_TEST_LOCK.lock().unwrap();
         std::env::set_var(ENV_FLOOD_THRESHOLD, "3");
         std::env::set_var(ENV_FLOOD_WINDOW_MS, "60000");
         reset_state();
@@ -334,7 +349,7 @@ mod tests {
         // Exercises send()'s flood path end-to-end: a failing sink past the
         // threshold returns `should_reconnect`, and the request_reconnect
         // call is a safe no-op when no coordinator trigger is installed.
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = super::SINK_TEST_LOCK.lock().unwrap();
         std::env::set_var(ENV_FLOOD_THRESHOLD, "3");
         std::env::set_var(ENV_FLOOD_WINDOW_MS, "60000");
         reset_state();
@@ -354,7 +369,7 @@ mod tests {
 
     #[test]
     fn stale_broken_pipes_age_out_of_window() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = super::SINK_TEST_LOCK.lock().unwrap();
         std::env::set_var(ENV_FLOOD_THRESHOLD, "2");
         std::env::set_var(ENV_FLOOD_WINDOW_MS, "100");
         reset_state();
@@ -364,7 +379,10 @@ mod tests {
         assert!(!st.note_broken_pipe(t0));
         // A failure past the window evicts t0, so this counts as the 1st.
         let later = t0 + Duration::from_millis(200);
-        assert!(!st.note_broken_pipe(later), "stale failure aged out, no flood");
+        assert!(
+            !st.note_broken_pipe(later),
+            "stale failure aged out, no flood"
+        );
         drop(st);
 
         std::env::remove_var(ENV_FLOOD_THRESHOLD);

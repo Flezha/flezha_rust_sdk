@@ -11,12 +11,11 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
+use super::{BoundedOperative, BoundedRunFn, RollbackMode};
 use crate::channel::builder::ChannelBuilder;
 use crate::channel::{ChannelKind, OperationId};
 use crate::operative::builder::build_topology;
 use crate::operative::topology::{OperativeTopology, SegmentingMode};
-
-use super::{BoundedOperative, BoundedRunFn, RollbackMode};
 
 /// Frozen per-class authoring result stored in the registry. `topology` is
 /// `None` for the run-sugar form; `Some` (with the ordered `chain`) for the
@@ -33,6 +32,9 @@ pub(crate) struct BoundedSpec {
     pub max_duration: Option<Duration>,
     /// Saga rollback scope applied on abnormal termination.
     pub rollback_mode: RollbackMode,
+    /// Class-level persistence toggle; when true, a structured bounded's
+    /// per-Segment Changes are flushed to the WAL as they apply.
+    pub persistence_enabled: bool,
 }
 
 // Manual: `OperativeTopology` holds closures and is not `Debug`. A summary is
@@ -44,6 +46,7 @@ impl std::fmt::Debug for BoundedSpec {
             .field("chain_len", &self.chain.len())
             .field("max_duration", &self.max_duration)
             .field("rollback_mode", &self.rollback_mode)
+            .field("persistence_enabled", &self.persistence_enabled)
             .finish()
     }
 }
@@ -67,7 +70,10 @@ pub enum BuildBoundedError {
         "bounded operative `{factory_id}` declares a branching topology at `{at}`; bounded v1 \
          supports a single linear chain only (each stage feeds exactly one downstream operation)"
     )]
-    Branching { factory_id: &'static str, at: String },
+    Branching {
+        factory_id: &'static str,
+        at: String,
+    },
 
     #[error(
         "bounded operative `{factory_id}` declares a dynamic-segment operation `{operation}`; \
@@ -118,6 +124,7 @@ pub(crate) fn build_spec<T: BoundedOperative>() -> Result<BoundedSpec, BuildBoun
             chain: Vec::new(),
             max_duration: T::max_duration(),
             rollback_mode: T::rollback_mode(),
+            persistence_enabled: T::PERSISTENCE_ENABLED,
         });
     }
 
@@ -133,6 +140,7 @@ pub(crate) fn build_spec<T: BoundedOperative>() -> Result<BoundedSpec, BuildBoun
         chain,
         max_duration: T::max_duration(),
         rollback_mode: T::rollback_mode(),
+        persistence_enabled: T::PERSISTENCE_ENABLED,
     })
 }
 

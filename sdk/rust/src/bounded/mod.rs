@@ -107,6 +107,16 @@ pub trait BoundedOperative: Send + Sync + 'static {
     fn rollback_mode() -> RollbackMode {
         RollbackMode::AllOrNothing
     }
+
+    /// Class-level persistence toggle (durable by default, mirroring
+    /// [`ContinuousOperative::PERSISTENCE_ENABLED`](crate::operative::ContinuousOperative::PERSISTENCE_ENABLED)).
+    /// When `true`, a structured bounded operative's per-Segment Changes are
+    /// written to the WAL as they apply, so a crash resumes from persisted
+    /// state. When `false`, the per-Segment flush drains and discards Changes
+    /// with no serialization or wire I/O — the operative is in-memory only
+    /// (a crash re-runs from the top). The controller resolves this
+    /// durable-by-default with a per-class operator opt-out.
+    const PERSISTENCE_ENABLED: bool = true;
 }
 
 /// Saga rollback scope chosen per bounded operative (see
@@ -256,7 +266,6 @@ impl BoundedCtx {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::cell::Cell;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
@@ -265,6 +274,7 @@ mod tests {
     use crossbeam::channel::Receiver;
     use serde::{Deserialize, Serialize};
 
+    use super::*;
     use crate::command::CommandAction;
     use crate::executor::fast::ExecutorNode;
     use crate::executor::{install_reconnect_trigger, ExecutorMessage};
@@ -423,7 +433,9 @@ mod tests {
         }
         fn operations(c: &mut ChannelBuilder) {
             c.input::<String>("in").into::<EchoOp>();
-            c.channel::<String>("out").from::<EchoOp>().to_plugin("sink");
+            c.channel::<String>("out")
+                .from::<EchoOp>()
+                .to_plugin("sink");
         }
     }
 
@@ -484,7 +496,9 @@ mod tests {
         fn operations(c: &mut ChannelBuilder) {
             c.input::<String>("in").into::<Stage1>();
             c.channel::<String>("mid").from::<Stage1>().into::<Stage2>();
-            c.channel::<String>("out").from::<Stage2>().to_plugin("sink");
+            c.channel::<String>("out")
+                .from::<Stage2>()
+                .to_plugin("sink");
         }
     }
 
@@ -580,6 +594,21 @@ mod tests {
         }
     }
 
+    /// Opt-out twin of `FanBounded`: identical topology, persistence disabled —
+    /// its Changes drain-and-discard instead of reaching the WAL.
+    struct FanOptOutBounded;
+    impl BoundedOperative for FanOptOutBounded {
+        fn factory_id() -> &'static str {
+            "test-fan-optout-bounded"
+        }
+        fn operations(c: &mut ChannelBuilder) {
+            c.input::<String>("in").into::<SplitOp>();
+            c.channel::<String>("mid").from::<SplitOp>().into::<FanOp>();
+            c.channel::<String>("out").from::<FanOp>().to_plugin("sink");
+        }
+        const PERSISTENCE_ENABLED: bool = false;
+    }
+
     #[derive(Default)]
     struct HybridStage1;
     impl Operation for HybridStage1 {
@@ -655,6 +684,9 @@ mod tests {
     /// plumbing (a compensable inter-operation op's `ctx.emit` is collected, not
     /// wired).
     static COMPENSATION_LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    // Captures the segment_state_change frames a durable bounded's flush ships.
+    static WAL_FRAMES: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
 
     fn comp_log(entry: String) {
         COMPENSATION_LOG.lock().unwrap().push(entry);
@@ -778,9 +810,15 @@ mod tests {
         }
         fn operations(c: &mut ChannelBuilder) {
             c.input::<String>("in").into::<SagaReserve>();
-            c.channel::<String>("c1").from::<SagaReserve>().into::<SagaCharge>();
-            c.channel::<String>("c2").from::<SagaCharge>().into::<SagaShipFails>();
-            c.channel::<String>("out").from::<SagaShipFails>().to_plugin("sink");
+            c.channel::<String>("c1")
+                .from::<SagaReserve>()
+                .into::<SagaCharge>();
+            c.channel::<String>("c2")
+                .from::<SagaCharge>()
+                .into::<SagaShipFails>();
+            c.channel::<String>("out")
+                .from::<SagaShipFails>()
+                .to_plugin("sink");
         }
     }
 
@@ -798,9 +836,15 @@ mod tests {
         }
         fn operations(c: &mut ChannelBuilder) {
             c.input::<String>("in").into::<SagaReserve>();
-            c.channel::<String>("c1").from::<SagaReserve>().into::<SagaCharge>();
-            c.channel::<String>("c2").from::<SagaCharge>().into::<SagaShipFails>();
-            c.channel::<String>("out").from::<SagaShipFails>().to_plugin("sink");
+            c.channel::<String>("c1")
+                .from::<SagaReserve>()
+                .into::<SagaCharge>();
+            c.channel::<String>("c2")
+                .from::<SagaCharge>()
+                .into::<SagaShipFails>();
+            c.channel::<String>("out")
+                .from::<SagaShipFails>()
+                .to_plugin("sink");
         }
     }
 
@@ -812,9 +856,15 @@ mod tests {
         }
         fn operations(c: &mut ChannelBuilder) {
             c.input::<String>("in").into::<SagaReserve>();
-            c.channel::<String>("c1").from::<SagaReserve>().into::<SagaCharge>();
-            c.channel::<String>("c2").from::<SagaCharge>().into::<EchoOp>();
-            c.channel::<String>("out").from::<EchoOp>().to_plugin("sink");
+            c.channel::<String>("c1")
+                .from::<SagaReserve>()
+                .into::<SagaCharge>();
+            c.channel::<String>("c2")
+                .from::<SagaCharge>()
+                .into::<EchoOp>();
+            c.channel::<String>("out")
+                .from::<EchoOp>()
+                .to_plugin("sink");
         }
     }
 
@@ -848,7 +898,10 @@ mod tests {
                 vec!["odd"]
             }
         }
-        fn init_state(operation_key: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> FanKeyState {
+        fn init_state(
+            operation_key: Option<&str>,
+            _: Option<RestoreInitPayload<'_>>,
+        ) -> FanKeyState {
             FanKeyState {
                 key: operation_key.unwrap_or("").to_string(),
             }
@@ -909,9 +962,15 @@ mod tests {
         }
         fn operations(c: &mut ChannelBuilder) {
             c.input::<String>("in").into::<SplitOp>();
-            c.channel::<String>("mid").from::<SplitOp>().into::<SagaFan>();
-            c.channel::<String>("mid2").from::<SagaFan>().into::<FailLast>();
-            c.channel::<String>("out").from::<FailLast>().to_plugin("sink");
+            c.channel::<String>("mid")
+                .from::<SplitOp>()
+                .into::<SagaFan>();
+            c.channel::<String>("mid2")
+                .from::<SagaFan>()
+                .into::<FailLast>();
+            c.channel::<String>("out")
+                .from::<FailLast>()
+                .to_plugin("sink");
         }
     }
 
@@ -966,8 +1025,12 @@ mod tests {
         }
         fn operations(c: &mut ChannelBuilder) {
             c.input::<String>("in").into::<StopReserve>();
-            c.channel::<String>("mid").from::<StopReserve>().into::<EchoOp>();
-            c.channel::<String>("out").from::<EchoOp>().to_plugin("sink");
+            c.channel::<String>("mid")
+                .from::<StopReserve>()
+                .into::<EchoOp>();
+            c.channel::<String>("out")
+                .from::<EchoOp>()
+                .to_plugin("sink");
         }
     }
 
@@ -1011,14 +1074,20 @@ mod tests {
             _ => panic!("expected a BoundedOperative variant"),
         }
 
-        assert!(matches!(reg.remove("t1").as_deref(), Some(Operative::Bounded(_))));
+        assert!(matches!(
+            reg.remove("t1").as_deref(),
+            Some(Operative::Bounded(_))
+        ));
         assert!(!reg.contains("t1"));
     }
 
     #[test]
     fn run_sugar_spec_has_no_topology() {
         let spec = spec::build_spec::<EmitBounded>().expect("run-sugar spec builds");
-        assert!(spec.topology.is_none(), "bare run() ⇒ run-sugar (no topology)");
+        assert!(
+            spec.topology.is_none(),
+            "bare run() ⇒ run-sugar (no topology)"
+        );
         assert!(spec.chain.is_empty());
     }
 
@@ -1126,6 +1195,21 @@ mod tests {
         let (tx, rx) = crossbeam::channel::unbounded::<ExecutorMessage>();
         install_reconnect_trigger(tx);
 
+        // Durable bounded operatives in this test ship WAL frames through the
+        // process-global sink; hold the shared sink lock for the whole test so
+        // it never races the segment-state sink tests, and install a capturing
+        // sink to observe the frames.
+        let _sink_guard = crate::segment::segment_state_sink::SINK_TEST_LOCK
+            .lock()
+            .unwrap();
+        let wal_sink: crate::segment::flusher::SendFrameFn = Arc::new(
+            |frame: &[u8]| -> Result<(), crate::segment::flusher::SendError> {
+                WAL_FRAMES.lock().unwrap().push(frame.to_vec());
+                Ok(())
+            },
+        );
+        crate::segment::segment_state_sink::install_global_sink(wal_sink);
+
         crate::register_bounded::<EmitBounded>();
         crate::register_bounded::<FailBounded>();
         crate::register_bounded::<PanicBounded>();
@@ -1135,6 +1219,7 @@ mod tests {
         crate::register_bounded::<EchoStructured>();
         crate::register_bounded::<ChainBounded>();
         crate::register_bounded::<FanBounded>();
+        crate::register_bounded::<FanOptOutBounded>();
         crate::register_bounded::<HybridBounded>();
         crate::register_bounded::<SagaBounded>();
         crate::register_bounded::<KeepProgressSaga>();
@@ -1146,17 +1231,36 @@ mod tests {
 
         // --- run-sugar: run once, args echoed, status "ok" ---
         EMIT_RUNS.store(0, Ordering::SeqCst);
-        assert!(node.start_bounded("test-emit-bounded".into(), "bounded-ok".into(), "hello".into()));
+        assert!(node.start_bounded(
+            "test-emit-bounded".into(),
+            "bounded-ok".into(),
+            "hello".into()
+        ));
         let (outs, done) = drain(&rx, "bounded-ok");
-        assert_eq!(EMIT_RUNS.load(Ordering::SeqCst), 1, "run executes exactly once");
+        assert_eq!(
+            EMIT_RUNS.load(Ordering::SeqCst),
+            1,
+            "run executes exactly once"
+        );
         assert_eq!(outs, vec![b"hello".to_vec()], "args echoed as output");
         assert_eq!((done.0.as_str(), done.1.as_str()), ("ok", ""));
 
         // Instance stays registered; a duplicate start is idempotent (no re-run).
         assert!(node.has_operative("bounded-ok"));
-        assert!(node.get_continuous("bounded-ok").is_none(), "a bounded is not a operative");
-        assert!(node.start_bounded("test-emit-bounded".into(), "bounded-ok".into(), "hello".into()));
-        assert_eq!(EMIT_RUNS.load(Ordering::SeqCst), 1, "duplicate start must not re-run");
+        assert!(
+            node.get_continuous("bounded-ok").is_none(),
+            "a bounded is not a operative"
+        );
+        assert!(node.start_bounded(
+            "test-emit-bounded".into(),
+            "bounded-ok".into(),
+            "hello".into()
+        ));
+        assert_eq!(
+            EMIT_RUNS.load(Ordering::SeqCst),
+            1,
+            "duplicate start must not re-run"
+        );
 
         // --- run-sugar: terminal error ---
         assert!(node.start_bounded("test-fail-bounded".into(), "bounded-err".into(), "".into()));
@@ -1165,20 +1269,35 @@ mod tests {
         assert!(done.1.contains("boom"));
 
         // --- run-sugar: panic caught and reported as "error" ---
-        assert!(node.start_bounded("test-panic-bounded".into(), "bounded-panic".into(), "".into()));
+        assert!(node.start_bounded(
+            "test-panic-bounded".into(),
+            "bounded-panic".into(),
+            "".into()
+        ));
         let (_o, done) = drain(&rx, "bounded-panic");
         assert_eq!(done.0, "error");
         assert!(done.1.contains("kaboom"));
 
         // --- run-sugar: ctx.complete carries the result payload ---
-        assert!(node.start_bounded("test-complete-bounded".into(), "bounded-c".into(), "z".into()));
+        assert!(node.start_bounded(
+            "test-complete-bounded".into(),
+            "bounded-c".into(),
+            "z".into()
+        ));
         let (_o, done) = drain(&rx, "bounded-c");
         assert_eq!(done.0, "ok");
-        assert_eq!(done.2, b"result:z".to_vec(), "complete() result reaches BoundedCompleted");
+        assert_eq!(
+            done.2,
+            b"result:z".to_vec(),
+            "complete() result reaches BoundedCompleted"
+        );
 
         // --- inbox + loop: post-start input is processed, terminal predicate exits ok ---
         assert!(node.start_bounded("test-loop-bounded".into(), "loop-1".into(), "".into()));
-        assert!(control::push_inbox("loop-1", b"alpha".to_vec()), "inbox delivers to running instance");
+        assert!(
+            control::push_inbox("loop-1", b"alpha".to_vec()),
+            "inbox delivers to running instance"
+        );
         assert!(control::push_inbox("loop-1", b"beta".to_vec()));
         assert!(control::push_inbox("loop-1", b"quit".to_vec()));
         let (outs, done) = drain(&rx, "loop-1");
@@ -1190,7 +1309,9 @@ mod tests {
         assert!(control::push_inbox("loop-2", b"one".to_vec()));
         // Drain the echo first so the instance is definitely live before stop.
         wait_for_output(&rx, "loop-2", b"got:one");
-        let stop = BoundedStop { operative_id: "loop-2".into() };
+        let stop = BoundedStop {
+            operative_id: "loop-2".into(),
+        };
         let mut errs = Vec::new();
         stop.handle(&mut node, "", &mut errs);
         assert!(errs.is_empty());
@@ -1201,10 +1322,16 @@ mod tests {
         assert!(node.start_bounded("test-loop-bounded".into(), "loop-3".into(), "".into()));
         assert!(control::push_inbox("loop-3", b"x".to_vec()));
         wait_for_output(&rx, "loop-3", b"got:x");
-        assert!(node.stop_operative("loop-3"), "stop_operative removes the bounded");
+        assert!(
+            node.stop_operative("loop-3"),
+            "stop_operative removes the bounded"
+        );
         assert!(!node.has_operative("loop-3"));
         let (_o, done) = drain(&rx, "loop-3");
-        assert_eq!(done.0, "cancelled", "hard stop ⇒ driver cancels and tears down");
+        assert_eq!(
+            done.0, "cancelled",
+            "hard stop ⇒ driver cancels and tears down"
+        );
 
         // --- max_duration backstop → cancelled ---
         assert!(node.start_bounded("test-timed-bounded".into(), "timed-1".into(), "".into()));
@@ -1225,7 +1352,11 @@ mod tests {
         assert!(node.start_bounded("test-chain-bounded".into(), "chain-1".into(), "x".into()));
         let (chain_outs, done) = drain(&rx, "chain-1");
         assert_eq!(done.0, "ok");
-        assert_eq!(chain_outs, vec![b"x-1-2".to_vec()], "Stage1 then Stage2, in order");
+        assert_eq!(
+            chain_outs,
+            vec![b"x-1-2".to_vec()],
+            "Stage1 then Stage2, in order"
+        );
 
         // --- structured parallel static segments + barrier + per-segment state ---
         assert!(node.start_bounded(
@@ -1278,7 +1409,11 @@ mod tests {
         // pass (the mode only diverges with committed iterations) — proves
         // rollback_mode() reaches the driver ---
         let _ = drain_comp_log();
-        assert!(node.start_bounded("test-keep-progress-saga".into(), "saga-kp".into(), "Y".into()));
+        assert!(node.start_bounded(
+            "test-keep-progress-saga".into(),
+            "saga-kp".into(),
+            "Y".into()
+        ));
         let (_o, done) = drain(&rx, "saga-kp");
         assert_eq!(done.0, "error");
         assert_eq!(
@@ -1295,7 +1430,10 @@ mod tests {
         let (clean_outs, done) = drain(&rx, "saga-ok");
         assert_eq!(done.0, "ok");
         assert_eq!(clean_outs, vec![b"echo:charged:reserved:Z".to_vec()]);
-        assert!(drain_comp_log().is_empty(), "a clean ok must not compensate");
+        assert!(
+            drain_comp_log().is_empty(),
+            "a clean ok must not compensate"
+        );
 
         // --- §7b.1 per-segment compensation: once per segment that ran;
         // hookless SplitOp is skipped ---
@@ -1342,7 +1480,10 @@ mod tests {
         };
         let mut errors = Vec::new();
         add.handle(&mut node, "", &mut errors);
-        assert!(errors.is_empty(), "AddOperative --kind bounded should not error: {errors:?}");
+        assert!(
+            errors.is_empty(),
+            "AddOperative --kind bounded should not error: {errors:?}"
+        );
         let (outs, done) = drain(&rx, "bounded-via-add");
         assert_eq!(outs, vec![b"argz".to_vec()]);
         assert_eq!(done.0, "ok");
@@ -1358,6 +1499,33 @@ mod tests {
         add_bad.handle(&mut node, "", &mut errors_bad);
         assert_eq!(errors_bad.len(), 1);
         assert!(errors_bad[0].contains("BoundedOperative class"));
+
+        // --- §5b.1/§7c.1 durable bounded actually writes WAL; opt-out writes nothing ---
+        // FanBounded is durable-by-default; its FanOp applies a Change per item,
+        // which the driver flushes as a segment_state_change frame to the sink.
+        WAL_FRAMES.lock().unwrap().clear();
+        assert!(node.start_bounded("test-fan-bounded".into(), "fan-wal".into(), "a,bb".into()));
+        let (_o, done) = drain(&rx, "fan-wal");
+        assert_eq!(done.0, "ok");
+        assert!(
+            !WAL_FRAMES.lock().unwrap().is_empty(),
+            "a durable bounded operative ships segment_state_change frames to the WAL"
+        );
+
+        // The opt-out twin does identical work with PERSISTENCE_ENABLED=false:
+        // Changes drain-and-discard, nothing reaches the WAL.
+        WAL_FRAMES.lock().unwrap().clear();
+        assert!(node.start_bounded(
+            "test-fan-optout-bounded".into(),
+            "fan-optout".into(),
+            "a,bb".into(),
+        ));
+        let (_o, done) = drain(&rx, "fan-optout");
+        assert_eq!(done.0, "ok");
+        assert!(
+            WAL_FRAMES.lock().unwrap().is_empty(),
+            "an opt-out bounded operative writes nothing to the WAL"
+        );
     }
 
     /// Drain output frames until the `BoundedCompleted` for `id`, returning the
@@ -1374,11 +1542,10 @@ mod tests {
                 .recv_timeout(remaining)
                 .unwrap_or_else(|_| panic!("timed out waiting for bounded {id}"));
             match msg {
-                ExecutorMessage::EmitBoundedOutput { operative_id, payload }
-                    if operative_id == id =>
-                {
-                    outs.push(payload)
-                }
+                ExecutorMessage::EmitBoundedOutput {
+                    operative_id,
+                    payload,
+                } if operative_id == id => outs.push(payload),
                 ExecutorMessage::EmitBoundedCompleted {
                     operative_id,
                     status,
@@ -1399,7 +1566,11 @@ mod tests {
             let msg = rx
                 .recv_timeout(remaining)
                 .unwrap_or_else(|_| panic!("timed out waiting for output from {id}"));
-            if let ExecutorMessage::EmitBoundedOutput { operative_id, payload: p } = msg {
+            if let ExecutorMessage::EmitBoundedOutput {
+                operative_id,
+                payload: p,
+            } = msg
+            {
                 if operative_id == id && p == payload {
                     return;
                 }

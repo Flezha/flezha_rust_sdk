@@ -24,19 +24,19 @@ use flz_transport::transport::FlezhaStream;
 
 use crate::bounded::{BoundedCollectSink, BoundedError};
 use crate::channel::builder::BuildSegmentArgs;
-use crate::channel::{ChannelId, ChannelKind, OverflowPolicy, OperationId};
-use crate::operative::topology::OperativeTopology;
+use crate::channel::{ChannelId, ChannelKind, OperationId, OverflowPolicy};
 use crate::executor::mailbox::Mailbox;
-use crate::segment::flusher::{
-    encode_segment_identity, FlushableBuffer, SegmentFlusher, TypedBuffer,
-};
-use crate::segment::header::HeaderTemplate;
-use crate::segment::{make_segment_payload, SegmentPayload, SegmentSlot, OperationDispatcher};
-use crate::operative::instance::ContinuousInstance;
 use crate::operation::change::NoChange;
 use crate::operation::ctx::EmitSink;
 use crate::operation::state_handle::StateHandle;
 use crate::operation::{Operation, OperationCtx, OperationError};
+use crate::operative::instance::ContinuousInstance;
+use crate::operative::topology::OperativeTopology;
+use crate::segment::flusher::{
+    encode_segment_identity, FlushableBuffer, SegmentFlusher, TypedBuffer,
+};
+use crate::segment::header::HeaderTemplate;
+use crate::segment::{make_segment_payload, OperationDispatcher, SegmentPayload, SegmentSlot};
 use crate::util::LockRecover;
 
 /// Per-segment holder for a typed Operation instance + its State. Boxed and
@@ -119,6 +119,22 @@ impl<S: Operation> OperationDispatcherImpl<S> {
             flush,
             _phantom: std::marker::PhantomData,
         }
+    }
+
+    /// Ship the Changes a collecting-path op applied to the WAL — or drain and
+    /// discard when the class opted out. The bounded analog of the continuous
+    /// `dispatch` flush hook; both feed `flusher::flush_one`.
+    fn flush_collected(&self, buffer: RefCell<Vec<S::Change>>) {
+        let mut buf = TypedBuffer::<S> {
+            inner: buffer.into_inner(),
+        };
+        crate::segment::flusher::flush_one(
+            &mut buf,
+            &self.flush.segment_identity,
+            &self.flush.change_seq,
+            &self.flush.header,
+            self.flush.persistence_enabled,
+        );
     }
 }
 
@@ -247,9 +263,8 @@ impl<S: Operation> OperationDispatcher for OperationDispatcherImpl<S> {
             .downcast_mut::<SegmentState<S>>()
             .expect("run_collecting: state type mismatch for operation");
 
-        // Local change buffer: P1 bounded folds Changes into in-memory state
-        // via `apply_change` but does not persist them (durability is Phase 3,
-        // where the WAL flush wires in here).
+        // Per-run change buffer: `StateHandle::apply` records Changes here; the
+        // flush after the run ships them to the WAL when the class is durable.
         let buffer: RefCell<Vec<S::Change>> = RefCell::new(Vec::new());
 
         let mut collect_sink = BoundedCollectAdapter {
@@ -265,6 +280,11 @@ impl<S: Operation> OperationDispatcher for OperationDispatcherImpl<S> {
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             typed_state.operation.run(input, handle, &mut ctx)
         }));
+
+        // Ship the applied Changes to the WAL regardless of outcome, so the WAL
+        // reflects the state applied before any failure (at-least-once; the saga
+        // compensates a partial run).
+        self.flush_collected(buffer);
 
         match outcome {
             Ok(Ok(())) => Ok(()),
@@ -306,8 +326,8 @@ impl<S: Operation> OperationDispatcher for OperationDispatcherImpl<S> {
             .downcast_mut::<SegmentState<S>>()
             .expect("compensate_collecting: state type mismatch for operation");
 
-        // Changes applied during compensation fold into in-memory state (P1);
-        // Phase-3 durability wires the WAL flush here, same as `run_collecting`.
+        // Per-compensation change buffer; flushed to the WAL after the hook runs
+        // when the class is durable, same as `run_collecting`.
         let buffer: RefCell<Vec<S::Change>> = RefCell::new(Vec::new());
 
         let mut collect_sink = BoundedCollectAdapter {
@@ -325,6 +345,10 @@ impl<S: Operation> OperationDispatcher for OperationDispatcherImpl<S> {
                 .operation
                 .compensate(typed_outputs, handle, &mut ctx)
         }));
+
+        // Persist the compensation's state changes to the WAL (durable classes)
+        // so a crash mid-compensation leaves the undo recorded.
+        self.flush_collected(buffer);
 
         match outcome {
             Ok(Ok(())) => Ok(()),
@@ -492,7 +516,10 @@ impl<'a> SegmentEmitSink<'a> {
 }
 
 impl<'a> EmitSink for SegmentEmitSink<'a> {
-    fn emit_inter_operation(&mut self, value: Arc<dyn Any + Send + Sync>) -> Result<(), OperationError> {
+    fn emit_inter_operation(
+        &mut self,
+        value: Arc<dyn Any + Send + Sync>,
+    ) -> Result<(), OperationError> {
         self.emit_inter_operation_with_meta(value, None)
     }
 
@@ -611,13 +638,15 @@ impl<'a> BoundedCollectAdapter<'a> {
     /// serializer (pure `to_plugin`) or hybrid plugin sink
     /// (`also_to_plugin_with`) and forward the bytes to the wire.
     fn route_plugin(&mut self, value: &Arc<dyn Any + Send + Sync>) -> Result<(), OperationError> {
-        let cid = self.output_channel_id.ok_or_else(|| self.unknown_channel())?;
-        let descriptor = self
-            .topology
-            .channel(cid)
-            .ok_or_else(|| OperationError::UnknownChannel {
-                channel: format!("<channel id {}>", cid),
-            })?;
+        let cid = self
+            .output_channel_id
+            .ok_or_else(|| self.unknown_channel())?;
+        let descriptor =
+            self.topology
+                .channel(cid)
+                .ok_or_else(|| OperationError::UnknownChannel {
+                    channel: format!("<channel id {}>", cid),
+                })?;
         let serializer = descriptor
             .plugin_serializer
             .as_ref()
@@ -694,11 +723,7 @@ const BLOCK_PARK_TIMEOUT: std::time::Duration = std::time::Duration::from_millis
 /// severely behind, and silence here is how the 2026-06-10 freeze hid.
 const BLOCK_WARN_AFTER: std::time::Duration = std::time::Duration::from_secs(5);
 
-pub(crate) fn enqueue(
-    slot: &Arc<SegmentSlot>,
-    payload: SegmentPayload,
-    policy: OverflowPolicy,
-) {
+pub(crate) fn enqueue(slot: &Arc<SegmentSlot>, payload: SegmentPayload, policy: OverflowPolicy) {
     let mut next = payload;
     let mut blocked_since: Option<std::time::Instant> = None;
     let mut block_warned = false;
@@ -1025,9 +1050,7 @@ pub fn build_segment_slot<S: Operation>(args: BuildSegmentArgs<'_>) -> Arc<Segme
         persistence_enabled: args.persistence_enabled,
         change_seq,
         segment_identity,
-        last_activity_at: std::sync::atomic::AtomicI64::new(
-            crate::segment::dynamic::now_millis(),
-        ),
+        last_activity_at: std::sync::atomic::AtomicI64::new(crate::segment::dynamic::now_millis()),
         flusher_entry_id,
     })
 }

@@ -25,6 +25,10 @@ use std::time::Duration;
 
 use crossbeam::channel::{unbounded, Receiver};
 
+use super::compensation::{plan_compensation, SegmentRun, StageRecord};
+use super::control::{self, BoundedControl};
+use super::spec::BoundedSpec;
+use super::{BoundedCollectSink, BoundedCtx, BoundedError, BoundedRunFn, RollbackMode};
 use crate::channel::builder::BuildSegmentArgs;
 use crate::channel::{ChannelKind, OperationId};
 use crate::executor::work_stealing_pool::WorkStealingPool;
@@ -32,11 +36,6 @@ use crate::operative::topology::{OperationDescriptor, OperativeTopology, Segment
 use crate::segment::flusher::SegmentFlusher;
 use crate::segment::SegmentSlot;
 use crate::util::LockRecover;
-
-use super::compensation::{plan_compensation, SegmentRun, StageRecord};
-use super::control::{self, BoundedControl};
-use super::spec::BoundedSpec;
-use super::{BoundedCollectSink, BoundedCtx, BoundedError, BoundedRunFn, RollbackMode};
 
 /// Type-erased value moving between bounded stages.
 type Value = Arc<dyn Any + Send + Sync>;
@@ -120,15 +119,7 @@ fn run(
 
     let (status, error, result) = match spec.topology.as_ref() {
         None => run_sugar(spec.run, &instance_id, &args, &cancel, inbox_rx),
-        Some(topology) => run_structured(
-            topology,
-            &spec.chain,
-            &instance_id,
-            &args,
-            &cancel,
-            &pool,
-            spec.rollback_mode,
-        ),
+        Some(_) => run_structured(&spec, &instance_id, &args, &cancel, &pool),
     };
 
     finished.store(true, Ordering::Release);
@@ -183,24 +174,35 @@ fn classify(
 /// only when every segment of operation `N` has finished (count-based barrier);
 /// segments within an operation run in parallel on the pool.
 fn run_structured(
-    topology: &Arc<OperativeTopology>,
-    chain: &[OperationId],
+    spec: &BoundedSpec,
     instance_id: &Arc<str>,
     args: &str,
     cancel: &Arc<AtomicBool>,
     pool: &Arc<WorkStealingPool>,
-    rollback_mode: RollbackMode,
 ) -> (String, String, Vec<u8>) {
+    let topology = spec
+        .topology
+        .as_ref()
+        .expect("run_structured invoked only for a structured spec");
+    let chain: &[OperationId] = &spec.chain;
+
     // Build each stage's segments up front (per-segment state lives for the
     // whole run). `instance` is a null Weak — the bounded collecting path never
-    // routes through a ContinuousInstance; `persistence_enabled` is false (P1
-    // bounded is in-memory; durability is Phase 3).
+    // routes through a ContinuousInstance. When the class is durable, each
+    // Segment's applied Changes are flushed to the WAL as they run.
     let mut stage_segments: Vec<Vec<Arc<SegmentSlot>>> = Vec::with_capacity(chain.len());
     for &op_id in chain {
         let op = topology
             .operation(op_id)
             .expect("chain operation present in topology");
-        stage_segments.push(build_stage_segments(topology, instance_id, op_id, op, pool));
+        stage_segments.push(build_stage_segments(
+            topology,
+            instance_id,
+            op_id,
+            op,
+            pool,
+            spec.persistence_enabled,
+        ));
     }
 
     let ctx = ChainCtx {
@@ -209,7 +211,7 @@ fn run_structured(
         instance_id,
         pool,
         stage_segments: &stage_segments,
-        rollback_mode,
+        rollback_mode: spec.rollback_mode,
     };
     let outcome = drive_chain(&ctx, args, cancel);
 
@@ -333,7 +335,10 @@ fn run_compensation(ctx: &ChainCtx, completed: &[StageRecord]) {
                 slot.dispatcher
                     .compensate_collecting(outputs, &mut state, ctx.topology, &mut sink)
             {
-                eprintln!("[flezha] bounded {} compensation error: {e}", ctx.instance_id);
+                eprintln!(
+                    "[flezha] bounded {} compensation error: {e}",
+                    ctx.instance_id
+                );
             }
         }
     }
@@ -348,6 +353,7 @@ fn build_stage_segments(
     op_id: OperationId,
     op: &OperationDescriptor,
     pool: &Arc<WorkStealingPool>,
+    persistence_enabled: bool,
 ) -> Vec<Arc<SegmentSlot>> {
     let build = |operation_key: Option<&str>, segment_index: usize| {
         (op.build_segment)(BuildSegmentArgs {
@@ -357,7 +363,7 @@ fn build_stage_segments(
             operation_id: op_id,
             operation_key,
             segment_index,
-            persistence_enabled: false,
+            persistence_enabled,
             pool: Arc::clone(pool),
         })
     };
