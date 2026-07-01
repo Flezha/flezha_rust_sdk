@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use crate::channel::builder::{BuildTopologyError, ChannelBuilder};
 use crate::channel::{ChannelDescriptor, ChannelKind, PluginSink};
-use crate::operative::topology::{SegmentingMode, OperativeTopology, OperationDescriptor};
+use crate::operative::topology::{OperationDescriptor, OperativeTopology, SegmentingMode};
 
 /// Built-in default per-Segment mailbox capacity used when a Operation does
 /// not override `mailbox_capacity()` and `FLEZHA_MAILBOX_CAPACITY` is
@@ -94,7 +94,10 @@ pub fn build_topology_with_persistence(
         if entry.operation_key_overridden && !entry.segment_keys.is_empty() {
             errors.push(BuildTopologyError::StaticAndDynamic { name: entry.name });
         }
-        let mode = match (entry.segment_keys.is_empty(), entry.operation_key_overridden) {
+        let mode = match (
+            entry.segment_keys.is_empty(),
+            entry.operation_key_overridden,
+        ) {
             (false, _) => SegmentingMode::Static,
             (true, true) => SegmentingMode::Dynamic,
             (true, false) => SegmentingMode::Single,
@@ -154,8 +157,8 @@ pub fn build_topology_with_persistence(
 /// `R::channels(...)` once and returns the resulting topology, capturing
 /// `R::PERSISTENCE_ENABLED` so `ContinuousInstance::new` can resolve the
 /// final per-instance flag.
-pub fn build_topology_for<R: crate::operative::ContinuousOperative>() -> Result<Arc<OperativeTopology>, TopologyBuildError>
-{
+pub fn build_topology_for<R: crate::operative::ContinuousOperative>(
+) -> Result<Arc<OperativeTopology>, TopologyBuildError> {
     let mut cb = ChannelBuilder::new();
     R::channels(&mut cb);
     build_topology_with_persistence(R::factory_id(), cb, R::PERSISTENCE_ENABLED)
@@ -195,9 +198,14 @@ pub(crate) fn resolve_mailbox_capacity_inner(
     validate_capacity(operation_name, resolved)
 }
 
-fn validate_capacity(operation_name: &'static str, value: usize) -> Result<usize, BuildTopologyError> {
+fn validate_capacity(
+    operation_name: &'static str,
+    value: usize,
+) -> Result<usize, BuildTopologyError> {
     if value == 0 {
-        return Err(BuildTopologyError::MailboxCapacityZero { operation: operation_name });
+        return Err(BuildTopologyError::MailboxCapacityZero {
+            operation: operation_name,
+        });
     }
     if value > MAX_MAILBOX_CAPACITY {
         return Err(BuildTopologyError::MailboxCapacityTooLarge {
@@ -282,8 +290,8 @@ mod tests {
 
     #[test]
     fn maximum_capacity_is_accepted() {
-        let cap =
-            resolve_mailbox_capacity_inner("max_operation", MAX_MAILBOX_CAPACITY, true, None).unwrap();
+        let cap = resolve_mailbox_capacity_inner("max_operation", MAX_MAILBOX_CAPACITY, true, None)
+            .unwrap();
         assert_eq!(cap, MAX_MAILBOX_CAPACITY);
     }
 }

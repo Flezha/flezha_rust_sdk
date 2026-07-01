@@ -56,7 +56,10 @@ impl Parse for OperativeDef {
         while input.peek(Token![->]) {
             input.parse::<Token![->]>()?;
             let ahead = input.fork();
-            let is_plugin = ahead.parse::<Ident>().map(|i| i == "plugin").unwrap_or(false);
+            let is_plugin = ahead
+                .parse::<Ident>()
+                .map(|i| i == "plugin")
+                .unwrap_or(false);
             if is_plugin {
                 input.parse::<Ident>()?; // plugin
                 input.parse::<Token![::]>()?;

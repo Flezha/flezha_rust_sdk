@@ -15,7 +15,7 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use crate::channel::entry_type::EntryChannelType;
-use crate::channel::{Channel, ChannelKind, OverflowPolicy, OperationId};
+use crate::channel::{Channel, ChannelKind, OperationId, OverflowPolicy};
 use crate::operation::Operation;
 
 /// Type-erased dispatcher factory for one Operation. Stored on
@@ -93,9 +93,8 @@ pub(crate) type SerializeStateFn =
 pub(crate) type DeserializeStateFn =
     Arc<dyn Fn(&serde_json::Value) -> Result<Box<dyn Any + Send>, String> + Send + Sync + 'static>;
 
-pub(crate) type SegmentBuilder = Box<
-    dyn Fn(BuildSegmentArgs<'_>) -> Arc<crate::segment::SegmentSlot> + Send + Sync + 'static,
->;
+pub(crate) type SegmentBuilder =
+    Box<dyn Fn(BuildSegmentArgs<'_>) -> Arc<crate::segment::SegmentSlot> + Send + Sync + 'static>;
 
 pub struct BuildSegmentArgs<'a> {
     pub topology: Arc<crate::operative::topology::OperativeTopology>,
@@ -176,13 +175,18 @@ pub enum BuildTopologyError {
     #[error("operation `{name}` registered with conflicting input/output types")]
     TypeMismatch { name: &'static str },
 
-    #[error("operation `{operation}` declared mailbox_capacity = 0; capacity must be in 1..=1_048_576")]
+    #[error(
+        "operation `{operation}` declared mailbox_capacity = 0; capacity must be in 1..=1_048_576"
+    )]
     MailboxCapacityZero { operation: &'static str },
 
     #[error(
         "operation `{operation}` declared mailbox_capacity = {value}; capacity must be in 1..=1_048_576"
     )]
-    MailboxCapacityTooLarge { operation: &'static str, value: usize },
+    MailboxCapacityTooLarge {
+        operation: &'static str,
+        value: usize,
+    },
 
     #[error(
         "channel `{channel}` was declared with `also_to_plugin_with(...)` more than once; \
@@ -299,7 +303,8 @@ impl ChannelBuilder {
             },
         );
 
-        let (serialize_state, deserialize_state) = crate::operative::dispatcher::build_state_fns::<S>();
+        let (serialize_state, deserialize_state) =
+            crate::operative::dispatcher::build_state_fns::<S>();
 
         self.operations.push(OperationEntry {
             name: S::name(),

@@ -56,7 +56,10 @@ impl OperativeRegistry {
         }
     }
 
-    pub fn register_continuous(&self, instance: Arc<ContinuousInstance>) -> Arc<ContinuousInstance> {
+    pub fn register_continuous(
+        &self,
+        instance: Arc<ContinuousInstance>,
+    ) -> Arc<ContinuousInstance> {
         let id = instance.instance_id.to_string();
         self.inner
             .insert(id, Arc::new(Operative::Continuous(Arc::clone(&instance))));
@@ -79,10 +82,12 @@ impl OperativeRegistry {
     /// Resolve `instance_id` only when it is a operative; `None` for a bounded or
     /// an absent id.
     pub fn get_continuous(&self, instance_id: &str) -> Option<Arc<ContinuousInstance>> {
-        self.inner.get(instance_id).and_then(|r| match &**r.value() {
-            Operative::Continuous(ri) => Some(Arc::clone(ri)),
-            Operative::Bounded(_) => None,
-        })
+        self.inner
+            .get(instance_id)
+            .and_then(|r| match &**r.value() {
+                Operative::Continuous(ri) => Some(Arc::clone(ri)),
+                Operative::Bounded(_) => None,
+            })
     }
 
     pub fn remove(&self, instance_id: &str) -> Option<Arc<Operative>> {

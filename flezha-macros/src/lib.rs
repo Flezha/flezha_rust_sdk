@@ -14,8 +14,8 @@
 
 use proc_macro::TokenStream;
 
-mod operative;
 mod operation;
+mod operative;
 mod state;
 mod util;
 

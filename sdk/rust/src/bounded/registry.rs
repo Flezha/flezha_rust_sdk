@@ -33,5 +33,10 @@ pub(crate) fn get_class(factory_id: &str) -> Option<Arc<BoundedSpec>> {
 /// Factory ids of every registered bounded class. Advertised to the controller
 /// on connect alongside operative factories so `AddOperative --kind bounded` validates.
 pub fn bounded_factory_ids() -> Vec<&'static str> {
-    BOUNDED_CLASS_REGISTRY.read().unwrap().keys().copied().collect()
+    BOUNDED_CLASS_REGISTRY
+        .read()
+        .unwrap()
+        .keys()
+        .copied()
+        .collect()
 }

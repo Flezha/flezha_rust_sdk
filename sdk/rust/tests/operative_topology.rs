@@ -9,8 +9,8 @@
 use std::sync::Arc;
 
 use flezha_executor::channel::ChannelBuilder;
-use flezha_executor::operative::builder::build_topology_for;
 use flezha_executor::operation::{Operation, OperationCtx, OperationError};
+use flezha_executor::operative::builder::build_topology_for;
 use flezha_executor::state::{Change, NoChange, RestoreInitPayload, StateHandle, WallClock};
 use flezha_executor::ContinuousOperative;
 
@@ -191,7 +191,8 @@ impl ContinuousOperative for UnannotatedOperative {
         "unannotated_operative"
     }
     fn channels(c: &mut ChannelBuilder) {
-        c.input::<String>("inp").into::<UnannotatedStaticOperation>();
+        c.input::<String>("inp")
+            .into::<UnannotatedStaticOperation>();
     }
 }
 
@@ -276,8 +277,11 @@ fn operative_instance_creates_segments() {
     use flezha_executor::__dispatch_internals as bi;
     let topology = build_topology_for::<StaticOperative>().expect("topology");
     let pool = Arc::new(bi::WorkStealingPool::with_size(2));
-    let instance =
-        flezha_executor::operative::ContinuousInstance::new(topology, Arc::from("instance-id"), pool);
+    let instance = flezha_executor::operative::ContinuousInstance::new(
+        topology,
+        Arc::from("instance-id"),
+        pool,
+    );
     assert_eq!(instance.segments.len(), 1);
     assert_eq!(instance.segments[0].len(), 3);
     assert_eq!(instance.segment_key_to_idx[0].get("a"), Some(&0));

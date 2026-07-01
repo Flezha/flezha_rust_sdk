@@ -107,7 +107,9 @@ pub fn validate_header_for_change<S: crate::operation::Operation>(
     validate_common::<S>(header)
 }
 
-fn validate_common<S: crate::operation::Operation>(header: &DecodedHeader) -> Result<(), RestoreError> {
+fn validate_common<S: crate::operation::Operation>(
+    header: &DecodedHeader,
+) -> Result<(), RestoreError> {
     if header.sdk_lang != SDK_LANG_RUST {
         return Err(RestoreError::LangMismatch {
             expected: SDK_LANG_RUST,

@@ -8,14 +8,14 @@ pub mod ctx;
 pub mod error;
 pub mod state_handle;
 
+use std::sync::Arc;
+
 pub use change::{Change, CoalesceKey, DerivedState, NoChange};
 pub use clock::{Clock, EventTimeFrom, LogicalClock, WallClock};
 #[allow(unused_imports)]
 pub(crate) use ctx::EmitSink;
 pub use ctx::OperationCtx;
 pub use error::OperationError;
-use std::sync::Arc;
-
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 pub use state_handle::StateHandle;

@@ -6,7 +6,7 @@
 
 pub mod harness;
 
-pub use harness::{ReplayMismatch, OperationTestHarness};
+pub use harness::{OperationTestHarness, ReplayMismatch};
 
 #[cfg(test)]
 mod tests;

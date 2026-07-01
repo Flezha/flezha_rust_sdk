@@ -19,11 +19,11 @@ use flz_transport::service::payloader;
 use crate::channel::builder::BuildSegmentArgs;
 use crate::channel::OperationId;
 use crate::executor::work_stealing_pool::WorkStealingPool;
-use crate::segment::flusher::SegmentFlusher;
-use crate::segment::{segment_state_sink, SegmentSlot};
 use crate::operative::dispatcher::drain_segment;
 use crate::operative::instance::ContinuousInstance;
 use crate::operative::topology::OperativeTopology;
+use crate::segment::flusher::SegmentFlusher;
+use crate::segment::{segment_state_sink, SegmentSlot};
 
 const ENV_REAP_INTERVAL_MS: &str = "FLEZHA_REAP_INTERVAL_MS";
 const MAX_SWEEP_INTERVAL: Duration = Duration::from_secs(30);
@@ -98,11 +98,15 @@ impl DynamicSegmentRegistry {
             return Ok(Arc::clone(slot.value()));
         }
         if self.segments.len() >= self.max_segments {
-            self.counters.inputs_dropped_capped_total.fetch_add(1, Ordering::Relaxed);
+            self.counters
+                .inputs_dropped_capped_total
+                .fetch_add(1, Ordering::Relaxed);
             return Err(GetOrCreateError::Capped);
         }
         let entry = self.segments.entry(key.to_owned()).or_insert_with(|| {
-            self.counters.segments_created_total.fetch_add(1, Ordering::Relaxed);
+            self.counters
+                .segments_created_total
+                .fetch_add(1, Ordering::Relaxed);
             self.build_slot(key)
         });
         Ok(Arc::clone(entry.value()))
@@ -155,7 +159,9 @@ impl DynamicSegmentRegistry {
             if slot.persistence_enabled {
                 send_delete_segment_state(&slot.segment_identity);
             }
-            self.counters.segments_evicted_total.fetch_add(1, Ordering::Relaxed);
+            self.counters
+                .segments_evicted_total
+                .fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -207,7 +213,11 @@ fn reap_interval(idle_ttl: Duration) -> Duration {
         .ok()
         .and_then(|v| v.trim().parse::<u64>().ok())
         .map(|ms| Duration::from_millis(ms.max(1)))
-        .unwrap_or((idle_ttl / 4).min(MAX_SWEEP_INTERVAL).max(Duration::from_millis(1)))
+        .unwrap_or(
+            (idle_ttl / 4)
+                .min(MAX_SWEEP_INTERVAL)
+                .max(Duration::from_millis(1)),
+        )
 }
 
 /// Sleep `total`, waking every ≤200ms to honour `stop` promptly.

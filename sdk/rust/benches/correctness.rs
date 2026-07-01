@@ -32,12 +32,12 @@ use std::time::{Duration, Instant};
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use flezha_executor::channel::ChannelBuilder;
+use flezha_executor::operation::{Operation, OperationCtx, OperationError};
 use flezha_executor::operative::builder::build_topology_for;
 use flezha_executor::operative::registry::OperativeRegistry;
 use flezha_executor::operative::ContinuousInstance;
-use flezha_executor::operation::{Operation, OperationCtx, OperationError};
 use flezha_executor::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_executor::{__dispatch_internals as bi, OverflowPolicy, ContinuousOperative};
+use flezha_executor::{__dispatch_internals as bi, ContinuousOperative, OverflowPolicy};
 use flz_transport::transport::FlezhaStream;
 
 // Helpers — duplicated from `dispatch.rs` per `operative-bench-harness/design.md`
@@ -281,9 +281,5 @@ fn throughput_static_fanout(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(
-    benches,
-    throughput_single_segment,
-    throughput_static_fanout
-);
+criterion_group!(benches, throughput_single_segment, throughput_static_fanout);
 criterion_main!(benches);

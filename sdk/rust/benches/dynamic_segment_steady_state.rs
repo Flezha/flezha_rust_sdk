@@ -11,12 +11,12 @@ use std::time::{Duration, Instant};
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use flezha_executor::channel::ChannelBuilder;
+use flezha_executor::operation::{Operation, OperationCtx, OperationError};
 use flezha_executor::operative::builder::build_topology_for;
 use flezha_executor::operative::registry::OperativeRegistry;
 use flezha_executor::operative::ContinuousInstance;
-use flezha_executor::operation::{Operation, OperationCtx, OperationError};
 use flezha_executor::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_executor::{__dispatch_internals as bi, OverflowPolicy, ContinuousOperative};
+use flezha_executor::{__dispatch_internals as bi, ContinuousOperative, OverflowPolicy};
 use flz_transport::transport::FlezhaStream;
 
 fn pool_size_from_env_or_cpus() -> usize {

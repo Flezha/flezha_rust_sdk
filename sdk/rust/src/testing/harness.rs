@@ -20,9 +20,9 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::segment::restore::{init_segment_with_payload, RestoreError, RestoreInitPayload};
 use crate::operation::ctx::EmitSink;
 use crate::operation::{Operation, OperationCtx, OperationError, StateHandle};
+use crate::segment::restore::{init_segment_with_payload, RestoreError, RestoreInitPayload};
 
 /// Recorded emit: type-erased value + optional plugin metadata.
 struct Emit {
@@ -294,7 +294,10 @@ struct RecordingEmitSink<'a> {
 }
 
 impl<'a> EmitSink for RecordingEmitSink<'a> {
-    fn emit_inter_operation(&mut self, value: Arc<dyn Any + Send + Sync>) -> Result<(), OperationError> {
+    fn emit_inter_operation(
+        &mut self,
+        value: Arc<dyn Any + Send + Sync>,
+    ) -> Result<(), OperationError> {
         self.emits.push(Emit { value, meta: None });
         Ok(())
     }

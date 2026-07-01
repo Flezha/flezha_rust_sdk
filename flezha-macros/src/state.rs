@@ -217,21 +217,19 @@ fn expand_map_field(
         )
     })?;
 
-    let mut push_mutator = |variant: syn::Ident,
-                            method: syn::Ident,
-                            arg_ty: &syn::Type,
-                            apply_body: TokenStream| {
-        variants.push(quote! { #variant(#key_ty, #arg_ty) });
-        apply_arms.push(quote! {
-            #change_ident::#variant(__k, __v) => { #apply_body }
-        });
-        mutator_sigs.push(quote! { fn #method(&mut self, key: #key_ty, value: #arg_ty); });
-        mutator_impls.push(quote! {
-            fn #method(&mut self, key: #key_ty, value: #arg_ty) {
-                self.apply(#change_ident::#variant(key, value));
-            }
-        });
-    };
+    let mut push_mutator =
+        |variant: syn::Ident, method: syn::Ident, arg_ty: &syn::Type, apply_body: TokenStream| {
+            variants.push(quote! { #variant(#key_ty, #arg_ty) });
+            apply_arms.push(quote! {
+                #change_ident::#variant(__k, __v) => { #apply_body }
+            });
+            mutator_sigs.push(quote! { fn #method(&mut self, key: #key_ty, value: #arg_ty); });
+            mutator_impls.push(quote! {
+                fn #method(&mut self, key: #key_ty, value: #arg_ty) {
+                    self.apply(#change_ident::#variant(key, value));
+                }
+            });
+        };
 
     match mode {
         JournalMode::MapSet => {

@@ -35,8 +35,8 @@ use std::time::Duration;
 
 use dashmap::DashMap;
 
-use crate::segment::header::HeaderTemplate;
 use crate::operation::change::{Change, CoalesceKey};
+use crate::segment::header::HeaderTemplate;
 use crate::util::LockRecover;
 
 /// Global identifier for a registered Segment entry. Assigned at

@@ -1,13 +1,13 @@
 //! Section 2.6: assert that the trait's default `compact_after_bytes`
 //! and `SCHEMA_VERSION` values match the umbrella's per-Operation contract.
 
-use crate::segment::restore::RestoreInitPayload;
 use crate::operation::change::NoChange;
 use crate::operation::clock::WallClock;
 use crate::operation::ctx::OperationCtx;
 use crate::operation::error::OperationError;
 use crate::operation::state_handle::StateHandle;
 use crate::operation::Operation;
+use crate::segment::restore::RestoreInitPayload;
 
 #[derive(Default)]
 struct DefaultsOperation;

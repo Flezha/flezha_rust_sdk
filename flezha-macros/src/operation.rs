@@ -177,7 +177,10 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
     // --- run body: bind input + state, run user body, emit the output. ---
     let user_body = &func.block;
     let (output_ty_tokens, run_emit) = match &output {
-        Output::Unit => (quote! { () }, quote! { let _: () = #user_body; ::core::result::Result::Ok(()) }),
+        Output::Unit => (
+            quote! { () },
+            quote! { let _: () = #user_body; ::core::result::Result::Ok(()) },
+        ),
         Output::ResultUnit => (
             quote! { () },
             quote! { let _: () = (#user_body)?; ::core::result::Result::Ok(()) },
@@ -412,17 +415,16 @@ fn on_full_call(on_full: &Option<syn::Ident>) -> syn::Result<TokenStream> {
     let Some(id) = on_full else {
         return Ok(quote! {});
     };
-    let variant = match id.to_string().as_str() {
-        "block" => quote! { Block },
-        "drop_newest" => quote! { DropNewest },
-        "drop_oldest" => quote! { DropOldest },
-        _ => {
-            return Err(syn::Error::new_spanned(
+    let variant =
+        match id.to_string().as_str() {
+            "block" => quote! { Block },
+            "drop_newest" => quote! { DropNewest },
+            "drop_oldest" => quote! { DropOldest },
+            _ => return Err(syn::Error::new_spanned(
                 id,
                 "#[flezha::operation] `on_full` must be one of: block, drop_newest, drop_oldest",
-            ))
-        }
-    };
+            )),
+        };
     Ok(quote! { .on_full(::flezha_executor::OverflowPolicy::#variant) })
 }
 

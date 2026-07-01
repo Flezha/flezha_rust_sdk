@@ -14,12 +14,12 @@ use std::time::{Duration, Instant};
 
 use bi::OperativeDispatchHandle;
 use flezha_executor::channel::ChannelBuilder;
+use flezha_executor::operation::{Operation, OperationCtx, OperationError};
 use flezha_executor::operative::builder::build_topology_for;
 use flezha_executor::operative::registry::OperativeRegistry;
 use flezha_executor::operative::ContinuousInstance;
-use flezha_executor::operation::{Operation, OperationCtx, OperationError};
 use flezha_executor::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_executor::{OverflowPolicy, ContinuousOperative, __dispatch_internals as bi};
+use flezha_executor::{__dispatch_internals as bi, ContinuousOperative, OverflowPolicy};
 
 mod common;
 use common::{dispatch_input, dummy_stream, setup, wait_until};
@@ -108,7 +108,8 @@ impl ContinuousOperative for ConcurrencyProbeOperative {
         "concurrency_probe_operative"
     }
     fn channels(c: &mut ChannelBuilder) {
-        c.input::<String>("input").into::<ConcurrencyProbeOperation>();
+        c.input::<String>("input")
+            .into::<ConcurrencyProbeOperation>();
     }
 }
 
@@ -828,8 +829,10 @@ fn default_entry_policy_does_not_stall_sibling_operatives() {
 
     let topology_a = build_topology_for::<WireOperativeADefault>().expect("topology a");
     let topology_b = build_topology_for::<WireOperativeB>().expect("topology b");
-    let instance_a = ContinuousInstance::new(topology_a, Arc::from("wire-a-default"), Arc::clone(&pool));
-    let instance_b = ContinuousInstance::new(topology_b, Arc::from("wire-b-default"), Arc::clone(&pool));
+    let instance_a =
+        ContinuousInstance::new(topology_a, Arc::from("wire-a-default"), Arc::clone(&pool));
+    let instance_b =
+        ContinuousInstance::new(topology_b, Arc::from("wire-b-default"), Arc::clone(&pool));
     registry.register_continuous(Arc::clone(&instance_a));
     registry.register_continuous(Arc::clone(&instance_b));
 
@@ -904,8 +907,10 @@ fn opt_in_entry_block_drains_inline_without_stalling_siblings() {
 
     let topology_a = build_topology_for::<WireOperativeABlock>().expect("topology a");
     let topology_b = build_topology_for::<WireOperativeB>().expect("topology b");
-    let instance_a = ContinuousInstance::new(topology_a, Arc::from("wire-a-block"), Arc::clone(&pool));
-    let instance_b = ContinuousInstance::new(topology_b, Arc::from("wire-b-block"), Arc::clone(&pool));
+    let instance_a =
+        ContinuousInstance::new(topology_a, Arc::from("wire-a-block"), Arc::clone(&pool));
+    let instance_b =
+        ContinuousInstance::new(topology_b, Arc::from("wire-b-block"), Arc::clone(&pool));
     registry.register_continuous(Arc::clone(&instance_a));
     registry.register_continuous(Arc::clone(&instance_b));
 
@@ -1093,7 +1098,10 @@ fn change_is_flushed_before_output_is_emitted() {
     segment_state_sink::install_global_sink(sink);
 
     let (handle, instance) = setup::<FlushOrderOperative>("flush-order-instance", 2);
-    assert!(instance.persistence_enabled(), "operative must be persistent");
+    assert!(
+        instance.persistence_enabled(),
+        "operative must be persistent"
+    );
     let stream = dummy_stream();
 
     let mut md = HashMap::new();

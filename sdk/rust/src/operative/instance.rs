@@ -7,10 +7,10 @@ use std::thread::JoinHandle;
 
 use crate::channel::builder::BuildSegmentArgs;
 use crate::executor::work_stealing_pool::WorkStealingPool;
+use crate::operative::persistence::resolve_persistence_enabled;
+use crate::operative::topology::{OperativeTopology, SegmentingMode};
 use crate::segment::dynamic::{spawn_reaper, DynamicSegmentRegistry};
 use crate::segment::SegmentSlot;
-use crate::operative::persistence::resolve_persistence_enabled;
-use crate::operative::topology::{SegmentingMode, OperativeTopology};
 
 pub struct ContinuousInstance {
     pub topology: Arc<OperativeTopology>,
@@ -162,8 +162,10 @@ impl ContinuousInstance {
     /// `ExecutorNode::stop_operative`; idempotent and a no-op for non-dynamic
     /// instances (no reapers).
     pub fn shutdown_reapers(&self) {
-        self.reaper_stop.store(true, std::sync::atomic::Ordering::Release);
-        let handles = std::mem::take(&mut *self.reaper_handles.lock().expect("reaper handles poisoned"));
+        self.reaper_stop
+            .store(true, std::sync::atomic::Ordering::Release);
+        let handles =
+            std::mem::take(&mut *self.reaper_handles.lock().expect("reaper handles poisoned"));
         for handle in handles {
             let _ = handle.join();
         }
@@ -175,7 +177,8 @@ impl Drop for ContinuousInstance {
         // Safety net for an instance dropped without `stop_operative`: signal the
         // reapers (don't join — Drop must not block on a sweep interval) so
         // each thread and its `Arc<DynamicSegmentRegistry>` wind down.
-        self.reaper_stop.store(true, std::sync::atomic::Ordering::Release);
+        self.reaper_stop
+            .store(true, std::sync::atomic::Ordering::Release);
     }
 }
 
@@ -183,15 +186,15 @@ impl Drop for ContinuousInstance {
 mod tests {
     use super::*;
     use crate::channel::ChannelBuilder;
-    use crate::segment::restore::RestoreInitPayload;
-    use crate::operative::builder::build_topology_with_persistence;
-    use crate::operative::ContinuousOperative;
     use crate::operation::change::NoChange;
     use crate::operation::clock::WallClock;
     use crate::operation::ctx::OperationCtx;
     use crate::operation::error::OperationError;
     use crate::operation::state_handle::StateHandle;
     use crate::operation::Operation;
+    use crate::operative::builder::build_topology_with_persistence;
+    use crate::operative::ContinuousOperative;
+    use crate::segment::restore::RestoreInitPayload;
 
     #[derive(Default)]
     struct DummyOperation;

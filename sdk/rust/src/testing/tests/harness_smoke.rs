@@ -8,13 +8,13 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::segment::restore::RestoreInitPayload;
 use crate::operation::change::Change;
 use crate::operation::clock::WallClock;
 use crate::operation::ctx::OperationCtx;
 use crate::operation::error::OperationError;
 use crate::operation::state_handle::StateHandle;
 use crate::operation::Operation;
+use crate::segment::restore::RestoreInitPayload;
 use crate::testing::OperationTestHarness;
 
 #[derive(Default, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]

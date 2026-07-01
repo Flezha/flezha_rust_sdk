@@ -127,8 +127,7 @@ impl ShutdownBridge {
         let mut wait_handles = Vec::with_capacity(operatives.len());
 
         for (operative_id, serialized_state) in operatives {
-            let reference_id =
-                format!("shutdown-{}-{}", operative_id, crate::util::nonce_suffix());
+            let reference_id = format!("shutdown-{}-{}", operative_id, crate::util::nonce_suffix());
 
             let request = pb::CommandRequest {
                 reference_id: reference_id.clone(),
@@ -362,7 +361,8 @@ mod tests {
 
     #[test]
     fn graceful_shutdown_returns_within_2s_when_ack_never_arrives() {
-        let (bridge, _controller_side) = build_bridge_with_operative("p_timeout", b"unused".to_vec());
+        let (bridge, _controller_side) =
+            build_bridge_with_operative("p_timeout", b"unused".to_vec());
 
         let started = Instant::now();
         bridge.run_graceful_shutdown();

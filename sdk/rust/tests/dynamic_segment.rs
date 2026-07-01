@@ -11,9 +11,9 @@ use std::thread;
 use std::time::Duration;
 
 use flezha_executor::channel::ChannelBuilder;
-use flezha_executor::segment::dynamic::DynamicSegmentRegistry;
-use flezha_executor::operative::ContinuousInstance;
 use flezha_executor::operation::{Operation, OperationCtx, OperationError};
+use flezha_executor::operative::ContinuousInstance;
+use flezha_executor::segment::dynamic::DynamicSegmentRegistry;
 use flezha_executor::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
 use flezha_executor::ContinuousOperative;
 
@@ -74,31 +74,57 @@ dyn_operation!(TtlOperation, TtlOperative, "ttl_operation", "ttl_operative"
 
 static SLEEP_RUN_STARTED: AtomicBool = AtomicBool::new(false);
 static SLEEP_RUN_DONE: AtomicBool = AtomicBool::new(false);
-dyn_operation_base!(SleepOperation, SleepOperative, "sleep_operation", "sleep_operative", {
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(&mut self, _: String, _: StateHandle<'_, Self>, _: &mut OperationCtx<'_>) -> Result<(), OperationError> {
-        SLEEP_RUN_STARTED.store(true, Ordering::Release);
-        thread::sleep(Duration::from_millis(500));
-        SLEEP_RUN_DONE.store(true, Ordering::Release);
-        Ok(())
-    }
-});
-
-static INIT_KEYS: Mutex<Vec<String>> = Mutex::new(Vec::new());
-dyn_operation_base!(InitTrackOperation, InitTrackOperative, "init_track_operation", "init_track_operative", {
-    fn init_state(key: Option<&str>, _: Option<RestoreInitPayload<'_>>) {
-        if let Some(k) = key {
-            INIT_KEYS.lock().unwrap().push(k.to_string());
+dyn_operation_base!(
+    SleepOperation,
+    SleepOperative,
+    "sleep_operation",
+    "sleep_operative",
+    {
+        fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
+        fn run(
+            &mut self,
+            _: String,
+            _: StateHandle<'_, Self>,
+            _: &mut OperationCtx<'_>,
+        ) -> Result<(), OperationError> {
+            SLEEP_RUN_STARTED.store(true, Ordering::Release);
+            thread::sleep(Duration::from_millis(500));
+            SLEEP_RUN_DONE.store(true, Ordering::Release);
+            Ok(())
         }
     }
-    fn run(&mut self, _: String, _: StateHandle<'_, Self>, _: &mut OperationCtx<'_>) -> Result<(), OperationError> {
-        Ok(())
+);
+
+static INIT_KEYS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+dyn_operation_base!(
+    InitTrackOperation,
+    InitTrackOperative,
+    "init_track_operation",
+    "init_track_operative",
+    {
+        fn init_state(key: Option<&str>, _: Option<RestoreInitPayload<'_>>) {
+            if let Some(k) = key {
+                INIT_KEYS.lock().unwrap().push(k.to_string());
+            }
+        }
+        fn run(
+            &mut self,
+            _: String,
+            _: StateHandle<'_, Self>,
+            _: &mut OperationCtx<'_>,
+        ) -> Result<(), OperationError> {
+            Ok(())
+        }
     }
-});
+);
 
 /// The single dynamic registry on a one-operation operative instance.
 fn registry(instance: &Arc<ContinuousInstance>) -> Arc<DynamicSegmentRegistry> {
-    Arc::clone(instance.dynamic_registries[0].as_ref().expect("operation 0 is dynamic"))
+    Arc::clone(
+        instance.dynamic_registries[0]
+            .as_ref()
+            .expect("operation 0 is dynamic"),
+    )
 }
 
 fn created(reg: &DynamicSegmentRegistry) -> u64 {
@@ -131,7 +157,9 @@ fn soft_cap_drops_overflow_key() {
     let reg = registry(&instance);
     assert_eq!(reg.segments.len(), 2, "cap = 2 → at most two slots");
     assert_eq!(
-        reg.counters.inputs_dropped_capped_total.load(Ordering::Relaxed),
+        reg.counters
+            .inputs_dropped_capped_total
+            .load(Ordering::Relaxed),
         1,
         "the third distinct key is dropped"
     );
@@ -142,14 +170,30 @@ fn none_key_inputs_are_dropped() {
     let (handle, instance) = setup::<DynOperative>("dyn-nokey", 4);
     let stream = dummy_stream();
     // 10 inputs; 4 "drop" sentinels → 6 slot creations.
-    for inp in ["a:1", "drop", "b:2", "drop", "c:3", "drop", "d:4", "drop", "e:5", "f:6"] {
-        dispatch_input(&handle, "dyn-nokey", "inp", inp.as_bytes().to_vec(), &stream);
+    for inp in [
+        "a:1", "drop", "b:2", "drop", "c:3", "drop", "d:4", "drop", "e:5", "f:6",
+    ] {
+        dispatch_input(
+            &handle,
+            "dyn-nokey",
+            "inp",
+            inp.as_bytes().to_vec(),
+            &stream,
+        );
     }
 
     let reg = registry(&instance);
-    assert!(wait_until(|| reg.segments.len() == 6, Duration::from_secs(10)));
+    assert!(wait_until(
+        || reg.segments.len() == 6,
+        Duration::from_secs(10)
+    ));
     assert_eq!(created(&reg), 6);
-    assert_eq!(reg.counters.inputs_dropped_no_key_total.load(Ordering::Relaxed), 4);
+    assert_eq!(
+        reg.counters
+            .inputs_dropped_no_key_total
+            .load(Ordering::Relaxed),
+        4
+    );
 }
 
 #[test]
@@ -180,14 +224,24 @@ fn reaper_skips_segment_with_active_run() {
     dispatch_input(&handle, "sleep-1", "inp", b"K:1".to_vec(), &stream);
     let reg = registry(&instance);
 
-    assert!(wait_until(|| SLEEP_RUN_STARTED.load(Ordering::Acquire), Duration::from_secs(10)));
+    assert!(wait_until(
+        || SLEEP_RUN_STARTED.load(Ordering::Acquire),
+        Duration::from_secs(10)
+    ));
     // The run holds the drain gate; a sweep (even at 1ms TTL) must not evict.
     reg.reap_sweep(Duration::from_millis(1));
-    assert_eq!(reg.segments.len(), 1, "evicted while Operation::run was active");
+    assert_eq!(
+        reg.segments.len(),
+        1,
+        "evicted while Operation::run was active"
+    );
     assert_eq!(evicted(&reg), 0);
 
     // Once the run releases the gate, the next sweep evicts.
-    assert!(wait_until(|| SLEEP_RUN_DONE.load(Ordering::Acquire), Duration::from_secs(10)));
+    assert!(wait_until(
+        || SLEEP_RUN_DONE.load(Ordering::Acquire),
+        Duration::from_secs(10)
+    ));
     assert!(wait_until(
         || {
             reg.reap_sweep(Duration::from_millis(1));
@@ -206,7 +260,10 @@ fn recreate_after_evict_cold_starts_fresh() {
     let reg = registry(&instance);
 
     dispatch_input(&handle, "recreate-1", "inp", b"K:1".to_vec(), &stream);
-    assert!(wait_until(|| reg.segments.len() == 1, Duration::from_secs(10)));
+    assert!(wait_until(
+        || reg.segments.len() == 1,
+        Duration::from_secs(10)
+    ));
 
     assert!(wait_until(
         || {
@@ -219,9 +276,15 @@ fn recreate_after_evict_cold_starts_fresh() {
     // Key returns → a brand-new slot + a SECOND init_state(Some("K")): a cold
     // recreate, not a restore.
     dispatch_input(&handle, "recreate-1", "inp", b"K:2".to_vec(), &stream);
-    assert!(wait_until(|| reg.segments.len() == 1, Duration::from_secs(10)));
+    assert!(wait_until(
+        || reg.segments.len() == 1,
+        Duration::from_secs(10)
+    ));
 
-    assert_eq!(*INIT_KEYS.lock().unwrap(), vec!["K".to_string(), "K".to_string()]);
+    assert_eq!(
+        *INIT_KEYS.lock().unwrap(),
+        vec!["K".to_string(), "K".to_string()]
+    );
     assert_eq!(created(&reg), 2);
     assert_eq!(evicted(&reg), 1);
 }
@@ -240,7 +303,13 @@ fn concurrent_producers_share_one_slot() {
             thread::spawn(move || {
                 let stream = dummy_stream();
                 barrier.wait();
-                dispatch_input(&handle, "dyn-concurrent", "inp", format!("K:{i}").into_bytes(), &stream);
+                dispatch_input(
+                    &handle,
+                    "dyn-concurrent",
+                    "inp",
+                    format!("K:{i}").into_bytes(),
+                    &stream,
+                );
             })
         })
         .collect();

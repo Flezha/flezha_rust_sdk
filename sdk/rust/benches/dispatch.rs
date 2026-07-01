@@ -20,12 +20,12 @@ use std::time::{Duration, Instant};
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use flezha_executor::channel::ChannelBuilder;
+use flezha_executor::operation::{Operation, OperationCtx, OperationError};
 use flezha_executor::operative::builder::build_topology_for;
 use flezha_executor::operative::registry::OperativeRegistry;
 use flezha_executor::operative::ContinuousInstance;
-use flezha_executor::operation::{Operation, OperationCtx, OperationError};
 use flezha_executor::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_executor::{__dispatch_internals as bi, OverflowPolicy, ContinuousOperative};
+use flezha_executor::{__dispatch_internals as bi, ContinuousOperative, OverflowPolicy};
 use flz_transport::transport::FlezhaStream;
 
 // ----- Shared bench helpers (Decision 10: duplicated locally per bench file) -----
@@ -111,7 +111,9 @@ fn regression_bench(c: &mut Criterion) {
     let topology = build_topology_for::<RegressionOperative>().expect("topology");
     let registry = Arc::new(OperativeRegistry::new());
 
-    let instance_ids: Vec<String> = (0..n_operatives).map(|i| format!("regression-{}", i)).collect();
+    let instance_ids: Vec<String> = (0..n_operatives)
+        .map(|i| format!("regression-{}", i))
+        .collect();
     for id in &instance_ids {
         let inst = ContinuousInstance::new(
             Arc::clone(&topology),

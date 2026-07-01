@@ -89,13 +89,13 @@
 //! - `FLEZHA_TRANSPORT` — `"uds"` (default) or `"quic"`.
 //! - `FLEZHA_QUIC_ADDRESS` — QUIC endpoint address.
 
+pub mod bounded;
 pub mod channel;
 pub mod command;
 mod executor;
-pub mod segment;
-pub mod operative;
 pub mod operation;
-pub mod bounded;
+pub mod operative;
+pub mod segment;
 mod shutdown;
 mod util;
 
@@ -107,34 +107,32 @@ pub mod testing;
 /// `use flezha_executor::state::*;` to write Operations that declare
 /// `Change` types and route mutations through `state.apply(...)`.
 pub mod state {
-    pub use crate::segment::restore::{RestoreError, RestoreInitPayload};
     pub use crate::operation::change::{Change, CoalesceKey, NoChange};
     pub use crate::operation::clock::{Clock, EventTimeFrom, LogicalClock, WallClock};
     pub use crate::operation::state_handle::StateHandle;
+    pub use crate::segment::restore::{RestoreError, RestoreInitPayload};
 }
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
+pub use bounded::{BoundedCtx, BoundedError, BoundedOperative, RollbackMode};
 pub use channel::{Channel, ChannelBuilder, OverflowPolicy};
 use crossbeam::channel::{Receiver, Sender};
+/// Authoring sugar. `#[flezha::operation]`, `#[derive(flezha::State)]`, and
+/// `flezha::operative!` expand to the trait surface above; see
+/// `docs/sdk_authoring_contract.md`.
+pub use flezha_macros::{operation, operative, State};
 pub use flz_transport::{service, transport};
-pub use segment::{RestoreError, RestoreInitPayload};
-pub use operative::ContinuousOperative;
-pub use bounded::{BoundedOperative, BoundedCtx, BoundedError, RollbackMode};
+/// Re-exported so macro-generated code can `submit!` into the auto-operative
+/// collection without the user adding an `inventory` dependency.
+pub use inventory;
 pub use operation::{
     Change, Clock, CoalesceKey, DerivedState, EventTimeFrom, LogicalClock, NoChange, Operation,
     OperationCtx, OperationError, StateHandle, WallClock,
 };
-
-/// Authoring sugar. `#[flezha::operation]`, `#[derive(flezha::State)]`, and
-/// `flezha::operative!` expand to the trait surface above; see
-/// `docs/sdk_authoring_contract.md`.
-pub use flezha_macros::{operative, operation, State};
-
-/// Re-exported so macro-generated code can `submit!` into the auto-operative
-/// collection without the user adding an `inventory` dependency.
-pub use inventory;
+pub use operative::ContinuousOperative;
+pub use segment::{RestoreError, RestoreInitPayload};
 
 /// An operative using the single-operation auto-wire path (`#[flezha::operation(sink = …)]`) or
 /// `flezha::operative!` registers without an explicit `register_continuous` call.
@@ -197,8 +195,8 @@ pub mod pb {
 /// topology (duplicate channel names, unwired channels, missing
 /// `segment_for` overrides, etc.).
 pub fn register_continuous<R: ContinuousOperative>() {
-    let topology =
-        operative::builder::build_topology_for::<R>().expect("register_continuous: invalid topology");
+    let topology = operative::builder::build_topology_for::<R>()
+        .expect("register_continuous: invalid topology");
     operative::registry::register_class(R::factory_id(), topology);
 }
 
@@ -278,7 +276,9 @@ impl Flezha {
     /// compatibility.
     // reason: public API; refactor would break external callers (test apps, observability)
     #[allow(clippy::type_complexity)]
-    pub fn get_operatives(&self) -> Arc<RwLock<HashMap<String, Arc<Mutex<Arc<ContinuousInstance>>>>>> {
+    pub fn get_operatives(
+        &self,
+    ) -> Arc<RwLock<HashMap<String, Arc<Mutex<Arc<ContinuousInstance>>>>>> {
         self.executor_tx
             .lock()
             .unwrap()

@@ -17,7 +17,10 @@ pub struct OperationCtx<'a> {
 /// Internal trait the runtime implements per-segment. Lets OperationCtx stay
 /// non-generic while the underlying dispatcher carries the typed wiring.
 pub(crate) trait EmitSink {
-    fn emit_inter_operation(&mut self, value: Arc<dyn Any + Send + Sync>) -> Result<(), OperationError>;
+    fn emit_inter_operation(
+        &mut self,
+        value: Arc<dyn Any + Send + Sync>,
+    ) -> Result<(), OperationError>;
 
     fn emit_plugin(
         &mut self,

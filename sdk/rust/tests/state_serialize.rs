@@ -5,9 +5,9 @@ use std::sync::Arc;
 
 use flezha_executor::channel::ChannelBuilder;
 use flezha_executor::command::segment_state::{apply_init_values, serialize_operative_state};
+use flezha_executor::operation::{Operation, OperationCtx, OperationError};
 use flezha_executor::operative::builder::build_topology_for;
 use flezha_executor::operative::ContinuousInstance;
-use flezha_executor::operation::{Operation, OperationCtx, OperationError};
 use flezha_executor::state::{Change, NoChange, RestoreInitPayload, StateHandle, WallClock};
 use flezha_executor::{__dispatch_internals as bi, ContinuousOperative};
 use serde::{Deserialize, Serialize};

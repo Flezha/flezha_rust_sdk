@@ -4,7 +4,9 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum OperationError {
-    #[error("metadata is only valid on plugin-bound channels; channel `{channel}` is inter-operation")]
+    #[error(
+        "metadata is only valid on plugin-bound channels; channel `{channel}` is inter-operation"
+    )]
     MetadataNotAllowedOnInterOperationChannel { channel: String },
 
     #[error("channel `{channel}` is not declared on this operative")]

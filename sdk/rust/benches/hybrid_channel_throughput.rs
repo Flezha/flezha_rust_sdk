@@ -23,12 +23,12 @@ use std::time::{Duration, Instant};
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use flezha_executor::channel::ChannelBuilder;
+use flezha_executor::operation::{Operation, OperationCtx, OperationError};
 use flezha_executor::operative::builder::build_topology_for;
 use flezha_executor::operative::registry::OperativeRegistry;
 use flezha_executor::operative::ContinuousInstance;
-use flezha_executor::operation::{Operation, OperationCtx, OperationError};
 use flezha_executor::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_executor::{__dispatch_internals as bi, OverflowPolicy, ContinuousOperative};
+use flezha_executor::{__dispatch_internals as bi, ContinuousOperative, OverflowPolicy};
 use flz_transport::transport::FlezhaStream;
 
 // ----- shared bench helpers -----
@@ -444,11 +444,23 @@ fn run_bench<R: ContinuousOperative>(
 }
 
 fn pure_inter_operation_1c(c: &mut Criterion) {
-    run_bench::<Pure1Operative>(c, "pure_inter_operation_1c", "bench-pure-1c", &PURE_1C_COUNT, 1);
+    run_bench::<Pure1Operative>(
+        c,
+        "pure_inter_operation_1c",
+        "bench-pure-1c",
+        &PURE_1C_COUNT,
+        1,
+    );
 }
 
 fn pure_inter_operation_3c(c: &mut Criterion) {
-    run_bench::<Pure3Operative>(c, "pure_inter_operation_3c", "bench-pure-3c", &PURE_3C_COUNT, 3);
+    run_bench::<Pure3Operative>(
+        c,
+        "pure_inter_operation_3c",
+        "bench-pure-3c",
+        &PURE_3C_COUNT,
+        3,
+    );
 }
 
 fn pure_plugin_bound(c: &mut Criterion) {

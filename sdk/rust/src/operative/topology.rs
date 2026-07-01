@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::channel::builder::{
-    DeserializeStateFn, SegmentBuilder, SegmentForFn, OperationKeyFn, SerializeStateFn,
+    DeserializeStateFn, OperationKeyFn, SegmentBuilder, SegmentForFn, SerializeStateFn,
 };
 use crate::channel::{ChannelDescriptor, ChannelId, OperationId};
 

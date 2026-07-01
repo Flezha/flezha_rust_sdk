@@ -21,8 +21,8 @@
 pub mod dynamic;
 pub mod flusher;
 pub mod header;
-pub mod segment_state_sink;
 pub mod restore;
+pub mod segment_state_sink;
 
 use std::any::Any;
 use std::collections::VecDeque;
