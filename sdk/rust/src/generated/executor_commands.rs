@@ -209,6 +209,14 @@ pub struct RestoreInitState {
     pub snapshot_bytes: ::prost::alloc::vec::Vec<u8>,
     #[prost(bytes = "vec", tag = "3")]
     pub change_log_bytes: ::prost::alloc::vec::Vec<u8>,
+    /// Saga crash-resume: this Segment's operation completed forward and may
+    /// need undo (`bounded-operative-saga` compensation-intent marker).
+    #[prost(bool, tag = "4")]
+    pub has_compensation_intent: bool,
+    /// Saga crash-resume: this Segment's compensation already ran — skip it on
+    /// resume (`bounded-operative-saga` compensation-done marker).
+    #[prost(bool, tag = "5")]
+    pub has_compensation_done: bool,
 }
 /// SDK acknowledgement after applying a `RestoreInitState`. `terminal_seq`
 /// is the highest WAL seq folded into State; the Controller expects the next

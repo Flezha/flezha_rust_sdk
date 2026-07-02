@@ -106,14 +106,15 @@ fn install_segment_state_sink_from_pairs(pairs: &[(FlezhaStream, Arc<FlezhaStrea
         // The Mutex serializes writes from the single flusher thread —
         // belt-and-braces given that the flusher has only one writer.
         let writer = Arc::new(Mutex::new(sink_stream));
-        let send_fn: SendFrameFn = Arc::new(move |frame: &[u8]| -> Result<(), SendError> {
-            let payload =
-                payloader::build_from_binary("segment_state_change", frame, HashMap::new());
-            let stream = writer.lock().map_err(|e| SendError::Other(e.to_string()))?;
-            (&**stream)
-                .write_all(&payload)
-                .map_err(|e| SendError::TransportDown(e.to_string()))
-        });
+        let send_fn: SendFrameFn = Arc::new(
+            move |payload_id: &str, frame: &[u8]| -> Result<(), SendError> {
+                let payload = payloader::build_from_binary(payload_id, frame, HashMap::new());
+                let stream = writer.lock().map_err(|e| SendError::Other(e.to_string()))?;
+                (&**stream)
+                    .write_all(&payload)
+                    .map_err(|e| SendError::TransportDown(e.to_string()))
+            },
+        );
         segment_state_sink::install_global_sink(send_fn);
     }
 }

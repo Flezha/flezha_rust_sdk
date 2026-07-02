@@ -685,8 +685,19 @@ mod tests {
     /// wired).
     static COMPENSATION_LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-    // Captures the segment_state_change frames a durable bounded's flush ships.
-    static WAL_FRAMES: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
+    // Captures the `(payload_id, frame)` pairs a durable bounded ships to the
+    // reliable sink — `segment_state_change` from the flush plus the saga
+    // `compensation_intent` / `compensation_done` markers.
+    static WAL_FRAMES: Mutex<Vec<(String, Vec<u8>)>> = Mutex::new(Vec::new());
+
+    fn count_wal_frames(payload_id: &str) -> usize {
+        WAL_FRAMES
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(pid, _)| pid == payload_id)
+            .count()
+    }
 
     fn comp_log(entry: String) {
         COMPENSATION_LOG.lock().unwrap().push(entry);
@@ -1034,6 +1045,99 @@ mod tests {
         }
     }
 
+    // ---- saga crash-resume ops (§4.3) ---------------------------------------
+    // Compensable ops whose `compensate` logs UNCONDITIONALLY (not per output),
+    // so a crash-resume — which reconstructs completed stages with EMPTY outputs
+    // (an operation's collected output was never durable) — is still observable.
+
+    #[derive(Default)]
+    struct ResumeUndoA;
+    impl Operation for ResumeUndoA {
+        type Input = String;
+        type Output = String;
+        type State = ();
+        type Change = NoChange;
+        type Clock = WallClock;
+        type Config = ();
+        fn name() -> &'static str {
+            "resume_undo_a"
+        }
+        fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
+        fn run(
+            &mut self,
+            input: String,
+            _state: StateHandle<'_, Self>,
+            ctx: &mut OperationCtx<'_>,
+        ) -> Result<(), OperationError> {
+            ctx.emit(format!("a:{input}"))?;
+            Ok(())
+        }
+        const COMPENSATE_OVERRIDDEN: bool = true;
+        fn compensate(
+            &mut self,
+            _out: Vec<Arc<String>>,
+            _state: StateHandle<'_, Self>,
+            _ctx: &mut OperationCtx<'_>,
+        ) -> Result<(), OperationError> {
+            comp_log("undo-A".to_string());
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct ResumeUndoB;
+    impl Operation for ResumeUndoB {
+        type Input = String;
+        type Output = String;
+        type State = ();
+        type Change = NoChange;
+        type Clock = WallClock;
+        type Config = ();
+        fn name() -> &'static str {
+            "resume_undo_b"
+        }
+        fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
+        fn run(
+            &mut self,
+            input: String,
+            _state: StateHandle<'_, Self>,
+            ctx: &mut OperationCtx<'_>,
+        ) -> Result<(), OperationError> {
+            ctx.emit(format!("b:{input}"))?;
+            Ok(())
+        }
+        const COMPENSATE_OVERRIDDEN: bool = true;
+        fn compensate(
+            &mut self,
+            _out: Vec<Arc<String>>,
+            _state: StateHandle<'_, Self>,
+            _ctx: &mut OperationCtx<'_>,
+        ) -> Result<(), OperationError> {
+            comp_log("undo-B".to_string());
+            Ok(())
+        }
+    }
+
+    /// A → B → ship(fails). Durable-by-default; both A and B are compensable.
+    struct ResumeSaga;
+    impl BoundedOperative for ResumeSaga {
+        fn factory_id() -> &'static str {
+            "test-resume-saga"
+        }
+        fn operations(c: &mut ChannelBuilder) {
+            c.input::<String>("in").into::<ResumeUndoA>();
+            c.channel::<String>("c1")
+                .from::<ResumeUndoA>()
+                .into::<ResumeUndoB>();
+            c.channel::<String>("c2")
+                .from::<ResumeUndoB>()
+                .into::<SagaShipFails>();
+            c.channel::<String>("out")
+                .from::<SagaShipFails>()
+                .to_plugin("sink");
+        }
+    }
+
     // ---- non-driver unit tests ----------------------------------------------
 
     #[test]
@@ -1205,8 +1309,11 @@ mod tests {
             .lock()
             .unwrap();
         let wal_sink: crate::segment::flusher::SendFrameFn = Arc::new(
-            |frame: &[u8]| -> Result<(), crate::segment::flusher::SendError> {
-                WAL_FRAMES.lock().unwrap().push(frame.to_vec());
+            |payload_id: &str, frame: &[u8]| -> Result<(), crate::segment::flusher::SendError> {
+                WAL_FRAMES
+                    .lock()
+                    .unwrap()
+                    .push((payload_id.to_string(), frame.to_vec()));
                 Ok(())
             },
         );
@@ -1228,6 +1335,7 @@ mod tests {
         crate::register_bounded::<CleanSaga>();
         crate::register_bounded::<FanSaga>();
         crate::register_bounded::<StopSaga>();
+        crate::register_bounded::<ResumeSaga>();
 
         let mut node = ExecutorNode::new("test-ns".to_string());
 
@@ -1575,6 +1683,80 @@ mod tests {
         assert_eq!(
             done.0, "ok",
             "the driver resumes once the expected Segment restore lands"
+        );
+
+        // --- §4.3 durable saga records: a fresh abnormal run emits one
+        // compensation_intent per completed compensable segment and one
+        // compensation_done per compensated segment ---
+        use crate::segment::segment_state_sink::{
+            COMPENSATION_DONE_PAYLOAD_ID as DONE, COMPENSATION_INTENT_PAYLOAD_ID as INTENT,
+        };
+        WAL_FRAMES.lock().unwrap().clear();
+        let _ = drain_comp_log();
+        // reserve + charge complete (both compensable ⇒ 2 intents); ship fails ⇒
+        // both roll back (2 dones). Hookless ship_fails never completed ⇒ no record.
+        assert!(node.start_bounded("test-saga-bounded".into(), "saga-rec".into(), "42".into()));
+        let (_o, done) = drain(&rx, "saga-rec");
+        assert_eq!(done.0, "error");
+        assert_eq!(
+            count_wal_frames(INTENT),
+            2,
+            "one intent per completed compensable segment"
+        );
+        assert_eq!(
+            count_wal_frames(DONE),
+            2,
+            "one done per compensated segment"
+        );
+
+        // --- §4.3 crash-resume finishes the remaining hooks, skipping the ones
+        // already recorded done, and does NOT re-run the forward chain ---
+        WAL_FRAMES.lock().unwrap().clear();
+        let _ = drain_comp_log();
+        // Respawn a durable saga expecting one restore: the driver parks on the
+        // gate while we seed the markers the RestoreInitState handler would carry.
+        assert!(node.start_bounded_resumable(
+            "test-resume-saga".into(),
+            "resume-saga".into(),
+            "x".into(),
+            1,
+        ));
+        let a_id =
+            crate::segment::flusher::encode_segment_identity("resume-saga", "resume_undo_a", "");
+        let b_id =
+            crate::segment::flusher::encode_segment_identity("resume-saga", "resume_undo_b", "");
+        let (saga_inst, _slot) = node
+            .find_bounded_segment(&a_id)
+            .expect("a durable bounded saga Segment is reachable by the restore handler");
+        // Original run: A + B both completed (intent); B was already undone before
+        // the crash (done). Resume must undo A and SKIP B — in reverse — without
+        // re-running the forward chain (so no fresh intents, no `a:`/`b:` output).
+        saga_inst.note_compensation_markers(&a_id, true, false);
+        saga_inst.note_compensation_markers(&b_id, true, true);
+        saga_inst.note_restored();
+        let (outs, done) = drain(&rx, "resume-saga");
+        assert_eq!(
+            done.0, "error",
+            "a resumed compensation terminates with error"
+        );
+        assert!(
+            outs.is_empty(),
+            "compensation-resume does not re-run forward ops"
+        );
+        assert_eq!(
+            drain_comp_log(),
+            vec!["undo-A".to_string()],
+            "A is undone; B (already done) is skipped"
+        );
+        assert_eq!(
+            count_wal_frames(DONE),
+            1,
+            "only A emits a fresh compensation_done; B was skipped"
+        );
+        assert_eq!(
+            count_wal_frames(INTENT),
+            0,
+            "a compensation-resume records no new intent (forward chain not re-run)"
         );
     }
 

@@ -38,6 +38,14 @@ impl CommandAction for RestoreInitState {
             // landed regardless of apply success, so the gate never stalls on a
             // corrupt record.
             let t = restore_into_slot(&slot, self, errors);
+            // Saga crash-resume (§4.3): carry the per-Segment compensation markers
+            // the controller persisted so the driver finishes an in-flight undo
+            // (intent) and skips segments already undone (done).
+            instance.note_compensation_markers(
+                &self.segment_id,
+                self.has_compensation_intent,
+                self.has_compensation_done,
+            );
             instance.note_restored();
             t
         } else {

@@ -1091,10 +1091,12 @@ fn change_is_flushed_before_output_is_emitted() {
 
     FLUSH_ORDER_LOG.lock().unwrap().clear();
     // WAL sink records every shipped change frame on the shared log.
-    let sink: SendFrameFn = Arc::new(|_frame: &[u8]| -> Result<(), SendError> {
-        FLUSH_ORDER_LOG.lock().unwrap().push("wal");
-        Ok(())
-    });
+    let sink: SendFrameFn = Arc::new(
+        |_payload_id: &str, _frame: &[u8]| -> Result<(), SendError> {
+            FLUSH_ORDER_LOG.lock().unwrap().push("wal");
+            Ok(())
+        },
+    );
     segment_state_sink::install_global_sink(sink);
 
     let (handle, instance) = setup::<FlushOrderOperative>("flush-order-instance", 2);

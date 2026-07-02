@@ -53,7 +53,11 @@ pub enum SendError {
     Other(String),
 }
 
-pub type SendFrameFn = Arc<dyn Fn(&[u8]) -> Result<(), SendError> + Send + Sync + 'static>;
+/// Ship one already-built wire frame under a given data-stream payload-id. The
+/// installed sink wraps the frame in the payloader envelope with that id, so the
+/// same reliable sink carries `segment_state_change` and the saga
+/// `compensation_intent` / `compensation_done` records.
+pub type SendFrameFn = Arc<dyn Fn(&str, &[u8]) -> Result<(), SendError> + Send + Sync + 'static>;
 
 /// Per-Segment entry registered with the flusher.
 struct FlusherEntry {
@@ -354,7 +358,10 @@ pub fn flush_one(
         return;
     }
     for frame in frames {
-        crate::segment::segment_state_sink::send(frame);
+        crate::segment::segment_state_sink::send(
+            crate::segment::segment_state_sink::SEGMENT_STATE_CHANGE_PAYLOAD_ID,
+            frame,
+        );
     }
 }
 

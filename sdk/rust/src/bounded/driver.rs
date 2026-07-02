@@ -37,6 +37,9 @@ use crate::channel::{ChannelKind, OperationId};
 use crate::executor::work_stealing_pool::WorkStealingPool;
 use crate::operative::topology::{OperationDescriptor, OperativeTopology, SegmentingMode};
 use crate::segment::flusher::SegmentFlusher;
+use crate::segment::segment_state_sink::{
+    COMPENSATION_DONE_PAYLOAD_ID, COMPENSATION_INTENT_PAYLOAD_ID,
+};
 use crate::segment::SegmentSlot;
 use crate::util::LockRecover;
 
@@ -52,16 +55,20 @@ struct StageOut {
 }
 
 /// Read-only context threaded through one structured chain run: the topology,
-/// the resolved chain order, the instance id, the work pool, the pre-built
-/// per-stage segments, and the rollback mode. Bundled so the chain driver and
-/// the compensator take it by reference instead of a long parameter list.
+/// the resolved chain order, the running instance (its id + saga crash-resume
+/// markers), the work pool, the pre-built per-stage segments, the rollback mode,
+/// and whether the class is durable (gates the saga compensation records).
+/// Bundled so the chain driver and the compensator take it by reference instead
+/// of a long parameter list.
 struct ChainCtx<'a> {
     topology: &'a Arc<OperativeTopology>,
     chain: &'a [OperationId],
+    instance: &'a BoundedInstance,
     instance_id: &'a Arc<str>,
     pool: &'a Arc<WorkStealingPool>,
     stage_segments: &'a [Vec<Arc<SegmentSlot>>],
     rollback_mode: RollbackMode,
+    persistence_enabled: bool,
 }
 
 /// Spawn the bounded driver for one already-registered instance on a dedicated
@@ -206,10 +213,12 @@ fn run_structured(
     let ctx = ChainCtx {
         topology,
         chain: &spec.chain,
+        instance,
         instance_id: &instance.instance_id,
         pool,
         stage_segments: &instance.stage_segments,
         rollback_mode: spec.rollback_mode,
+        persistence_enabled: spec.persistence_enabled,
     };
     drive_chain(&ctx, args, &instance.cancel)
 }
@@ -259,6 +268,23 @@ fn deregister_flushers(stage_segments: &[Vec<Arc<SegmentSlot>>]) {
 }
 
 fn drive_chain(ctx: &ChainCtx, args: &str, cancel: &AtomicBool) -> (String, String, Vec<u8>) {
+    // Crash-resume into an in-flight compensation (saga, §4.3): a non-empty
+    // reconstruction means the Controller shipped back compensation-intent
+    // markers, so the operative had terminated abnormally and (some of) its undo
+    // is outstanding. Finish the remaining hooks — skipping ones already recorded
+    // done — rather than re-running the forward chain, which would redo
+    // already-undone work. Empty ⇒ a fresh run / crash mid-forward, which re-runs
+    // the chain below (3C-a).
+    let resumed = reconstruct_completed_from_intents(ctx);
+    if !resumed.is_empty() {
+        run_compensation(ctx, &resumed);
+        return (
+            "error".to_string(),
+            "resumed compensation after crash".to_string(),
+            Vec::new(),
+        );
+    }
+
     let topology = ctx.topology;
     // Seed the first operation from the spawn args via the entry channel's
     // typed wrapper.
@@ -304,6 +330,19 @@ fn drive_chain(ctx: &ChainCtx, args: &str, cancel: &AtomicBool) -> (String, Stri
         match run_stage_parallel(topology, ctx.instance_id, slots, partitioned, ctx.pool) {
             Ok(stage_out) => {
                 batch = stage_out.batch;
+                // Durable saga (§4.3): record this operation's completion — one
+                // compensation-intent marker per segment that ran — so a crash
+                // mid-compensation knows what still needs undo. Only for
+                // compensable operations (a hookless op is never rolled back).
+                if op.compensate_overridden {
+                    for seg_run in &stage_out.segments {
+                        emit_compensation_record(
+                            COMPENSATION_INTENT_PAYLOAD_ID,
+                            &slots[seg_run.segment_index].segment_identity,
+                            ctx.persistence_enabled,
+                        );
+                    }
+                }
                 completed.push(StageRecord {
                     stage_idx,
                     segments: stage_out.segments,
@@ -359,18 +398,72 @@ fn run_compensation(ctx: &ChainCtx, completed: &[StageRecord]) {
         let slots = &ctx.stage_segments[record.stage_idx];
         for seg_run in &record.segments {
             let slot = &slots[seg_run.segment_index];
-            let outputs: Vec<Value> = seg_run.outputs.iter().map(Arc::clone).collect();
-            let mut state = slot.state.lock_recover();
-            if let Err(e) =
-                slot.dispatcher
-                    .compensate_collecting(outputs, &mut state, ctx.topology, &mut sink)
-            {
-                eprintln!(
-                    "[flezha] bounded {} compensation error: {e}",
-                    ctx.instance_id
-                );
+            // Crash-resume: a segment whose compensation-done marker was shipped
+            // back already ran its undo — skip it (idempotent by author
+            // contract, but re-running wastes work / double-emits records).
+            if ctx.instance.has_compensation_done(&slot.segment_identity) {
+                continue;
             }
+            let outputs: Vec<Value> = seg_run.outputs.iter().map(Arc::clone).collect();
+            {
+                let mut state = slot.state.lock_recover();
+                if let Err(e) = slot.dispatcher.compensate_collecting(
+                    outputs,
+                    &mut state,
+                    ctx.topology,
+                    &mut sink,
+                ) {
+                    eprintln!(
+                        "[flezha] bounded {} compensation error: {e}",
+                        ctx.instance_id
+                    );
+                }
+            }
+            // Durable saga (§4.3): record this compensation's completion so a
+            // later crash resumes the remainder and skips this segment.
+            emit_compensation_record(
+                COMPENSATION_DONE_PAYLOAD_ID,
+                &slot.segment_identity,
+                ctx.persistence_enabled,
+            );
         }
+    }
+}
+
+/// Rebuild the completed-stage records to compensate on a crash-resume from the
+/// shipped-back compensation-intent markers: a Segment slot whose identity was
+/// marked "intent" completed forward and needs undo. Outputs are empty — an
+/// operation's collected inter-operation output was never durable, so a durable
+/// compensable operation must persist its undo handle in State (which IS
+/// restored), per the at-least-once author contract. Stages are gathered in
+/// chain order; [`plan_compensation`] reverses them for the undo pass.
+fn reconstruct_completed_from_intents(ctx: &ChainCtx) -> Vec<StageRecord> {
+    let mut completed: Vec<StageRecord> = Vec::new();
+    for (stage_idx, slots) in ctx.stage_segments.iter().enumerate() {
+        let segments: Vec<SegmentRun> = slots
+            .iter()
+            .enumerate()
+            .filter(|(_, slot)| ctx.instance.has_compensation_intent(&slot.segment_identity))
+            .map(|(segment_index, _)| SegmentRun {
+                segment_index,
+                outputs: Vec::new(),
+            })
+            .collect();
+        if !segments.is_empty() {
+            completed.push(StageRecord {
+                stage_idx,
+                segments,
+            });
+        }
+    }
+    completed
+}
+
+/// Ship one saga compensation marker for a Segment through the reliable sink —
+/// a no-op for an opted-out (non-durable) class, which never crash-resumes.
+fn emit_compensation_record(payload_id: &str, segment_identity: &[u8], persistence_enabled: bool) {
+    if persistence_enabled {
+        crate::segment::segment_state_sink::send_compensation_record(payload_id, segment_identity);
     }
 }
 

@@ -10,6 +10,7 @@
 //! `RestoreInitState` handler all reach a running bounded operative through the
 //! same registry entry — no bounded-specific process-global.
 
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -27,6 +28,12 @@ const RESUME_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 /// promptly (mirrors the reaper's `sleep_responsive`).
 const RESUME_WAIT_CHUNK: Duration = Duration::from_millis(200);
 
+/// Lock a compensation-marker set, recovering from a poisoned lock (the sets
+/// only hold shipped-back Segment identities — no invariant to protect).
+fn marker_set(set: &Mutex<HashSet<Vec<u8>>>) -> std::sync::MutexGuard<'_, HashSet<Vec<u8>>> {
+    set.lock().unwrap_or_else(|p| p.into_inner())
+}
+
 pub struct BoundedInstance {
     pub instance_id: Arc<str>,
     /// Tripped by `BoundedStop` / `RemOperative` / `max_duration`; observed by
@@ -43,6 +50,14 @@ pub struct BoundedInstance {
     expected: usize,
     restored: Mutex<usize>,
     restored_cv: Condvar,
+    /// Segment identities whose operation completed forward and may need undo,
+    /// shipped back via `RestoreInitState.has_compensation_intent` on
+    /// crash-resume (saga). Non-empty ⇒ the driver finishes the compensation
+    /// instead of re-running the forward chain.
+    compensation_intents: Mutex<HashSet<Vec<u8>>>,
+    /// Segment identities whose compensation already ran before the crash
+    /// (`RestoreInitState.has_compensation_done`) — skipped on resume.
+    compensation_done: Mutex<HashSet<Vec<u8>>>,
 }
 
 impl BoundedInstance {
@@ -62,8 +77,33 @@ impl BoundedInstance {
             expected,
             restored: Mutex::new(0),
             restored_cv: Condvar::new(),
+            compensation_intents: Mutex::new(HashSet::new()),
+            compensation_done: Mutex::new(HashSet::new()),
         });
         (instance, inbox_rx)
+    }
+
+    /// Record the shipped-back saga compensation markers for a Segment (crash-
+    /// resume): `intent` ⇒ its operation completed forward and may need undo;
+    /// `done` ⇒ its compensation already ran (skip it on resume).
+    pub fn note_compensation_markers(&self, segment_identity: &[u8], intent: bool, done: bool) {
+        if intent {
+            marker_set(&self.compensation_intents).insert(segment_identity.to_vec());
+        }
+        if done {
+            marker_set(&self.compensation_done).insert(segment_identity.to_vec());
+        }
+    }
+
+    /// Whether this Segment completed forward and needs undo (drives which hooks
+    /// a crash-resume runs).
+    pub fn has_compensation_intent(&self, segment_identity: &[u8]) -> bool {
+        marker_set(&self.compensation_intents).contains(segment_identity)
+    }
+
+    /// Whether this Segment's compensation already ran (skip on resume).
+    pub fn has_compensation_done(&self, segment_identity: &[u8]) -> bool {
+        marker_set(&self.compensation_done).contains(segment_identity)
     }
 
     /// Trip the cancellation token (cooperative `BoundedStop`, hard

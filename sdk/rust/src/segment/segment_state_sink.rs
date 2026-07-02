@@ -30,18 +30,21 @@ use flz_transport::transport::FlezhaStream;
 
 use crate::segment::flusher::SendFrameFn;
 
+/// Data-stream payload-id for a per-Segment state Change record
+/// (SDK → controller). The reliable sink stamps this id on every flusher frame.
+pub const SEGMENT_STATE_CHANGE_PAYLOAD_ID: &str = "segment_state_change";
+
 /// Data-stream payload-id for the dynamic-mode hard-delete RPC
 /// (SDK → controller). The body is the structured `segment_id` bytes;
 /// the controller routes it to the per-Segment file lifecycle.
 pub const DELETE_SEGMENT_STATE_PAYLOAD_ID: &str = "delete_segment_state";
 
-/// Data-stream payload-ids reserved for the bounded-operative saga compensation
+/// Data-stream payload-ids for the bounded-operative saga compensation
 /// change-log (SDK → controller), same frame layout as `segment_state_change`.
 /// `compensation_intent` records an operation's completion; `compensation_done`
-/// records a compensation hook's completion.
-#[allow(dead_code)]
+/// records a compensation hook's completion. Both ride the reliable sink (with
+/// its reconnect ring) so a marker survives a reconnect before a crash.
 pub const COMPENSATION_INTENT_PAYLOAD_ID: &str = "compensation_intent";
-#[allow(dead_code)]
 pub const COMPENSATION_DONE_PAYLOAD_ID: &str = "compensation_done";
 
 const ENV_RING_CAPACITY: &str = "FLEZHA_RECONNECT_RING_CAPACITY";
@@ -55,9 +58,11 @@ const RECONNECT_REASON: &str = "broken_pipe_flood";
 
 struct SinkState {
     sink: Option<SendFrameFn>,
-    /// Frames produced while no sink was installed or a write failed.
-    /// Bounded; oldest is dropped on overflow.
-    ring: VecDeque<Vec<u8>>,
+    /// `(payload_id, frame)` pairs produced while no sink was installed or a
+    /// write failed. Bounded; oldest is dropped on overflow. The payload-id is
+    /// retained so a replayed frame is re-wrapped under its own id
+    /// (`segment_state_change` vs a `compensation_*` record).
+    ring: VecDeque<(String, Vec<u8>)>,
     /// Timestamps of recent write failures, used for flood detection.
     broken_pipe_at: VecDeque<Instant>,
     /// Set once a flood reconnect has been requested; cleared on the next
@@ -75,11 +80,11 @@ impl SinkState {
         }
     }
 
-    fn push_ring(&mut self, frame: Vec<u8>) {
+    fn push_ring(&mut self, payload_id: &str, frame: Vec<u8>) {
         if self.ring.len() >= ring_capacity() {
             self.ring.pop_front();
         }
-        self.ring.push_back(frame);
+        self.ring.push_back((payload_id.to_string(), frame));
     }
 
     /// Record a write failure; returns `true` when the caller should drive
@@ -148,10 +153,10 @@ fn flood_window_ms() -> u64 {
 /// a write failure (or while no sink is installed) the frame is buffered
 /// in the reconnect ring; a sustained failure run asks the coordinator to
 /// reconnect. Never blocks the flusher on a dead stream.
-pub fn send(frame: Vec<u8>) {
+pub fn send(payload_id: &str, frame: Vec<u8>) {
     let should_reconnect = {
         let mut st = STATE.lock().expect("segment_state_sink lock poisoned");
-        let outcome = st.sink.as_ref().map(|f| f(&frame));
+        let outcome = st.sink.as_ref().map(|f| f(payload_id, &frame));
         match outcome {
             Some(Ok(())) => false,
             Some(Err(ref e)) => {
@@ -163,13 +168,13 @@ pub fn send(frame: Vec<u8>) {
                         e
                     );
                 }
-                st.push_ring(frame);
+                st.push_ring(payload_id, frame);
                 st.note_broken_pipe(Instant::now())
             }
             None => {
                 // Reconnect window: hold the frame, but don't count it as a
                 // broken pipe — the stream is intentionally absent.
-                st.push_ring(frame);
+                st.push_ring(payload_id, frame);
                 false
             }
         }
@@ -193,19 +198,28 @@ pub fn install_global_sink(send_fn: SendFrameFn) {
     st.broken_pipe_at.clear();
     st.reconnect_requested = false;
 
-    let pending: Vec<Vec<u8>> = st.ring.drain(..).collect();
+    let pending: Vec<(String, Vec<u8>)> = st.ring.drain(..).collect();
     let mut it = pending.into_iter();
-    for frame in it.by_ref() {
-        if send_fn(&frame).is_err() {
+    for (pid, frame) in it.by_ref() {
+        if send_fn(&pid, &frame).is_err() {
             // The new stream is already failing — re-buffer this frame and
             // everything after it; a later install replays again.
-            st.push_ring(frame);
-            for rest in it.by_ref() {
-                st.push_ring(rest);
+            st.push_ring(&pid, frame);
+            for (rest_pid, rest) in it.by_ref() {
+                st.push_ring(&rest_pid, rest);
             }
             break;
         }
     }
+}
+
+/// Ship one bounded-operative saga compensation marker (`compensation_intent`
+/// or `compensation_done`) for a Segment through the reliable sink. The body is
+/// empty — the record's information is the Segment identity plus the payload-id
+/// — matching `Flezha.State.Wire.decode_frame/1` (crc32 over an empty body is 0).
+pub fn send_compensation_record(payload_id: &str, segment_identity: &[u8]) {
+    let frame = crate::segment::flusher::build_segment_frame(segment_identity, 0, &[0u8; 16], &[]);
+    send(payload_id, frame);
 }
 
 /// Serializes every test that installs the process-global sink — the sink's own
@@ -234,7 +248,7 @@ mod tests {
     fn recording_sink(fail: Arc<AtomicBool>) -> (SendFrameFn, Arc<StdMutex<Vec<Vec<u8>>>>) {
         let seen = Arc::new(StdMutex::new(Vec::new()));
         let seen_c = Arc::clone(&seen);
-        let f: SendFrameFn = Arc::new(move |frame: &[u8]| {
+        let f: SendFrameFn = Arc::new(move |_payload_id: &str, frame: &[u8]| {
             if fail.load(Ordering::SeqCst) {
                 Err(SendError::TransportDown("test".into()))
             } else {
@@ -245,13 +259,15 @@ mod tests {
         (f, seen)
     }
 
+    const PID: &str = super::SEGMENT_STATE_CHANGE_PAYLOAD_ID;
+
     #[test]
     fn frames_with_no_sink_buffer_and_replay_on_install() {
         let _g = super::SINK_TEST_LOCK.lock().unwrap();
         reset_state();
 
-        send(b"a".to_vec());
-        send(b"b".to_vec());
+        send(PID, b"a".to_vec());
+        send(PID, b"b".to_vec());
 
         let (sink, seen) = recording_sink(Arc::new(AtomicBool::new(false)));
         install_global_sink(sink);
@@ -271,7 +287,7 @@ mod tests {
 
         let (sink, seen) = recording_sink(Arc::new(AtomicBool::new(false)));
         install_global_sink(sink);
-        send(b"x".to_vec());
+        send(PID, b"x".to_vec());
 
         assert_eq!(*seen.lock().unwrap(), vec![b"x".to_vec()]);
         assert!(
@@ -290,8 +306,8 @@ mod tests {
         let (sink, _seen) = recording_sink(Arc::clone(&fail));
         install_global_sink(sink);
 
-        send(b"1".to_vec());
-        send(b"2".to_vec());
+        send(PID, b"1".to_vec());
+        send(PID, b"2".to_vec());
         assert_eq!(STATE.lock().unwrap().ring.len(), 2);
 
         // Stream recovers; a fresh install replays the ring in order.
@@ -310,9 +326,15 @@ mod tests {
         reset_state();
 
         for i in 0..5u8 {
-            send(vec![i]); // no sink → ring
+            send(PID, vec![i]); // no sink → ring
         }
-        let ring: Vec<Vec<u8>> = STATE.lock().unwrap().ring.iter().cloned().collect();
+        let ring: Vec<Vec<u8>> = STATE
+            .lock()
+            .unwrap()
+            .ring
+            .iter()
+            .map(|(_pid, frame)| frame.clone())
+            .collect();
         assert_eq!(
             ring,
             vec![vec![2u8], vec![3u8], vec![4u8]],
@@ -357,7 +379,7 @@ mod tests {
         let (sink, _seen) = recording_sink(Arc::new(AtomicBool::new(true)));
         install_global_sink(sink);
         for i in 0..5u8 {
-            send(vec![i]); // every write fails → buffered + counted
+            send(PID, vec![i]); // every write fails → buffered + counted
         }
         // All five frames buffered (drop-oldest not reached at default cap).
         assert_eq!(STATE.lock().unwrap().ring.len(), 5);
