@@ -35,9 +35,9 @@ use flezha_executor::channel::ChannelBuilder;
 use flezha_executor::operation::{Operation, OperationCtx, OperationError};
 use flezha_executor::operative::builder::build_topology_for;
 use flezha_executor::operative::registry::OperativeRegistry;
-use flezha_executor::operative::ContinuousInstance;
+use flezha_executor::operative::UnboundedInstance;
 use flezha_executor::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_executor::{__dispatch_internals as bi, ContinuousOperative, OverflowPolicy};
+use flezha_executor::{__dispatch_internals as bi, OverflowPolicy, UnboundedOperative};
 use flz_transport::transport::FlezhaStream;
 
 // Helpers — duplicated from `dispatch.rs` per `operative-bench-harness/design.md`
@@ -99,7 +99,7 @@ impl Operation for SingleSegmentOperation {
 }
 
 struct SingleSegmentOperative;
-impl ContinuousOperative for SingleSegmentOperative {
+impl UnboundedOperative for SingleSegmentOperative {
     fn factory_id() -> &'static str {
         "single_segment_operative"
     }
@@ -122,12 +122,12 @@ fn throughput_single_segment(c: &mut Criterion) {
     let pool = Arc::new(bi::WorkStealingPool::with_size(pool_size_from_env_or_cpus()));
     let topology = build_topology_for::<SingleSegmentOperative>().expect("topology");
     let registry = Arc::new(OperativeRegistry::new());
-    let instance = ContinuousInstance::new(
+    let instance = UnboundedInstance::new(
         Arc::clone(&topology),
         Arc::from("single-segment-bench"),
         Arc::clone(&pool),
     );
-    registry.register_continuous(instance);
+    registry.register_unbounded(instance);
 
     let handle = bi::OperativeDispatchHandle {
         registry: Arc::clone(&registry),
@@ -211,7 +211,7 @@ impl Operation for FanoutOperation {
 }
 
 struct StaticFanoutOperative;
-impl ContinuousOperative for StaticFanoutOperative {
+impl UnboundedOperative for StaticFanoutOperative {
     fn factory_id() -> &'static str {
         "static_fanout_operative"
     }
@@ -230,12 +230,12 @@ fn throughput_static_fanout(c: &mut Criterion) {
     let pool = Arc::new(bi::WorkStealingPool::with_size(pool_size_from_env_or_cpus()));
     let topology = build_topology_for::<StaticFanoutOperative>().expect("topology");
     let registry = Arc::new(OperativeRegistry::new());
-    let instance = ContinuousInstance::new(
+    let instance = UnboundedInstance::new(
         Arc::clone(&topology),
         Arc::from("static-fanout-bench"),
         Arc::clone(&pool),
     );
-    registry.register_continuous(instance);
+    registry.register_unbounded(instance);
 
     let handle = bi::OperativeDispatchHandle {
         registry: Arc::clone(&registry),

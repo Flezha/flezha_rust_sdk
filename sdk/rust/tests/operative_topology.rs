@@ -1,4 +1,4 @@
-//! Section 2 unit tests: topology construction + ContinuousInstance segment
+//! Section 2 unit tests: topology construction + UnboundedInstance segment
 //! creation. Covers the umbrella scenarios:
 //! - "Single segment for a Operation with no segmenting declared"
 //! - "Static segments created at operative startup"
@@ -12,7 +12,7 @@ use flezha_executor::channel::ChannelBuilder;
 use flezha_executor::operation::{Operation, OperationCtx, OperationError};
 use flezha_executor::operative::builder::build_topology_for;
 use flezha_executor::state::{Change, NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_executor::ContinuousOperative;
+use flezha_executor::UnboundedOperative;
 
 mod common;
 
@@ -21,7 +21,7 @@ test_operation!(EchoOperation, "echo_operation", String => String, (), |_input, 
 });
 
 struct SingleOperative;
-impl ContinuousOperative for SingleOperative {
+impl UnboundedOperative for SingleOperative {
     fn factory_id() -> &'static str {
         "single_operative"
     }
@@ -87,7 +87,7 @@ impl Operation for StaticOperation {
 }
 
 struct StaticOperative;
-impl ContinuousOperative for StaticOperative {
+impl UnboundedOperative for StaticOperative {
     fn factory_id() -> &'static str {
         "static_operative"
     }
@@ -135,7 +135,7 @@ impl Operation for DynamicOnlyOperation {
 }
 
 struct DynamicOnlyOperative;
-impl ContinuousOperative for DynamicOnlyOperative {
+impl UnboundedOperative for DynamicOnlyOperative {
     fn factory_id() -> &'static str {
         "dynamic_only_operative"
     }
@@ -186,7 +186,7 @@ impl Operation for UnannotatedStaticOperation {
 }
 
 struct UnannotatedOperative;
-impl ContinuousOperative for UnannotatedOperative {
+impl UnboundedOperative for UnannotatedOperative {
     fn factory_id() -> &'static str {
         "unannotated_operative"
     }
@@ -215,7 +215,7 @@ test_operation!(ZeroCapacityOperation, "zero_capacity_operation", String => Stri
 });
 
 struct ZeroCapacityOperative;
-impl ContinuousOperative for ZeroCapacityOperative {
+impl UnboundedOperative for ZeroCapacityOperative {
     fn factory_id() -> &'static str {
         "zero_capacity_operative"
     }
@@ -247,7 +247,7 @@ test_operation!(ExplicitCapOperation, "explicit_cap_operation", String => String
 });
 
 struct ExplicitCapOperative;
-impl ContinuousOperative for ExplicitCapOperative {
+impl UnboundedOperative for ExplicitCapOperative {
     fn factory_id() -> &'static str {
         "explicit_cap_operative"
     }
@@ -277,7 +277,7 @@ fn operative_instance_creates_segments() {
     use flezha_executor::__dispatch_internals as bi;
     let topology = build_topology_for::<StaticOperative>().expect("topology");
     let pool = Arc::new(bi::WorkStealingPool::with_size(2));
-    let instance = flezha_executor::operative::ContinuousInstance::new(
+    let instance = flezha_executor::operative::UnboundedInstance::new(
         topology,
         Arc::from("instance-id"),
         pool,

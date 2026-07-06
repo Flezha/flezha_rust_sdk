@@ -12,10 +12,10 @@ use std::time::Duration;
 
 use flezha_executor::channel::ChannelBuilder;
 use flezha_executor::operation::{Operation, OperationCtx, OperationError};
-use flezha_executor::operative::ContinuousInstance;
+use flezha_executor::operative::UnboundedInstance;
 use flezha_executor::segment::dynamic::DynamicSegmentRegistry;
 use flezha_executor::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_executor::ContinuousOperative;
+use flezha_executor::UnboundedOperative;
 
 mod common;
 use common::{dispatch_input, dummy_stream, setup, wait_until};
@@ -26,7 +26,7 @@ fn key_of(input: &str) -> Option<String> {
 
 /// A `String`-in, `()`-state dynamic-mode Operation keyed by [`key_of`]. The
 /// base form takes the `init_state` + `run` bodies; `dyn_operation!` adds
-/// trivial ones plus a paired single-entry ContinuousOperative. Extra trait items (TTL,
+/// trivial ones plus a paired single-entry UnboundedOperative. Extra trait items (TTL,
 /// cap) are appended verbatim.
 macro_rules! dyn_operation_base {
     ($operation:ident, $operative:ident, $name:literal, $factory:literal, { $($item:item)* }) => {
@@ -45,7 +45,7 @@ macro_rules! dyn_operation_base {
             $($item)*
         }
         struct $operative;
-        impl ContinuousOperative for $operative {
+        impl UnboundedOperative for $operative {
             fn factory_id() -> &'static str { $factory }
             fn channels(c: &mut ChannelBuilder) { c.input::<String>("inp").into::<$operation>(); }
         }
@@ -119,7 +119,7 @@ dyn_operation_base!(
 );
 
 /// The single dynamic registry on a one-operation operative instance.
-fn registry(instance: &Arc<ContinuousInstance>) -> Arc<DynamicSegmentRegistry> {
+fn registry(instance: &Arc<UnboundedInstance>) -> Arc<DynamicSegmentRegistry> {
     Arc::clone(
         instance.dynamic_registries[0]
             .as_ref()

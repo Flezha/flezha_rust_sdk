@@ -4,14 +4,14 @@
 //! Three-way precedence:
 //!   1. Executor override (`operative_persistence.<OperativeClass>` in operative-start
 //!      metadata) wins if present.
-//!   2. Otherwise, the ContinuousOperative's class const `ContinuousOperative::PERSISTENCE_ENABLED`.
+//!   2. Otherwise, the UnboundedOperative's class const `UnboundedOperative::PERSISTENCE_ENABLED`.
 //!   3. The trait default of the const is `true`.
 //!
 //! Frozen at instance start: the resolved value is bound on
-//! `ContinuousInstance` at construction; subsequent executor config changes
+//! `UnboundedInstance` at construction; subsequent executor config changes
 //! only take effect on the next `stop_operative` + `start_operative` cycle.
 
-/// Resolve the persistence flag for a ContinuousOperative instance. The controller's
+/// Resolve the persistence flag for an UnboundedOperative instance. The controller's
 /// runtime config is parsed by upstream code into a `Option<bool>` keyed
 /// by `operative_persistence.<OperativeClass>`; the present value wins
 /// regardless of the class const.

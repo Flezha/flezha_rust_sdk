@@ -5,7 +5,7 @@
 //! Stream readers push directly into per-Segment lock-free mailboxes
 //! (`crossbeam::queue::SegQueue` + `AtomicBool inflight`). A Chase-Lev
 //! work-stealing pool drains the mailboxes. A `DashMap`-backed
-//! [`operative::registry::OperativeRegistry`] holds live ContinuousOperative
+//! [`operative::registry::OperativeRegistry`] holds live UnboundedOperative
 //! instances; the central coordinator runs but only handles
 //! control-plane traffic.
 //!
@@ -13,7 +13,7 @@
 //!
 //! ```no_run
 //! use flezha_executor::{
-//!     register_continuous, ChannelBuilder, ContinuousOperative, Operation, OperationCtx, OperationError,
+//!     register_unbounded, ChannelBuilder, UnboundedOperative, Operation, OperationCtx, OperationError,
 //! };
 //! use flezha_executor::state::{
 //!     Change, NoChange, RestoreInitPayload, StateHandle, WallClock,
@@ -55,19 +55,19 @@
 //! }
 //!
 //! struct AppendOperative;
-//! impl ContinuousOperative for AppendOperative {
+//! impl UnboundedOperative for AppendOperative {
 //!     fn factory_id() -> &'static str { "appender" }
 //!     fn channels(c: &mut ChannelBuilder) {
 //!         c.input::<String>("input").into::<AppendOperation>();
 //!     }
 //! }
 //!
-//! register_continuous::<AppendOperative>();
+//! register_unbounded::<AppendOperative>();
 //! let _ = flezha_executor::new("my_namespace".to_string());
 //! # fn _ref() -> Option<NoChange> { None }
 //! ```
 //!
-//! When 10,000 messages targeting one `appender` ContinuousOperative instance arrive
+//! When 10,000 messages targeting one `appender` UnboundedOperative instance arrive
 //! on the entry channel, the final `state.seen` vector contains those
 //! 10,000 inputs in arrival order — the per-Segment inflight CAS
 //! guarantees no two `Operation::run` calls overlap on the same segment.
@@ -76,7 +76,7 @@
 //!
 //! The SDK's reconnect loop runs forever with capped exponential
 //! backoff. On every successful reconnect the controller re-issues
-//! `AddOperative` for every ContinuousOperative instance ProcessHub still has tagged
+//! `AddOperative` for every UnboundedOperative instance ProcessHub still has tagged
 //! to this executor's profile. The handler is idempotent on duplicate
 //! `operative_id`: if the local registry already contains the instance
 //! it logs and returns without re-registering, so the existing
@@ -131,17 +131,17 @@ pub use operation::{
     Change, Clock, CoalesceKey, DerivedState, EventTimeFrom, LogicalClock, NoChange, Operation,
     OperationCtx, OperationError, StateHandle, WallClock,
 };
-pub use operative::ContinuousOperative;
+pub use operative::UnboundedOperative;
 pub use segment::{RestoreError, RestoreInitPayload};
 
 /// An operative using the single-operation auto-wire path (`#[flezha::operation(sink = …)]`) or
-/// `flezha::operative!` registers without an explicit `register_continuous` call.
+/// `flezha::operative!` registers without an explicit `register_unbounded` call.
 /// Generated code `submit!`s one of these; [`register_inventory_operatives`]
 /// harvests them at startup.
 pub struct AutoOperative {
     /// The class's controller-facing factory id (for duplicate detection).
     pub factory_id: fn() -> &'static str,
-    /// Registers the class topology (`register_continuous::<R>()`).
+    /// Registers the class topology (`register_unbounded::<R>()`).
     pub register: fn(),
 }
 
@@ -159,7 +159,7 @@ inventory::collect!(AutoOperative);
 /// Harvest every auto-registered operative (single-operation auto-wire +
 /// `flezha::operative!`) into the class registry. Called once at startup. Panics
 /// on a duplicate `factory_id` — across two auto-registered operatives or against
-/// a operative already registered manually via [`register_continuous`].
+/// a operative already registered manually via [`register_unbounded`].
 pub fn register_inventory_operatives() {
     for auto in inventory::iter::<AutoOperative> {
         let factory_id = (auto.factory_id)();
@@ -174,7 +174,7 @@ pub fn register_inventory_operatives() {
 }
 
 use crate::executor::{ClientResponseMessage, ExecutorMessage};
-use crate::operative::instance::ContinuousInstance;
+use crate::operative::instance::UnboundedInstance;
 use crate::shutdown::ShutdownBridge;
 
 pub mod pb {
@@ -184,7 +184,7 @@ pub mod pb {
     include!("generated/executor_commands.rs");
 }
 
-/// Register a ContinuousOperative class with the SDK. Calls `R::channels(...)` once,
+/// Register an UnboundedOperative class with the SDK. Calls `R::channels(...)` once,
 /// freezes the resulting topology in the global class registry, and
 /// makes the class spawnable via the controller's `flz operative start
 /// <factory_id>` command (which routes to `start_operative` on the
@@ -194,19 +194,19 @@ pub mod pb {
 /// the prior topology. Panics if `R::channels` produced an invalid
 /// topology (duplicate channel names, unwired channels, missing
 /// `segment_for` overrides, etc.).
-pub fn register_continuous<R: ContinuousOperative>() {
+pub fn register_unbounded<R: UnboundedOperative>() {
     let topology = operative::builder::build_topology_for::<R>()
-        .expect("register_continuous: invalid topology");
+        .expect("register_unbounded: invalid topology");
     operative::registry::register_class(R::factory_id(), topology);
 }
 
-/// Register a bounded class with the SDK. Sibling of [`register_continuous`]: makes
+/// Register a bounded class with the SDK. Sibling of [`register_unbounded`]: makes
 /// the class spawnable via `flz operative start <factory_id> --kind bounded`.
 /// Builds and freezes the class spec — the run-sugar body or the structured
 /// linear chain declared via `BoundedOperative::operations` — and validates it
 /// (linear chain, no dynamic segments, terminable). Idempotent on the same
 /// `factory_id`. Panics if the authoring is invalid (mirrors
-/// [`register_continuous`]); use [`bounded::spec::build_spec`] to handle the
+/// [`register_unbounded`]); use [`bounded::spec::build_spec`] to handle the
 /// error explicitly.
 pub fn register_bounded<T: BoundedOperative>() {
     let spec =
@@ -262,23 +262,23 @@ impl Flezha {
         }
     }
 
-    /// Convenience pass-through to the free [`register_continuous`] function.
-    pub fn register_continuous<R: ContinuousOperative>(&self) {
-        register_continuous::<R>()
+    /// Convenience pass-through to the free [`register_unbounded`] function.
+    pub fn register_unbounded<R: UnboundedOperative>(&self) {
+        register_unbounded::<R>()
     }
 
     pub fn get_id(&self) -> &str {
         &self.id
     }
 
-    /// Snapshot of the live ContinuousOperative-instance registry. Returned shape
+    /// Snapshot of the live UnboundedOperative-instance registry. Returned shape
     /// mirrors the pre-`operative-mvp-rust` `get_operatives` for backward
     /// compatibility.
     // reason: public API; refactor would break external callers (test apps, observability)
     #[allow(clippy::type_complexity)]
     pub fn get_operatives(
         &self,
-    ) -> Arc<RwLock<HashMap<String, Arc<Mutex<Arc<ContinuousInstance>>>>>> {
+    ) -> Arc<RwLock<HashMap<String, Arc<Mutex<Arc<UnboundedInstance>>>>>> {
         self.executor_tx
             .lock()
             .unwrap()

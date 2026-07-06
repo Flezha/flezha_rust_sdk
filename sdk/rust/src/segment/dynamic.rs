@@ -20,7 +20,7 @@ use crate::channel::builder::BuildSegmentArgs;
 use crate::channel::OperationId;
 use crate::executor::work_stealing_pool::WorkStealingPool;
 use crate::operative::dispatcher::drain_segment;
-use crate::operative::instance::ContinuousInstance;
+use crate::operative::instance::UnboundedInstance;
 use crate::operative::topology::OperativeTopology;
 use crate::segment::flusher::SegmentFlusher;
 use crate::segment::{segment_state_sink, SegmentSlot};
@@ -53,14 +53,14 @@ pub enum GetOrCreateError {
 }
 
 /// Lazily-populated per-Operation segment map plus the build context needed to
-/// allocate fresh slots. Owned by the `ContinuousInstance`, one per dynamic Operation.
+/// allocate fresh slots. Owned by the `UnboundedInstance`, one per dynamic Operation.
 pub struct DynamicSegmentRegistry {
     pub segments: DashMap<String, Arc<SegmentSlot>>,
     pub counters: DynamicSegmentCounters,
     operation_id: OperationId,
     max_segments: usize,
     topology: Arc<OperativeTopology>,
-    instance: Weak<ContinuousInstance>,
+    instance: Weak<UnboundedInstance>,
     instance_id: Arc<str>,
     pool: Arc<WorkStealingPool>,
     persistence_enabled: bool,
@@ -72,7 +72,7 @@ impl DynamicSegmentRegistry {
         operation_id: OperationId,
         max_segments: usize,
         topology: Arc<OperativeTopology>,
-        instance: Weak<ContinuousInstance>,
+        instance: Weak<UnboundedInstance>,
         instance_id: Arc<str>,
         pool: Arc<WorkStealingPool>,
         persistence_enabled: bool,
@@ -166,7 +166,7 @@ impl DynamicSegmentRegistry {
     }
 
     /// Allocate a fresh slot for `key`, wired exactly as the static-mode slots
-    /// `ContinuousInstance::new` builds.
+    /// `UnboundedInstance::new` builds.
     fn build_slot(&self, key: &str) -> Arc<SegmentSlot> {
         let operation_desc = self
             .topology

@@ -7,9 +7,9 @@ use flezha_executor::channel::ChannelBuilder;
 use flezha_executor::command::segment_state::{apply_init_values, serialize_operative_state};
 use flezha_executor::operation::{Operation, OperationCtx, OperationError};
 use flezha_executor::operative::builder::build_topology_for;
-use flezha_executor::operative::ContinuousInstance;
+use flezha_executor::operative::UnboundedInstance;
 use flezha_executor::state::{Change, NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_executor::{__dispatch_internals as bi, ContinuousOperative};
+use flezha_executor::{__dispatch_internals as bi, UnboundedOperative};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -55,7 +55,7 @@ impl Operation for CounterOperation {
 }
 
 struct CounterOperative;
-impl ContinuousOperative for CounterOperative {
+impl UnboundedOperative for CounterOperative {
     fn factory_id() -> &'static str {
         "counter_operative"
     }
@@ -68,7 +68,7 @@ impl ContinuousOperative for CounterOperative {
 fn single_mode_operation_serializes_under_operation_name_key() {
     let topology = build_topology_for::<CounterOperative>().expect("topology");
     let pool = Arc::new(bi::WorkStealingPool::with_size(1));
-    let instance = ContinuousInstance::new(topology, Arc::from("inst-1"), pool);
+    let instance = UnboundedInstance::new(topology, Arc::from("inst-1"), pool);
 
     // Cold start: state is the default.
     let bytes = serialize_operative_state(&instance);
@@ -80,7 +80,7 @@ fn single_mode_operation_serializes_under_operation_name_key() {
 fn apply_init_values_seeds_single_mode_operation() {
     let topology = build_topology_for::<CounterOperative>().expect("topology");
     let pool = Arc::new(bi::WorkStealingPool::with_size(1));
-    let instance = ContinuousInstance::new(topology, Arc::from("inst-2"), pool);
+    let instance = UnboundedInstance::new(topology, Arc::from("inst-2"), pool);
 
     apply_init_values(&instance, "{\"counter\":{\"value\":42}}").unwrap();
 
@@ -129,7 +129,7 @@ impl Operation for OhlcOperation {
 }
 
 struct OhlcOperative;
-impl ContinuousOperative for OhlcOperative {
+impl UnboundedOperative for OhlcOperative {
     fn factory_id() -> &'static str {
         "ohlc_operative"
     }
@@ -142,7 +142,7 @@ impl ContinuousOperative for OhlcOperative {
 fn static_mode_operation_serializes_under_keyed_object() {
     let topology = build_topology_for::<OhlcOperative>().expect("topology");
     let pool = Arc::new(bi::WorkStealingPool::with_size(1));
-    let instance = ContinuousInstance::new(topology, Arc::from("inst-3"), pool);
+    let instance = UnboundedInstance::new(topology, Arc::from("inst-3"), pool);
 
     let bytes = serialize_operative_state(&instance);
     let v: Value = serde_json::from_slice(&bytes).unwrap();
@@ -153,7 +153,7 @@ fn static_mode_operation_serializes_under_keyed_object() {
 fn apply_init_values_seeds_static_mode_operation_per_key() {
     let topology = build_topology_for::<OhlcOperative>().expect("topology");
     let pool = Arc::new(bi::WorkStealingPool::with_size(1));
-    let instance = ContinuousInstance::new(topology, Arc::from("inst-4"), pool);
+    let instance = UnboundedInstance::new(topology, Arc::from("inst-4"), pool);
 
     apply_init_values(
         &instance,
@@ -170,7 +170,7 @@ fn apply_init_values_seeds_static_mode_operation_per_key() {
 fn apply_init_values_empty_string_is_noop() {
     let topology = build_topology_for::<CounterOperative>().expect("topology");
     let pool = Arc::new(bi::WorkStealingPool::with_size(1));
-    let instance = ContinuousInstance::new(topology, Arc::from("inst-5"), pool);
+    let instance = UnboundedInstance::new(topology, Arc::from("inst-5"), pool);
 
     apply_init_values(&instance, "").unwrap();
     let bytes = serialize_operative_state(&instance);
@@ -182,7 +182,7 @@ fn apply_init_values_empty_string_is_noop() {
 fn apply_init_values_unknown_operation_is_ignored() {
     let topology = build_topology_for::<CounterOperative>().expect("topology");
     let pool = Arc::new(bi::WorkStealingPool::with_size(1));
-    let instance = ContinuousInstance::new(topology, Arc::from("inst-6"), pool);
+    let instance = UnboundedInstance::new(topology, Arc::from("inst-6"), pool);
 
     apply_init_values(
         &instance,
@@ -198,7 +198,7 @@ fn apply_init_values_unknown_operation_is_ignored() {
 fn round_trip_static_mode_through_serialize_then_apply() {
     let topology = build_topology_for::<OhlcOperative>().expect("topology");
     let pool = Arc::new(bi::WorkStealingPool::with_size(1));
-    let src = ContinuousInstance::new(Arc::clone(&topology), Arc::from("src"), Arc::clone(&pool));
+    let src = UnboundedInstance::new(Arc::clone(&topology), Arc::from("src"), Arc::clone(&pool));
     apply_init_values(
         &src,
         "{\"ohlc\":{\"1m\":{\"high\":42},\"1h\":{\"high\":7}}}",
@@ -208,7 +208,7 @@ fn round_trip_static_mode_through_serialize_then_apply() {
     let bytes = serialize_operative_state(&src);
     let json_str = std::str::from_utf8(&bytes).unwrap();
 
-    let dst = ContinuousInstance::new(topology, Arc::from("dst"), pool);
+    let dst = UnboundedInstance::new(topology, Arc::from("dst"), pool);
     apply_init_values(&dst, json_str).unwrap();
 
     let dst_bytes = serialize_operative_state(&dst);

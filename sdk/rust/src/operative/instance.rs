@@ -1,4 +1,4 @@
-//! `ContinuousInstance`: per-`AddOperative` runtime state.
+//! `UnboundedInstance`: per-`AddOperative` runtime state.
 
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
@@ -12,7 +12,7 @@ use crate::operative::topology::{OperativeTopology, SegmentingMode};
 use crate::segment::dynamic::{spawn_reaper, DynamicSegmentRegistry};
 use crate::segment::SegmentSlot;
 
-pub struct ContinuousInstance {
+pub struct UnboundedInstance {
     pub topology: Arc<OperativeTopology>,
     pub instance_id: Arc<str>,
     /// Indexed by `OperationId`. Each entry is a Vec of segments for that
@@ -31,17 +31,17 @@ pub struct ContinuousInstance {
     reaper_stop: Arc<AtomicBool>,
     reaper_handles: Mutex<Vec<JoinHandle<()>>>,
     /// Frozen-at-instance-start persistence flag. Resolved from the
-    /// ContinuousOperative class const + executor override; propagated to every
+    /// UnboundedOperative class const + executor override; propagated to every
     /// `SegmentSlot`. Subsequent executor config changes do not
     /// affect this instance — only `stop_operative` + `start_operative` cycles
     /// pick up new values.
     persistence_enabled: bool,
 }
 
-impl ContinuousInstance {
-    /// Construct a fresh `ContinuousInstance` with no executor persistence
+impl UnboundedInstance {
+    /// Construct a fresh `UnboundedInstance` with no executor persistence
     /// override. Equivalent to
-    /// `ContinuousInstance::with_persistence_override(.., None)`.
+    /// `UnboundedInstance::with_persistence_override(.., None)`.
     pub fn new(
         topology: Arc<OperativeTopology>,
         instance_id: Arc<str>,
@@ -50,7 +50,7 @@ impl ContinuousInstance {
         Self::with_persistence_override(topology, instance_id, pool, None)
     }
 
-    /// Construct a fresh `ContinuousInstance` with an explicit executor
+    /// Construct a fresh `UnboundedInstance` with an explicit executor
     /// override for `operative_persistence.<OperativeClass>`. The executor
     /// override (when `Some`) wins over the class const.
     pub fn with_persistence_override(
@@ -61,7 +61,7 @@ impl ContinuousInstance {
     ) -> Arc<Self> {
         let persistence_enabled =
             resolve_persistence_enabled(topology.persistence_enabled_const, operator_override);
-        Arc::new_cyclic(|weak: &Weak<ContinuousInstance>| {
+        Arc::new_cyclic(|weak: &Weak<UnboundedInstance>| {
             let operation_count = topology.operations.len();
             let mut segments: Vec<Vec<Arc<SegmentSlot>>> = Vec::with_capacity(operation_count);
             let mut segment_key_to_idx: Vec<HashMap<&'static str, usize>> =
@@ -124,7 +124,7 @@ impl ContinuousInstance {
 
             // One reaper per dynamic Operation that opts into a TTL. Default
             // `idle_ttl == None` spawns none — dynamic Segments then live
-            // as long as the ContinuousOperative, like static ones.
+            // as long as the UnboundedOperative, like static ones.
             let reaper_stop = Arc::new(AtomicBool::new(false));
             let mut reaper_handles: Vec<JoinHandle<()>> = Vec::new();
             for (operation_id, registry) in dynamic_registries.iter().enumerate() {
@@ -139,7 +139,7 @@ impl ContinuousInstance {
                 }
             }
 
-            ContinuousInstance {
+            UnboundedInstance {
                 topology,
                 instance_id,
                 segments,
@@ -172,7 +172,7 @@ impl ContinuousInstance {
     }
 }
 
-impl Drop for ContinuousInstance {
+impl Drop for UnboundedInstance {
     fn drop(&mut self) {
         // Safety net for an instance dropped without `stop_operative`: signal the
         // reapers (don't join — Drop must not block on a sweep interval) so
@@ -193,7 +193,7 @@ mod tests {
     use crate::operation::state_handle::StateHandle;
     use crate::operation::Operation;
     use crate::operative::builder::build_topology_with_persistence;
-    use crate::operative::ContinuousOperative;
+    use crate::operative::UnboundedOperative;
     use crate::segment::restore::RestoreInitPayload;
 
     #[derive(Default)]
@@ -220,7 +220,7 @@ mod tests {
     }
 
     struct DummyOperative;
-    impl ContinuousOperative for DummyOperative {
+    impl UnboundedOperative for DummyOperative {
         fn factory_id() -> &'static str {
             "dummy_operative_persistence_test"
         }
@@ -240,7 +240,7 @@ mod tests {
         )
         .expect("topology");
         let pool = Arc::new(WorkStealingPool::with_size(1));
-        let instance = ContinuousInstance::new(topology, Arc::from("instance"), pool);
+        let instance = UnboundedInstance::new(topology, Arc::from("instance"), pool);
         assert!(instance.persistence_enabled());
     }
 
@@ -255,7 +255,7 @@ mod tests {
         )
         .expect("topology");
         let pool = Arc::new(WorkStealingPool::with_size(1));
-        let instance = ContinuousInstance::with_persistence_override(
+        let instance = UnboundedInstance::with_persistence_override(
             topology,
             Arc::from("instance"),
             pool,

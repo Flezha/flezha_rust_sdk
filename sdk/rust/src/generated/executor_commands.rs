@@ -88,9 +88,9 @@ pub struct AddOperative {
     pub factory_id: ::prost::alloc::string::String,
     #[prost(string, tag = "3")]
     pub init_values: ::prost::alloc::string::String,
-    /// Operative kind for this unit: "continuous" or "bounded". Default
+    /// Operative kind for this unit: "unbounded" or "bounded". Default
     /// (when populated by the Controller from the operative's :kind) is
-    /// "continuous".
+    /// "unbounded".
     #[prost(string, tag = "4")]
     pub kind: ::prost::alloc::string::String,
     /// Number of persisted Segments the Controller will ship RestoreInitState
@@ -98,7 +98,7 @@ pub struct AddOperative {
     /// operative that has WAL state on disk (crash-resume). A durable bounded
     /// driver holds its first Operation until this many Segment restores have
     /// landed, so a resumed run reads persisted state instead of cold-starting.
-    /// 0 for a fresh spawn, a continuous operative, or an opted-out bounded one.
+    /// 0 for a fresh spawn, an unbounded operative, or an opted-out bounded one.
     #[prost(uint32, tag = "5")]
     pub resume_segment_count: u32,
 }

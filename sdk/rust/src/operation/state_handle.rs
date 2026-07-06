@@ -40,7 +40,7 @@ impl<'a, S: Operation> StateHandle<'a, S> {
     /// the mutation into the underlying state, then pushes the Change
     /// onto the per-Segment flush buffer for the flusher to drain.
     /// The Change is retained for `OperationTestHarness::replay_equals`
-    /// regardless of `ContinuousOperative::PERSISTENCE_ENABLED`.
+    /// regardless of `UnboundedOperative::PERSISTENCE_ENABLED`.
     pub fn apply(&mut self, change: S::Change) {
         S::apply_change(self.state, &change);
         self.buffer.borrow_mut().push(change);

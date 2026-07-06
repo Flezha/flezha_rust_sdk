@@ -1,5 +1,5 @@
 //! `OperativeTopology`: shared, immutable topology produced by
-//! `register_continuous::<R>()`. Section 2 implements `build_topology`.
+//! `register_unbounded::<R>()`. Section 2 implements `build_topology`.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -33,7 +33,7 @@ pub struct OperationDescriptor {
     pub operation_key_overridden: bool,
     /// `Operation::COMPENSATE_OVERRIDDEN`, captured at registration. The bounded
     /// saga driver fires compensation only for operations with this set; a
-    /// continuous operative never reads it.
+    /// unbounded operative never reads it.
     pub compensate_overridden: bool,
     /// Segmenting mode resolved at registration. Drives whether the
     /// dispatch path routes by static key, single slot, or the dynamic
@@ -79,8 +79,8 @@ pub struct OperativeTopology {
     pub operations: Vec<OperationDescriptor>,
     pub operation_name_to_id: HashMap<&'static str, OperationId>,
     pub factory_id: &'static str,
-    /// Captured `ContinuousOperative::PERSISTENCE_ENABLED` const at registration.
-    /// `ContinuousInstance::new` resolves the final per-instance flag using
+    /// Captured `UnboundedOperative::PERSISTENCE_ENABLED` const at registration.
+    /// `UnboundedInstance::new` resolves the final per-instance flag using
     /// this const + the executor override from operative-start metadata.
     pub persistence_enabled_const: bool,
 }

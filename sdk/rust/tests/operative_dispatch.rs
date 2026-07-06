@@ -17,9 +17,9 @@ use flezha_executor::channel::ChannelBuilder;
 use flezha_executor::operation::{Operation, OperationCtx, OperationError};
 use flezha_executor::operative::builder::build_topology_for;
 use flezha_executor::operative::registry::OperativeRegistry;
-use flezha_executor::operative::ContinuousInstance;
+use flezha_executor::operative::UnboundedInstance;
 use flezha_executor::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_executor::{__dispatch_internals as bi, ContinuousOperative, OverflowPolicy};
+use flezha_executor::{__dispatch_internals as bi, OverflowPolicy, UnboundedOperative};
 
 mod common;
 use common::{dispatch_input, dummy_stream, setup, wait_until};
@@ -34,7 +34,7 @@ test_operation!(AppendOperation, "append_operation", String => String, (), |inpu
 });
 
 struct AppendOperative;
-impl ContinuousOperative for AppendOperative {
+impl UnboundedOperative for AppendOperative {
     fn factory_id() -> &'static str {
         "append_operative"
     }
@@ -103,7 +103,7 @@ test_operation!(ConcurrencyProbeOperation, "concurrency_probe_operation", String
 });
 
 struct ConcurrencyProbeOperative;
-impl ContinuousOperative for ConcurrencyProbeOperative {
+impl UnboundedOperative for ConcurrencyProbeOperative {
     fn factory_id() -> &'static str {
         "concurrency_probe_operative"
     }
@@ -121,8 +121,8 @@ fn same_segment_never_runs_concurrently() {
     let topology = build_topology_for::<ConcurrencyProbeOperative>().expect("topology");
     let pool = Arc::new(bi::WorkStealingPool::with_size(8));
     let registry = Arc::new(OperativeRegistry::new());
-    let instance = ContinuousInstance::new(topology, Arc::from("conc-instance"), Arc::clone(&pool));
-    registry.register_continuous(instance);
+    let instance = UnboundedInstance::new(topology, Arc::from("conc-instance"), Arc::clone(&pool));
+    registry.register_unbounded(instance);
     let handle = OperativeDispatchHandle {
         registry: Arc::clone(&registry),
     };
@@ -241,7 +241,7 @@ impl Operation for ParallelStaticOperation {
 }
 
 struct ParallelOperative;
-impl ContinuousOperative for ParallelOperative {
+impl UnboundedOperative for ParallelOperative {
     fn factory_id() -> &'static str {
         "parallel_operative"
     }
@@ -301,8 +301,8 @@ test_operation!(CountingOperation, "counting_operation", String => String, Count
     Ok(())
 });
 
-struct ContinuousA;
-impl ContinuousOperative for ContinuousA {
+struct UnboundedA;
+impl UnboundedOperative for UnboundedA {
     fn factory_id() -> &'static str {
         "ns_operative_a"
     }
@@ -311,8 +311,8 @@ impl ContinuousOperative for ContinuousA {
     }
 }
 
-struct ContinuousB;
-impl ContinuousOperative for ContinuousB {
+struct UnboundedB;
+impl UnboundedOperative for UnboundedB {
     fn factory_id() -> &'static str {
         "ns_operative_b"
     }
@@ -323,8 +323,8 @@ impl ContinuousOperative for ContinuousB {
 
 #[test]
 fn per_operative_namespace_isolation() {
-    let topology_a = build_topology_for::<ContinuousA>().expect("topology a");
-    let topology_b = build_topology_for::<ContinuousB>().expect("topology b");
+    let topology_a = build_topology_for::<UnboundedA>().expect("topology a");
+    let topology_b = build_topology_for::<UnboundedB>().expect("topology b");
     assert_ne!(topology_a.factory_id, topology_b.factory_id);
 
     // Same channel name on each is a separate ChannelDescriptor with id 0
@@ -356,7 +356,7 @@ test_operation!(MetaConsumerOperation, "meta_consumer_operation", String => (), 
 });
 
 struct MetaRejectOperative;
-impl ContinuousOperative for MetaRejectOperative {
+impl UnboundedOperative for MetaRejectOperative {
     fn factory_id() -> &'static str {
         "meta_reject_operative"
     }
@@ -404,7 +404,7 @@ test_operation!(BlockStressOperation, "block_stress_operation", Vec<u8> => (), (
 });
 
 struct BlockStressOperative;
-impl ContinuousOperative for BlockStressOperative {
+impl UnboundedOperative for BlockStressOperative {
     fn factory_id() -> &'static str {
         "block_stress_operative"
     }
@@ -487,7 +487,7 @@ test_operation!(DropNewestOperation, "drop_newest_operation", Vec<u8> => (), (),
 });
 
 struct DropNewestOperative;
-impl ContinuousOperative for DropNewestOperative {
+impl UnboundedOperative for DropNewestOperative {
     fn factory_id() -> &'static str {
         "drop_newest_operative"
     }
@@ -563,7 +563,7 @@ test_operation!(DropOldestOperation, "drop_oldest_operation", Vec<u8> => (), (),
 });
 
 struct DropOldestOperative;
-impl ContinuousOperative for DropOldestOperative {
+impl UnboundedOperative for DropOldestOperative {
     fn factory_id() -> &'static str {
         "drop_oldest_operative"
     }
@@ -650,7 +650,7 @@ test_operation!(InterOperationConsumer, "inter_operation_consumer", String => ()
 });
 
 struct InterOperationDefaultBlockOperative;
-impl ContinuousOperative for InterOperationDefaultBlockOperative {
+impl UnboundedOperative for InterOperationDefaultBlockOperative {
     fn factory_id() -> &'static str {
         "inter_operation_default_block_operative"
     }
@@ -692,7 +692,7 @@ test_operation!(StickyBoundedOperation, "sticky_bounded_operation", Vec<u8> => (
 });
 
 struct StickyBoundedOperative;
-impl ContinuousOperative for StickyBoundedOperative {
+impl UnboundedOperative for StickyBoundedOperative {
     fn factory_id() -> &'static str {
         "sticky_bounded_operative"
     }
@@ -783,7 +783,7 @@ test_operation!(WireFastBOperation, "wire_fast_b_operation", Vec<u8> => (), (), 
 });
 
 struct WireOperativeADefault;
-impl ContinuousOperative for WireOperativeADefault {
+impl UnboundedOperative for WireOperativeADefault {
     fn factory_id() -> &'static str {
         "wire_operative_a_default"
     }
@@ -793,7 +793,7 @@ impl ContinuousOperative for WireOperativeADefault {
 }
 
 struct WireOperativeABlock;
-impl ContinuousOperative for WireOperativeABlock {
+impl UnboundedOperative for WireOperativeABlock {
     fn factory_id() -> &'static str {
         "wire_operative_a_block"
     }
@@ -805,7 +805,7 @@ impl ContinuousOperative for WireOperativeABlock {
 }
 
 struct WireOperativeB;
-impl ContinuousOperative for WireOperativeB {
+impl UnboundedOperative for WireOperativeB {
     fn factory_id() -> &'static str {
         "wire_operative_b"
     }
@@ -815,9 +815,9 @@ impl ContinuousOperative for WireOperativeB {
 }
 
 /// Spec scenario "Default entry policy keeps wire reader running":
-/// when ContinuousOperative A's entry mailbox is artificially saturated under default
+/// when UnboundedOperative A's entry mailbox is artificially saturated under default
 /// `DropNewest`, the simulated wire-reader continues dispatching frames
-/// to sibling ContinuousOperative B without delay.
+/// to sibling UnboundedOperative B without delay.
 #[test]
 fn default_entry_policy_does_not_stall_sibling_operatives() {
     let _serial = WIRE_TEST_LOCK.lock().unwrap();
@@ -830,11 +830,11 @@ fn default_entry_policy_does_not_stall_sibling_operatives() {
     let topology_a = build_topology_for::<WireOperativeADefault>().expect("topology a");
     let topology_b = build_topology_for::<WireOperativeB>().expect("topology b");
     let instance_a =
-        ContinuousInstance::new(topology_a, Arc::from("wire-a-default"), Arc::clone(&pool));
+        UnboundedInstance::new(topology_a, Arc::from("wire-a-default"), Arc::clone(&pool));
     let instance_b =
-        ContinuousInstance::new(topology_b, Arc::from("wire-b-default"), Arc::clone(&pool));
-    registry.register_continuous(Arc::clone(&instance_a));
-    registry.register_continuous(Arc::clone(&instance_b));
+        UnboundedInstance::new(topology_b, Arc::from("wire-b-default"), Arc::clone(&pool));
+    registry.register_unbounded(Arc::clone(&instance_a));
+    registry.register_unbounded(Arc::clone(&instance_b));
 
     // Saturate A's mailbox; pre-acquire inflight so A's drain does not
     // make room for new frames during the test.
@@ -890,10 +890,10 @@ fn default_entry_policy_does_not_stall_sibling_operatives() {
 }
 
 /// Spec scenario "Opt-in entry Block drains inline instead of stalling":
-/// when ContinuousOperative A's explicit `OverflowPolicy::Block` entry channel
+/// when UnboundedOperative A's explicit `OverflowPolicy::Block` entry channel
 /// saturates while A's drain exists only as a scheduled-but-not-running
 /// pool bounded (inflight marked, no active drainer), the wire-reader
-/// thread drains A inline rather than parking — sibling ContinuousOperative B keeps
+/// thread drains A inline rather than parking — sibling UnboundedOperative B keeps
 /// flowing and no frame is lost. Parking here was the 2026-06-10 prod
 /// self-deadlock.
 #[test]
@@ -908,11 +908,11 @@ fn opt_in_entry_block_drains_inline_without_stalling_siblings() {
     let topology_a = build_topology_for::<WireOperativeABlock>().expect("topology a");
     let topology_b = build_topology_for::<WireOperativeB>().expect("topology b");
     let instance_a =
-        ContinuousInstance::new(topology_a, Arc::from("wire-a-block"), Arc::clone(&pool));
+        UnboundedInstance::new(topology_a, Arc::from("wire-a-block"), Arc::clone(&pool));
     let instance_b =
-        ContinuousInstance::new(topology_b, Arc::from("wire-b-block"), Arc::clone(&pool));
-    registry.register_continuous(Arc::clone(&instance_a));
-    registry.register_continuous(Arc::clone(&instance_b));
+        UnboundedInstance::new(topology_b, Arc::from("wire-b-block"), Arc::clone(&pool));
+    registry.register_unbounded(Arc::clone(&instance_a));
+    registry.register_unbounded(Arc::clone(&instance_b));
 
     // Phantom drain: inflight held but no thread is draining, so only the
     // producer itself can free the full mailbox.
@@ -1068,7 +1068,7 @@ test_operation!(FlushOrderSinkOperation, "flush_order_sink_operation", String =>
 });
 
 struct FlushOrderOperative;
-impl ContinuousOperative for FlushOrderOperative {
+impl UnboundedOperative for FlushOrderOperative {
     fn factory_id() -> &'static str {
         "flush_order_operative"
     }
@@ -1141,7 +1141,7 @@ test_operation!(PanicOperation, "panic_operation", String => (), (), |input, _st
 });
 
 struct PanicOperative;
-impl ContinuousOperative for PanicOperative {
+impl UnboundedOperative for PanicOperative {
     fn factory_id() -> &'static str {
         "panic_operative"
     }
@@ -1208,7 +1208,7 @@ test_operation!(BlockedConsumerOperation, "blocked_consumer_operation", String =
 });
 
 struct BlockDeadlockOperative;
-impl ContinuousOperative for BlockDeadlockOperative {
+impl UnboundedOperative for BlockDeadlockOperative {
     fn factory_id() -> &'static str {
         "block_deadlock_operative"
     }

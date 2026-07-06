@@ -32,7 +32,7 @@ pub const DEFAULT_OPERATION_APPLY_CHANGE_PANIC_MESSAGE: &str =
      Implement `fn apply_change(state: &mut Self::State, change: &Self::Change)` to fold \
      the Change into the State deterministically.";
 
-/// One Operation in a ContinuousOperative topology. Stateless dispatcher; per-segment
+/// One Operation in an UnboundedOperative topology. Stateless dispatcher; per-segment
 /// State is held by the runtime and threaded through `run` via a
 /// [`StateHandle`].
 ///
@@ -86,10 +86,10 @@ pub trait Operation: Send + Sync + 'static + Default {
     /// Bump on non-additive Change-schema edits.
     const SCHEMA_VERSION: u32 = 1;
 
-    /// Stable identifier within the ContinuousOperative class. Must be unique per ContinuousOperative.
+    /// Stable identifier within the UnboundedOperative class. Must be unique per UnboundedOperative.
     fn name() -> &'static str;
 
-    /// Per-segment state factory. Called once per Segment at ContinuousOperative
+    /// Per-segment state factory. Called once per Segment at UnboundedOperative
     /// startup. `operation_key` is `None` in single-segment mode and
     /// `Some(k)` for static mode where `k` is one of the values returned
     /// by `operation_keys()`.
@@ -170,7 +170,7 @@ pub trait Operation: Send + Sync + 'static + Default {
     const OPERATION_KEY_OVERRIDDEN: bool = false;
 
     /// Dynamic-mode idle eviction window. `None` (default) = no eviction:
-    /// Segments live as long as the ContinuousOperative, like static ones. `Some(ttl)`
+    /// Segments live as long as the UnboundedOperative, like static ones. `Some(ttl)`
     /// opts a per-Operation reaper in; eviction is destructive (in-memory slot +
     /// on-disk WAL/snapshot dropped) and a later input cold-starts fresh —
     /// no restore-from-disk. Ignored for single/static Operations.
@@ -203,7 +203,7 @@ pub trait Operation: Send + Sync + 'static + Default {
     /// `MAILBOX_CAPACITY_OVERRIDDEN = true` so the runtime can tell an
     /// explicit-but-equal-to-default override from the inherited default.
     /// Capacity must be in `1..=1_048_576`; out-of-range values fail
-    /// `register_continuous::<R>()` with the offending Operation name.
+    /// `register_unbounded::<R>()` with the offending Operation name.
     fn mailbox_capacity() -> usize {
         Self::DEFAULT_MAILBOX_CAPACITY
     }
@@ -232,7 +232,7 @@ pub trait Operation: Send + Sync + 'static + Default {
     /// Optional saga **compensation** hook (bounded operatives only). An
     /// operation whose `run` commits a reversible side effect declares this to
     /// undo it. The bounded driver fires it ONLY during abnormal-termination
-    /// rollback — never on a clean `ok`, never for a continuous operative — once
+    /// rollback — never on a clean `ok`, never for an unbounded operative — once
     /// per segment that ran, in reverse completion order, handing back that
     /// segment's own collected outputs (zero-copy `Arc`s) and its
     /// [`StateHandle`], so it can reverse precisely. Compensation MUST be

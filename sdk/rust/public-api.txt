@@ -49,7 +49,7 @@ pub use operation::WallClock;
 #   fn from_config(cfg: Self::Config) -> Self;
 #   fn run(&mut self, input, state: StateHandle<'_, Self>, ctx: &mut OperationCtx<'_>) -> Result<(), OperationError>;
 #
-# Trait surface on `ContinuousOperative`:
+# Trait surface on `UnboundedOperative`:
 #
 #   const PERSISTENCE_ENABLED: bool = true;
 #

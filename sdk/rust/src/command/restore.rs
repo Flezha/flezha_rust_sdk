@@ -75,7 +75,7 @@ impl CommandAction for RestoreInitState {
 
 /// Rebuild one live Segment's typed state from the shipped snapshot + change-log
 /// and re-arm its `change_seq` so post-restore appends stay contiguous (the
-/// controller then skips epoch realign). Shared by the continuous and bounded
+/// controller then skips epoch realign). Shared by the unbounded and bounded
 /// restore paths. Returns the terminal WAL seq (0 on apply failure).
 fn restore_into_slot(
     slot: &Arc<SegmentSlot>,

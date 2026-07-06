@@ -17,7 +17,7 @@ impl CommandAction for SegmentApplyState {
     ) -> (String, Vec<u8>) {
         if !executor.has_operative(&self.operative_id) {
             errors.push(format!(
-                "ContinuousOperative instance with id {} not found",
+                "UnboundedOperative instance with id {} not found",
                 self.operative_id
             ));
             return ("segment_apply_state".to_string(), Vec::new());

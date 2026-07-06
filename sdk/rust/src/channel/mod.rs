@@ -3,7 +3,7 @@
 //! Hot-path uses interned `u32` channel IDs from a `OperativeTopology`; the
 //! `Channel<T>` handle is phantom-typed so wiring errors fire at compile
 //! time. Channel names are de-duplicated and assigned sequential IDs at
-//! `register_continuous::<R>()` time and frozen for the process lifetime.
+//! `register_unbounded::<R>()` time and frozen for the process lifetime.
 
 use std::any::Any;
 use std::marker::PhantomData;

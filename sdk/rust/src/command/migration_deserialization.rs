@@ -1,4 +1,4 @@
-//! `MigrationDeserialization` — restore a ContinuousOperative instance's per-Operation /
+//! `MigrationDeserialization` — restore an UnboundedOperative instance's per-Operation /
 //! per-Segment state from a snapshot blob and register it locally.
 //! Reuses `apply_init_values` for the state-application path so a
 //! migrated instance ends up with byte-identical Segment state to the
@@ -37,7 +37,7 @@ impl CommandAction for MigrationDeserialization {
             }
             None => {
                 errors.push(format!(
-                    "ContinuousOperative class with factory_id {} is not registered",
+                    "UnboundedOperative class with factory_id {} is not registered",
                     self.factory_id
                 ));
                 ("migration_deserialization".to_string(), Vec::new())

@@ -205,7 +205,7 @@ pub struct SegmentSlot {
     pub operation_id: OperationId,
     pub operation_key: Option<Arc<str>>,
     pub pool: Arc<WorkStealingPool>,
-    pub instance: Weak<crate::operative::instance::ContinuousInstance>,
+    pub instance: Weak<crate::operative::instance::UnboundedInstance>,
     pub topology: Arc<crate::operative::topology::OperativeTopology>,
     /// FIFO wait list for `Block`-policy producers parked on a full
     /// mailbox. Drained one entry at a time by `drain_segment` after
@@ -227,7 +227,7 @@ pub struct SegmentSlot {
     pub flush_buffer: Arc<Mutex<Box<dyn flusher::FlushableBuffer>>>,
     /// Frozen-at-instance-start persistence flag. Resolved by
     /// `operative::persistence::resolve_persistence_enabled` from the
-    /// executor override + ContinuousOperative class const at `ContinuousInstance::new`
+    /// executor override + UnboundedOperative class const at `UnboundedInstance::new`
     /// time and propagated here.
     pub persistence_enabled: bool,
     /// Per-Segment WAL seq counter. The flusher fetches-and-adds once
@@ -268,16 +268,16 @@ pub trait OperationDispatcher: Send + Sync + 'static {
         payload: SegmentPayload,
         state: &mut Box<dyn Any + Send>,
         flush_buffer: &mut Box<dyn flusher::FlushableBuffer>,
-        instance: &Weak<crate::operative::instance::ContinuousInstance>,
+        instance: &Weak<crate::operative::instance::UnboundedInstance>,
     );
 
     fn operation_id(&self) -> OperationId;
 
     /// Bounded-driver entry: run `Operation::run` once on `input` against the
     /// type-erased segment `state`, collecting inter-operation output and
-    /// routing plugin-bound output through `sink` — instead of the continuous
+    /// routing plugin-bound output through `sink` — instead of the unbounded
     /// push-dispatch mailbox path. Used only by the sequential bounded driver
-    /// (`crate::bounded`); continuous dispatch never calls it. `topology`
+    /// (`crate::bounded`); unbounded dispatch never calls it. `topology`
     /// resolves the producer-edge channel's plugin serializer. Changes are
     /// folded into in-memory state via `StateHandle::apply`; Phase-3 durability
     /// wires the WAL flush here.
@@ -293,7 +293,7 @@ pub trait OperationDispatcher: Send + Sync + 'static {
     /// segment against its type-erased `state`, handing back the `outputs` the
     /// segment collected during its forward run (downcast to `Arc<S::Output>`)
     /// and routing any compensation emit through `sink`. Used only by the
-    /// bounded driver's reverse-order rollback; continuous dispatch never calls
+    /// bounded driver's reverse-order rollback; unbounded dispatch never calls
     /// it. `topology` resolves the producer-edge channel's plugin serializer.
     fn compensate_collecting(
         &self,

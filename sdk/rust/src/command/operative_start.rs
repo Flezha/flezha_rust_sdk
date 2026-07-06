@@ -13,7 +13,7 @@ impl CommandAction for AddOperative {
         let factory_id = self.factory_id.clone();
 
         // Idempotent on reconnect: the controller re-issues AddOperative for
-        // every ContinuousOperative instance ProcessHub still has tagged to this
+        // every UnboundedOperative instance ProcessHub still has tagged to this
         // executor's profile after a restart. If the instance is already
         // in the local registry, skip without re-registering — keeps
         // the existing per-Segment state intact and prevents
@@ -22,9 +22,9 @@ impl CommandAction for AddOperative {
             return ("start_operative".to_string(), Vec::new());
         }
 
-        // Empty kind ⇒ `operative`, keeping pre-kind wire frames backward-compatible.
+        // Empty kind ⇒ `unbounded`, the wire default.
         let kind = if self.kind.is_empty() {
-            "operative"
+            "unbounded"
         } else {
             self.kind.as_str()
         };
@@ -43,7 +43,7 @@ impl CommandAction for AddOperative {
                     ));
                 }
             }
-            "operative" => {
+            "unbounded" => {
                 match executor.start_operative(factory_id.clone(), instance_id.clone()) {
                     Some(instance) => {
                         if !self.init_values.is_empty() {
@@ -57,7 +57,7 @@ impl CommandAction for AddOperative {
                     }
                     None => {
                         errors.push(format!(
-                            "ContinuousOperative class with factory_id {} is not registered",
+                            "UnboundedOperative class with factory_id {} is not registered",
                             factory_id
                         ));
                     }

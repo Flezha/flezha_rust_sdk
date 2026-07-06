@@ -2,7 +2,7 @@
 //! possibly-interactive process.
 //!
 //! A bounded operative is spawned with `args`, runs to an exit trigger, and is
-//! then torn down. It reuses the continuous **building blocks** (Operations,
+//! then torn down. It reuses the unbounded **building blocks** (Operations,
 //! Channels, Segments, per-Segment state, `ctx.emit`) but drives them under a
 //! bounded **lifecycle**:
 //!
@@ -10,7 +10,7 @@
 //!   [`run`](BoundedOperative::run) body: a single implicit Operation/Segment.
 //! - **Structured** — override [`operations`](BoundedOperative::operations) to
 //!   author Operations/Channels/Segments on the same `ChannelBuilder` a
-//!   continuous operative uses; the bounded driver runs them **sequentially in
+//!   unbounded operative uses; the bounded driver runs them **sequentially in
 //!   a linear chain** with a per-operation **count-based barrier** (segments
 //!   within one operation still run in parallel) — see [`driver`].
 //! - **Exit triggers** — the operative terminates on the first of: the chain
@@ -73,7 +73,7 @@ pub trait BoundedOperative: Send + Sync + 'static {
     }
 
     /// Structured form: declare a **linear chain** of Operations/Channels/
-    /// Segments on the same `ChannelBuilder` a continuous operative uses. The
+    /// Segments on the same `ChannelBuilder` an unbounded operative uses. The
     /// default is empty, selecting the [`run`](Self::run)-sugar path. A
     /// non-empty declaration is run sequentially by the bounded driver
     /// (operation `N+1` starts only when every segment of operation `N` has
@@ -109,7 +109,7 @@ pub trait BoundedOperative: Send + Sync + 'static {
     }
 
     /// Class-level persistence toggle (durable by default, mirroring
-    /// [`ContinuousOperative::PERSISTENCE_ENABLED`](crate::operative::ContinuousOperative::PERSISTENCE_ENABLED)).
+    /// [`UnboundedOperative::PERSISTENCE_ENABLED`](crate::operative::UnboundedOperative::PERSISTENCE_ENABLED)).
     /// When `true`, a structured bounded operative's per-Segment Changes are
     /// written to the WAL as they apply, so a crash resumes from persisted
     /// state. When `false`, the per-Segment flush drains and discards Changes
@@ -1174,7 +1174,7 @@ mod tests {
 
         assert!(reg.contains("t1"));
         // A bounded is not a operative: the operative-only accessor returns None.
-        assert!(reg.get_continuous("t1").is_none());
+        assert!(reg.get_unbounded("t1").is_none());
         match reg.get_operative("t1").as_deref() {
             Some(Operative::Bounded(inst)) => assert_eq!(&*inst.instance_id, "t1"),
             _ => panic!("expected a BoundedOperative variant"),
@@ -1358,7 +1358,7 @@ mod tests {
         // Instance stays registered; a duplicate start is idempotent (no re-run).
         assert!(node.has_operative("bounded-ok"));
         assert!(
-            node.get_continuous("bounded-ok").is_none(),
+            node.get_unbounded("bounded-ok").is_none(),
             "a bounded is not a operative"
         );
         assert!(node.start_bounded(
@@ -1623,6 +1623,20 @@ mod tests {
         assert_eq!(errors_bad.len(), 1);
         assert!(errors_bad[0].contains("BoundedOperative class"));
 
+        // --- AddOperative with an unknown kind literal is rejected ---
+        let add_unknown = AddOperative {
+            operative_id: "kind-bad".into(),
+            factory_id: "test-emit-bounded".into(),
+            init_values: "".into(),
+            kind: "continuous".into(),
+            resume_segment_count: 0,
+        };
+        let mut errors_unknown = Vec::new();
+        add_unknown.handle(&mut node, "", &mut errors_unknown);
+        assert_eq!(errors_unknown.len(), 1);
+        assert!(errors_unknown[0].contains("unknown compute-unit kind 'continuous'"));
+        assert!(node.get_bounded("kind-bad").is_none());
+
         // --- §5b.1/§7c.1 durable bounded actually writes WAL; opt-out writes nothing ---
         // FanBounded is durable-by-default; its FanOp applies a Change per item,
         // which the driver flushes as a segment_state_change frame to the sink.
@@ -1664,8 +1678,8 @@ mod tests {
             1,
         ));
         // The bounded Segments are now reachable by wire identity — the restore
-        // handler could not see them before this change (the continuous lookup
-        // only scans ContinuousInstance segments).
+        // handler could not see them before this change (the unbounded lookup
+        // only scans UnboundedInstance segments).
         let even_id = crate::segment::flusher::encode_segment_identity(
             "resume-inst",
             "bounded_fan_op",

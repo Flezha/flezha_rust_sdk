@@ -134,7 +134,7 @@ pub fn expand(item: TokenStream) -> syn::Result<TokenStream> {
     Ok(quote! {
         #[doc(hidden)]
         struct #operative_ident;
-        impl ::flezha_executor::ContinuousOperative for #operative_ident {
+        impl ::flezha_executor::UnboundedOperative for #operative_ident {
             fn factory_id() -> &'static str { #id }
             fn channels(c: &mut ::flezha_executor::ChannelBuilder) {
                 c.input::<#input_ty>("input").into::<#first_operation>();
@@ -146,8 +146,8 @@ pub fn expand(item: TokenStream) -> syn::Result<TokenStream> {
         }
         ::flezha_executor::inventory::submit! {
             ::flezha_executor::AutoOperative::new(
-                <#operative_ident as ::flezha_executor::ContinuousOperative>::factory_id,
-                || ::flezha_executor::register_continuous::<#operative_ident>(),
+                <#operative_ident as ::flezha_executor::UnboundedOperative>::factory_id,
+                || ::flezha_executor::register_unbounded::<#operative_ident>(),
             )
         }
     })

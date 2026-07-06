@@ -1,7 +1,7 @@
-//! ContinuousOperative class + instance registries.
+//! UnboundedOperative class + instance registries.
 //!
-//! `OperativeClassRegistry`: process-global; one entry per ContinuousOperative class. Holds
-//! the immutable `Arc<OperativeTopology>` produced by `register_continuous::<R>()`.
+//! `OperativeClassRegistry`: process-global; one entry per UnboundedOperative class. Holds
+//! the immutable `Arc<OperativeTopology>` produced by `register_unbounded::<R>()`.
 //! Looked up by controller-facing `factory_id` when `AddOperative` arrives.
 //!
 //! `OperativeRegistry`: per-`ExecutorNode`; one entry per
@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use lazy_static::lazy_static;
 
 use crate::bounded::instance::BoundedInstance;
-use crate::operative::instance::ContinuousInstance;
+use crate::operative::instance::UnboundedInstance;
 use crate::operative::topology::OperativeTopology;
 use crate::segment::SegmentSlot;
 
@@ -28,7 +28,7 @@ use crate::segment::SegmentSlot;
 /// cancel/inbox/Segments live on its [`BoundedInstance`] (no bounded-specific
 /// process-global).
 pub enum Operative {
-    Continuous(Arc<ContinuousInstance>),
+    Unbounded(Arc<UnboundedInstance>),
     Bounded(Arc<BoundedInstance>),
 }
 
@@ -60,13 +60,10 @@ impl OperativeRegistry {
         }
     }
 
-    pub fn register_continuous(
-        &self,
-        instance: Arc<ContinuousInstance>,
-    ) -> Arc<ContinuousInstance> {
+    pub fn register_unbounded(&self, instance: Arc<UnboundedInstance>) -> Arc<UnboundedInstance> {
         let id = instance.instance_id.to_string();
         self.inner
-            .insert(id, Arc::new(Operative::Continuous(Arc::clone(&instance))));
+            .insert(id, Arc::new(Operative::Unbounded(Arc::clone(&instance))));
         instance
     }
 
@@ -85,28 +82,28 @@ impl OperativeRegistry {
 
     /// Resolve `instance_id` only when it is a operative; `None` for a bounded or
     /// an absent id.
-    pub fn get_continuous(&self, instance_id: &str) -> Option<Arc<ContinuousInstance>> {
+    pub fn get_unbounded(&self, instance_id: &str) -> Option<Arc<UnboundedInstance>> {
         self.inner
             .get(instance_id)
             .and_then(|r| match &**r.value() {
-                Operative::Continuous(ri) => Some(Arc::clone(ri)),
+                Operative::Unbounded(ri) => Some(Arc::clone(ri)),
                 Operative::Bounded(_) => None,
             })
     }
 
     /// Resolve `instance_id` only when it is a bounded operative; `None` for a
-    /// continuous or an absent id.
+    /// unbounded or an absent id.
     pub fn get_bounded(&self, instance_id: &str) -> Option<Arc<BoundedInstance>> {
         self.inner
             .get(instance_id)
             .and_then(|r| match &**r.value() {
                 Operative::Bounded(bi) => Some(Arc::clone(bi)),
-                Operative::Continuous(_) => None,
+                Operative::Unbounded(_) => None,
             })
     }
 
     /// Locate a live bounded Segment slot by its wire identity, for the inbound
-    /// `RestoreInitState` handler (the continuous scan does not see bounded
+    /// `RestoreInitState` handler (the unbounded scan does not see bounded
     /// Segments). Returns the owning instance (to record the restore against its
     /// gate) and the matched slot.
     pub fn find_bounded_segment(
@@ -117,7 +114,7 @@ impl OperativeRegistry {
             Operative::Bounded(bi) => bi
                 .segment_by_identity(segment_id)
                 .map(|slot| (Arc::clone(bi), slot)),
-            Operative::Continuous(_) => None,
+            Operative::Unbounded(_) => None,
         })
     }
 
@@ -131,11 +128,11 @@ impl OperativeRegistry {
 
     /// Snapshot of the operative instances only — bounded carry no serializable
     /// state, so the shutdown snapshot and `get_operatives` view skip them.
-    pub fn snapshot_continuous(&self) -> HashMap<String, Arc<ContinuousInstance>> {
+    pub fn snapshot_unbounded(&self) -> HashMap<String, Arc<UnboundedInstance>> {
         self.inner
             .iter()
             .filter_map(|r| match &**r.value() {
-                Operative::Continuous(ri) => Some((r.key().clone(), Arc::clone(ri))),
+                Operative::Unbounded(ri) => Some((r.key().clone(), Arc::clone(ri))),
                 Operative::Bounded(_) => None,
             })
             .collect()
@@ -164,15 +161,15 @@ impl Default for OperativeRegistry {
 /// Returned as `Arc<RwLock<HashMap<String, Arc<Mutex<…>>>>>` so external
 /// consumers (test apps, observability wrappers) can iterate without
 /// touching DashMap internals. The inner Mutex is a placeholder kept for
-/// API compatibility — `ContinuousInstance` is itself shared via Arc and does
+/// API compatibility — `UnboundedInstance` is itself shared via Arc and does
 /// not require a Mutex on the read path.
 // reason: return shape mirrors Flezha::get_operatives() public API; splitting would break external inspectors
 #[allow(clippy::type_complexity)]
 pub fn snapshot_as_operative_view(
     registry: &OperativeRegistry,
-) -> Arc<RwLock<HashMap<String, Arc<Mutex<Arc<ContinuousInstance>>>>>> {
-    let snapshot = registry.snapshot_continuous();
-    let mapped: HashMap<String, Arc<Mutex<Arc<ContinuousInstance>>>> = snapshot
+) -> Arc<RwLock<HashMap<String, Arc<Mutex<Arc<UnboundedInstance>>>>>> {
+    let snapshot = registry.snapshot_unbounded();
+    let mapped: HashMap<String, Arc<Mutex<Arc<UnboundedInstance>>>> = snapshot
         .into_iter()
         .map(|(k, v)| (k, Arc::new(Mutex::new(v))))
         .collect();

@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use flezha_executor::__dispatch_internals::{OperativeDispatchHandle, WorkStealingPool};
 use flezha_executor::operative::builder::build_topology_for;
 use flezha_executor::operative::registry::OperativeRegistry;
-use flezha_executor::operative::{ContinuousInstance, ContinuousOperative};
+use flezha_executor::operative::{UnboundedInstance, UnboundedOperative};
 use flz_transport::transport::FlezhaStream;
 
 /// A throwaway secondary stream for dispatch calls that never write back.
@@ -33,17 +33,17 @@ pub fn wait_until<F: Fn() -> bool>(predicate: F, timeout: Duration) -> bool {
     true
 }
 
-/// Build + register a single ContinuousOperative instance, returning a dispatch handle
+/// Build + register a single UnboundedOperative instance, returning a dispatch handle
 /// and the live instance (for counter / state assertions).
-pub fn setup<R: ContinuousOperative>(
+pub fn setup<R: UnboundedOperative>(
     id: &str,
     pool_size: usize,
-) -> (OperativeDispatchHandle, Arc<ContinuousInstance>) {
+) -> (OperativeDispatchHandle, Arc<UnboundedInstance>) {
     let topology = build_topology_for::<R>().expect("topology");
     let pool = Arc::new(WorkStealingPool::with_size(pool_size));
     let registry = Arc::new(OperativeRegistry::new());
-    let instance = ContinuousInstance::new(topology, Arc::from(id), pool);
-    registry.register_continuous(Arc::clone(&instance));
+    let instance = UnboundedInstance::new(topology, Arc::from(id), pool);
+    registry.register_unbounded(Arc::clone(&instance));
     (OperativeDispatchHandle { registry }, instance)
 }
 

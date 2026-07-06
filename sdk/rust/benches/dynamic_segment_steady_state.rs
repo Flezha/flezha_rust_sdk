@@ -14,9 +14,9 @@ use flezha_executor::channel::ChannelBuilder;
 use flezha_executor::operation::{Operation, OperationCtx, OperationError};
 use flezha_executor::operative::builder::build_topology_for;
 use flezha_executor::operative::registry::OperativeRegistry;
-use flezha_executor::operative::ContinuousInstance;
+use flezha_executor::operative::UnboundedInstance;
 use flezha_executor::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_executor::{__dispatch_internals as bi, ContinuousOperative, OverflowPolicy};
+use flezha_executor::{__dispatch_internals as bi, OverflowPolicy, UnboundedOperative};
 use flz_transport::transport::FlezhaStream;
 
 fn pool_size_from_env_or_cpus() -> usize {
@@ -80,7 +80,7 @@ impl Operation for SteadyDynOperation {
 }
 
 struct SteadyDynOperative;
-impl ContinuousOperative for SteadyDynOperative {
+impl UnboundedOperative for SteadyDynOperative {
     fn factory_id() -> &'static str {
         "steady_dyn_operative"
     }
@@ -101,7 +101,7 @@ fn steady_state_bench(c: &mut Criterion) {
     let pool = Arc::new(bi::WorkStealingPool::with_size(pool_size_from_env_or_cpus()));
     let topology = build_topology_for::<SteadyDynOperative>().expect("topology");
     let registry = Arc::new(OperativeRegistry::new());
-    registry.register_continuous(ContinuousInstance::new(
+    registry.register_unbounded(UnboundedInstance::new(
         Arc::clone(&topology),
         Arc::from("steady-dyn-0"),
         Arc::clone(&pool),

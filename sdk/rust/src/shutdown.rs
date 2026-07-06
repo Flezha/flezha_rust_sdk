@@ -15,7 +15,7 @@
 //!   per-operative timeout**, parallelised across operatives so total
 //!   wait is bounded by 2 s (not 2N s).
 //! - The per-operative serializer step is capped at the controller's
-//!   `cross_node_request_timeout` ceiling (**10 s**). Concrete `ContinuousOperative`
+//!   `cross_node_request_timeout` ceiling (**10 s**). Concrete `UnboundedOperative`
 //!   impls with multi-second serializers should override `bin_apply_state`
 //!   to keep below that cap.
 //! - On timeout the SDK exits unconditionally and SHALL NOT block its
@@ -51,7 +51,7 @@ const ACK_TIMEOUT: Duration = Duration::from_secs(2);
 /// to dispatch SDK-initiated variants vs `CommandResponse`s.
 const SHUTDOWN_PAYLOAD_ID: &str = "control_command";
 
-/// Returns `(instance_id, serialized_state_bytes)` per live ContinuousOperative
+/// Returns `(instance_id, serialized_state_bytes)` per live UnboundedOperative
 /// instance. The closure is responsible for walking the live registry
 /// and serializing each instance via `segment_state::serialize_operative_state`.
 pub type OperativeSnapshotFn = Box<dyn Fn() -> Vec<(String, Vec<u8>)> + Send + Sync>;

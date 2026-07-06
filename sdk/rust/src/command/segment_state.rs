@@ -1,4 +1,4 @@
-//! `SegmentState` — return the ContinuousOperative instance's per-Operation / per-Segment
+//! `SegmentState` — return the UnboundedOperative instance's per-Operation / per-Segment
 //! state JSON blob per `operative-mvp-rust/design.md` Decision 10.
 //!
 //! `serialize_operative_state` walks each Operation's segments via the per-Operation
@@ -13,7 +13,7 @@ use serde_json::{Map, Value};
 
 use super::CommandAction;
 use crate::executor::ExecutorNode;
-use crate::operative::instance::ContinuousInstance;
+use crate::operative::instance::UnboundedInstance;
 use crate::pb::SegmentState;
 use crate::util::LockRecover;
 
@@ -24,14 +24,14 @@ impl CommandAction for SegmentState {
         _message: &str,
         errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
-        match executor.get_continuous(&self.operative_id) {
+        match executor.get_unbounded(&self.operative_id) {
             Some(instance) => {
                 let payload = serialize_operative_state(&instance);
                 ("segment_state".to_string(), payload)
             }
             None => {
                 errors.push(format!(
-                    "ContinuousOperative instance with id {} not found",
+                    "UnboundedOperative instance with id {} not found",
                     self.operative_id
                 ));
                 ("segment_state".to_string(), Vec::new())
@@ -48,7 +48,7 @@ impl CommandAction for SegmentState {
 /// pointer cached on `OperationDescriptor`. Errors from individual segments
 /// are logged on stderr and the offending Operation's entry is omitted —
 /// the controller treats a missing operation key the same as no state.
-pub fn serialize_operative_state(instance: &Arc<ContinuousInstance>) -> Vec<u8> {
+pub fn serialize_operative_state(instance: &Arc<UnboundedInstance>) -> Vec<u8> {
     let mut top: Map<String, Value> = Map::new();
 
     for (operation_id, operation_segments) in instance.segments.iter().enumerate() {
@@ -107,7 +107,7 @@ pub fn serialize_operative_state(instance: &Arc<ContinuousInstance>) -> Vec<u8> 
     serde_json::to_vec(&Value::Object(top)).unwrap_or_default()
 }
 
-/// Apply an `AddOperative.init_values` JSON blob to a fresh ContinuousOperative instance.
+/// Apply an `AddOperative.init_values` JSON blob to a fresh UnboundedOperative instance.
 /// Walks the top-level keys, matches them against registered Operation names,
 /// and dispatches each value to the matching Operation's `deserialize_state`
 /// fn pointer to overwrite the freshly-`init_state`d Segment state.
@@ -116,7 +116,7 @@ pub fn serialize_operative_state(instance: &Arc<ContinuousInstance>) -> Vec<u8> 
 /// Unknown top-level keys and unknown inner operation_key entries are logged
 /// and skipped per the spec.
 pub fn apply_init_values(
-    instance: &Arc<ContinuousInstance>,
+    instance: &Arc<UnboundedInstance>,
     init_values: &str,
 ) -> Result<(), String> {
     if init_values.is_empty() {

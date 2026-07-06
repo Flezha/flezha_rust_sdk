@@ -23,9 +23,9 @@ use flezha_executor::channel::ChannelBuilder;
 use flezha_executor::operation::{Operation, OperationCtx, OperationError};
 use flezha_executor::operative::builder::build_topology_for;
 use flezha_executor::operative::registry::OperativeRegistry;
-use flezha_executor::operative::ContinuousInstance;
+use flezha_executor::operative::UnboundedInstance;
 use flezha_executor::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_executor::{__dispatch_internals as bi, ContinuousOperative, OverflowPolicy};
+use flezha_executor::{__dispatch_internals as bi, OverflowPolicy, UnboundedOperative};
 use flz_transport::transport::FlezhaStream;
 
 // ----- Shared bench helpers (Decision 10: duplicated locally per bench file) -----
@@ -86,7 +86,7 @@ impl Operation for RegressionOperation {
 }
 
 struct RegressionOperative;
-impl ContinuousOperative for RegressionOperative {
+impl UnboundedOperative for RegressionOperative {
     fn factory_id() -> &'static str {
         "regression_bench_operative"
     }
@@ -115,12 +115,12 @@ fn regression_bench(c: &mut Criterion) {
         .map(|i| format!("regression-{}", i))
         .collect();
     for id in &instance_ids {
-        let inst = ContinuousInstance::new(
+        let inst = UnboundedInstance::new(
             Arc::clone(&topology),
             Arc::from(id.as_str()),
             Arc::clone(&pool),
         );
-        registry.register_continuous(inst);
+        registry.register_unbounded(inst);
     }
 
     let handle = bi::OperativeDispatchHandle {
@@ -310,7 +310,7 @@ impl Operation for StressBenchOperationD {
 }
 
 struct SegmentingStressBenchOperative;
-impl ContinuousOperative for SegmentingStressBenchOperative {
+impl UnboundedOperative for SegmentingStressBenchOperative {
     fn factory_id() -> &'static str {
         "segmenting_stress_bench_operative"
     }
@@ -380,12 +380,12 @@ fn segmenting_stress_bench(c: &mut Criterion) {
             .map(|i| format!("segmenting-stress-{}", i))
             .collect();
         for id in &instance_ids {
-            let inst = ContinuousInstance::new(
+            let inst = UnboundedInstance::new(
                 Arc::clone(&topology),
                 Arc::from(id.as_str()),
                 Arc::clone(&pool),
             );
-            registry.register_continuous(inst);
+            registry.register_unbounded(inst);
         }
         let handle = bi::OperativeDispatchHandle {
             registry: Arc::clone(&registry),

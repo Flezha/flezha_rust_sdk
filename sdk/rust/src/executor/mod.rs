@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use crossbeam::channel::Sender;
 
-use crate::operative::instance::ContinuousInstance;
+use crate::operative::instance::UnboundedInstance;
 
 /// Process-global handle to the coordinator's message channel, installed
 /// once by `fast::start`. Lets components outside the coordinator (e.g.
@@ -128,11 +128,11 @@ pub enum ExecutorStatus {
 #[allow(clippy::type_complexity)]
 pub enum ClientResponseMessage {
     ExecutorIdConfirmation,
-    /// Snapshot of live ContinuousOperative instances. Returned to `Flezha::get_operatives()`
+    /// Snapshot of live UnboundedOperative instances. Returned to `Flezha::get_operatives()`
     /// callers — the public-API shape is preserved for backward
-    /// compatibility, but each entry is now an `Arc<ContinuousInstance>` rather
+    /// compatibility, but each entry is now an `Arc<UnboundedInstance>` rather
     /// than `Arc<Mutex<OperativeBox>>`.
-    ReturnOperatives(Arc<RwLock<HashMap<String, Arc<Mutex<Arc<ContinuousInstance>>>>>>),
+    ReturnOperatives(Arc<RwLock<HashMap<String, Arc<Mutex<Arc<UnboundedInstance>>>>>>),
 }
 
 pub use fast::{start, ExecutorNode};

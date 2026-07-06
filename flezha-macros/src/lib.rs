@@ -3,7 +3,7 @@
 //! - `#[flezha::operation]` — attribute macro on a `run` function; infers the six
 //!   `Operation` associated types from the signature and generates the impl, the
 //!   PascalCase operation type, and (for the single-operation `input → sink` case) a
-//!   `ContinuousOperative` impl plus inventory auto-registration.
+//!   `UnboundedOperative` impl plus inventory auto-registration.
 //! - `#[derive(flezha::State)]` — generates a field-granular `Change` enum +
 //!   `apply_change` + journaling mutators on the state handle.
 //! - `flezha::operative!` — declarative macro lowering a strictly linear pipeline

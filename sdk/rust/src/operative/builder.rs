@@ -1,5 +1,5 @@
 //! `build_topology` consumes a `ChannelBuilder` (populated by
-//! `ContinuousOperative::channels`) and produces a frozen `Arc<OperativeTopology>`.
+//! `UnboundedOperative::channels`) and produces a frozen `Arc<OperativeTopology>`.
 //!
 //! Build-time validation:
 //! - reject duplicate channel names
@@ -44,9 +44,9 @@ pub fn build_topology(
     build_topology_with_persistence(factory_id, builder, true)
 }
 
-/// Like [`build_topology`] but accepts the `ContinuousOperative::PERSISTENCE_ENABLED`
+/// Like [`build_topology`] but accepts the `UnboundedOperative::PERSISTENCE_ENABLED`
 /// const captured at registration. `build_topology_for::<R>()` is the
-/// canonical caller; tests that exercise topology without a ContinuousOperative
+/// canonical caller; tests that exercise topology without an UnboundedOperative
 /// generic call [`build_topology`] which defaults the const to `true`.
 pub fn build_topology_with_persistence(
     factory_id: &'static str,
@@ -153,11 +153,11 @@ pub fn build_topology_with_persistence(
     }))
 }
 
-/// Convenience constructor used by `register_continuous::<R>()`. Calls
+/// Convenience constructor used by `register_unbounded::<R>()`. Calls
 /// `R::channels(...)` once and returns the resulting topology, capturing
-/// `R::PERSISTENCE_ENABLED` so `ContinuousInstance::new` can resolve the
+/// `R::PERSISTENCE_ENABLED` so `UnboundedInstance::new` can resolve the
 /// final per-instance flag.
-pub fn build_topology_for<R: crate::operative::ContinuousOperative>(
+pub fn build_topology_for<R: crate::operative::UnboundedOperative>(
 ) -> Result<Arc<OperativeTopology>, TopologyBuildError> {
     let mut cb = ChannelBuilder::new();
     R::channels(&mut cb);

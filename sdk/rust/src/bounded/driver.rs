@@ -227,7 +227,7 @@ fn run_structured(
 /// synchronously by `start_bounded_resumable` so the Segments are registered
 /// for restore and the resume gate is armed before the driver thread — or any
 /// restore frame — runs. `instance` on each slot is a null `Weak` — the bounded
-/// collecting path never routes through a `ContinuousInstance`. When the class
+/// collecting path never routes through an `UnboundedInstance`. When the class
 /// is durable, each Segment's applied Changes are flushed to the WAL as they run.
 pub(crate) fn build_all_stage_segments(
     spec: &BoundedSpec,
@@ -468,8 +468,8 @@ fn emit_compensation_record(payload_id: &str, segment_identity: &[u8], persisten
 }
 
 /// Build the SegmentSlots for one stage: a single slot in Single mode, one per
-/// declared key in Static mode. Reuses the continuous `build_segment` closure
-/// so per-Segment state + identity are identical to a continuous operative.
+/// declared key in Static mode. Reuses the unbounded `build_segment` closure
+/// so per-Segment state + identity are identical to an unbounded operative.
 fn build_stage_segments(
     topology: &Arc<OperativeTopology>,
     instance_id: &Arc<str>,

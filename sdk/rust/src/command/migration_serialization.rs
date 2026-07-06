@@ -1,6 +1,6 @@
 //! `MigrationSerialization` — produces the per-Operation / per-Segment
 //! state blob per `operative-mvp-rust/design.md` Decision 10, then removes
-//! the ContinuousOperative instance from the local registry (the controller is migrating
+//! the UnboundedOperative instance from the local registry (the controller is migrating
 //! it elsewhere).
 
 use super::CommandAction;
@@ -15,7 +15,7 @@ impl CommandAction for MigrationSerialization {
         _message: &str,
         _errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
-        let serialized_state = match executor.get_continuous(&self.operative_id) {
+        let serialized_state = match executor.get_unbounded(&self.operative_id) {
             Some(instance) => serialize_operative_state(&instance),
             None => Vec::new(),
         };

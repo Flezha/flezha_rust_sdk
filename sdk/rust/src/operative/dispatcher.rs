@@ -30,7 +30,7 @@ use crate::operation::change::NoChange;
 use crate::operation::ctx::EmitSink;
 use crate::operation::state_handle::StateHandle;
 use crate::operation::{Operation, OperationCtx, OperationError};
-use crate::operative::instance::ContinuousInstance;
+use crate::operative::instance::UnboundedInstance;
 use crate::operative::topology::OperativeTopology;
 use crate::segment::flusher::{
     encode_segment_identity, FlushableBuffer, SegmentFlusher, TypedBuffer,
@@ -122,7 +122,7 @@ impl<S: Operation> OperationDispatcherImpl<S> {
     }
 
     /// Ship the Changes a collecting-path op applied to the WAL — or drain and
-    /// discard when the class opted out. The bounded analog of the continuous
+    /// discard when the class opted out. The bounded analog of the unbounded
     /// `dispatch` flush hook; both feed `flusher::flush_one`.
     fn flush_collected(&self, buffer: RefCell<Vec<S::Change>>) {
         let mut buf = TypedBuffer::<S> {
@@ -144,12 +144,12 @@ impl<S: Operation> OperationDispatcher for OperationDispatcherImpl<S> {
         payload: SegmentPayload,
         state: &mut Box<dyn Any + Send>,
         flush_buffer: &mut Box<dyn FlushableBuffer>,
-        instance: &Weak<ContinuousInstance>,
+        instance: &Weak<UnboundedInstance>,
     ) {
         let SegmentPayload { value, stream } = payload;
 
         // Downcast value to Arc<S::Input>. Consumers with different
-        // Input types in the same ContinuousOperative downcast independently because
+        // Input types in the same UnboundedOperative downcast independently because
         // the channel wiring guarantees they only ever receive their
         // own type.
         let input_arc = match Arc::downcast::<S::Input>(value) {
@@ -407,14 +407,14 @@ impl<S: Operation> OperationDispatcher for OperationDispatcherImpl<S> {
 type FlushBeforeEmit<'a> = Box<dyn FnMut() + 'a>;
 
 /// Per-invocation emit sink, constructed fresh inside each `dispatch`
-/// call. Holds an upgraded `Arc<ContinuousInstance>` for the duration of the
+/// call. Holds an upgraded `Arc<UnboundedInstance>` for the duration of the
 /// run; if the instance has been dropped, every emit returns
 /// `UnknownChannel`.
 struct SegmentEmitSink<'a> {
     output_channel_id: Option<ChannelId>,
     output_channel_kind: ChannelKind,
     output_channel_name: Option<&'a str>,
-    instance: Option<Arc<ContinuousInstance>>,
+    instance: Option<Arc<UnboundedInstance>>,
     stream: Arc<FlezhaStream>,
     /// `Some` for persistence-enabled segments with the flush-before-emit
     /// knob on. Called at the top of every emit so this run's just-applied
@@ -442,10 +442,10 @@ impl<'a> SegmentEmitSink<'a> {
         }
     }
 
-    /// Resolve the channel descriptor + ContinuousInstance for the cached
+    /// Resolve the channel descriptor + UnboundedInstance for the cached
     /// output channel. Returns `UnknownChannel` if either has been
     /// dropped or is unset.
-    fn resolve_channel(&self) -> Result<(Arc<ContinuousInstance>, ChannelId), OperationError> {
+    fn resolve_channel(&self) -> Result<(Arc<UnboundedInstance>, ChannelId), OperationError> {
         let cid = self
             .output_channel_id
             .ok_or_else(|| self.unknown_channel())?;
@@ -462,7 +462,7 @@ impl<'a> SegmentEmitSink<'a> {
     /// pure-`InterOperation` paths.
     fn fan_out_to_consumers(
         &self,
-        instance: &ContinuousInstance,
+        instance: &UnboundedInstance,
         descriptor: &crate::channel::ChannelDescriptor,
         value: &Arc<dyn Any + Send + Sync>,
     ) -> Result<(), OperationError> {
@@ -483,7 +483,7 @@ impl<'a> SegmentEmitSink<'a> {
     /// the dispatcher thread is unaffected.
     fn emit_plugin_sink(
         &self,
-        instance: &ContinuousInstance,
+        instance: &UnboundedInstance,
         descriptor: &crate::channel::ChannelDescriptor,
         sink: &crate::channel::PluginSink,
         value: &Arc<dyn Any + Send + Sync>,
@@ -615,7 +615,7 @@ impl<'a> EmitSink for SegmentEmitSink<'a> {
 /// **collected** for handoff to the next stage at the barrier; plugin-bound
 /// output is serialized and routed to the wire via the `BoundedCollectSink`.
 /// Constructed fresh per `run_collecting` call, so it never threads through
-/// the continuous push-dispatch mailbox path.
+/// the unbounded push-dispatch mailbox path.
 struct BoundedCollectAdapter<'a> {
     sink: &'a mut dyn BoundedCollectSink,
     output_channel_id: Option<ChannelId>,
@@ -816,7 +816,7 @@ pub(crate) fn enqueue(slot: &Arc<SegmentSlot>, payload: SegmentPayload, policy: 
 /// dynamic-mode operations derive a key via `operation_key` and lazily create the
 /// Segment through the per-Operation `DynamicSegmentRegistry`.
 pub(crate) fn route_to_consumers(
-    instance: &ContinuousInstance,
+    instance: &UnboundedInstance,
     consumer_ids: &[OperationId],
     policy: OverflowPolicy,
     value: &Arc<dyn Any + Send + Sync>,
@@ -969,7 +969,7 @@ pub fn drain_segment(slot: &Arc<SegmentSlot>) {
 
 /// Build one `SegmentSlot` for a Operation. Captures S statically; the
 /// channel builder collects this closure into `OperationEntry.build_segment`
-/// during `ContinuousOperative::channels` and `build_topology` invokes it once per
+/// during `UnboundedOperative::channels` and `build_topology` invokes it once per
 /// segment at operative-instance startup.
 pub fn build_segment_slot<S: Operation>(args: BuildSegmentArgs<'_>) -> Arc<SegmentSlot> {
     let operation = S::default();

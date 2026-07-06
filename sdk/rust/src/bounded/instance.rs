@@ -4,7 +4,7 @@
 //!
 //! Held as the [`Operative::Bounded`](crate::operative::registry::Operative)
 //! variant in the shared [`OperativeRegistry`](crate::operative::registry::OperativeRegistry)
-//! — mirroring `ContinuousInstance` and the Java `BoundedOperativeInstance`, so
+//! — mirroring `UnboundedInstance` and the Java `BoundedOperativeInstance`, so
 //! there is ONE per-instance registry. The `BoundedStop` / `RemOperative` /
 //! `max_duration` cancels, the wire-dispatch inbox, and the inbound
 //! `RestoreInitState` handler all reach a running bounded operative through the

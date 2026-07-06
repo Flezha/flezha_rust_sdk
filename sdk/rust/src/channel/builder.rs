@@ -20,7 +20,7 @@ use crate::operation::Operation;
 
 /// Type-erased dispatcher factory for one Operation. Stored on
 /// `ChannelBuilder::operations` and consumed by `build_topology` to produce
-/// per-segment slots in each `ContinuousInstance`.
+/// per-segment slots in each `UnboundedInstance`.
 pub(crate) struct OperationEntry {
     pub name: &'static str,
     pub segment_keys: Vec<&'static str>,
@@ -98,7 +98,7 @@ pub(crate) type SegmentBuilder =
 
 pub struct BuildSegmentArgs<'a> {
     pub topology: Arc<crate::operative::topology::OperativeTopology>,
-    pub instance: std::sync::Weak<crate::operative::instance::ContinuousInstance>,
+    pub instance: std::sync::Weak<crate::operative::instance::UnboundedInstance>,
     /// The operative INSTANCE id (controller-assigned operative_id). The on-disk WAL
     /// is keyed by this, not the factory id, so two operatives of the same factory
     /// keep independent per-Segment state instead of colliding on one WAL.
@@ -109,7 +109,7 @@ pub struct BuildSegmentArgs<'a> {
     /// operations; `0..operation_keys().len()` for static-mode operations.
     pub segment_index: usize,
     /// Frozen-at-instance-start persistence flag, propagated from the
-    /// `ContinuousInstance`. The `SegmentSlot` carries this on its
+    /// `UnboundedInstance`. The `SegmentSlot` carries this on its
     /// `persistence_enabled` field; the per-process flusher inspects it
     /// at drain time to decide whether to call `send_frame`.
     pub persistence_enabled: bool,
@@ -148,7 +148,7 @@ pub(crate) struct ChannelEntry {
     pub overflow_policy: OverflowPolicy,
 }
 
-/// Reasons `ContinuousOperative::channels(c)` declarations fail at registration time.
+/// Reasons `UnboundedOperative::channels(c)` declarations fail at registration time.
 #[derive(Debug, thiserror::Error)]
 pub enum BuildTopologyError {
     #[error("channel `{0}` declared more than once on this operative")]
@@ -195,7 +195,7 @@ pub enum BuildTopologyError {
     DuplicatePluginSink { channel: &'static str },
 }
 
-/// Builder collected by `ContinuousOperative::channels`. Internal state turns into a
+/// Builder collected by `UnboundedOperative::channels`. Internal state turns into a
 /// frozen `OperativeTopology` at `build_topology` time.
 pub struct ChannelBuilder {
     pub(crate) channels: Vec<ChannelEntry>,
@@ -369,7 +369,7 @@ impl<'b, T: 'static + Send + Sync> EntryChannel<'b, T> {
 
     /// Override the per-kind default `OverflowPolicy`. Entry channels
     /// default to `DropNewest`; declare `Block` here only if you accept
-    /// stalling the shared wire reader on this ContinuousOperative's saturation (see
+    /// stalling the shared wire reader on this UnboundedOperative's saturation (see
     /// `docs/operative_architecture.md` for the co-tenancy hazard).
     pub fn on_full(self, policy: OverflowPolicy) -> Self {
         self.builder.channels[self.channel_id as usize].overflow_policy = policy;

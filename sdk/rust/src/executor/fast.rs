@@ -2,7 +2,7 @@
 //! work-stealing pool. The coordinator thread still exists for control-plane
 //! traffic (`HandleCommandAction`, `ReturnOperatives`, `Reconnect`) but
 //! data-plane traffic bypasses it entirely — stream readers push directly
-//! into the targeted ContinuousOperative instance's segment mailboxes.
+//! into the targeted UnboundedOperative instance's segment mailboxes.
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -19,7 +19,7 @@ use tracing::warn;
 use super::work_stealing_pool::WorkStealingPool;
 use super::{control_unit, ClientResponseMessage, ExecutorMessage, ExecutorStatus};
 use crate::command;
-use crate::operative::instance::ContinuousInstance;
+use crate::operative::instance::UnboundedInstance;
 use crate::operative::registry::{get_class as get_operative_class, Operative, OperativeRegistry};
 use crate::pb::command_request::Command;
 use crate::pb::{BoundedCompleted as PbBoundedCompleted, CommandRequest};
@@ -53,7 +53,7 @@ impl ExecutorNode {
         }
     }
 
-    /// Spawn a ContinuousOperative instance from a registered ContinuousOperative class. `factory_id`
+    /// Spawn an UnboundedOperative instance from a registered UnboundedOperative class. `factory_id`
     /// is looked up in the global class registry; `instance_id` is what
     /// the wire calls `operative_id`. Idempotent on duplicate
     /// `instance_id`: returns the existing instance.
@@ -61,17 +61,17 @@ impl ExecutorNode {
         &self,
         factory_id: String,
         instance_id: String,
-    ) -> Option<Arc<ContinuousInstance>> {
-        if let Some(existing) = self.operative_registry.get_continuous(&instance_id) {
+    ) -> Option<Arc<UnboundedInstance>> {
+        if let Some(existing) = self.operative_registry.get_unbounded(&instance_id) {
             return Some(existing);
         }
         let topology = get_operative_class(&factory_id)?;
-        let instance = ContinuousInstance::new(
+        let instance = UnboundedInstance::new(
             topology,
             Arc::from(instance_id.as_str()),
             Arc::clone(&self.pool),
         );
-        Some(self.operative_registry.register_continuous(instance))
+        Some(self.operative_registry.register_unbounded(instance))
     }
 
     /// Spawn a bounded-kind unit: register it (idempotent on a duplicate id) and
@@ -130,7 +130,7 @@ impl ExecutorNode {
         match self.operative_registry.remove(instance_id) {
             Some(unit) => {
                 match &*unit {
-                    Operative::Continuous(instance) => instance.shutdown_reapers(),
+                    Operative::Unbounded(instance) => instance.shutdown_reapers(),
                     // Hard removal of a bounded: trip its cancellation token so
                     // the driver thread unwinds and exits promptly.
                     Operative::Bounded(instance) => instance.request_cancel(),
@@ -145,8 +145,8 @@ impl ExecutorNode {
         self.operative_registry.contains(instance_id)
     }
 
-    pub fn get_continuous(&self, instance_id: &str) -> Option<Arc<ContinuousInstance>> {
-        self.operative_registry.get_continuous(instance_id)
+    pub fn get_unbounded(&self, instance_id: &str) -> Option<Arc<UnboundedInstance>> {
+        self.operative_registry.get_unbounded(instance_id)
     }
 
     /// Resolve a running bounded instance by id (cooperative `BoundedStop`).
@@ -179,14 +179,14 @@ impl ExecutorNode {
         self._namespace.clone()
     }
 
-    /// Public-API view: snapshot of live ContinuousOperative instances. Mirrors the
+    /// Public-API view: snapshot of live UnboundedOperative instances. Mirrors the
     /// pre-`operative-mvp-rust` `Flezha::get_operatives()` shape so external
     /// inspectors that walk the registry continue to work.
     // reason: returned shape is the public API; splitting it would break external inspectors
     #[allow(clippy::type_complexity)]
     pub fn get_operatives(
         &self,
-    ) -> Arc<RwLock<HashMap<String, Arc<Mutex<Arc<ContinuousInstance>>>>>> {
+    ) -> Arc<RwLock<HashMap<String, Arc<Mutex<Arc<UnboundedInstance>>>>>> {
         crate::operative::registry::snapshot_as_operative_view(&self.operative_registry)
     }
 
@@ -225,14 +225,14 @@ pub fn start(
         let mut executor = ExecutorNode::new(namespace.clone());
 
         // Capture a registry snapshot closure now so the shutdown bridge
-        // can enumerate live ContinuousOperative instances without going through the
+        // can enumerate live UnboundedOperative instances without going through the
         // coordinator channel. Survives reconnects since the registry
         // Arc is stable.
         {
             let registry = Arc::clone(&executor.operative_registry);
             shutdown_bridge.set_snapshot_fn(Box::new(move || {
                 registry
-                    .snapshot_continuous()
+                    .snapshot_unbounded()
                     .into_iter()
                     .map(|(k, instance)| {
                         (
@@ -449,8 +449,8 @@ fn handle_reconnect(
     executor.set_status(ExecutorStatus::Running);
 }
 
-/// Stream-reader handle for the ContinuousOperative model. Cheap to clone; carries a
-/// reference to the live ContinuousOperative-instance registry. Per-Segment drain
+/// Stream-reader handle for the UnboundedOperative model. Cheap to clone; carries a
+/// reference to the live UnboundedOperative-instance registry. Per-Segment drain
 /// scheduling uses the pool held by `SegmentSlot`.
 #[derive(Clone)]
 pub struct OperativeDispatchHandle {
@@ -459,7 +459,7 @@ pub struct OperativeDispatchHandle {
 
 impl OperativeDispatchHandle {
     /// Dispatch a frame from the wire. Resolves the entry channel by
-    /// `metadata["channel"]` (or the ContinuousOperative's first declared input
+    /// `metadata["channel"]` (or the UnboundedOperative's first declared input
     /// channel as the documented default), wraps the payload bytes via
     /// the channel's `wrap_input`, and pushes the typed
     /// `Arc<dyn Any + Send + Sync>` onto every consumer Operation's
@@ -473,7 +473,7 @@ impl OperativeDispatchHandle {
     ) {
         let instance = match self.registry.get_operative(instance_id) {
             Some(unit) => match &*unit {
-                Operative::Continuous(ri) => Arc::clone(ri),
+                Operative::Unbounded(ri) => Arc::clone(ri),
                 // Bounded inbox: route post-start input to the running driver's
                 // inbox instead of dropping it. Dropped only if the instance is
                 // not running / has no live inbox.
