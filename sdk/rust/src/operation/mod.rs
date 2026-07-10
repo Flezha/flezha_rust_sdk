@@ -119,9 +119,10 @@ pub trait Operation: Send + Sync + 'static + Default {
 
     /// Per-Segment WAL size threshold reported to the controller. The
     /// runtime never compacts on the SDK side — compaction is controller-
-    /// driven per `operative-state-persistence-controller`. Default 64 MiB.
+    /// driven per `operative-state-persistence-controller`. Default 8 MiB,
+    /// in lockstep with the controller's `:default_compact_after_bytes`.
     fn compact_after_bytes() -> usize {
-        64 * 1024 * 1024
+        8 * 1024 * 1024
     }
 
     /// Constructor from typed Config. Default invokes `Self::default()`,

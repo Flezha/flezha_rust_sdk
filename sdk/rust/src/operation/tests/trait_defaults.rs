@@ -37,8 +37,44 @@ impl Operation for DefaultsOperation {
 }
 
 #[test]
-fn compact_after_bytes_default_is_64_mib() {
-    assert_eq!(DefaultsOperation::compact_after_bytes(), 64 * 1024 * 1024);
+fn compact_after_bytes_default_is_8_mib() {
+    assert_eq!(DefaultsOperation::compact_after_bytes(), 8 * 1024 * 1024);
+}
+
+#[test]
+fn compact_after_bytes_override_wins_over_default() {
+    #[derive(Default)]
+    struct OverridingOperation;
+
+    impl Operation for OverridingOperation {
+        type Input = ();
+        type Output = ();
+        type State = ();
+        type Change = NoChange;
+        type Clock = WallClock;
+        type Config = ();
+
+        fn name() -> &'static str {
+            "overriding_operation"
+        }
+
+        fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
+
+        fn run(
+            &mut self,
+            _: (),
+            _state: StateHandle<'_, Self>,
+            _: &mut OperationCtx<'_>,
+        ) -> Result<(), OperationError> {
+            Ok(())
+        }
+
+        fn compact_after_bytes() -> usize {
+            16 * 1024 * 1024
+        }
+    }
+
+    assert_eq!(OverridingOperation::compact_after_bytes(), 16 * 1024 * 1024);
 }
 
 #[test]
