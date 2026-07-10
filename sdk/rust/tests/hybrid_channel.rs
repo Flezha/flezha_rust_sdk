@@ -17,7 +17,7 @@ use std::time::Duration;
 use bi::OperativeDispatchHandle;
 use flezha_executor::channel::ChannelBuilder;
 use flezha_executor::operative::builder::build_topology_for;
-use flezha_executor::{__dispatch_internals as bi, UnboundedOperative};
+use flezha_executor::{UnboundedOperative, __dispatch_internals as bi};
 use flz_transport::service::payloader;
 use flz_transport::transport::FlezhaStream;
 

@@ -9,7 +9,7 @@ use flezha_executor::operation::{Operation, OperationCtx, OperationError};
 use flezha_executor::operative::builder::build_topology_for;
 use flezha_executor::operative::UnboundedInstance;
 use flezha_executor::state::{Change, NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_executor::{__dispatch_internals as bi, UnboundedOperative};
+use flezha_executor::{UnboundedOperative, __dispatch_internals as bi};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 

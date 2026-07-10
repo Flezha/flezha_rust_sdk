@@ -5,7 +5,7 @@ pub struct CommandRequest {
     pub reference_id: ::prost::alloc::string::String,
     #[prost(
         oneof = "command_request::Command",
-        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23"
+        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26"
     )]
     pub command: ::core::option::Option<command_request::Command>,
 }
@@ -57,6 +57,12 @@ pub mod command_request {
         BoundedCompleted(super::BoundedCompleted),
         #[prost(message, tag = "23")]
         BoundedStop(super::BoundedStop),
+        #[prost(message, tag = "24")]
+        CreditWindowInit(super::CreditWindowInit),
+        #[prost(message, tag = "25")]
+        CreditWindowAck(super::CreditWindowAck),
+        #[prost(message, tag = "26")]
+        CreditGrant(super::CreditGrant),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -209,12 +215,14 @@ pub struct RestoreInitState {
     pub snapshot_bytes: ::prost::alloc::vec::Vec<u8>,
     #[prost(bytes = "vec", tag = "3")]
     pub change_log_bytes: ::prost::alloc::vec::Vec<u8>,
-    /// Saga crash-resume: this Segment's operation completed forward and may
-    /// need undo (`bounded-operative-saga` compensation-intent marker).
+    /// Saga crash-resume (bounded-operative-saga): the Controller sets these
+    /// from the per-Segment compensation markers it persisted for a durable
+    /// bounded operative. `has_compensation_intent` ⇒ this Segment's operation
+    /// completed forward and may need undo; `has_compensation_done` ⇒ its
+    /// compensation already ran (skip it on resume). Both false for a
+    /// unbounded operative or a bounded one that never compensated.
     #[prost(bool, tag = "4")]
     pub has_compensation_intent: bool,
-    /// Saga crash-resume: this Segment's compensation already ran — skip it on
-    /// resume (`bounded-operative-saga` compensation-done marker).
     #[prost(bool, tag = "5")]
     pub has_compensation_done: bool,
 }
@@ -321,6 +329,46 @@ pub struct BoundedCompleted {
     pub error: ::prost::alloc::string::String,
     #[prost(bytes = "vec", tag = "4")]
     pub result: ::prost::alloc::vec::Vec<u8>,
+}
+/// Controller -> SDK. Offers credit-grant flow control for the executor's
+/// state stream. `stream_id` is an opaque credit-session id minted fresh per
+/// stream attach — grants carry it, and a reconnect re-runs the handshake with
+/// a new id so grants in flight for a dead session are discardable by
+/// construction. `window_bytes` is the byte budget the SDK may have un-fsynced
+/// on the controller; `low_watermark_bytes` is the controller's grant-batching
+/// threshold (informational to the SDK). The SDK acknowledges by returning an
+/// encoded CreditWindowAck as the CommandResponse raw_data; a pre-credit SDK
+/// that does not recognise the variant never acks and keeps the legacy
+/// SegmentMailboxStatus behaviour.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CreditWindowInit {
+    #[prost(string, tag = "1")]
+    pub stream_id: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "2")]
+    pub window_bytes: u64,
+    #[prost(uint64, tag = "3")]
+    pub low_watermark_bytes: u64,
+}
+/// SDK -> Controller, as the CommandResponse raw_data of CreditWindowInit.
+/// Echoes the offered `stream_id`; on receipt the controller marks the
+/// session credit-speaking and starts enforcing the byte ledger.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CreditWindowAck {
+    #[prost(string, tag = "1")]
+    pub stream_id: ::prost::alloc::string::String,
+}
+/// Controller -> SDK. Replenishes `bytes` of send credit for the session
+/// identified by `stream_id`. Minted only when appended state becomes durable
+/// (WAL fsync), batched by the controller's low watermark — never per record.
+/// The SDK discards a grant whose `stream_id` does not match its current
+/// credit session (stale grant from before a reconnect). One-way; the generic
+/// CommandResponse it solicits is ignored.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CreditGrant {
+    #[prost(string, tag = "1")]
+    pub stream_id: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "2")]
+    pub bytes: u64,
 }
 /// Controller -> SDK. Cooperative external stop for a bounded operative
 /// (`flz operative stop`), distinct from the hard `RemOperative` teardown: the

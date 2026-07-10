@@ -358,6 +358,11 @@ pub fn flush_one(
         return;
     }
     for frame in frames {
+        // Credit debit-on-send. Parks here (under the caller's buffer lock,
+        // which is what keeps per-Segment seq order across the background and
+        // inline drain paths) when the window is exhausted; a producer pushing
+        // into this buffer then blocks on the lock — the emit-path park.
+        crate::segment::credit::global().acquire(frame.len());
         crate::segment::segment_state_sink::send(
             crate::segment::segment_state_sink::SEGMENT_STATE_CHANGE_PAYLOAD_ID,
             frame,

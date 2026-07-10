@@ -18,6 +18,7 @@
 //! AtomicU64` counter. The per-process [`flusher::SegmentFlusher`]
 //! drains all registered buffers on its linger cadence.
 
+pub mod credit;
 pub mod dynamic;
 pub mod flusher;
 pub mod header;

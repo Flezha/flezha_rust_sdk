@@ -1,14 +1,12 @@
-//! Inbound `SegmentMailboxStatus`: controller → SDK back-pressure signal.
+//! Inbound `SegmentMailboxStatus`: legacy controller → SDK back-pressure
+//! signal, kept only for compatibility with pre-credit controllers.
 //!
-//! `status` is `"full"` (high watermark crossed) or `"open"` (drain
-//! below low watermark). The handler updates the global mailbox-status
-//! observer; the producing Operation's `OverflowPolicy` machinery reads
-//! the observer to decide whether to park or unpark `ctx.emit::<C>(value)`
-//! callers.
+//! A credit-speaking controller never sends this (back-pressure rides the
+//! credit-grant protocol — see `crate::segment::credit`); a pre-credit
+//! controller's `"full"`/`"open"` flags are tolerated and dropped, since
+//! this SDK's send path is already bounded by its local mailbox policies.
 //!
-//! No `CommandResponse` payload — this is a one-way notification. The
-//! controller issues it via the async `send_control_async` path, so it
-//! never blocks waiting for a reply.
+//! No `CommandResponse` payload — this is a one-way notification.
 
 use super::CommandAction;
 use crate::executor::ExecutorNode;
@@ -19,23 +17,13 @@ impl CommandAction for SegmentMailboxStatus {
         &self,
         _executor: &mut ExecutorNode,
         _message: &str,
-        errors: &mut Vec<String>,
+        _errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
-        match self.status.as_str() {
-            "full" | "open" => {
-                tracing::debug!(
-                    target: "flezha::backpressure",
-                    "segment mailbox status: {}",
-                    self.status,
-                );
-            }
-            other => {
-                errors.push(format!(
-                    "SegmentMailboxStatus: unknown status \"{}\" (expected \"full\" or \"open\")",
-                    other
-                ));
-            }
-        }
+        tracing::debug!(
+            target: "flezha::backpressure",
+            "legacy segment mailbox status from a pre-credit controller: {}",
+            self.status,
+        );
 
         ("segment_mailbox_status".to_string(), Vec::new())
     }

@@ -37,7 +37,7 @@ use flezha_executor::operative::builder::build_topology_for;
 use flezha_executor::operative::registry::OperativeRegistry;
 use flezha_executor::operative::UnboundedInstance;
 use flezha_executor::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_executor::{__dispatch_internals as bi, OverflowPolicy, UnboundedOperative};
+use flezha_executor::{OverflowPolicy, UnboundedOperative, __dispatch_internals as bi};
 use flz_transport::transport::FlezhaStream;
 
 // Helpers — duplicated from `dispatch.rs` per `operative-bench-harness/design.md`

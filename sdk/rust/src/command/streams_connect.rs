@@ -99,6 +99,10 @@ fn handle_quic(cmd: &ConnectSocket, executor: &mut ExecutorNode) -> (String, Vec
 /// the WAL is single-writer per segment and the controller serializes the
 /// per-Segment writes server-side.
 fn install_segment_state_sink_from_pairs(pairs: &[(FlezhaStream, Arc<FlezhaStream>)]) {
+    // Credit never carries across sessions: drop the old window (waking any
+    // parked sender into the legacy path) until the controller re-offers
+    // `CreditWindowInit` for the fresh attach.
+    crate::segment::credit::global().disarm();
     if let Some((_, secondary)) = pairs.first() {
         // Mirror the secondary stream for the reaper's one-shot delete send.
         segment_state_sink::set_secondary_stream(Some(Arc::clone(secondary)));

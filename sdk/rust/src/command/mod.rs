@@ -13,6 +13,7 @@ use crate::pb::{CommandRequest, CommandResponse};
 
 mod bounded_stop;
 mod compact;
+mod credit;
 mod executor_assign;
 mod executor_disconnect;
 mod migration_deserialization;
@@ -136,6 +137,13 @@ pub fn get_handler(_payload_id: &str, message: &[u8]) -> Result<FrameOutcome, Co
         // Cooperative external stop for a bounded operative (Controller -> SDK):
         // trip the driver's cancellation token via the BoundedStop handler.
         Some(Command::BoundedStop(proto_ch)) => CommandActionType::Regular(Box::new(proto_ch)),
+        // Credit-grant flow control (Controller -> SDK): the init arms the
+        // sender window and acks in its CommandResponse; grants replenish it.
+        Some(Command::CreditWindowInit(proto_ch)) => CommandActionType::Regular(Box::new(proto_ch)),
+        Some(Command::CreditGrant(proto_ch)) => CommandActionType::Regular(Box::new(proto_ch)),
+        // SDK is the SENDER for the ack (as CommandResponse raw_data) —
+        // receiving it as a request is a protocol bug. Drop and log.
+        Some(Command::CreditWindowAck(_)) => CommandActionType::NotificationIgnore,
         None => return Err(CommandDecodeError::EmptyCommand),
     };
 
