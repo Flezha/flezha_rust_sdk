@@ -1028,6 +1028,11 @@ fn default_inter_operation_policy_is_block_and_pushes_total_increments() {
 
 static FLUSH_ORDER_LOG: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
 
+/// Serializes every test whose dispatches produce WAL frames: the
+/// flush-order test installs a process-global recording sink, so a
+/// concurrent WAL-producing test would leak "wal" entries into its log.
+static WAL_TEST_LOCK: Mutex<()> = Mutex::new(());
+
 #[derive(serde::Serialize, serde::Deserialize)]
 struct AddChange(i64);
 impl flezha_executor::state::Change for AddChange {}
@@ -1089,6 +1094,7 @@ fn change_is_flushed_before_output_is_emitted() {
     use flezha_executor::segment::flusher::{SendError, SendFrameFn};
     use flezha_executor::segment::segment_state_sink;
 
+    let _serial = WAL_TEST_LOCK.lock().unwrap();
     FLUSH_ORDER_LOG.lock().unwrap().clear();
     // WAL sink records every shipped change frame on the shared log.
     let sink: SendFrameFn = Arc::new(
@@ -1242,5 +1248,430 @@ fn block_policy_emit_on_single_worker_pool_does_not_deadlock() {
         ),
         "Block-policy emit deadlocked the one-worker pool: {} of 8 consumed",
         BLOCKED_CONSUMED.load(Ordering::Acquire)
+    );
+}
+
+// ----- Output identity: keyed-channel stamps, byte-identity, replay -----
+
+use std::io::Read;
+use std::os::unix::net::UnixStream;
+
+use flz_transport::service::payloader;
+use flz_transport::transport::FlezhaStream;
+
+/// Socketpair whose write half is the dispatch stream and whose read half
+/// lets the test observe emitted plugin frames.
+fn stream_pair() -> (Arc<FlezhaStream>, UnixStream) {
+    let (a, b) = UnixStream::pair().expect("UnixStream::pair");
+    b.set_nonblocking(true).expect("set_nonblocking");
+    (Arc::new(FlezhaStream::Unix(a)), b)
+}
+
+struct WireFrame {
+    raw: Vec<u8>,
+    message: Vec<u8>,
+    metadata: HashMap<String, String>,
+}
+
+/// Parse complete payloader frames from a byte buffer:
+/// `[payload_id(32)][payload_size(4)][message_size(4)][message]
+///  [metadata_size(2)][metadata]`, metadata pairs
+/// `[key_len(1)][val_len(1)][key][value]`.
+fn parse_frames(mut bytes: &[u8]) -> Vec<WireFrame> {
+    let mut out = Vec::new();
+    while bytes.len() >= 36 {
+        let payload_size = u32::from_be_bytes(bytes[32..36].try_into().unwrap()) as usize;
+        if bytes.len() < 36 + payload_size {
+            break;
+        }
+        let raw = bytes[..36 + payload_size].to_vec();
+        let body = &bytes[36..36 + payload_size];
+        let message_size = u32::from_be_bytes(body[..4].try_into().unwrap()) as usize;
+        let message = body[4..4 + message_size].to_vec();
+        let meta_size =
+            u16::from_be_bytes(body[4 + message_size..6 + message_size].try_into().unwrap())
+                as usize;
+        let mut meta_bytes = &body[6 + message_size..6 + message_size + meta_size];
+        let mut metadata = HashMap::new();
+        while meta_bytes.len() >= 2 {
+            let klen = meta_bytes[0] as usize;
+            let vlen = meta_bytes[1] as usize;
+            let key = String::from_utf8_lossy(&meta_bytes[2..2 + klen]).to_string();
+            let val = String::from_utf8_lossy(&meta_bytes[2 + klen..2 + klen + vlen]).to_string();
+            metadata.insert(key, val);
+            meta_bytes = &meta_bytes[2 + klen + vlen..];
+        }
+        out.push(WireFrame {
+            raw,
+            message,
+            metadata,
+        });
+        bytes = &bytes[36 + payload_size..];
+    }
+    out
+}
+
+/// Read from the observer socket until `expected` frames parse (or panic
+/// after `timeout`).
+fn read_frames(sock: &mut UnixStream, expected: usize, timeout: Duration) -> Vec<WireFrame> {
+    let deadline = Instant::now() + timeout;
+    let mut buf = Vec::new();
+    loop {
+        let mut tmp = [0u8; 4096];
+        match sock.read(&mut tmp) {
+            Ok(0) => {}
+            Ok(n) => buf.extend_from_slice(&tmp[..n]),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(e) => panic!("frame read failed: {e}"),
+        }
+        let frames = parse_frames(&buf);
+        if frames.len() >= expected {
+            return frames;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out with {} of {} frames",
+            frames.len(),
+            expected
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct TickChange;
+impl flezha_executor::state::Change for TickChange {}
+
+/// Keyed operation: applies one change per input, emits the input under
+/// itself as the natural key.
+#[derive(Default)]
+struct KeyedStampOperation;
+impl Operation for KeyedStampOperation {
+    type Input = String;
+    type Output = String;
+    type State = i64;
+    type Change = TickChange;
+    type Clock = WallClock;
+    type Config = ();
+    fn name() -> &'static str {
+        "keyed_stamp_operation"
+    }
+    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> i64 {
+        0
+    }
+    fn apply_change(state: &mut i64, _change: &TickChange) {
+        *state += 1;
+    }
+    fn run(
+        &mut self,
+        input: String,
+        mut state: StateHandle<'_, Self>,
+        ctx: &mut OperationCtx<'_>,
+    ) -> Result<(), OperationError> {
+        state.apply(TickChange);
+        ctx.emit_keyed::<String>(input.clone(), input)?;
+        Ok(())
+    }
+}
+
+struct KeyedStampOperative;
+impl UnboundedOperative for KeyedStampOperative {
+    fn factory_id() -> &'static str {
+        "keyed_stamp_operative"
+    }
+    fn channels(c: &mut ChannelBuilder) {
+        c.input::<String>("input").into::<KeyedStampOperation>();
+        c.channel::<String>("out")
+            .from::<KeyedStampOperation>()
+            .keyed()
+            .to_plugin("kafka");
+    }
+}
+
+/// Spec "Identity stamps on keyed-channel output frames": every keyed
+/// plugin emit carries `flz.segment` / `flz.seq` / `flz.key` alongside the
+/// `channel` stamp; `flz.seq` reflects the durable change seq after the
+/// flush-before-emit drain plus the emit ordinal.
+#[test]
+fn keyed_channel_emits_carry_identity_stamps() {
+    let _serial = WAL_TEST_LOCK.lock().unwrap();
+    let (handle, _instance) = setup::<KeyedStampOperative>("keyed-stamps-instance", 2);
+    let (stream, mut observer) = stream_pair();
+
+    dispatch_input(
+        &handle,
+        "keyed-stamps-instance",
+        "input",
+        b"x".to_vec(),
+        &stream,
+    );
+    dispatch_input(
+        &handle,
+        "keyed-stamps-instance",
+        "input",
+        b"y".to_vec(),
+        &stream,
+    );
+
+    let frames = read_frames(&mut observer, 2, Duration::from_secs(5));
+    let f1 = &frames[0];
+    assert_eq!(f1.message, b"x".to_vec());
+    assert_eq!(f1.metadata.get("channel").unwrap(), "out");
+    assert_eq!(
+        f1.metadata.get("flz.segment").unwrap(),
+        "keyed-stamps-instance/keyed_stamp_operation/"
+    );
+    assert_eq!(f1.metadata.get("flz.seq").unwrap(), "1.0");
+    assert_eq!(f1.metadata.get("flz.key").unwrap(), "x");
+
+    let f2 = &frames[1];
+    assert_eq!(f2.metadata.get("flz.seq").unwrap(), "2.0");
+    assert_eq!(f2.metadata.get("flz.key").unwrap(), "y");
+}
+
+/// Spec "Non-keyed channels are unchanged and cost-free": a non-keyed
+/// plugin emit produces the exact pre-identity wire frame — byte-identical
+/// to `payloader::build_from_binary` with only the `channel` stamp.
+#[test]
+fn non_keyed_frame_is_byte_identical_to_prechange_layout() {
+    // MetaProducerOperation-free operative: reuse FlushOrderOperative's shape
+    // via a minimal pure-plugin operative.
+    struct PlainPluginOperative;
+    impl UnboundedOperative for PlainPluginOperative {
+        fn factory_id() -> &'static str {
+            "plain_plugin_operative"
+        }
+        fn channels(c: &mut ChannelBuilder) {
+            c.input::<String>("input").into::<PlainPluginOperation>();
+            c.channel::<String>("out")
+                .from::<PlainPluginOperation>()
+                .to_plugin("kafka");
+        }
+    }
+
+    let (handle, _instance) = setup::<PlainPluginOperative>("plain-plugin-instance", 2);
+    let (stream, mut observer) = stream_pair();
+
+    dispatch_input(
+        &handle,
+        "plain-plugin-instance",
+        "input",
+        b"payload".to_vec(),
+        &stream,
+    );
+
+    let frames = read_frames(&mut observer, 1, Duration::from_secs(5));
+    let mut expected_meta = HashMap::new();
+    expected_meta.insert("channel".to_string(), "out".to_string());
+    let expected = payloader::build_from_binary("plain-plugin-instance", b"payload", expected_meta);
+    assert_eq!(
+        frames[0].raw, expected,
+        "non-keyed plugin frame must be byte-identical to the pre-change layout"
+    );
+    assert!(
+        !frames[0].metadata.keys().any(|k| k.starts_with("flz.")),
+        "non-keyed frames carry no identity stamps"
+    );
+}
+
+test_operation!(PlainPluginOperation, "plain_plugin_operation", String => String, (), |input, _state, ctx| {
+    ctx.emit::<String>(input)?;
+    Ok(())
+});
+
+/// Build one controller-format WAL record:
+/// `[seq u64 BE][len u32 BE][header 16B][change][crc32 u32 BE]`,
+/// `len = 16 + change.len()`, trailing crc over `header + change`.
+fn wal_record<S: Operation>(seq: u64, change_bytes: &[u8]) -> Vec<u8> {
+    let header =
+        flezha_executor::segment::header::HeaderTemplate::for_operation::<S>().stamp(change_bytes);
+    let mut record = Vec::new();
+    record.extend_from_slice(&seq.to_be_bytes());
+    record.extend_from_slice(&((16 + change_bytes.len()) as u32).to_be_bytes());
+    record.extend_from_slice(&header);
+    record.extend_from_slice(change_bytes);
+    let mut crc_input = header.to_vec();
+    crc_input.extend_from_slice(change_bytes);
+    record.extend_from_slice(&crc32fast::hash(&crc_input).to_be_bytes());
+    record
+}
+
+/// Spec "Stamps present and replay-stable" (crash-restore e2e): after a
+/// simulated crash, a fresh instance restored via the runtime's
+/// `restore_state` + change_seq re-arm replays the same input and emits a
+/// frame whose `flz.*` stamps (and payload) are identical to the original.
+#[test]
+fn keyed_stamps_replay_identically_after_crash_restore() {
+    let _serial = WAL_TEST_LOCK.lock().unwrap();
+    // Original run: two inputs, two changes, two stamped frames.
+    let (handle_a, _instance_a) = setup::<KeyedStampOperative>("restore-stamps-instance", 2);
+    let (stream_a, mut observer_a) = stream_pair();
+    dispatch_input(
+        &handle_a,
+        "restore-stamps-instance",
+        "input",
+        b"x".to_vec(),
+        &stream_a,
+    );
+    dispatch_input(
+        &handle_a,
+        "restore-stamps-instance",
+        "input",
+        b"y".to_vec(),
+        &stream_a,
+    );
+    let original = read_frames(&mut observer_a, 2, Duration::from_secs(5));
+
+    // Crash after "x"'s change (seq 0) became durable; "y" is replayed.
+    // Fresh instance, same identity: restore state from the WAL and
+    // re-arm change_seq exactly like `RestoreInitState` does.
+    let (handle_b, instance_b) = setup::<KeyedStampOperative>("restore-stamps-instance", 2);
+    let slot = Arc::clone(&instance_b.segments[0][0]);
+    let change_bytes = postcard::to_allocvec(&TickChange).expect("encode change");
+    let change_log = wal_record::<KeyedStampOperation>(0, &change_bytes);
+    let terminal = {
+        let mut guard = slot.state.lock().unwrap();
+        slot.dispatcher
+            .restore_state(&mut guard, &[], &change_log, None)
+            .expect("restore_state")
+    };
+    assert_eq!(terminal, 0);
+    slot.change_seq
+        .store(terminal + 1, std::sync::atomic::Ordering::Release);
+
+    let (stream_b, mut observer_b) = stream_pair();
+    dispatch_input(
+        &handle_b,
+        "restore-stamps-instance",
+        "input",
+        b"y".to_vec(),
+        &stream_b,
+    );
+    let replayed = read_frames(&mut observer_b, 1, Duration::from_secs(5));
+
+    let orig = &original[1];
+    let replay = &replayed[0];
+    assert_eq!(replay.message, orig.message);
+    for stamp in ["flz.segment", "flz.seq", "flz.key"] {
+        assert_eq!(
+            replay.metadata.get(stamp),
+            orig.metadata.get(stamp),
+            "{stamp} must be replay-stable across crash-restore"
+        );
+    }
+    assert_eq!(replay.metadata.get("flz.seq").unwrap(), "2.0");
+}
+
+// ----- LogicalClock: ctx.now() == durable change seq, restore re-arm -----
+
+static LOGICAL_OBSERVED: Mutex<Vec<u64>> = Mutex::new(Vec::new());
+
+#[derive(Default)]
+struct LogicalNowOperation;
+impl Operation for LogicalNowOperation {
+    type Input = String;
+    type Output = String;
+    type State = i64;
+    type Change = TickChange;
+    type Clock = flezha_executor::state::LogicalClock;
+    type Config = ();
+    fn name() -> &'static str {
+        "logical_now_operation"
+    }
+    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> i64 {
+        0
+    }
+    fn apply_change(state: &mut i64, _change: &TickChange) {
+        *state += 1;
+    }
+    fn run(
+        &mut self,
+        input: String,
+        mut state: StateHandle<'_, Self>,
+        ctx: &mut OperationCtx<'_>,
+    ) -> Result<(), OperationError> {
+        LOGICAL_OBSERVED.lock().unwrap().push(ctx.now());
+        state.apply(TickChange);
+        // Emit so flush-before-emit ships the change deterministically
+        // (the background flusher's linger would otherwise race the test).
+        ctx.emit::<String>(input)?;
+        Ok(())
+    }
+}
+
+test_operation!(LogicalNowSinkOperation, "logical_now_sink_operation", String => (), (), |_input, _state, _ctx| {
+    Ok(())
+});
+
+struct LogicalNowOperative;
+impl UnboundedOperative for LogicalNowOperative {
+    fn factory_id() -> &'static str {
+        "logical_now_operative"
+    }
+    fn channels(c: &mut ChannelBuilder) {
+        c.input::<String>("input").into::<LogicalNowOperation>();
+        c.channel::<String>("hop")
+            .from::<LogicalNowOperation>()
+            .into::<LogicalNowSinkOperation>();
+    }
+}
+
+/// Spec "LogicalClock serves the durable change sequence": ctx.now() is
+/// the change seq at dispatch entry — advancing with applied changes —
+/// and a restored instance continues from the re-armed seq rather than a
+/// reset counter.
+#[test]
+fn logical_clock_serves_change_seq_and_survives_restore_rearm() {
+    let _serial = WAL_TEST_LOCK.lock().unwrap();
+    LOGICAL_OBSERVED.lock().unwrap().clear();
+    let (handle, instance) = setup::<LogicalNowOperative>("logical-now-instance", 2);
+    let stream = dummy_stream();
+
+    for payload in [b"a".to_vec(), b"b".to_vec()] {
+        dispatch_input(&handle, "logical-now-instance", "input", payload, &stream);
+    }
+    assert!(wait_until(
+        || LOGICAL_OBSERVED.lock().unwrap().len() == 2,
+        Duration::from_secs(5)
+    ));
+    assert_eq!(*LOGICAL_OBSERVED.lock().unwrap(), vec![0, 1]);
+    assert_eq!(
+        instance.segments[0][0].change_seq.load(Ordering::Acquire),
+        2
+    );
+
+    // Crash-restore: fresh instance, restore both changes (seqs 0, 1) and
+    // re-arm; the next invocation's logical time continues at 2.
+    LOGICAL_OBSERVED.lock().unwrap().clear();
+    let (handle_b, instance_b) = setup::<LogicalNowOperative>("logical-now-instance", 2);
+    let slot = Arc::clone(&instance_b.segments[0][0]);
+    let change_bytes = postcard::to_allocvec(&TickChange).expect("encode change");
+    let mut change_log = wal_record::<LogicalNowOperation>(0, &change_bytes);
+    change_log.extend_from_slice(&wal_record::<LogicalNowOperation>(1, &change_bytes));
+    let terminal = {
+        let mut guard = slot.state.lock().unwrap();
+        slot.dispatcher
+            .restore_state(&mut guard, &[], &change_log, None)
+            .expect("restore_state")
+    };
+    assert_eq!(terminal, 1);
+    slot.change_seq
+        .store(terminal + 1, std::sync::atomic::Ordering::Release);
+
+    dispatch_input(
+        &handle_b,
+        "logical-now-instance",
+        "input",
+        b"c".to_vec(),
+        &stream,
+    );
+    assert!(wait_until(
+        || LOGICAL_OBSERVED.lock().unwrap().len() == 1,
+        Duration::from_secs(5)
+    ));
+    assert_eq!(
+        *LOGICAL_OBSERVED.lock().unwrap(),
+        vec![2],
+        "logical time must continue from the re-armed seq, not reset"
     );
 }

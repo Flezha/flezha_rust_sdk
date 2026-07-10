@@ -288,3 +288,141 @@ fn operative_instance_creates_segments() {
     assert_eq!(instance.segment_key_to_idx[0].get("b"), Some(&1));
     assert_eq!(instance.segment_key_to_idx[0].get("c"), Some(&2));
 }
+
+// ----- Keyed channel declaration + build-time clock validation -----
+
+test_operation!(KeyedProducerOperation, "keyed_producer_operation", String => String, (), |input, _state, ctx| {
+    ctx.emit_keyed::<String>(input.clone(), input)?;
+    Ok(())
+});
+
+test_operation!(KeyedConsumerOperation, "keyed_consumer_operation", String => (), (), |_input, _state, _ctx| {
+    Ok(())
+});
+
+/// `.keyed()` with a pure plugin wire is accepted and recorded.
+struct KeyedPluginOperative;
+impl UnboundedOperative for KeyedPluginOperative {
+    fn factory_id() -> &'static str {
+        "keyed_plugin_operative"
+    }
+    fn channels(c: &mut ChannelBuilder) {
+        c.input::<String>("inp").into::<KeyedProducerOperation>();
+        c.channel::<String>("out")
+            .from::<KeyedProducerOperation>()
+            .keyed()
+            .to_plugin("kafka");
+    }
+}
+
+#[test]
+fn keyed_plugin_channel_is_accepted_and_marked() {
+    let topology = build_topology_for::<KeyedPluginOperative>().expect("topology");
+    let out = topology.lookup_channel_id("out").unwrap();
+    assert!(topology.channels[out as usize].keyed);
+    assert!(!topology.channels[0].keyed, "entry channel is not keyed");
+}
+
+/// `.keyed()` on a hybrid (`also_to_plugin_with`) channel is accepted.
+struct KeyedHybridOperative;
+impl UnboundedOperative for KeyedHybridOperative {
+    fn factory_id() -> &'static str {
+        "keyed_hybrid_operative"
+    }
+    fn channels(c: &mut ChannelBuilder) {
+        c.input::<String>("inp").into::<KeyedProducerOperation>();
+        c.channel::<String>("out")
+            .from::<KeyedProducerOperation>()
+            .also_to_plugin_with("kafka", |v: &String| v.clone().into_bytes())
+            .keyed()
+            .into::<KeyedConsumerOperation>();
+    }
+}
+
+#[test]
+fn keyed_hybrid_channel_is_accepted_and_marked() {
+    let topology = build_topology_for::<KeyedHybridOperative>().expect("topology");
+    let out = topology.lookup_channel_id("out").unwrap();
+    assert!(topology.channels[out as usize].keyed);
+    assert!(topology.channels[out as usize].plugin_sink.is_some());
+}
+
+/// `.keyed()` on a channel with no plugin wire fails the build with a
+/// typed error naming the channel.
+struct KeyedInterOperationOperative;
+impl UnboundedOperative for KeyedInterOperationOperative {
+    fn factory_id() -> &'static str {
+        "keyed_inter_operation_operative"
+    }
+    fn channels(c: &mut ChannelBuilder) {
+        c.input::<String>("inp").into::<KeyedProducerOperation>();
+        c.channel::<String>("hop")
+            .from::<KeyedProducerOperation>()
+            .keyed()
+            .into::<KeyedConsumerOperation>();
+    }
+}
+
+#[test]
+fn keyed_channel_without_plugin_wire_is_rejected() {
+    let err = match build_topology_for::<KeyedInterOperationOperative>() {
+        Ok(_) => panic!("keyed inter-operation channel must fail the build"),
+        Err(e) => e,
+    };
+    assert!(err.errors.iter().any(|e| matches!(
+        e,
+        flezha_executor::channel::builder::BuildTopologyError::KeyedChannelWithoutPluginWire {
+            channel: "hop"
+        }
+    )));
+}
+
+/// LogicalClock with `Change = NoChange` cannot be served (the durable
+/// change seq never advances) and fails the build naming the clock.
+#[derive(Default)]
+struct FrozenLogicalOperation;
+impl Operation for FrozenLogicalOperation {
+    type Input = String;
+    type Output = String;
+    type State = ();
+    type Change = NoChange;
+    type Clock = flezha_executor::state::LogicalClock;
+    type Config = ();
+    fn name() -> &'static str {
+        "frozen_logical_operation"
+    }
+    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
+    fn run(
+        &mut self,
+        _: String,
+        _state: StateHandle<'_, Self>,
+        _: &mut OperationCtx<'_>,
+    ) -> Result<(), OperationError> {
+        Ok(())
+    }
+}
+
+struct FrozenLogicalOperative;
+impl UnboundedOperative for FrozenLogicalOperative {
+    fn factory_id() -> &'static str {
+        "frozen_logical_operative"
+    }
+    fn channels(c: &mut ChannelBuilder) {
+        c.input::<String>("inp").into::<FrozenLogicalOperation>();
+    }
+}
+
+#[test]
+fn logical_clock_without_persistent_changes_is_rejected_at_build() {
+    let err = match build_topology_for::<FrozenLogicalOperative>() {
+        Ok(_) => panic!("LogicalClock + NoChange must fail the build"),
+        Err(e) => e,
+    };
+    assert!(err.errors.iter().any(|e| matches!(
+        e,
+        flezha_executor::channel::builder::BuildTopologyError::UnservableClock {
+            operation: "frozen_logical_operation",
+            clock_type: "LogicalClock",
+        }
+    )));
+}

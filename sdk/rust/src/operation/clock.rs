@@ -1,83 +1,133 @@
-//! `Clock` sealed trait and v1 implementations per `design.md` Decision 9.
+//! `Clock` sealed trait and the three runtime-served implementations.
 //!
-//! v1 fully wires only `WallClock`. `LogicalClock` and `EventTimeFrom<F>`
-//! ship the trait shape but their `now()` is `unimplemented!()`; the
-//! runtime rejects Operations declaring a non-`WallClock` `type Clock` with
-//! `OperativeStartError::ClockNotImplementedYet { clock_type }` until the
-//! follow-up `operative-clock-impls` change wires them.
+//! The runtime — not user code — reads the clock: the dispatcher evaluates
+//! the Operation's declared `Clock` exactly once per `run` invocation and
+//! `OperationCtx::now()` serves that single value for the whole invocation.
+//! All three clocks yield `u64`:
+//!
+//! - [`WallClock`] — milliseconds since the Unix epoch, read at dispatch
+//!   entry. Consistent within an invocation; non-deterministic across
+//!   replays *by declared intent*.
+//! - [`EventTimeFrom<F>`] — the value `F::extract` pulls from the input
+//!   being dispatched. Fully deterministic; the recommended clock for
+//!   time-like ordering.
+//! - [`LogicalClock`] — the Segment's durable change sequence (the same
+//!   counter that orders WAL records and is re-armed from the WAL on
+//!   restore). Version-like: advances as applied changes are flushed,
+//!   survives crash-restore, and is `0` until the first change ships.
 
-use std::sync::atomic::AtomicU64;
 use std::time::SystemTime;
 
 mod sealed {
     pub trait Sealed {}
 }
 
-/// Time source declared by a Operation. Sealed: the only impls in v1 are
+/// Time source declared by an Operation. Sealed: the only impls are
 /// `WallClock`, `LogicalClock`, and `EventTimeFrom<F>`. Custom Clocks
 /// are rejected at compile time.
 pub trait Clock: sealed::Sealed + Send + Sync + 'static {
-    /// Time value produced by `now()`. Bounded `Copy + Send + Sync` so
-    /// the runtime can store the value in atomics or share across
-    /// threads without further wrappers.
+    /// Time value served by `OperationCtx::now()`. All shipped clocks use
+    /// `u64` (epoch milliseconds, extracted event time, or change seq).
     type Time: Copy + Send + Sync + 'static;
 
-    /// Read the clock. Wall-clock implementations call
-    /// `SystemTime::now()`; logical clocks return the per-Segment
-    /// counter; event-time clocks defer to the user's extractor.
-    fn now() -> Self::Time;
-
-    /// Stable name used by the runtime when rejecting non-Wall clocks
-    /// pending `operative-clock-impls`.
+    /// Stable name used by build-time clock validation errors.
     #[doc(hidden)]
     fn type_name() -> &'static str;
 }
 
-/// Wall-clock time source. Reads `std::time::SystemTime::now()` on each
-/// call; suitable for Operations whose state mutations are insensitive to
-/// clock skew or for pure event-pipeline Operations that ignore time.
+/// Extract an event timestamp from an input. Implement on a unit marker
+/// type and declare `type Clock = EventTimeFrom<YourMarker>;` — the
+/// dispatcher applies the extractor to each input before `run`, and
+/// `ctx.now()` returns the extracted value.
+pub trait TimeExtractor<Input>: Send + Sync + 'static {
+    fn extract(input: &Input) -> u64;
+}
+
+/// Runtime evaluation seam: how the dispatcher computes the one
+/// per-invocation value `ctx.now()` serves. The `Input` parameter lets
+/// `EventTimeFrom<F>` require `F: TimeExtractor<Input>` — a clock the
+/// runtime cannot serve is a compile error at the `Operation` impl.
+pub trait ClockFor<Input>: Clock {
+    /// `input` is `None` only for `compensate` (there is no current
+    /// input); `EventTimeFrom` yields `0` there. `wall_ms` / `logical`
+    /// are lazy so unused sources cost nothing on the dispatch path.
+    #[doc(hidden)]
+    fn evaluate(
+        input: Option<&Input>,
+        wall_ms: impl FnOnce() -> u64,
+        logical: impl FnOnce() -> u64,
+    ) -> u64;
+}
+
+/// Wall-clock time source: milliseconds since the Unix epoch, read once
+/// at dispatch entry. Suitable for Operations whose outputs are
+/// insensitive to replay-time drift, or that ignore time entirely.
 pub struct WallClock;
 impl sealed::Sealed for WallClock {}
 impl Clock for WallClock {
-    type Time = SystemTime;
-    fn now() -> SystemTime {
-        SystemTime::now()
-    }
+    type Time = u64;
     fn type_name() -> &'static str {
         "WallClock"
     }
 }
+impl<Input> ClockFor<Input> for WallClock {
+    fn evaluate(
+        _input: Option<&Input>,
+        wall_ms: impl FnOnce() -> u64,
+        _logical: impl FnOnce() -> u64,
+    ) -> u64 {
+        wall_ms()
+    }
+}
 
-/// Logical clock. v1 ships the trait shape; per-Segment state-wiring is
-/// reserved for `operative-clock-impls`.
-pub struct LogicalClock(#[allow(dead_code)] AtomicU64);
+/// Logical clock: serves the Segment's durable change sequence.
+pub struct LogicalClock;
 impl sealed::Sealed for LogicalClock {}
 impl Clock for LogicalClock {
     type Time = u64;
-    fn now() -> u64 {
-        unimplemented!(
-            "LogicalClock requires per-Segment state wired by `operative-clock-impls`; \
-             v1 only fully supports WallClock"
-        )
-    }
     fn type_name() -> &'static str {
         "LogicalClock"
     }
 }
+impl<Input> ClockFor<Input> for LogicalClock {
+    fn evaluate(
+        _input: Option<&Input>,
+        _wall_ms: impl FnOnce() -> u64,
+        logical: impl FnOnce() -> u64,
+    ) -> u64 {
+        logical()
+    }
+}
 
 /// Event-time clock parametrized by a user-supplied input-to-timestamp
-/// extractor. v1 ships the shape; full wiring is reserved.
-pub struct EventTimeFrom<F>(#[allow(dead_code)] std::marker::PhantomData<F>);
+/// extractor marker type.
+pub struct EventTimeFrom<F>(std::marker::PhantomData<F>);
 impl<F: Send + Sync + 'static> sealed::Sealed for EventTimeFrom<F> {}
 impl<F: Send + Sync + 'static> Clock for EventTimeFrom<F> {
     type Time = u64;
-    fn now() -> u64 {
-        unimplemented!(
-            "EventTimeFrom<F> reads timestamps from inputs and is wired by \
-             `operative-clock-impls`; v1 only fully supports WallClock"
-        )
-    }
     fn type_name() -> &'static str {
         "EventTimeFrom"
     }
+}
+impl<Input, F> ClockFor<Input> for EventTimeFrom<F>
+where
+    F: TimeExtractor<Input>,
+{
+    fn evaluate(
+        input: Option<&Input>,
+        _wall_ms: impl FnOnce() -> u64,
+        _logical: impl FnOnce() -> u64,
+    ) -> u64 {
+        input.map(F::extract).unwrap_or(0)
+    }
+}
+
+/// Wall time as milliseconds since the Unix epoch. The dispatcher's wall
+/// source; the test harness injects fixed/scripted values by supplying
+/// its own `wall_ms` closure to [`ClockFor::evaluate`] instead.
+pub(crate) fn wall_now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }

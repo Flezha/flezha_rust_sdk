@@ -11,10 +11,10 @@ pub mod state_handle;
 use std::sync::Arc;
 
 pub use change::{Change, CoalesceKey, DerivedState, NoChange};
-pub use clock::{Clock, EventTimeFrom, LogicalClock, WallClock};
+pub use clock::{Clock, ClockFor, EventTimeFrom, LogicalClock, TimeExtractor, WallClock};
 #[allow(unused_imports)]
 pub(crate) use ctx::EmitSink;
-pub use ctx::OperationCtx;
+pub use ctx::{OperationCtx, StableId};
 pub use error::OperationError;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -35,6 +35,21 @@ pub const DEFAULT_OPERATION_APPLY_CHANGE_PANIC_MESSAGE: &str =
 /// One Operation in an UnboundedOperative topology. Stateless dispatcher; per-segment
 /// State is held by the runtime and threaded through `run` via a
 /// [`StateHandle`].
+///
+/// # Determinism contract
+///
+/// Replay is Flezha's recovery primitive: crash-resume, retry-replay, and
+/// the effectively-once / rewind capabilities all re-run Operations over
+/// restored state and rely on the results coming out the same. [`Self::run`],
+/// [`Self::apply_change`], and [`Self::compensate`] MUST therefore be
+/// deterministic: given the same Segment state and the same input sequence
+/// they produce identical state changes and identical emitted outputs.
+/// Ambient non-determinism inside these functions — `SystemTime::now()`,
+/// random numbers / `Uuid::new_v4()`, reads of external mutable state — is
+/// a contract violation. Obtain time via [`OperationCtx::now`] (served from
+/// the declared [`Self::Clock`]) and identifiers via
+/// [`OperationCtx::stable_id`]. `OperationTestHarness::replay_emits_equal`
+/// verifies the output side of the contract; `replay_equals` the state side.
 ///
 /// State persistence (added by `operative-state-persistence-rust`):
 ///
@@ -73,9 +88,13 @@ pub trait Operation: Send + Sync + 'static + Default {
     /// `type Change = NoChange;` explicitly.
     type Change: Change;
 
-    /// Time source. Sealed trait; v1 fully wires only [`WallClock`].
-    /// Persistence-free Operations write `type Clock = WallClock;`.
-    type Clock: Clock;
+    /// Time source. Sealed trait; evaluated by the runtime once per `run`
+    /// invocation and served via [`OperationCtx::now`]. The
+    /// `ClockFor<Self::Input>` bound makes an unservable configuration
+    /// (e.g. `EventTimeFrom<F>` whose `F` lacks a `TimeExtractor` for this
+    /// Input) a compile error. Persistence-free Operations write
+    /// `type Clock = WallClock;`.
+    type Clock: ClockFor<Self::Input>;
 
     /// Startup-time configuration deserialized from operative-start metadata
     /// (postcard). Use `()` for the no-config default; impls write

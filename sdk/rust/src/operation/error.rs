@@ -15,6 +15,23 @@ pub enum OperationError {
     #[error("plugin serializer for channel `{channel}` panicked: {message}")]
     PluginSerializerPanic { channel: String, message: String },
 
+    #[error(
+        "channel `{channel}` is declared .keyed(); use ctx.emit_keyed(key, value) so the \
+         output carries its natural key"
+    )]
+    KeyRequiredOnKeyedChannel { channel: String },
+
+    #[error(
+        "channel `{channel}` is not declared .keyed(); emit_keyed is only valid on keyed channels"
+    )]
+    KeyNotAllowedOnNonKeyedChannel { channel: String },
+
+    #[error(
+        "metadata key `{key}` uses the reserved `flz.` namespace; runtime stamps cannot be \
+             set by operative code"
+    )]
+    ReservedMetadataKey { key: String },
+
     #[error("operation error: {0}")]
     Custom(String),
 }

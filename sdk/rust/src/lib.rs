@@ -108,7 +108,9 @@ pub mod testing;
 /// `Change` types and route mutations through `state.apply(...)`.
 pub mod state {
     pub use crate::operation::change::{Change, CoalesceKey, NoChange};
-    pub use crate::operation::clock::{Clock, EventTimeFrom, LogicalClock, WallClock};
+    pub use crate::operation::clock::{
+        Clock, ClockFor, EventTimeFrom, LogicalClock, TimeExtractor, WallClock,
+    };
     pub use crate::operation::state_handle::StateHandle;
     pub use crate::segment::restore::{RestoreError, RestoreInitPayload};
 }
@@ -128,8 +130,8 @@ pub use flz_transport::{service, transport};
 /// collection without the user adding an `inventory` dependency.
 pub use inventory;
 pub use operation::{
-    Change, Clock, CoalesceKey, DerivedState, EventTimeFrom, LogicalClock, NoChange, Operation,
-    OperationCtx, OperationError, StateHandle, WallClock,
+    Change, Clock, ClockFor, CoalesceKey, DerivedState, EventTimeFrom, LogicalClock, NoChange,
+    Operation, OperationCtx, OperationError, StableId, StateHandle, TimeExtractor, WallClock,
 };
 pub use operative::UnboundedOperative;
 pub use segment::{RestoreError, RestoreInitPayload};

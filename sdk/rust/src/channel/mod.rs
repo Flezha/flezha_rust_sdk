@@ -96,6 +96,10 @@ pub struct ChannelDescriptor {
     /// `also_to_plugin_with(...)`: the named plugin sink. Mutually
     /// exclusive with `plugin_serializer` / `plugin_name`.
     pub plugin_sink: Option<PluginSink>,
+    /// Output-identity opt-in (`.keyed()`): plugin emits require a natural
+    /// key and carry `flz.*` identity stamps. Always paired with a plugin
+    /// wire (validated at build).
+    pub keyed: bool,
     /// Backpressure policy applied at the push site when the consumer's
     /// mailbox is full. Set at declaration time per channel kind, optionally
     /// overridden by `.on_full(...)`. Plugin-bound channels carry a

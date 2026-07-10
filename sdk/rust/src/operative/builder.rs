@@ -67,6 +67,13 @@ pub fn build_topology_with_persistence(
         if entry.producer.is_none() && entry.kind != ChannelKind::Entry {
             errors.push(BuildTopologyError::UnwiredChannel { name: entry.name });
         }
+        // Identity stamps only exist on plugin frames; a keyed channel
+        // must have a plugin wire (pure `to_plugin` or hybrid sink).
+        if entry.keyed && entry.kind != ChannelKind::PluginBound && entry.plugin_sink.is_none() {
+            errors.push(BuildTopologyError::KeyedChannelWithoutPluginWire {
+                channel: entry.name,
+            });
+        }
         let plugin_sink = entry.plugin_sink.map(|sink| PluginSink {
             name: Arc::from(sink.name),
             serializer: sink.serializer,
@@ -80,6 +87,7 @@ pub fn build_topology_with_persistence(
             wrap_input: entry.wrap_input,
             plugin_serializer: entry.plugin_serializer,
             plugin_sink,
+            keyed: entry.keyed,
             overflow_policy: entry.overflow_policy,
         });
     }
@@ -93,6 +101,15 @@ pub fn build_topology_with_persistence(
         // A Operation declares static keys OR dynamic operation_key(), never both.
         if entry.operation_key_overridden && !entry.segment_keys.is_empty() {
             errors.push(BuildTopologyError::StaticAndDynamic { name: entry.name });
+        }
+        // Build-time clock validation: LogicalClock serves the durable
+        // change seq, which never advances for a NoChange Operation — fail
+        // fast instead of serving a clock frozen at 0.
+        if entry.clock_type_name == "LogicalClock" && entry.change_is_nochange {
+            errors.push(BuildTopologyError::UnservableClock {
+                operation: entry.name,
+                clock_type: entry.clock_type_name,
+            });
         }
         let mode = match (
             entry.segment_keys.is_empty(),

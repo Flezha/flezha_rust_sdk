@@ -4,6 +4,29 @@ All notable changes to the Rust SDK crate.
 
 ## Unreleased
 
+### Determinism contract + output identity (`deterministic-effects-and-output-identity`)
+
+- **BREAKING: `Clock::now()` removed.** The runtime evaluates the declared
+  Clock once per `run` invocation and serves it via `OperationCtx::now()`
+  (`u64`: epoch ms for `WallClock`, extracted input timestamp for
+  `EventTimeFrom<F>` — now fully wired via the new `TimeExtractor<Input>`
+  trait — and the durable change seq for `LogicalClock`). The `Operation`
+  trait bound tightened to `type Clock: ClockFor<Self::Input>`, making an
+  unservable extractor a compile error; `LogicalClock` with
+  `Change = NoChange` fails registration with
+  `BuildTopologyError::UnservableClock`.
+- **`OperationCtx::stable_id()`** — replay-stable 128-bit identifiers
+  (frozen FNV-1a-128 over segment identity ‖ change seq ‖ call ordinal);
+  the determinism-contract replacement for `Uuid::new_v4()`.
+- **Keyed channels**: `.keyed()` on plugin-wired channels +
+  `ctx.emit_keyed(key, value)` stamp `flz.segment` / `flz.seq` / `flz.key`
+  on every plugin frame; the `flz.` metadata namespace is reserved
+  (`ReservedMetadataKey`). Non-keyed channels are byte-identical to before
+  (criterion dispatch regression bench: no change detected).
+- **Harness**: `replay_emits_equal` (output-side determinism gate),
+  injectable fixed/scripted wall clock, `with_keyed_channel`,
+  `emitted_meta`.
+
 ### Performance
 
 - **Dispatch core rewritten behind the `fast-dispatch` cargo feature.** The

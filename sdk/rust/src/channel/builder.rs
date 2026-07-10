@@ -38,6 +38,13 @@ pub(crate) struct OperationEntry {
     /// Erased output-type marker: matches the producer-edge's payload type.
     pub output_type_id: std::any::TypeId,
 
+    /// `Operation::Clock::type_name()` captured at registration time, plus
+    /// whether the Operation's `Change` is `NoChange`. `build_topology`
+    /// rejects clock configurations the runtime cannot serve (a
+    /// `LogicalClock` without persistent changes never advances).
+    pub clock_type_name: &'static str,
+    pub change_is_nochange: bool,
+
     /// `Operation::mailbox_capacity()` captured at registration time. The
     /// resolved value (after applying env-var precedence in `build_topology`)
     /// is the size of every Segment mailbox built for this Operation.
@@ -139,6 +146,10 @@ pub(crate) struct ChannelEntry {
     /// `plugin_name`/`plugin_serializer`, which are populated by
     /// `to_plugin(...)` on a pure `PluginBound` channel.
     pub plugin_sink: Option<PluginSink>,
+    /// Output-identity opt-in set by `.keyed()`. Valid only on channels
+    /// with a plugin wire; `build_topology` rejects a keyed channel that
+    /// has neither `to_plugin` nor `also_to_plugin_with`.
+    pub keyed: bool,
     /// Backpressure policy applied at the push site when the consumer
     /// mailbox is full. Initialized at `declare_channel` time per
     /// channel kind (Entry → DropNewest, InterOperation → Block); plugin-bound
@@ -193,6 +204,23 @@ pub enum BuildTopologyError {
          only one plugin sink per channel is allowed"
     )]
     DuplicatePluginSink { channel: &'static str },
+
+    #[error(
+        "channel `{channel}` is declared .keyed() but has no plugin wire; output identity \
+         stamps only exist on plugin-bound frames (add .to_plugin(...) or \
+         .also_to_plugin_with(...))"
+    )]
+    KeyedChannelWithoutPluginWire { channel: &'static str },
+
+    #[error(
+        "operation `{operation}` declares clock `{clock_type}` with `type Change = NoChange`; \
+         the runtime cannot serve it (logical time is the durable change seq, which never \
+         advances without persistent changes)"
+    )]
+    UnservableClock {
+        operation: &'static str,
+        clock_type: &'static str,
+    },
 }
 
 /// Builder collected by `UnboundedOperative::channels`. Internal state turns into a
@@ -259,6 +287,7 @@ impl ChannelBuilder {
             wrap_input: None,
             plugin_serializer: None,
             plugin_sink: None,
+            keyed: false,
             overflow_policy: default_policy_for_kind(kind),
         });
         self.name_to_id.insert(name, id);
@@ -316,6 +345,9 @@ impl ChannelBuilder {
             output_channel_id: None,
             input_type_id: std::any::TypeId::of::<S::Input>(),
             output_type_id: std::any::TypeId::of::<S::Output>(),
+            clock_type_name: <S::Clock as crate::operation::Clock>::type_name(),
+            change_is_nochange: std::any::TypeId::of::<S::Change>()
+                == std::any::TypeId::of::<crate::operation::NoChange>(),
             mailbox_capacity: S::mailbox_capacity(),
             mailbox_capacity_overridden: S::MAILBOX_CAPACITY_OVERRIDDEN,
             build_segment,
@@ -492,6 +524,16 @@ impl<'b, T: 'static + Send + Sync> ChannelDeclWithProducer<'b, T> {
             name: plugin_name,
             serializer: serializer_erased,
         });
+        self
+    }
+
+    /// Opt this channel into output identity: every plugin emit must carry
+    /// a natural key via `ctx.emit_keyed(key, value)` and the runtime
+    /// stamps `flz.segment` / `flz.seq` / `flz.key` on the wire frame.
+    /// Requires a plugin wire (`to_plugin` or `also_to_plugin_with`);
+    /// `build_topology` rejects a keyed channel without one.
+    pub fn keyed(self) -> Self {
+        self.builder.channels[self.channel_id as usize].keyed = true;
         self
     }
 

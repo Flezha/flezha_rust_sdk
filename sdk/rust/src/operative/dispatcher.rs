@@ -86,6 +86,12 @@ pub struct OperationDispatcherImpl<S: Operation> {
     output_channel_id: Option<ChannelId>,
     output_channel_kind: ChannelKind,
     output_channel_name: Option<Arc<str>>,
+    /// `.keyed()` flag of the producer-edge channel, cached like the kind
+    /// so the emit sink pays zero topology lookups on the hot path.
+    output_channel_keyed: bool,
+    /// Readable Segment identity (`instance/operation/segment_key`) stamped
+    /// as `flz.segment` on keyed-channel emits.
+    segment_label: Arc<str>,
     /// Flush-before-emit wiring, mirrored from the owning `SegmentSlot`
     /// so the emit sink can drain this segment's just-applied changes to
     /// the durable WAL path before its output frame is written.
@@ -109,6 +115,8 @@ impl<S: Operation> OperationDispatcherImpl<S> {
         output_channel_id: Option<ChannelId>,
         output_channel_kind: ChannelKind,
         output_channel_name: Option<Arc<str>>,
+        output_channel_keyed: bool,
+        segment_label: Arc<str>,
         flush: FlushWiring,
     ) -> Self {
         Self {
@@ -116,9 +124,26 @@ impl<S: Operation> OperationDispatcherImpl<S> {
             output_channel_id,
             output_channel_kind,
             output_channel_name,
+            output_channel_keyed,
+            segment_label,
             flush,
             _phantom: std::marker::PhantomData,
         }
+    }
+
+    /// Per-invocation determinism inputs, computed once at entry: the
+    /// declared Clock's value (served by `ctx.now()`) and the durable
+    /// change seq (`stable_id` derivation). `input` is `None` only for
+    /// `compensate`. Wall time is lazy — only WallClock pays the
+    /// `SystemTime::now()`.
+    fn invocation_inputs(&self, input: Option<&S::Input>) -> (u64, u64) {
+        let seq = self.flush.change_seq.load(Ordering::Relaxed);
+        let now = <S::Clock as crate::operation::ClockFor<S::Input>>::evaluate(
+            input,
+            crate::operation::clock::wall_now_ms,
+            || seq,
+        );
+        (now, seq)
     }
 
     /// Ship the Changes a collecting-path op applied to the WAL — or drain and
@@ -204,16 +229,23 @@ impl<S: Operation> OperationDispatcher for OperationDispatcherImpl<S> {
                 None
             };
 
+        let (now, invocation_seq) = self.invocation_inputs(Some(&input));
+
         let mut sink = SegmentEmitSink {
             output_channel_id: self.output_channel_id,
             output_channel_kind: self.output_channel_kind,
             output_channel_name: self.output_channel_name.as_deref(),
+            keyed: self.output_channel_keyed,
+            segment_label: &self.segment_label,
+            change_seq: &self.flush.change_seq,
+            emit_ordinal: 0,
             instance: instance.upgrade(),
             stream: Arc::clone(&stream),
             flush_before_emit,
         };
 
-        let mut ctx = OperationCtx::new(&mut sink);
+        let mut ctx =
+            OperationCtx::new(&mut sink, now, invocation_seq, &self.flush.segment_identity);
         let handle = StateHandle::<S>::new(&mut typed_state.state, &buffer_cell);
 
         // Contain a operation panic so it can't poison the held `state` lock.
@@ -267,6 +299,7 @@ impl<S: Operation> OperationDispatcher for OperationDispatcherImpl<S> {
         // flush after the run ships them to the WAL when the class is durable.
         let buffer: RefCell<Vec<S::Change>> = RefCell::new(Vec::new());
 
+        let (now, invocation_seq) = self.invocation_inputs(Some(&input));
         let mut collect_sink = BoundedCollectAdapter {
             sink,
             output_channel_id: self.output_channel_id,
@@ -274,7 +307,12 @@ impl<S: Operation> OperationDispatcher for OperationDispatcherImpl<S> {
             output_channel_name: self.output_channel_name.as_deref(),
             topology,
         };
-        let mut ctx = OperationCtx::new(&mut collect_sink);
+        let mut ctx = OperationCtx::new(
+            &mut collect_sink,
+            now,
+            invocation_seq,
+            &self.flush.segment_identity,
+        );
         let handle = StateHandle::<S>::new(&mut typed_state.state, &buffer);
 
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -330,6 +368,8 @@ impl<S: Operation> OperationDispatcher for OperationDispatcherImpl<S> {
         // when the class is durable, same as `run_collecting`.
         let buffer: RefCell<Vec<S::Change>> = RefCell::new(Vec::new());
 
+        // Compensation has no current input: EventTimeFrom yields 0 here.
+        let (now, invocation_seq) = self.invocation_inputs(None);
         let mut collect_sink = BoundedCollectAdapter {
             sink,
             output_channel_id: self.output_channel_id,
@@ -337,7 +377,12 @@ impl<S: Operation> OperationDispatcher for OperationDispatcherImpl<S> {
             output_channel_name: self.output_channel_name.as_deref(),
             topology,
         };
-        let mut ctx = OperationCtx::new(&mut collect_sink);
+        let mut ctx = OperationCtx::new(
+            &mut collect_sink,
+            now,
+            invocation_seq,
+            &self.flush.segment_identity,
+        );
         let handle = StateHandle::<S>::new(&mut typed_state.state, &buffer);
 
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -414,6 +459,16 @@ struct SegmentEmitSink<'a> {
     output_channel_id: Option<ChannelId>,
     output_channel_kind: ChannelKind,
     output_channel_name: Option<&'a str>,
+    /// `.keyed()` opt-in for the output channel. Non-keyed channels take
+    /// the pre-identity emit path byte-for-byte (no stamps, no extra work).
+    keyed: bool,
+    /// `flz.segment` stamp value for keyed emits.
+    segment_label: &'a str,
+    /// Durable change seq, read at stamp time (after flush_pending, so
+    /// the just-applied changes are counted) for the `flz.seq` stamp.
+    change_seq: &'a AtomicU64,
+    /// Emit ordinal within this invocation; second half of `flz.seq`.
+    emit_ordinal: u32,
     instance: Option<Arc<UnboundedInstance>>,
     stream: Arc<FlezhaStream>,
     /// `Some` for persistence-enabled segments with the flush-before-emit
@@ -476,18 +531,34 @@ impl<'a> SegmentEmitSink<'a> {
         Ok(())
     }
 
+    /// Append the output-identity stamps for a keyed-channel plugin frame.
+    /// Runs after user metadata is merged so stamps can never be
+    /// clobbered; no-op (and no cost) for non-keyed channels.
+    fn stamp_identity(&mut self, metadata: &mut HashMap<String, String>, key: Option<String>) {
+        if self.keyed {
+            apply_identity_stamps(
+                metadata,
+                self.segment_label,
+                self.change_seq.load(Ordering::Relaxed),
+                &mut self.emit_ordinal,
+                key,
+            );
+        }
+    }
+
     /// Hybrid plugin-sink tail: serialize once inside `catch_unwind`
     /// and forward the bytes through the existing plugin-wire framing
     /// path. A serializer panic surfaces as
     /// `OperationError::PluginSerializerPanic` to the producing Operation;
     /// the dispatcher thread is unaffected.
     fn emit_plugin_sink(
-        &self,
+        &mut self,
         instance: &UnboundedInstance,
         descriptor: &crate::channel::ChannelDescriptor,
         sink: &crate::channel::PluginSink,
         value: &Arc<dyn Any + Send + Sync>,
         meta: Option<HashMap<String, String>>,
+        key: Option<String>,
     ) -> Result<(), OperationError> {
         let serializer = Arc::clone(&sink.serializer);
         let value_for_panic = Arc::clone(value);
@@ -504,7 +575,8 @@ impl<'a> SegmentEmitSink<'a> {
             }
         };
 
-        let metadata = channel_metadata(meta, &descriptor.name);
+        let mut metadata = channel_metadata(meta, &descriptor.name);
+        self.stamp_identity(&mut metadata, key);
 
         // `sink.name` is informational on the SDK side (the wire frame
         // routes by `channel: String`); kept for parity with
@@ -520,13 +592,14 @@ impl<'a> EmitSink for SegmentEmitSink<'a> {
         &mut self,
         value: Arc<dyn Any + Send + Sync>,
     ) -> Result<(), OperationError> {
-        self.emit_inter_operation_with_meta(value, None)
+        self.emit_inter_operation_with_meta(value, None, None)
     }
 
     fn emit_inter_operation_with_meta(
         &mut self,
         value: Arc<dyn Any + Send + Sync>,
         meta: Option<HashMap<String, String>>,
+        key: Option<String>,
     ) -> Result<(), OperationError> {
         self.flush_pending();
         let (instance, cid) = self.resolve_channel()?;
@@ -539,7 +612,7 @@ impl<'a> EmitSink for SegmentEmitSink<'a> {
                 })?;
         self.fan_out_to_consumers(&instance, descriptor, &value)?;
         if let Some(sink) = descriptor.plugin_sink.as_ref() {
-            self.emit_plugin_sink(&instance, descriptor, sink, &value, meta)?;
+            self.emit_plugin_sink(&instance, descriptor, sink, &value, meta, key)?;
         }
         Ok(())
     }
@@ -548,19 +621,10 @@ impl<'a> EmitSink for SegmentEmitSink<'a> {
         &mut self,
         value: Arc<dyn Any + Send + Sync>,
         meta: Option<HashMap<String, String>>,
+        key: Option<String>,
     ) -> Result<(), OperationError> {
         self.flush_pending();
-        let cid = self
-            .output_channel_id
-            .ok_or_else(|| OperationError::UnknownChannel {
-                channel: self.channel_name().to_string(),
-            })?;
-        let instance = self
-            .instance
-            .as_ref()
-            .ok_or_else(|| OperationError::UnknownChannel {
-                channel: self.channel_name().to_string(),
-            })?;
+        let (instance, cid) = self.resolve_channel()?;
         let descriptor =
             instance
                 .topology
@@ -581,7 +645,8 @@ impl<'a> EmitSink for SegmentEmitSink<'a> {
 
         // Reserved key: any caller-supplied "channel" entry is dropped per
         // OperationCtx emit semantics, then the real channel name is stamped.
-        let metadata = channel_metadata(meta, &descriptor.name);
+        let mut metadata = channel_metadata(meta, &descriptor.name);
+        self.stamp_identity(&mut metadata, key);
 
         send_plugin_frame(&self.stream, &instance.instance_id, &bytes, &metadata);
         Ok(())
@@ -608,6 +673,10 @@ impl<'a> EmitSink for SegmentEmitSink<'a> {
             })
             .map(|d| d.plugin_sink.is_some())
             .unwrap_or(false)
+    }
+
+    fn is_keyed(&self) -> bool {
+        self.keyed
     }
 }
 
@@ -663,19 +732,37 @@ impl<'a> BoundedCollectAdapter<'a> {
     }
 }
 
+impl<'a> BoundedCollectAdapter<'a> {
+    /// The bounded plugin wire (`emit_plugin_bytes`) carries no metadata,
+    /// so `.keyed()` identity stamps cannot ride it. Reject rather than
+    /// silently dropping the identity contract.
+    fn reject_key(&self, key: &Option<String>) -> Result<(), OperationError> {
+        if key.is_some() {
+            return Err(OperationError::Custom(format!(
+                "keyed output identity is not supported on bounded operatives \
+                 (channel `{}`): the bounded plugin wire carries no metadata",
+                self.channel_name()
+            )));
+        }
+        Ok(())
+    }
+}
+
 impl<'a> EmitSink for BoundedCollectAdapter<'a> {
     fn emit_inter_operation(
         &mut self,
         value: Arc<dyn Any + Send + Sync>,
     ) -> Result<(), OperationError> {
-        self.emit_inter_operation_with_meta(value, None)
+        self.emit_inter_operation_with_meta(value, None, None)
     }
 
     fn emit_inter_operation_with_meta(
         &mut self,
         value: Arc<dyn Any + Send + Sync>,
         _meta: Option<HashMap<String, String>>,
+        key: Option<String>,
     ) -> Result<(), OperationError> {
+        self.reject_key(&key)?;
         // Hybrid `also_to_plugin_with`: collect for the next stage AND route
         // a serialized copy to the plugin wire.
         if self.has_plugin_sink() {
@@ -689,7 +776,9 @@ impl<'a> EmitSink for BoundedCollectAdapter<'a> {
         &mut self,
         value: Arc<dyn Any + Send + Sync>,
         _meta: Option<HashMap<String, String>>,
+        key: Option<String>,
     ) -> Result<(), OperationError> {
+        self.reject_key(&key)?;
         self.route_plugin(&value)
     }
 
@@ -705,6 +794,13 @@ impl<'a> EmitSink for BoundedCollectAdapter<'a> {
         self.output_channel_id
             .and_then(|cid| self.topology.channel(cid))
             .map(|d| d.plugin_sink.is_some())
+            .unwrap_or(false)
+    }
+
+    fn is_keyed(&self) -> bool {
+        self.output_channel_id
+            .and_then(|cid| self.topology.channel(cid))
+            .map(|d| d.keyed)
             .unwrap_or(false)
     }
 }
@@ -897,6 +993,30 @@ fn channel_metadata(
     metadata
 }
 
+/// Output-identity stamps for one keyed-channel plugin frame: the emitting
+/// Segment (`flz.segment`), the replay-stable output sequence
+/// `<change_seq>.<emit_ordinal>` (`flz.seq`), and the caller's natural key
+/// (`flz.key`). Applied after user metadata so stamps win; advances the
+/// per-invocation emit ordinal. Shared with the test harness so
+/// `replay_emits_equal` compares the same stamp bytes the wire carries.
+pub(crate) fn apply_identity_stamps(
+    metadata: &mut HashMap<String, String>,
+    segment_label: &str,
+    change_seq: u64,
+    emit_ordinal: &mut u32,
+    key: Option<String>,
+) {
+    metadata.insert("flz.segment".to_string(), segment_label.to_string());
+    metadata.insert(
+        "flz.seq".to_string(),
+        format!("{}.{}", change_seq, emit_ordinal),
+    );
+    *emit_ordinal += 1;
+    if let Some(k) = key {
+        metadata.insert("flz.key".to_string(), k);
+    }
+}
+
 const ENV_FLUSH_BEFORE_EMIT: &str = "FLEZHA_FLUSH_BEFORE_EMIT";
 
 /// Whether flush-before-emit is enabled for persistence-enabled segments.
@@ -1001,6 +1121,13 @@ pub fn build_segment_slot<S: Operation>(args: BuildSegmentArgs<'_>) -> Arc<Segme
     let output_channel = operation_desc
         .output_channel_id
         .and_then(|id| topology.channel(id));
+    // `flz.segment` stamp: same triple the WAL identity encodes, readable.
+    let segment_label: Arc<str> = Arc::from(format!(
+        "{}/{}/{}",
+        args.instance_id,
+        operation_desc.name,
+        args.operation_key.unwrap_or("")
+    ));
     let dispatcher = Arc::new(OperationDispatcherImpl::<S>::new(
         args.operation_id,
         operation_desc.output_channel_id,
@@ -1008,6 +1135,8 @@ pub fn build_segment_slot<S: Operation>(args: BuildSegmentArgs<'_>) -> Arc<Segme
             .map(|c| c.kind)
             .unwrap_or(ChannelKind::InterOperation),
         output_channel.map(|c| Arc::clone(&c.name)),
+        output_channel.map(|c| c.keyed).unwrap_or(false),
+        segment_label,
         FlushWiring {
             segment_identity: Arc::clone(&segment_identity),
             change_seq: Arc::clone(&change_seq),
@@ -1053,4 +1182,88 @@ pub fn build_segment_slot<S: Operation>(args: BuildSegmentArgs<'_>) -> Arc<Segme
         last_activity_at: std::sync::atomic::AtomicI64::new(crate::segment::dynamic::now_millis()),
         flusher_entry_id,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bounded::BoundedCollectSink;
+    use crate::channel::ChannelBuilder;
+    use crate::operation::state_handle::StateHandle;
+    use crate::operation::{Operation, OperationCtx, OperationError};
+    use crate::operative::UnboundedOperative;
+    use crate::segment::restore::RestoreInitPayload;
+
+    #[derive(Default)]
+    struct KeyedOp;
+    impl Operation for KeyedOp {
+        type Input = String;
+        type Output = String;
+        type State = ();
+        type Change = crate::operation::NoChange;
+        type Clock = crate::operation::WallClock;
+        type Config = ();
+        fn name() -> &'static str {
+            "bounded_keyed_op"
+        }
+        fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
+        fn run(
+            &mut self,
+            _: String,
+            _state: StateHandle<'_, Self>,
+            _: &mut OperationCtx<'_>,
+        ) -> Result<(), OperationError> {
+            Ok(())
+        }
+    }
+
+    struct KeyedOperative;
+    impl UnboundedOperative for KeyedOperative {
+        fn factory_id() -> &'static str {
+            "bounded_keyed_operative"
+        }
+        fn channels(c: &mut ChannelBuilder) {
+            c.input::<String>("in").into::<KeyedOp>();
+            c.channel::<String>("out")
+                .from::<KeyedOp>()
+                .keyed()
+                .to_plugin("kafka");
+        }
+    }
+
+    #[derive(Default)]
+    struct NullCollect {
+        plugin_bytes: usize,
+    }
+    impl BoundedCollectSink for NullCollect {
+        fn collect(&mut self, _value: Arc<dyn Any + Send + Sync>) {}
+        fn emit_plugin_bytes(&mut self, _bytes: Vec<u8>) {
+            self.plugin_bytes += 1;
+        }
+    }
+
+    /// The bounded plugin wire carries no metadata, so a keyed emit
+    /// through the bounded adapter must fail typed, never silently drop
+    /// the identity contract.
+    #[test]
+    fn bounded_adapter_rejects_keyed_emits() {
+        let topology =
+            crate::operative::builder::build_topology_for::<KeyedOperative>().expect("topology");
+        let out_id = topology.lookup_channel_id("out");
+        let mut collect = NullCollect::default();
+        let mut adapter = BoundedCollectAdapter {
+            sink: &mut collect,
+            output_channel_id: out_id,
+            output_channel_kind: ChannelKind::PluginBound,
+            output_channel_name: Some("out"),
+            topology: &topology,
+        };
+        assert!(adapter.is_keyed(), "descriptor keyed flag must surface");
+        let mut ctx = OperationCtx::new(&mut adapter, 0, 0, b"bounded/keyed/");
+        let err = ctx
+            .emit_keyed::<String>("k", "v".into())
+            .expect_err("keyed emit on the bounded wire must fail");
+        assert!(err.to_string().contains("bounded"));
+        assert_eq!(collect.plugin_bytes, 0, "nothing may reach the wire");
+    }
 }

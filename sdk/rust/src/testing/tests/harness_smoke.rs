@@ -142,3 +142,181 @@ fn non_deterministic_operation_replay_equals_fails() {
         "non-deterministic apply_change should fail replay_equals"
     );
 }
+
+// -- Ctx-mediated clocks through the harness --
+
+/// Operation over `CounterState` with `Change = u32` (`apply_change`
+/// sums); I/O types, Clock, and run body vary per test.
+macro_rules! clock_operation {
+    ($op:ident, $name:literal, $input:ty => $output:ty, clock $clock:ty,
+     |$inp:tt, $st:tt, $ctx:tt| $body:block) => {
+        #[derive(Default)]
+        struct $op;
+        impl Operation for $op {
+            type Input = $input;
+            type Output = $output;
+            type State = CounterState;
+            type Change = u32;
+            type Clock = $clock;
+            type Config = ();
+            fn name() -> &'static str {
+                $name
+            }
+            fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> CounterState {
+                CounterState::default()
+            }
+            fn apply_change(state: &mut CounterState, change: &u32) {
+                state.sum += *change as u64;
+            }
+            fn run(
+                &mut self,
+                $inp: $input,
+                #[allow(unused_mut)] mut $st: StateHandle<'_, Self>,
+                $ctx: &mut OperationCtx<'_>,
+            ) -> Result<(), OperationError> {
+                $body
+            }
+        }
+    };
+}
+
+// WallClock operation emitting the invocation's `ctx.now()` twice, so
+// tests observe both one-value-per-invocation and injected wall values.
+clock_operation!(EmitNowOperation, "emit_now_operation", () => u64, clock WallClock,
+    |_input, state, ctx| {
+        state.apply(1);
+        ctx.emit::<u64>(ctx.now())?;
+        ctx.emit::<u64>(ctx.now())?;
+        Ok(())
+    }
+);
+
+#[test]
+fn injected_wall_clock_serves_one_value_per_invocation() {
+    let mut harness =
+        OperationTestHarness::<EmitNowOperation>::new().with_wall_clock_script(vec![100, 200]);
+    harness.apply_inputs(vec![(), ()]);
+    // Both now() calls inside an invocation observe the same scripted
+    // value; the next invocation observes the next value.
+    harness.expect_emits::<u64>(&[100, 100, 200, 200]);
+}
+
+#[test]
+fn injected_fixed_wall_clock_makes_wallclock_replay_verifiable() {
+    let harness = OperationTestHarness::<EmitNowOperation>::new().with_wall_clock(1720000000000);
+    harness
+        .replay_emits_equal(&[(), (), ()])
+        .expect("fixed injected wall clock must replay identically");
+}
+
+/// Event-time extractor: `ctx.now()` comes from the input's first field.
+struct TsField;
+impl crate::operation::clock::TimeExtractor<(u64, String)> for TsField {
+    fn extract(input: &(u64, String)) -> u64 {
+        input.0
+    }
+}
+
+clock_operation!(EventTimeOperation, "event_time_operation", (u64, String) => u64,
+    clock crate::operation::clock::EventTimeFrom<TsField>,
+    |_input, state, ctx| {
+        state.apply(1);
+        ctx.emit::<u64>(ctx.now())?;
+        Ok(())
+    }
+);
+
+#[test]
+fn event_time_clock_extracts_the_dispatched_inputs_timestamp() {
+    let mut harness = OperationTestHarness::<EventTimeOperation>::new();
+    harness.apply_inputs(vec![
+        (1720000000000, "a".to_string()),
+        (1720000000500, "b".to_string()),
+    ]);
+    harness.expect_emits::<u64>(&[1720000000000, 1720000000500]);
+}
+
+#[test]
+fn event_time_clock_is_replay_stable() {
+    let harness = OperationTestHarness::<EventTimeOperation>::new();
+    harness
+        .replay_emits_equal(&[
+            (1720000000000, "a".to_string()),
+            (1720000000500, "b".to_string()),
+        ])
+        .expect("event time depends only on the input");
+}
+
+// LogicalClock operation: `ctx.now()` is the change seq at invocation
+// entry (the harness's stand-in for the durable WAL counter).
+clock_operation!(LogicalOperation, "logical_operation", () => u64,
+    clock crate::operation::clock::LogicalClock,
+    |_input, state, ctx| {
+        ctx.emit::<u64>(ctx.now())?;
+        state.apply(1);
+        Ok(())
+    }
+);
+
+#[test]
+fn logical_clock_advances_with_applied_changes() {
+    let mut harness = OperationTestHarness::<LogicalOperation>::new();
+    harness.apply_inputs(vec![(), (), ()]);
+    // Each invocation applies one change, so entry-time logical values
+    // strictly increase across invocations.
+    harness.expect_emits::<u64>(&[0, 1, 2]);
+}
+
+// -- Stable identifiers + keyed output identity through the harness --
+
+// Keyed operation: emits under a natural key with a stable_id payload.
+clock_operation!(KeyedIdOperation, "keyed_id_operation", String => String, clock WallClock,
+    |input, state, ctx| {
+        state.apply(1);
+        let id_a = ctx.stable_id();
+        let id_b = ctx.stable_id();
+        assert_ne!(id_a, id_b, "stable_id must be distinct within an invocation");
+        ctx.emit_keyed::<String>(input.clone(), format!("{id_a}/{id_b}"))?;
+        Ok(())
+    }
+);
+
+#[test]
+fn keyed_emits_carry_identity_stamps_in_the_harness() {
+    let mut harness = OperationTestHarness::<KeyedIdOperation>::new().with_keyed_channel();
+    harness.apply_inputs(vec!["BTC/1m".to_string()]);
+    let metas = harness.emitted_meta();
+    assert_eq!(metas.len(), 1);
+    let meta = metas[0].expect("keyed emit records stamped metadata");
+    assert_eq!(meta.get("flz.segment").unwrap(), "<harness>");
+    assert_eq!(meta.get("flz.seq").unwrap(), "0.0");
+    assert_eq!(meta.get("flz.key").unwrap(), "BTC/1m");
+}
+
+#[test]
+fn stable_ids_and_stamps_replay_identically() {
+    let harness = OperationTestHarness::<KeyedIdOperation>::new().with_keyed_channel();
+    harness
+        .replay_emits_equal(&["BTC/1m".to_string(), "ETH/1m".to_string()])
+        .expect("ctx-mediated identifiers and stamps must replay byte-identically");
+}
+
+// Deliberately non-deterministic: the emitted value comes from ambient
+// process state (a static counter), violating the determinism contract.
+static AMBIENT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+clock_operation!(AmbientCounterOperation, "ambient_counter_operation", () => u64, clock WallClock,
+    |_input, _state, ctx| {
+        ctx.emit::<u64>(AMBIENT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))?;
+        Ok(())
+    }
+);
+
+#[test]
+fn ambient_non_determinism_fails_replay_emits_equal() {
+    let harness = OperationTestHarness::<AmbientCounterOperation>::new();
+    let err = harness
+        .replay_emits_equal(&[(), ()])
+        .expect_err("ambient state must surface as a replay divergence");
+    assert!(err.to_string().contains("diverges"));
+}

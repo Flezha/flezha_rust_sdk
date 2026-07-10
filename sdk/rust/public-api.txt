@@ -17,8 +17,10 @@ pub mod state {
     pub use crate::operation::change::CoalesceKey;
     pub use crate::operation::change::NoChange;
     pub use crate::operation::clock::Clock;
+    pub use crate::operation::clock::ClockFor;
     pub use crate::operation::clock::EventTimeFrom;
     pub use crate::operation::clock::LogicalClock;
+    pub use crate::operation::clock::TimeExtractor;
     pub use crate::operation::clock::WallClock;
     pub use crate::operation::state_handle::StateHandle;
 }
@@ -27,6 +29,7 @@ pub use segment::RestoreError;
 pub use segment::RestoreInitPayload;
 pub use operation::Change;
 pub use operation::Clock;
+pub use operation::ClockFor;
 pub use operation::CoalesceKey;
 pub use operation::EventTimeFrom;
 pub use operation::LogicalClock;
@@ -34,13 +37,21 @@ pub use operation::NoChange;
 pub use operation::Operation;
 pub use operation::OperationCtx;
 pub use operation::OperationError;
+pub use operation::StableId;
 pub use operation::StateHandle;
+pub use operation::TimeExtractor;
 pub use operation::WallClock;
 
+# Clock surface (runtime-evaluated; no static `Clock::now()`):
+#
+#   pub trait Clock { type Time; }                          # sealed
+#   pub trait ClockFor<Input>: Clock { /* runtime seam */ } # sealed via Clock
+#   pub trait TimeExtractor<Input> { fn extract(input: &Input) -> u64; }
+#
 # Trait surface on `Operation`:
 #
 #   type Change: Change;
-#   type Clock: Clock;
+#   type Clock: ClockFor<Self::Input>;
 #   type Config: DeserializeOwned + Send + Sync + 'static;
 #   const SCHEMA_VERSION: u32 = 1;
 #   fn init_state(segment_key: Option<&str>, init_payload: Option<RestoreInitPayload<'_>>) -> Self::State;
@@ -48,6 +59,15 @@ pub use operation::WallClock;
 #   fn compact_after_bytes() -> usize;
 #   fn from_config(cfg: Self::Config) -> Self;
 #   fn run(&mut self, input, state: StateHandle<'_, Self>, ctx: &mut OperationCtx<'_>) -> Result<(), OperationError>;
+#
+# `OperationCtx` surface (per-invocation, determinism contract):
+#
+#   pub fn now(&self) -> u64;
+#   pub fn stable_id(&self) -> StableId;
+#   pub fn emit<C>(&mut self, value: C) -> Result<(), OperationError>;
+#   pub fn emit_with_meta<C>(&mut self, value: C, meta: HashMap<String, String>) -> Result<(), OperationError>;
+#   pub fn emit_keyed<C>(&mut self, key: impl Into<String>, value: C) -> Result<(), OperationError>;
+#   pub fn emit_keyed_with_meta<C>(&mut self, key: impl Into<String>, value: C, meta: HashMap<String, String>) -> Result<(), OperationError>;
 #
 # Trait surface on `UnboundedOperative`:
 #
@@ -59,29 +79,42 @@ pub use operation::WallClock;
 #       pub use harness::OperationTestHarness;
 #       pub use harness::ReplayMismatch;
 #   }
+#
+#   OperationTestHarness additions:
+#     pub fn with_keyed_channel(self) -> Self;
+#     pub fn with_wall_clock(self, ms: u64) -> Self;
+#     pub fn with_wall_clock_script(self, script: Vec<u64>) -> Self;
+#     pub fn replay_emits_equal(&self, inputs: &[S::Input]) -> Result<(), EmitStreamMismatch>;
+#     pub fn emitted_meta(&self) -> Vec<Option<&HashMap<String, String>>>;
 
 # Channel fan-out-to-plugin surface:
 #
-# Builder method (in `channel/builder.rs`):
+# Builder methods (in `channel/builder.rs`):
 #
 #   impl<'b, T: 'static + Send + Sync> ChannelDeclWithProducer<'b, T> {
 #       pub fn also_to_plugin_with<F>(self, plugin_name: &'static str, serializer: F) -> Self
 #       where
 #           F: Fn(&T) -> Vec<u8> + Send + Sync + 'static;
+#       pub fn keyed(self) -> Self;   # output-identity opt-in; requires a plugin wire
 #   }
 #
-# `BuildTopologyError` variant:
+# `BuildTopologyError` variants:
 #
 #   pub enum BuildTopologyError {
 #       /* existing variants unchanged */
 #       DuplicatePluginSink { channel: &'static str },
+#       KeyedChannelWithoutPluginWire { channel: &'static str },
+#       UnservableClock { operation: &'static str, clock_type: &'static str },
 #   }
 #
-# `OperationError` variant:
+# `OperationError` variants:
 #
 #   pub enum OperationError {
 #       /* existing variants unchanged */
 #       PluginSerializerPanic { channel: String, message: String },
+#       KeyRequiredOnKeyedChannel { channel: String },
+#       KeyNotAllowedOnNonKeyedChannel { channel: String },
+#       ReservedMetadataKey { key: String },
 #   }
 #
 # Runtime form on `ChannelDescriptor`:
@@ -89,6 +122,7 @@ pub use operation::WallClock;
 #   pub struct ChannelDescriptor {
 #       /* existing fields unchanged */
 #       pub plugin_sink: Option<PluginSink>,
+#       pub keyed: bool,
 #   }
 #
 #   pub struct PluginSink {
