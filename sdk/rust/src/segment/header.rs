@@ -17,6 +17,12 @@ pub const SDK_LANG_RUST: u8 = 1;
 /// Postcard format id stamped at byte 9 of the persistence header.
 pub const FORMAT_ID_POSTCARD: u8 = 1;
 
+/// Effect-record format id (effectively-once tier): the body is a postcard
+/// `EffectRecordBody` whose `changes` entries are themselves the postcard
+/// `S::Change` bytes a format-1 record would carry. The durable marker that
+/// lets mixed WALs (plain change records + effect records) stay readable.
+pub const FORMAT_ID_EFFECT_RECORD: u8 = 2;
+
 /// Parsed view of the 16-byte header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DecodedHeader {
@@ -107,7 +113,27 @@ pub fn validate_header_for_change<S: crate::operation::Operation>(
     validate_common::<S>(header)
 }
 
+/// Validate a header attached to an effect record (effectively-once tier):
+/// same language + schema checks, `format_id = 2`.
+pub fn validate_header_for_effect_record<S: crate::operation::Operation>(
+    header: &DecodedHeader,
+) -> Result<(), RestoreError> {
+    if header.format_id != FORMAT_ID_EFFECT_RECORD {
+        return Err(RestoreError::HeaderInvalid);
+    }
+    validate_lang_and_schema::<S>(header)
+}
+
 fn validate_common<S: crate::operation::Operation>(
+    header: &DecodedHeader,
+) -> Result<(), RestoreError> {
+    if header.format_id != FORMAT_ID_POSTCARD {
+        return Err(RestoreError::HeaderInvalid);
+    }
+    validate_lang_and_schema::<S>(header)
+}
+
+fn validate_lang_and_schema<S: crate::operation::Operation>(
     header: &DecodedHeader,
 ) -> Result<(), RestoreError> {
     if header.sdk_lang != SDK_LANG_RUST {
@@ -115,9 +141,6 @@ fn validate_common<S: crate::operation::Operation>(
             expected: SDK_LANG_RUST,
             found: header.sdk_lang,
         });
-    }
-    if header.format_id != FORMAT_ID_POSTCARD {
-        return Err(RestoreError::HeaderInvalid);
     }
     if header.schema_version != S::SCHEMA_VERSION {
         return Err(RestoreError::SchemaMismatch {

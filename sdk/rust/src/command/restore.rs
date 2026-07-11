@@ -95,6 +95,12 @@ fn restore_into_slot(
         Ok(t) => {
             drop(guard);
             slot.change_seq.store(t + 1, Ordering::Release);
+            // Effectively-once: remember the highest input-log offset the
+            // restored effect records durably consumed, so the crash-replay
+            // re-forward skips already-applied inputs (`drain_segment`).
+            if let Some(floor) = max_consumed_offset(&cmd.change_log_bytes) {
+                slot.consumed_floor.store(floor as i64, Ordering::Release);
+            }
             t
         }
         Err(e) => {
@@ -102,6 +108,24 @@ fn restore_into_slot(
             0
         }
     }
+}
+
+/// Highest `consumed_offset` across the change-log's effect records
+/// (`format_id = 2` at header byte 9), or `None` when the log carries no
+/// consumed offsets (plain change records / pre-tier history).
+fn max_consumed_offset(change_log_bytes: &[u8]) -> Option<u64> {
+    let mut max: Option<u64> = None;
+    for record in iter_change_log_records(change_log_bytes) {
+        let Ok(record) = record else { break };
+        if record.header.get(9) == Some(&crate::segment::header::FORMAT_ID_EFFECT_RECORD) {
+            if let Ok(body) = postcard::from_bytes::<crate::segment::flusher::EffectRecordBody>(
+                record.change_bytes,
+            ) {
+                max = max.max(body.consumed_offset);
+            }
+        }
+    }
+    max
 }
 
 /// Scan every live operative's segments for the slot whose wire identity equals

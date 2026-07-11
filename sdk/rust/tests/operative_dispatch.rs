@@ -1562,6 +1562,217 @@ fn keyed_stamps_replay_identically_after_crash_restore() {
     assert_eq!(replay.metadata.get("flz.seq").unwrap(), "2.0");
 }
 
+// ----- Effectively-once tier: atomic effect record on the state sink -----
+
+static TIER_SINK_FRAMES: Mutex<Vec<(String, Vec<u8>)>> = Mutex::new(Vec::new());
+
+#[derive(Default)]
+struct TierStampOperation;
+impl Operation for TierStampOperation {
+    type Input = String;
+    type Output = String;
+    type State = i64;
+    type Change = TickChange;
+    type Clock = WallClock;
+    type Config = ();
+    fn name() -> &'static str {
+        "tier_stamp_operation"
+    }
+    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> i64 {
+        0
+    }
+    fn apply_change(state: &mut i64, _change: &TickChange) {
+        *state += 1;
+    }
+    fn run(
+        &mut self,
+        input: String,
+        mut state: StateHandle<'_, Self>,
+        ctx: &mut OperationCtx<'_>,
+    ) -> Result<(), OperationError> {
+        state.apply(TickChange);
+        ctx.emit_keyed::<String>(input.clone(), input)?;
+        Ok(())
+    }
+}
+
+struct TierOperative;
+impl UnboundedOperative for TierOperative {
+    fn factory_id() -> &'static str {
+        "tier_operative"
+    }
+    fn channels(c: &mut ChannelBuilder) {
+        c.effectively_once();
+        c.input::<String>("input").into::<TierStampOperation>();
+        c.channel::<String>("out")
+            .from::<TierStampOperation>()
+            .keyed()
+            .to_plugin("kafka");
+    }
+}
+
+/// Spec "Emits leave the primary stream in tier mode" + "Offset
+/// round-trips": an effectively-once invocation's keyed emit travels inside
+/// a `segment_effect_record` on the reliable state sink — carrying the
+/// change, the output (channel/key/payload), and the `flz.offset` the
+/// input arrived with — and no output frame appears on the primary stream.
+#[test]
+fn tier_emits_ride_the_state_sink_as_one_effect_record() {
+    use flezha_executor::segment::flusher::{EffectRecordBody, SendError, SendFrameFn};
+    use flezha_executor::segment::segment_state_sink;
+
+    let _serial = WAL_TEST_LOCK.lock().unwrap();
+    TIER_SINK_FRAMES.lock().unwrap().clear();
+    let sink: SendFrameFn = Arc::new(|payload_id: &str, frame: &[u8]| -> Result<(), SendError> {
+        TIER_SINK_FRAMES
+            .lock()
+            .unwrap()
+            .push((payload_id.to_string(), frame.to_vec()));
+        Ok(())
+    });
+    segment_state_sink::install_global_sink(sink);
+
+    let (handle, _instance) = setup::<TierOperative>("tier-instance", 2);
+    let (stream, mut observer) = stream_pair();
+
+    let mut md = HashMap::new();
+    md.insert("channel".to_string(), "input".to_string());
+    md.insert("flz.offset".to_string(), "4711".to_string());
+    handle.dispatch(
+        "tier-instance",
+        b"BTC/1m".to_vec(),
+        &md,
+        Arc::clone(&stream),
+    );
+
+    // The background flusher drains the effect entry within the linger window.
+    assert!(
+        wait_until(
+            || {
+                TIER_SINK_FRAMES
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|(pid, _)| pid == "segment_effect_record")
+            },
+            Duration::from_secs(5)
+        ),
+        "no segment_effect_record reached the state sink"
+    );
+
+    let frames = TIER_SINK_FRAMES.lock().unwrap().clone();
+    let (_, frame) = frames
+        .iter()
+        .find(|(pid, _)| pid == "segment_effect_record")
+        .unwrap()
+        .clone();
+
+    // Outer frame layout is the state-change layout; header format_id = 2.
+    let pid_len = u16::from_be_bytes([frame[0], frame[1]]) as usize;
+    let header_off = 2 + pid_len + 8;
+    assert_eq!(frame[header_off + 9], 2, "effect record header format_id");
+    let body_len_off = header_off + 16;
+    let body_len =
+        u32::from_be_bytes(frame[body_len_off..body_len_off + 4].try_into().unwrap()) as usize;
+    let body: EffectRecordBody =
+        postcard::from_bytes(&frame[body_len_off + 4..body_len_off + 4 + body_len]).unwrap();
+
+    assert_eq!(body.consumed_offset, Some(4711), "offset must round-trip");
+    assert_eq!(body.changes.len(), 1, "the invocation's change rides along");
+    assert_eq!(body.outputs.len(), 1);
+    assert_eq!(body.outputs[0].channel, "out");
+    assert_eq!(body.outputs[0].key, "BTC/1m");
+    assert_eq!(body.outputs[0].payload, b"BTC/1m".to_vec());
+
+    // And the primary stream carried nothing.
+    std::thread::sleep(Duration::from_millis(50));
+    let mut buf = Vec::new();
+    let mut tmp = [0u8; 4096];
+    loop {
+        match observer.read(&mut tmp) {
+            Ok(0) => break,
+            Ok(n) => buf.extend_from_slice(&tmp[..n]),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(e) => panic!("observer read failed: {e}"),
+        }
+    }
+    assert!(
+        parse_frames(&buf).is_empty(),
+        "tier emit leaked onto the primary stream"
+    );
+}
+
+/// Spec "Replay after crash" (SDK half): the restored consumed-floor makes
+/// the Segment skip re-forwarded inputs it already durably consumed, and
+/// process everything above — never double-applied, never lost.
+#[test]
+fn tier_replay_skips_inputs_at_or_below_the_consumed_floor() {
+    use flezha_executor::segment::flusher::{SendError, SendFrameFn};
+    use flezha_executor::segment::segment_state_sink;
+
+    let _serial = WAL_TEST_LOCK.lock().unwrap();
+    TIER_SINK_FRAMES.lock().unwrap().clear();
+    let sink: SendFrameFn = Arc::new(|payload_id: &str, frame: &[u8]| -> Result<(), SendError> {
+        TIER_SINK_FRAMES
+            .lock()
+            .unwrap()
+            .push((payload_id.to_string(), frame.to_vec()));
+        Ok(())
+    });
+    segment_state_sink::install_global_sink(sink);
+
+    let (handle, instance) = setup::<TierOperative>("tier-replay-instance", 2);
+    let (stream, _observer) = stream_pair();
+
+    // Restore left this Segment durably consumed through offset 4711.
+    instance.segments[0][0]
+        .consumed_floor
+        .store(4711, std::sync::atomic::Ordering::Release);
+
+    let dispatch_with_offset = |offset: &str, body: &[u8]| {
+        let mut md = HashMap::new();
+        md.insert("channel".to_string(), "input".to_string());
+        md.insert("flz.offset".to_string(), offset.to_string());
+        handle.dispatch(
+            "tier-replay-instance",
+            body.to_vec(),
+            &md,
+            Arc::clone(&stream),
+        );
+    };
+
+    // Re-forwarded tail: 4710 and 4711 already consumed, 4712 is new.
+    dispatch_with_offset("4710", b"old-1");
+    dispatch_with_offset("4711", b"old-2");
+    dispatch_with_offset("4712", b"new-1");
+
+    assert!(
+        wait_until(
+            || {
+                TIER_SINK_FRAMES
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|(pid, _)| pid == "segment_effect_record")
+                    .count()
+                    == 1
+            },
+            Duration::from_secs(5)
+        ),
+        "exactly the above-floor input must produce an effect record"
+    );
+
+    // A linger window proves no late frames appear for the skipped offsets.
+    std::thread::sleep(Duration::from_millis(50));
+    let effect_count = TIER_SINK_FRAMES
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(pid, _)| pid == "segment_effect_record")
+        .count();
+    assert_eq!(effect_count, 1, "skipped offsets must not re-apply");
+}
+
 // ----- LogicalClock: ctx.now() == durable change seq, restore re-arm -----
 
 static LOGICAL_OBSERVED: Mutex<Vec<u64>> = Mutex::new(Vec::new());

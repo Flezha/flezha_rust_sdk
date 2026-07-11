@@ -83,6 +83,12 @@ pub struct OperativeTopology {
     /// `UnboundedInstance::new` resolves the final per-instance flag using
     /// this const + the executor override from operative-start metadata.
     pub persistence_enabled_const: bool,
+    /// Effectively-once delivery tier, declared via
+    /// `ChannelBuilder::effectively_once()`. Frozen at registration;
+    /// announced to the controller in the `AddOperative` response metadata
+    /// and drives the tier emit path (emits ride the reliable state sink
+    /// inside the atomic effect record instead of the primary stream).
+    pub effectively_once: bool,
 }
 
 impl OperativeTopology {

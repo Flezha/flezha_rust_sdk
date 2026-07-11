@@ -47,6 +47,11 @@ use crate::executor::work_stealing_pool::WorkStealingPool;
 pub struct SegmentPayload {
     pub value: Arc<dyn Any + Send + Sync>,
     pub stream: Arc<FlezhaStream>,
+    /// Durable input-log offset this payload derives from (`flz.offset` on
+    /// the inbound frame, inherited across inter-operation emits). `None`
+    /// outside the effectively-once tier; the invocation's atomic effect
+    /// record carries it as the consumed-offset.
+    pub consumed_offset: Option<u64>,
 }
 
 /// Construct a [`SegmentPayload`], cloning both shared handles. Shared by
@@ -54,10 +59,12 @@ pub struct SegmentPayload {
 pub fn make_segment_payload(
     value: &Arc<dyn Any + Send + Sync>,
     stream: &Arc<FlezhaStream>,
+    consumed_offset: Option<u64>,
 ) -> SegmentPayload {
     SegmentPayload {
         value: Arc::clone(value),
         stream: Arc::clone(stream),
+        consumed_offset,
     }
 }
 
@@ -236,6 +243,13 @@ pub struct SegmentSlot {
     /// handed to the sink, so a frame buffered during a reconnect replays
     /// with its original seq — the controller's WAL view stays gap-free.
     pub change_seq: Arc<std::sync::atomic::AtomicU64>,
+    /// Effectively-once tier: highest input-log offset this Segment
+    /// durably consumed before a restore (max `consumed_offset` across the
+    /// restored effect records; `-1` = none). `drain_segment` skips
+    /// re-forwarded inputs at or below it so a crash-replay never
+    /// double-applies. `None`-offset payloads (every non-tier input) pay
+    /// one branch.
+    pub consumed_floor: std::sync::atomic::AtomicI64,
     /// Stable per-Segment identity (`(operative_class, operation_id, segment_key)`)
     /// encoded for the wire by `flusher::encode_segment_identity`. The
     /// flusher reads this verbatim into each frame's

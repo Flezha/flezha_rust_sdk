@@ -221,6 +221,13 @@ pub enum BuildTopologyError {
         operation: &'static str,
         clock_type: &'static str,
     },
+
+    #[error(
+        "channel `{channel}` has a plugin wire but is not declared .keyed(); the \
+         effectively-once tier deduplicates by output identity, so every plugin-bound \
+         channel of an effectively_once() operative must opt in with .keyed()"
+    )]
+    UnkeyedChannelUnderEffectivelyOnce { channel: &'static str },
 }
 
 /// Builder collected by `UnboundedOperative::channels`. Internal state turns into a
@@ -231,6 +238,7 @@ pub struct ChannelBuilder {
     pub(crate) operations: Vec<OperationEntry>,
     pub(crate) operation_name_to_id: HashMap<&'static str, u32>,
     pub(crate) errors: Vec<BuildTopologyError>,
+    pub(crate) effectively_once: bool,
 }
 
 impl ChannelBuilder {
@@ -241,7 +249,21 @@ impl ChannelBuilder {
             operations: Vec::new(),
             operation_name_to_id: HashMap::new(),
             errors: Vec::new(),
+            effectively_once: false,
         }
+    }
+
+    /// Opt this operative into the effectively-once delivery tier.
+    ///
+    /// In tier mode each invocation's plugin emits ship inside the atomic
+    /// effect record on the reliable state sink (with the state change and
+    /// consumed input offset), and the controller flushes them to plugins
+    /// only after the record is fsynced. Identity is the dedup contract:
+    /// `build_topology` rejects the declaration when any plugin-bound
+    /// channel lacks `.keyed()`. Default is off — operatives that do not
+    /// call this keep the at-least-once paths byte-identical.
+    pub fn effectively_once(&mut self) {
+        self.effectively_once = true;
     }
 
     /// Declare an entry channel fed by the controller. T is restricted to

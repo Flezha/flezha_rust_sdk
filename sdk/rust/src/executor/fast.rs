@@ -550,12 +550,20 @@ impl OperativeDispatchHandle {
             }
         };
 
+        // Effectively-once tier: the controller stamps the durable input-log
+        // offset on the forwarded frame; thread it to the invocation so the
+        // atomic effect record carries the same offset as consumed-offset.
+        let consumed_offset = metadata
+            .get("flz.offset")
+            .and_then(|s| s.parse::<u64>().ok());
+
         crate::operative::dispatcher::route_to_consumers(
             &instance,
             &channel.consumers,
             channel.overflow_policy,
             &typed_payload,
             &stream,
+            consumed_offset,
         );
     }
 }

@@ -35,8 +35,10 @@ use std::time::Duration;
 
 use dashmap::DashMap;
 
+use serde::{Deserialize, Serialize};
+
 use crate::operation::change::{Change, CoalesceKey};
-use crate::segment::header::HeaderTemplate;
+use crate::segment::header::{HeaderTemplate, FORMAT_ID_EFFECT_RECORD};
 use crate::util::LockRecover;
 
 /// Global identifier for a registered Segment entry. Assigned at
@@ -93,6 +95,47 @@ pub fn encode_segment_identity(
     out
 }
 
+/// One plugin output captured inside an effect record. Field order is the
+/// wire contract (postcard is field-order-sensitive); `metadata` carries the
+/// caller's user metadata as key-sorted pairs — the controller derives the
+/// identity stamps (`flz.segment` / `outbox_seq` / epoch) at flush time, so
+/// none ride here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OutputRecord {
+    pub channel: String,
+    pub key: String,
+    pub metadata: Vec<(String, String)>,
+    pub payload: Vec<u8>,
+}
+
+/// Wire body of a `segment_effect_record` frame (header `format_id = 2`):
+/// one invocation's state change(s), plugin emits, and consumed input
+/// offset, persisted by the controller as ONE WAL record under ONE fsync.
+/// `changes` entries are the postcard `S::Change` bytes a plain change
+/// record would carry, so restore folds them identically.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EffectRecordBody {
+    pub changes: Vec<Vec<u8>>,
+    pub outputs: Vec<OutputRecord>,
+    pub consumed_offset: Option<u64>,
+}
+
+/// One invocation's buffered effect entry (effectively-once tier). Typed on
+/// the Operation's Change; serialized into an [`EffectRecordBody`] at drain.
+pub struct EffectEntry<S: crate::operation::Operation> {
+    pub changes: Vec<S::Change>,
+    pub outputs: Vec<OutputRecord>,
+    pub consumed_offset: Option<u64>,
+}
+
+/// One drained wire frame plus the data-stream payload id it ships under
+/// (`segment_state_change` for plain changes, `segment_effect_record` for
+/// effect records).
+pub struct FlushFrame {
+    pub payload_id: &'static str,
+    pub bytes: Vec<u8>,
+}
+
 /// Type-erased per-Segment flush buffer. The dispatcher downcasts to
 /// `TypedBuffer<S>` when constructing a `StateHandle`; the flusher only
 /// sees the trait surface.
@@ -107,7 +150,7 @@ pub trait FlushableBuffer: Send + Any {
         segment_identity: &[u8],
         change_seq: &AtomicU64,
         header: &HeaderTemplate,
-    ) -> (usize, Vec<Vec<u8>>);
+    ) -> (usize, Vec<FlushFrame>);
 
     /// Whether the underlying buffer is empty. The flusher uses this to
     /// avoid building frames when a Segment has had no `state.apply`
@@ -119,14 +162,20 @@ pub trait FlushableBuffer: Send + Any {
 
 /// Concrete per-Operation buffer. The dispatcher downcasts the type-erased
 /// `dyn FlushableBuffer` to `TypedBuffer<S>` to get a `&mut Vec<S::Change>`
-/// for `StateHandle::new`.
+/// for `StateHandle::new`. Exactly one of `inner` / `effects` is ever
+/// populated: plain changes outside the effectively-once tier, per-invocation
+/// effect entries inside it.
 pub struct TypedBuffer<S: crate::operation::Operation> {
     pub inner: Vec<S::Change>,
+    pub effects: Vec<EffectEntry<S>>,
 }
 
 impl<S: crate::operation::Operation> Default for TypedBuffer<S> {
     fn default() -> Self {
-        Self { inner: Vec::new() }
+        Self {
+            inner: Vec::new(),
+            effects: Vec::new(),
+        }
     }
 }
 
@@ -136,24 +185,46 @@ impl<S: crate::operation::Operation> FlushableBuffer for TypedBuffer<S> {
         segment_identity: &[u8],
         change_seq: &AtomicU64,
         header: &HeaderTemplate,
-    ) -> (usize, Vec<Vec<u8>>) {
-        if self.inner.is_empty() {
-            return (0, Vec::new());
-        }
-        let coalesced = coalesce(std::mem::take(&mut self.inner));
-        let frames: Vec<Vec<u8>> = coalesced
-            .into_iter()
-            .map(|c| {
+    ) -> (usize, Vec<FlushFrame>) {
+        let mut frames: Vec<FlushFrame> = Vec::new();
+        if !self.inner.is_empty() {
+            let coalesced = coalesce(std::mem::take(&mut self.inner));
+            frames.extend(coalesced.into_iter().map(|c| {
                 let seq = change_seq.fetch_add(1, Ordering::Relaxed);
-                build_segment_state_change_frame::<S::Change>(segment_identity, seq, header, &c)
-            })
-            .collect();
+                FlushFrame {
+                    payload_id: crate::segment::segment_state_sink::SEGMENT_STATE_CHANGE_PAYLOAD_ID,
+                    bytes: build_segment_state_change_frame::<S::Change>(
+                        segment_identity,
+                        seq,
+                        header,
+                        &c,
+                    ),
+                }
+            }));
+        }
+        // Effect records are never coalesced or merged: a coalesced-away
+        // record would drop its outputs and consumed-offset.
+        if !self.effects.is_empty() {
+            frames.extend(std::mem::take(&mut self.effects).into_iter().map(|entry| {
+                let seq = change_seq.fetch_add(1, Ordering::Relaxed);
+                FlushFrame {
+                    payload_id:
+                        crate::segment::segment_state_sink::SEGMENT_EFFECT_RECORD_PAYLOAD_ID,
+                    bytes: build_segment_effect_record_frame::<S>(
+                        segment_identity,
+                        seq,
+                        header,
+                        entry,
+                    ),
+                }
+            }));
+        }
         let count = frames.len();
         (count, frames)
     }
 
     fn is_empty(&self) -> bool {
-        self.inner.is_empty()
+        self.inner.is_empty() && self.effects.is_empty()
     }
 
     fn as_any_mut(&mut self) -> &mut dyn Any {
@@ -201,6 +272,39 @@ pub fn build_segment_state_change_frame<C: Change>(
         .expect("postcard serialization of Change failed; Change must be Serialize");
     let header_bytes = header.stamp(&change_bytes);
     build_segment_frame(segment_identity, seq, &header_bytes, &change_bytes)
+}
+
+/// Build one `segment_effect_record` frame (effectively-once tier): the
+/// invocation's changes (each postcard-encoded as a plain change body would
+/// be), outputs, and consumed-offset as one postcard `EffectRecordBody`,
+/// stamped with `format_id = 2` so mixed WALs stay readable.
+pub fn build_segment_effect_record_frame<S: crate::operation::Operation>(
+    segment_identity: &[u8],
+    seq: u64,
+    header: &HeaderTemplate,
+    entry: EffectEntry<S>,
+) -> Vec<u8> {
+    let changes: Vec<Vec<u8>> = entry
+        .changes
+        .iter()
+        .map(|c| {
+            postcard::to_allocvec(c)
+                .expect("postcard serialization of Change failed; Change must be Serialize")
+        })
+        .collect();
+    let body = EffectRecordBody {
+        changes,
+        outputs: entry.outputs,
+        consumed_offset: entry.consumed_offset,
+    };
+    let body_bytes = postcard::to_allocvec(&body)
+        .expect("postcard serialization of EffectRecordBody cannot fail");
+    let effect_header = HeaderTemplate {
+        format_id: FORMAT_ID_EFFECT_RECORD,
+        ..*header
+    };
+    let header_bytes = effect_header.stamp(&body_bytes);
+    build_segment_frame(segment_identity, seq, &header_bytes, &body_bytes)
 }
 
 /// Build one wire frame from already-serialized body bytes. Used by the
@@ -362,11 +466,8 @@ pub fn flush_one(
         // which is what keeps per-Segment seq order across the background and
         // inline drain paths) when the window is exhausted; a producer pushing
         // into this buffer then blocks on the lock — the emit-path park.
-        crate::segment::credit::global().acquire(frame.len());
-        crate::segment::segment_state_sink::send(
-            crate::segment::segment_state_sink::SEGMENT_STATE_CHANGE_PAYLOAD_ID,
-            frame,
-        );
+        crate::segment::credit::global().acquire(frame.bytes.len());
+        crate::segment::segment_state_sink::send(frame.payload_id, frame.bytes);
     }
 }
 
@@ -492,6 +593,164 @@ mod tests {
             &frame[crc_off..crc_off + 4],
             &crc32fast::hash(&body_bytes).to_be_bytes(),
         );
+    }
+
+    #[derive(Default)]
+    struct EffOp;
+    impl crate::operation::Operation for EffOp {
+        type Input = String;
+        type Output = String;
+        type State = ();
+        type Change = TestChange;
+        type Clock = crate::operation::WallClock;
+        type Config = ();
+        fn name() -> &'static str {
+            "effect_test_op"
+        }
+        fn init_state(_: Option<&str>, _: Option<crate::segment::restore::RestoreInitPayload<'_>>) {
+        }
+        fn run(
+            &mut self,
+            _: String,
+            _: crate::operation::state_handle::StateHandle<'_, Self>,
+            _: &mut crate::operation::OperationCtx<'_>,
+        ) -> Result<(), crate::operation::OperationError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn effect_record_frame_round_trips_and_marks_format_2() {
+        let change = TestChange {
+            key: None,
+            ts: 7,
+            value: 42,
+        };
+        let entry = EffectEntry::<EffOp> {
+            changes: vec![change.clone()],
+            outputs: vec![OutputRecord {
+                channel: "out".into(),
+                key: "BTC/1m".into(),
+                metadata: vec![("a".into(), "b".into())],
+                payload: b"candle".to_vec(),
+            }],
+            consumed_offset: Some(4711),
+        };
+        let template = HeaderTemplate::new(0x010203, 1);
+        let identity = encode_segment_identity("Op", "stage", "k");
+        let frame = build_segment_effect_record_frame::<EffOp>(&identity, 9, &template, entry);
+
+        // Same outer layout as a change frame; header format_id = 2.
+        let pid_len = u16::from_be_bytes([frame[0], frame[1]]) as usize;
+        let header_off = 2 + pid_len + 8;
+        assert_eq!(frame[header_off + 9], FORMAT_ID_EFFECT_RECORD);
+
+        let body_len_off = header_off + 16;
+        let body_len =
+            u32::from_be_bytes(frame[body_len_off..body_len_off + 4].try_into().unwrap()) as usize;
+        let body = &frame[body_len_off + 4..body_len_off + 4 + body_len];
+        let decoded: EffectRecordBody = postcard::from_bytes(body).unwrap();
+
+        assert_eq!(decoded.consumed_offset, Some(4711));
+        assert_eq!(decoded.outputs.len(), 1);
+        assert_eq!(decoded.outputs[0].channel, "out");
+        assert_eq!(decoded.outputs[0].key, "BTC/1m");
+        assert_eq!(decoded.outputs[0].payload, b"candle".to_vec());
+        assert_eq!(decoded.changes.len(), 1);
+        let folded: TestChange = postcard::from_bytes(&decoded.changes[0]).unwrap();
+        assert_eq!(folded, change);
+    }
+
+    /// Cost-free-default guard (WAL path): a non-tier buffer drains to
+    /// frames byte-identical to the pre-tier layout, under the pre-tier
+    /// payload id — the tier machinery adds zero bytes and zero work.
+    #[test]
+    fn non_tier_drain_frames_are_byte_identical_plain_change_frames() {
+        let change = TestChange {
+            key: None,
+            ts: 3,
+            value: 9,
+        };
+        let mut buffer = TypedBuffer::<EffOp> {
+            inner: vec![change.clone()],
+            effects: Vec::new(),
+        };
+        let seq = AtomicU64::new(5);
+        let template = HeaderTemplate::new(0x010203, 1);
+        let identity = encode_segment_identity("Op", "stage", "k");
+
+        let (count, frames) = buffer.drain_to_frames(&identity, &seq, &template);
+
+        assert_eq!(count, 1);
+        assert_eq!(frames[0].payload_id, "segment_state_change");
+        assert_eq!(
+            frames[0].bytes,
+            build_segment_state_change_frame::<TestChange>(&identity, 5, &template, &change)
+        );
+    }
+
+    /// Pins the postcard bytes of `EffectRecordBody` that the controller's
+    /// `Flezha.State.Wire.decode_effect_body/1` decodes — the two sides
+    /// share this exact fixture (wire_test.exs), so an encoding change
+    /// breaks loudly here.
+    #[test]
+    fn effect_record_body_postcard_bytes_are_the_cross_language_fixture() {
+        let body = EffectRecordBody {
+            changes: vec![vec![0xAA]],
+            outputs: vec![OutputRecord {
+                channel: "out".into(),
+                key: "k".into(),
+                metadata: vec![("a".into(), "b".into())],
+                payload: vec![1, 2],
+            }],
+            consumed_offset: Some(4711),
+        };
+        let bytes = postcard::to_allocvec(&body).unwrap();
+        assert_eq!(
+            bytes,
+            vec![
+                0x01, 0x01, 0xAA, // changes: 1 × [0xAA]
+                0x01, 0x03, b'o', b'u', b't', 0x01,
+                b'k', // outputs: 1 × channel "out", key "k"
+                0x01, 0x01, b'a', 0x01, b'b', // metadata: 1 × ("a","b")
+                0x02, 0x01, 0x02, // payload [1,2]
+                0x01, 0xE7, 0x24, // Some(4711)
+            ]
+        );
+    }
+
+    #[test]
+    fn effect_records_are_never_coalesced_at_drain() {
+        // Two entries whose changes share a coalesce key AND carry outputs:
+        // both must ship — a coalesced-away record would drop its outputs.
+        let mk = |ts: u64| EffectEntry::<EffOp> {
+            changes: vec![TestChange {
+                key: Some(7),
+                ts,
+                value: ts as i64,
+            }],
+            outputs: vec![OutputRecord {
+                channel: "out".into(),
+                key: format!("k{ts}"),
+                metadata: vec![],
+                payload: vec![1],
+            }],
+            consumed_offset: Some(ts),
+        };
+        let mut buffer = TypedBuffer::<EffOp> {
+            inner: Vec::new(),
+            effects: vec![mk(1), mk(2)],
+        };
+
+        let seq = AtomicU64::new(0);
+        let template = HeaderTemplate::new(0x010203, 1);
+        let identity = encode_segment_identity("Op", "stage", "k");
+        let (count, frames) = buffer.drain_to_frames(&identity, &seq, &template);
+
+        assert_eq!(count, 2, "output-bearing records must survive the drain");
+        assert!(frames.iter().all(|f| f.payload_id
+            == crate::segment::segment_state_sink::SEGMENT_EFFECT_RECORD_PAYLOAD_ID));
+        assert!(buffer.is_empty());
     }
 
     #[test]

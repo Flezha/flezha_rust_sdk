@@ -1,6 +1,7 @@
 use super::CommandAction;
 use crate::executor::ExecutorNode;
-use crate::pb::AddOperative;
+use crate::pb::{AddOperative, AddOperativeResponse};
+use prost::Message;
 
 impl CommandAction for AddOperative {
     fn handle(
@@ -12,6 +13,13 @@ impl CommandAction for AddOperative {
         let instance_id = self.operative_id.clone();
         let factory_id = self.factory_id.clone();
 
+        // Empty kind ⇒ `unbounded`, the wire default.
+        let kind = if self.kind.is_empty() {
+            "unbounded"
+        } else {
+            self.kind.as_str()
+        };
+
         // Idempotent on reconnect: the controller re-issues AddOperative for
         // every UnboundedOperative instance ProcessHub still has tagged to this
         // executor's profile after a restart. If the instance is already
@@ -19,15 +27,11 @@ impl CommandAction for AddOperative {
         // the existing per-Segment state intact and prevents
         // duplicate-init crashes.
         if executor.has_operative(&instance_id) {
-            return ("start_operative".to_string(), Vec::new());
+            return (
+                "start_operative".to_string(),
+                metadata_response(kind, &factory_id),
+            );
         }
-
-        // Empty kind ⇒ `unbounded`, the wire default.
-        let kind = if self.kind.is_empty() {
-            "unbounded"
-        } else {
-            self.kind.as_str()
-        };
 
         match kind {
             "bounded" => {
@@ -71,6 +75,34 @@ impl CommandAction for AddOperative {
             }
         }
 
-        ("start_operative".to_string(), Vec::new())
+        (
+            "start_operative".to_string(),
+            metadata_response(kind, &factory_id),
+        )
     }
+}
+
+/// Encode the class's SDK-side declarations as `AddOperativeResponse`
+/// metadata for the controller's capability resolution. Returns empty
+/// bytes when nothing is declared (the default), keeping the response
+/// byte-identical to pre-tier builds.
+fn metadata_response(kind: &str, factory_id: &str) -> Vec<u8> {
+    let effectively_once = match kind {
+        "bounded" => crate::bounded::registry::get_class(factory_id)
+            .and_then(|spec| spec.topology.as_ref().map(|t| t.effectively_once))
+            .unwrap_or(false),
+        _ => crate::operative::registry::get_class(factory_id)
+            .map(|t| t.effectively_once)
+            .unwrap_or(false),
+    };
+    if !effectively_once {
+        return Vec::new();
+    }
+    let response = AddOperativeResponse {
+        metadata: std::collections::HashMap::from([(
+            "effectively_once".to_string(),
+            "true".to_string(),
+        )]),
+    };
+    response.encode_to_vec()
 }

@@ -108,6 +108,21 @@ pub struct AddOperative {
     #[prost(uint32, tag = "5")]
     pub resume_segment_count: u32,
 }
+/// SDK -> Controller, as the CommandResponse raw_data of AddOperative.
+/// Carries the operative class's SDK-side declarations (operative metadata)
+/// so the Controller resolves per-class capabilities without a parallel
+/// config channel. Key "effectively_once" = "true" declares the
+/// effectively-once delivery tier. The SDK returns empty raw_data when no
+/// declaration is present (tier off), keeping the default wire byte-identical;
+/// the Controller resolves absent/undecodable metadata to every default.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AddOperativeResponse {
+    #[prost(map = "string, string", tag = "1")]
+    pub metadata: ::std::collections::HashMap<
+        ::prost::alloc::string::String,
+        ::prost::alloc::string::String,
+    >,
+}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RemOperative {
     #[prost(string, tag = "1")]

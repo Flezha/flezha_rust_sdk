@@ -59,6 +59,7 @@ pub fn build_topology_with_persistence(
         operations,
         operation_name_to_id,
         mut errors,
+        effectively_once,
     } = builder;
 
     // Build channel descriptors and validate.
@@ -71,6 +72,17 @@ pub fn build_topology_with_persistence(
         // must have a plugin wire (pure `to_plugin` or hybrid sink).
         if entry.keyed && entry.kind != ChannelKind::PluginBound && entry.plugin_sink.is_none() {
             errors.push(BuildTopologyError::KeyedChannelWithoutPluginWire {
+                channel: entry.name,
+            });
+        }
+        // The effectively-once tier deduplicates by output identity, which
+        // only keyed channels carry — an unkeyed plugin wire would silently
+        // break the guarantee.
+        if effectively_once
+            && !entry.keyed
+            && (entry.kind == ChannelKind::PluginBound || entry.plugin_sink.is_some())
+        {
+            errors.push(BuildTopologyError::UnkeyedChannelUnderEffectivelyOnce {
                 channel: entry.name,
             });
         }
@@ -167,6 +179,7 @@ pub fn build_topology_with_persistence(
         operation_name_to_id,
         factory_id,
         persistence_enabled_const,
+        effectively_once,
     }))
 }
 
@@ -236,6 +249,101 @@ fn validate_capacity(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::channel::ChannelBuilder;
+    use crate::operation::state_handle::StateHandle;
+    use crate::operation::{NoChange, Operation, OperationCtx, OperationError, WallClock};
+    use crate::segment::restore::RestoreInitPayload;
+
+    #[derive(Default)]
+    struct TierOp;
+    impl Operation for TierOp {
+        type Input = String;
+        type Output = String;
+        type State = ();
+        type Change = NoChange;
+        type Clock = WallClock;
+        type Config = ();
+        fn name() -> &'static str {
+            "tier_builder_test_op"
+        }
+        fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
+        fn run(
+            &mut self,
+            _: String,
+            _: StateHandle<'_, Self>,
+            _: &mut OperationCtx<'_>,
+        ) -> Result<(), OperationError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn effectively_once_with_keyed_plugin_channel_builds() {
+        let mut cb = ChannelBuilder::new();
+        cb.effectively_once();
+        cb.input::<String>("in").into::<TierOp>();
+        cb.channel::<String>("out")
+            .from::<TierOp>()
+            .keyed()
+            .to_plugin("kafka");
+        let topology = build_topology("tier_keyed_ok", cb).expect("topology");
+        assert!(topology.effectively_once);
+    }
+
+    #[test]
+    fn effectively_once_rejects_unkeyed_plugin_channel() {
+        let mut cb = ChannelBuilder::new();
+        cb.effectively_once();
+        cb.input::<String>("in").into::<TierOp>();
+        cb.channel::<String>("out")
+            .from::<TierOp>()
+            .to_plugin("kafka");
+        let err = match build_topology("tier_unkeyed_plugin", cb) {
+            Err(e) => e,
+            Ok(_) => panic!("unkeyed plugin channel must fail under the tier"),
+        };
+        assert!(err.errors.iter().any(|e| matches!(
+            e,
+            BuildTopologyError::UnkeyedChannelUnderEffectivelyOnce { channel: "out" }
+        )));
+    }
+
+    #[test]
+    fn effectively_once_rejects_unkeyed_hybrid_sink() {
+        let mut cb = ChannelBuilder::new();
+        cb.effectively_once();
+        cb.input::<String>("in").into::<TierOp>();
+        cb.channel::<String>("mid")
+            .from::<TierOp>()
+            .also_to_plugin_with("kafka", |s: &String| s.as_bytes().to_vec());
+        let err = match build_topology("tier_unkeyed_hybrid", cb) {
+            Err(e) => e,
+            Ok(_) => panic!("unkeyed hybrid sink must fail under the tier"),
+        };
+        assert!(err.errors.iter().any(|e| matches!(
+            e,
+            BuildTopologyError::UnkeyedChannelUnderEffectivelyOnce { channel: "mid" }
+        )));
+    }
+
+    #[test]
+    fn default_topology_is_not_effectively_once() {
+        let mut cb = ChannelBuilder::new();
+        cb.input::<String>("in").into::<TierOp>();
+        let topology = build_topology("tier_default_off", cb).expect("topology");
+        assert!(!topology.effectively_once);
+    }
+
+    #[test]
+    fn non_tier_unkeyed_plugin_channel_still_builds() {
+        let mut cb = ChannelBuilder::new();
+        cb.input::<String>("in").into::<TierOp>();
+        cb.channel::<String>("out")
+            .from::<TierOp>()
+            .to_plugin("kafka");
+        let topology = build_topology("no_tier_unkeyed_ok", cb).expect("topology");
+        assert!(!topology.effectively_once);
+    }
 
     #[test]
     fn override_on_operation_takes_precedence() {

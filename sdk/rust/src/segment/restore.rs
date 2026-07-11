@@ -8,7 +8,10 @@
 //! and `payload.change_log_bytes` for instrumentation but never has to
 //! decode them.
 
-use crate::segment::header::{decode_header, validate_header_for_change};
+use crate::segment::header::{
+    decode_header, validate_header_for_change, validate_header_for_effect_record,
+    FORMAT_ID_EFFECT_RECORD,
+};
 use crate::util::{read_u32_be, read_u64_be};
 
 /// Snapshot + change-log bytes handed to `Operation::init_state` on a warm
@@ -84,7 +87,6 @@ where
         for record in iter_change_log_records(p.change_log_bytes) {
             let record = record?;
             let header = decode_header(record.header)?;
-            validate_header_for_change::<S>(&header)?;
             // The trailing crc32 in the WAL covers header + change_bytes.
             let mut hasher = crc32fast::Hasher::new();
             hasher.update(record.header);
@@ -95,9 +97,25 @@ where
                     seq: record.seq,
                 });
             }
-            let change: S::Change = postcard::from_bytes(record.change_bytes)
-                .map_err(|e| RestoreError::ChangeDecode(e.to_string()))?;
-            S::apply_change(&mut state, &change);
+            if header.format_id == FORMAT_ID_EFFECT_RECORD {
+                // Effectively-once effect record: fold its change portion
+                // exactly as plain change records fold, in order. Outputs
+                // and consumed-offset are controller-side concerns here.
+                validate_header_for_effect_record::<S>(&header)?;
+                let body: crate::segment::flusher::EffectRecordBody =
+                    postcard::from_bytes(record.change_bytes)
+                        .map_err(|e| RestoreError::ChangeDecode(e.to_string()))?;
+                for change_bytes in &body.changes {
+                    let change: S::Change = postcard::from_bytes(change_bytes)
+                        .map_err(|e| RestoreError::ChangeDecode(e.to_string()))?;
+                    S::apply_change(&mut state, &change);
+                }
+            } else {
+                validate_header_for_change::<S>(&header)?;
+                let change: S::Change = postcard::from_bytes(record.change_bytes)
+                    .map_err(|e| RestoreError::ChangeDecode(e.to_string()))?;
+                S::apply_change(&mut state, &change);
+            }
         }
     }
     Ok(state)
@@ -170,11 +188,103 @@ impl<'a> Iterator for ChangeLogIter<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::segment::flusher::{EffectRecordBody, OutputRecord};
+    use crate::segment::header::{HeaderTemplate, FORMAT_ID_POSTCARD};
 
     #[test]
     fn empty_change_log_yields_no_records() {
         let mut iter = iter_change_log_records(&[]);
         assert!(iter.next().is_none());
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize)]
+    struct AddChange(i64);
+    impl crate::operation::change::Change for AddChange {}
+
+    #[derive(Default)]
+    struct FoldOp;
+    impl crate::operation::Operation for FoldOp {
+        type Input = String;
+        type Output = String;
+        type State = i64;
+        type Change = AddChange;
+        type Clock = crate::operation::WallClock;
+        type Config = ();
+        fn name() -> &'static str {
+            "restore_fold_test_op"
+        }
+        fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> i64 {
+            0
+        }
+        fn apply_change(state: &mut i64, change: &AddChange) {
+            *state += change.0;
+        }
+        fn run(
+            &mut self,
+            _: String,
+            _: crate::operation::state_handle::StateHandle<'_, Self>,
+            _: &mut crate::operation::OperationCtx<'_>,
+        ) -> Result<(), crate::operation::OperationError> {
+            Ok(())
+        }
+    }
+
+    fn wal_record(seq: u64, format_id: u8, body: &[u8]) -> Vec<u8> {
+        let template = HeaderTemplate {
+            format_id,
+            ..HeaderTemplate::for_operation::<FoldOp>()
+        };
+        let header = template.stamp(body);
+        let mut hasher = crc32fast::Hasher::new();
+        hasher.update(&header);
+        hasher.update(body);
+        let crc = hasher.finalize();
+        let mut out = Vec::new();
+        out.extend_from_slice(&seq.to_be_bytes());
+        out.extend_from_slice(&((16 + body.len()) as u32).to_be_bytes());
+        out.extend_from_slice(&header);
+        out.extend_from_slice(body);
+        out.extend_from_slice(&crc.to_be_bytes());
+        out
+    }
+
+    #[test]
+    fn mixed_wal_folds_plain_and_effect_records_in_order() {
+        // Plain change record (seq 0), then an effect record (seq 1)
+        // carrying two changes + an output — tier enabled mid-lifetime.
+        let plain = wal_record(
+            0,
+            FORMAT_ID_POSTCARD,
+            &postcard::to_allocvec(&AddChange(5)).unwrap(),
+        );
+        let effect_body = EffectRecordBody {
+            changes: vec![
+                postcard::to_allocvec(&AddChange(10)).unwrap(),
+                postcard::to_allocvec(&AddChange(100)).unwrap(),
+            ],
+            outputs: vec![OutputRecord {
+                channel: "out".into(),
+                key: "k".into(),
+                metadata: vec![],
+                payload: vec![1, 2],
+            }],
+            consumed_offset: Some(4711),
+        };
+        let effect = wal_record(
+            1,
+            FORMAT_ID_EFFECT_RECORD,
+            &postcard::to_allocvec(&effect_body).unwrap(),
+        );
+
+        let mut change_log = plain;
+        change_log.extend_from_slice(&effect);
+
+        let payload = RestoreInitPayload {
+            snapshot_bytes: &[],
+            change_log_bytes: &change_log,
+        };
+        let state = init_segment_with_payload::<FoldOp>(None, Some(&payload)).unwrap();
+        assert_eq!(state, 115, "5 (plain) + 10 + 100 (effect) folded in order");
     }
 
     #[test]

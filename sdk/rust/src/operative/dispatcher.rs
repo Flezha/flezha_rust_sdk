@@ -107,6 +107,10 @@ struct FlushWiring {
     change_seq: Arc<AtomicU64>,
     header: HeaderTemplate,
     persistence_enabled: bool,
+    /// Effectively-once tier (`OperativeTopology::effectively_once`): the
+    /// invocation's plugin emits are captured into an atomic effect record
+    /// on the reliable state sink instead of the primary stream.
+    effectively_once: bool,
 }
 
 impl<S: Operation> OperationDispatcherImpl<S> {
@@ -131,6 +135,15 @@ impl<S: Operation> OperationDispatcherImpl<S> {
         }
     }
 
+    /// Fresh per-invocation output-capture cell — `Some` only under the
+    /// effectively-once tier (plugin emits then form the atomic effect
+    /// record instead of leaving on a wire path).
+    fn effect_capture(&self) -> Option<RefCell<Vec<crate::segment::flusher::OutputRecord>>> {
+        self.flush
+            .effectively_once
+            .then(|| RefCell::new(Vec::new()))
+    }
+
     /// Per-invocation determinism inputs, computed once at entry: the
     /// declared Clock's value (served by `ctx.now()`) and the durable
     /// change seq (`stable_id` derivation). `input` is `None` only for
@@ -146,12 +159,35 @@ impl<S: Operation> OperationDispatcherImpl<S> {
         (now, seq)
     }
 
-    /// Ship the Changes a collecting-path op applied to the WAL — or drain and
-    /// discard when the class opted out. The bounded analog of the unbounded
-    /// `dispatch` flush hook; both feed `flusher::flush_one`.
-    fn flush_collected(&self, buffer: RefCell<Vec<S::Change>>) {
-        let mut buf = TypedBuffer::<S> {
-            inner: buffer.into_inner(),
+    /// Ship the Changes (and, under the effectively-once tier, the captured
+    /// outputs as one atomic effect entry) a collecting-path op applied — or
+    /// drain and discard when the class opted out. The bounded analog of the
+    /// unbounded `dispatch` flush hook; both feed `flusher::flush_one`.
+    fn flush_collected(
+        &self,
+        buffer: RefCell<Vec<S::Change>>,
+        outputs: Vec<crate::segment::flusher::OutputRecord>,
+    ) {
+        let changes = buffer.into_inner();
+        let mut buf = if self.flush.effectively_once {
+            if changes.is_empty() && outputs.is_empty() {
+                return;
+            }
+            // Bounded inputs arrive via args/inbox, not the input-log —
+            // no consumed-offset to carry.
+            TypedBuffer::<S> {
+                inner: Vec::new(),
+                effects: vec![crate::segment::flusher::EffectEntry {
+                    changes,
+                    outputs,
+                    consumed_offset: None,
+                }],
+            }
+        } else {
+            TypedBuffer::<S> {
+                inner: changes,
+                effects: Vec::new(),
+            }
         };
         crate::segment::flusher::flush_one(
             &mut buf,
@@ -171,7 +207,11 @@ impl<S: Operation> OperationDispatcher for OperationDispatcherImpl<S> {
         flush_buffer: &mut Box<dyn FlushableBuffer>,
         instance: &Weak<UnboundedInstance>,
     ) {
-        let SegmentPayload { value, stream } = payload;
+        let SegmentPayload {
+            value,
+            stream,
+            consumed_offset,
+        } = payload;
 
         // Downcast value to Arc<S::Input>. Consumers with different
         // Input types in the same UnboundedOperative downcast independently because
@@ -212,24 +252,34 @@ impl<S: Operation> OperationDispatcher for OperationDispatcherImpl<S> {
         // frame, so change N reaches the controller's WAL before N's
         // output reaches Kafka. Gated on `persistence_enabled` (and the
         // `FLEZHA_FLUSH_BEFORE_EMIT` knob) so `NoChange` / non-persistent
-        // operatives keep the zero-cost inline emit.
-        let flush_before_emit: Option<FlushBeforeEmit> =
-            if self.flush.persistence_enabled && flush_before_emit_enabled() {
-                let identity = Arc::clone(&self.flush.segment_identity);
-                let seq = Arc::clone(&self.flush.change_seq);
-                let header = self.flush.header;
-                let cell = &buffer_cell;
-                Some(Box::new(move || {
-                    let mut buf = TypedBuffer::<S> {
-                        inner: std::mem::take(&mut *cell.borrow_mut()),
-                    };
-                    crate::segment::flusher::flush_one(&mut buf, &identity, &seq, &header, true);
-                }))
-            } else {
-                None
-            };
+        // operatives keep the zero-cost inline emit. Moot in tier mode:
+        // changes and outputs ship in ONE effect record, so there is no
+        // separate output frame to order against.
+        let flush_before_emit: Option<FlushBeforeEmit> = if !self.flush.effectively_once
+            && self.flush.persistence_enabled
+            && flush_before_emit_enabled()
+        {
+            let identity = Arc::clone(&self.flush.segment_identity);
+            let seq = Arc::clone(&self.flush.change_seq);
+            let header = self.flush.header;
+            let cell = &buffer_cell;
+            Some(Box::new(move || {
+                let mut buf = TypedBuffer::<S> {
+                    inner: std::mem::take(&mut *cell.borrow_mut()),
+                    effects: Vec::new(),
+                };
+                crate::segment::flusher::flush_one(&mut buf, &identity, &seq, &header, true);
+            }))
+        } else {
+            None
+        };
 
         let (now, invocation_seq) = self.invocation_inputs(Some(&input));
+
+        // Tier mode: plugin emits are captured here (in emit order) instead
+        // of leaving on the primary stream, then combined with the run's
+        // changes + consumed-offset into one atomic effect record.
+        let effect_outputs = self.effect_capture();
 
         let mut sink = SegmentEmitSink {
             output_channel_id: self.output_channel_id,
@@ -242,6 +292,8 @@ impl<S: Operation> OperationDispatcher for OperationDispatcherImpl<S> {
             instance: instance.upgrade(),
             stream: Arc::clone(&stream),
             flush_before_emit,
+            consumed_offset,
+            effect_outputs: effect_outputs.as_ref(),
         };
 
         let mut ctx =
@@ -265,11 +317,29 @@ impl<S: Operation> OperationDispatcher for OperationDispatcherImpl<S> {
         }
 
         drop(sink);
-        // Return any changes not yet drained by flush-before-emit (or all
-        // of them when the hook is disabled) to the buffer the background
-        // flusher drains. `change_seq` and the move-out drain guarantee
-        // each change is shipped exactly once.
-        typed_buffer.inner = buffer_cell.into_inner();
+        if let Some(outputs_cell) = effect_outputs {
+            // Tier mode: this invocation's changes + outputs + consumed
+            // offset become ONE effect entry, drained by the flusher as one
+            // `segment_effect_record` frame (never coalesced). An
+            // effect-free invocation contributes nothing durable.
+            let changes = buffer_cell.into_inner();
+            let outputs = outputs_cell.into_inner();
+            if !(changes.is_empty() && outputs.is_empty()) {
+                typed_buffer
+                    .effects
+                    .push(crate::segment::flusher::EffectEntry {
+                        changes,
+                        outputs,
+                        consumed_offset,
+                    });
+            }
+        } else {
+            // Return any changes not yet drained by flush-before-emit (or all
+            // of them when the hook is disabled) to the buffer the background
+            // flusher drains. `change_seq` and the move-out drain guarantee
+            // each change is shipped exactly once.
+            typed_buffer.inner = buffer_cell.into_inner();
+        }
     }
 
     fn operation_id(&self) -> OperationId {
@@ -300,12 +370,18 @@ impl<S: Operation> OperationDispatcher for OperationDispatcherImpl<S> {
         let buffer: RefCell<Vec<S::Change>> = RefCell::new(Vec::new());
 
         let (now, invocation_seq) = self.invocation_inputs(Some(&input));
+
+        // Tier mode: keyed plugin emits are captured for the invocation's
+        // atomic effect record instead of the bounded plugin wire.
+        let effect_outputs = self.effect_capture();
+
         let mut collect_sink = BoundedCollectAdapter {
             sink,
             output_channel_id: self.output_channel_id,
             output_channel_kind: self.output_channel_kind,
             output_channel_name: self.output_channel_name.as_deref(),
             topology,
+            effect_outputs: effect_outputs.as_ref(),
         };
         let mut ctx = OperationCtx::new(
             &mut collect_sink,
@@ -322,7 +398,10 @@ impl<S: Operation> OperationDispatcher for OperationDispatcherImpl<S> {
         // Ship the applied Changes to the WAL regardless of outcome, so the WAL
         // reflects the state applied before any failure (at-least-once; the saga
         // compensates a partial run).
-        self.flush_collected(buffer);
+        self.flush_collected(
+            buffer,
+            effect_outputs.map(RefCell::into_inner).unwrap_or_default(),
+        );
 
         match outcome {
             Ok(Ok(())) => Ok(()),
@@ -370,12 +449,15 @@ impl<S: Operation> OperationDispatcher for OperationDispatcherImpl<S> {
 
         // Compensation has no current input: EventTimeFrom yields 0 here.
         let (now, invocation_seq) = self.invocation_inputs(None);
+        // Compensation keeps the pre-tier emit contract (keyed emits are
+        // rejected); under the tier its changes still flush atomically.
         let mut collect_sink = BoundedCollectAdapter {
             sink,
             output_channel_id: self.output_channel_id,
             output_channel_kind: self.output_channel_kind,
             output_channel_name: self.output_channel_name.as_deref(),
             topology,
+            effect_outputs: None,
         };
         let mut ctx = OperationCtx::new(
             &mut collect_sink,
@@ -393,7 +475,7 @@ impl<S: Operation> OperationDispatcher for OperationDispatcherImpl<S> {
 
         // Persist the compensation's state changes to the WAL (durable classes)
         // so a crash mid-compensation leaves the undo recorded.
-        self.flush_collected(buffer);
+        self.flush_collected(buffer, Vec::new());
 
         match outcome {
             Ok(Ok(())) => Ok(()),
@@ -475,6 +557,14 @@ struct SegmentEmitSink<'a> {
     /// knob on. Called at the top of every emit so this run's just-applied
     /// changes are durably shipped before the output frame leaves.
     flush_before_emit: Option<FlushBeforeEmit<'a>>,
+    /// Input-log offset of the invocation's input, inherited by
+    /// inter-operation emits so downstream Segments' effect records carry
+    /// the origin offset.
+    consumed_offset: Option<u64>,
+    /// `Some` in effectively-once tier mode: plugin emits are pushed here
+    /// (for the invocation's atomic effect record) instead of being written
+    /// to the primary stream.
+    effect_outputs: Option<&'a RefCell<Vec<crate::segment::flusher::OutputRecord>>>,
 }
 
 impl<'a> SegmentEmitSink<'a> {
@@ -527,6 +617,7 @@ impl<'a> SegmentEmitSink<'a> {
             descriptor.overflow_policy,
             value,
             &self.stream,
+            self.consumed_offset,
         );
         Ok(())
     }
@@ -574,6 +665,11 @@ impl<'a> SegmentEmitSink<'a> {
                 });
             }
         };
+
+        if let Some(cell) = self.effect_outputs {
+            push_effect_output(cell, &descriptor.name, key, meta, bytes);
+            return Ok(());
+        }
 
         let mut metadata = channel_metadata(meta, &descriptor.name);
         self.stamp_identity(&mut metadata, key);
@@ -643,6 +739,11 @@ impl<'a> EmitSink for SegmentEmitSink<'a> {
 
         let bytes = serialize(&*value);
 
+        if let Some(cell) = self.effect_outputs {
+            push_effect_output(cell, &descriptor.name, key, meta, bytes);
+            return Ok(());
+        }
+
         // Reserved key: any caller-supplied "channel" entry is dropped per
         // OperationCtx emit semantics, then the real channel name is stamped.
         let mut metadata = channel_metadata(meta, &descriptor.name);
@@ -691,6 +792,10 @@ struct BoundedCollectAdapter<'a> {
     output_channel_kind: ChannelKind,
     output_channel_name: Option<&'a str>,
     topology: &'a OperativeTopology,
+    /// `Some` under the effectively-once tier: plugin emits (keyed
+    /// included) are captured into the invocation's atomic effect record
+    /// instead of the metadata-less bounded plugin wire.
+    effect_outputs: Option<&'a RefCell<Vec<crate::segment::flusher::OutputRecord>>>,
 }
 
 impl<'a> BoundedCollectAdapter<'a> {
@@ -705,8 +810,14 @@ impl<'a> BoundedCollectAdapter<'a> {
 
     /// Serialize a plugin-bound value via the producer-edge channel's
     /// serializer (pure `to_plugin`) or hybrid plugin sink
-    /// (`also_to_plugin_with`) and forward the bytes to the wire.
-    fn route_plugin(&mut self, value: &Arc<dyn Any + Send + Sync>) -> Result<(), OperationError> {
+    /// (`also_to_plugin_with`) and route the bytes: into the invocation's
+    /// effect record under the tier, else to the bounded plugin wire.
+    fn route_plugin(
+        &mut self,
+        value: &Arc<dyn Any + Send + Sync>,
+        key: Option<String>,
+        meta: Option<HashMap<String, String>>,
+    ) -> Result<(), OperationError> {
         let cid = self
             .output_channel_id
             .ok_or_else(|| self.unknown_channel())?;
@@ -727,7 +838,11 @@ impl<'a> BoundedCollectAdapter<'a> {
                 ))
             })?;
         let bytes = serializer(&**value);
-        self.sink.emit_plugin_bytes(bytes);
+        if let Some(cell) = self.effect_outputs {
+            push_effect_output(cell, &descriptor.name, key, meta, bytes);
+        } else {
+            self.sink.emit_plugin_bytes(bytes);
+        }
         Ok(())
     }
 }
@@ -735,9 +850,11 @@ impl<'a> BoundedCollectAdapter<'a> {
 impl<'a> BoundedCollectAdapter<'a> {
     /// The bounded plugin wire (`emit_plugin_bytes`) carries no metadata,
     /// so `.keyed()` identity stamps cannot ride it. Reject rather than
-    /// silently dropping the identity contract.
+    /// silently dropping the identity contract — except under the
+    /// effectively-once tier, where emits ride the effect record (which
+    /// carries the key durably).
     fn reject_key(&self, key: &Option<String>) -> Result<(), OperationError> {
-        if key.is_some() {
+        if self.effect_outputs.is_none() && key.is_some() {
             return Err(OperationError::Custom(format!(
                 "keyed output identity is not supported on bounded operatives \
                  (channel `{}`): the bounded plugin wire carries no metadata",
@@ -759,14 +876,14 @@ impl<'a> EmitSink for BoundedCollectAdapter<'a> {
     fn emit_inter_operation_with_meta(
         &mut self,
         value: Arc<dyn Any + Send + Sync>,
-        _meta: Option<HashMap<String, String>>,
+        meta: Option<HashMap<String, String>>,
         key: Option<String>,
     ) -> Result<(), OperationError> {
         self.reject_key(&key)?;
         // Hybrid `also_to_plugin_with`: collect for the next stage AND route
-        // a serialized copy to the plugin wire.
+        // a serialized copy to the plugin wire / effect record.
         if self.has_plugin_sink() {
-            self.route_plugin(&value)?;
+            self.route_plugin(&value, key, meta)?;
         }
         self.sink.collect(value);
         Ok(())
@@ -775,11 +892,11 @@ impl<'a> EmitSink for BoundedCollectAdapter<'a> {
     fn emit_plugin(
         &mut self,
         value: Arc<dyn Any + Send + Sync>,
-        _meta: Option<HashMap<String, String>>,
+        meta: Option<HashMap<String, String>>,
         key: Option<String>,
     ) -> Result<(), OperationError> {
         self.reject_key(&key)?;
-        self.route_plugin(&value)
+        self.route_plugin(&value, key, meta)
     }
 
     fn channel_name(&self) -> &str {
@@ -917,6 +1034,7 @@ pub(crate) fn route_to_consumers(
     policy: OverflowPolicy,
     value: &Arc<dyn Any + Send + Sync>,
     stream: &Arc<FlezhaStream>,
+    consumed_offset: Option<u64>,
 ) {
     use crate::operative::topology::SegmentingMode;
     for &consumer_operation_id in consumer_ids {
@@ -949,7 +1067,11 @@ pub(crate) fn route_to_consumers(
                     }
                 };
                 if let Ok(slot) = registry.get_or_create(&key) {
-                    enqueue(&slot, make_segment_payload(value, stream), policy);
+                    enqueue(
+                        &slot,
+                        make_segment_payload(value, stream, consumed_offset),
+                        policy,
+                    );
                 }
             }
             SegmentingMode::Single => {
@@ -958,7 +1080,11 @@ pub(crate) fn route_to_consumers(
                     .get(consumer_operation_id as usize)
                     .and_then(|p| p.first())
                 {
-                    enqueue(slot, make_segment_payload(value, stream), policy);
+                    enqueue(
+                        slot,
+                        make_segment_payload(value, stream, consumed_offset),
+                        policy,
+                    );
                 }
             }
             SegmentingMode::Static => {
@@ -972,7 +1098,11 @@ pub(crate) fn route_to_consumers(
                 for key in (consumer.segment_for_erased)(value.as_ref()) {
                     if let Some(&idx) = key_to_idx.and_then(|m| m.get(key)) {
                         if let Some(slot) = segments.get(idx) {
-                            enqueue(slot, make_segment_payload(value, stream), policy);
+                            enqueue(
+                                slot,
+                                make_segment_payload(value, stream, consumed_offset),
+                                policy,
+                            );
                         }
                     }
                 }
@@ -1015,6 +1145,34 @@ pub(crate) fn apply_identity_stamps(
     if let Some(k) = key {
         metadata.insert("flz.key".to_string(), k);
     }
+}
+
+/// Tier-mode capture (shared by the unbounded emit sink and the bounded
+/// collect adapter): push one plugin output into the invocation's atomic
+/// effect record instead of any wire path. Key-sorted user metadata keeps
+/// the record bytes replay-deterministic (HashMap iteration order is not);
+/// the reserved `channel` key is dropped like `channel_metadata` does, and
+/// identity stamps are derived controller-side from the durable record.
+fn push_effect_output(
+    cell: &RefCell<Vec<crate::segment::flusher::OutputRecord>>,
+    channel: &str,
+    key: Option<String>,
+    meta: Option<HashMap<String, String>>,
+    payload: Vec<u8>,
+) {
+    let mut metadata: Vec<(String, String)> = meta
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(k, _)| k != "channel")
+        .collect();
+    metadata.sort();
+    cell.borrow_mut()
+        .push(crate::segment::flusher::OutputRecord {
+            channel: channel.to_string(),
+            key: key.unwrap_or_default(),
+            metadata,
+            payload,
+        });
 }
 
 const ENV_FLUSH_BEFORE_EMIT: &str = "FLEZHA_FLUSH_BEFORE_EMIT";
@@ -1062,6 +1220,15 @@ pub fn drain_segment(slot: &Arc<SegmentSlot>) {
             // the popped slot is now available for the unparked producer
             // to re-attempt its push.
             slot.block_parker.unpark_one();
+            // Effectively-once crash-replay: the controller re-forwards the
+            // journaled input tail; offsets this Segment already durably
+            // consumed (restored effect records) are skipped, never re-run.
+            if let Some(offset) = payload.consumed_offset {
+                if (offset as i64) <= slot.consumed_floor.load(Ordering::Acquire) {
+                    crate::segment::DISPATCHES_COMPLETED.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
+            }
             let mut state_guard = slot.state.lock_recover();
             let mut buffer_guard = slot.flush_buffer.lock_recover();
             let instance_weak = Weak::clone(&slot.instance);
@@ -1142,6 +1309,7 @@ pub fn build_segment_slot<S: Operation>(args: BuildSegmentArgs<'_>) -> Arc<Segme
             change_seq: Arc::clone(&change_seq),
             header: HeaderTemplate::for_operation::<S>(),
             persistence_enabled: args.persistence_enabled,
+            effectively_once: topology.effectively_once,
         },
     )) as Arc<dyn OperationDispatcher>;
 
@@ -1150,19 +1318,22 @@ pub fn build_segment_slot<S: Operation>(args: BuildSegmentArgs<'_>) -> Arc<Segme
     // time). The SegmentSlot still carries a (always-empty) flush
     // buffer so the dispatcher can construct a `StateHandle<'_, S>`
     // uniformly for all Operations; only the per-process flusher registry
-    // is conditional.
-    let flusher_entry_id = if TypeId::of::<S::Change>() != TypeId::of::<NoChange>() {
-        let flusher = SegmentFlusher::instance();
-        Some(flusher.register(
-            Arc::clone(&segment_identity),
-            Arc::clone(&flush_buffer),
-            args.persistence_enabled,
-            Arc::clone(&change_seq),
-            HeaderTemplate::for_operation::<S>(),
-        ))
-    } else {
-        None
-    };
+    // is conditional. Effectively-once operatives always register: their
+    // effect records (outputs + consumed-offset, possibly with no change)
+    // drain through the same buffer.
+    let flusher_entry_id =
+        if TypeId::of::<S::Change>() != TypeId::of::<NoChange>() || topology.effectively_once {
+            let flusher = SegmentFlusher::instance();
+            Some(flusher.register(
+                Arc::clone(&segment_identity),
+                Arc::clone(&flush_buffer),
+                args.persistence_enabled,
+                Arc::clone(&change_seq),
+                HeaderTemplate::for_operation::<S>(),
+            ))
+        } else {
+            None
+        };
 
     Arc::new(SegmentSlot {
         state: std::sync::Mutex::new(Box::new(typed_state)),
@@ -1178,6 +1349,7 @@ pub fn build_segment_slot<S: Operation>(args: BuildSegmentArgs<'_>) -> Arc<Segme
         flush_buffer,
         persistence_enabled: args.persistence_enabled,
         change_seq,
+        consumed_floor: std::sync::atomic::AtomicI64::new(-1),
         segment_identity,
         last_activity_at: std::sync::atomic::AtomicI64::new(crate::segment::dynamic::now_millis()),
         flusher_entry_id,
@@ -1257,6 +1429,7 @@ mod tests {
             output_channel_kind: ChannelKind::PluginBound,
             output_channel_name: Some("out"),
             topology: &topology,
+            effect_outputs: None,
         };
         assert!(adapter.is_keyed(), "descriptor keyed flag must surface");
         let mut ctx = OperationCtx::new(&mut adapter, 0, 0, b"bounded/keyed/");
@@ -1265,5 +1438,35 @@ mod tests {
             .expect_err("keyed emit on the bounded wire must fail");
         assert!(err.to_string().contains("bounded"));
         assert_eq!(collect.plugin_bytes, 0, "nothing may reach the wire");
+    }
+
+    /// Under the effectively-once tier the bounded adapter accepts keyed
+    /// emits and captures them for the atomic effect record — never the
+    /// metadata-less bounded plugin wire.
+    #[test]
+    fn bounded_adapter_captures_keyed_emits_under_the_tier() {
+        let topology =
+            crate::operative::builder::build_topology_for::<KeyedOperative>().expect("topology");
+        let out_id = topology.lookup_channel_id("out");
+        let mut collect = NullCollect::default();
+        let effect_outputs = RefCell::new(Vec::new());
+        let mut adapter = BoundedCollectAdapter {
+            sink: &mut collect,
+            output_channel_id: out_id,
+            output_channel_kind: ChannelKind::PluginBound,
+            output_channel_name: Some("out"),
+            topology: &topology,
+            effect_outputs: Some(&effect_outputs),
+        };
+        let mut ctx = OperationCtx::new(&mut adapter, 0, 0, b"bounded/keyed/");
+        ctx.emit_keyed::<String>("BTC/1m", "v".into())
+            .expect("keyed emit must succeed under the tier");
+
+        assert_eq!(collect.plugin_bytes, 0, "the bounded wire carries nothing");
+        let captured = effect_outputs.into_inner();
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0].channel, "out");
+        assert_eq!(captured[0].key, "BTC/1m");
+        assert_eq!(captured[0].payload, b"v".to_vec());
     }
 }

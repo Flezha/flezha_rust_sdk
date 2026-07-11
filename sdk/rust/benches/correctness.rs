@@ -281,5 +281,183 @@ fn throughput_static_fanout(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, throughput_single_segment, throughput_static_fanout);
+// ----- Effectively-once tier: tier-on vs tier-off emit throughput -----
+//
+// Two identical stateful keyed-emit operatives, differing only in the
+// `effectively_once()` declaration. The pair publishes the tier's cost
+// (`effectively-once-output` §6.3); the tier-off number doubles as the
+// zero-delta guard for the default path.
+
+use flezha_executor::segment::flusher::{SendError, SendFrameFn};
+use flezha_executor::segment::segment_state_sink;
+use serde::{Deserialize, Serialize};
+
+static TIER_OFF_COUNTER: AtomicUsize = AtomicUsize::new(0);
+static TIER_ON_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+#[derive(Serialize, Deserialize)]
+struct BumpChange;
+impl flezha_executor::state::Change for BumpChange {}
+
+macro_rules! tier_bench_operation {
+    ($op:ident, $name:literal, $counter:ident) => {
+        #[derive(Default)]
+        struct $op;
+        impl Operation for $op {
+            type Input = Vec<u8>;
+            type Output = Vec<u8>;
+            type State = i64;
+            type Change = BumpChange;
+            type Clock = WallClock;
+            type Config = ();
+            fn name() -> &'static str {
+                $name
+            }
+            fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> i64 {
+                0
+            }
+            fn apply_change(state: &mut i64, _: &BumpChange) {
+                *state += 1;
+            }
+            fn run(
+                &mut self,
+                input: Vec<u8>,
+                mut state: StateHandle<'_, Self>,
+                ctx: &mut OperationCtx<'_>,
+            ) -> Result<(), OperationError> {
+                state.apply(BumpChange);
+                ctx.emit_keyed::<Vec<u8>>("k".to_string(), input)?;
+                $counter.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            }
+        }
+    };
+}
+
+tier_bench_operation!(TierOffOperation, "tier_off_operation", TIER_OFF_COUNTER);
+tier_bench_operation!(TierOnOperation, "tier_on_operation", TIER_ON_COUNTER);
+
+struct TierOffOperative;
+impl UnboundedOperative for TierOffOperative {
+    fn factory_id() -> &'static str {
+        "tier_off_bench_operative"
+    }
+    fn channels(c: &mut ChannelBuilder) {
+        c.input::<Vec<u8>>("input")
+            .on_full(OverflowPolicy::Block)
+            .into::<TierOffOperation>();
+        c.channel::<Vec<u8>>("out")
+            .from::<TierOffOperation>()
+            .keyed()
+            .to_plugin("bench");
+    }
+}
+
+struct TierOnOperative;
+impl UnboundedOperative for TierOnOperative {
+    fn factory_id() -> &'static str {
+        "tier_on_bench_operative"
+    }
+    fn channels(c: &mut ChannelBuilder) {
+        c.effectively_once();
+        c.input::<Vec<u8>>("input")
+            .on_full(OverflowPolicy::Block)
+            .into::<TierOnOperation>();
+        c.channel::<Vec<u8>>("out")
+            .from::<TierOnOperation>()
+            .keyed()
+            .to_plugin("bench");
+    }
+}
+
+/// Socketpair whose read half is drained by a background thread, so the
+/// tier-off variant's primary-stream emits never block on a full buffer.
+fn drained_stream() -> Arc<FlezhaStream> {
+    let (a, mut b) = UnixStream::pair().expect("UnixStream::pair");
+    std::thread::spawn(move || {
+        use std::io::Read;
+        let mut buf = [0u8; 65536];
+        while b.read(&mut buf).map(|n| n > 0).unwrap_or(false) {}
+    });
+    Arc::new(FlezhaStream::Unix(a))
+}
+
+fn throughput_effectively_once_tiers(c: &mut Criterion) {
+    let msgs_per_iter = 50_000usize;
+
+    // Discard state frames: the bench measures the SDK-side emit paths,
+    // not the controller.
+    let sink: SendFrameFn =
+        Arc::new(|_pid: &str, _frame: &[u8]| -> Result<(), SendError> { Ok(()) });
+    segment_state_sink::install_global_sink(sink);
+
+    let pool = Arc::new(bi::WorkStealingPool::with_size(pool_size_from_env_or_cpus()));
+    let registry = Arc::new(OperativeRegistry::new());
+
+    for (factory, id) in [
+        (
+            build_topology_for::<TierOffOperative>().expect("topology"),
+            "tier-off-bench",
+        ),
+        (
+            build_topology_for::<TierOnOperative>().expect("topology"),
+            "tier-on-bench",
+        ),
+    ] {
+        let instance = UnboundedInstance::new(factory, Arc::from(id), Arc::clone(&pool));
+        registry.register_unbounded(instance);
+    }
+
+    let handle = bi::OperativeDispatchHandle {
+        registry: Arc::clone(&registry),
+    };
+    let stream = drained_stream();
+    let payload: Vec<u8> = b"x".repeat(64);
+
+    let mut group = c.benchmark_group("throughput_effectively_once_tiers");
+    group.measurement_time(Duration::from_secs(10));
+    group.sample_size(10);
+    group.throughput(criterion::Throughput::Elements(msgs_per_iter as u64));
+
+    for (bench_name, instance_id, counter) in [
+        ("tier_off", "tier-off-bench", &TIER_OFF_COUNTER),
+        ("tier_on", "tier-on-bench", &TIER_ON_COUNTER),
+    ] {
+        group.bench_function(bench_name, |b| {
+            b.iter_custom(|iters| {
+                let mut elapsed = Duration::ZERO;
+                for _ in 0..iters {
+                    counter.store(0, Ordering::Release);
+                    let start = Instant::now();
+                    for i in 0..msgs_per_iter {
+                        let mut md = HashMap::new();
+                        md.insert("channel".to_string(), "input".to_string());
+                        md.insert("flz.offset".to_string(), i.to_string());
+                        handle.dispatch(instance_id, payload.clone(), &md, Arc::clone(&stream));
+                    }
+                    let drained = wait_until(
+                        || counter.load(Ordering::Acquire) == msgs_per_iter,
+                        Duration::from_secs(30),
+                    );
+                    elapsed += start.elapsed();
+                    assert!(
+                        drained,
+                        "{bench_name} drain timed out: {} of {}",
+                        counter.load(Ordering::Acquire),
+                        msgs_per_iter
+                    );
+                }
+                elapsed
+            });
+        });
+    }
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    throughput_single_segment,
+    throughput_static_fanout,
+    throughput_effectively_once_tiers
+);
 criterion_main!(benches);

@@ -34,6 +34,14 @@ use crate::segment::flusher::SendFrameFn;
 /// (SDK → controller). The reliable sink stamps this id on every flusher frame.
 pub const SEGMENT_STATE_CHANGE_PAYLOAD_ID: &str = "segment_state_change";
 
+/// Data-stream payload-id for an atomic effect record (effectively-once
+/// tier, SDK → controller): one invocation's state change(s) + plugin
+/// outputs + consumed input offset, same frame layout as
+/// `segment_state_change` with a `format_id = 2` header and an
+/// `EffectRecordBody` body. Rides the reliable sink so outputs are never
+/// on the primary stream in tier mode.
+pub const SEGMENT_EFFECT_RECORD_PAYLOAD_ID: &str = "segment_effect_record";
+
 /// Data-stream payload-id for the dynamic-mode hard-delete RPC
 /// (SDK → controller). The body is the structured `segment_id` bytes;
 /// the controller routes it to the per-Segment file lifecycle.
