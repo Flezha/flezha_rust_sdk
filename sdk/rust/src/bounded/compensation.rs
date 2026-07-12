@@ -25,12 +25,19 @@ use super::RollbackMode;
 /// `OperationDispatcher::compensate_collecting`.
 pub(crate) type Value = Arc<dyn Any + Send + Sync>;
 
-/// One segment's contribution to a completed stage: which segment ran and the
-/// outputs it collected. Only segments that actually processed input are
-/// recorded ("an effect"); empty-partition segments never ran and are skipped.
+/// One serialized plugin-bound output staged by a segment, in the order the
+/// segment produced it: `(plugin channel name, payload bytes)`.
+pub(crate) type StagedOutput = (String, Vec<u8>);
+
+/// One segment's contribution to a completed stage: which segment ran, the
+/// inter-operation outputs it collected, and the plugin-bound output it staged
+/// for the operation's transactional outbox. Only segments that actually
+/// processed input are recorded ("an effect"); empty-partition segments never
+/// ran and are skipped.
 pub(crate) struct SegmentRun {
     pub segment_index: usize,
     pub outputs: Vec<Value>,
+    pub staged: Vec<StagedOutput>,
 }
 
 /// A completed operation in the chain, recorded so it can be rolled back.

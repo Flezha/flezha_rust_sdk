@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 
 use crossbeam::channel::{unbounded, Receiver};
 
-use super::compensation::{plan_compensation, SegmentRun, StageRecord};
+use super::compensation::{plan_compensation, SegmentRun, StageRecord, StagedOutput};
 use super::instance::BoundedInstance;
 use super::spec::BoundedSpec;
 use super::{BoundedCollectSink, BoundedCtx, BoundedError, BoundedRunFn, RollbackMode};
@@ -77,6 +77,18 @@ struct ChainCtx<'a> {
     stage_segments: &'a [Vec<Arc<SegmentSlot>>],
     rollback_mode: RollbackMode,
     persistence_enabled: bool,
+}
+
+impl ChainCtx<'_> {
+    /// Whether this run journals its op boundaries — the single gate on both
+    /// the `OpCommit` handshake and output staging. An opted-out class or a
+    /// transport-less run (unit test / standalone bench, no coordinator) has no
+    /// journal to gate a flush on, so its plugin output must keep going
+    /// straight to the wire rather than being staged into an outbox nobody
+    /// would ever flush.
+    fn journaling(&self) -> bool {
+        self.persistence_enabled && crate::executor::coordinator_installed()
+    }
 }
 
 /// Spawn the bounded driver for one already-registered instance on a dedicated
@@ -353,7 +365,14 @@ fn drive_chain(ctx: &ChainCtx, args: &str, cancel: &AtomicBool) -> (String, Stri
             .expect("chain operation present in topology");
         let slots = &ctx.stage_segments[stage_idx];
         let partitioned = partition(op, slots.len(), &batch);
-        match run_stage_parallel(topology, ctx.instance_id, slots, partitioned, ctx.pool) {
+        match run_stage_parallel(
+            topology,
+            ctx.instance_id,
+            slots,
+            partitioned,
+            ctx.pool,
+            ctx.journaling(),
+        ) {
             Ok(StageOut {
                 batch: out_batch,
                 segments,
@@ -459,10 +478,14 @@ fn seed_from_journal(
 /// durable `OpCommitResponse` (bounded-op-journal D3). The handoff batch is
 /// serialized through the operation's output-channel codec (validated present
 /// at registration; a terminal or plugin-bound output has no codec and ships
-/// an empty handoff). Skipped for opted-out classes and transport-less runs
-/// (unit tests / standalone, where no coordinator is installed — mirroring
-/// the DLQ park's sink gate). A failed or timed-out ack is a terminal run
-/// error; the un-acked op re-runs on resume (at-least-once).
+/// an empty handoff), and the stage's staged plugin output rides along as the
+/// operation's outbox (`bounded-transactional-outbox`) — journaled with the
+/// commit in one durable write, flushed by the controller only afterwards.
+/// Skipped for opted-out classes and transport-less runs (unit tests /
+/// standalone, where no coordinator is installed — mirroring the DLQ park's
+/// sink gate); those never stage, so nothing is stranded. A failed or timed-out
+/// ack is a terminal run error; the un-acked op re-runs on resume, and its
+/// staged output — never journaled — is simply dropped (at-least-once).
 fn commit_op_boundary(
     ctx: &ChainCtx,
     stage_idx: usize,
@@ -471,7 +494,7 @@ fn commit_op_boundary(
     slots: &[Arc<SegmentSlot>],
     batch: &[Value],
 ) -> Result<(), String> {
-    if !ctx.persistence_enabled || !crate::executor::coordinator_installed() {
+    if !ctx.journaling() {
         return Ok(());
     }
 
@@ -506,6 +529,60 @@ fn commit_op_boundary(
         })
         .collect();
 
+    ship_op_commit(
+        ctx,
+        stage_idx,
+        crate::pb::OpCommit {
+            operative_id: ctx.instance_id.to_string(),
+            op_idx: stage_idx as u32,
+            iter: 0,
+            segments_ran,
+            handoff,
+            outbox: segments
+                .iter()
+                .flat_map(|seg_run| outbox_items(&slots[seg_run.segment_index], &seg_run.staged))
+                .collect(),
+            compensating: false,
+        },
+    )
+}
+
+/// One segment's staged plugin output as outbox entries, tagged with the
+/// producing segment's wire identity and the segment-local emit order
+/// (`seq_in_op`) — the controller mints the flush key from that tuple.
+fn outbox_items(slot: &Arc<SegmentSlot>, staged: &[StagedOutput]) -> Vec<crate::pb::OpOutboxItem> {
+    staged
+        .iter()
+        .enumerate()
+        .map(|(seq_in_op, (channel, payload))| crate::pb::OpOutboxItem {
+            segment_id: slot.segment_identity.as_ref().clone(),
+            seq_in_op: seq_in_op as u32,
+            channel: channel.clone(),
+            payload: payload.clone(),
+        })
+        .collect()
+}
+
+/// Emit one `OpCommit` and block until the controller's durable ack. Shared by
+/// the forward op boundary and the compensation undo record — both are "journal
+/// this, then tell me it is durable" round-trips over the same handshake.
+///
+/// A forward commit aborts early on a cooperative cancel (the caller maps that
+/// to the `cancelled` terminal status and rolls back). A compensation commit
+/// does not: rollback IS the response to that cancel, and abandoning the undo
+/// record because the token is set would drop the undo output it carries. It
+/// waits out the full ack deadline instead.
+fn ship_op_commit(
+    ctx: &ChainCtx,
+    stage_idx: usize,
+    commit: crate::pb::OpCommit,
+) -> Result<(), String> {
+    let compensating = commit.compensating;
+    let what = if compensating {
+        "compensation"
+    } else {
+        "commit"
+    };
     let reference_id = format!(
         "op-commit-{}-{}-{}",
         ctx.instance_id,
@@ -513,16 +590,7 @@ fn commit_op_boundary(
         crate::util::nonce_suffix()
     );
     let rx = crate::shutdown::register_pending_ack(reference_id.clone());
-    crate::executor::emit_op_commit(
-        reference_id.clone(),
-        crate::pb::OpCommit {
-            operative_id: ctx.instance_id.to_string(),
-            op_idx: stage_idx as u32,
-            iter: 0,
-            segments_ran,
-            handoff,
-        },
-    );
+    crate::executor::emit_op_commit(reference_id.clone(), commit);
 
     // Chunked wait so a cooperative cancel is observed promptly; the caller
     // maps a cancel-tripped failure to the `cancelled` terminal status.
@@ -531,24 +599,24 @@ fn commit_op_boundary(
         match rx.recv_timeout(OP_COMMIT_ACK_CHUNK) {
             Ok(Ok(())) => return Ok(()),
             Ok(Err(e)) => {
-                return Err(format!("op {stage_idx} commit refused by controller: {e}"));
+                return Err(format!("op {stage_idx} {what} refused by controller: {e}"));
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                if ctx.instance.cancel.load(Ordering::Acquire) {
+                if !compensating && ctx.instance.cancel.load(Ordering::Acquire) {
                     crate::shutdown::drop_pending_ack(&reference_id);
-                    return Err(format!("op {stage_idx} commit interrupted by stop"));
+                    return Err(format!("op {stage_idx} {what} interrupted by stop"));
                 }
                 if Instant::now() >= deadline {
                     crate::shutdown::drop_pending_ack(&reference_id);
                     return Err(format!(
-                        "op {stage_idx} commit ack timed out after {}s",
+                        "op {stage_idx} {what} ack timed out after {}s",
                         OP_COMMIT_ACK_TIMEOUT.as_secs()
                     ));
                 }
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 crate::shutdown::drop_pending_ack(&reference_id);
-                return Err(format!("op {stage_idx} commit waiter dropped"));
+                return Err(format!("op {stage_idx} {what} waiter dropped"));
             }
         }
     }
@@ -567,10 +635,6 @@ fn run_compensation(ctx: &ChainCtx, completed: &[StageRecord]) {
     if plan.is_empty() {
         return;
     }
-    let mut sink = BoundedSegmentSink {
-        instance_id: Arc::clone(ctx.instance_id),
-        collected: Vec::new(),
-    };
     for record in plan {
         let op_id = ctx.chain[record.stage_idx];
         let op = ctx
@@ -591,6 +655,10 @@ fn run_compensation(ctx: &ChainCtx, completed: &[StageRecord]) {
                 continue;
             }
             let outputs: Vec<Value> = seg_run.outputs.iter().map(Arc::clone).collect();
+            // One sink per compensated segment: the undo output it emits is
+            // staged under that segment's identity for the `compensated`
+            // journal entry (bounded-transactional-outbox D5).
+            let mut sink = BoundedSegmentSink::new(ctx.instance_id, ctx.journaling());
             {
                 let mut state = slot.state.lock_recover();
                 if let Err(e) = slot.dispatcher.compensate_collecting(
@@ -601,6 +669,28 @@ fn run_compensation(ctx: &ChainCtx, completed: &[StageRecord]) {
                 ) {
                     eprintln!(
                         "[flezha] bounded {} compensation error: {e}",
+                        ctx.instance_id
+                    );
+                }
+            }
+            // Journal this segment's undo output BEFORE the done marker: the
+            // marker is what stops the hook re-running on resume, so a crash
+            // between the two must fall on the side that re-runs the (idempotent)
+            // hook rather than the side that loses its undo output. A hook that
+            // emitted nothing needs no entry.
+            if !sink.staged.is_empty() {
+                let commit = crate::pb::OpCommit {
+                    operative_id: ctx.instance_id.to_string(),
+                    op_idx: record.stage_idx as u32,
+                    iter: 0,
+                    segments_ran: vec![slot.segment_identity.as_ref().clone()],
+                    handoff: Vec::new(),
+                    outbox: outbox_items(slot, &sink.staged),
+                    compensating: true,
+                };
+                if let Err(e) = ship_op_commit(ctx, record.stage_idx, commit) {
+                    eprintln!(
+                        "[flezha] bounded {} undo-outbox journaling failed: {e}",
                         ctx.instance_id
                     );
                 }
@@ -633,6 +723,7 @@ fn reconstruct_completed_from_intents(ctx: &ChainCtx) -> Vec<StageRecord> {
             .map(|(segment_index, _)| SegmentRun {
                 segment_index,
                 outputs: Vec::new(),
+                staged: Vec::new(),
             })
             .collect();
         if !segments.is_empty() {
@@ -728,8 +819,10 @@ fn run_stage_parallel(
     slots: &[Arc<SegmentSlot>],
     partitioned: Vec<Vec<Value>>,
     pool: &Arc<WorkStealingPool>,
+    staging: bool,
 ) -> Result<StageOut, BoundedError> {
-    let (tx, rx) = unbounded::<(usize, Result<Vec<Value>, BoundedError>)>();
+    type SegmentOut = (Vec<Value>, Vec<StagedOutput>);
+    let (tx, rx) = unbounded::<(usize, Result<SegmentOut, BoundedError>)>();
     let mut spawned = 0usize;
     for (seg_idx, (slot, items)) in slots.iter().zip(partitioned.into_iter()).enumerate() {
         if items.is_empty() {
@@ -741,7 +834,10 @@ fn run_stage_parallel(
         let tx = tx.clone();
         spawned += 1;
         pool.submit(Box::new(move || {
-            let _ = tx.send((seg_idx, run_segment(&topology, &instance_id, &slot, items)));
+            let _ = tx.send((
+                seg_idx,
+                run_segment(&topology, &instance_id, &slot, items, staging),
+            ));
         }));
     }
     drop(tx);
@@ -749,13 +845,16 @@ fn run_stage_parallel(
     // Wait for every segment (the barrier) before returning, even on failure,
     // so no segment is mid-run when the stage completes. Each segment's outputs
     // are kept under its index for both the next-stage batch and saga rollback.
+    // A failing stage returns `Err` here, dropping every segment's staged
+    // plugin output with it — a failed operation leaks nothing.
     let mut segments: Vec<SegmentRun> = Vec::new();
     let mut first_err: Option<BoundedError> = None;
     for _ in 0..spawned {
         match rx.recv() {
-            Ok((seg_idx, Ok(outputs))) => segments.push(SegmentRun {
+            Ok((seg_idx, Ok((outputs, staged)))) => segments.push(SegmentRun {
                 segment_index: seg_idx,
                 outputs,
+                staged,
             }),
             Ok((_, Err(e))) => {
                 first_err.get_or_insert(e);
@@ -780,31 +879,46 @@ fn run_stage_parallel(
 
 /// Process one segment's items sequentially (per-segment ordering preserved),
 /// running `Operation::run` via the monomorphized dispatcher's collecting path
-/// and gathering inter-operation output for the next stage.
+/// and gathering the inter-operation output for the next stage plus the
+/// plugin-bound output staged for the operation's outbox.
 fn run_segment(
     topology: &OperativeTopology,
     instance_id: &Arc<str>,
     slot: &Arc<SegmentSlot>,
     items: Vec<Value>,
-) -> Result<Vec<Value>, BoundedError> {
-    let mut sink = BoundedSegmentSink {
-        instance_id: Arc::clone(instance_id),
-        collected: Vec::new(),
-    };
+    staging: bool,
+) -> Result<(Vec<Value>, Vec<StagedOutput>), BoundedError> {
+    let mut sink = BoundedSegmentSink::new(instance_id, staging);
     let mut state = slot.state.lock_recover();
     for item in items {
         slot.dispatcher
             .run_collecting(item, &mut state, topology, &mut sink)?;
     }
-    Ok(sink.collected)
+    Ok((sink.collected, sink.staged))
 }
 
 /// Per-segment collecting sink for the structured driver. Inter-operation
-/// output is buffered for the next stage; plugin-bound output is forwarded to
-/// the unit's wire via the coordinator (identical to `run`-sugar `ctx.emit`).
+/// output is buffered for the next stage. Plugin-bound output is **staged** for
+/// the operation's transactional outbox when the run commits its op boundaries
+/// (`staging`), so nothing reaches a plugin before the op's journal entry is
+/// durable; otherwise — an opted-out class or a transport-less run, neither of
+/// which journals — it is forwarded straight to the wire as before.
 struct BoundedSegmentSink {
     instance_id: Arc<str>,
     collected: Vec<Value>,
+    staged: Vec<StagedOutput>,
+    staging: bool,
+}
+
+impl BoundedSegmentSink {
+    fn new(instance_id: &Arc<str>, staging: bool) -> Self {
+        Self {
+            instance_id: Arc::clone(instance_id),
+            collected: Vec::new(),
+            staged: Vec::new(),
+            staging,
+        }
+    }
 }
 
 impl BoundedCollectSink for BoundedSegmentSink {
@@ -812,8 +926,12 @@ impl BoundedCollectSink for BoundedSegmentSink {
         self.collected.push(value);
     }
 
-    fn emit_plugin_bytes(&mut self, bytes: Vec<u8>) {
-        crate::executor::emit_bounded_output(self.instance_id.to_string(), bytes);
+    fn emit_plugin_bytes(&mut self, channel: &str, bytes: Vec<u8>) {
+        if self.staging {
+            self.staged.push((channel.to_string(), bytes));
+        } else {
+            crate::executor::emit_bounded_output(self.instance_id.to_string(), bytes);
+        }
     }
 }
 

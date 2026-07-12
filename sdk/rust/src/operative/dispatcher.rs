@@ -936,7 +936,7 @@ impl<'a> BoundedCollectAdapter<'a> {
         if let Some(cell) = self.effect_outputs {
             push_effect_output(cell, &descriptor.name, key, meta, bytes);
         } else {
-            self.sink.emit_plugin_bytes(bytes);
+            self.sink.emit_plugin_bytes(&descriptor.name, bytes);
         }
         Ok(())
     }
@@ -1534,7 +1534,7 @@ mod tests {
     }
     impl BoundedCollectSink for NullCollect {
         fn collect(&mut self, _value: Arc<dyn Any + Send + Sync>) {}
-        fn emit_plugin_bytes(&mut self, _bytes: Vec<u8>) {
+        fn emit_plugin_bytes(&mut self, _channel: &str, _bytes: Vec<u8>) {
             self.plugin_bytes += 1;
         }
     }

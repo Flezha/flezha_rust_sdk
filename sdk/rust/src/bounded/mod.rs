@@ -160,15 +160,19 @@ impl From<&str> for BoundedError {
 
 /// Collecting sink driven by [`crate::segment::OperationDispatcher::run_collecting`]:
 /// inter-operation output is **collected** for handoff to the next stage at the
-/// barrier; plugin-bound output is **routed** (serialized) to the wire. The
-/// bounded driver implements this per running segment.
+/// barrier; plugin-bound output is **staged** (serialized) for the operation's
+/// transactional outbox. The bounded driver implements this per running segment.
 pub trait BoundedCollectSink {
     /// Collect an inter-operation output value for the next stage's input batch.
     fn collect(&mut self, value: Arc<dyn Any + Send + Sync>);
 
-    /// Forward an already-serialized plugin-bound output to the unit's wire
-    /// (best-effort, at-least-once — like all bounded/operative output).
-    fn emit_plugin_bytes(&mut self, bytes: Vec<u8>);
+    /// Take an already-serialized plugin-bound output produced on `channel`.
+    /// For a durable structured operative the bytes are **staged** until the
+    /// operation's barrier and travel to the controller inside `OpCommit`, so
+    /// nothing reaches a plugin before the op's journal entry is durable
+    /// (`bounded-transactional-outbox`); an opted-out class forwards straight
+    /// to the wire (at-least-once, as before).
+    fn emit_plugin_bytes(&mut self, channel: &str, bytes: Vec<u8>);
 }
 
 /// Lifecycle-aware context handed to [`BoundedOperative::run`] (the run-sugar
@@ -203,6 +207,12 @@ impl BoundedCtx {
     /// Emit one output payload to the unit's bound plugins. Best-effort and
     /// at-least-once, like operative output. Routed through the coordinator so
     /// the stream write stays single-threaded.
+    ///
+    /// This is the `run`-sugar path only: with no operations there is no
+    /// barrier to stage against and no journal entry to gate a flush on, so the
+    /// emit goes straight to the wire. A structured operation's `ctx.emit`
+    /// instead stages into the operation's transactional outbox
+    /// (`bounded-transactional-outbox`).
     pub fn emit(&mut self, bytes: impl Into<Vec<u8>>) -> Result<(), BoundedError> {
         crate::executor::emit_bounded_output(self.instance_id.to_string(), bytes.into());
         Ok(())
@@ -1134,6 +1144,107 @@ mod tests {
         }
     }
 
+    // ---- staged-commit / transactional-outbox ops --------------------------
+
+    /// Emits plugin-bound output and THEN fails: the operation never commits,
+    /// so its staged output must never reach a plugin (nothing leaked).
+    #[derive(Default)]
+    struct EmitThenFail;
+    impl Operation for EmitThenFail {
+        type Input = String;
+        type Output = String;
+        type State = ();
+        type Change = NoChange;
+        type Clock = WallClock;
+        type Config = ();
+        fn name() -> &'static str {
+            "bounded_emit_then_fail"
+        }
+        fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
+        fn run(
+            &mut self,
+            input: String,
+            _state: StateHandle<'_, Self>,
+            ctx: &mut OperationCtx<'_>,
+        ) -> Result<(), OperationError> {
+            ctx.emit(format!("leak:{input}"))?;
+            Err(OperationError::Custom("failed after emitting".into()))
+        }
+    }
+
+    /// One operation that emits then fails, straight to a plugin sink.
+    struct LeakBounded;
+    impl BoundedOperative for LeakBounded {
+        fn factory_id() -> &'static str {
+            "test-leak-bounded"
+        }
+        fn operations(c: &mut ChannelBuilder) {
+            c.input::<String>("in").into::<EmitThenFail>();
+            c.channel::<String>("out")
+                .from::<EmitThenFail>()
+                .to_plugin("sink");
+        }
+    }
+
+    /// Compensable op on a hybrid channel: its forward output feeds the next
+    /// operation AND a plugin sink, so its `compensate` hook's `ctx.emit`
+    /// produces plugin-bound undo output (staged for the `compensated` entry).
+    #[derive(Default)]
+    struct UndoEmit;
+    impl Operation for UndoEmit {
+        type Input = String;
+        type Output = String;
+        type State = ();
+        type Change = NoChange;
+        type Clock = WallClock;
+        type Config = ();
+        fn name() -> &'static str {
+            "bounded_undo_emit"
+        }
+        fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
+        fn run(
+            &mut self,
+            input: String,
+            _state: StateHandle<'_, Self>,
+            ctx: &mut OperationCtx<'_>,
+        ) -> Result<(), OperationError> {
+            ctx.emit(format!("did:{input}"))?;
+            Ok(())
+        }
+        const COMPENSATE_OVERRIDDEN: bool = true;
+        fn compensate(
+            &mut self,
+            completed_output: Vec<Arc<String>>,
+            _state: StateHandle<'_, Self>,
+            ctx: &mut OperationCtx<'_>,
+        ) -> Result<(), OperationError> {
+            for out in &completed_output {
+                ctx.emit(format!("undo:{out}"))?;
+            }
+            Ok(())
+        }
+    }
+
+    /// UndoEmit(hybrid, compensable) → FailLast. The failure rolls UndoEmit
+    /// back; its undo output is staged and journaled in a `compensated` entry.
+    struct UndoSaga;
+    impl BoundedOperative for UndoSaga {
+        fn factory_id() -> &'static str {
+            "test-undo-saga"
+        }
+        fn operations(c: &mut ChannelBuilder) {
+            c.input::<String>("in").into::<UndoEmit>();
+            c.channel::<String>("mid")
+                .codec()
+                .from::<UndoEmit>()
+                .also_to_plugin_with("undosink", |s: &String| s.clone().into_bytes())
+                .into::<FailLast>();
+            c.channel::<String>("out")
+                .from::<FailLast>()
+                .to_plugin("sink");
+        }
+    }
+
     /// A → B → ship(fails). Durable-by-default; both A and B are compensable.
     struct ResumeSaga;
     impl BoundedOperative for ResumeSaga {
@@ -1389,6 +1500,8 @@ mod tests {
         crate::register_bounded::<FanSaga>();
         crate::register_bounded::<StopSaga>();
         crate::register_bounded::<ResumeSaga>();
+        crate::register_bounded::<LeakBounded>();
+        crate::register_bounded::<UndoSaga>();
 
         let mut node = ExecutorNode::new("test-ns".to_string());
 
@@ -1786,18 +1899,96 @@ mod tests {
             "one segment ran in stage 0"
         );
 
-        // Opt-out twin: no journal, no handshake — zero commits.
+        // bounded-transactional-outbox: the terminal stage's plugin output did
+        // NOT go to the wire — it was staged and rode INSIDE that stage's
+        // commit, keyed by the producing segment and its per-op sequence.
+        assert!(
+            wire_emits_for("chain-commit").is_empty(),
+            "a durable structured operative stages: nothing reaches the wire mid-op"
+        );
+        assert!(
+            commits[0].outbox.is_empty(),
+            "stage 0's output is inter-op (codec handoff), not plugin-bound"
+        );
+        assert_eq!(commits[1].outbox.len(), 1, "stage 1's plugin output staged");
+        assert_eq!(commits[1].outbox[0].payload, b"x-1-2".to_vec());
+        assert_eq!(commits[1].outbox[0].channel, "out");
+        assert_eq!(commits[1].outbox[0].seq_in_op, 0);
+        assert!(!commits[1].outbox[0].segment_id.is_empty());
+        assert!(commits.iter().all(|c| !c.compensating));
+
+        // The run-sugar path is untouched: no operations, no barrier to stage
+        // against, so its emit goes straight to the wire (at-least-once).
+        assert_eq!(
+            wire_emits_for("bounded-ok"),
+            vec![b"hello".to_vec()],
+            "run-sugar keeps the direct wire path"
+        );
+
+        // Opt-out twin: no journal, no handshake — zero commits, and (having
+        // nothing that could ever flush a staged outbox) it still emits direct.
         assert!(node.start_bounded(
             "test-fan-optout-bounded".into(),
             "optout-no-commit".into(),
             "a".into(),
         ));
-        let (_o, done) = drain(&rx, "optout-no-commit");
+        let (outs, done) = drain(&rx, "optout-no-commit");
         assert_eq!(done.0, "ok");
         assert!(
             drain_op_commits().is_empty(),
             "an opted-out class skips the op-commit handshake entirely"
         );
+        assert_eq!(
+            wire_emits_for("optout-no-commit"),
+            outs,
+            "an opted-out class emits straight to the wire, as before"
+        );
+        assert_eq!(outs, vec![b"1:a".to_vec()]);
+
+        // --- bounded-transactional-outbox: a failed operation leaks nothing ---
+        assert!(node.start_bounded("test-leak-bounded".into(), "leak-1".into(), "x".into()));
+        let (outs, done) = drain(&rx, "leak-1");
+        assert_eq!(done.0, "error");
+        assert!(
+            outs.is_empty() && wire_emits_for("leak-1").is_empty(),
+            "the failing op emitted before it failed; that output must never be delivered"
+        );
+        assert!(
+            drain_op_commits().is_empty(),
+            "the op never committed, so its staged output was never journaled"
+        );
+
+        // --- bounded-transactional-outbox §D5: a compensate hook's undo output
+        // is staged too, and rides a `compensating` commit for the operation it
+        // reverses (the forward output already flushed under its own key) ---
+        assert!(node.start_bounded("test-undo-saga".into(), "undo-1".into(), "u".into()));
+        let (outs, done) = drain(&rx, "undo-1");
+        assert_eq!(done.0, "error");
+        assert!(
+            wire_emits_for("undo-1").is_empty(),
+            "undo output stages like forward output — never straight to the wire"
+        );
+        let commits = drain_op_commits();
+        let forward: Vec<_> = commits.iter().filter(|c| !c.compensating).collect();
+        let undo: Vec<_> = commits.iter().filter(|c| c.compensating).collect();
+        assert_eq!(forward.len(), 1, "only UndoEmit completed forward");
+        assert_eq!(
+            forward[0].outbox[0].payload,
+            b"did:u".to_vec(),
+            "the hybrid channel staged the forward copy"
+        );
+        assert_eq!(undo.len(), 1, "one compensated segment ⇒ one undo record");
+        assert_eq!(undo[0].op_idx, 0, "the compensated operation's index");
+        assert_eq!(undo[0].outbox.len(), 1);
+        assert_eq!(undo[0].outbox[0].payload, b"undo:did:u".to_vec());
+        assert_eq!(undo[0].outbox[0].channel, "mid");
+        assert!(
+            undo[0].handoff.is_empty(),
+            "an undo record carries outbox only"
+        );
+        // Both the forward copy and the undo reached the plugins (the fake
+        // controller flushes each commit's outbox on ack), in that order.
+        assert_eq!(outs, vec![b"did:u".to_vec(), b"undo:did:u".to_vec()]);
 
         // --- bounded-op-journal §D5: resume-skip — a shipped journal skips the
         // committed stages and seeds the next one from the journaled handoff ---
@@ -1947,19 +2138,43 @@ mod tests {
     /// so the gating/handoff assertions can inspect what would be journaled.
     static OP_COMMITS: Mutex<Vec<crate::pb::OpCommit>> = Mutex::new(Vec::new());
 
+    /// Every `EmitBoundedOutput` the drain helpers saw — output that went
+    /// STRAIGHT to the wire, bypassing any op boundary. A durable structured
+    /// operative must produce none of these (it stages); `run`-sugar and
+    /// opted-out classes still do.
+    static WIRE_EMITS: Mutex<Vec<(String, Vec<u8>)>> = Mutex::new(Vec::new());
+
     fn drain_op_commits() -> Vec<crate::pb::OpCommit> {
         std::mem::take(&mut *OP_COMMITS.lock().unwrap())
     }
 
-    /// Fake-controller half of the op-commit barrier: record the commit and
-    /// wake the blocked driver with a durable-ack success.
-    fn ack_op_commit(reference_id: String, commit: crate::pb::OpCommit) {
+    fn wire_emits_for(id: &str) -> Vec<Vec<u8>> {
+        WIRE_EMITS
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(oid, _)| oid == id)
+            .map(|(_, p)| p.clone())
+            .collect()
+    }
+
+    /// Fake-controller half of the op-commit barrier: record the commit, then
+    /// wake the blocked driver with a durable-ack success. Returns the outbox
+    /// the (real) controller would flush to the plugins AFTER that durable
+    /// point — the drain helpers append it to the observed output, so a staged
+    /// operative's assertions still describe what a plugin finally sees.
+    fn ack_op_commit(reference_id: String, commit: crate::pb::OpCommit) -> Vec<Vec<u8>> {
+        let flushed: Vec<Vec<u8>> = commit.outbox.iter().map(|o| o.payload.clone()).collect();
         OP_COMMITS.lock().unwrap().push(commit);
         crate::shutdown::signal_result(&reference_id, Ok(()));
+        flushed
     }
 
     /// Drain output frames until the `BoundedCompleted` for `id`, returning the
     /// collected outputs and the `(status, error, result)` completion tuple.
+    /// "Output" is what reaches the plugins: a `run`-sugar / opted-out emit
+    /// straight off the wire, plus a structured operative's staged outbox once
+    /// its op commits (the fake controller flushes it on ack).
     fn drain(
         rx: &Receiver<ExecutorMessage>,
         id: &str,
@@ -1975,7 +2190,13 @@ mod tests {
                 ExecutorMessage::EmitBoundedOutput {
                     operative_id,
                     payload,
-                } if operative_id == id => outs.push(payload),
+                } if operative_id == id => {
+                    WIRE_EMITS
+                        .lock()
+                        .unwrap()
+                        .push((operative_id, payload.clone()));
+                    outs.push(payload);
+                }
                 ExecutorMessage::EmitBoundedCompleted {
                     operative_id,
                     status,
@@ -1985,7 +2206,13 @@ mod tests {
                 ExecutorMessage::EmitOpCommit {
                     reference_id,
                     commit,
-                } => ack_op_commit(reference_id, commit),
+                } => {
+                    let for_id = commit.operative_id == id;
+                    let flushed = ack_op_commit(reference_id, commit);
+                    if for_id {
+                        outs.extend(flushed);
+                    }
+                }
                 _ => {}
             }
         }
@@ -2004,7 +2231,13 @@ mod tests {
                 ExecutorMessage::EmitOpCommit {
                     reference_id,
                     commit,
-                } => ack_op_commit(reference_id, commit),
+                } => {
+                    let for_id = commit.operative_id == id;
+                    let flushed = ack_op_commit(reference_id, commit);
+                    if for_id && flushed.iter().any(|p| p == payload) {
+                        return;
+                    }
+                }
                 ExecutorMessage::EmitBoundedOutput {
                     operative_id,
                     payload: p,

@@ -229,16 +229,40 @@ pub struct OpHandoffItem {
     #[prost(bytes = "vec", tag = "2")]
     pub payload: ::prost::alloc::vec::Vec<u8>,
 }
+/// One staged plugin-bound output of an operation, buffered per segment
+/// while the operation ran and shipped at its barrier
+/// (bounded-transactional-outbox). `seq_in_op` orders the entries a single
+/// segment staged during the operation; `channel` is the producing plugin
+/// channel's name, carried through to the flushed frame's `channel`
+/// metadata.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct OpOutboxItem {
+    #[prost(bytes = "vec", tag = "1")]
+    pub segment_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint32, tag = "2")]
+    pub seq_in_op: u32,
+    #[prost(string, tag = "3")]
+    pub channel: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "4")]
+    pub payload: ::prost::alloc::vec::Vec<u8>,
+}
 /// SDK -> Controller, at each operation barrier of a durable structured
 /// bounded operative (bounded-op-journal): operation `op_idx` completed
 /// forward on `segments_ran` (wire segment identities) and released the
-/// serialized `handoff` batch. The Controller appends an `op_committed`
-/// entry to the instance's op-journal, fsyncs, and replies
-/// OpCommitResponse; the driver starts the next operation only after the
+/// serialized `handoff` batch plus the `outbox` its segments staged
+/// (bounded-transactional-outbox — nothing reached a plugin yet). The
+/// Controller appends ONE `op_committed` entry carrying handoff AND outbox
+/// to the instance's op-journal, fsyncs, replies OpCommitResponse, and only
+/// then flushes the outbox; the driver starts the next operation after the
 /// successful reply. Direction is reversed like ExecutorShutdownNotification:
 /// SDK -> Controller over the "control_command" payload_id; old Controllers
 /// ignore the unknown variant via Protox unknown-field handling. `iter` is 0
 /// for the single-pass chain (the durable-loop follow-up increments it).
+///
+/// `compensating` marks the undo twin: a `compensate` hook's staged output
+/// for the already-committed operation `op_idx`, journaled as a
+/// `compensated` entry and flushed with comp-marked keys. The per-segment
+/// compensation markers still decide which hooks run.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct OpCommit {
     #[prost(string, tag = "1")]
@@ -251,6 +275,10 @@ pub struct OpCommit {
     pub segments_ran: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
     #[prost(message, repeated, tag = "5")]
     pub handoff: ::prost::alloc::vec::Vec<OpHandoffItem>,
+    #[prost(message, repeated, tag = "6")]
+    pub outbox: ::prost::alloc::vec::Vec<OpOutboxItem>,
+    #[prost(bool, tag = "7")]
+    pub compensating: bool,
 }
 /// Controller -> SDK reply to OpCommit, emitted only AFTER the journal
 /// entry is durable (fsync). Carries the originating request's
