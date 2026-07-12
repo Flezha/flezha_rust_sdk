@@ -5,7 +5,7 @@ pub struct CommandRequest {
     pub reference_id: ::prost::alloc::string::String,
     #[prost(
         oneof = "command_request::Command",
-        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27"
+        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29"
     )]
     pub command: ::core::option::Option<command_request::Command>,
 }
@@ -65,6 +65,10 @@ pub mod command_request {
         CreditGrant(super::CreditGrant),
         #[prost(message, tag = "27")]
         ParkPayloadAck(super::ParkPayloadAck),
+        #[prost(message, tag = "28")]
+        OpCommit(super::OpCommit),
+        #[prost(message, tag = "29")]
+        OpCommitResponse(super::OpCommitResponse),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -215,6 +219,67 @@ pub struct ExecutorShutdownAck {
     #[prost(string, tag = "1")]
     pub operative_id: ::prost::alloc::string::String,
 }
+/// One serialized inter-operation handoff value: the payload bytes produced
+/// by the channel's byte codec, tagged with the producing channel id so a
+/// resume re-seeds through the same channel's decoder.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct OpHandoffItem {
+    #[prost(uint32, tag = "1")]
+    pub channel_id: u32,
+    #[prost(bytes = "vec", tag = "2")]
+    pub payload: ::prost::alloc::vec::Vec<u8>,
+}
+/// SDK -> Controller, at each operation barrier of a durable structured
+/// bounded operative (bounded-op-journal): operation `op_idx` completed
+/// forward on `segments_ran` (wire segment identities) and released the
+/// serialized `handoff` batch. The Controller appends an `op_committed`
+/// entry to the instance's op-journal, fsyncs, and replies
+/// OpCommitResponse; the driver starts the next operation only after the
+/// successful reply. Direction is reversed like ExecutorShutdownNotification:
+/// SDK -> Controller over the "control_command" payload_id; old Controllers
+/// ignore the unknown variant via Protox unknown-field handling. `iter` is 0
+/// for the single-pass chain (the durable-loop follow-up increments it).
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct OpCommit {
+    #[prost(string, tag = "1")]
+    pub operative_id: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "2")]
+    pub op_idx: u32,
+    #[prost(uint32, tag = "3")]
+    pub iter: u32,
+    #[prost(bytes = "vec", repeated, tag = "4")]
+    pub segments_ran: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+    #[prost(message, repeated, tag = "5")]
+    pub handoff: ::prost::alloc::vec::Vec<OpHandoffItem>,
+}
+/// Controller -> SDK reply to OpCommit, emitted only AFTER the journal
+/// entry is durable (fsync). Carries the originating request's
+/// reference_id so the SDK wakes the blocked driver. A non-empty `error`
+/// (journal write/fsync failure, oversized handoff) terminates the run
+/// abnormally through the existing terminal-error path.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct OpCommitResponse {
+    #[prost(string, tag = "1")]
+    pub operative_id: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "2")]
+    pub op_idx: u32,
+    #[prost(string, tag = "3")]
+    pub error: ::prost::alloc::string::String,
+}
+/// Committed op-journal state shipped back on crash-resume
+/// (bounded-op-journal): the op indexes recorded `op_committed` plus the
+/// latest journaled handoff batch. The driver skips committed operations
+/// and seeds the first uncommitted operation from `handoff` instead of the
+/// entry channel.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct OpJournalState {
+    #[prost(uint32, repeated, tag = "1")]
+    pub committed_op_idxs: ::prost::alloc::vec::Vec<u32>,
+    #[prost(uint32, tag = "2")]
+    pub iter: u32,
+    #[prost(message, repeated, tag = "3")]
+    pub handoff: ::prost::alloc::vec::Vec<OpHandoffItem>,
+}
 /// Per-Segment state restore handshake: Controller ships latest snapshot
 /// bytes plus tail-WAL bytes, SDK applies them to the segment's State
 /// before any input is processed. See the per-segment state persistence design.
@@ -242,6 +307,14 @@ pub struct RestoreInitState {
     pub has_compensation_intent: bool,
     #[prost(bool, tag = "5")]
     pub has_compensation_done: bool,
+    /// Bounded op-journal crash-resume (bounded-op-journal): the instance's
+    /// committed op indexes + latest journaled handoff, shipped in the same
+    /// restore exchange as the compensation markers (no second round-trip).
+    /// Absent when the instance has no journal (fresh spawn, opted-out class,
+    /// unbounded operative, pre-upgrade instance) — the driver then keeps the
+    /// re-run-from-top behaviour.
+    #[prost(message, optional, tag = "6")]
+    pub op_journal: ::core::option::Option<OpJournalState>,
 }
 /// SDK acknowledgement after applying a `RestoreInitState`. `terminal_seq`
 /// is the highest WAL seq folded into State; the Controller expects the next

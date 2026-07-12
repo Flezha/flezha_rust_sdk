@@ -327,6 +327,22 @@ pub fn start(
                         );
                     }
                 }
+                ExecutorMessage::EmitOpCommit {
+                    reference_id,
+                    commit,
+                } => {
+                    // The reference_id keys the driver's registered waiter, so
+                    // it is reused verbatim (no fresh nonce). A failed write is
+                    // left to the driver's ack timeout — same posture as a
+                    // lost frame.
+                    let frame = framed_request(reference_id, Command::OpCommit(commit));
+                    if let Err(e) = (&*control_stream).write_all(&frame) {
+                        warn!(
+                            target: "flezha",
+                            "[flezha] OpCommit write failed: {}", e
+                        );
+                    }
+                }
             }
         }
     })
@@ -363,8 +379,14 @@ fn write_bounded_output(
 /// Build an SDK -> Controller `control_command` frame for one oneof command,
 /// stamping a `<ref_prefix>-<nonce>` reference id.
 fn control_command_frame(ref_prefix: &str, command: Command) -> Vec<u8> {
+    framed_request(format!("{ref_prefix}-{}", nonce_suffix()), command)
+}
+
+/// Frame one SDK-initiated `CommandRequest` under an explicit reference_id
+/// (the caller's waiter key when a controller reply is awaited).
+fn framed_request(reference_id: String, command: Command) -> Vec<u8> {
     let request = CommandRequest {
-        reference_id: format!("{ref_prefix}-{}", nonce_suffix()),
+        reference_id,
         command: Some(command),
     };
     payloader::build_from_binary("control_command", &request.encode_to_vec(), HashMap::new())

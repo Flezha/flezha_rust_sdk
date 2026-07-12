@@ -41,11 +41,12 @@ pub trait CommandAction {
 pub enum CommandActionType {
     Regular(Box<dyn CommandAction>),
     ExecutorDisconnect(Box<dyn CommandAction>),
-    /// Controller -> SDK `ExecutorShutdownAck`. Wake the corresponding
-    /// per-operative wait channel registered by the SDK's graceful-shutdown
-    /// routine. No `CommandResponse` is written — the controller sent
-    /// this as its own `CommandRequest`, not in reply to one we sent.
-    AckSignal,
+    /// Controller -> SDK reply to an SDK-initiated request
+    /// (`ExecutorShutdownAck`, `OpCommitResponse`). Wake the waiter
+    /// registered under the request's `reference_id` with the carried
+    /// outcome. No `CommandResponse` is written — the controller sent this
+    /// as its own `CommandRequest`, not in reply to one we sent.
+    AckSignal(crate::shutdown::AckResult),
     /// Defensive: SDK should never receive `ExecutorShutdownNotification`
     /// (it's the SDK->controller direction). Logged and dropped if a buggy
     /// or future controller ever emits one.
@@ -114,7 +115,7 @@ pub fn get_handler(_payload_id: &str, message: &[u8]) -> Result<FrameOutcome, Co
             CommandActionType::Regular(Box::new(proto_ch))
         }
         Some(Command::ExecutorShutdownNotification(_)) => CommandActionType::NotificationIgnore,
-        Some(Command::ExecutorShutdownAck(_)) => CommandActionType::AckSignal,
+        Some(Command::ExecutorShutdownAck(_)) => CommandActionType::AckSignal(Ok(())),
         Some(Command::RestoreInitState(proto_ch)) => CommandActionType::Regular(Box::new(proto_ch)),
         // SDK is the SENDER for the response variants — receiving them
         // is a protocol bug. Drop the message, log it like the other
@@ -148,6 +149,18 @@ pub fn get_handler(_payload_id: &str, message: &[u8]) -> Result<FrameOutcome, Co
         // Dead-letter park durability ack (Controller -> SDK): wakes the
         // dispatch thread parked in `segment::park::park_blocking`.
         Some(Command::ParkPayloadAck(proto_ch)) => CommandActionType::Regular(Box::new(proto_ch)),
+        // SDK is the SENDER for OpCommit — receiving it is a protocol bug.
+        Some(Command::OpCommit(_)) => CommandActionType::NotificationIgnore,
+        // Op-journal durability reply (Controller -> SDK): wakes the bounded
+        // driver blocked at the op-commit barrier; a non-empty error
+        // terminates the run abnormally.
+        Some(Command::OpCommitResponse(reply)) => {
+            CommandActionType::AckSignal(if reply.error.is_empty() {
+                Ok(())
+            } else {
+                Err(reply.error)
+            })
+        }
         None => return Err(CommandDecodeError::EmptyCommand),
     };
 
@@ -216,10 +229,10 @@ pub fn handle_command(
             let _ = stream.shutdown(Shutdown::Both);
         }
 
-        CommandActionType::AckSignal => {
+        CommandActionType::AckSignal(result) => {
             // Suppress unused-variable warnings for unused params.
             let _ = executor;
-            crate::shutdown::signal_ack(&reference_id);
+            crate::shutdown::signal_result(&reference_id, result);
         }
 
         CommandActionType::NotificationIgnore => {

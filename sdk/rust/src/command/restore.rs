@@ -46,6 +46,20 @@ impl CommandAction for RestoreInitState {
                 self.has_compensation_intent,
                 self.has_compensation_done,
             );
+            // Op-journal crash-resume (bounded-op-journal): carry the
+            // committed op state so the driver skips journaled operations
+            // and seeds the next one from the journaled handoff.
+            if let Some(journal) = &self.op_journal {
+                instance.note_op_journal(crate::bounded::instance::JournalResume {
+                    committed_op_idxs: journal.committed_op_idxs.clone(),
+                    iter: journal.iter,
+                    handoff: journal
+                        .handoff
+                        .iter()
+                        .map(|item| (item.channel_id, item.payload.clone()))
+                        .collect(),
+                });
+            }
             instance.note_restored();
             t
         } else {

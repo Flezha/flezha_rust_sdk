@@ -99,6 +99,17 @@ pub enum BuildBoundedError {
         factory_id: &'static str,
         operation: String,
     },
+
+    #[error(
+        "bounded operative `{factory_id}` is durable but its inter-operation channel `{channel}` \
+         has no byte codec; declare `.codec()` (standard serde payloads) or `.codec_with(...)` \
+         so the op-journal can persist and re-seed the stage handoff, or opt the class out with \
+         `PERSISTENCE_ENABLED = false`"
+    )]
+    MissingInterOpCodec {
+        factory_id: &'static str,
+        channel: String,
+    },
 }
 
 /// Build and validate the spec for a bounded class. Empty `operations()`
@@ -133,6 +144,23 @@ pub(crate) fn build_spec<T: BoundedOperative>() -> Result<BoundedSpec, BuildBoun
         detail: format!("{e}"),
     })?;
     let chain = linear_chain(factory_id, &topology)?;
+
+    // Durable structured classes journal the inter-op handoff at every op
+    // boundary (`bounded-op-journal`), which requires every inter-operation
+    // channel to carry a byte codec. Unpublished library: fail registration
+    // instead of shimming.
+    if T::PERSISTENCE_ENABLED {
+        if let Some(ch) = topology
+            .channels
+            .iter()
+            .find(|c| c.kind == ChannelKind::InterOperation && c.codec.is_none())
+        {
+            return Err(BuildBoundedError::MissingInterOpCodec {
+                factory_id,
+                channel: ch.name.to_string(),
+            });
+        }
+    }
 
     Ok(BoundedSpec {
         run: T::run as BoundedRunFn,

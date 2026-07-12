@@ -160,6 +160,9 @@ pub(crate) struct ChannelEntry {
     /// Retry-then-park policy for this channel's consumer dispatchers.
     /// `.retry_max(...)` / `.retry_backoff_ms(...)` overwrite the defaults.
     pub retry: crate::channel::RetryPolicy,
+    /// Inter-op byte codec declared via `.codec()` / `.codec_with(...)`.
+    /// Required for durable structured bounded classes (`bounded-op-journal`).
+    pub codec: Option<crate::channel::ChannelCodec>,
 }
 
 /// Reasons `UnboundedOperative::channels(c)` declarations fail at registration time.
@@ -321,6 +324,7 @@ impl ChannelBuilder {
             keyed: false,
             overflow_policy: default_policy_for_kind(kind),
             retry: crate::channel::RetryPolicy::default(),
+            codec: None,
         });
         self.name_to_id.insert(name, id);
         id
@@ -413,6 +417,49 @@ fn set_retry_max(builder: &mut ChannelBuilder, channel_id: u32, max_attempts: u3
         return;
     }
     entry.retry.max_attempts = max_attempts;
+}
+
+/// Install the standard inter-op byte codec for `T` — postcard over the
+/// SDK's standard serde derives, the same wire format the effect records
+/// use. Shared by the `.codec()` declarations on both builder stages.
+fn set_codec<T>(builder: &mut ChannelBuilder, channel_id: u32)
+where
+    T: serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static,
+{
+    set_codec_with::<T, _, _>(
+        builder,
+        channel_id,
+        |typed: &T| {
+            postcard::to_allocvec(typed).map_err(|e| format!("inter-op codec encode failed: {e}"))
+        },
+        |bytes: Vec<u8>| {
+            postcard::from_bytes::<T>(&bytes)
+                .map_err(|e| format!("inter-op codec decode failed: {e}"))
+        },
+    );
+}
+
+/// Install a custom typed→bytes / bytes→typed codec pair, type-erasing both
+/// halves onto the channel entry.
+fn set_codec_with<T, E, D>(builder: &mut ChannelBuilder, channel_id: u32, encode: E, decode: D)
+where
+    T: Send + Sync + 'static,
+    E: Fn(&T) -> Result<Vec<u8>, String> + Send + Sync + 'static,
+    D: Fn(Vec<u8>) -> Result<T, String> + Send + Sync + 'static,
+{
+    let encode_erased: crate::channel::CodecEncodeFn = Arc::new(move |val: &dyn Any| {
+        let typed = val
+            .downcast_ref::<T>()
+            .ok_or_else(|| "inter-op codec: type mismatch (build-time invariant)".to_string())?;
+        encode(typed)
+    });
+    let decode_erased: crate::channel::EntryWrapFn = Arc::new(move |bytes: Vec<u8>| {
+        decode(bytes).map(|v| Arc::new(v) as Arc<dyn Any + Send + Sync>)
+    });
+    builder.channels[channel_id as usize].codec = Some(crate::channel::ChannelCodec {
+        encode: encode_erased,
+        decode: decode_erased,
+    });
 }
 
 pub(crate) fn default_policy_for_kind(kind: ChannelKind) -> OverflowPolicy {
@@ -510,6 +557,29 @@ impl<'b, T: 'static + Send + Sync> ChannelDecl<'b, T> {
         self
     }
 
+    /// Declare the standard inter-op byte codec (postcard over `T`'s serde
+    /// derives) so this channel's handoff batch is journal-able at the
+    /// bounded op-commit barrier and re-seedable on crash-resume. Required
+    /// on every inter-op channel of a durable structured bounded class.
+    pub fn codec(self) -> Self
+    where
+        T: serde::Serialize + serde::de::DeserializeOwned,
+    {
+        set_codec::<T>(self.builder, self.channel_id);
+        self
+    }
+
+    /// Declare a custom typed→bytes / bytes→typed codec pair for payload
+    /// types without the standard serde derives.
+    pub fn codec_with<E, D>(self, encode: E, decode: D) -> Self
+    where
+        E: Fn(&T) -> Result<Vec<u8>, String> + Send + Sync + 'static,
+        D: Fn(Vec<u8>) -> Result<T, String> + Send + Sync + 'static,
+    {
+        set_codec_with::<T, E, D>(self.builder, self.channel_id, encode, decode);
+        self
+    }
+
     /// Wire the producer Operation. Compile-time bound: `S::Output == T`.
     /// Multi-producer is a compile error: this consumes `self` and returns
     /// `ChannelDeclWithProducer`, which has no `.from` method.
@@ -570,6 +640,28 @@ impl<'b, T: 'static + Send + Sync> ChannelDeclWithProducer<'b, T> {
         self.builder.channels[self.channel_id as usize]
             .retry
             .backoff_base_ms = base_ms;
+        self
+    }
+
+    /// Declare the standard inter-op byte codec (postcard over `T`'s serde
+    /// derives). See [`ChannelDecl::codec`] — declarable on either side of
+    /// `.from(...)`.
+    pub fn codec(self) -> Self
+    where
+        T: serde::Serialize + serde::de::DeserializeOwned,
+    {
+        set_codec::<T>(self.builder, self.channel_id);
+        self
+    }
+
+    /// Declare a custom typed→bytes / bytes→typed codec pair. See
+    /// [`ChannelDecl::codec_with`].
+    pub fn codec_with<E, D>(self, encode: E, decode: D) -> Self
+    where
+        E: Fn(&T) -> Result<Vec<u8>, String> + Send + Sync + 'static,
+        D: Fn(Vec<u8>) -> Result<T, String> + Send + Sync + 'static,
+    {
+        set_codec_with::<T, E, D>(self.builder, self.channel_id, encode, decode);
         self
     }
 

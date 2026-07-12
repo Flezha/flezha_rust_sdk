@@ -135,7 +135,24 @@ pub struct ChannelDescriptor {
     /// Retry-then-park policy applied by this channel's consumer dispatchers.
     /// Plugin-bound channels have no SDK-side consumer and ignore this value.
     pub retry: RetryPolicy,
+    /// Symmetric byte codec for inter-operation payloads, declared via
+    /// `.codec()` / `.codec_with(...)`. Required on every inter-op channel of
+    /// a durable structured bounded class so the stage handoff batch can be
+    /// journaled at the op-commit barrier and re-seeded on crash-resume
+    /// (`bounded-op-journal`). `None` elsewhere.
+    pub codec: Option<ChannelCodec>,
 }
+
+/// Typed→bytes / bytes→typed codec pair for an inter-operation channel's
+/// payload. `encode` receives the type-erased collected value; `decode` is
+/// the inter-op sibling of the entry channel's `wrap_input`.
+#[derive(Clone)]
+pub struct ChannelCodec {
+    pub encode: CodecEncodeFn,
+    pub decode: EntryWrapFn,
+}
+
+pub type CodecEncodeFn = Arc<dyn Fn(&dyn Any) -> Result<Vec<u8>, String> + Send + Sync + 'static>;
 
 pub type EntryWrapFn =
     Arc<dyn Fn(Vec<u8>) -> Result<Arc<dyn Any + Send + Sync>, String> + Send + Sync + 'static>;

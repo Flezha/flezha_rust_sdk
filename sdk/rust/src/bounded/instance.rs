@@ -58,6 +58,22 @@ pub struct BoundedInstance {
     /// Segment identities whose compensation already ran before the crash
     /// (`RestoreInitState.has_compensation_done`) — skipped on resume.
     compensation_done: Mutex<HashSet<Vec<u8>>>,
+    /// Committed op-journal state shipped back via `RestoreInitState.op_journal`
+    /// on crash-resume (`bounded-op-journal`). `Some` ⇒ the driver skips the
+    /// journaled operations and seeds the first uncommitted one from the
+    /// handoff. Every restore frame of the bind carries the same state, so
+    /// repeated notes are idempotent overwrites.
+    op_journal: Mutex<Option<JournalResume>>,
+}
+
+/// Committed op-journal state for one crash-resume: the op indexes recorded
+/// `op_committed` plus the latest journaled handoff batch (channel-id-tagged
+/// codec bytes, decoded by the channel's inter-op codec at seed time).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JournalResume {
+    pub committed_op_idxs: Vec<u32>,
+    pub iter: u32,
+    pub handoff: Vec<(u32, Vec<u8>)>,
 }
 
 impl BoundedInstance {
@@ -79,8 +95,31 @@ impl BoundedInstance {
             restored_cv: Condvar::new(),
             compensation_intents: Mutex::new(HashSet::new()),
             compensation_done: Mutex::new(HashSet::new()),
+            op_journal: Mutex::new(None),
         });
         (instance, inbox_rx)
+    }
+
+    /// Record the shipped-back op-journal state (crash-resume). Overwrites —
+    /// every restore frame of one bind carries the same snapshot.
+    pub fn note_op_journal(&self, resume: JournalResume) {
+        *self.op_journal.lock().unwrap_or_else(|p| p.into_inner()) = Some(resume);
+    }
+
+    /// The shipped-back op-journal state, if any. Cloned so the driver reads
+    /// it without holding the lock across the chain run.
+    pub fn op_journal_resume(&self) -> Option<JournalResume> {
+        self.op_journal
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+
+    /// Whether any Segment's compensation-done marker was shipped back — the
+    /// signal that an undo pass was already in flight before the crash, so
+    /// compensation resume outranks journal-gated forward resume.
+    pub fn any_compensation_done(&self) -> bool {
+        !marker_set(&self.compensation_done).is_empty()
     }
 
     /// Record the shipped-back saga compensation markers for a Segment (crash-

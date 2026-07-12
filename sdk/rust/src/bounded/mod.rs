@@ -495,7 +495,10 @@ mod tests {
         }
         fn operations(c: &mut ChannelBuilder) {
             c.input::<String>("in").into::<Stage1>();
-            c.channel::<String>("mid").from::<Stage1>().into::<Stage2>();
+            c.channel::<String>("mid")
+                .codec()
+                .from::<Stage1>()
+                .into::<Stage2>();
             c.channel::<String>("out")
                 .from::<Stage2>()
                 .to_plugin("sink");
@@ -589,7 +592,10 @@ mod tests {
         }
         fn operations(c: &mut ChannelBuilder) {
             c.input::<String>("in").into::<SplitOp>();
-            c.channel::<String>("mid").from::<SplitOp>().into::<FanOp>();
+            c.channel::<String>("mid")
+                .codec()
+                .from::<SplitOp>()
+                .into::<FanOp>();
             c.channel::<String>("out").from::<FanOp>().to_plugin("sink");
         }
     }
@@ -667,6 +673,7 @@ mod tests {
         fn operations(c: &mut ChannelBuilder) {
             c.input::<String>("in").into::<HybridStage1>();
             c.channel::<String>("mid")
+                .codec()
                 .from::<HybridStage1>()
                 .also_to_plugin_with("midsink", |s: &String| format!("mid:{s}").into_bytes())
                 .into::<HybridStage2>();
@@ -822,9 +829,11 @@ mod tests {
         fn operations(c: &mut ChannelBuilder) {
             c.input::<String>("in").into::<SagaReserve>();
             c.channel::<String>("c1")
+                .codec()
                 .from::<SagaReserve>()
                 .into::<SagaCharge>();
             c.channel::<String>("c2")
+                .codec()
                 .from::<SagaCharge>()
                 .into::<SagaShipFails>();
             c.channel::<String>("out")
@@ -848,9 +857,11 @@ mod tests {
         fn operations(c: &mut ChannelBuilder) {
             c.input::<String>("in").into::<SagaReserve>();
             c.channel::<String>("c1")
+                .codec()
                 .from::<SagaReserve>()
                 .into::<SagaCharge>();
             c.channel::<String>("c2")
+                .codec()
                 .from::<SagaCharge>()
                 .into::<SagaShipFails>();
             c.channel::<String>("out")
@@ -868,9 +879,11 @@ mod tests {
         fn operations(c: &mut ChannelBuilder) {
             c.input::<String>("in").into::<SagaReserve>();
             c.channel::<String>("c1")
+                .codec()
                 .from::<SagaReserve>()
                 .into::<SagaCharge>();
             c.channel::<String>("c2")
+                .codec()
                 .from::<SagaCharge>()
                 .into::<EchoOp>();
             c.channel::<String>("out")
@@ -974,9 +987,11 @@ mod tests {
         fn operations(c: &mut ChannelBuilder) {
             c.input::<String>("in").into::<SplitOp>();
             c.channel::<String>("mid")
+                .codec()
                 .from::<SplitOp>()
                 .into::<SagaFan>();
             c.channel::<String>("mid2")
+                .codec()
                 .from::<SagaFan>()
                 .into::<FailLast>();
             c.channel::<String>("out")
@@ -1037,6 +1052,7 @@ mod tests {
         fn operations(c: &mut ChannelBuilder) {
             c.input::<String>("in").into::<StopReserve>();
             c.channel::<String>("mid")
+                .codec()
                 .from::<StopReserve>()
                 .into::<EchoOp>();
             c.channel::<String>("out")
@@ -1127,9 +1143,11 @@ mod tests {
         fn operations(c: &mut ChannelBuilder) {
             c.input::<String>("in").into::<ResumeUndoA>();
             c.channel::<String>("c1")
+                .codec()
                 .from::<ResumeUndoA>()
                 .into::<ResumeUndoB>();
             c.channel::<String>("c2")
+                .codec()
                 .from::<ResumeUndoB>()
                 .into::<SagaShipFails>();
             c.channel::<String>("out")
@@ -1220,6 +1238,41 @@ mod tests {
         );
         // Naming the missing terminal condition is part of the contract.
         assert!(err.to_string().contains("terminal condition"));
+    }
+
+    #[test]
+    fn durable_structured_without_inter_op_codec_is_rejected() {
+        struct NoCodec;
+        impl BoundedOperative for NoCodec {
+            fn factory_id() -> &'static str {
+                "test-no-codec-bounded"
+            }
+            fn operations(c: &mut ChannelBuilder) {
+                c.input::<String>("in").into::<Stage1>();
+                c.channel::<String>("mid").from::<Stage1>().into::<Stage2>();
+            }
+        }
+        let err = spec::build_spec::<NoCodec>().expect_err("durable class needs the codec");
+        match err {
+            spec::BuildBoundedError::MissingInterOpCodec { channel, .. } => {
+                assert_eq!(channel, "mid", "the error names the codec-less channel");
+            }
+            other => panic!("expected MissingInterOpCodec, got {other:?}"),
+        }
+
+        // The opted-out shape of the same topology registers fine.
+        struct NoCodecOptOut;
+        impl BoundedOperative for NoCodecOptOut {
+            fn factory_id() -> &'static str {
+                "test-no-codec-optout-bounded"
+            }
+            const PERSISTENCE_ENABLED: bool = false;
+            fn operations(c: &mut ChannelBuilder) {
+                c.input::<String>("in").into::<Stage1>();
+                c.channel::<String>("mid").from::<Stage1>().into::<Stage2>();
+            }
+        }
+        spec::build_spec::<NoCodecOptOut>().expect("opted-out classes may omit the codec");
     }
 
     #[test]
@@ -1699,6 +1752,97 @@ mod tests {
             "the driver resumes once the expected Segment restore lands"
         );
 
+        // --- bounded-op-journal §D3: a durable structured chain commits every
+        // op boundary — one OpCommit per stage, gated on the (fake
+        // controller's) durable ack, carrying the codec-serialized handoff ---
+        let _ = drain_op_commits();
+        assert!(node.start_bounded(
+            "test-chain-bounded".into(),
+            "chain-commit".into(),
+            "x".into()
+        ));
+        let (outs, done) = drain(&rx, "chain-commit");
+        assert_eq!(done.0, "ok");
+        assert_eq!(outs, vec![b"x-1-2".to_vec()]);
+        let commits = drain_op_commits();
+        assert_eq!(
+            commits.iter().map(|c| c.op_idx).collect::<Vec<_>>(),
+            vec![0, 1],
+            "one gated OpCommit per completed stage, in chain order"
+        );
+        assert!(commits.iter().all(|c| c.operative_id == "chain-commit"));
+        // Stage 0 hands off on the codec'd `mid` channel (id 1: in=0, mid=1);
+        // the terminal stage's output is plugin-bound (no codec) ⇒ empty.
+        assert_eq!(commits[0].handoff.len(), 1);
+        assert_eq!(commits[0].handoff[0].channel_id, 1);
+        assert_eq!(
+            postcard::from_bytes::<String>(&commits[0].handoff[0].payload).unwrap(),
+            "x-1"
+        );
+        assert!(commits[1].handoff.is_empty());
+        assert_eq!(
+            commits[0].segments_ran.len(),
+            1,
+            "one segment ran in stage 0"
+        );
+
+        // Opt-out twin: no journal, no handshake — zero commits.
+        assert!(node.start_bounded(
+            "test-fan-optout-bounded".into(),
+            "optout-no-commit".into(),
+            "a".into(),
+        ));
+        let (_o, done) = drain(&rx, "optout-no-commit");
+        assert_eq!(done.0, "ok");
+        assert!(
+            drain_op_commits().is_empty(),
+            "an opted-out class skips the op-commit handshake entirely"
+        );
+
+        // --- bounded-op-journal §D5: resume-skip — a shipped journal skips the
+        // committed stages and seeds the next one from the journaled handoff ---
+        let (outs, done) = resume_chain_with_journal(
+            &node,
+            &rx,
+            "chain-resume",
+            instance::JournalResume {
+                committed_op_idxs: vec![0],
+                iter: 0,
+                handoff: vec![(1, postcard::to_allocvec(&"seed".to_string()).unwrap())],
+            },
+        );
+        assert_eq!(done.0, "ok");
+        assert_eq!(
+            outs,
+            vec![b"seed-2".to_vec()],
+            "stage 0 is skipped (no `-1` suffix, args unused); stage 1 runs \
+             seeded from the journaled handoff"
+        );
+        assert_eq!(
+            drain_op_commits()
+                .iter()
+                .map(|c| c.op_idx)
+                .collect::<Vec<_>>(),
+            vec![1],
+            "only the resumed (uncommitted) stage re-commits"
+        );
+
+        // A journal recording EVERY stage committed resumes straight to a
+        // clean completion — nothing re-runs, nothing re-commits.
+        let (outs, done) = resume_chain_with_journal(
+            &node,
+            &rx,
+            "chain-done",
+            instance::JournalResume {
+                committed_op_idxs: vec![0, 1],
+                iter: 0,
+                handoff: Vec::new(),
+            },
+        );
+        assert_eq!(done.0, "ok");
+        assert!(outs.is_empty(), "a fully-committed chain re-runs nothing");
+        assert!(drain_op_commits().is_empty());
+
         // --- §4.3 durable saga records: a fresh abnormal run emits one
         // compensation_intent per completed compensable segment and one
         // compensation_done per compensated segment ---
@@ -1774,6 +1918,46 @@ mod tests {
         );
     }
 
+    /// Respawn `test-chain-bounded` as a crash-resume carrying `journal`
+    /// (exactly what the RestoreInitState handler would note), release the
+    /// restore gate, and drain it to completion.
+    fn resume_chain_with_journal(
+        node: &ExecutorNode,
+        rx: &Receiver<ExecutorMessage>,
+        id: &str,
+        journal: instance::JournalResume,
+    ) -> (Vec<Vec<u8>>, (String, String, Vec<u8>)) {
+        assert!(node.start_bounded_resumable(
+            "test-chain-bounded".into(),
+            id.into(),
+            "ignored-args".into(),
+            1,
+        ));
+        let s1_id = crate::segment::flusher::encode_segment_identity(id, "bounded_stage1", "");
+        let (inst, _slot) = node
+            .find_bounded_segment(&s1_id)
+            .expect("chain segment reachable by the restore handler");
+        inst.note_op_journal(journal);
+        inst.note_restored();
+        drain(rx, id)
+    }
+
+    /// Op-commits observed by the fake controller (`bounded-op-journal`
+    /// barrier): every `EmitOpCommit` the drain helpers ack is recorded here
+    /// so the gating/handoff assertions can inspect what would be journaled.
+    static OP_COMMITS: Mutex<Vec<crate::pb::OpCommit>> = Mutex::new(Vec::new());
+
+    fn drain_op_commits() -> Vec<crate::pb::OpCommit> {
+        std::mem::take(&mut *OP_COMMITS.lock().unwrap())
+    }
+
+    /// Fake-controller half of the op-commit barrier: record the commit and
+    /// wake the blocked driver with a durable-ack success.
+    fn ack_op_commit(reference_id: String, commit: crate::pb::OpCommit) {
+        OP_COMMITS.lock().unwrap().push(commit);
+        crate::shutdown::signal_result(&reference_id, Ok(()));
+    }
+
     /// Drain output frames until the `BoundedCompleted` for `id`, returning the
     /// collected outputs and the `(status, error, result)` completion tuple.
     fn drain(
@@ -1798,6 +1982,10 @@ mod tests {
                     error,
                     result,
                 } if operative_id == id => return (outs, (status, error, result)),
+                ExecutorMessage::EmitOpCommit {
+                    reference_id,
+                    commit,
+                } => ack_op_commit(reference_id, commit),
                 _ => {}
             }
         }
@@ -1812,14 +2000,20 @@ mod tests {
             let msg = rx
                 .recv_timeout(remaining)
                 .unwrap_or_else(|_| panic!("timed out waiting for output from {id}"));
-            if let ExecutorMessage::EmitBoundedOutput {
-                operative_id,
-                payload: p,
-            } = msg
-            {
-                if operative_id == id && p == payload {
-                    return;
+            match msg {
+                ExecutorMessage::EmitOpCommit {
+                    reference_id,
+                    commit,
+                } => ack_op_commit(reference_id, commit),
+                ExecutorMessage::EmitBoundedOutput {
+                    operative_id,
+                    payload: p,
+                } => {
+                    if operative_id == id && p == payload {
+                        return;
+                    }
                 }
+                _ => {}
             }
         }
     }

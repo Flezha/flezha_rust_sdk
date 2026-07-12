@@ -157,7 +157,7 @@ impl ShutdownBridge {
             let operative_id_for_thread = operative_id;
             let reference_id_for_thread = reference_id;
             wait_handles.push(thread::spawn(move || match rx.recv_timeout(ACK_TIMEOUT) {
-                Ok(()) => {}
+                Ok(_) => {}
                 Err(_) => {
                     eprintln!(
                         "[flezha] ExecutorShutdownAck timeout for {}",
@@ -188,34 +188,43 @@ impl ShutdownBridge {
 // `new()` calls; each registers its bridge here.
 // ---------------------------------------------------------------------------
 
-fn pending_acks_map() -> &'static Mutex<HashMap<String, mpsc::SyncSender<()>>> {
-    static PENDING_ACKS: OnceLock<Mutex<HashMap<String, mpsc::SyncSender<()>>>> = OnceLock::new();
+/// Result carried by a controller reply to an SDK-initiated request:
+/// `Ok(())` for a bare ack (`ExecutorShutdownAck`), `Err(reason)` when the
+/// reply reports a failure (`OpCommitResponse.error`).
+pub type AckResult = Result<(), String>;
+
+fn pending_acks_map() -> &'static Mutex<HashMap<String, mpsc::SyncSender<AckResult>>> {
+    static PENDING_ACKS: OnceLock<Mutex<HashMap<String, mpsc::SyncSender<AckResult>>>> =
+        OnceLock::new();
     PENDING_ACKS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn register_pending_ack(reference_id: String) -> mpsc::Receiver<()> {
+/// Register a waiter for a controller reply keyed by the outbound request's
+/// `reference_id`. Shared by the graceful-shutdown ack wait and the bounded
+/// driver's op-commit barrier.
+pub(crate) fn register_pending_ack(reference_id: String) -> mpsc::Receiver<AckResult> {
     let (tx, rx) = mpsc::sync_channel(1);
     pending_acks_map().lock().unwrap().insert(reference_id, tx);
     rx
 }
 
-fn drop_pending_ack(reference_id: &str) {
+pub(crate) fn drop_pending_ack(reference_id: &str) {
     pending_acks_map().lock().unwrap().remove(reference_id);
 }
 
-/// Called from the controller->SDK `ExecutorShutdownAck` command handler. Wakes
-/// the per-operative wait channel registered by `run_graceful_shutdown`.
-/// A missing entry is logged and ignored — this happens after the wait
-/// already timed out and dropped its registration.
-pub fn signal_ack(reference_id: &str) {
+/// Wake the waiter registered under `reference_id` with the controller's
+/// reply outcome — `Ok(())` from `ExecutorShutdownAck`, the carried result
+/// from `OpCommitResponse`. A missing entry is logged and ignored (the wait
+/// already timed out and dropped its registration).
+pub fn signal_result(reference_id: &str, result: AckResult) {
     let entry = pending_acks_map().lock().unwrap().remove(reference_id);
     match entry {
         Some(tx) => {
-            let _ = tx.send(());
+            let _ = tx.send(result);
         }
         None => {
             eprintln!(
-                "[flezha] ExecutorShutdownAck for unknown reference_id {} — \
+                "[flezha] controller reply for unknown reference_id {} — \
                  either timed out already or never registered.",
                 reference_id
             );
@@ -355,7 +364,7 @@ mod tests {
         // Now signal the ack so the wait thread releases. Closing the
         // socket on the controller side without acking would also work but
         // we exercise the happy path explicitly.
-        signal_ack(&request.reference_id);
+        signal_result(&request.reference_id, Ok(()));
         run_handle.join().expect("shutdown thread joins");
     }
 
@@ -385,11 +394,11 @@ mod tests {
     }
 
     #[test]
-    fn signal_ack_for_unknown_reference_does_not_panic() {
+    fn signal_result_for_unknown_reference_does_not_panic() {
         // Matches the post-timeout cleanup race: the wait thread already
         // dropped its registration; a late ack arrives and finds nothing.
         // Must not panic.
-        signal_ack("never-registered-ref");
+        signal_result("never-registered-ref", Ok(()));
     }
 
     #[test]

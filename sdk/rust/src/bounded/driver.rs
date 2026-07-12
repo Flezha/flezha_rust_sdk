@@ -22,9 +22,9 @@
 use std::any::Any;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Weak};
+use std::sync::{mpsc, Arc, Weak};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossbeam::channel::{unbounded, Receiver};
 
@@ -45,6 +45,14 @@ use crate::util::LockRecover;
 
 /// Type-erased value moving between bounded stages.
 type Value = Arc<dyn Any + Send + Sync>;
+
+/// Upper bound on the wait for the controller's `OpCommitResponse` before the
+/// run terminates abnormally — the same posture as any mid-run channel loss
+/// (the un-acked op re-runs on resume, at-least-once).
+const OP_COMMIT_ACK_TIMEOUT: Duration = Duration::from_secs(30);
+/// Re-check cadence during the ack wait so a cooperative cancel is observed
+/// promptly (mirrors the restore gate's `RESUME_WAIT_CHUNK`).
+const OP_COMMIT_ACK_CHUNK: Duration = Duration::from_millis(200);
 
 /// One stage's parallel-join result: the inter-operation `batch` released to the
 /// next stage, plus the per-segment record (which segments ran, with their
@@ -270,13 +278,15 @@ fn deregister_flushers(stage_segments: &[Vec<Arc<SegmentSlot>>]) {
 fn drive_chain(ctx: &ChainCtx, args: &str, cancel: &AtomicBool) -> (String, String, Vec<u8>) {
     // Crash-resume into an in-flight compensation (saga, §4.3): a non-empty
     // reconstruction means the Controller shipped back compensation-intent
-    // markers, so the operative had terminated abnormally and (some of) its undo
-    // is outstanding. Finish the remaining hooks — skipping ones already recorded
-    // done — rather than re-running the forward chain, which would redo
-    // already-undone work. Empty ⇒ a fresh run / crash mid-forward, which re-runs
-    // the chain below (3C-a).
+    // markers. Without an op-journal that always means the operative had
+    // terminated abnormally with (some of) its undo outstanding. WITH a
+    // journal, intent markers also accumulate during normal forward progress,
+    // so only a shipped compensation-done marker — written exclusively by an
+    // undo pass — still proves compensation was in flight; otherwise the
+    // journal decides where forward execution resumes (bounded-op-journal).
     let resumed = reconstruct_completed_from_intents(ctx);
-    if !resumed.is_empty() {
+    let journal = ctx.instance.op_journal_resume();
+    if !resumed.is_empty() && (journal.is_none() || ctx.instance.any_compensation_done()) {
         run_compensation(ctx, &resumed);
         return (
             "error".to_string(),
@@ -286,36 +296,52 @@ fn drive_chain(ctx: &ChainCtx, args: &str, cancel: &AtomicBool) -> (String, Stri
     }
 
     let topology = ctx.topology;
-    // Seed the first operation from the spawn args via the entry channel's
-    // typed wrapper.
-    let entry = topology
-        .channels
-        .iter()
-        .find(|c| c.kind == ChannelKind::Entry)
-        .expect("structured bounded has an entry channel (validated at registration)");
-    let wrap = entry
-        .wrap_input
-        .as_ref()
-        .expect("entry channel carries a wrap_input");
-    let mut batch: Vec<Value> = match wrap(args.as_bytes().to_vec()) {
-        Ok(v) => vec![v],
-        Err(e) => {
-            return (
-                "error".to_string(),
-                format!("seeding entry channel failed: {e}"),
-                Vec::new(),
-            )
-        }
-    };
 
     // Completed stages of the current (and only, in v1) pass, recorded in
-    // completion order so an abnormal exit can roll them back in reverse.
+    // completion order so an abnormal exit can roll them back in reverse. A
+    // journal-gated resume pre-seeds it with the intent reconstruction so the
+    // skipped (already-committed) operations still roll back if a later
+    // stage terminates the run abnormally.
     let mut completed: Vec<StageRecord> = Vec::new();
+
+    // Journal-gated resume: skip every operation recorded `op_committed` and
+    // seed the first uncommitted one from the journaled handoff via the
+    // channel codec. No journal ⇒ seed the first operation from the spawn
+    // args via the entry channel's typed wrapper (re-run from the top).
+    let (first_stage, mut batch): (usize, Vec<Value>) = match journal
+        .as_ref()
+        .filter(|resume| !resume.committed_op_idxs.is_empty())
+    {
+        Some(resume) => {
+            let last = *resume
+                .committed_op_idxs
+                .iter()
+                .max()
+                .expect("non-empty committed set") as usize;
+            match seed_from_journal(ctx, resume) {
+                Ok(seeded) => {
+                    completed = resumed;
+                    (last + 1, seeded)
+                }
+                Err(e) => {
+                    // The journaled handoff cannot be re-seeded — terminate
+                    // abnormally and undo the committed operations.
+                    run_compensation(ctx, &resumed);
+                    return ("error".to_string(), e, Vec::new());
+                }
+            }
+        }
+        None => match seed_from_entry(topology, args) {
+            Ok(seeded) => (0, seeded),
+            Err(e) => return ("error".to_string(), e, Vec::new()),
+        },
+    };
+
     // `Some` once the chain terminates abnormally (error / mid-chain stop),
     // carrying the terminal status + error text.
     let mut abnormal: Option<(String, String)> = None;
 
-    for (stage_idx, &op_id) in ctx.chain.iter().enumerate() {
+    for (stage_idx, &op_id) in ctx.chain.iter().enumerate().skip(first_stage) {
         // A cooperative stop before a stage starts is partial progress: stop
         // advancing and roll back what completed.
         if cancel.load(Ordering::Acquire) {
@@ -328,14 +354,17 @@ fn drive_chain(ctx: &ChainCtx, args: &str, cancel: &AtomicBool) -> (String, Stri
         let slots = &ctx.stage_segments[stage_idx];
         let partitioned = partition(op, slots.len(), &batch);
         match run_stage_parallel(topology, ctx.instance_id, slots, partitioned, ctx.pool) {
-            Ok(stage_out) => {
-                batch = stage_out.batch;
+            Ok(StageOut {
+                batch: out_batch,
+                segments,
+            }) => {
+                batch = out_batch;
                 // Durable saga (§4.3): record this operation's completion — one
                 // compensation-intent marker per segment that ran — so a crash
                 // mid-compensation knows what still needs undo. Only for
                 // compensable operations (a hookless op is never rolled back).
                 if op.compensate_overridden {
-                    for seg_run in &stage_out.segments {
+                    for seg_run in &segments {
                         emit_compensation_record(
                             COMPENSATION_INTENT_PAYLOAD_ID,
                             &slots[seg_run.segment_index].segment_identity,
@@ -343,10 +372,26 @@ fn drive_chain(ctx: &ChainCtx, args: &str, cancel: &AtomicBool) -> (String, Stri
                         );
                     }
                 }
+                // Op-boundary commit (bounded-op-journal): journal the stage's
+                // completion + handoff on the controller and block until the
+                // durable ack — the next operation must not race ahead of the
+                // committed record. Ordered AFTER the intent markers so a
+                // crash between marker and ack resolves as "op not committed
+                // → re-run" (at-least-once).
+                let commit = commit_op_boundary(ctx, stage_idx, op, &segments, slots, &batch);
                 completed.push(StageRecord {
                     stage_idx,
-                    segments: stage_out.segments,
+                    segments,
                 });
+                if let Err(e) = commit {
+                    let status = if cancel.load(Ordering::Acquire) {
+                        ("cancelled".to_string(), String::new())
+                    } else {
+                        ("error".to_string(), e)
+                    };
+                    abnormal = Some(status);
+                    break;
+                }
             }
             Err(e) => {
                 abnormal = Some(("error".to_string(), e.to_string()));
@@ -364,6 +409,147 @@ fn drive_chain(ctx: &ChainCtx, args: &str, cancel: &AtomicBool) -> (String, Stri
         Some((status, error)) => {
             run_compensation(ctx, &completed);
             (status, error, Vec::new())
+        }
+    }
+}
+
+/// Seed the first operation from the spawn args via the entry channel's
+/// typed wrapper (a fresh run, or a resume with nothing journaled).
+fn seed_from_entry(topology: &OperativeTopology, args: &str) -> Result<Vec<Value>, String> {
+    let entry = topology
+        .channels
+        .iter()
+        .find(|c| c.kind == ChannelKind::Entry)
+        .expect("structured bounded has an entry channel (validated at registration)");
+    let wrap = entry
+        .wrap_input
+        .as_ref()
+        .expect("entry channel carries a wrap_input");
+    wrap(args.as_bytes().to_vec())
+        .map(|v| vec![v])
+        .map_err(|e| format!("seeding entry channel failed: {e}"))
+}
+
+/// Decode the journaled handoff batch back into typed values via each item's
+/// producing-channel codec (`bounded-op-journal` crash-resume seeding).
+fn seed_from_journal(
+    ctx: &ChainCtx,
+    resume: &super::instance::JournalResume,
+) -> Result<Vec<Value>, String> {
+    let mut seeded: Vec<Value> = Vec::with_capacity(resume.handoff.len());
+    for (channel_id, bytes) in &resume.handoff {
+        let codec = ctx
+            .topology
+            .channel(*channel_id)
+            .and_then(|c| c.codec.as_ref())
+            .ok_or_else(|| {
+                format!(
+                    "journaled handoff references channel id {channel_id} without an inter-op \
+                     codec; cannot re-seed the resumed operation"
+                )
+            })?;
+        let value = (codec.decode)(bytes.clone())
+            .map_err(|e| format!("journaled handoff decode failed on channel {channel_id}: {e}"))?;
+        seeded.push(value);
+    }
+    Ok(seeded)
+}
+
+/// Ship `OpCommit` for a completed stage and block until the controller's
+/// durable `OpCommitResponse` (bounded-op-journal D3). The handoff batch is
+/// serialized through the operation's output-channel codec (validated present
+/// at registration; a terminal or plugin-bound output has no codec and ships
+/// an empty handoff). Skipped for opted-out classes and transport-less runs
+/// (unit tests / standalone, where no coordinator is installed — mirroring
+/// the DLQ park's sink gate). A failed or timed-out ack is a terminal run
+/// error; the un-acked op re-runs on resume (at-least-once).
+fn commit_op_boundary(
+    ctx: &ChainCtx,
+    stage_idx: usize,
+    op: &OperationDescriptor,
+    segments: &[SegmentRun],
+    slots: &[Arc<SegmentSlot>],
+    batch: &[Value],
+) -> Result<(), String> {
+    if !ctx.persistence_enabled || !crate::executor::coordinator_installed() {
+        return Ok(());
+    }
+
+    let mut handoff: Vec<crate::pb::OpHandoffItem> = Vec::new();
+    if let Some(channel_id) = op.output_channel_id {
+        if let Some(codec) = ctx
+            .topology
+            .channel(channel_id)
+            .and_then(|c| c.codec.as_ref())
+        {
+            for value in batch {
+                let payload = (codec.encode)(value.as_ref()).map_err(|e| {
+                    format!(
+                        "op {stage_idx} handoff serialization failed on channel {channel_id}: {e}"
+                    )
+                })?;
+                handoff.push(crate::pb::OpHandoffItem {
+                    channel_id,
+                    payload,
+                });
+            }
+        }
+    }
+
+    let segments_ran: Vec<Vec<u8>> = segments
+        .iter()
+        .map(|seg_run| {
+            slots[seg_run.segment_index]
+                .segment_identity
+                .as_ref()
+                .clone()
+        })
+        .collect();
+
+    let reference_id = format!(
+        "op-commit-{}-{}-{}",
+        ctx.instance_id,
+        stage_idx,
+        crate::util::nonce_suffix()
+    );
+    let rx = crate::shutdown::register_pending_ack(reference_id.clone());
+    crate::executor::emit_op_commit(
+        reference_id.clone(),
+        crate::pb::OpCommit {
+            operative_id: ctx.instance_id.to_string(),
+            op_idx: stage_idx as u32,
+            iter: 0,
+            segments_ran,
+            handoff,
+        },
+    );
+
+    // Chunked wait so a cooperative cancel is observed promptly; the caller
+    // maps a cancel-tripped failure to the `cancelled` terminal status.
+    let deadline = Instant::now() + OP_COMMIT_ACK_TIMEOUT;
+    loop {
+        match rx.recv_timeout(OP_COMMIT_ACK_CHUNK) {
+            Ok(Ok(())) => return Ok(()),
+            Ok(Err(e)) => {
+                return Err(format!("op {stage_idx} commit refused by controller: {e}"));
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if ctx.instance.cancel.load(Ordering::Acquire) {
+                    crate::shutdown::drop_pending_ack(&reference_id);
+                    return Err(format!("op {stage_idx} commit interrupted by stop"));
+                }
+                if Instant::now() >= deadline {
+                    crate::shutdown::drop_pending_ack(&reference_id);
+                    return Err(format!(
+                        "op {stage_idx} commit ack timed out after {}s",
+                        OP_COMMIT_ACK_TIMEOUT.as_secs()
+                    ));
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                crate::shutdown::drop_pending_ack(&reference_id);
+                return Err(format!("op {stage_idx} commit waiter dropped"));
+            }
         }
     }
 }

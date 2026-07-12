@@ -39,12 +39,29 @@ pub(crate) fn request_reconnect(reason: &'static str) {
     coordinator_send(ExecutorMessage::Reconnect(reason));
 }
 
+/// Whether a coordinator channel is installed — `false` only for
+/// transport-less runs (unit tests, standalone benches), which cannot ship
+/// control frames and must not block waiting for replies.
+pub(crate) fn coordinator_installed() -> bool {
+    RECONNECT_TRIGGER.get().is_some()
+}
+
 /// Route a bounded's output to the coordinator (written on a secondary stream
 /// tagged with `operative_id`; the controller fans it out to the unit's plugins).
 pub(crate) fn emit_bounded_output(operative_id: String, payload: Vec<u8>) {
     coordinator_send(ExecutorMessage::EmitBoundedOutput {
         operative_id,
         payload,
+    });
+}
+
+/// Route a bounded op-commit to the coordinator (written as an `OpCommit`
+/// control frame under the caller's `reference_id` so the controller's
+/// `OpCommitResponse` wakes the waiter the driver registered).
+pub(crate) fn emit_op_commit(reference_id: String, commit: crate::pb::OpCommit) {
+    coordinator_send(ExecutorMessage::EmitOpCommit {
+        reference_id,
+        commit,
     });
 }
 
@@ -115,6 +132,14 @@ pub enum ExecutorMessage {
         status: String,
         error: String,
         result: Vec<u8>,
+    },
+    /// A bounded driver reached an op barrier (`bounded-op-journal`); the
+    /// coordinator writes an `OpCommit` control frame under the driver's
+    /// `reference_id` — the controller's `OpCommitResponse` wakes the
+    /// registered waiter. Routed here so control writes stay single-threaded.
+    EmitOpCommit {
+        reference_id: String,
+        commit: crate::pb::OpCommit,
     },
 }
 
