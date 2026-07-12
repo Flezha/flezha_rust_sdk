@@ -47,7 +47,36 @@ use std::time::Duration;
 
 use crossbeam::channel::{Receiver, RecvTimeoutError};
 
+use self::instance::InboxItem;
 use crate::channel::ChannelBuilder;
+
+/// Frame-metadata key carrying a journaled input's durable-inbox offset
+/// (`bounded-durable-suspension`). Stamped by the controller when it appends
+/// the input to the instance's `inbox.wal`, before forwarding it.
+pub(crate) const INBOX_OFFSET_KEY: &str = "flz.inbox_offset";
+
+/// How a structured bounded chain repeats (`bounded-durable-loop`). Every
+/// iteration ends with a durable iteration commit — journal + boundary snapshot
+/// + outbox flush — so a crash resumes at the iteration **after** the last
+/// committed one, never at the loop start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoopMode {
+    /// Not a loop: one pass of the chain, seeded from the spawn args. The
+    /// default, and the only mode a `run`-sugar class may declare.
+    Once,
+    /// One iteration per inbox item (the chat-turn shape): each iteration is
+    /// seeded by the next post-start input through the entry channel. A
+    /// durable instance whose inbox stays empty past the idle threshold at a
+    /// committed boundary **parks** — it is evicted from the executor and
+    /// rehydrated by the next input or its wake deadline
+    /// (`bounded-durable-suspension`).
+    PerInput,
+    /// One iteration per pass of the chain, each seeded by the previous
+    /// iteration's terminal handoff (the refinement-loop shape). Iteration 0 is
+    /// seeded from the spawn args; the loop ends when an iteration releases an
+    /// empty batch. Never parks — it always has its own next input.
+    Chained,
+}
 
 /// One bounded operative class. The bare [`run`](Self::run) form is the
 /// trivial single-Operation, single-Segment case; override
@@ -95,6 +124,27 @@ pub trait BoundedOperative: Send + Sync + 'static {
     /// with a message directing the author to add a terminal condition.
     fn self_terminating() -> bool {
         true
+    }
+
+    /// Loop shape of a structured chain (`bounded-durable-loop`). The default
+    /// [`LoopMode::Once`] is the single pass. A looping class commits every
+    /// iteration durably — journal + boundary snapshot + outbox flush — so a
+    /// crash resumes at the iteration after the last committed one, and
+    /// [`RollbackMode::KeepProgress`] keeps every committed iteration. Declaring
+    /// a loop on a `run`-sugar class (no `operations`) is rejected at
+    /// registration: there is no chain to iterate.
+    fn loop_mode() -> LoopMode {
+        LoopMode::Once
+    }
+
+    /// Durable wake deadline for a [`LoopMode::PerInput`] loop: how long after
+    /// parking the instance is rehydrated even with no input
+    /// (`bounded-durable-suspension`). `None` (the default) parks until the next
+    /// input arrives. The timer is journaled with the park record, so it
+    /// survives a controller redeploy; it wakes the loop with an **empty** entry
+    /// payload, which a class declaring one must accept as its tick.
+    fn wake_after() -> Option<Duration> {
+        None
     }
 
     /// Saga rollback scope, applied when the operative terminates abnormally
@@ -186,14 +236,14 @@ pub struct BoundedCtx {
     cancel: Arc<AtomicBool>,
     completed: bool,
     result: Vec<u8>,
-    inbox: Receiver<Vec<u8>>,
+    inbox: Receiver<InboxItem>,
 }
 
 impl BoundedCtx {
     pub(crate) fn new(
         instance_id: Arc<str>,
         cancel: Arc<AtomicBool>,
-        inbox: Receiver<Vec<u8>>,
+        inbox: Receiver<InboxItem>,
     ) -> Self {
         Self {
             instance_id,
@@ -242,7 +292,7 @@ impl BoundedCtx {
                 return None;
             }
             match self.inbox.recv_timeout(Duration::from_millis(200)) {
-                Ok(item) => return Some(item),
+                Ok(item) => return Some(item.payload),
                 Err(RecvTimeoutError::Timeout) => continue,
                 Err(RecvTimeoutError::Disconnected) => return None,
             }
@@ -502,6 +552,194 @@ mod tests {
     impl BoundedOperative for ChainBounded {
         fn factory_id() -> &'static str {
             "test-chain-bounded"
+        }
+        fn operations(c: &mut ChannelBuilder) {
+            c.input::<String>("in").into::<Stage1>();
+            c.channel::<String>("mid")
+                .codec()
+                .from::<Stage1>()
+                .into::<Stage2>();
+            c.channel::<String>("out")
+                .from::<Stage2>()
+                .to_plugin("sink");
+        }
+    }
+
+    /// The same chain, driven as a chat-style inbox loop: one iteration per
+    /// post-start input, parking when the inbox goes quiet
+    /// (`bounded-durable-loop` + `bounded-durable-suspension`).
+    struct ChatLoop;
+    impl BoundedOperative for ChatLoop {
+        fn factory_id() -> &'static str {
+            "test-chat-loop"
+        }
+        fn loop_mode() -> LoopMode {
+            LoopMode::PerInput
+        }
+        fn self_terminating() -> bool {
+            false
+        }
+        fn max_duration() -> Option<Duration> {
+            Some(Duration::from_secs(30))
+        }
+        fn operations(c: &mut ChannelBuilder) {
+            c.input::<String>("in").into::<Stage1>();
+            c.channel::<String>("mid")
+                .codec()
+                .from::<Stage1>()
+                .into::<Stage2>();
+            c.channel::<String>("out")
+                .from::<Stage2>()
+                .to_plugin("sink");
+        }
+    }
+
+    /// Compensable stage-0 op of the loop saga. Its undo logs the number of
+    /// retained outputs it was handed, which is how the test tells the two
+    /// rollback sources apart: the in-flight iteration carries its outputs in
+    /// memory (`1`), while an iteration rebuilt from the journal carries none
+    /// (`0`) — the documented at-least-once contract, where a durable undo
+    /// handle lives in Segment state.
+    #[derive(Default)]
+    struct LoopReserve;
+    impl Operation for LoopReserve {
+        type Input = String;
+        type Output = String;
+        type State = ();
+        type Change = NoChange;
+        type Clock = WallClock;
+        type Config = ();
+        fn name() -> &'static str {
+            "loop_reserve"
+        }
+        fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
+        fn run(
+            &mut self,
+            input: String,
+            _state: StateHandle<'_, Self>,
+            ctx: &mut OperationCtx<'_>,
+        ) -> Result<(), OperationError> {
+            ctx.emit(format!("reserved:{input}"))?;
+            Ok(())
+        }
+        const COMPENSATE_OVERRIDDEN: bool = true;
+        fn compensate(
+            &mut self,
+            completed_output: Vec<Arc<String>>,
+            _state: StateHandle<'_, Self>,
+            _ctx: &mut OperationCtx<'_>,
+        ) -> Result<(), OperationError> {
+            comp_log(format!("undo-loop:{}", completed_output.len()));
+            Ok(())
+        }
+    }
+
+    /// Terminal op of the loop saga: fails the iteration whose turn says "boom".
+    #[derive(Default)]
+    struct LoopMaybeFail;
+    impl Operation for LoopMaybeFail {
+        type Input = String;
+        type Output = String;
+        type State = ();
+        type Change = NoChange;
+        type Clock = WallClock;
+        type Config = ();
+        fn name() -> &'static str {
+            "loop_maybe_fail"
+        }
+        fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
+        fn run(
+            &mut self,
+            input: String,
+            _state: StateHandle<'_, Self>,
+            ctx: &mut OperationCtx<'_>,
+        ) -> Result<(), OperationError> {
+            if input.contains("boom") {
+                return Err(OperationError::Custom("turn failed".into()));
+            }
+            ctx.emit(format!("done:{input}"))?;
+            Ok(())
+        }
+    }
+
+    /// Inbox-driven saga loop, all-or-nothing: a failing turn unwinds every
+    /// committed turn too.
+    struct LoopSagaAllOrNothing;
+    impl BoundedOperative for LoopSagaAllOrNothing {
+        fn factory_id() -> &'static str {
+            "test-loop-saga-aon"
+        }
+        fn loop_mode() -> LoopMode {
+            LoopMode::PerInput
+        }
+        fn self_terminating() -> bool {
+            false
+        }
+        fn max_duration() -> Option<Duration> {
+            Some(Duration::from_secs(30))
+        }
+        fn operations(c: &mut ChannelBuilder) {
+            loop_saga_chain(c);
+        }
+    }
+
+    /// The same loop, keep-progress: a failing turn unwinds only itself.
+    struct LoopSagaKeepProgress;
+    impl BoundedOperative for LoopSagaKeepProgress {
+        fn factory_id() -> &'static str {
+            "test-loop-saga-keep"
+        }
+        fn loop_mode() -> LoopMode {
+            LoopMode::PerInput
+        }
+        fn rollback_mode() -> RollbackMode {
+            RollbackMode::KeepProgress
+        }
+        fn self_terminating() -> bool {
+            false
+        }
+        fn max_duration() -> Option<Duration> {
+            Some(Duration::from_secs(30))
+        }
+        fn operations(c: &mut ChannelBuilder) {
+            loop_saga_chain(c);
+        }
+    }
+
+    fn loop_saga_chain(c: &mut ChannelBuilder) {
+        c.input::<String>("in").into::<LoopReserve>();
+        c.channel::<String>("mid")
+            .codec()
+            .from::<LoopReserve>()
+            .into::<LoopMaybeFail>();
+        c.channel::<String>("out")
+            .from::<LoopMaybeFail>()
+            .to_plugin("sink");
+    }
+
+    /// A loop declared on a `run`-sugar class: no chain to iterate.
+    struct LoopWithoutChain;
+    impl BoundedOperative for LoopWithoutChain {
+        fn factory_id() -> &'static str {
+            "test-loop-no-chain"
+        }
+        fn loop_mode() -> LoopMode {
+            LoopMode::PerInput
+        }
+        fn run(_ctx: &mut BoundedCtx, _args: &str) -> Result<(), BoundedError> {
+            Ok(())
+        }
+    }
+
+    /// A durable handoff-chained loop whose terminal operation emits to a plugin
+    /// (no codec), so iteration N+1 could not be re-seeded after a crash.
+    struct ChainedLoopNoCodec;
+    impl BoundedOperative for ChainedLoopNoCodec {
+        fn factory_id() -> &'static str {
+            "test-chained-loop-no-codec"
+        }
+        fn loop_mode() -> LoopMode {
+            LoopMode::Chained
         }
         fn operations(c: &mut ChannelBuilder) {
             c.input::<String>("in").into::<Stage1>();
@@ -1386,6 +1624,36 @@ mod tests {
         spec::build_spec::<NoCodecOptOut>().expect("opted-out classes may omit the codec");
     }
 
+    /// `bounded-durable-loop` registration validation: a loop needs a chain to
+    /// iterate, and a durable handoff-chained loop needs a serializable terminal
+    /// batch — otherwise a crash mid-loop would re-seed iteration N+1 with an
+    /// empty batch and silently read as "converged".
+    #[test]
+    fn loop_authoring_is_validated() {
+        match spec::build_spec::<LoopWithoutChain>().expect_err("run-sugar cannot loop a chain") {
+            spec::BuildBoundedError::LoopWithoutChain { .. } => {}
+            other => panic!("expected LoopWithoutChain, got {other:?}"),
+        }
+
+        match spec::build_spec::<ChainedLoopNoCodec>()
+            .expect_err("a chained loop must be able to journal its terminal batch")
+        {
+            spec::BuildBoundedError::LoopTerminalWithoutCodec { operation, .. } => {
+                assert_eq!(
+                    operation, "bounded_stage2",
+                    "the error names the terminal operation"
+                );
+            }
+            other => panic!("expected LoopTerminalWithoutCodec, got {other:?}"),
+        }
+
+        // An inbox-driven loop over the same topology is fine: it re-seeds each
+        // iteration from its inbox, never from the terminal handoff.
+        let spec = spec::build_spec::<ChatLoop>().expect("PerInput loop registers");
+        assert_eq!(spec.loop_mode, LoopMode::PerInput);
+        assert_eq!(spec.chain.len(), 2);
+    }
+
     #[test]
     fn branching_topology_is_rejected() {
         struct Branching;
@@ -1502,6 +1770,9 @@ mod tests {
         crate::register_bounded::<ResumeSaga>();
         crate::register_bounded::<LeakBounded>();
         crate::register_bounded::<UndoSaga>();
+        crate::register_bounded::<ChatLoop>();
+        crate::register_bounded::<LoopSagaAllOrNothing>();
+        crate::register_bounded::<LoopSagaKeepProgress>();
 
         let mut node = ExecutorNode::new("test-ns".to_string());
 
@@ -1572,15 +1843,15 @@ mod tests {
         assert!(node.start_bounded("test-loop-bounded".into(), "loop-1".into(), "".into()));
         assert!(
             node.get_bounded("loop-1")
-                .is_some_and(|i| i.push_inbox(b"alpha".to_vec())),
+                .is_some_and(|i| i.push_inbox(b"alpha".to_vec(), 0)),
             "inbox delivers to running instance"
         );
         assert!(node
             .get_bounded("loop-1")
-            .is_some_and(|i| i.push_inbox(b"beta".to_vec())));
+            .is_some_and(|i| i.push_inbox(b"beta".to_vec(), 0)));
         assert!(node
             .get_bounded("loop-1")
-            .is_some_and(|i| i.push_inbox(b"quit".to_vec())));
+            .is_some_and(|i| i.push_inbox(b"quit".to_vec(), 0)));
         let (outs, done) = drain(&rx, "loop-1");
         assert_eq!(outs, vec![b"got:alpha".to_vec(), b"got:beta".to_vec()]);
         assert_eq!(done.0, "ok", "terminal predicate ⇒ ok");
@@ -1589,7 +1860,7 @@ mod tests {
         assert!(node.start_bounded("test-loop-bounded".into(), "loop-2".into(), "".into()));
         assert!(node
             .get_bounded("loop-2")
-            .is_some_and(|i| i.push_inbox(b"one".to_vec())));
+            .is_some_and(|i| i.push_inbox(b"one".to_vec(), 0)));
         // Drain the echo first so the instance is definitely live before stop.
         wait_for_output(&rx, "loop-2", b"got:one");
         let stop = BoundedStop {
@@ -1605,7 +1876,7 @@ mod tests {
         assert!(node.start_bounded("test-loop-bounded".into(), "loop-3".into(), "".into()));
         assert!(node
             .get_bounded("loop-3")
-            .is_some_and(|i| i.push_inbox(b"x".to_vec())));
+            .is_some_and(|i| i.push_inbox(b"x".to_vec(), 0)));
         wait_for_output(&rx, "loop-3", b"got:x");
         assert!(
             node.stop_operative("loop-3"),
@@ -1998,8 +2269,8 @@ mod tests {
             "chain-resume",
             instance::JournalResume {
                 committed_op_idxs: vec![0],
-                iter: 0,
                 handoff: vec![(1, postcard::to_allocvec(&"seed".to_string()).unwrap())],
+                ..Default::default()
             },
         );
         assert_eq!(done.0, "ok");
@@ -2026,8 +2297,7 @@ mod tests {
             "chain-done",
             instance::JournalResume {
                 committed_op_idxs: vec![0, 1],
-                iter: 0,
-                handoff: Vec::new(),
+                ..Default::default()
             },
         );
         assert_eq!(done.0, "ok");
@@ -2107,6 +2377,167 @@ mod tests {
             0,
             "a compensation-resume records no new intent (forward chain not re-run)"
         );
+
+        // --- bounded-durable-loop: one iteration per inbox item, each ending in
+        // a durable iteration commit; an idle inbox parks the instance ---
+        std::env::set_var("FLEZHA_BOUNDED_PARK_IDLE_MS", "300");
+        let _ = drain_op_commits();
+        assert!(node.start_bounded("test-chat-loop".into(), "chat-1".into(), "ignored".into()));
+        let chat = node
+            .get_bounded("chat-1")
+            .expect("the loop's instance is registered before its driver runs");
+        // Two chat turns, at durable-inbox offsets 4 and 7 (the controller's
+        // offsets are opaque to the driver — it only echoes them back).
+        assert!(chat.push_inbox(b"hi".to_vec(), 4));
+        assert!(chat.push_inbox(b"again".to_vec(), 7));
+
+        let (outs, done) = drain(&rx, "chat-1");
+        assert_eq!(
+            done.0, "parked",
+            "an idle inbox at a committed boundary parks — NOT a terminal completion"
+        );
+        assert_eq!(
+            outs,
+            vec![b"hi-1-2".to_vec(), b"again-1-2".to_vec()],
+            "one full pass of the chain per inbox item"
+        );
+
+        let iters = drain_iter_commits();
+        assert_eq!(
+            iters.iter().map(|c| c.iter).collect::<Vec<_>>(),
+            vec![0, 1],
+            "one iteration commit per turn, in order"
+        );
+        assert_eq!(
+            iters.iter().map(|c| c.consumed_offset).collect::<Vec<_>>(),
+            vec![4, 7],
+            "each commit records the inbox offset its iteration consumed"
+        );
+        assert_eq!(
+            drain_op_commits()
+                .iter()
+                .map(|c| (c.iter, c.op_idx))
+                .collect::<Vec<_>>(),
+            vec![(0, 0), (0, 1), (1, 0), (1, 1)],
+            "every op commit is stamped with its enclosing iteration"
+        );
+
+        let parks = drain_iter_parks();
+        assert_eq!(parks.len(), 1, "exactly one park");
+        assert_eq!(
+            parks[0].iter, 1,
+            "the park names the last COMMITTED iteration"
+        );
+        assert_eq!(
+            parks[0].wake_deadline_ms, 0,
+            "no wake_after declared ⇒ park until the next input"
+        );
+
+        // --- resume-at-iteration: a journal recording iterations 0-1 committed
+        // enters iteration 2 — the committed turns never re-run ---
+        assert!(node.start_bounded_resumable(
+            "test-chat-loop".into(),
+            "chat-2".into(),
+            "ignored".into(),
+            1,
+        ));
+        let s1_id =
+            crate::segment::flusher::encode_segment_identity("chat-2", "bounded_stage1", "");
+        let (chat2, _slot) = node
+            .find_bounded_segment(&s1_id)
+            .expect("the loop's Segment is reachable by the restore handler");
+        chat2.note_op_journal(instance::JournalResume {
+            iter: 2,
+            consumed_offset: 7,
+            committed_ops: vec![
+                instance::CommittedOp {
+                    op_idx: 0,
+                    iter: 0,
+                    segments_ran: vec![s1_id.clone()],
+                },
+                instance::CommittedOp {
+                    op_idx: 1,
+                    iter: 0,
+                    segments_ran: Vec::new(),
+                },
+            ],
+            ..Default::default()
+        });
+        chat2.note_restored();
+        assert!(chat2.push_inbox(b"third".to_vec(), 9));
+
+        let (outs, done) = drain(&rx, "chat-2");
+        assert_eq!(done.0, "parked");
+        assert_eq!(
+            outs,
+            vec![b"third-1-2".to_vec()],
+            "only the new turn runs; the journaled iterations do not re-run"
+        );
+        let iters = drain_iter_commits();
+        assert_eq!(
+            iters.iter().map(|c| c.iter).collect::<Vec<_>>(),
+            vec![2],
+            "the resumed run commits iteration 2 — never 0 or 1 again"
+        );
+        assert_eq!(iters[0].consumed_offset, 9);
+
+        // --- bounded-durable-loop D2: KeepProgress/AllOrNothing are backed by
+        // the JOURNAL — the `committed` iterations a crash-resumed run rolls
+        // back come from `iter_committed` records, not from memory ---
+        for (factory, id, expected) in [
+            // All-or-nothing: the failing turn unwinds itself AND the journaled
+            // turn below it. `undo-loop:1` is the in-flight iteration (outputs
+            // retained in memory); `undo-loop:0` the journal-rebuilt one.
+            (
+                "test-loop-saga-aon",
+                "loop-saga-aon",
+                vec!["undo-loop:1".to_string(), "undo-loop:0".to_string()],
+            ),
+            // Keep-progress: the committed turn is kept; only the in-flight one
+            // unwinds.
+            (
+                "test-loop-saga-keep",
+                "loop-saga-keep",
+                vec!["undo-loop:1".to_string()],
+            ),
+        ] {
+            let _ = drain_comp_log();
+            assert!(node.start_bounded_resumable(factory.into(), id.into(), "ignored".into(), 1));
+            let seg = crate::segment::flusher::encode_segment_identity(id, "loop_reserve", "");
+            let (inst, _slot) = node
+                .find_bounded_segment(&seg)
+                .expect("the loop saga's Segment is reachable by the restore handler");
+            // Journal: iteration 0 committed both of its operations.
+            inst.note_op_journal(instance::JournalResume {
+                iter: 1,
+                consumed_offset: 2,
+                committed_ops: vec![
+                    instance::CommittedOp {
+                        op_idx: 0,
+                        iter: 0,
+                        segments_ran: vec![seg.clone()],
+                    },
+                    instance::CommittedOp {
+                        op_idx: 1,
+                        iter: 0,
+                        segments_ran: Vec::new(),
+                    },
+                ],
+                ..Default::default()
+            });
+            inst.note_restored();
+            assert!(inst.push_inbox(b"boom".to_vec(), 5));
+
+            let (_outs, done) = drain(&rx, id);
+            assert_eq!(done.0, "error", "the failing turn terminates the run");
+            assert_eq!(
+                drain_comp_log(),
+                expected,
+                "{factory}: rollback scope across a journaled iteration boundary"
+            );
+        }
+
+        std::env::remove_var("FLEZHA_BOUNDED_PARK_IDLE_MS");
     }
 
     /// Respawn `test-chain-bounded` as a crash-resume carrying `journal`
@@ -2134,9 +2565,18 @@ mod tests {
     }
 
     /// Op-commits observed by the fake controller (`bounded-op-journal`
-    /// barrier): every `EmitOpCommit` the drain helpers ack is recorded here
+    /// barrier): every `OpCommit` the drain helpers ack is recorded here
     /// so the gating/handoff assertions can inspect what would be journaled.
     static OP_COMMITS: Mutex<Vec<crate::pb::OpCommit>> = Mutex::new(Vec::new());
+
+    /// Iteration commits observed by the fake controller (`bounded-durable-loop`
+    /// boundary) — what the journal would record as `iter_committed`.
+    static ITER_COMMITS: Mutex<Vec<crate::pb::IterCommit>> = Mutex::new(Vec::new());
+
+    /// Park notifications observed by the fake controller
+    /// (`bounded-durable-suspension`) — the instance evicted itself at a
+    /// committed boundary.
+    static ITER_PARKS: Mutex<Vec<crate::pb::IterPark>> = Mutex::new(Vec::new());
 
     /// Every `EmitBoundedOutput` the drain helpers saw — output that went
     /// STRAIGHT to the wire, bypassing any op boundary. A durable structured
@@ -2146,6 +2586,14 @@ mod tests {
 
     fn drain_op_commits() -> Vec<crate::pb::OpCommit> {
         std::mem::take(&mut *OP_COMMITS.lock().unwrap())
+    }
+
+    fn drain_iter_commits() -> Vec<crate::pb::IterCommit> {
+        std::mem::take(&mut *ITER_COMMITS.lock().unwrap())
+    }
+
+    fn drain_iter_parks() -> Vec<crate::pb::IterPark> {
+        std::mem::take(&mut *ITER_PARKS.lock().unwrap())
     }
 
     fn wire_emits_for(id: &str) -> Vec<Vec<u8>> {
@@ -2158,16 +2606,47 @@ mod tests {
             .collect()
     }
 
-    /// Fake-controller half of the op-commit barrier: record the commit, then
-    /// wake the blocked driver with a durable-ack success. Returns the outbox
-    /// the (real) controller would flush to the plugins AFTER that durable
-    /// point — the drain helpers append it to the observed output, so a staged
-    /// operative's assertions still describe what a plugin finally sees.
-    fn ack_op_commit(reference_id: String, commit: crate::pb::OpCommit) -> Vec<Vec<u8>> {
-        let flushed: Vec<Vec<u8>> = commit.outbox.iter().map(|o| o.payload.clone()).collect();
-        OP_COMMITS.lock().unwrap().push(commit);
-        crate::shutdown::signal_result(&reference_id, Ok(()));
-        flushed
+    /// Fake-controller half of every SDK-initiated control request: record the
+    /// frame and, for the two durability handshakes, wake the blocked driver
+    /// with an ack success. Returns the outbox the (real) controller would flush
+    /// to the plugins AFTER that durable point — the drain helpers append it to
+    /// the observed output, so a staged operative's assertions still describe
+    /// what a plugin finally sees. A park is one-way: nothing to ack.
+    fn ack_control_request(
+        reference_id: String,
+        command: crate::pb::command_request::Command,
+    ) -> Vec<Vec<u8>> {
+        use crate::pb::command_request::Command;
+        match command {
+            Command::OpCommit(commit) => {
+                let flushed: Vec<Vec<u8>> =
+                    commit.outbox.iter().map(|o| o.payload.clone()).collect();
+                OP_COMMITS.lock().unwrap().push(commit);
+                crate::shutdown::signal_result(&reference_id, Ok(()));
+                flushed
+            }
+            Command::IterCommit(commit) => {
+                ITER_COMMITS.lock().unwrap().push(commit);
+                crate::shutdown::signal_result(&reference_id, Ok(()));
+                Vec::new()
+            }
+            Command::IterPark(park) => {
+                ITER_PARKS.lock().unwrap().push(park);
+                Vec::new()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// The operative id an SDK-initiated control request belongs to.
+    fn control_request_operative(command: &crate::pb::command_request::Command) -> String {
+        use crate::pb::command_request::Command;
+        match command {
+            Command::OpCommit(c) => c.operative_id.clone(),
+            Command::IterCommit(c) => c.operative_id.clone(),
+            Command::IterPark(p) => p.operative_id.clone(),
+            _ => String::new(),
+        }
     }
 
     /// Drain output frames until the `BoundedCompleted` for `id`, returning the
@@ -2203,14 +2682,22 @@ mod tests {
                     error,
                     result,
                 } if operative_id == id => return (outs, (status, error, result)),
-                ExecutorMessage::EmitOpCommit {
+                ExecutorMessage::EmitControlRequest {
                     reference_id,
-                    commit,
+                    command,
                 } => {
-                    let for_id = commit.operative_id == id;
-                    let flushed = ack_op_commit(reference_id, commit);
+                    let for_id = control_request_operative(&command) == id;
+                    // A park tears the run down WITHOUT a completion, so the
+                    // drain would otherwise wait out its deadline: report it as
+                    // the terminal outcome of this run instead.
+                    let parked =
+                        matches!(command, crate::pb::command_request::Command::IterPark(_));
+                    let flushed = ack_control_request(reference_id, command);
                     if for_id {
                         outs.extend(flushed);
+                        if parked {
+                            return (outs, ("parked".to_string(), String::new(), Vec::new()));
+                        }
                     }
                 }
                 _ => {}
@@ -2228,12 +2715,12 @@ mod tests {
                 .recv_timeout(remaining)
                 .unwrap_or_else(|_| panic!("timed out waiting for output from {id}"));
             match msg {
-                ExecutorMessage::EmitOpCommit {
+                ExecutorMessage::EmitControlRequest {
                     reference_id,
-                    commit,
+                    command,
                 } => {
-                    let for_id = commit.operative_id == id;
-                    let flushed = ack_op_commit(reference_id, commit);
+                    let for_id = control_request_operative(&command) == id;
+                    let flushed = ack_control_request(reference_id, command);
                     if for_id && flushed.iter().any(|p| p == payload) {
                         return;
                     }

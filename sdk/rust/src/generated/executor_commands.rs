@@ -5,7 +5,7 @@ pub struct CommandRequest {
     pub reference_id: ::prost::alloc::string::String,
     #[prost(
         oneof = "command_request::Command",
-        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29"
+        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32"
     )]
     pub command: ::core::option::Option<command_request::Command>,
 }
@@ -69,6 +69,12 @@ pub mod command_request {
         OpCommit(super::OpCommit),
         #[prost(message, tag = "29")]
         OpCommitResponse(super::OpCommitResponse),
+        #[prost(message, tag = "30")]
+        IterCommit(super::IterCommit),
+        #[prost(message, tag = "31")]
+        IterCommitResponse(super::IterCommitResponse),
+        #[prost(message, tag = "32")]
+        IterPark(super::IterPark),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -294,11 +300,78 @@ pub struct OpCommitResponse {
     #[prost(string, tag = "3")]
     pub error: ::prost::alloc::string::String,
 }
+/// SDK -> Controller, at each iteration boundary of a looping durable
+/// structured bounded operative (bounded-durable-loop): iteration `iter`
+/// finished, having consumed the durable inbox up to `consumed_offset` and
+/// released `handoff` as its terminal batch. The Controller appends
+/// `iter_committed(iter, consumed_offset)` to the op-journal, fsyncs, requests
+/// a boundary snapshot for the instance's segments, flushes whatever the
+/// iteration's operations staged, truncates the inbox below the consumed
+/// offset, and replies IterCommitResponse. The driver enters iteration
+/// `iter + 1` only on the successful reply — a crash before it re-runs the
+/// whole iteration (at-least-once), never the ones below it.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct IterCommit {
+    #[prost(string, tag = "1")]
+    pub operative_id: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "2")]
+    pub iter: u32,
+    #[prost(uint64, tag = "3")]
+    pub consumed_offset: u64,
+    #[prost(message, repeated, tag = "4")]
+    pub handoff: ::prost::alloc::vec::Vec<OpHandoffItem>,
+}
+/// Controller -> SDK reply to IterCommit, emitted only AFTER the journal entry
+/// is durable (fsync). Same reference_id / terminal-error contract as
+/// OpCommitResponse.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct IterCommitResponse {
+    #[prost(string, tag = "1")]
+    pub operative_id: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "2")]
+    pub iter: u32,
+    #[prost(string, tag = "3")]
+    pub error: ::prost::alloc::string::String,
+}
+/// SDK -> Controller. A looping durable bounded operative found its inbox empty
+/// at the committed boundary of iteration `iter` and past the idle threshold:
+/// it has torn its own run down WITHOUT a BoundedCompleted (this is not a
+/// terminal outcome). The Controller journals `parked(iter\[, wake_deadline_ms\])`
+/// and evicts the instance from the executor; the registry keeps it `suspended`
+/// until a new inbox append — or the wake deadline — rehydrates it
+/// (bounded-durable-suspension). `wake_deadline_ms` is 0 when the operative
+/// declared no durable timer.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct IterPark {
+    #[prost(string, tag = "1")]
+    pub operative_id: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "2")]
+    pub iter: u32,
+    #[prost(uint64, tag = "3")]
+    pub wake_deadline_ms: u64,
+}
+/// One journaled forward op commit, shipped back on crash-resume so the driver
+/// can rebuild `plan_compensation`'s per-iteration `committed` input from
+/// durable state (bounded-durable-loop): operation `op_idx` of iteration `iter`
+/// completed forward on `segments_ran`.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct OpCommittedOp {
+    #[prost(uint32, tag = "1")]
+    pub op_idx: u32,
+    #[prost(uint32, tag = "2")]
+    pub iter: u32,
+    #[prost(bytes = "vec", repeated, tag = "3")]
+    pub segments_ran: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+}
 /// Committed op-journal state shipped back on crash-resume
-/// (bounded-op-journal): the op indexes recorded `op_committed` plus the
-/// latest journaled handoff batch. The driver skips committed operations
-/// and seeds the first uncommitted operation from `handoff` instead of the
-/// entry channel.
+/// (bounded-op-journal). `iter` is the iteration to resume at — the one after
+/// the highest journaled `iter_committed` (0 for a non-looping chain);
+/// `committed_op_idxs` are the operations already committed inside that
+/// still-in-flight iteration, which the driver skips; `handoff` seeds the first
+/// uncommitted one. `committed_ops` carries every forward op commit with its
+/// iteration (compensation planning), `consumed_offset` the inbox offset the
+/// last committed iteration consumed, and `parked` / `wake_deadline_ms` the
+/// suspension record (bounded-durable-suspension).
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct OpJournalState {
     #[prost(uint32, repeated, tag = "1")]
@@ -307,6 +380,14 @@ pub struct OpJournalState {
     pub iter: u32,
     #[prost(message, repeated, tag = "3")]
     pub handoff: ::prost::alloc::vec::Vec<OpHandoffItem>,
+    #[prost(message, repeated, tag = "4")]
+    pub committed_ops: ::prost::alloc::vec::Vec<OpCommittedOp>,
+    #[prost(uint64, tag = "5")]
+    pub consumed_offset: u64,
+    #[prost(bool, tag = "6")]
+    pub parked: bool,
+    #[prost(uint64, tag = "7")]
+    pub wake_deadline_ms: u64,
 }
 /// Per-Segment state restore handshake: Controller ships latest snapshot
 /// bytes plus tail-WAL bytes, SDK applies them to the segment's State

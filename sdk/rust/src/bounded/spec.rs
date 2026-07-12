@@ -11,7 +11,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::{BoundedOperative, BoundedRunFn, RollbackMode};
+use super::{BoundedOperative, BoundedRunFn, LoopMode, RollbackMode};
 use crate::channel::builder::ChannelBuilder;
 use crate::channel::{ChannelKind, OperationId};
 use crate::operative::builder::build_topology;
@@ -32,6 +32,10 @@ pub(crate) struct BoundedSpec {
     pub max_duration: Option<Duration>,
     /// Saga rollback scope applied on abnormal termination.
     pub rollback_mode: RollbackMode,
+    /// Loop shape of the structured chain (`LoopMode::Once` for run-sugar).
+    pub loop_mode: LoopMode,
+    /// Durable wake deadline armed when a `PerInput` loop parks.
+    pub wake_after: Option<Duration>,
     /// Class-level persistence toggle; when true, a structured bounded's
     /// per-Segment Changes are flushed to the WAL as they apply.
     pub persistence_enabled: bool,
@@ -46,6 +50,7 @@ impl std::fmt::Debug for BoundedSpec {
             .field("chain_len", &self.chain.len())
             .field("max_duration", &self.max_duration)
             .field("rollback_mode", &self.rollback_mode)
+            .field("loop_mode", &self.loop_mode)
             .field("persistence_enabled", &self.persistence_enabled)
             .finish()
     }
@@ -101,6 +106,13 @@ pub enum BuildBoundedError {
     },
 
     #[error(
+        "bounded operative `{factory_id}` declares a chain loop but no operations; a loop iterates \
+         a structured chain — declare operations() (c.input::<T>(...) + operations), or drop \
+         loop_mode() and let the run() body drive its own loop_until"
+    )]
+    LoopWithoutChain { factory_id: &'static str },
+
+    #[error(
         "bounded operative `{factory_id}` is durable but its inter-operation channel `{channel}` \
          has no byte codec; declare `.codec()` (standard serde payloads) or `.codec_with(...)` \
          so the op-journal can persist and re-seed the stage handoff, or opt the class out with \
@@ -109,6 +121,18 @@ pub enum BuildBoundedError {
     MissingInterOpCodec {
         factory_id: &'static str,
         channel: String,
+    },
+
+    #[error(
+        "bounded operative `{factory_id}` is a durable handoff-chained loop, but its terminal \
+         operation `{operation}` releases no codec'd output channel; iteration N+1 is seeded from \
+         iteration N's terminal batch, which the iteration commit must be able to journal. Give \
+         the terminal operation an output channel with `.codec()`, or switch to \
+         `LoopMode::PerInput`"
+    )]
+    LoopTerminalWithoutCodec {
+        factory_id: &'static str,
+        operation: String,
     },
 }
 
@@ -127,14 +151,20 @@ pub(crate) fn build_spec<T: BoundedOperative>() -> Result<BoundedSpec, BuildBoun
     let mut cb = ChannelBuilder::new();
     T::operations(&mut cb);
 
-    // No declared operations ⇒ run-sugar.
+    // No declared operations ⇒ run-sugar. A loop needs a chain to iterate.
     if cb.operations.is_empty() {
+        if T::loop_mode() != LoopMode::Once {
+            return Err(BuildBoundedError::LoopWithoutChain { factory_id });
+        }
+
         return Ok(BoundedSpec {
             run: T::run as BoundedRunFn,
             topology: None,
             chain: Vec::new(),
             max_duration: T::max_duration(),
             rollback_mode: T::rollback_mode(),
+            loop_mode: LoopMode::Once,
+            wake_after: None,
             persistence_enabled: T::PERSISTENCE_ENABLED,
         });
     }
@@ -160,6 +190,27 @@ pub(crate) fn build_spec<T: BoundedOperative>() -> Result<BoundedSpec, BuildBoun
                 channel: ch.name.to_string(),
             });
         }
+
+        // A handoff-chained loop re-seeds iteration N+1 from iteration N's
+        // journaled terminal batch, so the terminal operation's output must be
+        // serializable — otherwise a crash mid-loop would silently resume with
+        // an empty seed and read as "converged".
+        if T::loop_mode() == LoopMode::Chained {
+            let terminal = chain
+                .last()
+                .and_then(|&op_id| topology.operation(op_id))
+                .expect("non-empty chain");
+            let codec_ok = terminal
+                .output_channel_id
+                .and_then(|cid| topology.channel(cid))
+                .is_some_and(|ch| ch.codec.is_some());
+            if !codec_ok {
+                return Err(BuildBoundedError::LoopTerminalWithoutCodec {
+                    factory_id,
+                    operation: terminal.name.to_string(),
+                });
+            }
+        }
     }
 
     Ok(BoundedSpec {
@@ -168,6 +219,8 @@ pub(crate) fn build_spec<T: BoundedOperative>() -> Result<BoundedSpec, BuildBoun
         chain,
         max_duration: T::max_duration(),
         rollback_mode: T::rollback_mode(),
+        loop_mode: T::loop_mode(),
+        wake_after: T::wake_after(),
         persistence_enabled: T::PERSISTENCE_ENABLED,
     })
 }

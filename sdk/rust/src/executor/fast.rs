@@ -327,19 +327,19 @@ pub fn start(
                         );
                     }
                 }
-                ExecutorMessage::EmitOpCommit {
+                ExecutorMessage::EmitControlRequest {
                     reference_id,
-                    commit,
+                    command,
                 } => {
                     // The reference_id keys the driver's registered waiter, so
                     // it is reused verbatim (no fresh nonce). A failed write is
                     // left to the driver's ack timeout — same posture as a
                     // lost frame.
-                    let frame = framed_request(reference_id, Command::OpCommit(commit));
+                    let frame = framed_request(reference_id, command);
                     if let Err(e) = (&*control_stream).write_all(&frame) {
                         warn!(
                             target: "flezha",
-                            "[flezha] OpCommit write failed: {}", e
+                            "[flezha] SDK-initiated control request write failed: {}", e
                         );
                     }
                 }
@@ -504,7 +504,14 @@ impl OperativeDispatchHandle {
                 // inbox instead of dropping it. Dropped only if the instance is
                 // not running / has no live inbox.
                 Operative::Bounded(instance) => {
-                    if !instance.push_inbox(payload) {
+                    // A durable instance's input was journaled to its inbox
+                    // before this frame was forwarded; the stamped offset rides
+                    // into the iteration commit as the consumed offset.
+                    let offset = metadata
+                        .get(crate::bounded::INBOX_OFFSET_KEY)
+                        .and_then(|v| v.parse::<u64>().ok())
+                        .unwrap_or(0);
+                    if !instance.push_inbox(payload, offset) {
                         eprintln!(
                             "[flezha] inbox frame for bounded unit {} dropped (not running / no inbox)",
                             instance_id

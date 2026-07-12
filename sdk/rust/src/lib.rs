@@ -118,7 +118,7 @@ pub mod state {
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
-pub use bounded::{BoundedCtx, BoundedError, BoundedOperative, RollbackMode};
+pub use bounded::{BoundedCtx, BoundedError, BoundedOperative, LoopMode, RollbackMode};
 pub use channel::{Channel, ChannelBuilder, OverflowPolicy, RetryPolicy};
 use crossbeam::channel::{Receiver, Sender};
 /// Authoring sugar. `#[flezha::operation]`, `#[derive(flezha::State)]`, and

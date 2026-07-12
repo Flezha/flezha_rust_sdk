@@ -58,6 +58,16 @@ impl CommandAction for RestoreInitState {
                         .iter()
                         .map(|item| (item.channel_id, item.payload.clone()))
                         .collect(),
+                    committed_ops: journal
+                        .committed_ops
+                        .iter()
+                        .map(|op| crate::bounded::instance::CommittedOp {
+                            op_idx: op.op_idx,
+                            iter: op.iter,
+                            segments_ran: op.segments_ran.clone(),
+                        })
+                        .collect(),
+                    consumed_offset: journal.consumed_offset,
                 });
             }
             instance.note_restored();

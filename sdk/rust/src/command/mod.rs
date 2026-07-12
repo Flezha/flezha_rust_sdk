@@ -149,22 +149,34 @@ pub fn get_handler(_payload_id: &str, message: &[u8]) -> Result<FrameOutcome, Co
         // Dead-letter park durability ack (Controller -> SDK): wakes the
         // dispatch thread parked in `segment::park::park_blocking`.
         Some(Command::ParkPayloadAck(proto_ch)) => CommandActionType::Regular(Box::new(proto_ch)),
-        // SDK is the SENDER for OpCommit — receiving it is a protocol bug.
+        // SDK is the SENDER for OpCommit / IterCommit / IterPark — receiving one
+        // is a protocol bug.
         Some(Command::OpCommit(_)) => CommandActionType::NotificationIgnore,
-        // Op-journal durability reply (Controller -> SDK): wakes the bounded
-        // driver blocked at the op-commit barrier; a non-empty error
-        // terminates the run abnormally.
+        Some(Command::IterCommit(_)) => CommandActionType::NotificationIgnore,
+        Some(Command::IterPark(_)) => CommandActionType::NotificationIgnore,
+        // Op-journal durability replies (Controller -> SDK): wake the bounded
+        // driver blocked at the op-commit / iteration-commit barrier; a non-empty
+        // error terminates the run abnormally.
         Some(Command::OpCommitResponse(reply)) => {
-            CommandActionType::AckSignal(if reply.error.is_empty() {
-                Ok(())
-            } else {
-                Err(reply.error)
-            })
+            CommandActionType::AckSignal(ack_result(reply.error))
+        }
+        Some(Command::IterCommitResponse(reply)) => {
+            CommandActionType::AckSignal(ack_result(reply.error))
         }
         None => return Err(CommandDecodeError::EmptyCommand),
     };
 
     Ok(FrameOutcome::Command(command_handler, reference_id))
+}
+
+/// A durability reply's `error` field as the waiter's ack result: empty ⇒ the
+/// journal entry is durable, non-empty ⇒ the run terminates abnormally.
+fn ack_result(error: String) -> Result<(), String> {
+    if error.is_empty() {
+        Ok(())
+    } else {
+        Err(error)
+    }
 }
 
 pub fn handle_command(

@@ -20,18 +20,18 @@
 //!   emitting status (`ok | error | cancelled`) plus the result payload.
 
 use std::any::Any;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Weak};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use crossbeam::channel::{unbounded, Receiver};
+use crossbeam::channel::{unbounded, Receiver, RecvTimeoutError};
 
 use super::compensation::{plan_compensation, SegmentRun, StageRecord, StagedOutput};
-use super::instance::BoundedInstance;
+use super::instance::{BoundedInstance, InboxItem, JournalResume};
 use super::spec::BoundedSpec;
-use super::{BoundedCollectSink, BoundedCtx, BoundedError, BoundedRunFn, RollbackMode};
+use super::{BoundedCollectSink, BoundedCtx, BoundedError, BoundedRunFn, LoopMode, RollbackMode};
 use crate::channel::builder::BuildSegmentArgs;
 use crate::channel::{ChannelKind, OperationId};
 use crate::executor::work_stealing_pool::WorkStealingPool;
@@ -46,13 +46,31 @@ use crate::util::LockRecover;
 /// Type-erased value moving between bounded stages.
 type Value = Arc<dyn Any + Send + Sync>;
 
-/// Upper bound on the wait for the controller's `OpCommitResponse` before the
-/// run terminates abnormally — the same posture as any mid-run channel loss
-/// (the un-acked op re-runs on resume, at-least-once).
+/// Upper bound on the wait for the controller's `OpCommitResponse` /
+/// `IterCommitResponse` before the run terminates abnormally — the same posture
+/// as any mid-run channel loss (the un-acked op/iteration re-runs on resume,
+/// at-least-once).
 const OP_COMMIT_ACK_TIMEOUT: Duration = Duration::from_secs(30);
 /// Re-check cadence during the ack wait so a cooperative cancel is observed
 /// promptly (mirrors the restore gate's `RESUME_WAIT_CHUNK`).
 const OP_COMMIT_ACK_CHUNK: Duration = Duration::from_millis(200);
+
+/// How long an inbox-driven loop waits at a committed iteration boundary before
+/// it parks (eviction hysteresis, `bounded-durable-suspension`): a message
+/// arriving inside the window continues the loop in place instead of paying a
+/// park/rehydrate cycle. Overridable with `FLEZHA_BOUNDED_PARK_IDLE_MS`.
+const PARK_IDLE_DEFAULT_MS: u64 = 5_000;
+
+/// How a bounded run ended, as seen by the teardown.
+enum RunOutcome {
+    /// Terminal: emit `BoundedCompleted` with this `(status, error, result)`.
+    Terminal(String, String, Vec<u8>),
+    /// Suspended at a committed iteration boundary. `IterPark` is already on the
+    /// wire; the run tears down WITHOUT a terminal completion, and the
+    /// controller keeps the instance `suspended` until an input (or the wake
+    /// deadline) rehydrates it.
+    Parked,
+}
 
 /// One stage's parallel-join result: the inter-operation `batch` released to the
 /// next stage, plus the per-segment record (which segments ran, with their
@@ -76,6 +94,14 @@ struct ChainCtx<'a> {
     pool: &'a Arc<WorkStealingPool>,
     stage_segments: &'a [Vec<Arc<SegmentSlot>>],
     rollback_mode: RollbackMode,
+    /// Loop shape: `Once` is the single pass, the others iterate the chain with
+    /// a durable commit per iteration (`bounded-durable-loop`).
+    loop_mode: LoopMode,
+    /// Wake deadline armed when a `PerInput` loop parks.
+    wake_after: Option<Duration>,
+    /// Post-start input, fed from the wire dispatch path. A `PerInput` loop
+    /// seeds each iteration from it.
+    inbox: &'a Receiver<InboxItem>,
     persistence_enabled: bool,
 }
 
@@ -100,7 +126,7 @@ impl ChainCtx<'_> {
 pub(crate) fn spawn(
     spec: Arc<BoundedSpec>,
     instance: Arc<BoundedInstance>,
-    inbox_rx: Receiver<Vec<u8>>,
+    inbox_rx: Receiver<InboxItem>,
     args: String,
     pool: Arc<WorkStealingPool>,
 ) {
@@ -127,7 +153,7 @@ pub(crate) fn spawn(
 fn run(
     spec: Arc<BoundedSpec>,
     instance: Arc<BoundedInstance>,
-    inbox_rx: Receiver<Vec<u8>>,
+    inbox_rx: Receiver<InboxItem>,
     args: String,
     pool: Arc<WorkStealingPool>,
 ) {
@@ -139,12 +165,12 @@ fn run(
         .max_duration
         .map(|d| spawn_duration_watcher(d, Arc::clone(&instance.cancel), Arc::clone(&finished)));
 
-    let (status, error, result) = match spec.topology.as_ref() {
+    let outcome = match spec.topology.as_ref() {
         // Structured: hold on the crash-resume gate until the Controller's
         // Segment restores land, then drive the chain over the restored state.
         Some(_) => {
             instance.wait_for_restore();
-            run_structured(&spec, &instance, &args, &pool)
+            run_structured(&spec, &instance, &args, &pool, &inbox_rx)
         }
         // Run-sugar: no Segments, no restore — a crash re-runs from the top.
         None => run_sugar(
@@ -165,12 +191,19 @@ fn run(
     // duplicate AddOperative before then is idempotent (no re-run).
     deregister_flushers(&instance.stage_segments);
 
-    crate::executor::emit_bounded_completed(
-        instance.instance_id.to_string(),
-        status,
-        error,
-        result,
-    );
+    match outcome {
+        RunOutcome::Terminal(status, error, result) => {
+            crate::executor::emit_bounded_completed(
+                instance.instance_id.to_string(),
+                status,
+                error,
+                result,
+            );
+        }
+        // Suspension is not a terminal outcome: the controller evicts the
+        // instance on the already-shipped `IterPark` and keeps it resumable.
+        RunOutcome::Parked => {}
+    }
 }
 
 /// Run-sugar path: a single implicit Operation/Segment whose body is `run`.
@@ -179,8 +212,8 @@ fn run_sugar(
     instance_id: &Arc<str>,
     args: &str,
     cancel: &Arc<AtomicBool>,
-    inbox_rx: Receiver<Vec<u8>>,
-) -> (String, String, Vec<u8>) {
+    inbox_rx: Receiver<InboxItem>,
+) -> RunOutcome {
     let mut ctx = BoundedCtx::new(Arc::clone(instance_id), Arc::clone(cancel), inbox_rx);
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&mut ctx, args)));
     let (_completed, result) = ctx.into_result();
@@ -194,22 +227,22 @@ fn classify(
     outcome: std::thread::Result<Result<(), BoundedError>>,
     cancel: &AtomicBool,
     result: Vec<u8>,
-) -> (String, String, Vec<u8>) {
-    match outcome {
+) -> RunOutcome {
+    let (status, error) = match outcome {
         Ok(Ok(())) => {
             if cancel.load(Ordering::Acquire) {
-                ("cancelled".to_string(), String::new(), result)
+                ("cancelled".to_string(), String::new())
             } else {
-                ("ok".to_string(), String::new(), result)
+                ("ok".to_string(), String::new())
             }
         }
-        Ok(Err(e)) => ("error".to_string(), e.to_string(), result),
+        Ok(Err(e)) => ("error".to_string(), e.to_string()),
         Err(panic) => (
             "error".to_string(),
             crate::operation::error::format_panic(panic),
-            result,
         ),
-    }
+    };
+    RunOutcome::Terminal(status, error, result)
 }
 
 /// Structured path: run the linear chain sequentially. Operation `N+1` starts
@@ -220,7 +253,8 @@ fn run_structured(
     instance: &BoundedInstance,
     args: &str,
     pool: &Arc<WorkStealingPool>,
-) -> (String, String, Vec<u8>) {
+    inbox: &Receiver<InboxItem>,
+) -> RunOutcome {
     let topology = spec
         .topology
         .as_ref()
@@ -238,6 +272,9 @@ fn run_structured(
         pool,
         stage_segments: &instance.stage_segments,
         rollback_mode: spec.rollback_mode,
+        loop_mode: spec.loop_mode,
+        wake_after: spec.wake_after,
+        inbox,
         persistence_enabled: spec.persistence_enabled,
     };
     drive_chain(&ctx, args, &instance.cancel)
@@ -287,7 +324,7 @@ fn deregister_flushers(stage_segments: &[Vec<Arc<SegmentSlot>>]) {
     }
 }
 
-fn drive_chain(ctx: &ChainCtx, args: &str, cancel: &AtomicBool) -> (String, String, Vec<u8>) {
+fn drive_chain(ctx: &ChainCtx, args: &str, cancel: &AtomicBool) -> RunOutcome {
     // Crash-resume into an in-flight compensation (saga, §4.3): a non-empty
     // reconstruction means the Controller shipped back compensation-intent
     // markers. Without an op-journal that always means the operative had
@@ -299,142 +336,340 @@ fn drive_chain(ctx: &ChainCtx, args: &str, cancel: &AtomicBool) -> (String, Stri
     let resumed = reconstruct_completed_from_intents(ctx);
     let journal = ctx.instance.op_journal_resume();
     if !resumed.is_empty() && (journal.is_none() || ctx.instance.any_compensation_done()) {
-        run_compensation(ctx, &resumed);
-        return (
+        run_compensation(ctx, &[], &resumed);
+        return RunOutcome::Terminal(
             "error".to_string(),
             "resumed compensation after crash".to_string(),
             Vec::new(),
         );
     }
 
-    let topology = ctx.topology;
+    let resume = journal.unwrap_or_default();
 
-    // Completed stages of the current (and only, in v1) pass, recorded in
-    // completion order so an abnormal exit can roll them back in reverse. A
-    // journal-gated resume pre-seeds it with the intent reconstruction so the
-    // skipped (already-committed) operations still roll back if a later
-    // stage terminates the run abnormally.
-    let mut completed: Vec<StageRecord> = Vec::new();
+    // The journal's committed work, in the two granularities the driver needs:
+    // the fully-committed iterations (`plan_compensation`'s `committed` input, so
+    // keep-progress keeps them and all-or-nothing unwinds them —
+    // `bounded-durable-loop` D2) and the stages of the still-in-flight iteration.
+    // Both are empty for a fresh run and for a non-looping chain.
+    let (mut committed, in_flight) = journaled_stages(ctx, &resume);
 
-    // Journal-gated resume: skip every operation recorded `op_committed` and
-    // seed the first uncommitted one from the journaled handoff via the
-    // channel codec. No journal ⇒ seed the first operation from the spawn
-    // args via the entry channel's typed wrapper (re-run from the top).
-    let (first_stage, mut batch): (usize, Vec<Value>) = match journal
-        .as_ref()
-        .filter(|resume| !resume.committed_op_idxs.is_empty())
-    {
-        Some(resume) => {
-            let last = *resume
-                .committed_op_idxs
-                .iter()
-                .max()
-                .expect("non-empty committed set") as usize;
-            match seed_from_journal(ctx, resume) {
-                Ok(seeded) => {
-                    completed = resumed;
-                    (last + 1, seeded)
+    let mut iter = resume.iter;
+    let mut consumed_offset = resume.consumed_offset;
+    // Terminal batch of the previous iteration, carried in memory by a
+    // handoff-chained loop; on resume it comes back from the journal instead.
+    let mut carry: Option<Vec<Value>> = None;
+
+    // Resume state, consumed by the first pass: the operations of the in-flight
+    // iteration the journal already records committed are skipped (`first_stage`)
+    // but still recorded as completed, so a later failure rolls them back too.
+    let mut resumed_stages = Some(in_flight);
+    let mut first_stage = resume
+        .committed_op_idxs
+        .iter()
+        .max()
+        .map_or(0, |last| *last as usize + 1);
+
+    loop {
+        // Completed stages of this iteration, in completion order, so an abnormal
+        // exit rolls them back in reverse.
+        let mut completed: Vec<StageRecord> = resumed_stages.take().unwrap_or_default();
+
+        let seed = if first_stage > 0 {
+            // Mid-iteration resume: pick up at the first uncommitted operation.
+            match seed_from_journal(ctx, &resume.handoff) {
+                Ok(batch) => IterationSeed::Batch(batch, None),
+                Err(e) => IterationSeed::Failed(e),
+            }
+        } else {
+            next_iteration_seed(ctx, args, iter, &resume, carry.take(), cancel)
+        };
+
+        let batch = match seed {
+            IterationSeed::Batch(batch, consumed) => {
+                if let Some(offset) = consumed {
+                    consumed_offset = offset;
                 }
-                Err(e) => {
-                    // The journaled handoff cannot be re-seeded — terminate
-                    // abnormally and undo the committed operations.
-                    run_compensation(ctx, &resumed);
-                    return ("error".to_string(), e, Vec::new());
+                batch
+            }
+            // The loop ran out of work (single pass done, chained loop released
+            // an empty batch, inbox closed): a clean terminal.
+            IterationSeed::Done => return terminal_or_cancelled(cancel),
+            // The park record names the last COMMITTED iteration — `iter` is the
+            // one it would have run next — so `parked(N)` always follows
+            // `iter_committed(N)`, and a resume enters N+1 either way.
+            IterationSeed::Park => return park(ctx, iter.saturating_sub(1)),
+            IterationSeed::Cancelled => {
+                return RunOutcome::Terminal("cancelled".to_string(), String::new(), Vec::new());
+            }
+            // The seed cannot be built (an unre-seedable journaled handoff, an
+            // entry payload the channel rejects) — terminate abnormally and undo
+            // what is outstanding.
+            IterationSeed::Failed(e) => {
+                run_compensation(ctx, &committed, &completed);
+                return RunOutcome::Terminal("error".to_string(), e, Vec::new());
+            }
+        };
+
+        match run_iteration(ctx, iter, first_stage, batch, cancel, &mut completed) {
+            Ok(terminal_batch) => {
+                // Iteration boundary (`bounded-durable-loop`): journal
+                // `iter_committed`, snapshot the segments, flush the iteration's
+                // staged outbox, release the consumed inbox prefix — then enter
+                // the next iteration. A non-looping chain has no boundary and
+                // finishes here, exactly as before.
+                if ctx.loop_mode == LoopMode::Once {
+                    return RunOutcome::Terminal("ok".to_string(), String::new(), Vec::new());
                 }
+                if let Err(e) = commit_iteration(ctx, iter, consumed_offset, &terminal_batch) {
+                    let (status, error) = abnormal_status(cancel, e);
+                    run_compensation(ctx, &committed, &completed);
+                    return RunOutcome::Terminal(status, error, Vec::new());
+                }
+                committed.push(completed);
+                carry = Some(terminal_batch);
+                iter += 1;
+                // Every iteration after the resumed one runs the whole chain.
+                first_stage = 0;
+            }
+            Err((status, error)) => {
+                run_compensation(ctx, &committed, &completed);
+                return RunOutcome::Terminal(status, error, Vec::new());
             }
         }
-        None => match seed_from_entry(topology, args) {
-            Ok(seeded) => (0, seeded),
-            Err(e) => return ("error".to_string(), e, Vec::new()),
-        },
-    };
+    }
+}
 
-    // `Some` once the chain terminates abnormally (error / mid-chain stop),
-    // carrying the terminal status + error text.
-    let mut abnormal: Option<(String, String)> = None;
-
+/// Run one iteration's stages from `first_stage` to the end of the chain,
+/// recording each completed stage into `completed`. `Ok` carries the terminal
+/// batch the last operation released; `Err` the terminal status of an abnormal
+/// exit (a failing operation, a cooperative stop, a refused op commit).
+fn run_iteration(
+    ctx: &ChainCtx,
+    iter: u32,
+    first_stage: usize,
+    mut batch: Vec<Value>,
+    cancel: &AtomicBool,
+    completed: &mut Vec<StageRecord>,
+) -> Result<Vec<Value>, (String, String)> {
     for (stage_idx, &op_id) in ctx.chain.iter().enumerate().skip(first_stage) {
         // A cooperative stop before a stage starts is partial progress: stop
         // advancing and roll back what completed.
         if cancel.load(Ordering::Acquire) {
-            abnormal = Some(("cancelled".to_string(), String::new()));
-            break;
+            return Err(("cancelled".to_string(), String::new()));
         }
-        let op = topology
+        let op = ctx
+            .topology
             .operation(op_id)
             .expect("chain operation present in topology");
         let slots = &ctx.stage_segments[stage_idx];
         let partitioned = partition(op, slots.len(), &batch);
-        match run_stage_parallel(
-            topology,
+        let StageOut {
+            batch: out_batch,
+            segments,
+        } = run_stage_parallel(
+            ctx.topology,
             ctx.instance_id,
             slots,
             partitioned,
             ctx.pool,
             ctx.journaling(),
-        ) {
-            Ok(StageOut {
-                batch: out_batch,
-                segments,
-            }) => {
-                batch = out_batch;
-                // Durable saga (§4.3): record this operation's completion — one
-                // compensation-intent marker per segment that ran — so a crash
-                // mid-compensation knows what still needs undo. Only for
-                // compensable operations (a hookless op is never rolled back).
-                if op.compensate_overridden {
-                    for seg_run in &segments {
-                        emit_compensation_record(
-                            COMPENSATION_INTENT_PAYLOAD_ID,
-                            &slots[seg_run.segment_index].segment_identity,
-                            ctx.persistence_enabled,
-                        );
-                    }
-                }
-                // Op-boundary commit (bounded-op-journal): journal the stage's
-                // completion + handoff on the controller and block until the
-                // durable ack — the next operation must not race ahead of the
-                // committed record. Ordered AFTER the intent markers so a
-                // crash between marker and ack resolves as "op not committed
-                // → re-run" (at-least-once).
-                let commit = commit_op_boundary(ctx, stage_idx, op, &segments, slots, &batch);
-                completed.push(StageRecord {
-                    stage_idx,
-                    segments,
-                });
-                if let Err(e) = commit {
-                    let status = if cancel.load(Ordering::Acquire) {
-                        ("cancelled".to_string(), String::new())
-                    } else {
-                        ("error".to_string(), e)
-                    };
-                    abnormal = Some(status);
-                    break;
-                }
-            }
-            Err(e) => {
-                abnormal = Some(("error".to_string(), e.to_string()));
-                break;
+        )
+        .map_err(|e| ("error".to_string(), e.to_string()))?;
+        batch = out_batch;
+
+        // Durable saga (§4.3): record this operation's completion — one
+        // compensation-intent marker per segment that ran — so a crash
+        // mid-compensation knows what still needs undo. Only for compensable
+        // operations (a hookless op is never rolled back).
+        if op.compensate_overridden {
+            for seg_run in &segments {
+                emit_compensation_record(
+                    COMPENSATION_INTENT_PAYLOAD_ID,
+                    &slots[seg_run.segment_index].segment_identity,
+                    ctx.persistence_enabled,
+                );
             }
         }
+        // Op-boundary commit (bounded-op-journal): journal the stage's
+        // completion + handoff on the controller and block until the durable
+        // ack — the next operation must not race ahead of the committed record.
+        // Ordered AFTER the intent markers so a crash between marker and ack
+        // resolves as "op not committed → re-run" (at-least-once).
+        let commit = commit_op_boundary(ctx, stage_idx, iter, op, &segments, slots, &batch);
+        completed.push(StageRecord {
+            stage_idx,
+            segments,
+        });
+        if let Err(e) = commit {
+            return Err(abnormal_status(cancel, e));
+        }
     }
+    Ok(batch)
+}
 
-    match abnormal {
-        // Clean run to quiescence: every stage completed, so there is nothing
-        // partial to undo — a clean `ok` never compensates.
-        None => ("ok".to_string(), String::new(), Vec::new()),
-        // Abnormal exit after partial progress: roll back the completed stages
-        // in the rollback mode's order, then report the terminal status.
-        Some((status, error)) => {
-            run_compensation(ctx, &completed);
-            (status, error, Vec::new())
+/// How the next iteration is seeded.
+enum IterationSeed {
+    /// Run the iteration over this batch; `Some(offset)` when an inbox item
+    /// supplied it (the offset the iteration commit records as consumed).
+    Batch(Vec<Value>, Option<u64>),
+    /// The loop has no more work: terminate cleanly.
+    Done,
+    /// The inbox is empty at a committed boundary past the idle threshold:
+    /// suspend (`bounded-durable-suspension`).
+    Park,
+    /// A cooperative stop arrived while waiting for input — nothing is in
+    /// flight, so there is nothing to roll back.
+    Cancelled,
+    /// The seed could not be built; terminate abnormally.
+    Failed(String),
+}
+
+/// Resolve the seed for a fresh iteration from the loop's shape: the spawn args
+/// (single pass / first iteration), the next inbox item (`PerInput`), or the
+/// previous iteration's terminal handoff (`Chained`).
+fn next_iteration_seed(
+    ctx: &ChainCtx,
+    args: &str,
+    iter: u32,
+    resume: &JournalResume,
+    carry: Option<Vec<Value>>,
+    cancel: &AtomicBool,
+) -> IterationSeed {
+    match ctx.loop_mode {
+        // Single pass, and the first iteration of a chained loop: the spawn args
+        // through the entry channel.
+        LoopMode::Once | LoopMode::Chained if iter == 0 => {
+            seed_or_fail(seed_bytes(ctx.topology, args.as_bytes().to_vec()), None)
+        }
+        // A single pass has no second iteration.
+        LoopMode::Once => IterationSeed::Done,
+
+        // Handoff-chained: the previous iteration's terminal batch, in memory or
+        // (after a crash) re-decoded from the journaled iteration commit. An
+        // empty batch means the loop has converged.
+        LoopMode::Chained => {
+            let batch = match carry {
+                Some(batch) => batch,
+                None => match seed_from_journal(ctx, &resume.handoff) {
+                    Ok(batch) => batch,
+                    Err(e) => return IterationSeed::Failed(e),
+                },
+            };
+            if batch.is_empty() {
+                IterationSeed::Done
+            } else {
+                IterationSeed::Batch(batch, None)
+            }
+        }
+
+        // Inbox-driven: one iteration per post-start input. An empty inbox past
+        // the idle threshold parks the instance (durable classes only — an
+        // opted-out one has no journal to park into and blocks in memory, as
+        // before).
+        LoopMode::PerInput => match wait_for_input(ctx, cancel) {
+            Some(item) => seed_or_fail(
+                seed_bytes(ctx.topology, item.payload),
+                // Offset 0 = unjournaled input (opted-out class): keep the
+                // recorded consumed offset where it is.
+                (item.offset > 0).then_some(item.offset),
+            ),
+            None if cancel.load(Ordering::Acquire) => IterationSeed::Cancelled,
+            None if ctx.journaling() => IterationSeed::Park,
+            // Transport-less / opted-out: the inbox closed for good.
+            None => IterationSeed::Done,
+        },
+    }
+}
+
+fn seed_or_fail(seeded: Result<Vec<Value>, String>, consumed: Option<u64>) -> IterationSeed {
+    match seeded {
+        Ok(batch) => IterationSeed::Batch(batch, consumed),
+        Err(e) => IterationSeed::Failed(e),
+    }
+}
+
+/// Block for the next inbox item. `None` on a cooperative stop, on a closed
+/// inbox, or — for a journaling instance — once the inbox has been idle past
+/// the hysteresis window (the caller then parks). Sleeps while idle; the
+/// ≤200 ms wake granularity observes cancellation promptly.
+fn wait_for_input(ctx: &ChainCtx, cancel: &AtomicBool) -> Option<InboxItem> {
+    let deadline = Instant::now() + park_idle();
+    loop {
+        if cancel.load(Ordering::Acquire) {
+            return None;
+        }
+        match ctx.inbox.recv_timeout(OP_COMMIT_ACK_CHUNK) {
+            Ok(item) => return Some(item),
+            Err(RecvTimeoutError::Timeout) => {
+                if ctx.journaling() && Instant::now() >= deadline {
+                    return None;
+                }
+            }
+            Err(RecvTimeoutError::Disconnected) => return None,
         }
     }
 }
 
-/// Seed the first operation from the spawn args via the entry channel's
-/// typed wrapper (a fresh run, or a resume with nothing journaled).
-fn seed_from_entry(topology: &OperativeTopology, args: &str) -> Result<Vec<Value>, String> {
+/// Eviction hysteresis for an idle inbox-driven loop.
+fn park_idle() -> Duration {
+    let ms = std::env::var("FLEZHA_BOUNDED_PARK_IDLE_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(PARK_IDLE_DEFAULT_MS);
+    Duration::from_millis(ms)
+}
+
+/// Suspend at the committed boundary of iteration `iter`: ship `IterPark` (with
+/// the class's durable wake deadline, if any) and tear the run down without a
+/// terminal completion. The controller journals `parked`, evicts the instance,
+/// and rehydrates it on the next inbox append or at the deadline.
+fn park(ctx: &ChainCtx, iter: u32) -> RunOutcome {
+    let wake_deadline_ms = ctx.wake_after.map_or(0, |after| {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default();
+        (now + after).as_millis() as u64
+    });
+    crate::executor::emit_control_request(
+        format!(
+            "iter-park-{}-{}-{}",
+            ctx.instance_id,
+            iter,
+            crate::util::nonce_suffix()
+        ),
+        crate::pb::command_request::Command::IterPark(crate::pb::IterPark {
+            operative_id: ctx.instance_id.to_string(),
+            iter,
+            wake_deadline_ms,
+        }),
+    );
+    RunOutcome::Parked
+}
+
+/// Terminal status of a loop that ran out of work: `cancelled` when a stop
+/// tripped the token, else a clean `ok`.
+fn terminal_or_cancelled(cancel: &AtomicBool) -> RunOutcome {
+    let status = if cancel.load(Ordering::Acquire) {
+        "cancelled"
+    } else {
+        "ok"
+    };
+    RunOutcome::Terminal(status.to_string(), String::new(), Vec::new())
+}
+
+/// A commit failure is `cancelled` when the token tripped (the stop is what
+/// interrupted the ack wait), else a terminal error.
+fn abnormal_status(cancel: &AtomicBool, error: String) -> (String, String) {
+    if cancel.load(Ordering::Acquire) {
+        ("cancelled".to_string(), String::new())
+    } else {
+        ("error".to_string(), error)
+    }
+}
+
+/// Wrap one entry payload — the spawn args, or an inbox item's bytes — into the
+/// entry channel's typed value.
+fn seed_bytes(topology: &OperativeTopology, bytes: Vec<u8>) -> Result<Vec<Value>, String> {
     let entry = topology
         .channels
         .iter()
@@ -444,19 +679,16 @@ fn seed_from_entry(topology: &OperativeTopology, args: &str) -> Result<Vec<Value
         .wrap_input
         .as_ref()
         .expect("entry channel carries a wrap_input");
-    wrap(args.as_bytes().to_vec())
+    wrap(bytes)
         .map(|v| vec![v])
         .map_err(|e| format!("seeding entry channel failed: {e}"))
 }
 
-/// Decode the journaled handoff batch back into typed values via each item's
+/// Decode a journaled handoff batch back into typed values via each item's
 /// producing-channel codec (`bounded-op-journal` crash-resume seeding).
-fn seed_from_journal(
-    ctx: &ChainCtx,
-    resume: &super::instance::JournalResume,
-) -> Result<Vec<Value>, String> {
-    let mut seeded: Vec<Value> = Vec::with_capacity(resume.handoff.len());
-    for (channel_id, bytes) in &resume.handoff {
+fn seed_from_journal(ctx: &ChainCtx, handoff: &[(u32, Vec<u8>)]) -> Result<Vec<Value>, String> {
+    let mut seeded: Vec<Value> = Vec::with_capacity(handoff.len());
+    for (channel_id, bytes) in handoff {
         let codec = ctx
             .topology
             .channel(*channel_id)
@@ -474,6 +706,63 @@ fn seed_from_journal(
     Ok(seeded)
 }
 
+/// Rebuild the journal's committed work as stage records, in the two
+/// granularities the driver needs: the **fully-committed iterations** (below the
+/// resume point — `plan_compensation`'s `committed` input, `bounded-durable-loop`
+/// D2) and the stages of the **still-in-flight iteration**, which a resumed pass
+/// skips but must still be able to roll back. One traversal, one grouping.
+///
+/// Segment outputs are empty, as on any crash-resume: an operation's collected
+/// inter-operation output was never durable, so a durable compensable operation
+/// persists its undo handle in Segment state (which IS restored), per the
+/// at-least-once author contract.
+fn journaled_stages(
+    ctx: &ChainCtx,
+    resume: &JournalResume,
+) -> (Vec<Vec<StageRecord>>, Vec<StageRecord>) {
+    let mut by_iter: BTreeMap<u32, Vec<StageRecord>> = BTreeMap::new();
+    for op in &resume.committed_ops {
+        if let Some(record) = stage_record(ctx, op.op_idx, &op.segments_ran) {
+            by_iter.entry(op.iter).or_default().push(record);
+        }
+    }
+    for stages in by_iter.values_mut() {
+        // Completion order within an iteration is chain order.
+        stages.sort_by_key(|s| s.stage_idx);
+    }
+    // The resume point splits the two: everything below it is committed progress.
+    let in_flight = by_iter
+        .split_off(&resume.iter)
+        .remove(&resume.iter)
+        .unwrap_or_default();
+    (by_iter.into_values().collect(), in_flight)
+}
+
+/// One journaled op commit as a `StageRecord`, resolving each shipped-back wire
+/// segment identity to its slot index. `None` when the operation is not in this
+/// build's chain (a topology that changed under a journaled instance).
+fn stage_record(ctx: &ChainCtx, op_idx: u32, segments_ran: &[Vec<u8>]) -> Option<StageRecord> {
+    let stage_idx = op_idx as usize;
+    let slots = ctx.stage_segments.get(stage_idx)?;
+    let segments = segments_ran
+        .iter()
+        .filter_map(|id| {
+            slots
+                .iter()
+                .position(|slot| slot.segment_identity.as_slice() == id.as_slice())
+        })
+        .map(|segment_index| SegmentRun {
+            segment_index,
+            outputs: Vec::new(),
+            staged: Vec::new(),
+        })
+        .collect();
+    Some(StageRecord {
+        stage_idx,
+        segments,
+    })
+}
+
 /// Ship `OpCommit` for a completed stage and block until the controller's
 /// durable `OpCommitResponse` (bounded-op-journal D3). The handoff batch is
 /// serialized through the operation's output-channel codec (validated present
@@ -489,6 +778,7 @@ fn seed_from_journal(
 fn commit_op_boundary(
     ctx: &ChainCtx,
     stage_idx: usize,
+    iter: u32,
     op: &OperationDescriptor,
     segments: &[SegmentRun],
     slots: &[Arc<SegmentSlot>],
@@ -498,26 +788,8 @@ fn commit_op_boundary(
         return Ok(());
     }
 
-    let mut handoff: Vec<crate::pb::OpHandoffItem> = Vec::new();
-    if let Some(channel_id) = op.output_channel_id {
-        if let Some(codec) = ctx
-            .topology
-            .channel(channel_id)
-            .and_then(|c| c.codec.as_ref())
-        {
-            for value in batch {
-                let payload = (codec.encode)(value.as_ref()).map_err(|e| {
-                    format!(
-                        "op {stage_idx} handoff serialization failed on channel {channel_id}: {e}"
-                    )
-                })?;
-                handoff.push(crate::pb::OpHandoffItem {
-                    channel_id,
-                    payload,
-                });
-            }
-        }
-    }
+    let handoff = encode_handoff(ctx, op.output_channel_id, batch)
+        .map_err(|e| format!("op {stage_idx} {e}"))?;
 
     let segments_ran: Vec<Vec<u8>> = segments
         .iter()
@@ -529,13 +801,15 @@ fn commit_op_boundary(
         })
         .collect();
 
-    ship_op_commit(
+    ship_and_await(
         ctx,
         stage_idx,
-        crate::pb::OpCommit {
+        "commit",
+        true,
+        crate::pb::command_request::Command::OpCommit(crate::pb::OpCommit {
             operative_id: ctx.instance_id.to_string(),
             op_idx: stage_idx as u32,
-            iter: 0,
+            iter,
             segments_ran,
             handoff,
             outbox: segments
@@ -543,8 +817,83 @@ fn commit_op_boundary(
                 .flat_map(|seg_run| outbox_items(&slots[seg_run.segment_index], &seg_run.staged))
                 .collect(),
             compensating: false,
-        },
+        }),
     )
+}
+
+/// Ship `IterCommit` for a finished loop iteration and block until the
+/// controller's durable `IterCommitResponse` (`bounded-durable-loop` D1): the
+/// journal records `iter_committed(iter, consumed_offset)` with the iteration's
+/// terminal handoff, the instance's segments are snapshotted at the boundary,
+/// the iteration's staged outbox is flushed, and the consumed inbox prefix is
+/// released. The next iteration starts only on the successful reply, so a crash
+/// re-runs at most the whole in-flight iteration — never a committed one.
+fn commit_iteration(
+    ctx: &ChainCtx,
+    iter: u32,
+    consumed_offset: u64,
+    batch: &[Value],
+) -> Result<(), String> {
+    if !ctx.journaling() {
+        return Ok(());
+    }
+
+    // The terminal handoff re-seeds iteration N+1 of a handoff-chained loop
+    // after a crash; an inbox-driven loop re-seeds from its inbox instead and
+    // ships whatever the terminal operation released (empty when it has no
+    // codec'd output channel).
+    let terminal_channel = ctx
+        .chain
+        .last()
+        .and_then(|&op_id| ctx.topology.operation(op_id))
+        .and_then(|op| op.output_channel_id);
+    let handoff = encode_handoff(ctx, terminal_channel, batch)
+        .map_err(|e| format!("iteration {iter} {e}"))?;
+
+    ship_and_await(
+        ctx,
+        iter as usize,
+        "iteration commit",
+        true,
+        crate::pb::command_request::Command::IterCommit(crate::pb::IterCommit {
+            operative_id: ctx.instance_id.to_string(),
+            iter,
+            consumed_offset,
+            handoff,
+        }),
+    )
+}
+
+/// Serialize a released batch through its producing channel's inter-op codec.
+/// Empty when the operation has no output channel (a terminal stage) or the
+/// channel carries no codec (a plugin-bound output).
+fn encode_handoff(
+    ctx: &ChainCtx,
+    channel_id: Option<u32>,
+    batch: &[Value],
+) -> Result<Vec<crate::pb::OpHandoffItem>, String> {
+    let Some(channel_id) = channel_id else {
+        return Ok(Vec::new());
+    };
+    let Some(codec) = ctx
+        .topology
+        .channel(channel_id)
+        .and_then(|c| c.codec.as_ref())
+    else {
+        return Ok(Vec::new());
+    };
+
+    batch
+        .iter()
+        .map(|value| {
+            (codec.encode)(value.as_ref())
+                .map(|payload| crate::pb::OpHandoffItem {
+                    channel_id,
+                    payload,
+                })
+                .map_err(|e| format!("handoff serialization failed on channel {channel_id}: {e}"))
+        })
+        .collect()
 }
 
 /// One segment's staged plugin output as outbox entries, tagged with the
@@ -563,75 +912,70 @@ fn outbox_items(slot: &Arc<SegmentSlot>, staged: &[StagedOutput]) -> Vec<crate::
         .collect()
 }
 
-/// Emit one `OpCommit` and block until the controller's durable ack. Shared by
-/// the forward op boundary and the compensation undo record — both are "journal
-/// this, then tell me it is durable" round-trips over the same handshake.
+/// Emit one durability handshake — `OpCommit` (forward op boundary or
+/// compensation undo record) or `IterCommit` (iteration boundary) — and block
+/// until the controller's durable ack. All three are "journal this, then tell me
+/// it is durable" round-trips over the same reference-id-keyed reply path.
 ///
-/// A forward commit aborts early on a cooperative cancel (the caller maps that
-/// to the `cancelled` terminal status and rolls back). A compensation commit
-/// does not: rollback IS the response to that cancel, and abandoning the undo
-/// record because the token is set would drop the undo output it carries. It
+/// `abort_on_cancel` aborts the wait early on a cooperative cancel, which the
+/// caller maps to the `cancelled` terminal status. The compensation undo record
+/// passes `false`: rollback IS the response to that cancel, and abandoning the
+/// record because the token is set would drop the undo output it carries — it
 /// waits out the full ack deadline instead.
-fn ship_op_commit(
+fn ship_and_await(
     ctx: &ChainCtx,
-    stage_idx: usize,
-    commit: crate::pb::OpCommit,
+    idx: usize,
+    what: &str,
+    abort_on_cancel: bool,
+    command: crate::pb::command_request::Command,
 ) -> Result<(), String> {
-    let compensating = commit.compensating;
-    let what = if compensating {
-        "compensation"
-    } else {
-        "commit"
-    };
     let reference_id = format!(
         "op-commit-{}-{}-{}",
         ctx.instance_id,
-        stage_idx,
+        idx,
         crate::util::nonce_suffix()
     );
     let rx = crate::shutdown::register_pending_ack(reference_id.clone());
-    crate::executor::emit_op_commit(reference_id.clone(), commit);
+    crate::executor::emit_control_request(reference_id.clone(), command);
 
-    // Chunked wait so a cooperative cancel is observed promptly; the caller
-    // maps a cancel-tripped failure to the `cancelled` terminal status.
+    // Chunked wait so a cooperative cancel is observed promptly.
     let deadline = Instant::now() + OP_COMMIT_ACK_TIMEOUT;
     loop {
         match rx.recv_timeout(OP_COMMIT_ACK_CHUNK) {
             Ok(Ok(())) => return Ok(()),
             Ok(Err(e)) => {
-                return Err(format!("op {stage_idx} {what} refused by controller: {e}"));
+                return Err(format!("{what} {idx} refused by controller: {e}"));
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                if !compensating && ctx.instance.cancel.load(Ordering::Acquire) {
+                if abort_on_cancel && ctx.instance.cancel.load(Ordering::Acquire) {
                     crate::shutdown::drop_pending_ack(&reference_id);
-                    return Err(format!("op {stage_idx} {what} interrupted by stop"));
+                    return Err(format!("{what} {idx} interrupted by stop"));
                 }
                 if Instant::now() >= deadline {
                     crate::shutdown::drop_pending_ack(&reference_id);
                     return Err(format!(
-                        "op {stage_idx} {what} ack timed out after {}s",
+                        "{what} {idx} ack timed out after {}s",
                         OP_COMMIT_ACK_TIMEOUT.as_secs()
                     ));
                 }
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 crate::shutdown::drop_pending_ack(&reference_id);
-                return Err(format!("op {stage_idx} {what} waiter dropped"));
+                return Err(format!("{what} {idx} waiter dropped"));
             }
         }
     }
 }
 
-/// Roll back the completed stages of an abnormally-terminated chain. Completed
-/// operations are compensated in reverse order (per [`plan_compensation`]) and,
-/// within an operation, once per segment that ran. Operations without a
+/// Roll back an abnormally-terminated chain. The in-flight iteration's completed
+/// operations are always compensated, in reverse order (per
+/// [`plan_compensation`]) and, within an operation, once per segment that ran;
+/// `committed` holds the iterations the journal records as finished, which
+/// keep-progress keeps and all-or-nothing unwinds after it. Operations without a
 /// `compensate` hook are skipped. Best-effort: a failing hook is logged and the
 /// remaining steps still run, so one broken undo cannot strand the rest.
-fn run_compensation(ctx: &ChainCtx, completed: &[StageRecord]) {
-    // v1 runs a single pass, so there are no committed iterations to keep; the
-    // structured-loop follow-up threads them in and `plan_compensation` already
-    // honours the mode difference.
-    let plan = plan_compensation(ctx.rollback_mode, &[], completed);
+fn run_compensation(ctx: &ChainCtx, committed: &[Vec<StageRecord>], in_flight: &[StageRecord]) {
+    let plan = plan_compensation(ctx.rollback_mode, committed, in_flight);
     if plan.is_empty() {
         return;
     }
@@ -679,7 +1023,7 @@ fn run_compensation(ctx: &ChainCtx, completed: &[StageRecord]) {
             // hook rather than the side that loses its undo output. A hook that
             // emitted nothing needs no entry.
             if !sink.staged.is_empty() {
-                let commit = crate::pb::OpCommit {
+                let commit = crate::pb::command_request::Command::OpCommit(crate::pb::OpCommit {
                     operative_id: ctx.instance_id.to_string(),
                     op_idx: record.stage_idx as u32,
                     iter: 0,
@@ -687,8 +1031,9 @@ fn run_compensation(ctx: &ChainCtx, completed: &[StageRecord]) {
                     handoff: Vec::new(),
                     outbox: outbox_items(slot, &sink.staged),
                     compensating: true,
-                };
-                if let Err(e) = ship_op_commit(ctx, record.stage_idx, commit) {
+                });
+                if let Err(e) = ship_and_await(ctx, record.stage_idx, "compensation", false, commit)
+                {
                     eprintln!(
                         "[flezha] bounded {} undo-outbox journaling failed: {e}",
                         ctx.instance_id

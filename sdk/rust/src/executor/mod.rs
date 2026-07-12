@@ -55,13 +55,18 @@ pub(crate) fn emit_bounded_output(operative_id: String, payload: Vec<u8>) {
     });
 }
 
-/// Route a bounded op-commit to the coordinator (written as an `OpCommit`
-/// control frame under the caller's `reference_id` so the controller's
-/// `OpCommitResponse` wakes the waiter the driver registered).
-pub(crate) fn emit_op_commit(reference_id: String, commit: crate::pb::OpCommit) {
-    coordinator_send(ExecutorMessage::EmitOpCommit {
+/// Route an SDK-initiated control request to the coordinator (written verbatim
+/// under the caller's `reference_id`, so the controller's reply — an
+/// `OpCommitResponse` / `IterCommitResponse` carrying the same id — wakes the
+/// waiter the caller registered). Carries the bounded driver's op-boundary
+/// commit, iteration commit, and park frames.
+pub(crate) fn emit_control_request(
+    reference_id: String,
+    command: crate::pb::command_request::Command,
+) {
+    coordinator_send(ExecutorMessage::EmitControlRequest {
         reference_id,
-        commit,
+        command,
     });
 }
 
@@ -133,13 +138,13 @@ pub enum ExecutorMessage {
         error: String,
         result: Vec<u8>,
     },
-    /// A bounded driver reached an op barrier (`bounded-op-journal`); the
-    /// coordinator writes an `OpCommit` control frame under the driver's
-    /// `reference_id` — the controller's `OpCommitResponse` wakes the
-    /// registered waiter. Routed here so control writes stay single-threaded.
-    EmitOpCommit {
+    /// An SDK-initiated control request (the bounded driver's `OpCommit` /
+    /// `IterCommit` / `IterPark`); the coordinator writes it verbatim under the
+    /// caller's `reference_id`, which the controller echoes on its reply to wake
+    /// the registered waiter. Routed here so control writes stay single-threaded.
+    EmitControlRequest {
         reference_id: String,
-        commit: crate::pb::OpCommit,
+        command: crate::pb::command_request::Command,
     },
 }
 

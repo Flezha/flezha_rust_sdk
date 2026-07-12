@@ -34,13 +34,23 @@ fn marker_set(set: &Mutex<HashSet<Vec<u8>>>) -> std::sync::MutexGuard<'_, HashSe
     set.lock().unwrap_or_else(|p| p.into_inner())
 }
 
+/// One post-start input delivered to a running bounded instance: the payload
+/// plus the durable-inbox offset the controller assigned it
+/// (`bounded-durable-suspension`). `offset` is `0` when the input was not
+/// journaled — an opted-out class, whose inbox is memory-only as before.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InboxItem {
+    pub payload: Vec<u8>,
+    pub offset: u64,
+}
+
 pub struct BoundedInstance {
     pub instance_id: Arc<str>,
     /// Tripped by `BoundedStop` / `RemOperative` / `max_duration`; observed by
     /// the driver's loops + `recv` within ≤200 ms.
     pub cancel: Arc<AtomicBool>,
     /// Inbox feeder; the driver owns the matching `Receiver`.
-    inbox_tx: Sender<Vec<u8>>,
+    inbox_tx: Sender<InboxItem>,
     /// Pre-built Segments per chain stage (empty for run-sugar). Shared with the
     /// driver; the restore handler rebuilds a slot's state in place before the
     /// gate releases the driver to read it.
@@ -66,14 +76,32 @@ pub struct BoundedInstance {
     op_journal: Mutex<Option<JournalResume>>,
 }
 
-/// Committed op-journal state for one crash-resume: the op indexes recorded
-/// `op_committed` plus the latest journaled handoff batch (channel-id-tagged
-/// codec bytes, decoded by the channel's inter-op codec at seed time).
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Committed op-journal state for one crash-resume. `iter` is the iteration to
+/// resume at — the one after the highest journaled `iter_committed`, so a
+/// looping instance never re-runs a committed iteration (`bounded-durable-loop`);
+/// `committed_op_idxs` are the operations already committed inside that
+/// still-in-flight iteration and `handoff` (channel-id-tagged codec bytes,
+/// decoded by the channel's inter-op codec at seed time) seeds the first
+/// uncommitted one. `committed_ops` carries every journaled forward op commit
+/// with its iteration, which the driver folds into the compensation planner's
+/// per-iteration `committed` input.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct JournalResume {
     pub committed_op_idxs: Vec<u32>,
     pub iter: u32,
     pub handoff: Vec<(u32, Vec<u8>)>,
+    pub committed_ops: Vec<CommittedOp>,
+    /// Inbox offset the last committed iteration consumed — the floor a
+    /// rehydrated inbox-driven loop reads its next item above.
+    pub consumed_offset: u64,
+}
+
+/// One journaled forward op commit, shipped back on resume.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommittedOp {
+    pub op_idx: u32,
+    pub iter: u32,
+    pub segments_ran: Vec<Vec<u8>>,
 }
 
 impl BoundedInstance {
@@ -83,7 +111,7 @@ impl BoundedInstance {
         instance_id: Arc<str>,
         stage_segments: Vec<Vec<Arc<SegmentSlot>>>,
         expected: usize,
-    ) -> (Arc<Self>, Receiver<Vec<u8>>) {
+    ) -> (Arc<Self>, Receiver<InboxItem>) {
         let (inbox_tx, inbox_rx) = unbounded();
         let instance = Arc::new(Self {
             instance_id,
@@ -151,10 +179,11 @@ impl BoundedInstance {
         self.cancel.store(true, Ordering::Release);
     }
 
-    /// Route a post-start input frame to the driver's inbox. `false` if the
-    /// channel is closed (the driver has finished).
-    pub fn push_inbox(&self, payload: Vec<u8>) -> bool {
-        self.inbox_tx.send(payload).is_ok()
+    /// Route a post-start input frame to the driver's inbox, carrying the
+    /// durable-inbox offset the controller assigned it (`0` when unjournaled).
+    /// `false` if the channel is closed (the driver has finished).
+    pub fn push_inbox(&self, payload: Vec<u8>, offset: u64) -> bool {
+        self.inbox_tx.send(InboxItem { payload, offset }).is_ok()
     }
 
     /// Locate one of this instance's Segment slots by wire identity, for the
