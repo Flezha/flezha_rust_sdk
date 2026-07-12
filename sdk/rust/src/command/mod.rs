@@ -21,6 +21,7 @@ mod migration_serialization;
 mod operation_message;
 mod operative_start;
 mod operative_stop;
+mod park_ack;
 mod ping;
 mod restore;
 mod segment_apply_state;
@@ -144,6 +145,9 @@ pub fn get_handler(_payload_id: &str, message: &[u8]) -> Result<FrameOutcome, Co
         // SDK is the SENDER for the ack (as CommandResponse raw_data) —
         // receiving it as a request is a protocol bug. Drop and log.
         Some(Command::CreditWindowAck(_)) => CommandActionType::NotificationIgnore,
+        // Dead-letter park durability ack (Controller -> SDK): wakes the
+        // dispatch thread parked in `segment::park::park_blocking`.
+        Some(Command::ParkPayloadAck(proto_ch)) => CommandActionType::Regular(Box::new(proto_ch)),
         None => return Err(CommandDecodeError::EmptyCommand),
     };
 

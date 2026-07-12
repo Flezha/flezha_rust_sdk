@@ -91,6 +91,10 @@ name = "operative_dispatch"
 required-features = ["bench-internals"]
 
 [[test]]
+name = "dlq_retry"
+required-features = ["bench-internals"]
+
+[[test]]
 name = "operative_topology"
 required-features = ["bench-internals"]
 

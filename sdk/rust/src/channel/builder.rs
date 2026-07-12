@@ -157,6 +157,9 @@ pub(crate) struct ChannelEntry {
     /// `emit_plugin` writes straight to the wire. `.on_full(...)`
     /// overwrites this value.
     pub overflow_policy: OverflowPolicy,
+    /// Retry-then-park policy for this channel's consumer dispatchers.
+    /// `.retry_max(...)` / `.retry_backoff_ms(...)` overwrite the defaults.
+    pub retry: crate::channel::RetryPolicy,
 }
 
 /// Reasons `UnboundedOperative::channels(c)` declarations fail at registration time.
@@ -228,6 +231,12 @@ pub enum BuildTopologyError {
          channel of an effectively_once() operative must opt in with .keyed()"
     )]
     UnkeyedChannelUnderEffectivelyOnce { channel: &'static str },
+
+    #[error(
+        "channel `{channel}` declared retry_max = 0; at least one attempt is required \
+         (use OperationError::non_retryable to park without retries)"
+    )]
+    RetryMaxZero { channel: &'static str },
 }
 
 /// Builder collected by `UnboundedOperative::channels`. Internal state turns into a
@@ -311,6 +320,7 @@ impl ChannelBuilder {
             plugin_sink: None,
             keyed: false,
             overflow_policy: default_policy_for_kind(kind),
+            retry: crate::channel::RetryPolicy::default(),
         });
         self.name_to_id.insert(name, id);
         id
@@ -391,6 +401,20 @@ impl ChannelBuilder {
 /// have no SDK mailbox and the value is never consulted; we still set
 /// `Block` so the field is always meaningful and to keep the descriptor
 /// cheap to compare against.
+/// Apply a `.retry_max(...)` declaration, rejecting a zero budget at
+/// registration time (surfaced by `build_topology` like every other
+/// declaration error).
+fn set_retry_max(builder: &mut ChannelBuilder, channel_id: u32, max_attempts: u32) {
+    let entry = &mut builder.channels[channel_id as usize];
+    if max_attempts == 0 {
+        builder.errors.push(BuildTopologyError::RetryMaxZero {
+            channel: entry.name,
+        });
+        return;
+    }
+    entry.retry.max_attempts = max_attempts;
+}
+
 pub(crate) fn default_policy_for_kind(kind: ChannelKind) -> OverflowPolicy {
     match kind {
         ChannelKind::Entry => OverflowPolicy::DropNewest,
@@ -430,6 +454,22 @@ impl<'b, T: 'static + Send + Sync> EntryChannel<'b, T> {
         self
     }
 
+    /// Override the consumer-side retry budget (total attempts, default 3)
+    /// applied before a failing payload is parked to the dead-letter queue.
+    pub fn retry_max(self, max_attempts: u32) -> Self {
+        set_retry_max(self.builder, self.channel_id, max_attempts);
+        self
+    }
+
+    /// Override the exponential-backoff base (milliseconds, default 50)
+    /// slept between failed attempts.
+    pub fn retry_backoff_ms(self, base_ms: u64) -> Self {
+        self.builder.channels[self.channel_id as usize]
+            .retry
+            .backoff_base_ms = base_ms;
+        self
+    }
+
     /// Discarded handle accessor (rarely useful — kept for symmetry).
     pub fn name(&self) -> &'static str {
         self.name
@@ -451,6 +491,22 @@ impl<'b, T: 'static + Send + Sync> ChannelDecl<'b, T> {
     /// can be sacrificed for liveness.
     pub fn on_full(self, policy: OverflowPolicy) -> Self {
         self.builder.channels[self.channel_id as usize].overflow_policy = policy;
+        self
+    }
+
+    /// Override the consumer-side retry budget (total attempts, default 3)
+    /// applied before a failing payload is parked to the dead-letter queue.
+    pub fn retry_max(self, max_attempts: u32) -> Self {
+        set_retry_max(self.builder, self.channel_id, max_attempts);
+        self
+    }
+
+    /// Override the exponential-backoff base (milliseconds, default 50)
+    /// slept between failed attempts.
+    pub fn retry_backoff_ms(self, base_ms: u64) -> Self {
+        self.builder.channels[self.channel_id as usize]
+            .retry
+            .backoff_base_ms = base_ms;
         self
     }
 
@@ -498,6 +554,22 @@ impl<'b, T: 'static + Send + Sync> ChannelDeclWithProducer<'b, T> {
     /// compile error.
     pub fn on_full(self, policy: OverflowPolicy) -> Self {
         self.builder.channels[self.channel_id as usize].overflow_policy = policy;
+        self
+    }
+
+    /// Override the consumer-side retry budget (total attempts, default 3)
+    /// applied before a failing payload is parked to the dead-letter queue.
+    pub fn retry_max(self, max_attempts: u32) -> Self {
+        set_retry_max(self.builder, self.channel_id, max_attempts);
+        self
+    }
+
+    /// Override the exponential-backoff base (milliseconds, default 50)
+    /// slept between failed attempts.
+    pub fn retry_backoff_ms(self, base_ms: u64) -> Self {
+        self.builder.channels[self.channel_id as usize]
+            .retry
+            .backoff_base_ms = base_ms;
         self
     }
 

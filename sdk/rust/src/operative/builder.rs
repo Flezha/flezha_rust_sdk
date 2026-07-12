@@ -101,6 +101,7 @@ pub fn build_topology_with_persistence(
             plugin_sink,
             keyed: entry.keyed,
             overflow_policy: entry.overflow_policy,
+            retry: entry.retry,
         });
     }
 

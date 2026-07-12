@@ -200,8 +200,7 @@ pub fn global() -> &'static CreditWindow {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::mpsc;
-    use std::sync::Arc;
+    use std::sync::{mpsc, Arc};
     use std::thread;
     use std::time::Duration;
 

@@ -5,7 +5,7 @@ pub struct CommandRequest {
     pub reference_id: ::prost::alloc::string::String,
     #[prost(
         oneof = "command_request::Command",
-        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26"
+        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27"
     )]
     pub command: ::core::option::Option<command_request::Command>,
 }
@@ -63,6 +63,8 @@ pub mod command_request {
         CreditWindowAck(super::CreditWindowAck),
         #[prost(message, tag = "26")]
         CreditGrant(super::CreditGrant),
+        #[prost(message, tag = "27")]
+        ParkPayloadAck(super::ParkPayloadAck),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -384,6 +386,15 @@ pub struct CreditGrant {
     pub stream_id: ::prost::alloc::string::String,
     #[prost(uint64, tag = "2")]
     pub bytes: u64,
+}
+/// Controller -> SDK. Durable ack for a `park_payload` data-stream frame:
+/// the dead-letter entry identified by `park_id` is fsynced in the DLQ
+/// store, so the parked segment may drop the poison payload and advance.
+/// One-way; the generic CommandResponse it solicits is ignored.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ParkPayloadAck {
+    #[prost(string, tag = "1")]
+    pub park_id: ::prost::alloc::string::String,
 }
 /// Controller -> SDK. Cooperative external stop for a bounded operative
 /// (`flz operative stop`), distinct from the hard `RemOperative` teardown: the

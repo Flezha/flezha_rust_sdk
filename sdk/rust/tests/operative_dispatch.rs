@@ -19,7 +19,7 @@ use flezha_executor::operative::builder::build_topology_for;
 use flezha_executor::operative::registry::OperativeRegistry;
 use flezha_executor::operative::UnboundedInstance;
 use flezha_executor::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_executor::{OverflowPolicy, UnboundedOperative, __dispatch_internals as bi};
+use flezha_executor::{__dispatch_internals as bi, OverflowPolicy, UnboundedOperative};
 
 mod common;
 use common::{dispatch_input, dummy_stream, setup, wait_until};
@@ -1159,6 +1159,22 @@ impl UnboundedOperative for PanicOperative {
 #[test]
 fn operation_panic_does_not_wedge_the_segment() {
     PANIC_AFTER.store(0, Ordering::Release);
+    // The exhausted retry budget parks the poison payload. With no global
+    // sink the park drops immediately (transport-less fallback), but a
+    // concurrently-running sink test may have installed a non-acking sink
+    // — then the park (correctly) holds the segment until acked. Ack it
+    // out-of-band: park ids are `<segment_label>#<process nonce>`, and
+    // this binary parks only here, so a small nonce sweep always hits.
+    let _acker = std::thread::spawn(|| {
+        for _ in 0..200 {
+            for nonce in 0..32 {
+                flezha_executor::segment::park::complete_ack(&format!(
+                    "panic-instance/panic_operation/#{nonce}"
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    });
     let (handle, instance) = setup::<PanicOperative>("panic-instance", 4);
     let stream = dummy_stream();
 

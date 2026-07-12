@@ -34,7 +34,6 @@ use std::thread;
 use std::time::Duration;
 
 use dashmap::DashMap;
-
 use serde::{Deserialize, Serialize};
 
 use crate::operation::change::{Change, CoalesceKey};
@@ -108,16 +107,31 @@ pub struct OutputRecord {
     pub payload: Vec<u8>,
 }
 
+/// Dead-letter park carried inside an effect record (effectively-once
+/// tier): the poisoned invocation's park entry rides the SAME atomic WAL
+/// record as its consumed-offset advance, so a crash can never advance the
+/// offset while losing the park. `payload` is `None` when the input type
+/// is not byte-representable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DlqEntryBody {
+    pub channel: String,
+    pub error: String,
+    pub attempts: u32,
+    pub payload: Option<Vec<u8>>,
+}
+
 /// Wire body of a `segment_effect_record` frame (header `format_id = 2`):
-/// one invocation's state change(s), plugin emits, and consumed input
-/// offset, persisted by the controller as ONE WAL record under ONE fsync.
-/// `changes` entries are the postcard `S::Change` bytes a plain change
-/// record would carry, so restore folds them identically.
+/// one invocation's state change(s), plugin emits, consumed input offset,
+/// and (for a parked poison payload) its dead-letter entry, persisted by
+/// the controller as ONE WAL record under ONE fsync. `changes` entries are
+/// the postcard `S::Change` bytes a plain change record would carry, so
+/// restore folds them identically.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EffectRecordBody {
     pub changes: Vec<Vec<u8>>,
     pub outputs: Vec<OutputRecord>,
     pub consumed_offset: Option<u64>,
+    pub dlq: Option<DlqEntryBody>,
 }
 
 /// One invocation's buffered effect entry (effectively-once tier). Typed on
@@ -126,6 +140,7 @@ pub struct EffectEntry<S: crate::operation::Operation> {
     pub changes: Vec<S::Change>,
     pub outputs: Vec<OutputRecord>,
     pub consumed_offset: Option<u64>,
+    pub dlq: Option<DlqEntryBody>,
 }
 
 /// One drained wire frame plus the data-stream payload id it ships under
@@ -296,6 +311,7 @@ pub fn build_segment_effect_record_frame<S: crate::operation::Operation>(
         changes,
         outputs: entry.outputs,
         consumed_offset: entry.consumed_offset,
+        dlq: entry.dlq,
     };
     let body_bytes = postcard::to_allocvec(&body)
         .expect("postcard serialization of EffectRecordBody cannot fail");
@@ -635,6 +651,7 @@ mod tests {
                 payload: b"candle".to_vec(),
             }],
             consumed_offset: Some(4711),
+            dlq: None,
         };
         let template = HeaderTemplate::new(0x010203, 1);
         let identity = encode_segment_identity("Op", "stage", "k");
@@ -704,6 +721,7 @@ mod tests {
                 payload: vec![1, 2],
             }],
             consumed_offset: Some(4711),
+            dlq: None,
         };
         let bytes = postcard::to_allocvec(&body).unwrap();
         assert_eq!(
@@ -715,6 +733,7 @@ mod tests {
                 0x01, 0x01, b'a', 0x01, b'b', // metadata: 1 × ("a","b")
                 0x02, 0x01, 0x02, // payload [1,2]
                 0x01, 0xE7, 0x24, // Some(4711)
+                0x00, // dlq: None
             ]
         );
     }
@@ -736,6 +755,7 @@ mod tests {
                 payload: vec![1],
             }],
             consumed_offset: Some(ts),
+            dlq: None,
         };
         let mut buffer = TypedBuffer::<EffOp> {
             inner: Vec::new(),

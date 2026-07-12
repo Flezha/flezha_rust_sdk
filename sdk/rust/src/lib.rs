@@ -119,7 +119,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
 pub use bounded::{BoundedCtx, BoundedError, BoundedOperative, RollbackMode};
-pub use channel::{Channel, ChannelBuilder, OverflowPolicy};
+pub use channel::{Channel, ChannelBuilder, OverflowPolicy, RetryPolicy};
 use crossbeam::channel::{Receiver, Sender};
 /// Authoring sugar. `#[flezha::operation]`, `#[derive(flezha::State)]`, and
 /// `flezha::operative!` expand to the trait surface above; see

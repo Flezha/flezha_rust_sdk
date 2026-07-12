@@ -22,6 +22,7 @@ pub mod credit;
 pub mod dynamic;
 pub mod flusher;
 pub mod header;
+pub mod park;
 pub mod restore;
 pub mod segment_state_sink;
 

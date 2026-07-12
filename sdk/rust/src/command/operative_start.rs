@@ -1,7 +1,8 @@
+use prost::Message;
+
 use super::CommandAction;
 use crate::executor::ExecutorNode;
 use crate::pb::{AddOperative, AddOperativeResponse};
-use prost::Message;
 
 impl CommandAction for AddOperative {
     fn handle(

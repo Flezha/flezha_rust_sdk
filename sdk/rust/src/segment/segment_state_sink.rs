@@ -55,6 +55,14 @@ pub const DELETE_SEGMENT_STATE_PAYLOAD_ID: &str = "delete_segment_state";
 pub const COMPENSATION_INTENT_PAYLOAD_ID: &str = "compensation_intent";
 pub const COMPENSATION_DONE_PAYLOAD_ID: &str = "compensation_done";
 
+/// Data-stream payload-id for a dead-letter park (SDK → controller,
+/// tier-off sessions): a poison payload whose retry budget is exhausted,
+/// shipped with its error context so the controller can append it to the
+/// durable DLQ store. Same outer frame layout as `segment_state_change`
+/// with a postcard `ParkBody` body; the controller answers with a
+/// `ParkPayloadAck` control command once the entry is fsynced.
+pub const PARK_PAYLOAD_PAYLOAD_ID: &str = "park_payload";
+
 const ENV_RING_CAPACITY: &str = "FLEZHA_RECONNECT_RING_CAPACITY";
 const DEFAULT_RING_CAPACITY: usize = 1024;
 const ENV_FLOOD_THRESHOLD: &str = "FLEZHA_BROKEN_PIPE_RECONNECT_THRESHOLD";
@@ -155,6 +163,17 @@ fn flood_threshold() -> usize {
 
 fn flood_window_ms() -> u64 {
     crate::util::env_parse(ENV_FLOOD_WINDOW_MS, DEFAULT_FLOOD_WINDOW_MS)
+}
+
+/// Whether a global sink has ever been installed. `false` only for
+/// transport-less runs (unit tests, standalone benches); the install is
+/// never undone, so a reconnect window still reports `true`.
+pub fn sink_installed() -> bool {
+    STATE
+        .lock()
+        .expect("segment_state_sink lock poisoned")
+        .sink
+        .is_some()
 }
 
 /// Ship one frame to the controller. Resolves the live sink each call. On

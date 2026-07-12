@@ -24,7 +24,7 @@ use flz_transport::transport::FlezhaStream;
 
 use crate::bounded::{BoundedCollectSink, BoundedError};
 use crate::channel::builder::BuildSegmentArgs;
-use crate::channel::{ChannelId, ChannelKind, OperationId, OverflowPolicy};
+use crate::channel::{ChannelId, ChannelKind, OperationId, OverflowPolicy, RetryPolicy};
 use crate::executor::mailbox::Mailbox;
 use crate::operation::change::NoChange;
 use crate::operation::ctx::EmitSink;
@@ -86,6 +86,11 @@ pub struct OperationDispatcherImpl<S: Operation> {
     output_channel_id: Option<ChannelId>,
     output_channel_kind: ChannelKind,
     output_channel_name: Option<Arc<str>>,
+    /// Input-channel name stamped on dead-letter entries; `None` for
+    /// operations without a wired input channel.
+    input_channel_name: Option<Arc<str>>,
+    /// Retry-then-park policy of the input channel (defaults when unwired).
+    retry: RetryPolicy,
     /// `.keyed()` flag of the producer-edge channel, cached like the kind
     /// so the emit sink pays zero topology lookups on the hot path.
     output_channel_keyed: bool,
@@ -114,12 +119,15 @@ struct FlushWiring {
 }
 
 impl<S: Operation> OperationDispatcherImpl<S> {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         operation_id: OperationId,
         output_channel_id: Option<ChannelId>,
         output_channel_kind: ChannelKind,
         output_channel_name: Option<Arc<str>>,
         output_channel_keyed: bool,
+        input_channel_name: Option<Arc<str>>,
+        retry: RetryPolicy,
         segment_label: Arc<str>,
         flush: FlushWiring,
     ) -> Self {
@@ -129,6 +137,8 @@ impl<S: Operation> OperationDispatcherImpl<S> {
             output_channel_kind,
             output_channel_name,
             output_channel_keyed,
+            input_channel_name,
+            retry,
             segment_label,
             flush,
             _phantom: std::marker::PhantomData,
@@ -181,6 +191,7 @@ impl<S: Operation> OperationDispatcherImpl<S> {
                     changes,
                     outputs,
                     consumed_offset: None,
+                    dlq: None,
                 }],
             }
         } else {
@@ -296,41 +307,114 @@ impl<S: Operation> OperationDispatcher for OperationDispatcherImpl<S> {
             effect_outputs: effect_outputs.as_ref(),
         };
 
-        let mut ctx =
-            OperationCtx::new(&mut sink, now, invocation_seq, &self.flush.segment_identity);
-        let handle = StateHandle::<S>::new(&mut typed_state.state, &buffer_cell);
+        // Retry-then-park loop (`platform-dead-letter-queue`): a failing
+        // invocation — returned error or contained panic — is re-run up to
+        // the input channel's `retry_max` with exponential backoff + jitter;
+        // an `OperationError::NonRetryable` skips the remaining budget. A
+        // non-final attempt passes a clone of the input so the original
+        // survives for the re-run; the final attempt moves it (after saving
+        // the park bytes, needed only if it fails too).
+        let policy = self.retry;
+        let mut input_slot = Some(input);
+        let mut parked_payload_bytes: Option<Vec<u8>> = None;
+        let mut attempt: u32 = 0;
+        let park_error: Option<String> = loop {
+            attempt += 1;
+            let is_final = attempt >= policy.max_attempts;
+            let attempt_input = if is_final {
+                let input = input_slot.take().expect("retry loop: input consumed twice");
+                parked_payload_bytes = crate::segment::park::extract_payload_bytes(&input);
+                input
+            } else {
+                input_slot
+                    .as_ref()
+                    .expect("retry loop: input consumed twice")
+                    .clone()
+            };
 
-        // Contain a operation panic so it can't poison the held `state` lock.
-        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            typed_state.operation.run(input, handle, &mut ctx)
-        }));
+            let mut ctx =
+                OperationCtx::new(&mut sink, now, invocation_seq, &self.flush.segment_identity);
+            let handle = StateHandle::<S>::new(&mut typed_state.state, &buffer_cell);
 
-        match outcome {
-            Ok(Ok(())) => {}
-            Ok(Err(err)) => eprintln!("[flezha] operation {} run error: {}", S::name(), err),
-            Err(_) => {
-                eprintln!(
-                    "[flezha] operation {} run panicked; segment continues",
-                    S::name()
-                )
+            // Contain a operation panic so it can't poison the held `state` lock.
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                typed_state.operation.run(attempt_input, handle, &mut ctx)
+            }));
+
+            let (error, retryable) = match outcome {
+                Ok(Ok(())) => break None,
+                Ok(Err(err)) => {
+                    let retryable = !err.is_non_retryable();
+                    (err.to_string(), retryable)
+                }
+                // A panic is retryable by default — the author never got to
+                // classify it (design D5).
+                Err(panic) => (crate::operation::error::format_panic(panic), true),
+            };
+            // A failed attempt's captured tier outputs must not ship (the
+            // invocation did not complete); changes it already applied to
+            // the in-memory state stay buffered so durable state cannot
+            // diverge from memory.
+            if let Some(cell) = effect_outputs.as_ref() {
+                cell.borrow_mut().clear();
             }
-        }
+            if !retryable || is_final {
+                break Some(error);
+            }
+            crate::segment::park::RETRIES_TOTAL.fetch_add(1, Ordering::Relaxed);
+            eprintln!(
+                "[flezha] operation {} attempt {}/{} failed (retrying): {}",
+                S::name(),
+                attempt,
+                policy.max_attempts,
+                error
+            );
+            std::thread::sleep(retry_backoff(policy.backoff_base_ms, attempt));
+        };
 
         drop(sink);
+        let dlq = if let Some(error) = park_error {
+            crate::segment::park::PARKED_TOTAL.fetch_add(1, Ordering::Relaxed);
+            eprintln!(
+                "[flezha] operation {} parking poison payload to DLQ after {} attempt(s): {}",
+                S::name(),
+                attempt,
+                error
+            );
+            Some(crate::segment::flusher::DlqEntryBody {
+                channel: self
+                    .input_channel_name
+                    .as_deref()
+                    .unwrap_or("<unwired>")
+                    .to_string(),
+                error,
+                attempts: attempt,
+                payload: input_slot
+                    .as_ref()
+                    .and_then(|input| crate::segment::park::extract_payload_bytes(input))
+                    .or(parked_payload_bytes),
+            })
+        } else {
+            None
+        };
+
         if let Some(outputs_cell) = effect_outputs {
             // Tier mode: this invocation's changes + outputs + consumed
             // offset become ONE effect entry, drained by the flusher as one
             // `segment_effect_record` frame (never coalesced). An
-            // effect-free invocation contributes nothing durable.
+            // effect-free invocation contributes nothing durable — unless it
+            // parked, in which case the entry MUST ship so the dead-letter
+            // park and the consumed-offset advance stay atomic.
             let changes = buffer_cell.into_inner();
             let outputs = outputs_cell.into_inner();
-            if !(changes.is_empty() && outputs.is_empty()) {
+            if !(changes.is_empty() && outputs.is_empty()) || dlq.is_some() {
                 typed_buffer
                     .effects
                     .push(crate::segment::flusher::EffectEntry {
                         changes,
                         outputs,
                         consumed_offset,
+                        dlq,
                     });
             }
         } else {
@@ -339,6 +423,17 @@ impl<S: Operation> OperationDispatcher for OperationDispatcherImpl<S> {
             // flusher drains. `change_seq` and the move-out drain guarantee
             // each change is shipped exactly once.
             typed_buffer.inner = buffer_cell.into_inner();
+            if let Some(entry) = dlq {
+                // Tier-off park: ship the park frame and hold this segment
+                // (the drain thread) until the controller acks the DLQ
+                // append as durable — park-then-advance, never a drop.
+                let body = crate::segment::park::ParkBody {
+                    park_id: crate::segment::park::mint_park_id(&self.segment_label),
+                    origin_offset: consumed_offset,
+                    entry,
+                };
+                crate::segment::park::park_blocking(&self.flush.segment_identity, &body);
+            }
         }
     }
 
@@ -1207,6 +1302,29 @@ fn send_plugin_frame(
     }
 }
 
+/// Exponential retry backoff with ±50% jitter: `base * 2^(attempt-1)`,
+/// jitter included, capped at [`crate::channel::RETRY_BACKOFF_MAX_MS`].
+/// The jitter draws from a cheap xorshift over the wall clock — backoff
+/// timing is runtime scheduling, outside the operation determinism
+/// contract.
+fn retry_backoff(base_ms: u64, attempt: u32) -> std::time::Duration {
+    let exp = base_ms
+        .max(1)
+        .saturating_mul(1u64 << (attempt.saturating_sub(1)).min(16))
+        .min(crate::channel::RETRY_BACKOFF_MAX_MS);
+    let mut x = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as u64)
+        .unwrap_or(0x9E37_79B9)
+        | 1;
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    // Uniform in [exp/2, exp*1.5), then re-capped.
+    let jittered = exp / 2 + x % exp;
+    std::time::Duration::from_millis(jittered.min(crate::channel::RETRY_BACKOFF_MAX_MS))
+}
+
 pub fn drain_segment(slot: &Arc<SegmentSlot>) {
     // Single-ACTIVE-drainer gate. The queued pool task and a Block-policy
     // producer draining inline may both arrive here; the loser leaves and the
@@ -1288,6 +1406,11 @@ pub fn build_segment_slot<S: Operation>(args: BuildSegmentArgs<'_>) -> Arc<Segme
     let output_channel = operation_desc
         .output_channel_id
         .and_then(|id| topology.channel(id));
+    // Retry-then-park policy rides the operation's input channel; an
+    // unwired input keeps the defaults (park still works, channel unnamed).
+    let input_channel = operation_desc
+        .input_channel_id
+        .and_then(|id| topology.channel(id));
     // `flz.segment` stamp: same triple the WAL identity encodes, readable.
     let segment_label: Arc<str> = Arc::from(format!(
         "{}/{}/{}",
@@ -1303,6 +1426,8 @@ pub fn build_segment_slot<S: Operation>(args: BuildSegmentArgs<'_>) -> Arc<Segme
             .unwrap_or(ChannelKind::InterOperation),
         output_channel.map(|c| Arc::clone(&c.name)),
         output_channel.map(|c| c.keyed).unwrap_or(false),
+        input_channel.map(|c| Arc::clone(&c.name)),
+        input_channel.map(|c| c.retry).unwrap_or_default(),
         segment_label,
         FlushWiring {
             segment_identity: Arc::clone(&segment_identity),

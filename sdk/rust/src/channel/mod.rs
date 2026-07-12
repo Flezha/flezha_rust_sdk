@@ -68,6 +68,33 @@ pub enum OverflowPolicy {
     DropOldest,
 }
 
+/// Per-channel retry policy applied by the consumer-side dispatcher when an
+/// operation invocation fails (returned error or panic). After
+/// `max_attempts` total attempts — or immediately on an error the author
+/// classified `OperationError::NonRetryable` — the payload is parked to the
+/// controller's dead-letter queue and the segment advances. Declared via
+/// `.retry_max(...)` / `.retry_backoff_ms(...)` on the channel builder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RetryPolicy {
+    /// Total attempts (first run included). Default 3.
+    pub max_attempts: u32,
+    /// Exponential backoff base in milliseconds: attempt n sleeps
+    /// `base * 2^(n-1)` (±50% jitter), capped at [`RETRY_BACKOFF_MAX_MS`].
+    pub backoff_base_ms: u64,
+}
+
+/// Cap on the per-attempt retry backoff, jitter included.
+pub const RETRY_BACKOFF_MAX_MS: u64 = 5_000;
+
+impl Default for RetryPolicy {
+    fn default() -> Self {
+        Self {
+            max_attempts: 3,
+            backoff_base_ms: 50,
+        }
+    }
+}
+
 /// Hybrid plugin sink: the runtime form of `also_to_plugin_with(...)`.
 /// Lives alongside an `InterOperation` channel's consumer fan-out so a
 /// single emit reaches both consumer mailboxes (typed) and the named
@@ -105,6 +132,9 @@ pub struct ChannelDescriptor {
     /// overridden by `.on_full(...)`. Plugin-bound channels carry a
     /// placeholder value that is never consulted.
     pub overflow_policy: OverflowPolicy,
+    /// Retry-then-park policy applied by this channel's consumer dispatchers.
+    /// Plugin-bound channels have no SDK-side consumer and ignore this value.
+    pub retry: RetryPolicy,
 }
 
 pub type EntryWrapFn =

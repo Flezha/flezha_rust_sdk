@@ -269,6 +269,7 @@ mod tests {
                 payload: vec![1, 2],
             }],
             consumed_offset: Some(4711),
+            dlq: None,
         };
         let effect = wal_record(
             1,
