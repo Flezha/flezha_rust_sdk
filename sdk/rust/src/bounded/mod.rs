@@ -2817,6 +2817,75 @@ mod tests {
             );
         }
 
+        // --- bounded-loop-rewind: a journal carrying `rewind_undo` unwinds those
+        // iterations — reverse iteration, reverse stage — BEFORE the loop resumes
+        // forward at the rewound-to iteration ---
+        let _ = drain_comp_log();
+        let _ = drain_op_commits();
+        // Keep-progress deliberately: a rewind unwinds committed iterations by
+        // definition, so the undo must be forced all-or-nothing whatever the
+        // class's crash rollback mode says.
+        let id = "loop-rewind";
+        assert!(node.start_bounded_resumable(
+            "test-loop-saga-keep".into(),
+            id.into(),
+            "ignored".into(),
+            1
+        ));
+        let seg = crate::segment::flusher::encode_segment_identity(id, "loop_reserve", "");
+        let (inst, _slot) = node
+            .find_bounded_segment(&seg)
+            .expect("the loop saga's Segment is reachable by the restore handler");
+        // Rewound to iteration 0: iteration 0 stays committed, iterations 1 and 2
+        // are outstanding undo, and the loop resumes at 1.
+        let undo_op = |op_idx: u32, iter: u32, segments_ran: Vec<Vec<u8>>| instance::CommittedOp {
+            op_idx,
+            iter,
+            segments_ran,
+        };
+        inst.note_op_journal(instance::JournalResume {
+            iter: 1,
+            consumed_offset: 1,
+            committed_ops: vec![undo_op(0, 0, vec![seg.clone()]), undo_op(1, 0, Vec::new())],
+            rewind_undo: vec![
+                undo_op(0, 1, vec![seg.clone()]),
+                undo_op(1, 1, Vec::new()),
+                undo_op(0, 2, vec![seg.clone()]),
+                undo_op(1, 2, Vec::new()),
+            ],
+            ..Default::default()
+        });
+        inst.note_restored();
+        // The resumed turn fails, so the run reaches a terminal state (the fake
+        // controller must stay in `drain` to ack the undo commits).
+        assert!(inst.push_inbox(b"boom".to_vec(), 2));
+
+        let (_outs, done) = drain(&rx, id);
+        assert_eq!(done.0, "error", "the resumed turn's own failure terminates");
+        assert_eq!(
+            drain_comp_log(),
+            vec![
+                "undo-loop:0".to_string(),
+                "undo-loop:0".to_string(),
+                "undo-loop:1".to_string()
+            ],
+            "both rewound iterations are undone first (journal-rebuilt ⇒ 0 retained \
+             outputs), and only then does the resumed turn run and roll itself back \
+             (in-flight ⇒ 1 retained output)"
+        );
+        let undo: Vec<(u32, u32)> = drain_op_commits()
+            .iter()
+            .filter(|c| c.compensating)
+            .map(|c| (c.op_idx, c.iter))
+            .collect();
+        assert_eq!(
+            undo,
+            vec![(1, 2), (0, 2), (1, 1), (0, 1)],
+            "reverse iteration, reverse stage — and the hookless terminal op still \
+             journals its (empty) `compensated` record, which is what drains it out \
+             of the next fold's outstanding work"
+        );
+
         std::env::remove_var("FLEZHA_BOUNDED_PARK_IDLE_MS");
 
         // --- bounded-segment-retry: a transient segment failure recovers in

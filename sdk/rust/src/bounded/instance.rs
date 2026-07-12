@@ -94,6 +94,11 @@ pub struct JournalResume {
     /// Inbox offset the last committed iteration consumed — the floor a
     /// rehydrated inbox-driven loop reads its next item above.
     pub consumed_offset: u64,
+    /// Operations a rewind unwound that nothing has compensated yet. The driver
+    /// undoes them through the ordinary compensation planner before resuming
+    /// forward at `iter` (which the journal has already folded back to the
+    /// rewound-to iteration). Empty = no rewind pending.
+    pub rewind_undo: Vec<CommittedOp>,
 }
 
 /// One journaled forward op commit, shipped back on resume.

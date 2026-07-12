@@ -88,6 +88,8 @@ impl CommandAction for AddOperative {
 /// bytes when nothing is declared (the default), keeping the response
 /// byte-identical to pre-tier builds.
 fn metadata_response(kind: &str, factory_id: &str) -> Vec<u8> {
+    let mut metadata = std::collections::HashMap::new();
+
     let effectively_once = match kind {
         "bounded" => crate::bounded::registry::get_class(factory_id)
             .and_then(|spec| spec.topology.as_ref().map(|t| t.effectively_once))
@@ -96,14 +98,45 @@ fn metadata_response(kind: &str, factory_id: &str) -> Vec<u8> {
             .map(|t| t.effectively_once)
             .unwrap_or(false),
     };
-    if !effectively_once {
+    if effectively_once {
+        metadata.insert("effectively_once".to_string(), "true".to_string());
+    }
+
+    // The chain positions whose operation declares `compensate`. A rewind can
+    // only unwind an operation whose plugin output is semantically undoable, and
+    // the controller refuses one that is not — so it needs this before it wakes
+    // the instance (bounded-loop-rewind D5).
+    if let Some(ops) = compensable_ops(kind, factory_id) {
+        metadata.insert("compensable_ops".to_string(), ops);
+    }
+
+    if metadata.is_empty() {
         return Vec::new();
     }
-    let response = AddOperativeResponse {
-        metadata: std::collections::HashMap::from([(
-            "effectively_once".to_string(),
-            "true".to_string(),
-        )]),
-    };
-    response.encode_to_vec()
+    AddOperativeResponse { metadata }.encode_to_vec()
+}
+
+/// Comma-separated chain positions of the operations declaring a `compensate`
+/// hook, or `None` for a class with no structured chain (run-sugar, unbounded).
+/// An empty string is meaningful — "a chain, none of it compensable" — and is
+/// not the same as absent.
+fn compensable_ops(kind: &str, factory_id: &str) -> Option<String> {
+    if kind != "bounded" {
+        return None;
+    }
+    let spec = crate::bounded::registry::get_class(factory_id)?;
+    let topology = spec.topology.as_ref()?;
+    Some(
+        spec.chain
+            .iter()
+            .enumerate()
+            .filter(|(_, op_id)| {
+                topology
+                    .operation(**op_id)
+                    .is_some_and(|op| op.compensate_overridden)
+            })
+            .map(|(idx, _)| idx.to_string())
+            .collect::<Vec<_>>()
+            .join(","),
+    )
 }

@@ -58,16 +58,9 @@ impl CommandAction for RestoreInitState {
                         .iter()
                         .map(|item| (item.channel_id, item.payload.clone()))
                         .collect(),
-                    committed_ops: journal
-                        .committed_ops
-                        .iter()
-                        .map(|op| crate::bounded::instance::CommittedOp {
-                            op_idx: op.op_idx,
-                            iter: op.iter,
-                            segments_ran: op.segments_ran.clone(),
-                        })
-                        .collect(),
+                    committed_ops: journal.committed_ops.iter().map(committed_op).collect(),
                     consumed_offset: journal.consumed_offset,
+                    rewind_undo: journal.rewind_undo.iter().map(committed_op).collect(),
                 });
             }
             instance.note_restored();
@@ -150,6 +143,14 @@ fn max_consumed_offset(change_log_bytes: &[u8]) -> Option<u64> {
         }
     }
     max
+}
+
+fn committed_op(op: &crate::pb::OpCommittedOp) -> crate::bounded::instance::CommittedOp {
+    crate::bounded::instance::CommittedOp {
+        op_idx: op.op_idx,
+        iter: op.iter,
+        segments_ran: op.segments_ran.clone(),
+    }
 }
 
 /// Scan every live operative's segments for the slot whose wire identity equals

@@ -43,9 +43,12 @@ pub(crate) struct SegmentRun {
 /// A completed operation in the chain, recorded so it can be rolled back.
 /// `stage_idx` indexes both the chain and the driver's pre-built stage-segment
 /// table, so the compensator resolves the operation descriptor and the segment
-/// slots from it.
+/// slots from it. `iter` is the loop iteration it ran in, which its `compensated`
+/// journal entry is keyed by (0 for a non-looping chain, and for a record
+/// rebuilt from compensation-intent markers, which carry no iteration).
 pub(crate) struct StageRecord {
     pub stage_idx: usize,
+    pub iter: u32,
     pub segments: Vec<SegmentRun>,
 }
 
@@ -86,6 +89,7 @@ mod tests {
     fn stage(stage_idx: usize) -> StageRecord {
         StageRecord {
             stage_idx,
+            iter: 0,
             segments: Vec::new(),
         }
     }

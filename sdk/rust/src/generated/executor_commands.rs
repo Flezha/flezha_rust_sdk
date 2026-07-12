@@ -372,6 +372,13 @@ pub struct OpCommittedOp {
 /// iteration (compensation planning), `consumed_offset` the inbox offset the
 /// last committed iteration consumed, and `parked` / `wake_deadline_ms` the
 /// suspension record (bounded-durable-suspension).
+///
+/// `rewind_undo` carries the operations a rewind unwound that have not been
+/// compensated yet (bounded-loop-rewind). The driver runs them through the
+/// ordinary compensation planner before resuming forward at `iter`, which the
+/// journal has already folded back to the rewound-to iteration. Each undo
+/// journals a `compensated` entry, so the list shrinks across a crash and
+/// re-planning never double-compensates. Empty = no rewind pending.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct OpJournalState {
     #[prost(uint32, repeated, tag = "1")]
@@ -388,6 +395,8 @@ pub struct OpJournalState {
     pub parked: bool,
     #[prost(uint64, tag = "7")]
     pub wake_deadline_ms: u64,
+    #[prost(message, repeated, tag = "8")]
+    pub rewind_undo: ::prost::alloc::vec::Vec<OpCommittedOp>,
 }
 /// Per-Segment state restore handshake: Controller ships latest snapshot
 /// bytes plus tail-WAL bytes, SDK applies them to the segment's State

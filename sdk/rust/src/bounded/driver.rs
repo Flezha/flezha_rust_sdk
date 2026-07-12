@@ -29,7 +29,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crossbeam::channel::{unbounded, Receiver, RecvTimeoutError};
 
 use super::compensation::{plan_compensation, SegmentRun, StageRecord, StagedOutput};
-use super::instance::{BoundedInstance, InboxItem, JournalResume};
+use super::instance::{BoundedInstance, CommittedOp, InboxItem, JournalResume};
 use super::spec::BoundedSpec;
 use super::{BoundedCollectSink, BoundedCtx, BoundedError, BoundedRunFn, LoopMode, RollbackMode};
 use crate::channel::builder::BuildSegmentArgs;
@@ -356,6 +356,15 @@ fn drive_chain(ctx: &ChainCtx, args: &str, cancel: &AtomicBool) -> RunOutcome {
     // Both are empty for a fresh run and for a non-looping chain.
     let (mut committed, in_flight) = journaled_stages(ctx, &resume);
 
+    // A rewind unwinds the iterations above its target before the loop resumes at
+    // it (bounded-loop-rewind). The journal has already folded the forward state
+    // back — `resume.iter` IS the rewound-to iteration + 1 — so all that is left
+    // is the undo, and the journal is authoritative about how much of it is still
+    // outstanding.
+    if !resume.rewind_undo.is_empty() {
+        run_rewind_undo(ctx, &resume.rewind_undo);
+    }
+
     let mut iter = resume.iter;
     let mut consumed_offset = resume.consumed_offset;
     // Terminal batch of the previous iteration, carried in memory by a
@@ -494,6 +503,7 @@ fn run_iteration(
         let commit = commit_op_boundary(ctx, stage_idx, iter, op, &segments, slots, &batch);
         completed.push(StageRecord {
             stage_idx,
+            iter,
             segments,
         });
         if let Err(e) = commit {
@@ -716,16 +726,7 @@ fn journaled_stages(
     ctx: &ChainCtx,
     resume: &JournalResume,
 ) -> (Vec<Vec<StageRecord>>, Vec<StageRecord>) {
-    let mut by_iter: BTreeMap<u32, Vec<StageRecord>> = BTreeMap::new();
-    for op in &resume.committed_ops {
-        if let Some(record) = stage_record(ctx, op.op_idx, &op.segments_ran) {
-            by_iter.entry(op.iter).or_default().push(record);
-        }
-    }
-    for stages in by_iter.values_mut() {
-        // Completion order within an iteration is chain order.
-        stages.sort_by_key(|s| s.stage_idx);
-    }
+    let mut by_iter = stages_by_iter(ctx, &resume.committed_ops);
     // The resume point splits the two: everything below it is committed progress.
     let in_flight = by_iter
         .split_off(&resume.iter)
@@ -734,10 +735,33 @@ fn journaled_stages(
     (by_iter.into_values().collect(), in_flight)
 }
 
+/// Journaled op commits as stage records, grouped by the iteration they ran in
+/// and ordered within it by chain position (= completion order). Shared by the
+/// forward resume and the rewind undo, which need the same grouping over
+/// different sets of commits.
+fn stages_by_iter(ctx: &ChainCtx, ops: &[CommittedOp]) -> BTreeMap<u32, Vec<StageRecord>> {
+    let mut by_iter: BTreeMap<u32, Vec<StageRecord>> = BTreeMap::new();
+    for op in ops {
+        if let Some(record) = stage_record(ctx, op.op_idx, op.iter, &op.segments_ran) {
+            by_iter.entry(op.iter).or_default().push(record);
+        }
+    }
+    for stages in by_iter.values_mut() {
+        // Completion order within an iteration is chain order.
+        stages.sort_by_key(|s| s.stage_idx);
+    }
+    by_iter
+}
+
 /// One journaled op commit as a `StageRecord`, resolving each shipped-back wire
 /// segment identity to its slot index. `None` when the operation is not in this
 /// build's chain (a topology that changed under a journaled instance).
-fn stage_record(ctx: &ChainCtx, op_idx: u32, segments_ran: &[Vec<u8>]) -> Option<StageRecord> {
+fn stage_record(
+    ctx: &ChainCtx,
+    op_idx: u32,
+    iter: u32,
+    segments_ran: &[Vec<u8>],
+) -> Option<StageRecord> {
     let stage_idx = op_idx as usize;
     let slots = ctx.stage_segments.get(stage_idx)?;
     let segments = segments_ran
@@ -755,6 +779,7 @@ fn stage_record(ctx: &ChainCtx, op_idx: u32, segments_ran: &[Vec<u8>]) -> Option
         .collect();
     Some(StageRecord {
         stage_idx,
+        iter,
         segments,
     })
 }
@@ -994,47 +1019,20 @@ fn run_compensation(ctx: &ChainCtx, committed: &[Vec<StageRecord>], in_flight: &
             if ctx.instance.has_compensation_done(&slot.segment_identity) {
                 continue;
             }
-            let outputs: Vec<Value> = seg_run.outputs.iter().map(Arc::clone).collect();
-            // One sink per compensated segment: the undo output it emits is
-            // staged under that segment's identity for the `compensated`
-            // journal entry (bounded-transactional-outbox D5).
-            let mut sink = BoundedSegmentSink::new(ctx.instance_id, ctx.journaling());
-            {
-                let mut state = slot.state.lock_recover();
-                if let Err(e) = slot.dispatcher.compensate_collecting(
-                    outputs,
-                    &mut state,
-                    ctx.topology,
-                    &mut sink,
-                ) {
-                    eprintln!(
-                        "[flezha] bounded {} compensation error: {e}",
-                        ctx.instance_id
-                    );
-                }
-            }
+            let sink = compensate_segment(ctx, slot, seg_run);
             // Journal this segment's undo output BEFORE the done marker: the
             // marker is what stops the hook re-running on resume, so a crash
             // between the two must fall on the side that re-runs the (idempotent)
             // hook rather than the side that loses its undo output. A hook that
             // emitted nothing needs no entry.
             if !sink.staged.is_empty() {
-                let commit = crate::pb::command_request::Command::OpCommit(crate::pb::OpCommit {
-                    operative_id: ctx.instance_id.to_string(),
-                    op_idx: record.stage_idx as u32,
-                    iter: 0,
-                    segments_ran: vec![slot.segment_identity.as_ref().clone()],
-                    handoff: Vec::new(),
-                    outbox: outbox_items(slot, &sink.staged),
-                    compensating: true,
-                });
-                if let Err(e) = ship_and_await(ctx, record.stage_idx, "compensation", false, commit)
-                {
-                    eprintln!(
-                        "[flezha] bounded {} undo-outbox journaling failed: {e}",
-                        ctx.instance_id
-                    );
-                }
+                journal_undo(
+                    ctx,
+                    record,
+                    "compensation",
+                    vec![slot.segment_identity.as_ref().clone()],
+                    outbox_items(slot, &sink.staged),
+                );
             }
             // Durable saga (§4.3): record this compensation's completion so a
             // later crash resumes the remainder and skips this segment.
@@ -1045,6 +1043,99 @@ fn run_compensation(ctx: &ChainCtx, committed: &[Vec<StageRecord>], in_flight: &
             );
         }
     }
+}
+
+/// Undo the operations a rewind unwound, in reverse iteration and reverse chain
+/// order (`bounded-loop-rewind`). Forced all-or-nothing: a rewind unwinds
+/// committed iterations by definition, whatever the class's rollback mode says
+/// about crashes.
+///
+/// Two things differ from the crash-resume pass. It does not consult the
+/// per-segment compensation-done markers — those are per *segment*, and a segment
+/// that ran in two rewound iterations must be undone once per iteration. And it
+/// journals exactly one `compensated` entry per operation, **even an empty one**
+/// for a hookless operation: that entry is the durable proof the operation is
+/// undone, and without it the journal would re-plan it on every restore. The
+/// journal is therefore the sole authority on what is still outstanding, which is
+/// what makes a crash mid-rewind resume with exactly the remaining work.
+fn run_rewind_undo(ctx: &ChainCtx, unwound: &[CommittedOp]) {
+    let by_iter: Vec<Vec<StageRecord>> = stages_by_iter(ctx, unwound).into_values().collect();
+
+    for record in plan_compensation(RollbackMode::AllOrNothing, &by_iter, &[]) {
+        let op_id = ctx.chain[record.stage_idx];
+        let op = ctx
+            .topology
+            .operation(op_id)
+            .expect("chain operation present in topology");
+        let slots = &ctx.stage_segments[record.stage_idx];
+
+        let mut segments_ran = Vec::new();
+        let mut outbox = Vec::new();
+        for seg_run in &record.segments {
+            let slot = &slots[seg_run.segment_index];
+            segments_ran.push(slot.segment_identity.as_ref().clone());
+            if op.compensate_overridden {
+                let sink = compensate_segment(ctx, slot, seg_run);
+                outbox.extend(outbox_items(slot, &sink.staged));
+            }
+        }
+
+        journal_undo(ctx, record, "rewind-undo", segments_ran, outbox);
+    }
+}
+
+/// Journal one operation's undo — the `compensated` entry that records it as
+/// reversed, carrying whatever output its hook staged. Shared by the crash-resume
+/// pass (one entry per compensated segment) and the rewind pass (one per
+/// operation, even an empty one). Best-effort: the cancel token is ignored,
+/// because rollback IS the response to that cancel.
+fn journal_undo(
+    ctx: &ChainCtx,
+    record: &StageRecord,
+    what: &str,
+    segments_ran: Vec<Vec<u8>>,
+    outbox: Vec<crate::pb::OpOutboxItem>,
+) {
+    let commit = crate::pb::command_request::Command::OpCommit(crate::pb::OpCommit {
+        operative_id: ctx.instance_id.to_string(),
+        op_idx: record.stage_idx as u32,
+        iter: record.iter,
+        segments_ran,
+        handoff: Vec::new(),
+        outbox,
+        compensating: true,
+    });
+
+    if let Err(e) = ship_and_await(ctx, record.stage_idx, what, false, commit) {
+        eprintln!(
+            "[flezha] bounded {} {what} journaling failed: {e}",
+            ctx.instance_id
+        );
+    }
+}
+
+/// Run one segment's `compensate` hook and hand back the sink holding whatever
+/// undo output it staged (under that segment's identity, for the `compensated`
+/// journal entry — `bounded-transactional-outbox` D5). Best-effort: a failing
+/// hook is logged so one broken undo cannot strand the rest of the plan.
+fn compensate_segment(
+    ctx: &ChainCtx,
+    slot: &Arc<SegmentSlot>,
+    seg_run: &SegmentRun,
+) -> BoundedSegmentSink {
+    let outputs: Vec<Value> = seg_run.outputs.iter().map(Arc::clone).collect();
+    let mut sink = BoundedSegmentSink::new(ctx.instance_id, ctx.journaling());
+    let mut state = slot.state.lock_recover();
+    if let Err(e) =
+        slot.dispatcher
+            .compensate_collecting(outputs, &mut state, ctx.topology, &mut sink)
+    {
+        eprintln!(
+            "[flezha] bounded {} compensation error: {e}",
+            ctx.instance_id
+        );
+    }
+    sink
 }
 
 /// Rebuild the completed-stage records to compensate on a crash-resume from the
@@ -1068,8 +1159,11 @@ fn reconstruct_completed_from_intents(ctx: &ChainCtx) -> Vec<StageRecord> {
             })
             .collect();
         if !segments.is_empty() {
+            // Intent markers carry no iteration; a pre-journal saga resume has
+            // only one pass to undo anyway.
             completed.push(StageRecord {
                 stage_idx,
+                iter: 0,
                 segments,
             });
         }
