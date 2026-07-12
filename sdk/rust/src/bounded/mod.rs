@@ -56,8 +56,8 @@ use crate::channel::ChannelBuilder;
 pub(crate) const INBOX_OFFSET_KEY: &str = "flz.inbox_offset";
 
 /// How a structured bounded chain repeats (`bounded-durable-loop`). Every
-/// iteration ends with a durable iteration commit — journal + boundary snapshot
-/// + outbox flush — so a crash resumes at the iteration **after** the last
+/// iteration ends with a durable iteration commit — journal, boundary snapshot,
+/// outbox flush — so a crash resumes at the iteration **after** the last
 /// committed one, never at the loop start.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoopMode {
@@ -90,7 +90,9 @@ pub trait BoundedOperative: Send + Sync + 'static {
     /// Run-sugar body: the single-Operation, single-Segment case. Invoked once
     /// per started instance with `args` from `init_values`. Emit output via
     /// `ctx`, optionally call [`BoundedCtx::complete`] with a result, and
-    /// return `Ok(())`; returning `Err` is a terminal failure (no retry).
+    /// return `Ok(())`; returning `Err` is a terminal failure — the retry
+    /// ladder ([`retry_attempts`](Self::retry_attempts)) scopes to a structured
+    /// operation's segments, and a `run` body has none.
     ///
     /// The default errors — a class must implement either `run` or
     /// `operations`. A structured operative (non-empty `operations`) never has
@@ -147,6 +149,31 @@ pub trait BoundedOperative: Send + Sync + 'static {
         None
     }
 
+    /// Total attempts a **structured** operation's segment gets before its
+    /// error fails the operation (`bounded-segment-retry`): the first run plus
+    /// the retries. Default 3; `0` or `1` restores fail-fast. Only the failed
+    /// segment re-runs — siblings that completed stay buffered at the barrier —
+    /// and the retry always happens **before** the operation commits, so a
+    /// committed operation is never retried.
+    ///
+    /// A retried segment re-runs its whole batch for that operation, under the
+    /// same at-least-once idempotency contract crash-resume imposes: a failed
+    /// attempt's state changes are already applied, so `Operation::run` must
+    /// tolerate re-running over them. Classify a permanent failure with
+    /// [`OperationError::non_retryable`](crate::operation::OperationError::non_retryable)
+    /// to skip the ladder.
+    fn retry_attempts() -> u32 {
+        3
+    }
+
+    /// Backoff base of the retry ladder: attempt `n` waits `base × 2^(n-1)`
+    /// with jitter, capped at [`RETRY_BACKOFF_MAX_MS`](crate::channel::RETRY_BACKOFF_MAX_MS).
+    /// Default 500 ms. The wait observes cancellation, so an external stop or
+    /// `max_duration` interrupts it promptly.
+    fn retry_backoff() -> Duration {
+        Duration::from_millis(500)
+    }
+
     /// Saga rollback scope, applied when the operative terminates abnormally
     /// after partial progress. Default [`RollbackMode::AllOrNothing`] undoes
     /// every completed operation in reverse, back to the start;
@@ -186,25 +213,54 @@ pub enum RollbackMode {
 /// to this `fn` pointer because it takes no `self`.
 pub type BoundedRunFn = fn(&mut BoundedCtx, &str) -> Result<(), BoundedError>;
 
-/// A terminal bounded failure.
+/// A bounded failure. Retryable by default: inside a structured operation it
+/// first passes through the class's per-segment retry ladder
+/// (`bounded-segment-retry`), and only a `non_retryable` error — or one that
+/// exhausted the ladder — fails the operation.
 #[derive(Debug, Clone)]
-pub struct BoundedError(pub String);
+pub struct BoundedError {
+    pub message: String,
+    /// Skip the retry ladder: this failure can never succeed on a re-run.
+    pub non_retryable: bool,
+}
+
+impl BoundedError {
+    /// Classify a failure as permanent (validation error, 4xx-class response):
+    /// the segment is not retried and the operation fails immediately. Mirrors
+    /// [`OperationError::non_retryable`](crate::operation::OperationError::non_retryable),
+    /// which an operation body inside a segment returns to the same effect.
+    pub fn non_retryable(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            non_retryable: true,
+        }
+    }
+
+    /// Build with an explicit classification (dispatcher seam: carries an
+    /// operation's own `NonRetryable` marker through to the bounded ladder).
+    pub(crate) fn new(message: impl Into<String>, non_retryable: bool) -> Self {
+        Self {
+            message: message.into(),
+            non_retryable,
+        }
+    }
+}
 
 impl fmt::Display for BoundedError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
+        write!(f, "{}", self.message)
     }
 }
 
 impl From<String> for BoundedError {
     fn from(s: String) -> Self {
-        BoundedError(s)
+        BoundedError::new(s, false)
     }
 }
 
 impl From<&str> for BoundedError {
     fn from(s: &str) -> Self {
-        BoundedError(s.to_string())
+        BoundedError::new(s, false)
     }
 }
 
@@ -346,6 +402,7 @@ mod tests {
     use crate::segment::restore::RestoreInitPayload;
 
     static EMIT_RUNS: AtomicUsize = AtomicUsize::new(0);
+    static FAIL_RUNS: AtomicUsize = AtomicUsize::new(0);
 
     // ---- run-sugar operatives ------------------------------------------------
 
@@ -362,12 +419,15 @@ mod tests {
         }
     }
 
+    /// Run-sugar that always fails (counting its runs: a `run` body has no
+    /// segments to scope a retry to, so it must run exactly once).
     struct FailBounded;
     impl BoundedOperative for FailBounded {
         fn factory_id() -> &'static str {
             "test-fail-bounded"
         }
         fn run(_ctx: &mut BoundedCtx, _args: &str) -> Result<(), BoundedError> {
+            FAIL_RUNS.fetch_add(1, Ordering::SeqCst);
             Err(BoundedError::from("boom"))
         }
     }
@@ -1505,14 +1565,192 @@ mod tests {
         }
     }
 
+    // ---- per-segment retry ladder ops (`bounded-segment-retry`) -------------
+
+    /// Attempts the `odd` segment has made, and items the `even` sibling has
+    /// processed — a retry must re-run ONLY the failing segment.
+    static ODD_ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
+    static EVEN_RUNS: AtomicUsize = AtomicUsize::new(0);
+    /// How many of the `odd` segment's attempts fail, and how they are
+    /// classified — set per scenario.
+    static ODD_FAILURES: AtomicUsize = AtomicUsize::new(0);
+    static ODD_NON_RETRYABLE: AtomicBool = AtomicBool::new(false);
+
+    /// Compensable pass-through in front of the flaky stage: its undo proves
+    /// whether a segment failure escalated to the operation (compensation) or
+    /// was absorbed by the ladder.
+    #[derive(Default)]
+    struct RetryReserve;
+    impl Operation for RetryReserve {
+        type Input = String;
+        type Output = String;
+        type State = ();
+        type Change = NoChange;
+        type Clock = WallClock;
+        type Config = ();
+        fn name() -> &'static str {
+            "retry_reserve"
+        }
+        fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
+        fn run(
+            &mut self,
+            input: String,
+            _state: StateHandle<'_, Self>,
+            ctx: &mut OperationCtx<'_>,
+        ) -> Result<(), OperationError> {
+            ctx.emit(input)?;
+            Ok(())
+        }
+        const COMPENSATE_OVERRIDDEN: bool = true;
+        fn compensate(
+            &mut self,
+            _completed_output: Vec<Arc<String>>,
+            _state: StateHandle<'_, Self>,
+            _ctx: &mut OperationCtx<'_>,
+        ) -> Result<(), OperationError> {
+            comp_log("undo-retry-reserve".to_string());
+            Ok(())
+        }
+    }
+
+    /// Static-segmented flaky stage: the `odd` segment fails its first
+    /// `ODD_FAILURES` attempts (retryably, or `NonRetryable` when the scenario
+    /// says so) and then succeeds; the `even` segment always succeeds and
+    /// counts the items it saw.
+    #[derive(Default)]
+    struct FlakyFan;
+    impl Operation for FlakyFan {
+        type Input = String;
+        type Output = String;
+        type State = ();
+        type Change = NoChange;
+        type Clock = WallClock;
+        type Config = ();
+        fn name() -> &'static str {
+            "flaky_fan"
+        }
+        fn operation_keys() -> Vec<&'static str> {
+            vec!["even", "odd"]
+        }
+        const SEGMENT_FOR_OVERRIDDEN: bool = true;
+        fn segment_for(input: &String) -> Vec<&'static str> {
+            if input.len().is_multiple_of(2) {
+                vec!["even"]
+            } else {
+                vec!["odd"]
+            }
+        }
+        fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
+        fn run(
+            &mut self,
+            input: String,
+            _state: StateHandle<'_, Self>,
+            ctx: &mut OperationCtx<'_>,
+        ) -> Result<(), OperationError> {
+            if input.len().is_multiple_of(2) {
+                EVEN_RUNS.fetch_add(1, Ordering::SeqCst);
+                ctx.emit(format!("even:{input}"))?;
+                return Ok(());
+            }
+            let attempt = ODD_ATTEMPTS.fetch_add(1, Ordering::SeqCst) + 1;
+            if attempt <= ODD_FAILURES.load(Ordering::SeqCst) {
+                let message = format!("flaky attempt {attempt}");
+                return Err(if ODD_NON_RETRYABLE.load(Ordering::SeqCst) {
+                    OperationError::non_retryable(message)
+                } else {
+                    OperationError::Custom(message)
+                });
+            }
+            ctx.emit(format!("odd:{input}"))?;
+            Ok(())
+        }
+    }
+
+    fn retry_chain(c: &mut ChannelBuilder) {
+        c.input::<String>("in").into::<SplitOp>();
+        c.channel::<String>("mid")
+            .codec()
+            .from::<SplitOp>()
+            .into::<RetryReserve>();
+        c.channel::<String>("mid2")
+            .codec()
+            .from::<RetryReserve>()
+            .into::<FlakyFan>();
+        c.channel::<String>("out")
+            .from::<FlakyFan>()
+            .to_plugin("sink");
+    }
+
+    /// Split → Reserve(compensable) → FlakyFan(even/odd). Default 3-attempt
+    /// ladder, backoff shrunk so the scenarios do not sleep out a real one.
+    struct RetryBounded;
+    impl BoundedOperative for RetryBounded {
+        fn factory_id() -> &'static str {
+            "test-retry-bounded"
+        }
+        fn retry_backoff() -> Duration {
+            Duration::from_millis(10)
+        }
+        fn operations(c: &mut ChannelBuilder) {
+            retry_chain(c);
+        }
+    }
+
+    /// The same chain with the ladder opted out: the first segment error fails
+    /// the operation, exactly as before this capability existed.
+    struct RetryFailFastBounded;
+    impl BoundedOperative for RetryFailFastBounded {
+        fn factory_id() -> &'static str {
+            "test-retry-failfast-bounded"
+        }
+        fn retry_attempts() -> u32 {
+            0
+        }
+        fn operations(c: &mut ChannelBuilder) {
+            retry_chain(c);
+        }
+    }
+
+    /// The same chain with a backoff long enough that a stop must interrupt the
+    /// wait rather than outlast it.
+    struct RetrySlowBackoffBounded;
+    impl BoundedOperative for RetrySlowBackoffBounded {
+        fn factory_id() -> &'static str {
+            "test-retry-slow-bounded"
+        }
+        fn retry_backoff() -> Duration {
+            Duration::from_secs(30)
+        }
+        fn operations(c: &mut ChannelBuilder) {
+            retry_chain(c);
+        }
+    }
+
+    /// Arm the flaky stage: `failures` attempts of the `odd` segment fail,
+    /// classified retryable or not, with both attempt counters reset.
+    fn arm_flaky(failures: usize, non_retryable: bool) {
+        ODD_ATTEMPTS.store(0, Ordering::SeqCst);
+        EVEN_RUNS.store(0, Ordering::SeqCst);
+        ODD_FAILURES.store(failures, Ordering::SeqCst);
+        ODD_NON_RETRYABLE.store(non_retryable, Ordering::SeqCst);
+        let _ = drain_comp_log();
+    }
+
     // ---- non-driver unit tests ----------------------------------------------
 
     #[test]
     fn bounded_error_conversions() {
+        // String conversions stay retryable-by-default: the ladder is opt-out.
         let from_str: BoundedError = "x".into();
         assert_eq!(from_str.to_string(), "x");
+        assert!(!from_str.non_retryable);
         let from_string: BoundedError = String::from("y").into();
-        assert_eq!(from_string.0, "y");
+        assert_eq!(from_string.message, "y");
+        assert!(!from_string.non_retryable);
+
+        let permanent = BoundedError::non_retryable("z");
+        assert_eq!(permanent.to_string(), "z");
+        assert!(permanent.non_retryable);
     }
 
     #[test]
@@ -1654,6 +1892,39 @@ mod tests {
         assert_eq!(spec.chain.len(), 2);
     }
 
+    /// `bounded-segment-retry` policy surface: the defaults land on the shared
+    /// `RetryPolicy`, `retry_attempts() = 0` collapses to the one-attempt
+    /// fail-fast, and a ladder without a backoff is rejected at registration.
+    #[test]
+    fn retry_policy_is_resolved_and_validated() {
+        let spec = spec::build_spec::<ChainBounded>().expect("defaults register");
+        assert_eq!(spec.retry.max_attempts, 3, "platform default is 3 attempts");
+        assert_eq!(spec.retry.backoff_base_ms, 500);
+
+        let fail_fast = spec::build_spec::<RetryFailFastBounded>().expect("attempts = 0 registers");
+        assert_eq!(
+            fail_fast.retry.max_attempts, 1,
+            "attempts = 0 ⇒ the single fail-fast attempt"
+        );
+
+        struct HotLoop;
+        impl BoundedOperative for HotLoop {
+            fn factory_id() -> &'static str {
+                "test-retry-hot-loop"
+            }
+            fn retry_backoff() -> Duration {
+                Duration::ZERO
+            }
+            fn operations(c: &mut ChannelBuilder) {
+                retry_chain(c);
+            }
+        }
+        match spec::build_spec::<HotLoop>().expect_err("a retry ladder needs a backoff") {
+            spec::BuildBoundedError::ZeroRetryBackoff { attempts, .. } => assert_eq!(attempts, 3),
+            other => panic!("expected ZeroRetryBackoff, got {other:?}"),
+        }
+    }
+
     #[test]
     fn branching_topology_is_rejected() {
         struct Branching;
@@ -1773,6 +2044,9 @@ mod tests {
         crate::register_bounded::<ChatLoop>();
         crate::register_bounded::<LoopSagaAllOrNothing>();
         crate::register_bounded::<LoopSagaKeepProgress>();
+        crate::register_bounded::<RetryBounded>();
+        crate::register_bounded::<RetryFailFastBounded>();
+        crate::register_bounded::<RetrySlowBackoffBounded>();
 
         let mut node = ExecutorNode::new("test-ns".to_string());
 
@@ -1809,11 +2083,17 @@ mod tests {
             "duplicate start must not re-run"
         );
 
-        // --- run-sugar: terminal error ---
+        // --- run-sugar: terminal error, with no retry ladder to climb ---
+        FAIL_RUNS.store(0, Ordering::SeqCst);
         assert!(node.start_bounded("test-fail-bounded".into(), "bounded-err".into(), "".into()));
         let (_o, done) = drain(&rx, "bounded-err");
         assert_eq!(done.0, "error");
         assert!(done.1.contains("boom"));
+        assert_eq!(
+            FAIL_RUNS.load(Ordering::SeqCst),
+            1,
+            "a run-sugar body has no segments to retry: Err is terminal on the first failure"
+        );
 
         // --- run-sugar: panic caught and reported as "error" ---
         assert!(node.start_bounded(
@@ -2538,6 +2818,129 @@ mod tests {
         }
 
         std::env::remove_var("FLEZHA_BOUNDED_PARK_IDLE_MS");
+
+        // --- bounded-segment-retry: a transient segment failure recovers in
+        // place — the sibling segment is NOT re-run and nothing compensates ---
+        arm_flaky(1, false);
+        assert!(node.start_bounded(
+            "test-retry-bounded".into(),
+            "retry-ok".into(),
+            "a,bb".into()
+        ));
+        let (mut outs, done) = drain(&rx, "retry-ok");
+        assert_eq!(done.0, "ok", "the ladder absorbed the transient failure");
+        outs.sort();
+        assert_eq!(
+            outs,
+            vec![b"even:bb".to_vec(), b"odd:a".to_vec()],
+            "each segment's output lands exactly once — a retried attempt's \
+             staged output is discarded, not double-emitted"
+        );
+        assert_eq!(
+            ODD_ATTEMPTS.load(Ordering::SeqCst),
+            2,
+            "the failing segment ran twice (fail, then retry)"
+        );
+        assert_eq!(
+            EVEN_RUNS.load(Ordering::SeqCst),
+            1,
+            "the sibling segment stayed buffered at the barrier: no re-run"
+        );
+        assert!(
+            drain_comp_log().is_empty(),
+            "a recovered retry must not compensate"
+        );
+
+        // --- retry exhaustion fails the operation exactly as before: the
+        // original error surfaces and completed operations compensate ---
+        arm_flaky(99, false);
+        assert!(node.start_bounded(
+            "test-retry-bounded".into(),
+            "retry-exhausted".into(),
+            "a,bb".into()
+        ));
+        let (_o, done) = drain(&rx, "retry-exhausted");
+        assert_eq!(done.0, "error");
+        assert!(
+            done.1.contains("flaky attempt 3"),
+            "the last attempt's error is the terminal one: {}",
+            done.1
+        );
+        assert_eq!(
+            ODD_ATTEMPTS.load(Ordering::SeqCst),
+            3,
+            "the default ladder is 3 attempts"
+        );
+        assert_eq!(
+            drain_comp_log(),
+            vec!["undo-retry-reserve".to_string()],
+            "exhaustion runs the existing saga rollback"
+        );
+
+        // --- a non-retryable error skips the ladder entirely ---
+        arm_flaky(99, true);
+        assert!(node.start_bounded(
+            "test-retry-bounded".into(),
+            "retry-permanent".into(),
+            "a,bb".into()
+        ));
+        let (_o, done) = drain(&rx, "retry-permanent");
+        assert_eq!(done.0, "error");
+        assert_eq!(
+            ODD_ATTEMPTS.load(Ordering::SeqCst),
+            1,
+            "OperationError::non_retryable ⇒ no retry"
+        );
+        assert_eq!(drain_comp_log(), vec!["undo-retry-reserve".to_string()]);
+
+        // --- retry_attempts() = 0 restores the pre-change fail-fast ---
+        arm_flaky(99, false);
+        assert!(node.start_bounded(
+            "test-retry-failfast-bounded".into(),
+            "retry-failfast".into(),
+            "a,bb".into()
+        ));
+        let (_o, done) = drain(&rx, "retry-failfast");
+        assert_eq!(done.0, "error");
+        assert_eq!(
+            ODD_ATTEMPTS.load(Ordering::SeqCst),
+            1,
+            "attempts = 0 ⇒ the first error is terminal"
+        );
+        assert_eq!(drain_comp_log(), vec!["undo-retry-reserve".to_string()]);
+
+        // --- an external stop interrupts a waiting backoff (30 s base: the run
+        // can only end inside `drain`'s deadline by observing the cancel in the
+        // wait). The stop rides a helper thread because this thread is the fake
+        // controller — it must stay in `drain` to ack the chain's op commits ---
+        arm_flaky(99, false);
+        assert!(node.start_bounded(
+            "test-retry-slow-bounded".into(),
+            "retry-stop".into(),
+            "a,bb".into()
+        ));
+        let stop_target = node
+            .get_bounded("retry-stop")
+            .expect("live instance accepts cancel");
+        let stopper = std::thread::spawn(move || {
+            while ODD_ATTEMPTS.load(Ordering::SeqCst) == 0 {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            stop_target.request_cancel();
+        });
+        let (_o, done) = drain(&rx, "retry-stop");
+        stopper.join().expect("stopper thread");
+        assert_eq!(done.0, "cancelled", "the stop wins over the pending retry");
+        assert_eq!(
+            ODD_ATTEMPTS.load(Ordering::SeqCst),
+            1,
+            "the interrupted attempt is not retried"
+        );
+        assert_eq!(
+            drain_comp_log(),
+            vec!["undo-retry-reserve".to_string()],
+            "a cancelled ladder takes the normal abnormal-exit path"
+        );
     }
 
     /// Respawn `test-chain-bounded` as a crash-resume carrying `journal`

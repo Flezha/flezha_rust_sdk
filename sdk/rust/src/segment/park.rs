@@ -136,7 +136,7 @@ pub fn park_blocking(segment_identity: &[u8], body: &ParkBody) {
                 .expect("park ack registry poisoned");
         }
         resends += 1;
-        if resends % WARN_EVERY_RESENDS == 0 {
+        if resends.is_multiple_of(WARN_EVERY_RESENDS) {
             tracing::warn!(
                 target: "flezha::dlq",
                 park_id = %body.park_id,

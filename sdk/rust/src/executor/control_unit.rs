@@ -409,7 +409,7 @@ mod tests {
             "control_stream_broken"
         );
 
-        let other = io::Error::new(io::ErrorKind::Other, "x");
+        let other = io::Error::other("x");
         assert_eq!(classify_reconnect_reason(&other, acked), "read_error");
     }
 

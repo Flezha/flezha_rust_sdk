@@ -361,15 +361,13 @@ impl<S: Operation> OperationDispatcher for OperationDispatcherImpl<S> {
             if !retryable || is_final {
                 break Some(error);
             }
-            crate::segment::park::RETRIES_TOTAL.fetch_add(1, Ordering::Relaxed);
-            eprintln!(
-                "[flezha] operation {} attempt {}/{} failed (retrying): {}",
-                S::name(),
+            let delay = crate::segment::retry::note_failed_attempt(
+                &format!("operation {}", S::name()),
                 attempt,
-                policy.max_attempts,
-                error
+                policy,
+                &error,
             );
-            std::thread::sleep(retry_backoff(policy.backoff_base_ms, attempt));
+            crate::util::sleep_interruptible(delay, None);
         };
 
         drop(sink);
@@ -391,7 +389,7 @@ impl<S: Operation> OperationDispatcher for OperationDispatcherImpl<S> {
                 attempts: attempt,
                 payload: input_slot
                     .as_ref()
-                    .and_then(|input| crate::segment::park::extract_payload_bytes(input))
+                    .and_then(crate::segment::park::extract_payload_bytes)
                     .or(parked_payload_bytes),
             })
         } else {
@@ -500,11 +498,13 @@ impl<S: Operation> OperationDispatcher for OperationDispatcherImpl<S> {
 
         match outcome {
             Ok(Ok(())) => Ok(()),
-            Ok(Err(err)) => Err(BoundedError::from(format!(
-                "operation {} failed: {}",
-                S::name(),
-                err
-            ))),
+            // The author's own classification rides through to the bounded
+            // retry ladder; a panic stays retryable (the author never got to
+            // classify it), as on the unbounded retry-then-park path.
+            Ok(Err(err)) => Err(BoundedError::new(
+                format!("operation {} failed: {}", S::name(), err),
+                err.is_non_retryable(),
+            )),
             Err(panic) => Err(BoundedError::from(format!(
                 "operation {} panicked: {}",
                 S::name(),
@@ -1300,29 +1300,6 @@ fn send_plugin_frame(
             e
         );
     }
-}
-
-/// Exponential retry backoff with ±50% jitter: `base * 2^(attempt-1)`,
-/// jitter included, capped at [`crate::channel::RETRY_BACKOFF_MAX_MS`].
-/// The jitter draws from a cheap xorshift over the wall clock — backoff
-/// timing is runtime scheduling, outside the operation determinism
-/// contract.
-fn retry_backoff(base_ms: u64, attempt: u32) -> std::time::Duration {
-    let exp = base_ms
-        .max(1)
-        .saturating_mul(1u64 << (attempt.saturating_sub(1)).min(16))
-        .min(crate::channel::RETRY_BACKOFF_MAX_MS);
-    let mut x = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.subsec_nanos() as u64)
-        .unwrap_or(0x9E37_79B9)
-        | 1;
-    x ^= x << 13;
-    x ^= x >> 7;
-    x ^= x << 17;
-    // Uniform in [exp/2, exp*1.5), then re-capped.
-    let jittered = exp / 2 + x % exp;
-    std::time::Duration::from_millis(jittered.min(crate::channel::RETRY_BACKOFF_MAX_MS))
 }
 
 pub fn drain_segment(slot: &Arc<SegmentSlot>) {

@@ -183,7 +183,7 @@ mod tests {
         let profile = |ids: &[&str]| {
             let owned: Vec<String> = ids.iter().map(|s| s.to_string()).collect();
             derive_id("ns", &owned)
-                .splitn(3, '-')
+                .split('-')
                 .nth(1)
                 .unwrap()
                 .to_string()

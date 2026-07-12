@@ -24,6 +24,7 @@ pub mod flusher;
 pub mod header;
 pub mod park;
 pub mod restore;
+pub mod retry;
 pub mod segment_state_sink;
 
 use std::any::Any;

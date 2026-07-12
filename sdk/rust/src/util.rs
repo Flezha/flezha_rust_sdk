@@ -3,7 +3,31 @@
 //! recovery, big-endian reads, monotonic-ish nonces).
 
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
+use std::time::{Duration, Instant};
+
+/// Wake granularity of [`sleep_interruptible`]: how promptly a tripped flag is
+/// observed inside a longer sleep.
+const SLEEP_POLL_CHUNK: Duration = Duration::from_millis(200);
+
+/// Sleep for `duration`, waking every [`SLEEP_POLL_CHUNK`] so a tripped `stop`
+/// flag (a cooperative cancel, a body that already finished) ends the wait
+/// promptly. `true` when the full duration elapsed, `false` when `stop` cut it
+/// short. `None` sleeps it out uninterruptibly.
+pub(crate) fn sleep_interruptible(duration: Duration, stop: Option<&AtomicBool>) -> bool {
+    let deadline = Instant::now() + duration;
+    loop {
+        if stop.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+            return false;
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return true;
+        }
+        std::thread::sleep(SLEEP_POLL_CHUNK.min(deadline - now));
+    }
+}
 
 /// Parse an env var as `T`, falling back to `default` when unset or
 /// unparseable.

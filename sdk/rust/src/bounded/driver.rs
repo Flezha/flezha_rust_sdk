@@ -33,7 +33,7 @@ use super::instance::{BoundedInstance, InboxItem, JournalResume};
 use super::spec::BoundedSpec;
 use super::{BoundedCollectSink, BoundedCtx, BoundedError, BoundedRunFn, LoopMode, RollbackMode};
 use crate::channel::builder::BuildSegmentArgs;
-use crate::channel::{ChannelKind, OperationId};
+use crate::channel::{ChannelKind, OperationId, RetryPolicy};
 use crate::executor::work_stealing_pool::WorkStealingPool;
 use crate::operative::topology::{OperationDescriptor, OperativeTopology, SegmentingMode};
 use crate::segment::flusher::SegmentFlusher;
@@ -102,6 +102,8 @@ struct ChainCtx<'a> {
     /// Post-start input, fed from the wire dispatch path. A `PerInput` loop
     /// seeds each iteration from it.
     inbox: &'a Receiver<InboxItem>,
+    /// Per-segment retry ladder applied inside a stage (`bounded-segment-retry`).
+    retry: RetryPolicy,
     persistence_enabled: bool,
 }
 
@@ -275,6 +277,7 @@ fn run_structured(
         loop_mode: spec.loop_mode,
         wake_after: spec.wake_after,
         inbox,
+        retry: spec.retry,
         persistence_enabled: spec.persistence_enabled,
     };
     drive_chain(&ctx, args, &instance.cancel)
@@ -466,15 +469,8 @@ fn run_iteration(
         let StageOut {
             batch: out_batch,
             segments,
-        } = run_stage_parallel(
-            ctx.topology,
-            ctx.instance_id,
-            slots,
-            partitioned,
-            ctx.pool,
-            ctx.journaling(),
-        )
-        .map_err(|e| ("error".to_string(), e.to_string()))?;
+        } = run_stage_parallel(ctx, slots, partitioned)
+            .map_err(|e| abnormal_status(cancel, e.to_string()))?;
         batch = out_batch;
 
         // Durable saga (§4.3): record this operation's completion — one
@@ -1158,31 +1154,31 @@ fn partition(op: &OperationDescriptor, segment_count: usize, batch: &[Value]) ->
 /// Run a stage's segments in parallel on the pool and join on a count-based
 /// barrier: every dispatched item is processed across all segments, with no
 /// segment mid-run, before the collected output is released to the next stage.
+/// A failing segment climbs its retry ladder in place ([`run_segment_retrying`])
+/// — its siblings keep their completed results buffered and are never re-run.
 fn run_stage_parallel(
-    topology: &Arc<OperativeTopology>,
-    instance_id: &Arc<str>,
+    ctx: &ChainCtx,
     slots: &[Arc<SegmentSlot>],
     partitioned: Vec<Vec<Value>>,
-    pool: &Arc<WorkStealingPool>,
-    staging: bool,
 ) -> Result<StageOut, BoundedError> {
-    type SegmentOut = (Vec<Value>, Vec<StagedOutput>);
     let (tx, rx) = unbounded::<(usize, Result<SegmentOut, BoundedError>)>();
     let mut spawned = 0usize;
     for (seg_idx, (slot, items)) in slots.iter().zip(partitioned.into_iter()).enumerate() {
         if items.is_empty() {
             continue;
         }
-        let slot = Arc::clone(slot);
-        let topology = Arc::clone(topology);
-        let instance_id = Arc::clone(instance_id);
+        let job = SegmentJob {
+            topology: Arc::clone(ctx.topology),
+            instance_id: Arc::clone(ctx.instance_id),
+            slot: Arc::clone(slot),
+            staging: ctx.journaling(),
+            retry: ctx.retry,
+            cancel: Arc::clone(&ctx.instance.cancel),
+        };
         let tx = tx.clone();
         spawned += 1;
-        pool.submit(Box::new(move || {
-            let _ = tx.send((
-                seg_idx,
-                run_segment(&topology, &instance_id, &slot, items, staging),
-            ));
+        ctx.pool.submit(Box::new(move || {
+            let _ = tx.send((seg_idx, job.run_with_retry(items)));
         }));
     }
     drop(tx);
@@ -1213,7 +1209,7 @@ fn run_stage_parallel(
         return Err(e);
     }
     // Deterministic next-stage batch: segments in index order (each segment's
-    // own item order is preserved by `run_segment`).
+    // own item order is preserved by `SegmentJob::run`).
     segments.sort_by_key(|s| s.segment_index);
     let batch: Vec<Value> = segments
         .iter()
@@ -1222,24 +1218,91 @@ fn run_stage_parallel(
     Ok(StageOut { batch, segments })
 }
 
-/// Process one segment's items sequentially (per-segment ordering preserved),
-/// running `Operation::run` via the monomorphized dispatcher's collecting path
-/// and gathering the inter-operation output for the next stage plus the
-/// plugin-bound output staged for the operation's outbox.
-fn run_segment(
-    topology: &OperativeTopology,
-    instance_id: &Arc<str>,
-    slot: &Arc<SegmentSlot>,
-    items: Vec<Value>,
+/// One segment's stage result: the inter-operation output collected for the
+/// next stage plus the plugin-bound output staged for the operation's outbox.
+type SegmentOut = (Vec<Value>, Vec<StagedOutput>);
+
+/// One segment's share of a stage, moved onto a pool thread: everything needed
+/// to run its batch — and to re-run it on a retry — off the driver thread.
+struct SegmentJob {
+    topology: Arc<OperativeTopology>,
+    instance_id: Arc<str>,
+    slot: Arc<SegmentSlot>,
     staging: bool,
-) -> Result<(Vec<Value>, Vec<StagedOutput>), BoundedError> {
-    let mut sink = BoundedSegmentSink::new(instance_id, staging);
-    let mut state = slot.state.lock_recover();
-    for item in items {
-        slot.dispatcher
-            .run_collecting(item, &mut state, topology, &mut sink)?;
+    retry: RetryPolicy,
+    cancel: Arc<AtomicBool>,
+}
+
+impl SegmentJob {
+    /// Run the batch, climbing the class's retry ladder on a retryable failure
+    /// (`bounded-segment-retry`): the segment re-runs its whole batch from the
+    /// top — at-least-once, the same idempotency contract crash-resume imposes —
+    /// with each attempt collecting into a fresh sink, so a failed attempt's
+    /// output is discarded rather than double-counted. A non-retryable error, an
+    /// exhausted ladder, or a cancellation during the backoff returns the error
+    /// into the caller's abnormal path unchanged.
+    fn run_with_retry(&self, items: Vec<Value>) -> Result<SegmentOut, BoundedError> {
+        let max_attempts = self.retry.max_attempts.max(1);
+        let mut items = Some(items);
+        let mut attempt: u32 = 1;
+        loop {
+            let is_final = attempt >= max_attempts;
+            // A non-final attempt hands the batch over by Arc clone so the
+            // original survives for the re-run; the final attempt moves it.
+            let attempt_items = match &items {
+                Some(batch) if !is_final => batch.clone(),
+                _ => items.take().expect("retry ladder: batch consumed twice"),
+            };
+            match self.run(attempt_items) {
+                Ok(out) => return Ok(out),
+                Err(e) if is_final || e.non_retryable => return Err(e),
+                Err(e) => {
+                    let delay = crate::segment::retry::note_failed_attempt(
+                        &self.label(),
+                        attempt,
+                        self.retry,
+                        &e,
+                    );
+                    // An external stop / `max_duration` during the wait abandons
+                    // the ladder: the failure takes the abnormal-exit path.
+                    if !crate::util::sleep_interruptible(delay, Some(&self.cancel)) {
+                        return Err(e);
+                    }
+                    attempt += 1;
+                }
+            }
+        }
     }
-    Ok((sink.collected, sink.staged))
+
+    /// One attempt: process the segment's items sequentially (per-segment
+    /// ordering preserved), running `Operation::run` via the monomorphized
+    /// dispatcher's collecting path and gathering the inter-operation output for
+    /// the next stage plus the plugin-bound output staged for the operation's
+    /// outbox.
+    fn run(&self, items: Vec<Value>) -> Result<SegmentOut, BoundedError> {
+        let mut sink = BoundedSegmentSink::new(&self.instance_id, self.staging);
+        let mut state = self.slot.state.lock_recover();
+        for item in items {
+            self.slot
+                .dispatcher
+                .run_collecting(item, &mut state, &self.topology, &mut sink)?;
+        }
+        Ok((sink.collected, sink.staged))
+    }
+
+    /// The failing work, as the retry log names it.
+    fn label(&self) -> String {
+        let operation = self
+            .topology
+            .operation(self.slot.operation_id)
+            .map_or("-", |op| op.name.as_ref());
+        format!(
+            "bounded {} operation {} segment {}",
+            self.instance_id,
+            operation,
+            self.slot.operation_key.as_deref().unwrap_or("-")
+        )
+    }
 }
 
 /// Per-segment collecting sink for the structured driver. Inter-operation
@@ -1281,8 +1344,8 @@ impl BoundedCollectSink for BoundedSegmentSink {
 }
 
 /// Watcher thread for `max_duration`: trips `cancel` once the duration elapses,
-/// unless the body finished first. Wakes every ≤200 ms to honour an early
-/// finish promptly.
+/// unless the body finished first (the sleep wakes every ≤200 ms to honour an
+/// early finish promptly).
 fn spawn_duration_watcher(
     duration: Duration,
     cancel: Arc<AtomicBool>,
@@ -1291,17 +1354,7 @@ fn spawn_duration_watcher(
     thread::Builder::new()
         .name("flezha-bounded-timer".to_string())
         .spawn(move || {
-            let chunk = Duration::from_millis(200);
-            let mut slept = Duration::ZERO;
-            while slept < duration {
-                if finished.load(Ordering::Acquire) {
-                    return;
-                }
-                let nap = chunk.min(duration - slept);
-                thread::sleep(nap);
-                slept += nap;
-            }
-            if !finished.load(Ordering::Acquire) {
+            if crate::util::sleep_interruptible(duration, Some(&finished)) {
                 cancel.store(true, Ordering::Release);
             }
         })

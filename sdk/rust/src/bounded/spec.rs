@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use super::{BoundedOperative, BoundedRunFn, LoopMode, RollbackMode};
 use crate::channel::builder::ChannelBuilder;
-use crate::channel::{ChannelKind, OperationId};
+use crate::channel::{ChannelKind, OperationId, RetryPolicy};
 use crate::operative::builder::build_topology;
 use crate::operative::topology::{OperativeTopology, SegmentingMode};
 
@@ -36,6 +36,10 @@ pub(crate) struct BoundedSpec {
     pub loop_mode: LoopMode,
     /// Durable wake deadline armed when a `PerInput` loop parks.
     pub wake_after: Option<Duration>,
+    /// Per-segment retry ladder applied inside a structured stage
+    /// (`bounded-segment-retry`), on the same policy type the unbounded
+    /// retry-then-park loop uses.
+    pub retry: RetryPolicy,
     /// Class-level persistence toggle; when true, a structured bounded's
     /// per-Segment Changes are flushed to the WAL as they apply.
     pub persistence_enabled: bool,
@@ -51,6 +55,7 @@ impl std::fmt::Debug for BoundedSpec {
             .field("max_duration", &self.max_duration)
             .field("rollback_mode", &self.rollback_mode)
             .field("loop_mode", &self.loop_mode)
+            .field("retry", &self.retry)
             .field("persistence_enabled", &self.persistence_enabled)
             .finish()
     }
@@ -106,6 +111,16 @@ pub enum BuildBoundedError {
     },
 
     #[error(
+        "bounded operative `{factory_id}` declares a retry ladder ({attempts} attempts) with a \
+         zero backoff base; retries would re-run the failing segment in a hot loop. Give \
+         retry_backoff() a non-zero base, or set retry_attempts() to 0 for fail-fast"
+    )]
+    ZeroRetryBackoff {
+        factory_id: &'static str,
+        attempts: u32,
+    },
+
+    #[error(
         "bounded operative `{factory_id}` declares a chain loop but no operations; a loop iterates \
          a structured chain — declare operations() (c.input::<T>(...) + operations), or drop \
          loop_mode() and let the run() body drive its own loop_until"
@@ -148,6 +163,8 @@ pub(crate) fn build_spec<T: BoundedOperative>() -> Result<BoundedSpec, BuildBoun
         return Err(BuildBoundedError::ExternalStopOnly { factory_id });
     }
 
+    let retry = retry_policy::<T>(factory_id)?;
+
     let mut cb = ChannelBuilder::new();
     T::operations(&mut cb);
 
@@ -165,6 +182,7 @@ pub(crate) fn build_spec<T: BoundedOperative>() -> Result<BoundedSpec, BuildBoun
             rollback_mode: T::rollback_mode(),
             loop_mode: LoopMode::Once,
             wake_after: None,
+            retry,
             persistence_enabled: T::PERSISTENCE_ENABLED,
         });
     }
@@ -221,7 +239,28 @@ pub(crate) fn build_spec<T: BoundedOperative>() -> Result<BoundedSpec, BuildBoun
         rollback_mode: T::rollback_mode(),
         loop_mode: T::loop_mode(),
         wake_after: T::wake_after(),
+        retry,
         persistence_enabled: T::PERSISTENCE_ENABLED,
+    })
+}
+
+/// Resolve the class's per-segment retry ladder onto the shared
+/// [`RetryPolicy`], rejecting a ladder that would spin without a backoff. A
+/// declared 0 collapses to the one-attempt fail-fast the driver runs.
+fn retry_policy<T: BoundedOperative>(
+    factory_id: &'static str,
+) -> Result<RetryPolicy, BuildBoundedError> {
+    let attempts = T::retry_attempts();
+    let backoff_base_ms = T::retry_backoff().as_millis().min(u64::MAX as u128) as u64;
+    if attempts > 1 && backoff_base_ms == 0 {
+        return Err(BuildBoundedError::ZeroRetryBackoff {
+            factory_id,
+            attempts,
+        });
+    }
+    Ok(RetryPolicy {
+        max_attempts: attempts.max(1),
+        backoff_base_ms,
     })
 }
 
