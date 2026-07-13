@@ -95,6 +95,29 @@ pub struct OperativeTopology {
     /// announces the window to the controller in the `AddOperative` response
     /// metadata and arms lateness detection on the dispatch path.
     pub correction: Option<CorrectionPolicy>,
+
+    /// Where the effectively-once tier acknowledges its inputs, declared via
+    /// `ChannelBuilder::checkpoint_ack()`. Frozen at registration; announced
+    /// to the controller in the `AddOperative` response metadata.
+    pub ack_granularity: AckGranularity,
+}
+
+/// Where a tier-enabled operative's durable consumed-offset advances.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AckGranularity {
+    /// One atomic record per effectful invocation, each acknowledging its own
+    /// input. The default, and the only granularity for an operative whose
+    /// state is kernel-visible after every input.
+    #[default]
+    PerInput,
+    /// The consumed-offset advances only at an explicit `ctx.checkpoint()`.
+    /// Changes applied in between are held in the Segment's flush buffer and
+    /// ship — with the offset of the input that closed the interval — as one
+    /// fsynced record, so the state a restore sees and the offset it resumes
+    /// from can never tear. The interval's inputs are re-forwarded from the
+    /// input log on recovery and its outputs re-emitted; both are absorbed by
+    /// the keyed-sink dedup the tier already requires.
+    Checkpoint,
 }
 
 /// What an operative does about an input that arrives behind its Segment's

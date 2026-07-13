@@ -13,7 +13,9 @@ use std::sync::Arc;
 
 use crate::channel::builder::{BuildTopologyError, ChannelBuilder};
 use crate::channel::{ChannelDescriptor, ChannelKind, PluginSink};
-use crate::operative::topology::{OperationDescriptor, OperativeTopology, SegmentingMode};
+use crate::operative::topology::{
+    AckGranularity, OperationDescriptor, OperativeTopology, SegmentingMode,
+};
 
 /// Built-in default per-Segment mailbox capacity used when a Operation does
 /// not override `mailbox_capacity()` and `FLEZHA_MAILBOX_CAPACITY` is
@@ -61,6 +63,7 @@ pub fn build_topology_with_persistence(
         mut errors,
         effectively_once,
         correction,
+        ack_granularity,
     } = builder;
 
     // Correction replays the durable input log against a rewound baseline.
@@ -74,6 +77,15 @@ pub fn build_topology_with_persistence(
     }
     if correction.is_some_and(|c| c.window_ms == 0) {
         errors.push(BuildTopologyError::CorrectionWindowZero);
+    }
+
+    // The checkpoint is where the tier's consumed-offset advances; off the
+    // tier there is no durable offset to hold back. The mode's other
+    // precondition — every plugin channel keyed, so the interval's re-emitted
+    // outputs are absorbed by sink dedup — is already enforced for the whole
+    // tier by `UnkeyedChannelUnderEffectivelyOnce` below.
+    if ack_granularity == AckGranularity::Checkpoint && !effectively_once {
+        errors.push(BuildTopologyError::CheckpointAckWithoutTier);
     }
 
     // Build channel descriptors and validate.
@@ -206,6 +218,7 @@ pub fn build_topology_with_persistence(
         persistence_enabled_const,
         effectively_once,
         correction,
+        ack_granularity,
     }))
 }
 
@@ -509,6 +522,55 @@ mod tests {
         // The default must be the engine's existing behaviour: declaring a
         // window never silently starts discarding data.
         assert_eq!(policy.beyond_window, BeyondWindowPolicy::ProcessAsArrival);
+    }
+
+    #[test]
+    fn checkpoint_ack_with_the_tier_builds() {
+        let mut cb = ChannelBuilder::new();
+        cb.effectively_once();
+        cb.checkpoint_ack();
+        cb.input::<String>("in").into::<TierOp>();
+        cb.channel::<String>("out")
+            .from::<TierOp>()
+            .keyed()
+            .to_plugin("kafka");
+        let topology = build_topology("checkpoint_ok", cb).expect("topology");
+        assert_eq!(topology.ack_granularity, AckGranularity::Checkpoint);
+    }
+
+    #[test]
+    fn per_input_is_the_default_ack_granularity() {
+        let mut cb = ChannelBuilder::new();
+        cb.effectively_once();
+        cb.input::<String>("in").into::<TierOp>();
+        cb.channel::<String>("out")
+            .from::<TierOp>()
+            .keyed()
+            .to_plugin("kafka");
+        let topology = build_topology("per_input_default", cb).expect("topology");
+        assert_eq!(topology.ack_granularity, AckGranularity::PerInput);
+    }
+
+    #[test]
+    fn checkpoint_ack_without_the_tier_is_refused() {
+        // The checkpoint is where the tier's consumed-offset advances; off the
+        // tier there is no durable offset to hold back, and no durable input
+        // log to replay the interval from.
+        let mut cb = ChannelBuilder::new();
+        cb.checkpoint_ack();
+        cb.input::<String>("in").into::<TierOp>();
+        cb.channel::<String>("out")
+            .from::<TierOp>()
+            .to_plugin("kafka");
+
+        let err = build_topology("checkpoint_no_tier", cb)
+            .err()
+            .expect("checkpoint_ack without the tier must fail");
+
+        assert!(err
+            .errors
+            .iter()
+            .any(|e| matches!(e, BuildTopologyError::CheckpointAckWithoutTier)));
     }
 
     #[test]

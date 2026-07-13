@@ -265,6 +265,13 @@ pub enum BuildTopologyError {
 
     #[error("operative declares correction_window(0); a zero window can correct nothing")]
     CorrectionWindowZero,
+
+    #[error(
+        "operative declares checkpoint_ack() without effectively_once(); the checkpoint is \
+         where the tier's consumed-offset advances, and an at-least-once operative has no \
+         durable offset to hold back (nor a durable input log to replay the interval from)"
+    )]
+    CheckpointAckWithoutTier,
 }
 
 /// Builder collected by `UnboundedOperative::channels`. Internal state turns into a
@@ -277,6 +284,7 @@ pub struct ChannelBuilder {
     pub(crate) errors: Vec<BuildTopologyError>,
     pub(crate) effectively_once: bool,
     pub(crate) correction: Option<crate::operative::topology::CorrectionPolicy>,
+    pub(crate) ack_granularity: crate::operative::topology::AckGranularity,
 }
 
 impl ChannelBuilder {
@@ -289,6 +297,7 @@ impl ChannelBuilder {
             errors: Vec::new(),
             effectively_once: false,
             correction: None,
+            ack_granularity: crate::operative::topology::AckGranularity::PerInput,
         }
     }
 
@@ -344,6 +353,32 @@ impl ChannelBuilder {
     /// call this keep the at-least-once paths byte-identical.
     pub fn effectively_once(&mut self) {
         self.effectively_once = true;
+    }
+
+    /// Advance the durable consumed-offset only at an explicit
+    /// [`OperationCtx::checkpoint`], instead of once per input.
+    ///
+    /// For an operative that folds many inputs into one state push — a window
+    /// that only closes on its boundary — the per-input default is not merely
+    /// expensive, it is incoherent: the offset would run ahead of the state,
+    /// and a restore would resume past inputs the restored state never saw.
+    /// Under this granularity the changes an interval applies are held until
+    /// `ctx.checkpoint()` and ship with the closing input's offset as one
+    /// fsynced record, so state and offset advance together or not at all.
+    ///
+    /// The price is the interval: on recovery the controller re-forwards
+    /// every input after the last checkpoint, and the interval's outputs are
+    /// emitted again. Both are absorbed by the keyed-sink dedup the tier
+    /// already requires — and the interval you choose is also the input-log
+    /// retention and the recovery work you are asking for.
+    ///
+    /// Requires `effectively_once()`; `build_topology` refuses it otherwise.
+    /// Emits made before a checkpoint are still flushed as they happen —
+    /// checkpointing moves the *acknowledgement*, not the output.
+    ///
+    /// [`OperationCtx::checkpoint`]: crate::operation::OperationCtx::checkpoint
+    pub fn checkpoint_ack(&mut self) {
+        self.ack_granularity = crate::operative::topology::AckGranularity::Checkpoint;
     }
 
     /// Declare an entry channel fed by the controller. T is restricted to

@@ -25,6 +25,7 @@ pub struct OperationCtx<'a> {
     invocation_seq: u64,
     segment_identity: &'a [u8],
     stable_id_ordinal: Cell<u32>,
+    checkpoint: bool,
 }
 
 /// Replay-stable 128-bit identifier returned by [`OperationCtx::stable_id`].
@@ -123,7 +124,29 @@ impl<'a> OperationCtx<'a> {
             invocation_seq,
             segment_identity,
             stable_id_ordinal: Cell::new(0),
+            checkpoint: false,
         }
+    }
+
+    /// Close the current checkpoint interval: every input folded in since the
+    /// last checkpoint — this one included — is acknowledged, and the state
+    /// they accumulated is made durable, as one atomic record.
+    ///
+    /// Only meaningful under `ChannelBuilder::checkpoint_ack()`. An operative
+    /// on the default per-input granularity already acknowledges every input,
+    /// so the call is a no-op there rather than an error — a checkpointing
+    /// Operation stays correct if its operative later drops the declaration.
+    ///
+    /// Call it where the accumulated state is genuinely coherent (a closed
+    /// window, a completed batch): the interval you leave open is the work a
+    /// crash replays and the input log retains.
+    pub fn checkpoint(&mut self) {
+        self.checkpoint = true;
+    }
+
+    /// Whether `run` closed the interval with [`Self::checkpoint`].
+    pub(crate) fn checkpointed(&self) -> bool {
+        self.checkpoint
     }
 
     /// The invocation's time value, computed once by the runtime from the

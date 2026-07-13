@@ -19,7 +19,7 @@ use flezha_executor::operative::builder::build_topology_for;
 use flezha_executor::operative::registry::OperativeRegistry;
 use flezha_executor::operative::UnboundedInstance;
 use flezha_executor::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_executor::{__dispatch_internals as bi, OverflowPolicy, UnboundedOperative};
+use flezha_executor::{OverflowPolicy, UnboundedOperative, __dispatch_internals as bi};
 
 mod common;
 use common::{dispatch_input, dummy_stream, setup, wait_until};
@@ -1634,19 +1634,10 @@ impl UnboundedOperative for TierOperative {
 /// input arrived with — and no output frame appears on the primary stream.
 #[test]
 fn tier_emits_ride_the_state_sink_as_one_effect_record() {
-    use flezha_executor::segment::flusher::{EffectRecordBody, SendError, SendFrameFn};
-    use flezha_executor::segment::segment_state_sink;
+    use flezha_executor::segment::flusher::EffectRecordBody;
 
     let _serial = WAL_TEST_LOCK.lock().unwrap();
-    TIER_SINK_FRAMES.lock().unwrap().clear();
-    let sink: SendFrameFn = Arc::new(|payload_id: &str, frame: &[u8]| -> Result<(), SendError> {
-        TIER_SINK_FRAMES
-            .lock()
-            .unwrap()
-            .push((payload_id.to_string(), frame.to_vec()));
-        Ok(())
-    });
-    segment_state_sink::install_global_sink(sink);
+    install_capturing_tier_sink();
 
     let (handle, _instance) = setup::<TierOperative>("tier-instance", 2);
     let (stream, mut observer) = stream_pair();
@@ -1676,22 +1667,22 @@ fn tier_emits_ride_the_state_sink_as_one_effect_record() {
         "no segment_effect_record reached the state sink"
     );
 
+    // Outer frame layout is the state-change layout; header format_id = 2.
     let frames = TIER_SINK_FRAMES.lock().unwrap().clone();
     let (_, frame) = frames
         .iter()
         .find(|(pid, _)| pid == "segment_effect_record")
         .unwrap()
         .clone();
-
-    // Outer frame layout is the state-change layout; header format_id = 2.
     let pid_len = u16::from_be_bytes([frame[0], frame[1]]) as usize;
-    let header_off = 2 + pid_len + 8;
-    assert_eq!(frame[header_off + 9], 2, "effect record header format_id");
-    let body_len_off = header_off + 16;
-    let body_len =
-        u32::from_be_bytes(frame[body_len_off..body_len_off + 4].try_into().unwrap()) as usize;
-    let body: EffectRecordBody =
-        postcard::from_bytes(&frame[body_len_off + 4..body_len_off + 4 + body_len]).unwrap();
+    assert_eq!(
+        frame[2 + pid_len + 8 + 9],
+        2,
+        "effect record header format_id"
+    );
+
+    let bodies = captured_effect_bodies();
+    let body: &EffectRecordBody = &bodies[0];
 
     assert_eq!(body.consumed_offset, Some(4711), "offset must round-trip");
     assert_eq!(body.changes.len(), 1, "the invocation's change rides along");
@@ -1723,44 +1714,20 @@ fn tier_emits_ride_the_state_sink_as_one_effect_record() {
 /// process everything above — never double-applied, never lost.
 #[test]
 fn tier_replay_skips_inputs_at_or_below_the_consumed_floor() {
-    use flezha_executor::segment::flusher::{SendError, SendFrameFn};
-    use flezha_executor::segment::segment_state_sink;
-
     let _serial = WAL_TEST_LOCK.lock().unwrap();
-    TIER_SINK_FRAMES.lock().unwrap().clear();
-    let sink: SendFrameFn = Arc::new(|payload_id: &str, frame: &[u8]| -> Result<(), SendError> {
-        TIER_SINK_FRAMES
-            .lock()
-            .unwrap()
-            .push((payload_id.to_string(), frame.to_vec()));
-        Ok(())
-    });
-    segment_state_sink::install_global_sink(sink);
+    install_capturing_tier_sink();
 
     let (handle, instance) = setup::<TierOperative>("tier-replay-instance", 2);
-    let (stream, _observer) = stream_pair();
 
     // Restore left this Segment durably consumed through offset 4711.
     instance.segments[0][0]
         .consumed_floor
         .store(4711, std::sync::atomic::Ordering::Release);
 
-    let dispatch_with_offset = |offset: &str, body: &[u8]| {
-        let mut md = HashMap::new();
-        md.insert("channel".to_string(), "input".to_string());
-        md.insert("flz.offset".to_string(), offset.to_string());
-        handle.dispatch(
-            "tier-replay-instance",
-            body.to_vec(),
-            &md,
-            Arc::clone(&stream),
-        );
-    };
-
     // Re-forwarded tail: 4710 and 4711 already consumed, 4712 is new.
-    dispatch_with_offset("4710", b"old-1");
-    dispatch_with_offset("4711", b"old-2");
-    dispatch_with_offset("4712", b"new-1");
+    dispatch_at(&handle, "tier-replay-instance", 4710, "old-1");
+    dispatch_at(&handle, "tier-replay-instance", 4711, "old-2");
+    dispatch_at(&handle, "tier-replay-instance", 4712, "new-1");
 
     assert!(
         wait_until(
@@ -2137,5 +2104,233 @@ fn a_replay_does_not_lower_the_event_time_high_water() {
         slot.event_time_high_water.load(Ordering::Acquire),
         900,
         "the replay lowered the high-water; a later input at 850 would now read as on-time"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// effectively-once-checkpoint-granularity
+// ---------------------------------------------------------------------------
+
+/// Decode every `segment_effect_record` the tier sink captured, in order.
+fn captured_effect_bodies() -> Vec<flezha_executor::segment::flusher::EffectRecordBody> {
+    use flezha_executor::segment::flusher::EffectRecordBody;
+
+    TIER_SINK_FRAMES
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(pid, _)| pid == "segment_effect_record")
+        .map(|(_, frame)| {
+            let pid_len = u16::from_be_bytes([frame[0], frame[1]]) as usize;
+            let body_len_off = 2 + pid_len + 8 + 16;
+            let body_len =
+                u32::from_be_bytes(frame[body_len_off..body_len_off + 4].try_into().unwrap())
+                    as usize;
+            let body: EffectRecordBody =
+                postcard::from_bytes(&frame[body_len_off + 4..body_len_off + 4 + body_len])
+                    .unwrap();
+            body
+        })
+        .collect()
+}
+
+fn install_capturing_tier_sink() {
+    use flezha_executor::segment::flusher::{SendError, SendFrameFn};
+    use flezha_executor::segment::segment_state_sink;
+
+    TIER_SINK_FRAMES.lock().unwrap().clear();
+    let sink: SendFrameFn = Arc::new(|payload_id: &str, frame: &[u8]| -> Result<(), SendError> {
+        TIER_SINK_FRAMES
+            .lock()
+            .unwrap()
+            .push((payload_id.to_string(), frame.to_vec()));
+        Ok(())
+    });
+    segment_state_sink::install_global_sink(sink);
+}
+
+/// Folds every input into state; `commit` closes the interval, `poison` parks.
+#[derive(Default)]
+struct CheckpointOperation;
+impl Operation for CheckpointOperation {
+    type Input = String;
+    type Output = String;
+    type State = i64;
+    type Change = TickChange;
+    type Clock = WallClock;
+    type Config = ();
+    fn name() -> &'static str {
+        "checkpoint_operation"
+    }
+    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> i64 {
+        0
+    }
+    fn apply_change(state: &mut i64, _change: &TickChange) {
+        *state += 1;
+    }
+    fn run(
+        &mut self,
+        input: String,
+        mut state: StateHandle<'_, Self>,
+        ctx: &mut OperationCtx<'_>,
+    ) -> Result<(), OperationError> {
+        match input.as_str() {
+            "poison" => Err(OperationError::non_retryable("poison")),
+            "commit" => {
+                state.apply(TickChange);
+                ctx.checkpoint();
+                Ok(())
+            }
+            "emit" => {
+                state.apply(TickChange);
+                ctx.emit_keyed::<String>("k".to_string(), input)
+            }
+            // Pure accumulation: nothing durable, nothing emitted.
+            _ => {
+                state.apply(TickChange);
+                Ok(())
+            }
+        }
+    }
+}
+
+struct CheckpointOperative;
+impl UnboundedOperative for CheckpointOperative {
+    fn factory_id() -> &'static str {
+        "checkpoint_operative"
+    }
+    fn channels(c: &mut ChannelBuilder) {
+        c.effectively_once();
+        c.checkpoint_ack();
+        c.input::<String>("input").into::<CheckpointOperation>();
+        c.channel::<String>("out")
+            .from::<CheckpointOperation>()
+            .keyed()
+            .to_plugin("kafka");
+    }
+}
+
+fn dispatch_at(handle: &OperativeDispatchHandle, instance: &str, offset: u64, body: &str) {
+    let mut md = HashMap::new();
+    md.insert("channel".to_string(), "input".to_string());
+    md.insert("flz.offset".to_string(), offset.to_string());
+    handle.dispatch(instance, body.as_bytes().to_vec(), &md, dummy_stream());
+}
+
+/// Spec "Consumed-offset advances only at checkpoint boundaries" + "Mid-interval
+/// outputs flush when they are produced": an accumulating input makes nothing
+/// durable at all; an emitting one ships its output with NO offset (it
+/// acknowledges nothing — the state it came from is not durable yet); and the
+/// checkpoint ships the whole interval's changes with the closing offset.
+#[test]
+fn checkpoint_ack_holds_the_offset_until_the_interval_closes() {
+    let _serial = WAL_TEST_LOCK.lock().unwrap();
+    install_capturing_tier_sink();
+
+    let (handle, _instance) = setup::<CheckpointOperative>("cp-instance", 2);
+
+    dispatch_at(&handle, "cp-instance", 1, "acc"); // fold only
+    dispatch_at(&handle, "cp-instance", 2, "emit"); // fold + emit
+    dispatch_at(&handle, "cp-instance", 3, "commit"); // fold + close
+
+    assert!(
+        wait_until(
+            || captured_effect_bodies()
+                .iter()
+                .any(|b| b.consumed_offset == Some(3)),
+            Duration::from_secs(5)
+        ),
+        "the checkpoint record never reached the state sink"
+    );
+
+    let bodies = captured_effect_bodies();
+    assert_eq!(
+        bodies.len(),
+        2,
+        "expected one mid-interval output record and one checkpoint record, got {bodies:?}"
+    );
+
+    // The accumulating input produced nothing durable, and the emitting one
+    // acknowledged nothing.
+    let mid = &bodies[0];
+    assert_eq!(
+        mid.consumed_offset, None,
+        "a mid-interval emit must not ack"
+    );
+    assert!(
+        mid.changes.is_empty(),
+        "state must not be durable ahead of its offset"
+    );
+    assert_eq!(mid.outputs.len(), 1, "the emit still flushes as it happens");
+
+    // The checkpoint carries the WHOLE interval — all three folds — plus the
+    // offset of the input that closed it.
+    let checkpoint = &bodies[1];
+    assert_eq!(checkpoint.consumed_offset, Some(3));
+    assert_eq!(
+        checkpoint.changes.len(),
+        3,
+        "the checkpoint must carry every change the interval accumulated"
+    );
+}
+
+/// Spec "A dead-letter park closes the interval": the poison input is
+/// acknowledged together with the interval's accumulated state, so a later
+/// replay starts after it instead of re-tripping it.
+#[test]
+fn a_park_closes_the_checkpoint_interval() {
+    let _serial = WAL_TEST_LOCK.lock().unwrap();
+    install_capturing_tier_sink();
+
+    let (handle, _instance) = setup::<CheckpointOperative>("cp-park-instance", 2);
+
+    dispatch_at(&handle, "cp-park-instance", 7, "acc");
+    dispatch_at(&handle, "cp-park-instance", 8, "poison");
+
+    assert!(
+        wait_until(
+            || captured_effect_bodies().iter().any(|b| b.dlq.is_some()),
+            Duration::from_secs(5)
+        ),
+        "the park record never reached the state sink"
+    );
+
+    let bodies = captured_effect_bodies();
+    let park = bodies.iter().find(|b| b.dlq.is_some()).unwrap();
+
+    assert_eq!(
+        park.consumed_offset,
+        Some(8),
+        "the parked offset must be acknowledged, or the replay re-trips the poison"
+    );
+    assert_eq!(
+        park.changes.len(),
+        1,
+        "the park must carry the interval's accumulated state, or offset and state tear"
+    );
+}
+
+/// Spec "Recovery ... SHALL discard any open interval": the changes an
+/// abandoned interval applied belong to a past the restore replaced — the
+/// controller re-forwards the inputs that produced them.
+#[test]
+fn a_restore_discards_the_open_interval() {
+    use flezha_executor::segment::flusher::{FlushableBuffer, TypedBuffer};
+
+    let mut buf: TypedBuffer<CheckpointOperation> = TypedBuffer::default();
+    buf.staged.push(TickChange);
+    buf.staged.push(TickChange);
+
+    // An open interval is not flushable: the background flusher must never
+    // ship it on its own (that would put state ahead of its offset).
+    assert!(
+        buf.is_empty(),
+        "an open interval must not look flushable to the flusher"
+    );
+
+    buf.discard_staged();
+    assert!(
+        buf.staged.is_empty(),
+        "a restore must drop the open interval"
     );
 }

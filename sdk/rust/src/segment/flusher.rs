@@ -176,8 +176,14 @@ pub trait FlushableBuffer: Send + Any {
 
     /// Whether the underlying buffer is empty. The flusher uses this to
     /// avoid building frames when a Segment has had no `state.apply`
-    /// calls in the linger window.
+    /// calls in the linger window. An open checkpoint interval does not
+    /// count: its changes are not flushable on their own.
     fn is_empty(&self) -> bool;
+
+    /// Drop an open checkpoint interval's accumulated changes. A restore
+    /// re-seats the Segment on a past in which they were never applied, and
+    /// the controller re-forwards the inputs that produced them.
+    fn discard_staged(&mut self);
 
     fn as_any_mut(&mut self) -> &mut dyn Any;
 }
@@ -187,8 +193,16 @@ pub trait FlushableBuffer: Send + Any {
 /// for `StateHandle::new`. Exactly one of `inner` / `effects` is ever
 /// populated: plain changes outside the effectively-once tier, per-invocation
 /// effect entries inside it.
+///
+/// `staged` is neither: under checkpoint ack-granularity it holds the changes
+/// an open interval has applied, which are not flushable yet — they become
+/// durable only inside the effect record the closing `ctx.checkpoint()` ships,
+/// together with the offset that acknowledges them. Draining them on their own
+/// would put the state ahead of its offset, which is the tear the mode exists
+/// to prevent.
 pub struct TypedBuffer<S: crate::operation::Operation> {
     pub inner: Vec<S::Change>,
+    pub staged: Vec<S::Change>,
     pub effects: Vec<EffectEntry<S>>,
 }
 
@@ -196,6 +210,7 @@ impl<S: crate::operation::Operation> Default for TypedBuffer<S> {
     fn default() -> Self {
         Self {
             inner: Vec::new(),
+            staged: Vec::new(),
             effects: Vec::new(),
         }
     }
@@ -247,6 +262,10 @@ impl<S: crate::operation::Operation> FlushableBuffer for TypedBuffer<S> {
 
     fn is_empty(&self) -> bool {
         self.inner.is_empty() && self.effects.is_empty()
+    }
+
+    fn discard_staged(&mut self) {
+        self.staged.clear();
     }
 
     fn as_any_mut(&mut self) -> &mut dyn Any {
@@ -699,7 +718,7 @@ mod tests {
         };
         let mut buffer = TypedBuffer::<EffOp> {
             inner: vec![change.clone()],
-            effects: Vec::new(),
+            ..Default::default()
         };
         let seq = AtomicU64::new(5);
         let template = HeaderTemplate::new(0x010203, 1);
@@ -770,8 +789,8 @@ mod tests {
             dlq: None,
         };
         let mut buffer = TypedBuffer::<EffOp> {
-            inner: Vec::new(),
             effects: vec![mk(1), mk(2)],
+            ..Default::default()
         };
 
         let seq = AtomicU64::new(0);

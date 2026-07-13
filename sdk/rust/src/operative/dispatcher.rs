@@ -117,6 +117,11 @@ struct FlushWiring {
     /// invocation's plugin emits are captured into an atomic effect record
     /// on the reliable state sink instead of the primary stream.
     effectively_once: bool,
+    /// Checkpoint ack-granularity (`AckGranularity::Checkpoint`): the
+    /// consumed-offset advances only at an explicit `ctx.checkpoint()`, and
+    /// the changes an open interval applies are held in the flush buffer
+    /// until it does.
+    checkpoint_ack: bool,
     /// Late-input correction policy, `None` unless the class declared a
     /// `correction_window()`. Shares the owning slot's high-water atomic —
     /// the dispatcher is the only place the event-time extractor can run, so
@@ -246,7 +251,6 @@ impl<S: Operation> OperationDispatcherImpl<S> {
             // Bounded inputs arrive via args/inbox, not the input-log —
             // no consumed-offset to carry.
             TypedBuffer::<S> {
-                inner: Vec::new(),
                 effects: vec![crate::segment::flusher::EffectEntry {
                     changes,
                     outputs,
@@ -254,11 +258,12 @@ impl<S: Operation> OperationDispatcherImpl<S> {
                     dlq: None,
                     event_time,
                 }],
+                ..Default::default()
             }
         } else {
             TypedBuffer::<S> {
                 inner: changes,
-                effects: Vec::new(),
+                ..Default::default()
             }
         };
         crate::segment::flusher::flush_one(
@@ -339,7 +344,7 @@ impl<S: Operation> OperationDispatcher for OperationDispatcherImpl<S> {
             Some(Box::new(move || {
                 let mut buf = TypedBuffer::<S> {
                     inner: std::mem::take(&mut *cell.borrow_mut()),
-                    effects: Vec::new(),
+                    ..Default::default()
                 };
                 crate::segment::flusher::flush_one(&mut buf, &identity, &seq, &header, true);
             }))
@@ -386,6 +391,9 @@ impl<S: Operation> OperationDispatcher for OperationDispatcherImpl<S> {
         let mut input_slot = Some(input);
         let mut parked_payload_bytes: Option<Vec<u8>> = None;
         let mut attempt: u32 = 0;
+        // Only the attempt that succeeded may close the interval; a failed
+        // attempt's `ctx` — and its checkpoint intent — is discarded with it.
+        let mut checkpointed = false;
         let park_error: Option<String> = loop {
             attempt += 1;
             let is_final = attempt >= policy.max_attempts;
@@ -410,7 +418,10 @@ impl<S: Operation> OperationDispatcher for OperationDispatcherImpl<S> {
             }));
 
             let (error, retryable) = match outcome {
-                Ok(Ok(())) => break None,
+                Ok(Ok(())) => {
+                    checkpointed = ctx.checkpointed();
+                    break None;
+                }
                 Ok(Err(err)) => {
                     let retryable = !err.is_non_retryable();
                     (err.to_string(), retryable)
@@ -473,7 +484,28 @@ impl<S: Operation> OperationDispatcher for OperationDispatcherImpl<S> {
             // park and the consumed-offset advance stay atomic.
             let changes = buffer_cell.into_inner();
             let outputs = outputs_cell.into_inner();
-            if !(changes.is_empty() && outputs.is_empty()) || dlq.is_some() {
+            let (changes, consumed_offset, ship) = if self.flush.checkpoint_ack {
+                typed_buffer.staged.extend(changes);
+                // The interval closes on an explicit checkpoint — or on a
+                // park, whose poison input is about to be acknowledged into
+                // the DLQ and must never be replayed back onto the operation.
+                if checkpointed || dlq.is_some() {
+                    // Even a checkpoint that accumulated nothing ships: the
+                    // record exists to carry the offset.
+                    let staged = std::mem::take(&mut typed_buffer.staged);
+                    (staged, consumed_offset, true)
+                } else {
+                    // Mid-interval: emits still flush as they happen, but they
+                    // acknowledge nothing — the state they were computed from
+                    // is not durable yet, so a record carrying their offset
+                    // would let a restore resume past inputs it never saw.
+                    (Vec::new(), None, !outputs.is_empty())
+                }
+            } else {
+                let ship = !(changes.is_empty() && outputs.is_empty()) || dlq.is_some();
+                (changes, consumed_offset, ship)
+            };
+            if ship {
                 typed_buffer
                     .effects
                     .push(crate::segment::flusher::EffectEntry {
@@ -1608,6 +1640,8 @@ pub fn build_segment_slot<S: Operation>(args: BuildSegmentArgs<'_>) -> Arc<Segme
             header: HeaderTemplate::for_operation::<S>(),
             persistence_enabled: args.persistence_enabled,
             effectively_once: topology.effectively_once,
+            checkpoint_ack: topology.ack_granularity
+                == crate::operative::topology::AckGranularity::Checkpoint,
             correction: topology.correction,
             event_time_high_water: Arc::clone(&event_time_high_water),
         },

@@ -123,11 +123,15 @@ fn restore_into_slot(
             // half-filled replay buffer belongs to a slice that was abandoned.
             // Keeping either would double-apply them, and — worse — apply them
             // *after* the replayed slice in arrival order, reintroducing the
-            // exact mis-ordering a correction exists to repair.
+            // exact mis-ordering a correction exists to repair. An open
+            // checkpoint interval is the same story: its changes were never
+            // acknowledged, so the restored state does not contain them and
+            // the re-forwarded inputs will produce them again.
             slot.mailbox.clear();
             slot.replay_buffer.lock_recover().clear();
             slot.replay_depth.store(0, Ordering::Relaxed);
             slot.replay_open.store(false, Ordering::Release);
+            slot.flush_buffer.lock_recover().discard_staged();
 
             let cursors = restore_cursors(&cmd.change_log_bytes);
             // Effectively-once: remember the highest input-log offset the

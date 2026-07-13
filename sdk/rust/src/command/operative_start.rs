@@ -88,28 +88,33 @@ impl CommandAction for AddOperative {
 /// bytes when nothing is declared (the default), keeping the response
 /// byte-identical to pre-tier builds.
 fn metadata_response(kind: &str, factory_id: &str) -> Vec<u8> {
+    use crate::operative::topology::{AckGranularity, BeyondWindowPolicy};
+
     let mut metadata = std::collections::HashMap::new();
+
+    // Every unbounded-only declaration reads the same topology; resolve it once.
+    // `None` for a bounded class, or one that never registered.
+    let unbounded = match kind {
+        "bounded" => None,
+        _ => crate::operative::registry::get_class(factory_id),
+    };
 
     let effectively_once = match kind {
         "bounded" => crate::bounded::registry::get_class(factory_id)
             .and_then(|spec| spec.topology.as_ref().map(|t| t.effectively_once))
             .unwrap_or(false),
-        _ => crate::operative::registry::get_class(factory_id)
-            .map(|t| t.effectively_once)
-            .unwrap_or(false),
+        _ => unbounded.as_ref().is_some_and(|t| t.effectively_once),
     };
     if effectively_once {
         metadata.insert("effectively_once".to_string(), "true".to_string());
     }
 
-    // Late-input correction. The controller owns the two prerequisites the SDK
-    // cannot see — the input-log hold window and the snapshot age-floor must
-    // both cover this window, or the past it promises to repair is already
-    // gone — so it needs the window before it binds the operative.
-    if kind != "bounded" {
-        if let Some(policy) =
-            crate::operative::registry::get_class(factory_id).and_then(|t| t.correction)
-        {
+    if let Some(topology) = &unbounded {
+        // Late-input correction. The controller owns the two prerequisites the
+        // SDK cannot see — the input-log hold window and the snapshot age-floor
+        // must both cover this window, or the past it promises to repair is
+        // already gone — so it needs the window before it binds the operative.
+        if let Some(policy) = topology.correction {
             metadata.insert(
                 "correction_window_ms".to_string(),
                 policy.window_ms.to_string(),
@@ -117,13 +122,19 @@ fn metadata_response(kind: &str, factory_id: &str) -> Vec<u8> {
             metadata.insert(
                 "beyond_window_policy".to_string(),
                 match policy.beyond_window {
-                    crate::operative::topology::BeyondWindowPolicy::ProcessAsArrival => {
-                        "process_as_arrival"
-                    }
-                    crate::operative::topology::BeyondWindowPolicy::Drop => "drop",
+                    BeyondWindowPolicy::ProcessAsArrival => "process_as_arrival",
+                    BeyondWindowPolicy::Drop => "drop",
                 }
                 .to_string(),
             );
+        }
+
+        // Checkpoint ack-granularity. A Segment that only acknowledges at a
+        // checkpoint holds its input-log watermark still for the whole interval
+        // — the controller's silence-based liveness detectors have to read that
+        // as the steady state it is, not as a stall.
+        if topology.ack_granularity == AckGranularity::Checkpoint {
+            metadata.insert("ack_granularity".to_string(), "checkpoint".to_string());
         }
     }
 
