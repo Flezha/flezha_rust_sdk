@@ -97,6 +97,26 @@ fn stable_id_displays_as_32_hex_chars() {
     assert!(rendered.chars().all(|c| c.is_ascii_hexdigit()));
 }
 
+/// Cross-language fixture: the Java SDK derives `StableId` with a hand-rolled
+/// 128-bit FNV-1a (no `u128` in Java). A user may embed the rendered id in an
+/// emitted key, so the two SDKs must agree bit for bit. The twin assertion
+/// lives in Java's `StableIdTest`.
+#[test]
+fn stable_id_matches_the_cross_language_fixture() {
+    assert_eq!(
+        StableId::derive(b"instance/op/key", 42, 0).to_string(),
+        "bbf81fd4955afd1724203700a240e822"
+    );
+    assert_eq!(
+        StableId::derive(b"instance/op/key", 42, 1).to_string(),
+        "bbf81fd4965afd1724203700a240e95d"
+    );
+    assert_eq!(
+        StableId::derive(b"", 0, 0).to_string(),
+        "15915375576d2f389a938dc3a9940c9d"
+    );
+}
+
 #[test]
 fn plain_emit_on_keyed_channel_is_rejected() {
     let mut sink = StubSink {
