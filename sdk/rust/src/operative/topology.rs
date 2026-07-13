@@ -89,6 +89,37 @@ pub struct OperativeTopology {
     /// and drives the tier emit path (emits ride the reliable state sink
     /// inside the atomic effect record instead of the primary stream).
     pub effectively_once: bool,
+
+    /// `ChannelBuilder::correction_window()`. `None` (the default) means the
+    /// operative never corrects: a late input is just an input. Declared, it
+    /// announces the window to the controller in the `AddOperative` response
+    /// metadata and arms lateness detection on the dispatch path.
+    pub correction: Option<CorrectionPolicy>,
+}
+
+/// What an operative does about an input that arrives behind its Segment's
+/// event-time high-water. Frozen at registration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CorrectionPolicy {
+    /// How far behind the high-water an input may be and still be repaired by
+    /// a rewind-restore-replay. Bounds the WAL rewind, the input-log slice,
+    /// and hence the retention the controller must guarantee.
+    pub window_ms: u64,
+    /// What happens to an input that is later than `window_ms` — the past is
+    /// too old to rebuild.
+    pub beyond_window: BeyondWindowPolicy,
+}
+
+/// Fate of a late input the correction window cannot reach.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BeyondWindowPolicy {
+    /// Process it as if it had just happened — the engine's behaviour with no
+    /// correction declared at all, so declaring a window never silently starts
+    /// discarding data that used to be processed. The default for that reason.
+    #[default]
+    ProcessAsArrival,
+    /// Discard it. Opt in only when a stale event is worse than a missing one.
+    Drop,
 }
 
 impl OperativeTopology {

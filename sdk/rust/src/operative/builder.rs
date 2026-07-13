@@ -60,7 +60,21 @@ pub fn build_topology_with_persistence(
         operation_name_to_id,
         mut errors,
         effectively_once,
+        correction,
     } = builder;
+
+    // Correction replays the durable input log against a rewound baseline.
+    // Without the tier there is no durable input log to replay — inputs are
+    // forwarded, not journaled — so the declaration is meaningless, not merely
+    // degraded. (The tier's own `UnkeyedChannelUnderEffectivelyOnce` check
+    // already forces every plugin channel keyed, which is correction's other
+    // hard prerequisite: a bumped epoch can only overwrite by natural key.)
+    if correction.is_some() && !effectively_once {
+        errors.push(BuildTopologyError::CorrectionWithoutTier);
+    }
+    if correction.is_some_and(|c| c.window_ms == 0) {
+        errors.push(BuildTopologyError::CorrectionWindowZero);
+    }
 
     // Build channel descriptors and validate.
     let mut channel_descs: Vec<ChannelDescriptor> = Vec::with_capacity(channels.len());
@@ -125,6 +139,15 @@ pub fn build_topology_with_persistence(
                 clock_type: entry.clock_type_name,
             });
         }
+        // Correction orders a replayed slice by event time. An operation whose
+        // clock is the wall or the change seq has no event time, so the sort
+        // key does not exist and lateness is undefined.
+        if correction.is_some() && !entry.clock_is_event_time {
+            errors.push(BuildTopologyError::CorrectionWithoutEventTime {
+                operation: entry.name,
+                clock_type: entry.clock_type_name,
+            });
+        }
         let mode = match (
             entry.segment_keys.is_empty(),
             entry.operation_key_overridden,
@@ -182,6 +205,7 @@ pub fn build_topology_with_persistence(
         factory_id,
         persistence_enabled_const,
         effectively_once,
+        correction,
     }))
 }
 
@@ -254,6 +278,7 @@ mod tests {
     use crate::channel::ChannelBuilder;
     use crate::operation::state_handle::StateHandle;
     use crate::operation::{NoChange, Operation, OperationCtx, OperationError, WallClock};
+    use crate::operative::topology::BeyondWindowPolicy;
     use crate::segment::restore::RestoreInitPayload;
 
     #[derive(Default)]
@@ -420,5 +445,133 @@ mod tests {
         let cap = resolve_mailbox_capacity_inner("max_operation", MAX_MAILBOX_CAPACITY, true, None)
             .unwrap();
         assert_eq!(cap, MAX_MAILBOX_CAPACITY);
+    }
+
+    // ---------- Late-input correction: the declaration's prerequisites ----------
+
+    struct TradeTime;
+    impl crate::operation::TimeExtractor<String> for TradeTime {
+        fn extract(input: &String) -> u64 {
+            input.parse().unwrap_or(0)
+        }
+    }
+
+    #[derive(Default)]
+    struct EventTimeOp;
+    impl Operation for EventTimeOp {
+        type Input = String;
+        type Output = String;
+        type State = ();
+        type Change = NoChange;
+        type Clock = crate::operation::EventTimeFrom<TradeTime>;
+        type Config = ();
+        fn name() -> &'static str {
+            "correction_builder_test_op"
+        }
+        fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
+        fn run(
+            &mut self,
+            _: String,
+            _: StateHandle<'_, Self>,
+            _: &mut OperationCtx<'_>,
+        ) -> Result<(), OperationError> {
+            Ok(())
+        }
+    }
+
+    fn correction_builder<S: Operation<Input = String, Output = String> + Default>(
+        window_ms: u64,
+        tier: bool,
+    ) -> ChannelBuilder {
+        let mut cb = ChannelBuilder::new();
+        if tier {
+            cb.effectively_once();
+        }
+        cb.correction_window(window_ms);
+        cb.input::<String>("in").into::<S>();
+        cb.channel::<String>("out")
+            .from::<S>()
+            .keyed()
+            .to_plugin("kafka");
+        cb
+    }
+
+    #[test]
+    fn correction_with_tier_and_event_time_builds() {
+        let topology = build_topology(
+            "correction_ok",
+            correction_builder::<EventTimeOp>(600_000, true),
+        )
+        .expect("topology");
+
+        let policy = topology.correction.expect("correction declared");
+        assert_eq!(policy.window_ms, 600_000);
+        // The default must be the engine's existing behaviour: declaring a
+        // window never silently starts discarding data.
+        assert_eq!(policy.beyond_window, BeyondWindowPolicy::ProcessAsArrival);
+    }
+
+    #[test]
+    fn correction_without_the_tier_is_refused() {
+        // Without the tier there is no durable input log, so there is nothing to
+        // replay — the declaration is meaningless, not merely degraded.
+        let err = build_topology(
+            "correction_no_tier",
+            correction_builder::<EventTimeOp>(600_000, false),
+        )
+        .err()
+        .expect("correction without the tier must fail");
+
+        assert!(err
+            .errors
+            .iter()
+            .any(|e| matches!(e, BuildTopologyError::CorrectionWithoutTier)));
+    }
+
+    #[test]
+    fn correction_without_an_event_time_clock_is_refused() {
+        // TierOp declares WallClock: there is no event time to order a replayed
+        // slice by, so lateness is not even definable.
+        let err = build_topology(
+            "correction_wall_clock",
+            correction_builder::<TierOp>(600_000, true),
+        )
+        .err()
+        .expect("correction without an event-time clock must fail");
+
+        assert!(err.errors.iter().any(|e| matches!(
+            e,
+            BuildTopologyError::CorrectionWithoutEventTime {
+                clock_type: "WallClock",
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn a_zero_correction_window_is_refused() {
+        let err = build_topology(
+            "correction_zero",
+            correction_builder::<EventTimeOp>(0, true),
+        )
+        .err()
+        .expect("a zero window must fail");
+
+        assert!(err
+            .errors
+            .iter()
+            .any(|e| matches!(e, BuildTopologyError::CorrectionWindowZero)));
+    }
+
+    #[test]
+    fn the_beyond_window_policy_is_declarable() {
+        let mut cb = correction_builder::<EventTimeOp>(600_000, true);
+        cb.beyond_window_policy(BeyondWindowPolicy::Drop);
+        let topology = build_topology("correction_drop", cb).expect("topology");
+
+        let policy = topology.correction.expect("correction declared");
+        assert_eq!(policy.beyond_window, BeyondWindowPolicy::Drop);
+        // ...and setting the policy must not clobber the window.
+        assert_eq!(policy.window_ms, 600_000);
     }
 }

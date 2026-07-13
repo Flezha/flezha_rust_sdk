@@ -18,6 +18,7 @@
 //! AtomicU64` counter. The per-process [`flusher::SegmentFlusher`]
 //! drains all registered buffers on its linger cadence.
 
+pub mod correction;
 pub mod credit;
 pub mod dynamic;
 pub mod flusher;
@@ -54,6 +55,16 @@ pub struct SegmentPayload {
     /// outside the effectively-once tier; the invocation's atomic effect
     /// record carries it as the consumed-offset.
     pub consumed_offset: Option<u64>,
+    /// Set when the controller re-forwarded this payload as part of a replayed
+    /// slice (`flz.replay` on the inbound frame). The drain holds such payloads
+    /// until the slice closes, orders them by event time, and only then
+    /// dispatches — an arrival-ordered replay would recompute the same wrong
+    /// answer the correction exists to repair.
+    ///
+    /// Never inherited by an inter-operation emit: a downstream Operation
+    /// receives the corrected outputs already in order, and a slice it could
+    /// never see the end of would hold its drain forever.
+    pub replay: bool,
 }
 
 /// Construct a [`SegmentPayload`], cloning both shared handles. Shared by
@@ -62,11 +73,13 @@ pub fn make_segment_payload(
     value: &Arc<dyn Any + Send + Sync>,
     stream: &Arc<FlezhaStream>,
     consumed_offset: Option<u64>,
+    replay: bool,
 ) -> SegmentPayload {
     SegmentPayload {
         value: Arc::clone(value),
         stream: Arc::clone(stream),
         consumed_offset,
+        replay,
     }
 }
 
@@ -252,6 +265,32 @@ pub struct SegmentSlot {
     /// double-applies. `None`-offset payloads (every non-tier input) pay
     /// one branch.
     pub consumed_floor: std::sync::atomic::AtomicI64,
+    /// Late-input correction: the highest event time this Segment has
+    /// dispatched (`-1` = none yet). Only an `EventTimeFrom` clock advances
+    /// it. An input behind it is *late*; how far behind decides whether it
+    /// is correctable or falls to the beyond-window policy. Rebuilt on
+    /// restore from the snapshot header so a resumed Segment does not
+    /// mistake its whole history for a flood of late inputs. Shared with the
+    /// dispatcher, which is the only place the extractor can run.
+    pub event_time_high_water: Arc<AtomicI64>,
+    /// Late-input correction: payloads of a replayed slice (`flz.replay`),
+    /// held so the drain can order them by event time before dispatching any.
+    /// Empty whenever no replay is in flight, which is the overwhelmingly
+    /// common case — a normal drain pays one `is_empty` check.
+    pub replay_buffer: Mutex<Vec<SegmentPayload>>,
+    /// True from the moment a replayed payload is enqueued until the
+    /// controller's end-of-slice broadcast closes the slice. The drain flushes
+    /// the buffer only once it is false, so a mailbox that momentarily runs dry
+    /// mid-slice cannot dispatch half an ordering.
+    ///
+    /// It is set on the frame-handling thread (in `enqueue`) and cleared by the
+    /// broadcast, which arrives on that same thread after every slice frame —
+    /// so the close can never overtake a member it was meant to include.
+    pub replay_open: AtomicBool,
+    /// Number of payloads currently held in `replay_buffer`. A plain counter so
+    /// the drain's hot path can ask "is a slice pending?" with one relaxed load
+    /// instead of taking the buffer's mutex on every payload.
+    pub replay_depth: AtomicU64,
     /// Stable per-Segment identity (`(operative_class, operation_id, segment_key)`)
     /// encoded for the wire by `flusher::encode_segment_identity`. The
     /// flusher reads this verbatim into each frame's
@@ -289,6 +328,15 @@ pub trait OperationDispatcher: Send + Sync + 'static {
     );
 
     fn operation_id(&self) -> OperationId;
+
+    /// The payload's event time, or `None` when this Operation's clock is not
+    /// `EventTimeFrom` — i.e. when there is no event time to order by.
+    ///
+    /// The type-erased seam that lets `drain_segment`, which sees only an
+    /// opaque `SegmentPayload`, sort a replayed slice by a key that only the
+    /// user's `TimeExtractor` can produce. Same erasure trick as
+    /// `compensate_collecting`.
+    fn event_time_of(&self, payload: &SegmentPayload) -> Option<u64>;
 
     /// Bounded-driver entry: run `Operation::run` once on `input` against the
     /// type-erased segment `state`, collecting inter-operation output and

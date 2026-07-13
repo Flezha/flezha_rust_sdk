@@ -258,6 +258,7 @@ mod tests {
             &postcard::to_allocvec(&AddChange(5)).unwrap(),
         );
         let effect_body = EffectRecordBody {
+            event_time: 0,
             changes: vec![
                 postcard::to_allocvec(&AddChange(10)).unwrap(),
                 postcard::to_allocvec(&AddChange(100)).unwrap(),

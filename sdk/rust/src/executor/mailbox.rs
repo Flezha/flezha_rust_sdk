@@ -217,6 +217,16 @@ impl<Payload: Send + 'static> Mailbox<Payload> {
     pub fn pop(&self) -> Option<Payload> {
         self.queue.pop()
     }
+
+    /// Discard every queued item, unparking any producers waiting on space.
+    ///
+    /// Used by the restore path: a Segment re-seated on a rewound or recovered
+    /// past has queued inputs that belong to a state which no longer exists,
+    /// and every one of them is durable in the input log the controller is
+    /// about to re-forward.
+    pub fn clear(&self) {
+        while self.queue.pop().is_some() {}
+    }
 }
 
 #[cfg(test)]

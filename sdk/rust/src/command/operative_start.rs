@@ -102,6 +102,31 @@ fn metadata_response(kind: &str, factory_id: &str) -> Vec<u8> {
         metadata.insert("effectively_once".to_string(), "true".to_string());
     }
 
+    // Late-input correction. The controller owns the two prerequisites the SDK
+    // cannot see — the input-log hold window and the snapshot age-floor must
+    // both cover this window, or the past it promises to repair is already
+    // gone — so it needs the window before it binds the operative.
+    if kind != "bounded" {
+        if let Some(policy) =
+            crate::operative::registry::get_class(factory_id).and_then(|t| t.correction)
+        {
+            metadata.insert(
+                "correction_window_ms".to_string(),
+                policy.window_ms.to_string(),
+            );
+            metadata.insert(
+                "beyond_window_policy".to_string(),
+                match policy.beyond_window {
+                    crate::operative::topology::BeyondWindowPolicy::ProcessAsArrival => {
+                        "process_as_arrival"
+                    }
+                    crate::operative::topology::BeyondWindowPolicy::Drop => "drop",
+                }
+                .to_string(),
+            );
+        }
+    }
+
     // The chain positions whose operation declares `compensate`. A rewind can
     // only unwind an operation whose plugin output is semantically undoable, and
     // the controller refuses one that is not — so it needs this before it wakes

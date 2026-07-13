@@ -16,7 +16,7 @@ use std::any::{Any, TypeId};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::Write;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use flz_transport::service::payloader;
@@ -31,7 +31,8 @@ use crate::operation::ctx::EmitSink;
 use crate::operation::state_handle::StateHandle;
 use crate::operation::{Operation, OperationCtx, OperationError};
 use crate::operative::instance::UnboundedInstance;
-use crate::operative::topology::OperativeTopology;
+use crate::operative::topology::{BeyondWindowPolicy, OperativeTopology};
+use crate::segment::correction::Lateness;
 use crate::segment::flusher::{
     encode_segment_identity, FlushableBuffer, SegmentFlusher, TypedBuffer,
 };
@@ -116,6 +117,12 @@ struct FlushWiring {
     /// invocation's plugin emits are captured into an atomic effect record
     /// on the reliable state sink instead of the primary stream.
     effectively_once: bool,
+    /// Late-input correction policy, `None` unless the class declared a
+    /// `correction_window()`. Shares the owning slot's high-water atomic —
+    /// the dispatcher is the only place the event-time extractor can run, so
+    /// it is also the only place that can maintain it.
+    correction: Option<crate::operative::topology::CorrectionPolicy>,
+    event_time_high_water: Arc<AtomicI64>,
 }
 
 impl<S: Operation> OperationDispatcherImpl<S> {
@@ -169,6 +176,58 @@ impl<S: Operation> OperationDispatcherImpl<S> {
         (now, seq)
     }
 
+    /// Decide whether an input should be dispatched at all, and keep the
+    /// Segment's event-time high-water. Returns `false` when the caller must
+    /// drop the input instead of running it.
+    ///
+    /// An input behind the high-water but inside the correction window is
+    /// dropped *here* and asked for back: it is already durable in the input
+    /// log, so the correction re-delivers it inside the replayed slice, in its
+    /// rightful place. Running it now would fold it into the state at the
+    /// wrong position — the very mistake the correction undoes.
+    ///
+    /// A `replayed` input is exempt from classification: the engine has just
+    /// put it back into event-time order, so it is in order by construction.
+    /// It still advances the high-water — the replay is what rebuilds it.
+    ///
+    /// A class with no `correction_window()` — the default — pays one
+    /// `Option` check and nothing else.
+    fn admit_and_track(&self, event_time: u64, replayed: bool) -> bool {
+        let Some(policy) = self.flush.correction else {
+            return true;
+        };
+        let advance = || {
+            self.flush
+                .event_time_high_water
+                .fetch_max(event_time as i64, Ordering::AcqRel);
+        };
+        if replayed {
+            advance();
+            return true;
+        }
+        let high_water = self.flush.event_time_high_water.load(Ordering::Acquire);
+
+        match crate::segment::correction::classify(event_time, high_water, policy.window_ms) {
+            Lateness::OnTime => {
+                advance();
+                true
+            }
+            // Requested: drop it here, the slice brings it back. Not requested
+            // (transport-less run, nobody to ask): fall back to the
+            // no-correction behaviour and process it as an arrival.
+            Lateness::Correctable => {
+                !crate::segment::correction::request(&self.flush.segment_identity, event_time)
+            }
+            // The high-water deliberately does NOT advance for a beyond-window
+            // arrival: a very old event must not drag the window backward and
+            // make the inputs after it look late.
+            Lateness::BeyondWindow => match policy.beyond_window {
+                BeyondWindowPolicy::ProcessAsArrival => true,
+                BeyondWindowPolicy::Drop => false,
+            },
+        }
+    }
+
     /// Ship the Changes (and, under the effectively-once tier, the captured
     /// outputs as one atomic effect entry) a collecting-path op applied — or
     /// drain and discard when the class opted out. The bounded analog of the
@@ -177,6 +236,7 @@ impl<S: Operation> OperationDispatcherImpl<S> {
         &self,
         buffer: RefCell<Vec<S::Change>>,
         outputs: Vec<crate::segment::flusher::OutputRecord>,
+        event_time: u64,
     ) {
         let changes = buffer.into_inner();
         let mut buf = if self.flush.effectively_once {
@@ -192,6 +252,7 @@ impl<S: Operation> OperationDispatcherImpl<S> {
                     outputs,
                     consumed_offset: None,
                     dlq: None,
+                    event_time,
                 }],
             }
         } else {
@@ -222,6 +283,7 @@ impl<S: Operation> OperationDispatcher for OperationDispatcherImpl<S> {
             value,
             stream,
             consumed_offset,
+            replay,
         } = payload;
 
         // Downcast value to Arc<S::Input>. Consumers with different
@@ -286,6 +348,12 @@ impl<S: Operation> OperationDispatcher for OperationDispatcherImpl<S> {
         };
 
         let (now, invocation_seq) = self.invocation_inputs(Some(&input));
+
+        // Late-input correction: decide whether this input runs at all, and
+        // keep the Segment's event-time high-water.
+        if !self.admit_and_track(now, replay) {
+            return;
+        }
 
         // Tier mode: plugin emits are captured here (in emit order) instead
         // of leaving on the primary stream, then combined with the run's
@@ -413,6 +481,7 @@ impl<S: Operation> OperationDispatcher for OperationDispatcherImpl<S> {
                         outputs,
                         consumed_offset,
                         dlq,
+                        event_time: now,
                     });
             }
         } else {
@@ -437,6 +506,20 @@ impl<S: Operation> OperationDispatcher for OperationDispatcherImpl<S> {
 
     fn operation_id(&self) -> OperationId {
         self.operation_id
+    }
+
+    fn event_time_of(&self, payload: &SegmentPayload) -> Option<u64> {
+        if !<S::Clock as crate::operation::Clock>::IS_EVENT_TIME {
+            return None;
+        }
+        let input = payload.value.downcast_ref::<S::Input>()?;
+        Some(
+            <S::Clock as crate::operation::ClockFor<S::Input>>::evaluate(
+                Some(input),
+                crate::operation::clock::wall_now_ms,
+                || 0,
+            ),
+        )
     }
 
     fn run_collecting(
@@ -494,6 +577,7 @@ impl<S: Operation> OperationDispatcher for OperationDispatcherImpl<S> {
         self.flush_collected(
             buffer,
             effect_outputs.map(RefCell::into_inner).unwrap_or_default(),
+            now,
         );
 
         match outcome {
@@ -570,7 +654,7 @@ impl<S: Operation> OperationDispatcher for OperationDispatcherImpl<S> {
 
         // Persist the compensation's state changes to the WAL (durable classes)
         // so a crash mid-compensation leaves the undo recorded.
-        self.flush_collected(buffer, Vec::new());
+        self.flush_collected(buffer, Vec::new(), now);
 
         match outcome {
             Ok(Ok(())) => Ok(()),
@@ -706,6 +790,9 @@ impl<'a> SegmentEmitSink<'a> {
         descriptor: &crate::channel::ChannelDescriptor,
         value: &Arc<dyn Any + Send + Sync>,
     ) -> Result<(), OperationError> {
+        // An inter-operation emit is never a replay member: the downstream
+        // Operation receives the corrected outputs already in order, and a
+        // slice it could never see the end of would hold its drain forever.
         route_to_consumers(
             instance,
             &descriptor.consumers,
@@ -713,6 +800,7 @@ impl<'a> SegmentEmitSink<'a> {
             value,
             &self.stream,
             self.consumed_offset,
+            false,
         );
         Ok(())
     }
@@ -1032,6 +1120,15 @@ const BLOCK_PARK_TIMEOUT: std::time::Duration = std::time::Duration::from_millis
 const BLOCK_WARN_AFTER: std::time::Duration = std::time::Duration::from_secs(5);
 
 pub(crate) fn enqueue(slot: &Arc<SegmentSlot>, payload: SegmentPayload, policy: OverflowPolicy) {
+    // Open the slice here, on the frame-handling thread, rather than in the
+    // drain: the controller's end-of-slice broadcast arrives on this same thread
+    // after every slice frame, so opening here guarantees the close can never
+    // overtake a member it was meant to include. Opening in the drain would race
+    // — a slow drain could see the close first and then buffer members nobody
+    // would ever flush.
+    if payload.replay {
+        slot.replay_open.store(true, Ordering::Release);
+    }
     let mut next = payload;
     let mut blocked_since: Option<std::time::Instant> = None;
     let mut block_warned = false;
@@ -1130,6 +1227,7 @@ pub(crate) fn route_to_consumers(
     value: &Arc<dyn Any + Send + Sync>,
     stream: &Arc<FlezhaStream>,
     consumed_offset: Option<u64>,
+    replay: bool,
 ) {
     use crate::operative::topology::SegmentingMode;
     for &consumer_operation_id in consumer_ids {
@@ -1164,7 +1262,7 @@ pub(crate) fn route_to_consumers(
                 if let Ok(slot) = registry.get_or_create(&key) {
                     enqueue(
                         &slot,
-                        make_segment_payload(value, stream, consumed_offset),
+                        make_segment_payload(value, stream, consumed_offset, replay),
                         policy,
                     );
                 }
@@ -1177,7 +1275,7 @@ pub(crate) fn route_to_consumers(
                 {
                     enqueue(
                         slot,
-                        make_segment_payload(value, stream, consumed_offset),
+                        make_segment_payload(value, stream, consumed_offset, replay),
                         policy,
                     );
                 }
@@ -1195,7 +1293,7 @@ pub(crate) fn route_to_consumers(
                         if let Some(slot) = segments.get(idx) {
                             enqueue(
                                 slot,
-                                make_segment_payload(value, stream, consumed_offset),
+                                make_segment_payload(value, stream, consumed_offset, replay),
                                 policy,
                             );
                         }
@@ -1324,13 +1422,28 @@ pub fn drain_segment(slot: &Arc<SegmentSlot>) {
                     continue;
                 }
             }
-            let mut state_guard = slot.state.lock_recover();
-            let mut buffer_guard = slot.flush_buffer.lock_recover();
-            let instance_weak = Weak::clone(&slot.instance);
-            slot.dispatcher
-                .dispatch(payload, &mut state_guard, &mut buffer_guard, &instance_weak);
-            crate::segment::DISPATCHES_COMPLETED.fetch_add(1, Ordering::Relaxed);
+            // A replayed slice is held whole, ordered by event time, and only
+            // then dispatched. Re-running it in arrival order would put the
+            // late input back after the inputs that overtook it and recompute
+            // the same wrong answer.
+            if payload.replay {
+                slot.replay_buffer.lock_recover().push(payload);
+                slot.replay_depth.fetch_add(1, Ordering::Relaxed);
+                continue;
+            }
+            // A live input popped while a closed slice is still buffered: the
+            // slice is older than it, so the slice runs first. Without this the
+            // live input jumps the queue and lands ahead of the very inputs the
+            // correction was re-ordering.
+            maybe_dispatch_replay_slice(slot);
+            dispatch_one(slot, payload);
         }
+
+        // The mailbox is dry. If a slice is buffered and the controller has
+        // closed it, this is the moment to order and run it — in the drain, not
+        // the frame handler, so it happens under the single-drainer gate with no
+        // dispatch racing it.
+        maybe_dispatch_replay_slice(slot);
         // Drop the active gate BEFORE releasing inflight so a producer that
         // observes inflight=false can immediately become the next drainer.
         slot.drain_active.store(false, Ordering::Release);
@@ -1346,6 +1459,88 @@ pub fn drain_segment(slot: &Arc<SegmentSlot>) {
             // marked; it releases the inflight token when it finishes.
             return;
         }
+    }
+}
+
+/// Close every Segment's replayed slice and wake their drains to run it.
+///
+/// A broadcast rather than a marker riding the slice's last input, because it
+/// has to be: an input routes to exactly one Segment by key, so a marker on the
+/// last one would reach one Segment and leave every other Segment that buffered
+/// slice members holding them forever.
+///
+/// Arrives on the frame-handling thread after every frame of the slice, so a
+/// Segment cannot still be receiving members when its slice is closed.
+pub(crate) fn end_replay_slice(instance: &UnboundedInstance) {
+    let statics = instance.segments.iter().flatten().cloned();
+    let dynamics = instance.dynamic_registries.iter().flatten().flat_map(|r| {
+        r.segments
+            .iter()
+            .map(|e| Arc::clone(e.value()))
+            .collect::<Vec<_>>()
+    });
+
+    for slot in statics.chain(dynamics) {
+        slot.replay_open.store(false, Ordering::Release);
+        // The drain may already have run dry and exited with the slice still
+        // buffered — it had no way to know more was coming. Wake it so it can
+        // see the closed slice and flush it.
+        if slot.mailbox.try_mark_inflight() {
+            let cloned = Arc::clone(&slot);
+            slot.pool.submit(Box::new(move || drain_segment(&cloned)));
+        }
+    }
+}
+
+/// Dispatch the buffered slice if there is one and the controller has closed it.
+/// Two relaxed loads in the overwhelmingly common case of no replay in flight.
+fn maybe_dispatch_replay_slice(slot: &Arc<SegmentSlot>) {
+    if slot.replay_depth.load(Ordering::Relaxed) != 0 && !slot.replay_open.load(Ordering::Acquire) {
+        dispatch_replay_slice(slot);
+    }
+}
+
+/// Run one payload through the Operation, holding the state and flush-buffer
+/// locks for the invocation.
+fn dispatch_one(slot: &Arc<SegmentSlot>, payload: SegmentPayload) {
+    let mut state_guard = slot.state.lock_recover();
+    let mut buffer_guard = slot.flush_buffer.lock_recover();
+    let instance_weak = Weak::clone(&slot.instance);
+    slot.dispatcher
+        .dispatch(payload, &mut state_guard, &mut buffer_guard, &instance_weak);
+    crate::segment::DISPATCHES_COMPLETED.fetch_add(1, Ordering::Relaxed);
+}
+
+/// The end-of-slice marker arrived: order the buffered slice by event time and
+/// dispatch it.
+///
+/// The sort is **stable** and tie-broken by ascending input-log offset, so two
+/// inputs bearing the same event time replay in log order. That is what makes a
+/// correction reproducible: slice membership is an offset range and slice order
+/// is a function of the inputs alone, so a re-run after a crash folds the same
+/// inputs in the same order into the same state — and re-emits byte-identical
+/// output identities.
+fn dispatch_replay_slice(slot: &Arc<SegmentSlot>) {
+    let mut slice = std::mem::take(&mut *slot.replay_buffer.lock_recover());
+    slot.replay_depth.store(0, Ordering::Relaxed);
+
+    slice.sort_by_key(|p| {
+        (
+            slot.dispatcher.event_time_of(p).unwrap_or(0),
+            p.consumed_offset.unwrap_or(0),
+        )
+    });
+
+    // The high-water is NOT reset here. Every replay is preceded by a restore,
+    // which already re-established it from the change log it restored — the
+    // rewound baseline's for a correction, the recovered state's for a crash
+    // resume. Zeroing it would be redundant in the first case and *lossy* in the
+    // second: a resumed Segment whose unconsumed tail happens to carry a lower
+    // max event time than its restored state would come back with a high-water
+    // below the truth, and read a genuinely late input as on-time. The slice's
+    // payloads raise it by `fetch_max` as they dispatch.
+    for payload in slice {
+        dispatch_one(slot, payload);
     }
 }
 
@@ -1372,6 +1567,7 @@ pub fn build_segment_slot<S: Operation>(args: BuildSegmentArgs<'_>) -> Arc<Segme
         as Box<dyn FlushableBuffer>));
 
     let change_seq = Arc::new(AtomicU64::new(0));
+    let event_time_high_water = Arc::new(AtomicI64::new(-1));
     // Key the on-disk WAL identity by the operative INSTANCE id, not the factory
     // id: two operatives of the same factory must not share one Segment WAL.
     let segment_identity = Arc::new(encode_segment_identity(
@@ -1412,6 +1608,8 @@ pub fn build_segment_slot<S: Operation>(args: BuildSegmentArgs<'_>) -> Arc<Segme
             header: HeaderTemplate::for_operation::<S>(),
             persistence_enabled: args.persistence_enabled,
             effectively_once: topology.effectively_once,
+            correction: topology.correction,
+            event_time_high_water: Arc::clone(&event_time_high_water),
         },
     )) as Arc<dyn OperationDispatcher>;
 
@@ -1452,6 +1650,10 @@ pub fn build_segment_slot<S: Operation>(args: BuildSegmentArgs<'_>) -> Arc<Segme
         persistence_enabled: args.persistence_enabled,
         change_seq,
         consumed_floor: std::sync::atomic::AtomicI64::new(-1),
+        event_time_high_water: Arc::clone(&event_time_high_water),
+        replay_buffer: Mutex::new(Vec::new()),
+        replay_open: std::sync::atomic::AtomicBool::new(false),
+        replay_depth: AtomicU64::new(0),
         segment_identity,
         last_activity_at: std::sync::atomic::AtomicI64::new(crate::segment::dynamic::now_millis()),
         flusher_entry_id,

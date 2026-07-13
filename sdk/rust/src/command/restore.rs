@@ -22,6 +22,7 @@ use crate::executor::ExecutorNode;
 use crate::pb::{RestoreInitState, RestoreInitStateResponse};
 use crate::segment::restore::iter_change_log_records;
 use crate::segment::SegmentSlot;
+use crate::util::LockRecover;
 
 impl CommandAction for RestoreInitState {
     fn handle(
@@ -112,12 +113,36 @@ fn restore_into_slot(
         Ok(t) => {
             drop(guard);
             slot.change_seq.store(t + 1, Ordering::Release);
+
+            // A restore re-seats the Segment on a different past — the crash's,
+            // or (for a correction) a deliberately rewound one. Anything the
+            // old past left in flight belongs to a state that no longer exists:
+            // the mailbox holds inputs the controller is about to re-forward
+            // from the durable log anyway (every tier input is journaled before
+            // it is forwarded, so the log is a superset of the mailbox), and a
+            // half-filled replay buffer belongs to a slice that was abandoned.
+            // Keeping either would double-apply them, and — worse — apply them
+            // *after* the replayed slice in arrival order, reintroducing the
+            // exact mis-ordering a correction exists to repair.
+            slot.mailbox.clear();
+            slot.replay_buffer.lock_recover().clear();
+            slot.replay_depth.store(0, Ordering::Relaxed);
+            slot.replay_open.store(false, Ordering::Release);
+
+            let cursors = restore_cursors(&cmd.change_log_bytes);
             // Effectively-once: remember the highest input-log offset the
             // restored effect records durably consumed, so the crash-replay
             // re-forward skips already-applied inputs (`drain_segment`).
-            if let Some(floor) = max_consumed_offset(&cmd.change_log_bytes) {
+            if let Some(floor) = cursors.consumed_offset {
                 slot.consumed_floor.store(floor as i64, Ordering::Release);
             }
+            // Correction: rebuild the event-time high-water, so a resumed
+            // Segment neither mistakes its own history for a flood of late
+            // inputs (high-water too low) nor misses a genuinely late one.
+            slot.event_time_high_water.store(
+                cursors.event_time_high_water.map_or(-1, |t| t as i64),
+                Ordering::Release,
+            );
             t
         }
         Err(e) => {
@@ -127,22 +152,37 @@ fn restore_into_slot(
     }
 }
 
-/// Highest `consumed_offset` across the change-log's effect records
-/// (`format_id = 2` at header byte 9), or `None` when the log carries no
-/// consumed offsets (plain change records / pre-tier history).
-fn max_consumed_offset(change_log_bytes: &[u8]) -> Option<u64> {
-    let mut max: Option<u64> = None;
+/// Per-Segment cursors folded out of a restore payload's change log.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct RestoreCursors {
+    /// Highest `consumed_offset` across the effect records; `None` when the log
+    /// carries none (plain change records / pre-tier history).
+    consumed_offset: Option<u64>,
+    /// Highest `event_time`. The change log holds every record above the
+    /// snapshot, and compaction may not truncate inside the correction window
+    /// (`compact_after_age_ms >= correction_window`), so the retained records
+    /// always cover the window — and an event older than the window is
+    /// beyond-window by definition, correctable by nobody.
+    event_time_high_water: Option<u64>,
+}
+
+/// Fold the change-log's effect records (`format_id = 2` at header byte 9) into
+/// the cursors a restored Segment resumes from.
+fn restore_cursors(change_log_bytes: &[u8]) -> RestoreCursors {
+    let mut cursors = RestoreCursors::default();
     for record in iter_change_log_records(change_log_bytes) {
         let Ok(record) = record else { break };
         if record.header.get(9) == Some(&crate::segment::header::FORMAT_ID_EFFECT_RECORD) {
             if let Ok(body) = postcard::from_bytes::<crate::segment::flusher::EffectRecordBody>(
                 record.change_bytes,
             ) {
-                max = max.max(body.consumed_offset);
+                cursors.consumed_offset = cursors.consumed_offset.max(body.consumed_offset);
+                cursors.event_time_high_water =
+                    cursors.event_time_high_water.max(Some(body.event_time));
             }
         }
     }
-    max
+    cursors
 }
 
 fn committed_op(op: &crate::pb::OpCommittedOp) -> crate::bounded::instance::CommittedOp {

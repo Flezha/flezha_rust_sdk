@@ -30,6 +30,13 @@ pub trait Clock: sealed::Sealed + Send + Sync + 'static {
     /// `u64` (epoch milliseconds, extracted event time, or change seq).
     type Time: Copy + Send + Sync + 'static;
 
+    /// Whether this clock's value is an *event* time — a property of the
+    /// input rather than of when it happened to be processed. Only such a
+    /// clock gives late-input correction something to order by, so it gates
+    /// the correction machinery (lateness detection, the replay sort) at
+    /// compile time.
+    const IS_EVENT_TIME: bool = false;
+
     /// Stable name used by build-time clock validation errors.
     #[doc(hidden)]
     fn type_name() -> &'static str;
@@ -105,6 +112,7 @@ pub struct EventTimeFrom<F>(std::marker::PhantomData<F>);
 impl<F: Send + Sync + 'static> sealed::Sealed for EventTimeFrom<F> {}
 impl<F: Send + Sync + 'static> Clock for EventTimeFrom<F> {
     type Time = u64;
+    const IS_EVENT_TIME: bool = true;
     fn type_name() -> &'static str {
         "EventTimeFrom"
     }

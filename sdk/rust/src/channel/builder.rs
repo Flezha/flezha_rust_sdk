@@ -43,6 +43,10 @@ pub(crate) struct OperationEntry {
     /// rejects clock configurations the runtime cannot serve (a
     /// `LogicalClock` without persistent changes never advances).
     pub clock_type_name: &'static str,
+    /// `Clock::IS_EVENT_TIME` — whether this operation's clock yields a time
+    /// carried by the input rather than one read off the wall or the WAL.
+    /// Late-input correction is only definable against such a clock.
+    pub clock_is_event_time: bool,
     pub change_is_nochange: bool,
 
     /// `Operation::mailbox_capacity()` captured at registration time. The
@@ -240,6 +244,27 @@ pub enum BuildTopologyError {
          (use OperationError::non_retryable to park without retries)"
     )]
     RetryMaxZero { channel: &'static str },
+
+    #[error(
+        "operative declares correction_window() without effectively_once(); correction \
+         replays the input log against a rewound baseline, and only the tier journals \
+         inputs before forwarding them (an at-least-once operative has no durable input \
+         to replay)"
+    )]
+    CorrectionWithoutTier,
+
+    #[error(
+        "operative declares correction_window() but operation `{operation}` declares clock \
+         `{clock_type}`; correction orders a replayed slice by event time, which only \
+         `EventTimeFrom` yields"
+    )]
+    CorrectionWithoutEventTime {
+        operation: &'static str,
+        clock_type: &'static str,
+    },
+
+    #[error("operative declares correction_window(0); a zero window can correct nothing")]
+    CorrectionWindowZero,
 }
 
 /// Builder collected by `UnboundedOperative::channels`. Internal state turns into a
@@ -251,6 +276,7 @@ pub struct ChannelBuilder {
     pub(crate) operation_name_to_id: HashMap<&'static str, u32>,
     pub(crate) errors: Vec<BuildTopologyError>,
     pub(crate) effectively_once: bool,
+    pub(crate) correction: Option<crate::operative::topology::CorrectionPolicy>,
 }
 
 impl ChannelBuilder {
@@ -262,7 +288,49 @@ impl ChannelBuilder {
             operation_name_to_id: HashMap::new(),
             errors: Vec::new(),
             effectively_once: false,
+            correction: None,
         }
+    }
+
+    /// Opt this operative into late-input correction over the given window.
+    ///
+    /// An input whose extracted event time is behind its Segment's high-water
+    /// by no more than `window_ms` is not processed as an arrival. The engine
+    /// rewinds the Segment to a baseline preceding that event time, replays
+    /// the retained input slice in event-time order under a bumped epoch, and
+    /// keyed changelog sinks overwrite the stale rows by natural key.
+    ///
+    /// Requires `effectively_once()` (correction replays the durable input
+    /// log) and an `EventTimeFrom` clock (there is nothing else to order by).
+    /// `build_topology` refuses the declaration otherwise. The controller
+    /// additionally refuses to start the operative unless its input-log hold
+    /// window and snapshot age-floor both cover `window_ms` — you cannot
+    /// rebuild a past you did not retain.
+    ///
+    /// Inputs later than the window follow [`beyond_window_policy`], which
+    /// defaults to processing them as arrivals.
+    ///
+    /// [`beyond_window_policy`]: ChannelBuilder::beyond_window_policy
+    pub fn correction_window(&mut self, window_ms: u64) {
+        let beyond_window = self.correction.map(|c| c.beyond_window).unwrap_or_default();
+        self.correction = Some(crate::operative::topology::CorrectionPolicy {
+            window_ms,
+            beyond_window,
+        });
+    }
+
+    /// Fate of an input later than the declared correction window. Defaults to
+    /// [`BeyondWindowPolicy::ProcessAsArrival`] — the behaviour of an operative
+    /// with no correction window at all, so declaring one never silently starts
+    /// dropping data.
+    ///
+    /// [`BeyondWindowPolicy::ProcessAsArrival`]: crate::operative::topology::BeyondWindowPolicy::ProcessAsArrival
+    pub fn beyond_window_policy(&mut self, policy: crate::operative::topology::BeyondWindowPolicy) {
+        let window_ms = self.correction.map(|c| c.window_ms).unwrap_or(0);
+        self.correction = Some(crate::operative::topology::CorrectionPolicy {
+            window_ms,
+            beyond_window: policy,
+        });
     }
 
     /// Opt this operative into the effectively-once delivery tier.
@@ -382,6 +450,7 @@ impl ChannelBuilder {
             input_type_id: std::any::TypeId::of::<S::Input>(),
             output_type_id: std::any::TypeId::of::<S::Output>(),
             clock_type_name: <S::Clock as crate::operation::Clock>::type_name(),
+            clock_is_event_time: <S::Clock as crate::operation::Clock>::IS_EVENT_TIME,
             change_is_nochange: std::any::TypeId::of::<S::Change>()
                 == std::any::TypeId::of::<crate::operation::NoChange>(),
             mailbox_capacity: S::mailbox_capacity(),

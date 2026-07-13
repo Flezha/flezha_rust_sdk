@@ -526,6 +526,15 @@ impl OperativeDispatchHandle {
             }
         };
 
+        // Late-input correction: the end of a replayed slice is a broadcast, not
+        // an input — an input routes to one Segment by key, so a marker riding
+        // one would strand the slice every *other* Segment buffered. It carries
+        // no payload and never reaches an Operation.
+        if metadata.contains_key("flz.replay_end") {
+            crate::operative::dispatcher::end_replay_slice(&instance);
+            return;
+        }
+
         let topology = &instance.topology;
 
         let channel_id = match metadata.get("channel") {
@@ -593,6 +602,7 @@ impl OperativeDispatchHandle {
             &typed_payload,
             &stream,
             consumed_offset,
+            metadata.contains_key("flz.replay"),
         );
     }
 }

@@ -126,12 +126,18 @@ pub struct DlqEntryBody {
 /// the controller as ONE WAL record under ONE fsync. `changes` entries are
 /// the postcard `S::Change` bytes a plain change record would carry, so
 /// restore folds them identically.
+///
+/// `event_time` is the invocation's declared clock value. For an
+/// `EventTimeFrom` clock it is the extracted event time, which is what makes
+/// the controller's event-time → seq → input-offset lookup a read rather than
+/// a guess — the correction baseline rests on it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EffectRecordBody {
     pub changes: Vec<Vec<u8>>,
     pub outputs: Vec<OutputRecord>,
     pub consumed_offset: Option<u64>,
     pub dlq: Option<DlqEntryBody>,
+    pub event_time: u64,
 }
 
 /// One invocation's buffered effect entry (effectively-once tier). Typed on
@@ -141,6 +147,7 @@ pub struct EffectEntry<S: crate::operation::Operation> {
     pub outputs: Vec<OutputRecord>,
     pub consumed_offset: Option<u64>,
     pub dlq: Option<DlqEntryBody>,
+    pub event_time: u64,
 }
 
 /// One drained wire frame plus the data-stream payload id it ships under
@@ -312,6 +319,7 @@ pub fn build_segment_effect_record_frame<S: crate::operation::Operation>(
         outputs: entry.outputs,
         consumed_offset: entry.consumed_offset,
         dlq: entry.dlq,
+        event_time: entry.event_time,
     };
     let body_bytes = postcard::to_allocvec(&body)
         .expect("postcard serialization of EffectRecordBody cannot fail");
@@ -643,6 +651,7 @@ mod tests {
             value: 42,
         };
         let entry = EffectEntry::<EffOp> {
+            event_time: 0,
             changes: vec![change.clone()],
             outputs: vec![OutputRecord {
                 channel: "out".into(),
@@ -722,6 +731,7 @@ mod tests {
             }],
             consumed_offset: Some(4711),
             dlq: None,
+            event_time: 1_700_000_000_123,
         };
         let bytes = postcard::to_allocvec(&body).unwrap();
         assert_eq!(
@@ -734,6 +744,7 @@ mod tests {
                 0x02, 0x01, 0x02, // payload [1,2]
                 0x01, 0xE7, 0x24, // Some(4711)
                 0x00, // dlq: None
+                0xFB, 0xD0, 0x95, 0xFF, 0xBC, 0x31, // event_time: 1700000000123
             ]
         );
     }
@@ -743,6 +754,7 @@ mod tests {
         // Two entries whose changes share a coalesce key AND carry outputs:
         // both must ship — a coalesced-away record would drop its outputs.
         let mk = |ts: u64| EffectEntry::<EffOp> {
+            event_time: ts,
             changes: vec![TestChange {
                 key: Some(7),
                 ts,
