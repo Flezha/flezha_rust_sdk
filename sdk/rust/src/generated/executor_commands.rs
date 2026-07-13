@@ -363,14 +363,27 @@ pub struct OpCommittedOp {
     #[prost(bytes = "vec", repeated, tag = "3")]
     pub segments_ran: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
 }
+/// What one committed operation of the in-flight iteration released, keyed by
+/// its op_idx (bounded-branching). An operation tree re-seeds each uncommitted
+/// child branch from its own parent's edge, so the resume state carries every
+/// in-flight commit's handoff — not just the latest one's.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct OpEdgeHandoff {
+    #[prost(uint32, tag = "1")]
+    pub op_idx: u32,
+    #[prost(message, repeated, tag = "2")]
+    pub handoff: ::prost::alloc::vec::Vec<OpHandoffItem>,
+}
 /// Committed op-journal state shipped back on crash-resume
 /// (bounded-op-journal). `iter` is the iteration to resume at — the one after
 /// the highest journaled `iter_committed` (0 for a non-looping chain);
 /// `committed_op_idxs` are the operations already committed inside that
-/// still-in-flight iteration, which the driver skips; `handoff` seeds the first
-/// uncommitted one. `committed_ops` carries every forward op commit with its
-/// iteration (compensation planning), `consumed_offset` the inbox offset the
-/// last committed iteration consumed, and `parked` / `wake_deadline_ms` the
+/// still-in-flight iteration, which the driver skips, and `op_handoffs` what
+/// each of them released, which seeds their uncommitted children. `handoff` is
+/// the previous iteration's terminal batch, which re-seeds a handoff-chained
+/// loop. `committed_ops` carries every forward op commit with its iteration
+/// (compensation planning), `consumed_offset` the inbox offset the last
+/// committed iteration consumed, and `parked` / `wake_deadline_ms` the
 /// suspension record (bounded-durable-suspension).
 ///
 /// `rewind_undo` carries the operations a rewind unwound that have not been
@@ -397,6 +410,8 @@ pub struct OpJournalState {
     pub wake_deadline_ms: u64,
     #[prost(message, repeated, tag = "8")]
     pub rewind_undo: ::prost::alloc::vec::Vec<OpCommittedOp>,
+    #[prost(message, repeated, tag = "9")]
+    pub op_handoffs: ::prost::alloc::vec::Vec<OpEdgeHandoff>,
 }
 /// Per-Segment state restore handshake: Controller ships latest snapshot
 /// bytes plus tail-WAL bytes, SDK applies them to the segment's State

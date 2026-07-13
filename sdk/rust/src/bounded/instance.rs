@@ -80,16 +80,20 @@ pub struct BoundedInstance {
 /// resume at — the one after the highest journaled `iter_committed`, so a
 /// looping instance never re-runs a committed iteration (`bounded-durable-loop`);
 /// `committed_op_idxs` are the operations already committed inside that
-/// still-in-flight iteration and `handoff` (channel-id-tagged codec bytes,
-/// decoded by the channel's inter-op codec at seed time) seeds the first
-/// uncommitted one. `committed_ops` carries every journaled forward op commit
-/// with its iteration, which the driver folds into the compensation planner's
-/// per-iteration `committed` input.
+/// still-in-flight iteration, and `op_handoffs` carries what each of them
+/// released, so every uncommitted child branch re-seeds from its own parent's
+/// edge (`bounded-branching`). `handoff` is the previous iteration's terminal
+/// batch, which re-seeds a handoff-chained loop. Both are channel-id-tagged
+/// codec bytes, decoded by the producing channel's inter-op codec at seed time.
+/// `committed_ops` carries every journaled forward op commit with its iteration,
+/// which the driver folds into the compensation planner's per-iteration
+/// `committed` input.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct JournalResume {
     pub committed_op_idxs: Vec<u32>,
     pub iter: u32,
     pub handoff: Vec<(u32, Vec<u8>)>,
+    pub op_handoffs: Vec<EdgeHandoff>,
     pub committed_ops: Vec<CommittedOp>,
     /// Inbox offset the last committed iteration consumed — the floor a
     /// rehydrated inbox-driven loop reads its next item above.
@@ -99,6 +103,14 @@ pub struct JournalResume {
     /// forward at `iter` (which the journal has already folded back to the
     /// rewound-to iteration). Empty = no rewind pending.
     pub rewind_undo: Vec<CommittedOp>,
+}
+
+/// What one committed operation of the in-flight iteration released, so its
+/// uncommitted children re-seed from exactly their own parent.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EdgeHandoff {
+    pub op_idx: u32,
+    pub handoff: Vec<(u32, Vec<u8>)>,
 }
 
 /// One journaled forward op commit, shipped back on resume.

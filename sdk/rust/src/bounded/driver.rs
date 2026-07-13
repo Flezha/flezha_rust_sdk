@@ -1,4 +1,4 @@
-//! Sequential bounded driver.
+//! Bounded driver.
 //!
 //! One driver runs per started bounded instance on a **dedicated thread** (not
 //! a work-pool worker): a `run`-sugar body may block on its inbox during an
@@ -13,14 +13,15 @@
 //!   `RemOperative` / `max_duration` cancel it and the wire-dispatch path
 //!   delivers post-start input) and, for a structured durable class, the
 //!   crash-resume gate held until the Controller's Segment restores land;
-//! - runs the body — `run`-sugar ([`run_sugar`]) or the structured linear chain
-//!   ([`run_structured`], operations sequential, segments parallel within an
-//!   operation, count-based barrier between them);
+//! - runs the body — `run`-sugar ([`run_sugar`]) or the structured operation
+//!   tree ([`run_structured`], a child operation runs only after its parent
+//!   commits, sibling branches and the segments inside each operation run in
+//!   parallel on the pool, count-based barrier between levels);
 //! - converges every exit trigger on the single `BoundedCompleted` teardown,
 //!   emitting status (`ok | error | cancelled`) plus the result payload.
 
 use std::any::Any;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Weak};
 use std::thread::{self, JoinHandle};
@@ -30,10 +31,10 @@ use crossbeam::channel::{unbounded, Receiver, RecvTimeoutError};
 
 use super::compensation::{plan_compensation, SegmentRun, StageRecord, StagedOutput};
 use super::instance::{BoundedInstance, CommittedOp, InboxItem, JournalResume};
-use super::spec::BoundedSpec;
+use super::spec::{BoundedSpec, OpTree};
 use super::{BoundedCollectSink, BoundedCtx, BoundedError, BoundedRunFn, LoopMode, RollbackMode};
 use crate::channel::builder::BuildSegmentArgs;
-use crate::channel::{ChannelKind, OperationId, RetryPolicy};
+use crate::channel::{ChannelId, ChannelKind, OperationId, RetryPolicy};
 use crate::executor::work_stealing_pool::WorkStealingPool;
 use crate::operative::topology::{OperationDescriptor, OperativeTopology, SegmentingMode};
 use crate::segment::flusher::SegmentFlusher;
@@ -81,14 +82,14 @@ struct StageOut {
 }
 
 /// Read-only context threaded through one structured chain run: the topology,
-/// the resolved chain order, the running instance (its id + saga crash-resume
-/// markers), the work pool, the pre-built per-stage segments, the rollback mode,
-/// and whether the class is durable (gates the saga compensation records).
-/// Bundled so the chain driver and the compensator take it by reference instead
-/// of a long parameter list.
+/// the resolved operation tree, the running instance (its id + saga
+/// crash-resume markers), the work pool, the pre-built per-stage segments, the
+/// rollback mode, and whether the class is durable (gates the saga compensation
+/// records). Bundled so the chain driver and the compensator take it by
+/// reference instead of a long parameter list.
 struct ChainCtx<'a> {
     topology: &'a Arc<OperativeTopology>,
-    chain: &'a [OperationId],
+    tree: &'a OpTree,
     instance: &'a BoundedInstance,
     instance_id: &'a Arc<str>,
     pool: &'a Arc<WorkStealingPool>,
@@ -116,6 +117,14 @@ impl ChainCtx<'_> {
     /// would ever flush.
     fn journaling(&self) -> bool {
         self.persistence_enabled && crate::executor::coordinator_installed()
+    }
+
+    /// The operation descriptor at a tree node (= its `stage_idx` / wire
+    /// `op_idx`).
+    fn op(&self, node: usize) -> &OperationDescriptor {
+        self.topology
+            .operation(self.tree.order[node])
+            .expect("tree operation present in topology")
     }
 }
 
@@ -247,9 +256,10 @@ fn classify(
     RunOutcome::Terminal(status, error, result)
 }
 
-/// Structured path: run the linear chain sequentially. Operation `N+1` starts
-/// only when every segment of operation `N` has finished (count-based barrier);
-/// segments within an operation run in parallel on the pool.
+/// Structured path: walk the operation tree. A child operation starts only when
+/// every segment of its parent has finished and the parent's commit is acked
+/// (count-based barrier); segments — and independent sibling branches — run in
+/// parallel on the pool.
 fn run_structured(
     spec: &BoundedSpec,
     instance: &BoundedInstance,
@@ -268,7 +278,7 @@ fn run_structured(
     // frames. The run's flusher entries are deregistered in `run`'s teardown.
     let ctx = ChainCtx {
         topology,
-        chain: &spec.chain,
+        tree: &spec.tree,
         instance,
         instance_id: &instance.instance_id,
         pool,
@@ -283,7 +293,7 @@ fn run_structured(
     drive_chain(&ctx, args, &instance.cancel)
 }
 
-/// Build every stage's Segments for a structured spec, in chain order. Called
+/// Build every stage's Segments for a structured spec, in tree order. Called
 /// synchronously by `start_bounded_resumable` so the Segments are registered
 /// for restore and the resume gate is armed before the driver thread — or any
 /// restore frame — runs. `instance` on each slot is a null `Weak` — the bounded
@@ -298,8 +308,8 @@ pub(crate) fn build_all_stage_segments(
         .topology
         .as_ref()
         .expect("build_all_stage_segments invoked only for a structured spec");
-    let mut stage_segments: Vec<Vec<Arc<SegmentSlot>>> = Vec::with_capacity(spec.chain.len());
-    for &op_id in &spec.chain {
+    let mut stage_segments: Vec<Vec<Arc<SegmentSlot>>> = Vec::with_capacity(spec.tree.len());
+    for &op_id in &spec.tree.order {
         let op = topology
             .operation(op_id)
             .expect("chain operation present in topology");
@@ -372,36 +382,44 @@ fn drive_chain(ctx: &ChainCtx, args: &str, cancel: &AtomicBool) -> RunOutcome {
     let mut carry: Option<Vec<Value>> = None;
 
     // Resume state, consumed by the first pass: the operations of the in-flight
-    // iteration the journal already records committed are skipped (`first_stage`)
-    // but still recorded as completed, so a later failure rolls them back too.
+    // iteration the journal already records committed are skipped but still
+    // recorded as completed, so a later failure rolls them back too. Their
+    // uncommitted children are the pass's starting frontier, each re-seeded from
+    // its own parent's journaled handoff.
     let mut resumed_stages = Some(in_flight);
-    let mut first_stage = resume
-        .committed_op_idxs
-        .iter()
-        .max()
-        .map_or(0, |last| *last as usize + 1);
+    // The root is index 0, so "the root already committed" IS "this is a
+    // mid-iteration resume" — and a journal that somehow records a child without
+    // its parent re-runs the whole iteration rather than trusting the fragment.
+    let mut committed_nodes: Vec<usize> = if resume.committed_op_idxs.contains(&0) {
+        resume
+            .committed_op_idxs
+            .iter()
+            .map(|&i| i as usize)
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     loop {
-        // Completed stages of this iteration, in completion order, so an abnormal
-        // exit rolls them back in reverse.
+        // Completed stages of this iteration, in completion order (parents before
+        // children), so an abnormal exit rolls them back in reverse — which for a
+        // tree is reverse-topological.
         let mut completed: Vec<StageRecord> = resumed_stages.take().unwrap_or_default();
 
-        let seed = if first_stage > 0 {
-            // Mid-iteration resume: pick up at the first uncommitted operation.
-            match seed_from_journal(ctx, &resume.handoff) {
-                Ok(batch) => IterationSeed::Batch(batch, None),
-                Err(e) => IterationSeed::Failed(e),
-            }
-        } else {
-            next_iteration_seed(ctx, args, iter, &resume, carry.take(), cancel)
-        };
-
-        let batch = match seed {
-            IterationSeed::Batch(batch, consumed) => {
+        let frontier = match next_iteration_seed(
+            ctx,
+            args,
+            iter,
+            &resume,
+            &committed_nodes,
+            carry.take(),
+            cancel,
+        ) {
+            IterationSeed::Frontier(frontier, consumed) => {
                 if let Some(offset) = consumed {
                     consumed_offset = offset;
                 }
-                batch
+                frontier
             }
             // The loop ran out of work (single pass done, chained loop released
             // an empty batch, inbox closed): a clean terminal.
@@ -422,7 +440,7 @@ fn drive_chain(ctx: &ChainCtx, args: &str, cancel: &AtomicBool) -> RunOutcome {
             }
         };
 
-        match run_iteration(ctx, iter, first_stage, batch, cancel, &mut completed) {
+        match run_iteration(ctx, iter, frontier, cancel, &mut completed) {
             Ok(terminal_batch) => {
                 // Iteration boundary (`bounded-durable-loop`): journal
                 // `iter_committed`, snapshot the segments, flush the iteration's
@@ -440,8 +458,8 @@ fn drive_chain(ctx: &ChainCtx, args: &str, cancel: &AtomicBool) -> RunOutcome {
                 committed.push(completed);
                 carry = Some(terminal_batch);
                 iter += 1;
-                // Every iteration after the resumed one runs the whole chain.
-                first_stage = 0;
+                // Every iteration after the resumed one runs the whole tree.
+                committed_nodes.clear();
             }
             Err((status, error)) => {
                 run_compensation(ctx, &committed, &completed);
@@ -451,73 +469,142 @@ fn drive_chain(ctx: &ChainCtx, args: &str, cancel: &AtomicBool) -> RunOutcome {
     }
 }
 
-/// Run one iteration's stages from `first_stage` to the end of the chain,
-/// recording each completed stage into `completed`. `Ok` carries the terminal
-/// batch the last operation released; `Err` the terminal status of an abnormal
-/// exit (a failing operation, a cooperative stop, a refused op commit).
+/// One tree node scheduled to run, with the batch it consumes.
+type Runnable = (usize, Vec<Value>);
+
+/// Run one iteration of the operation tree, starting from `frontier` (the root
+/// on a fresh pass; the uncommitted subtrees whose parent already committed on a
+/// mid-iteration resume) and advancing level by level: every node in a frontier
+/// runs its segments on the pool together — sibling branches are independent, so
+/// they interleave — joins on one barrier, commits, and releases its children
+/// into the next frontier. Each completed stage is recorded into `completed` in
+/// that order, which is topological (a parent always precedes its children).
+///
+/// `Ok` carries the batch the leaves released — the operative is complete
+/// exactly when the frontier empties, i.e. when every leaf has committed. `Err`
+/// carries the terminal status of an abnormal exit (a failing operation, a
+/// cooperative stop, a refused op commit).
 fn run_iteration(
     ctx: &ChainCtx,
     iter: u32,
-    first_stage: usize,
-    mut batch: Vec<Value>,
+    mut frontier: Vec<Runnable>,
     cancel: &AtomicBool,
     completed: &mut Vec<StageRecord>,
 ) -> Result<Vec<Value>, (String, String)> {
-    for (stage_idx, &op_id) in ctx.chain.iter().enumerate().skip(first_stage) {
-        // A cooperative stop before a stage starts is partial progress: stop
+    let mut leaf_batch: Vec<Value> = Vec::new();
+
+    while !frontier.is_empty() {
+        // A cooperative stop before a level starts is partial progress: stop
         // advancing and roll back what completed.
         if cancel.load(Ordering::Acquire) {
             return Err(("cancelled".to_string(), String::new()));
         }
-        let op = ctx
-            .topology
-            .operation(op_id)
-            .expect("chain operation present in topology");
-        let slots = &ctx.stage_segments[stage_idx];
-        let partitioned = partition(op, slots.len(), &batch);
-        let StageOut {
-            batch: out_batch,
-            segments,
-        } = run_stage_parallel(ctx, slots, partitioned)
-            .map_err(|e| abnormal_status(cancel, e.to_string()))?;
-        batch = out_batch;
 
-        // Durable saga (§4.3): record this operation's completion — one
-        // compensation-intent marker per segment that ran — so a crash
-        // mid-compensation knows what still needs undo. Only for compensable
-        // operations (a hookless op is never rolled back).
-        if op.compensate_overridden {
-            for seg_run in &segments {
-                emit_compensation_record(
-                    COMPENSATION_INTENT_PAYLOAD_ID,
-                    &slots[seg_run.segment_index].segment_identity,
-                    ctx.persistence_enabled,
-                );
+        let (level, failure) = run_frontier(ctx, frontier);
+        let mut next: Vec<Runnable> = Vec::new();
+
+        for (node, out) in level {
+            let op = ctx.op(node);
+            let slots = &ctx.stage_segments[node];
+
+            // Durable saga (§4.3): record this operation's completion — one
+            // compensation-intent marker per segment that ran — so a crash
+            // mid-compensation knows what still needs undo. Only for compensable
+            // operations (a hookless op is never rolled back).
+            if op.compensate_overridden {
+                for seg_run in &out.segments {
+                    emit_compensation_record(
+                        COMPENSATION_INTENT_PAYLOAD_ID,
+                        &slots[seg_run.segment_index].segment_identity,
+                        ctx.persistence_enabled,
+                    );
+                }
+            }
+
+            // Op-boundary commit (bounded-op-journal): journal the stage's
+            // completion + handoff on the controller and block until the durable
+            // ack — a child operation must not race ahead of the committed
+            // record. Ordered AFTER the intent markers so a crash between marker
+            // and ack resolves as "op not committed → re-run" (at-least-once).
+            //
+            // A sibling in the same level failed ⇒ the run is already unwinding:
+            // this node's work still needs undo (it ran), but committing it —
+            // and flushing the outbox that commit carries — would only have to be
+            // compensated straight back.
+            let commit = match failure {
+                None => commit_op_boundary(ctx, node, iter, op, &out.segments, slots, &out.batch),
+                Some(_) => Ok(()),
+            };
+            completed.push(StageRecord {
+                stage_idx: node,
+                iter,
+                segments: out.segments,
+            });
+            if let Err(e) = commit {
+                return Err(abnormal_status(cancel, e));
+            }
+            if failure.is_some() {
+                continue;
+            }
+
+            let children = &ctx.tree.children[node];
+            if children.is_empty() {
+                leaf_batch.extend(out.batch);
+            } else {
+                for &child in children {
+                    next.push((child, out.batch.clone()));
+                }
             }
         }
-        // Op-boundary commit (bounded-op-journal): journal the stage's
-        // completion + handoff on the controller and block until the durable
-        // ack — the next operation must not race ahead of the committed record.
-        // Ordered AFTER the intent markers so a crash between marker and ack
-        // resolves as "op not committed → re-run" (at-least-once).
-        let commit = commit_op_boundary(ctx, stage_idx, iter, op, &segments, slots, &batch);
-        completed.push(StageRecord {
-            stage_idx,
-            iter,
-            segments,
-        });
-        if let Err(e) = commit {
-            return Err(abnormal_status(cancel, e));
+
+        if let Some(e) = failure {
+            return Err(abnormal_status(cancel, e.to_string()));
         }
+        frontier = next;
     }
-    Ok(batch)
+
+    Ok(leaf_batch)
+}
+
+/// The starting frontier of a mid-iteration resume: every uncommitted node whose
+/// parent the journal records committed, seeded from that parent's journaled
+/// handoff — filtered to the channel this child consumes, so a branch only ever
+/// re-seeds from its own edge.
+fn resumed_frontier(
+    ctx: &ChainCtx,
+    resume: &JournalResume,
+    committed: &[usize],
+) -> Result<Vec<Runnable>, String> {
+    let mut frontier = Vec::new();
+    for node in 0..ctx.tree.len() {
+        if committed.contains(&node) {
+            continue;
+        }
+        let Some(parent) = ctx.tree.parents[node] else {
+            continue;
+        };
+        if !committed.contains(&parent) {
+            continue;
+        }
+        let handoff = resume
+            .op_handoffs
+            .iter()
+            .find(|edge| edge.op_idx as usize == parent)
+            .map(|edge| edge.handoff.as_slice())
+            .unwrap_or_default();
+        let batch = seed_from_journal(ctx, handoff, ctx.op(node).input_channel_id)?;
+        frontier.push((node, batch));
+    }
+    Ok(frontier)
 }
 
 /// How the next iteration is seeded.
 enum IterationSeed {
-    /// Run the iteration over this batch; `Some(offset)` when an inbox item
-    /// supplied it (the offset the iteration commit records as consumed).
-    Batch(Vec<Value>, Option<u64>),
+    /// Start the iteration from this runnable frontier — the root alone on a
+    /// fresh pass, the uncommitted subtrees on a mid-iteration resume.
+    /// `Some(offset)` when an inbox item supplied the seed (the offset the
+    /// iteration commit records as consumed).
+    Frontier(Vec<Runnable>, Option<u64>),
     /// The loop has no more work: terminate cleanly.
     Done,
     /// The inbox is empty at a committed boundary past the idle threshold:
@@ -530,17 +617,30 @@ enum IterationSeed {
     Failed(String),
 }
 
-/// Resolve the seed for a fresh iteration from the loop's shape: the spawn args
-/// (single pass / first iteration), the next inbox item (`PerInput`), or the
-/// previous iteration's terminal handoff (`Chained`).
+/// Resolve the frontier this iteration starts from.
+///
+/// A mid-iteration resume (`committed` non-empty — the journal already records
+/// operations of this iteration committed) starts at exactly the uncommitted
+/// subtrees whose parent did commit. Otherwise the iteration starts at the tree
+/// root, seeded by the loop's shape: the spawn args (single pass / first
+/// iteration), the next inbox item (`PerInput`), or the previous iteration's
+/// terminal handoff (`Chained`).
 fn next_iteration_seed(
     ctx: &ChainCtx,
     args: &str,
     iter: u32,
     resume: &JournalResume,
+    committed: &[usize],
     carry: Option<Vec<Value>>,
     cancel: &AtomicBool,
 ) -> IterationSeed {
+    if !committed.is_empty() {
+        return match resumed_frontier(ctx, resume, committed) {
+            Ok(frontier) => IterationSeed::Frontier(frontier, None),
+            Err(e) => IterationSeed::Failed(e),
+        };
+    }
+
     match ctx.loop_mode {
         // Single pass, and the first iteration of a chained loop: the spawn args
         // through the entry channel.
@@ -556,7 +656,7 @@ fn next_iteration_seed(
         LoopMode::Chained => {
             let batch = match carry {
                 Some(batch) => batch,
-                None => match seed_from_journal(ctx, &resume.handoff) {
+                None => match seed_from_journal(ctx, &resume.handoff, None) {
                     Ok(batch) => batch,
                     Err(e) => return IterationSeed::Failed(e),
                 },
@@ -564,7 +664,7 @@ fn next_iteration_seed(
             if batch.is_empty() {
                 IterationSeed::Done
             } else {
-                IterationSeed::Batch(batch, None)
+                IterationSeed::Frontier(root(batch), None)
             }
         }
 
@@ -589,9 +689,15 @@ fn next_iteration_seed(
 
 fn seed_or_fail(seeded: Result<Vec<Value>, String>, consumed: Option<u64>) -> IterationSeed {
     match seeded {
-        Ok(batch) => IterationSeed::Batch(batch, consumed),
+        Ok(batch) => IterationSeed::Frontier(root(batch), consumed),
         Err(e) => IterationSeed::Failed(e),
     }
+}
+
+/// The frontier a fresh iteration starts from: the tree root (node 0, the entry
+/// channel's consumer) over the seed batch.
+fn root(batch: Vec<Value>) -> Vec<Runnable> {
+    vec![(0, batch)]
 }
 
 /// Block for the next inbox item. `None` on a cooperative stop, on a closed
@@ -692,9 +798,21 @@ fn seed_bytes(topology: &OperativeTopology, bytes: Vec<u8>) -> Result<Vec<Value>
 
 /// Decode a journaled handoff batch back into typed values via each item's
 /// producing-channel codec (`bounded-op-journal` crash-resume seeding).
-fn seed_from_journal(ctx: &ChainCtx, handoff: &[(u32, Vec<u8>)]) -> Result<Vec<Value>, String> {
+///
+/// `only` restricts the batch to one edge: a resumed child branch consumes just
+/// the values its parent released on the channel that child reads. `None` takes
+/// the whole batch — the handoff-chained loop's terminal re-seed, whose values
+/// were released on the terminal channel and enter through the entry one.
+fn seed_from_journal(
+    ctx: &ChainCtx,
+    handoff: &[(u32, Vec<u8>)],
+    only: Option<ChannelId>,
+) -> Result<Vec<Value>, String> {
     let mut seeded: Vec<Value> = Vec::with_capacity(handoff.len());
     for (channel_id, bytes) in handoff {
+        if only.is_some_and(|edge| edge != *channel_id) {
+            continue;
+        }
         let codec = ctx
             .topology
             .channel(*channel_id)
@@ -862,12 +980,12 @@ fn commit_iteration(
     // The terminal handoff re-seeds iteration N+1 of a handoff-chained loop
     // after a crash; an inbox-driven loop re-seeds from its inbox instead and
     // ships whatever the terminal operation released (empty when it has no
-    // codec'd output channel).
+    // codec'd output channel, and for a branching tree, which has no single
+    // terminal operation — registration refuses to chain a loop over one).
     let terminal_channel = ctx
-        .chain
-        .last()
-        .and_then(|&op_id| ctx.topology.operation(op_id))
-        .and_then(|op| op.output_channel_id);
+        .tree
+        .single_leaf()
+        .and_then(|leaf| ctx.op(leaf).output_channel_id);
     let handoff = encode_handoff(ctx, terminal_channel, batch)
         .map_err(|e| format!("iteration {iter} {e}"))?;
 
@@ -1001,11 +1119,7 @@ fn run_compensation(ctx: &ChainCtx, committed: &[Vec<StageRecord>], in_flight: &
         return;
     }
     for record in plan {
-        let op_id = ctx.chain[record.stage_idx];
-        let op = ctx
-            .topology
-            .operation(op_id)
-            .expect("chain operation present in topology");
+        let op = ctx.op(record.stage_idx);
         // Hookless operations take no part in rollback.
         if !op.compensate_overridden {
             continue;
@@ -1062,11 +1176,7 @@ fn run_rewind_undo(ctx: &ChainCtx, unwound: &[CommittedOp]) {
     let by_iter: Vec<Vec<StageRecord>> = stages_by_iter(ctx, unwound).into_values().collect();
 
     for record in plan_compensation(RollbackMode::AllOrNothing, &by_iter, &[]) {
-        let op_id = ctx.chain[record.stage_idx];
-        let op = ctx
-            .topology
-            .operation(op_id)
-            .expect("chain operation present in topology");
+        let op = ctx.op(record.stage_idx);
         let slots = &ctx.stage_segments[record.stage_idx];
 
         let mut segments_ran = Vec::new();
@@ -1245,71 +1355,100 @@ fn partition(op: &OperationDescriptor, segment_count: usize, batch: &[Value]) ->
     buckets
 }
 
-/// Run a stage's segments in parallel on the pool and join on a count-based
-/// barrier: every dispatched item is processed across all segments, with no
-/// segment mid-run, before the collected output is released to the next stage.
-/// A failing segment climbs its retry ladder in place ([`run_segment_retrying`])
-/// — its siblings keep their completed results buffered and are never re-run.
-fn run_stage_parallel(
+/// Run one frontier — every currently-runnable tree node — on the pool and join
+/// on a single count-based barrier. All of a node's segments and all the nodes
+/// of the frontier are submitted together: the nodes are independent subtrees,
+/// so sibling branches genuinely interleave on the pool. A failing segment
+/// climbs its retry ladder in place ([`SegmentJob::run_with_retry`]); its
+/// siblings keep their completed results buffered and are never re-run.
+///
+/// Returns the `StageOut` of every node that completed **whole** (ascending by
+/// node, so parents keep preceding children) plus the first error seen. A node
+/// with a failing segment yields nothing: its staged plugin output is dropped
+/// with the error, exactly as a failing stage's always was — a failed operation
+/// leaks nothing. A node whose segments all got an empty partition still yields
+/// an empty `StageOut`: an operation with nothing to do is done.
+fn run_frontier(
     ctx: &ChainCtx,
-    slots: &[Arc<SegmentSlot>],
-    partitioned: Vec<Vec<Value>>,
-) -> Result<StageOut, BoundedError> {
-    let (tx, rx) = unbounded::<(usize, Result<SegmentOut, BoundedError>)>();
+    frontier: Vec<Runnable>,
+) -> (Vec<(usize, StageOut)>, Option<BoundedError>) {
+    let (tx, rx) = unbounded::<(usize, usize, Result<SegmentOut, BoundedError>)>();
     let mut spawned = 0usize;
-    for (seg_idx, (slot, items)) in slots.iter().zip(partitioned.into_iter()).enumerate() {
-        if items.is_empty() {
-            continue;
+    let mut segments: BTreeMap<usize, Vec<SegmentRun>> = frontier
+        .iter()
+        .map(|(node, _)| (*node, Vec::new()))
+        .collect();
+
+    for (node, batch) in &frontier {
+        let slots = &ctx.stage_segments[*node];
+        for (seg_idx, items) in partition(ctx.op(*node), slots.len(), batch)
+            .into_iter()
+            .enumerate()
+        {
+            if items.is_empty() {
+                continue;
+            }
+            let job = SegmentJob {
+                topology: Arc::clone(ctx.topology),
+                instance_id: Arc::clone(ctx.instance_id),
+                slot: Arc::clone(&slots[seg_idx]),
+                staging: ctx.journaling(),
+                retry: ctx.retry,
+                cancel: Arc::clone(&ctx.instance.cancel),
+            };
+            let tx = tx.clone();
+            let node = *node;
+            spawned += 1;
+            ctx.pool.submit(Box::new(move || {
+                let _ = tx.send((node, seg_idx, job.run_with_retry(items)));
+            }));
         }
-        let job = SegmentJob {
-            topology: Arc::clone(ctx.topology),
-            instance_id: Arc::clone(ctx.instance_id),
-            slot: Arc::clone(slot),
-            staging: ctx.journaling(),
-            retry: ctx.retry,
-            cancel: Arc::clone(&ctx.instance.cancel),
-        };
-        let tx = tx.clone();
-        spawned += 1;
-        ctx.pool.submit(Box::new(move || {
-            let _ = tx.send((seg_idx, job.run_with_retry(items)));
-        }));
     }
     drop(tx);
 
-    // Wait for every segment (the barrier) before returning, even on failure,
-    // so no segment is mid-run when the stage completes. Each segment's outputs
-    // are kept under its index for both the next-stage batch and saga rollback.
-    // A failing stage returns `Err` here, dropping every segment's staged
-    // plugin output with it — a failed operation leaks nothing.
-    let mut segments: Vec<SegmentRun> = Vec::new();
+    // Wait for every segment of every node (the barrier) before returning, even
+    // on failure, so nothing is mid-run when the level completes.
+    let mut failed: HashSet<usize> = HashSet::new();
     let mut first_err: Option<BoundedError> = None;
     for _ in 0..spawned {
         match rx.recv() {
-            Ok((seg_idx, Ok((outputs, staged)))) => segments.push(SegmentRun {
-                segment_index: seg_idx,
-                outputs,
-                staged,
-            }),
-            Ok((_, Err(e))) => {
+            Ok((node, seg_idx, Ok((outputs, staged)))) => {
+                if let Some(runs) = segments.get_mut(&node) {
+                    runs.push(SegmentRun {
+                        segment_index: seg_idx,
+                        outputs,
+                        staged,
+                    });
+                }
+            }
+            Ok((node, _, Err(e))) => {
+                failed.insert(node);
                 first_err.get_or_insert(e);
             }
+            // A dropped task cannot be attributed to a node, so no node of this
+            // level is trusted to have completed.
             Err(_) => {
+                failed.extend(segments.keys().copied());
                 first_err.get_or_insert_with(|| BoundedError::from("bounded segment task dropped"));
             }
         }
     }
-    if let Some(e) = first_err {
-        return Err(e);
-    }
-    // Deterministic next-stage batch: segments in index order (each segment's
-    // own item order is preserved by `SegmentJob::run`).
-    segments.sort_by_key(|s| s.segment_index);
-    let batch: Vec<Value> = segments
-        .iter()
-        .flat_map(|s| s.outputs.iter().map(Arc::clone))
+
+    let level = segments
+        .into_iter()
+        .filter(|(node, _)| !failed.contains(node))
+        .map(|(node, mut segments)| {
+            // Deterministic downstream batch: segments in index order (each
+            // segment's own item order is preserved by `SegmentJob::run`).
+            segments.sort_by_key(|s| s.segment_index);
+            let batch: Vec<Value> = segments
+                .iter()
+                .flat_map(|s| s.outputs.iter().map(Arc::clone))
+                .collect();
+            (node, StageOut { batch, segments })
+        })
         .collect();
-    Ok(StageOut { batch, segments })
+    (level, first_err)
 }
 
 /// One segment's stage result: the inter-operation output collected for the

@@ -607,6 +607,58 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct Stage3;
+    impl Operation for Stage3 {
+        type Input = String;
+        type Output = String;
+        type State = ();
+        type Change = NoChange;
+        type Clock = WallClock;
+        type Config = ();
+        fn name() -> &'static str {
+            "bounded_stage3"
+        }
+        fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
+        fn run(
+            &mut self,
+            input: String,
+            _state: StateHandle<'_, Self>,
+            ctx: &mut OperationCtx<'_>,
+        ) -> Result<(), OperationError> {
+            ctx.emit(format!("{input}-3"))?;
+            Ok(())
+        }
+    }
+
+    /// `bounded-branching`: Stage1 fans out to Stage2 and EchoOp on one channel,
+    /// each branch ending at its own plugin sink. The edge is (channel,
+    /// consumer), so both branches read exactly what Stage1 released on `mid`.
+    fn tree_chain(c: &mut ChannelBuilder) {
+        c.input::<String>("in").into::<Stage1>();
+        c.channel::<String>("mid")
+            .codec()
+            .from::<Stage1>()
+            .into::<Stage2>()
+            .into::<EchoOp>();
+        c.channel::<String>("out_b")
+            .from::<Stage2>()
+            .to_plugin("sink");
+        c.channel::<String>("out_c")
+            .from::<EchoOp>()
+            .to_plugin("sink");
+    }
+
+    struct TreeBounded;
+    impl BoundedOperative for TreeBounded {
+        fn factory_id() -> &'static str {
+            "test-tree-bounded"
+        }
+        fn operations(c: &mut ChannelBuilder) {
+            tree_chain(c);
+        }
+    }
+
     /// Two-stage linear chain: Stage1 → Stage2 → plugin.
     struct ChainBounded;
     impl BoundedOperative for ChainBounded {
@@ -1129,6 +1181,74 @@ mod tests {
     }
 
     /// Reserve → Charge → Ship(fails). Default all-or-nothing rollback.
+    /// Compensable leaf of the fan-out branch: archives (emits `archived:<input>`);
+    /// undo logs `undo-archive`.
+    #[derive(Default)]
+    struct SagaArchive;
+    impl Operation for SagaArchive {
+        type Input = String;
+        type Output = String;
+        type State = ();
+        type Change = NoChange;
+        type Clock = WallClock;
+        type Config = ();
+        fn name() -> &'static str {
+            "saga_archive"
+        }
+        fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
+        fn run(
+            &mut self,
+            input: String,
+            _state: StateHandle<'_, Self>,
+            ctx: &mut OperationCtx<'_>,
+        ) -> Result<(), OperationError> {
+            ctx.emit(format!("archived:{input}"))?;
+            Ok(())
+        }
+        const COMPENSATE_OVERRIDDEN: bool = true;
+        fn compensate(
+            &mut self,
+            completed_output: Vec<Arc<String>>,
+            _state: StateHandle<'_, Self>,
+            _ctx: &mut OperationCtx<'_>,
+        ) -> Result<(), OperationError> {
+            for out in &completed_output {
+                comp_log(format!("undo-archive:{out}"));
+            }
+            Ok(())
+        }
+    }
+
+    /// `bounded-branching` saga: reserve fans out to (charge → ship-fails) and
+    /// archive. The failure sits under one branch, so the abort must unwind BOTH
+    /// branches and only then their shared parent.
+    struct TreeSaga;
+    impl BoundedOperative for TreeSaga {
+        fn factory_id() -> &'static str {
+            "test-tree-saga"
+        }
+        fn operations(c: &mut ChannelBuilder) {
+            c.input::<String>("in").into::<SagaReserve>();
+            c.channel::<String>("t1")
+                .codec()
+                .from::<SagaReserve>()
+                .into::<SagaCharge>()
+                .into::<SagaArchive>();
+            c.channel::<String>("t2")
+                .codec()
+                .from::<SagaCharge>()
+                .into::<SagaShipFails>();
+            // The archive leaf releases an inter-op batch nobody consumes: it
+            // stays a leaf, and its retained output is what its undo reverses
+            // (a plugin-bound leaf would stage instead of collect, leaving the
+            // hook nothing to name).
+            c.channel::<String>("t_out").codec().from::<SagaArchive>();
+            c.channel::<String>("t_ship")
+                .from::<SagaShipFails>()
+                .to_plugin("sink");
+        }
+    }
+
     struct SagaBounded;
     impl BoundedOperative for SagaBounded {
         fn factory_id() -> &'static str {
@@ -1799,7 +1919,7 @@ mod tests {
             spec.topology.is_none(),
             "bare run() ⇒ run-sugar (no topology)"
         );
-        assert!(spec.chain.is_empty());
+        assert!(spec.tree.order.is_empty());
     }
 
     #[test]
@@ -1808,7 +1928,8 @@ mod tests {
         let topology = spec.topology.as_ref().expect("structured ⇒ topology");
         // Chain is ordered entry-consumer → terminal: Stage1 then Stage2.
         let names: Vec<&str> = spec
-            .chain
+            .tree
+            .order
             .iter()
             .map(|&id| topology.operation(id).unwrap().name.as_ref())
             .collect();
@@ -1889,7 +2010,7 @@ mod tests {
         // iteration from its inbox, never from the terminal handoff.
         let spec = spec::build_spec::<ChatLoop>().expect("PerInput loop registers");
         assert_eq!(spec.loop_mode, LoopMode::PerInput);
-        assert_eq!(spec.chain.len(), 2);
+        assert_eq!(spec.tree.len(), 2);
     }
 
     /// `bounded-segment-retry` policy surface: the defaults land on the shared
@@ -1925,27 +2046,139 @@ mod tests {
         }
     }
 
+    /// `bounded-branching` registration validation. A tree is accepted (with its
+    /// nodes BFS-numbered, parents before children — the invariant that makes
+    /// completion order topological and its reverse a valid compensation order);
+    /// every non-tree shape is refused, naming the node.
     #[test]
-    fn branching_topology_is_rejected() {
-        struct Branching;
-        impl BoundedOperative for Branching {
+    fn tree_topology_is_validated() {
+        // A→(B,C): one channel, two consumers. The edge is (channel, consumer),
+        // so both branches read what Stage1 released on `mid`.
+        let spec = spec::build_spec::<TreeBounded>().expect("a fan-out tree registers");
+        let topology = spec.topology.as_ref().expect("structured ⇒ topology");
+        let names: Vec<&str> = spec
+            .tree
+            .order
+            .iter()
+            .map(|&id| topology.operation(id).unwrap().name.as_ref())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["bounded_stage1", "bounded_stage2", "bounded_echo_op"],
+            "BFS order: the root, then its children"
+        );
+        assert_eq!(spec.tree.parents, vec![None, Some(0), Some(0)]);
+        assert_eq!(spec.tree.children, vec![vec![1, 2], vec![], vec![]]);
+        assert_eq!(spec.tree.leaves().collect::<Vec<_>>(), vec![1, 2]);
+        assert!(
+            spec.tree.single_leaf().is_none(),
+            "two leaves ⇒ no single terminal operation"
+        );
+        for (node, parent) in spec.tree.parents.iter().enumerate() {
+            if let Some(p) = parent {
+                assert!(*p < node, "a parent's index always precedes its children's");
+            }
+        }
+
+        // A linear chain is the single-branch case, unchanged.
+        let linear = spec::build_spec::<ChainBounded>().expect("linear still registers");
+        assert_eq!(linear.tree.children, vec![vec![1], vec![]]);
+        assert_eq!(linear.tree.single_leaf(), Some(1));
+
+        // A join — two channels feeding one operation — is not a tree.
+        struct FanIn;
+        impl BoundedOperative for FanIn {
             fn factory_id() -> &'static str {
-                "test-branching-bounded"
+                "test-fan-in-bounded"
             }
             fn operations(c: &mut ChannelBuilder) {
-                // One channel feeding two downstream operations = branching.
                 c.input::<String>("in").into::<Stage1>();
                 c.channel::<String>("mid")
                     .from::<Stage1>()
                     .into::<Stage2>()
                     .into::<EchoOp>();
+                // Both branches now feed Stage3: fan-in.
+                c.channel::<String>("join_b")
+                    .from::<Stage2>()
+                    .into::<Stage3>();
+                c.channel::<String>("join_c")
+                    .from::<EchoOp>()
+                    .into::<Stage3>();
             }
         }
-        let err = spec::build_spec::<Branching>().expect_err("branching must be rejected");
-        assert!(
-            matches!(err, spec::BuildBoundedError::Branching { .. }),
-            "expected Branching, got {err:?}"
-        );
+        match spec::build_spec::<FanIn>().expect_err("a join is not a tree") {
+            spec::BuildBoundedError::FanIn { operation, .. } => {
+                assert_eq!(operation, "bounded_stage3", "the error names the join node");
+            }
+            other => panic!("expected FanIn, got {other:?}"),
+        }
+
+        // Two output channels from one operation: `Operation::Output` is one
+        // type on one channel, so the second could never be routed.
+        struct TwoOutputs;
+        impl BoundedOperative for TwoOutputs {
+            fn factory_id() -> &'static str {
+                "test-two-outputs-bounded"
+            }
+            fn operations(c: &mut ChannelBuilder) {
+                c.input::<String>("in").into::<Stage1>();
+                c.channel::<String>("to_b")
+                    .from::<Stage1>()
+                    .into::<Stage2>();
+                c.channel::<String>("to_c")
+                    .from::<Stage1>()
+                    .into::<EchoOp>();
+            }
+        }
+        match spec::build_spec::<TwoOutputs>().expect_err("one operation, one output channel") {
+            spec::BuildBoundedError::MultipleOutputChannels { operation, .. } => {
+                assert_eq!(operation, "bounded_stage1");
+            }
+            other => panic!("expected MultipleOutputChannels, got {other:?}"),
+        }
+
+        // The tree hangs off the entry channel, so an unwired entry channel roots
+        // nothing.
+        struct NoRoot;
+        impl BoundedOperative for NoRoot {
+            fn factory_id() -> &'static str {
+                "test-no-root-bounded"
+            }
+            fn operations(c: &mut ChannelBuilder) {
+                c.input::<String>("in");
+                c.channel::<String>("mid")
+                    .codec()
+                    .from::<Stage1>()
+                    .into::<Stage2>();
+            }
+        }
+        match spec::build_spec::<NoRoot>().expect_err("a bounded tree has one root") {
+            spec::BuildBoundedError::EntryRoot { consumers, .. } => assert_eq!(consumers, 0),
+            other => panic!("expected EntryRoot, got {other:?}"),
+        }
+
+        // A handoff-chained loop over a branching tree has no single terminal
+        // batch to seed iteration N+1 from.
+        struct BranchingChained;
+        impl BoundedOperative for BranchingChained {
+            fn factory_id() -> &'static str {
+                "test-branching-chained-bounded"
+            }
+            fn loop_mode() -> LoopMode {
+                LoopMode::Chained
+            }
+            fn operations(c: &mut ChannelBuilder) {
+                tree_chain(c);
+            }
+        }
+        match spec::build_spec::<BranchingChained>()
+            .expect_err("a chained loop needs one terminal operation")
+        {
+            spec::BuildBoundedError::BranchingChainedLoop { leaves, .. } => {
+                assert_eq!(leaves, 2);
+            }
+            other => panic!("expected BranchingChainedLoop, got {other:?}"),
+        }
     }
 
     #[test]
@@ -2030,6 +2263,8 @@ mod tests {
         crate::register_bounded::<TimedBounded>();
         crate::register_bounded::<EchoStructured>();
         crate::register_bounded::<ChainBounded>();
+        crate::register_bounded::<TreeBounded>();
+        crate::register_bounded::<TreeSaga>();
         crate::register_bounded::<FanBounded>();
         crate::register_bounded::<FanOptOutBounded>();
         crate::register_bounded::<HybridBounded>();
@@ -2549,7 +2784,13 @@ mod tests {
             "chain-resume",
             instance::JournalResume {
                 committed_op_idxs: vec![0],
-                handoff: vec![(1, postcard::to_allocvec(&"seed".to_string()).unwrap())],
+                // The seed is the COMMITTING operation's own handoff — keyed by
+                // its op_idx, so a fan-out's children each take their own
+                // parent's edge (`bounded-branching`).
+                op_handoffs: vec![instance::EdgeHandoff {
+                    op_idx: 0,
+                    handoff: vec![(1, postcard::to_allocvec(&"seed".to_string()).unwrap())],
+                }],
                 ..Default::default()
             },
         );
@@ -3009,6 +3250,98 @@ mod tests {
             drain_comp_log(),
             vec!["undo-retry-reserve".to_string()],
             "a cancelled ladder takes the normal abnormal-exit path"
+        );
+
+        // --- bounded-branching: A→(B,C) runs to DONE — both branches receive
+        // what A released on the channel they consume, and the operative is `ok`
+        // exactly when every leaf has committed ---
+        let _ = drain_op_commits();
+        assert!(node.start_bounded("test-tree-bounded".into(), "tree-1".into(), "x".into()));
+        let (mut tree_outs, done) = drain(&rx, "tree-1");
+        assert_eq!(
+            done.0, "ok",
+            "both leaves committed ⇒ the operative is done"
+        );
+        tree_outs.sort();
+        assert_eq!(
+            tree_outs,
+            vec![b"echo:x-1".to_vec(), b"x-1-2".to_vec()],
+            "each branch consumed Stage1's `mid` batch and emitted on its own sink"
+        );
+        let committed: Vec<u32> = drain_op_commits().iter().map(|c| c.op_idx).collect();
+        assert_eq!(
+            committed,
+            vec![0, 1, 2],
+            "the root commits before its children, which commit independently"
+        );
+
+        // --- bounded-branching resume: the journal records A and B committed, so
+        // only C re-runs — seeded from A's journaled edge, not from B's ---
+        let _ = drain_op_commits();
+        let id = "tree-resume";
+        assert!(node.start_bounded_resumable(
+            "test-tree-bounded".into(),
+            id.into(),
+            "ignored-args".into(),
+            1,
+        ));
+        let root_seg = crate::segment::flusher::encode_segment_identity(id, "bounded_stage1", "");
+        let (inst, _slot) = node
+            .find_bounded_segment(&root_seg)
+            .expect("the tree's root Segment is reachable by the restore handler");
+        // Channel ids follow declaration order: `in` = 0, `mid` = 1.
+        inst.note_op_journal(instance::JournalResume {
+            committed_op_idxs: vec![0, 1],
+            op_handoffs: vec![instance::EdgeHandoff {
+                op_idx: 0,
+                handoff: vec![(1, postcard::to_allocvec(&"resumed-1".to_string()).unwrap())],
+            }],
+            committed_ops: vec![
+                instance::CommittedOp {
+                    op_idx: 0,
+                    iter: 0,
+                    segments_ran: vec![root_seg.clone()],
+                },
+                instance::CommittedOp {
+                    op_idx: 1,
+                    iter: 0,
+                    segments_ran: Vec::new(),
+                },
+            ],
+            ..Default::default()
+        });
+        inst.note_restored();
+        let (outs, done) = drain(&rx, id);
+        assert_eq!(done.0, "ok");
+        assert_eq!(
+            outs,
+            vec![b"echo:resumed-1".to_vec()],
+            "only the uncommitted branch re-ran, seeded from its parent's edge"
+        );
+        assert_eq!(
+            drain_op_commits()
+                .iter()
+                .map(|c| c.op_idx)
+                .collect::<Vec<_>>(),
+            vec![2],
+            "the committed root and its committed sibling did NOT re-run"
+        );
+
+        // --- bounded-branching compensation: a failure under one branch unwinds
+        // BOTH branches before their shared parent (reverse topological) ---
+        let _ = drain_comp_log();
+        assert!(node.start_bounded("test-tree-saga".into(), "tree-saga".into(), "o1".into()));
+        let (_o, done) = drain(&rx, "tree-saga");
+        assert_eq!(done.0, "error");
+        assert_eq!(
+            drain_comp_log(),
+            vec![
+                "undo-archive:archived:reserved:o1".to_string(),
+                "undo-charge:charged:reserved:o1".to_string(),
+                "undo-reserve:reserved:o1".to_string(),
+            ],
+            "descendants before ancestors: the sibling leaf and the failing branch's \
+             committed operation both unwind before the root they share"
         );
     }
 

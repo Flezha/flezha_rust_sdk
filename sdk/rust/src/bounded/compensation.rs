@@ -55,8 +55,16 @@ pub(crate) struct StageRecord {
 /// Resolve the rollback order for an abnormal termination.
 ///
 /// `in_flight` is the interrupted iteration's completed stages, in completion
-/// order; it is **always** undone (reverse order). `committed` holds fully
-/// finished iterations, in completion order:
+/// order; it is **always** undone (reverse order). Completion order is
+/// **topological** over the operation tree — the driver records a level of the
+/// frontier before releasing its children, and the journal-rebuilt path sorts by
+/// `stage_idx`, which is BFS-numbered — so reversing it is exactly the
+/// reverse-topological order a tree saga requires: no operation is undone before
+/// its compensated descendants, and independent sibling subtrees unwind in an
+/// unspecified relative order. For a linear chain that degenerates to the exact
+/// reverse of the chain (`bounded-branching` D4a).
+///
+/// `committed` holds fully finished iterations, in completion order:
 ///
 /// - **all-or-nothing** undoes everything — the in-flight iteration first, then
 ///   each committed iteration, all in reverse completion order, back to the
@@ -114,6 +122,30 @@ mod tests {
         for mode in [RollbackMode::AllOrNothing, RollbackMode::KeepProgress] {
             let plan = plan_compensation(mode, &[], &in_flight);
             assert_eq!(order(&plan), vec![2, 1, 0], "mode {mode:?}");
+        }
+    }
+
+    /// `bounded-branching`: a tree's completion order is topological (a parent's
+    /// level completes before its children's), so the planner's plain reversal
+    /// IS reverse-topological — descendants before ancestors — with no
+    /// parent-link bookkeeping of its own.
+    #[test]
+    fn a_tree_pass_unwinds_descendants_before_ancestors() {
+        // Root 0 → (1, 2); 1 → 3. Completion order is the frontier order:
+        // level 0 = [0], level 1 = [1, 2], level 2 = [3].
+        let parent = [None, Some(0), Some(0), Some(1)];
+        let in_flight = vec![stage(0), stage(1), stage(2), stage(3)];
+        let plan = plan_compensation(RollbackMode::AllOrNothing, &[], &in_flight);
+        assert_eq!(order(&plan), vec![3, 2, 1, 0]);
+
+        let position = |node: usize| order(&plan).iter().position(|&s| s == node).unwrap();
+        for (node, p) in parent.iter().enumerate() {
+            if let Some(p) = p {
+                assert!(
+                    position(*p) > position(node),
+                    "operation {p} must be compensated after its descendant {node}"
+                );
+            }
         }
     }
 

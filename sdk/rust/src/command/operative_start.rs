@@ -1,6 +1,7 @@
 use prost::Message;
 
 use super::CommandAction;
+use crate::bounded::spec::BoundedSpec;
 use crate::executor::ExecutorNode;
 use crate::pb::{AddOperative, AddOperativeResponse};
 
@@ -138,12 +139,26 @@ fn metadata_response(kind: &str, factory_id: &str) -> Vec<u8> {
         }
     }
 
-    // The chain positions whose operation declares `compensate`. A rewind can
+    // The tree positions whose operation declares `compensate`. A rewind can
     // only unwind an operation whose plugin output is semantically undoable, and
     // the controller refuses one that is not — so it needs this before it wakes
     // the instance (bounded-loop-rewind D5).
-    if let Some(ops) = compensable_ops(kind, factory_id) {
+    if let Some(ops) = declared_ops(kind, factory_id, |spec, node| {
+        spec.topology
+            .as_ref()
+            .and_then(|t| t.operation(spec.tree.order[node]))
+            .is_some_and(|op| op.compensate_overridden)
+    }) {
         metadata.insert("compensable_ops".to_string(), ops);
+    }
+
+    // The tree's leaf positions. The operative is DONE when all of them have
+    // committed, and the controller derives that from the journal alone —
+    // which needs the leaf set (bounded-branching D4).
+    if let Some(ops) = declared_ops(kind, factory_id, |spec, node| {
+        spec.tree.children[node].is_empty()
+    }) {
+        metadata.insert("leaf_ops".to_string(), ops);
     }
 
     if metadata.is_empty() {
@@ -152,26 +167,24 @@ fn metadata_response(kind: &str, factory_id: &str) -> Vec<u8> {
     AddOperativeResponse { metadata }.encode_to_vec()
 }
 
-/// Comma-separated chain positions of the operations declaring a `compensate`
-/// hook, or `None` for a class with no structured chain (run-sugar, unbounded).
-/// An empty string is meaningful — "a chain, none of it compensable" — and is
-/// not the same as absent.
-fn compensable_ops(kind: &str, factory_id: &str) -> Option<String> {
+/// Comma-separated tree positions of the operations `select` picks out, or
+/// `None` for anything without a structured tree (run-sugar, unbounded) — the
+/// one seam every bounded operation-set declaration rides. An empty string is
+/// meaningful — "a tree, none of it selected" — and is not the same as absent.
+fn declared_ops(
+    kind: &str,
+    factory_id: &str,
+    select: impl Fn(&BoundedSpec, usize) -> bool,
+) -> Option<String> {
     if kind != "bounded" {
         return None;
     }
     let spec = crate::bounded::registry::get_class(factory_id)?;
-    let topology = spec.topology.as_ref()?;
+    spec.topology.as_ref()?;
     Some(
-        spec.chain
-            .iter()
-            .enumerate()
-            .filter(|(_, op_id)| {
-                topology
-                    .operation(**op_id)
-                    .is_some_and(|op| op.compensate_overridden)
-            })
-            .map(|(idx, _)| idx.to_string())
+        (0..spec.tree.len())
+            .filter(|&node| select(&spec, node))
+            .map(|node| node.to_string())
             .collect::<Vec<_>>()
             .join(","),
     )

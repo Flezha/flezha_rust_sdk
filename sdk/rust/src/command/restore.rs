@@ -54,10 +54,14 @@ impl CommandAction for RestoreInitState {
                 instance.note_op_journal(crate::bounded::instance::JournalResume {
                     committed_op_idxs: journal.committed_op_idxs.clone(),
                     iter: journal.iter,
-                    handoff: journal
-                        .handoff
+                    handoff: handoff_items(&journal.handoff),
+                    op_handoffs: journal
+                        .op_handoffs
                         .iter()
-                        .map(|item| (item.channel_id, item.payload.clone()))
+                        .map(|edge| crate::bounded::instance::EdgeHandoff {
+                            op_idx: edge.op_idx,
+                            handoff: handoff_items(&edge.handoff),
+                        })
                         .collect(),
                     committed_ops: journal.committed_ops.iter().map(committed_op).collect(),
                     consumed_offset: journal.consumed_offset,
@@ -195,6 +199,14 @@ fn committed_op(op: &crate::pb::OpCommittedOp) -> crate::bounded::instance::Comm
         iter: op.iter,
         segments_ran: op.segments_ran.clone(),
     }
+}
+
+/// A journaled handoff batch as the driver's seed form: channel-id-tagged bytes.
+fn handoff_items(items: &[crate::pb::OpHandoffItem]) -> Vec<(u32, Vec<u8>)> {
+    items
+        .iter()
+        .map(|item| (item.channel_id, item.payload.clone()))
+        .collect()
 }
 
 /// Scan every live operative's segments for the slot whose wire identity equals
