@@ -223,7 +223,7 @@ pub trait Operation: Send + Sync + 'static + Default {
     /// `MAILBOX_CAPACITY_OVERRIDDEN = true` so the runtime can tell an
     /// explicit-but-equal-to-default override from the inherited default.
     /// Capacity must be in `1..=1_048_576`; out-of-range values fail
-    /// `register_unbounded::<R>()` with the offending Operation name.
+    /// `define_unbounded::<R>()` with the offending Operation name.
     fn mailbox_capacity() -> usize {
         Self::DEFAULT_MAILBOX_CAPACITY
     }

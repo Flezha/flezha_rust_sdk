@@ -180,7 +180,7 @@ impl RunnerNode {
     }
 
     /// Public-API view: snapshot of live UnboundedOperative instances. Mirrors the
-    /// pre-`operative-mvp-rust` `Flezha::get_operatives()` shape so external
+    /// pre-`operative-mvp-rust` `FlezhaRunner::operatives()` shape so external
     /// inspectors that walk the registry continue to work.
     // reason: returned shape is the public API; splitting it would break external inspectors
     #[allow(clippy::type_complexity)]
@@ -268,7 +268,11 @@ pub fn start(
         let _data_heartbeat = control_unit::spawn_data_heartbeat(otx_arc.clone());
 
         loop {
-            let message = orx.recv().expect("Failed to receive coordinator message");
+            // A closed channel means every sender is gone — the owning
+            // FlezhaRunner dropped. Exit cleanly so a later runner can start.
+            let Ok(message) = orx.recv() else {
+                break;
+            };
 
             match message {
                 RunnerMessage::HandleCommandAction(payload_id, message, _metadata) => {

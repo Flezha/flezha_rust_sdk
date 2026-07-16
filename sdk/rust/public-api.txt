@@ -129,3 +129,43 @@ pub use operation::WallClock;
 #       pub name: Arc<str>,
 #       pub serializer: PluginSerializeFn,
 #   }
+
+# Entry point + runner lifecycle (`runner-lifecycle-singleton-api`).
+# REMOVED (no back-compat shim): `pub fn new(namespace) -> Flezha`,
+# `pub fn register_unbounded<R>()`, `pub fn register_bounded<T>()`,
+# the instance-returning `Flezha` struct.
+
+pub use bounded::spec::BuildBoundedError;
+pub use channel::builder::BuildTopologyError;
+pub use operative::builder::TopologyBuildError;
+
+#   pub struct Flezha;                     # static-only entry point
+#   impl Flezha {
+#       pub fn new_runner(namespace: impl Into<String>) -> Result<RunnerBuilder, RunnerStartError>;
+#       pub fn current_runner() -> Option<Arc<FlezhaRunner>>;
+#   }
+#
+#   pub struct RunnerBuilder;              # consumed by start()/run()
+#   impl RunnerBuilder {
+#       pub fn define_unbounded<R: UnboundedOperative>(self) -> Result<Self, TopologyBuildError>;
+#       pub fn define_bounded<T: BoundedOperative>(self) -> Result<Self, BuildBoundedError>;
+#       pub fn start(self) -> Result<FlezhaRunner, RunnerStartError>;
+#       pub fn run(self) -> Result<(), RunnerError>;
+#   }
+#
+#   pub struct FlezhaRunner;               # Drop = graceful shutdown (owning handle)
+#   impl FlezhaRunner {
+#       pub fn id(&self) -> &str;
+#       pub fn operatives(&self) -> Arc<RwLock<HashMap<String, Arc<Mutex<Arc<UnboundedInstance>>>>>>;
+#       pub fn await_termination(&self);
+#   }
+#
+#   pub enum RunnerStartError {            # thiserror
+#       AlreadyRunning { namespace: String },
+#       InvalidNamespace,
+#       NoOperativeDeclared,
+#       ConnectFailed(String),
+#   }
+#   pub type RunnerError = RunnerStartError;
+#
+#   #[doc(hidden)] pub fn __register_unbounded<R: UnboundedOperative>();  # macro plumbing only

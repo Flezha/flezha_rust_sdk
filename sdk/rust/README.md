@@ -2,6 +2,29 @@
 
 Rust SDK for the Flezha runner platform.
 
+## Quickstart
+
+```rust
+use flezha_runner::Flezha;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    Flezha::new_runner("my_app")?          // the namespace
+        .define_unbounded::<MyOperative>()? // declare before start()/run()
+        .run()?;                            // connect + block until shutdown
+    Ok(())
+}
+```
+
+`run()` is `start()` + `await_termination()` — the one-liner for a standalone
+binary. Embedding into a larger app? `start()` returns a `FlezhaRunner` handle
+and keeps your thread; dropping it runs the graceful-shutdown sequence, and
+`Flezha::current_runner()` reaches it from anywhere. At most one runner runs
+per process: a second `start()` returns
+`Err(RunnerStartError::AlreadyRunning { .. })` naming the running namespace.
+Invalid topologies surface as `Err(TopologyBuildError)` at the
+`define_unbounded` call site — no panics. Lifecycle vocabulary:
+`docs/sdk_naming_conventions.md`.
+
 ## Public API workflow
 
 The public API surface baseline lives at `sdk/rust/public-api.txt`.

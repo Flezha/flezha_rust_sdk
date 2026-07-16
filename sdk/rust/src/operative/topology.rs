@@ -1,5 +1,5 @@
 //! `OperativeTopology`: shared, immutable topology produced by
-//! `register_unbounded::<R>()`. Section 2 implements `build_topology`.
+//! `define_unbounded::<R>()`. Section 2 implements `build_topology`.
 
 use std::collections::HashMap;
 use std::sync::Arc;

@@ -24,7 +24,7 @@ use crate::channel::ChannelBuilder;
 ///   per-Process flusher drains-and-discards Changes for this UnboundedOperative's
 ///   Segments (no wire I/O, no controller contact).
 ///
-/// The runtime calls `R::channels(...)` once at `register_unbounded::<R>()`
+/// The runtime calls `R::channels(...)` once at `define_unbounded::<R>()`
 /// time and freezes the resulting topology in an `Arc<OperativeTopology>`
 /// shared by every `UnboundedInstance` of this class.
 pub trait UnboundedOperative: Send + Sync + 'static {

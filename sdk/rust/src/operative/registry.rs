@@ -1,7 +1,7 @@
 //! UnboundedOperative class + instance registries.
 //!
 //! `OperativeClassRegistry`: process-global; one entry per UnboundedOperative class. Holds
-//! the immutable `Arc<OperativeTopology>` produced by `register_unbounded::<R>()`.
+//! the immutable `Arc<OperativeTopology>` produced by `define_unbounded::<R>()`.
 //! Looked up by controller-facing `factory_id` when `AddOperative` arrives.
 //!
 //! `OperativeRegistry`: per-`RunnerNode`; one entry per

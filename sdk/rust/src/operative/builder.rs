@@ -222,7 +222,7 @@ pub fn build_topology_with_persistence(
     }))
 }
 
-/// Convenience constructor used by `register_unbounded::<R>()`. Calls
+/// Convenience constructor used by `define_unbounded::<R>()`. Calls
 /// `R::channels(...)` once and returns the resulting topology, capturing
 /// `R::PERSISTENCE_ENABLED` so `UnboundedInstance::new` can resolve the
 /// final per-instance flag.

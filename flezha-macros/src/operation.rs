@@ -303,7 +303,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             ::flezha_runner::inventory::submit! {
                 ::flezha_runner::AutoOperative::new(
                     <#operative_ident as ::flezha_runner::UnboundedOperative>::factory_id,
-                    || ::flezha_runner::register_unbounded::<#operative_ident>(),
+                    || ::flezha_runner::__register_unbounded::<#operative_ident>(),
                 )
             }
         }

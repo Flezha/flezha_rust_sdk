@@ -19,7 +19,14 @@ use crate::operative::instance::UnboundedInstance;
 static RECONNECT_TRIGGER: OnceLock<Mutex<Sender<RunnerMessage>>> = OnceLock::new();
 
 pub(crate) fn install_reconnect_trigger(otx: Sender<RunnerMessage>) {
-    let _ = RECONNECT_TRIGGER.set(Mutex::new(otx));
+    // Replace on re-install: a runner restarted after a prior one closed must
+    // not leave the trigger pointing at the dead coordinator's channel.
+    match RECONNECT_TRIGGER.get() {
+        Some(lock) => *lock.lock().unwrap() = otx,
+        None => {
+            let _ = RECONNECT_TRIGGER.set(Mutex::new(otx));
+        }
+    }
 }
 
 /// Send a message to the coordinator from outside its thread, so control- and
@@ -154,11 +161,11 @@ pub enum RunnerStatus {
     Stopped,
 }
 
-// reason: ReturnOperatives carries the same public shape returned by Flezha::get_operatives()
+// reason: ReturnOperatives carries the same public shape returned by FlezhaRunner::operatives()
 #[allow(clippy::type_complexity)]
 pub enum ClientResponseMessage {
     RunnerIdConfirmation,
-    /// Snapshot of live UnboundedOperative instances. Returned to `Flezha::get_operatives()`
+    /// Snapshot of live UnboundedOperative instances. Returned to `FlezhaRunner::operatives()`
     /// callers — the public-API shape is preserved for backward
     /// compatibility, but each entry is now an `Arc<UnboundedInstance>` rather
     /// than `Arc<Mutex<OperativeBox>>`.

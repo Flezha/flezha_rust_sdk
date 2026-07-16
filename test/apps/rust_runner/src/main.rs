@@ -1,7 +1,7 @@
-use std::io::{self, Read};
+use std::io::Read;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
-use std::{env, thread};
+use std::{env, io, thread};
 
 use flezha_runner::operation::{
     EventTimeFrom, Operation, OperationCtx, OperationError, TimeExtractor,
@@ -10,18 +10,44 @@ use flezha_runner::state::{
     Change, CoalesceKey, NoChange, RestoreInitPayload, StateHandle, WallClock,
 };
 use flezha_runner::{
-    register_bounded, register_unbounded, BoundedCtx, BoundedError, BoundedOperative,
-    ChannelBuilder, LoopMode, OverflowPolicy, UnboundedOperative,
+    BoundedCtx, BoundedError, BoundedOperative, ChannelBuilder, Flezha, LoopMode, OverflowPolicy,
+    UnboundedOperative,
 };
 use serde::{Deserialize, Serialize};
 
-fn main() {
-    register_unbounded_all();
-    register_bounded_all();
-
-    let _runner = flezha_runner::new(namespace());
-
-    std_keeper();
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    spawn_stdin_eof_exit();
+    Flezha::new_runner(namespace())?
+        .define_unbounded::<DoNothingOperative>()?
+        .define_unbounded::<StoreInputOperative>()?
+        .define_unbounded::<CompareFilterOperative>()?
+        .define_unbounded::<StaticSegmentOperative>()?
+        .define_unbounded::<SegmentingStressOperative>()?
+        .define_unbounded::<BoundedMailboxOperative>()?
+        .define_unbounded::<StatefulCounterOperative>()?
+        .define_unbounded::<CoalescingCounterOperative>()?
+        .define_unbounded::<PersistenceOffOperative>()?
+        .define_unbounded::<HybridChannelOperative>()?
+        .define_unbounded::<ResumeProbeOperative>()?
+        .define_unbounded::<DynamicSegmentOperative>()?
+        .define_unbounded::<MixedOperative>()?
+        .define_unbounded::<TierStoreOperative>()?
+        .define_unbounded::<CheckpointStoreOperative>()?
+        .define_unbounded::<PoisonProbeOperative>()?
+        .define_unbounded::<CandleOperative>()?
+        .define_bounded::<EchoBounded>()?
+        .define_bounded::<CommitBlockBounded>()?
+        .define_bounded::<OptOutCommitBlockBounded>()?
+        .define_bounded::<TierCommitBlockBounded>()?
+        .define_bounded::<SagaBlockBounded>()?
+        .define_bounded::<OutboxBlockBounded>()?
+        .define_bounded::<UndoOutboxBounded>()?
+        .define_bounded::<ChatLoopBounded>()?
+        .define_bounded::<ChatRewindBounded>()?
+        .define_bounded::<RetryBounded>()?
+        .define_bounded::<BranchBounded>()?
+        .run()?;
+    Ok(())
 }
 
 fn namespace() -> String {
@@ -32,52 +58,19 @@ fn namespace() -> String {
     "default".to_string()
 }
 
-fn std_keeper() -> thread::JoinHandle<()> {
-    let mut buf = [0u8; 1];
-    loop {
-        match io::stdin().read(&mut buf) {
-            Ok(0) => std::process::exit(0),
-            Ok(_) => {
-                println!("Data available: {:?}", buf);
+/// The Elixir e2e suite manages this app as an Erlang Port and terminates it
+/// by closing the port (= our stdin). Exit on EOF so `Port.close/1` reliably
+/// tears the process down; keep-alive itself is `run()`'s job.
+fn spawn_stdin_eof_exit() {
+    thread::spawn(|| {
+        let mut buf = [0u8; 64];
+        loop {
+            match io::stdin().read(&mut buf) {
+                Ok(0) | Err(_) => std::process::exit(0),
+                Ok(_) => {}
             }
-            Err(_e) => {}
         }
-        thread::sleep(Duration::from_secs(1));
-    }
-}
-
-fn register_unbounded_all() {
-    register_unbounded::<DoNothingOperative>();
-    register_unbounded::<StoreInputOperative>();
-    register_unbounded::<CompareFilterOperative>();
-    register_unbounded::<StaticSegmentOperative>();
-    register_unbounded::<SegmentingStressOperative>();
-    register_unbounded::<BoundedMailboxOperative>();
-    register_unbounded::<StatefulCounterOperative>();
-    register_unbounded::<CoalescingCounterOperative>();
-    register_unbounded::<PersistenceOffOperative>();
-    register_unbounded::<HybridChannelOperative>();
-    register_unbounded::<ResumeProbeOperative>();
-    register_unbounded::<DynamicSegmentOperative>();
-    register_unbounded::<MixedOperative>();
-    register_unbounded::<TierStoreOperative>();
-    register_unbounded::<CheckpointStoreOperative>();
-    register_unbounded::<PoisonProbeOperative>();
-    register_unbounded::<CandleOperative>();
-}
-
-fn register_bounded_all() {
-    register_bounded::<EchoBounded>();
-    register_bounded::<CommitBlockBounded>();
-    register_bounded::<OptOutCommitBlockBounded>();
-    register_bounded::<TierCommitBlockBounded>();
-    register_bounded::<SagaBlockBounded>();
-    register_bounded::<OutboxBlockBounded>();
-    register_bounded::<UndoOutboxBounded>();
-    register_bounded::<ChatLoopBounded>();
-    register_bounded::<ChatRewindBounded>();
-    register_bounded::<RetryBounded>();
-    register_bounded::<BranchBounded>();
+    });
 }
 
 // -- EchoBounded -----------------------------------------------------------------
@@ -2507,7 +2500,7 @@ mod macro_twin_tests {
 
     #[test]
     fn sugar_operatives_register() {
-        // Auto-wire + `operative!` operatives are harvested without `register_unbounded`.
+        // Auto-wire + `operative!` operatives are harvested without `.define_unbounded()`.
         flezha_runner::register_inventory_operatives();
         let ids = flezha_runner::operative::registry::class_factory_ids();
         for id in [
@@ -2520,8 +2513,11 @@ mod macro_twin_tests {
                 "auto-registered operative `{id}` missing"
             );
         }
-        // The mixed operative registers manually, as before.
-        register_unbounded::<MixedOperative>();
+        // The mixed operative is declared explicitly, as before.
+        Flezha::new_runner("sugar_test")
+            .unwrap()
+            .define_unbounded::<MixedOperative>()
+            .unwrap();
         assert!(flezha_runner::operative::registry::get_class("mixed_operative").is_some());
     }
 

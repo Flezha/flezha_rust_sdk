@@ -30,7 +30,10 @@
 //!         Ok(())
 //!     }
 //! }
-//! flezha_runner::register_bounded::<Greet>();
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! flezha_runner::Flezha::new_runner("my_app")?.define_bounded::<Greet>()?.run()?;
+//! # Ok(())
+//! # }
 //! ```
 
 pub(crate) mod compensation;
@@ -1885,7 +1888,7 @@ mod tests {
             }
         }
         assert!(registry::get_class("test-getclass-bounded").is_none());
-        crate::register_bounded::<RegBounded>();
+        crate::register_bounded_class::<RegBounded>().unwrap();
         assert!(registry::get_class("test-getclass-bounded").is_some());
         assert!(registry::get_class("test-nonexistent-bounded").is_none());
     }
@@ -2255,33 +2258,33 @@ mod tests {
         );
         crate::segment::segment_state_sink::install_global_sink(wal_sink);
 
-        crate::register_bounded::<EmitBounded>();
-        crate::register_bounded::<FailBounded>();
-        crate::register_bounded::<PanicBounded>();
-        crate::register_bounded::<CompleteBounded>();
-        crate::register_bounded::<LoopBounded>();
-        crate::register_bounded::<TimedBounded>();
-        crate::register_bounded::<EchoStructured>();
-        crate::register_bounded::<ChainBounded>();
-        crate::register_bounded::<TreeBounded>();
-        crate::register_bounded::<TreeSaga>();
-        crate::register_bounded::<FanBounded>();
-        crate::register_bounded::<FanOptOutBounded>();
-        crate::register_bounded::<HybridBounded>();
-        crate::register_bounded::<SagaBounded>();
-        crate::register_bounded::<KeepProgressSaga>();
-        crate::register_bounded::<CleanSaga>();
-        crate::register_bounded::<FanSaga>();
-        crate::register_bounded::<StopSaga>();
-        crate::register_bounded::<ResumeSaga>();
-        crate::register_bounded::<LeakBounded>();
-        crate::register_bounded::<UndoSaga>();
-        crate::register_bounded::<ChatLoop>();
-        crate::register_bounded::<LoopSagaAllOrNothing>();
-        crate::register_bounded::<LoopSagaKeepProgress>();
-        crate::register_bounded::<RetryBounded>();
-        crate::register_bounded::<RetryFailFastBounded>();
-        crate::register_bounded::<RetrySlowBackoffBounded>();
+        crate::register_bounded_class::<EmitBounded>().unwrap();
+        crate::register_bounded_class::<FailBounded>().unwrap();
+        crate::register_bounded_class::<PanicBounded>().unwrap();
+        crate::register_bounded_class::<CompleteBounded>().unwrap();
+        crate::register_bounded_class::<LoopBounded>().unwrap();
+        crate::register_bounded_class::<TimedBounded>().unwrap();
+        crate::register_bounded_class::<EchoStructured>().unwrap();
+        crate::register_bounded_class::<ChainBounded>().unwrap();
+        crate::register_bounded_class::<TreeBounded>().unwrap();
+        crate::register_bounded_class::<TreeSaga>().unwrap();
+        crate::register_bounded_class::<FanBounded>().unwrap();
+        crate::register_bounded_class::<FanOptOutBounded>().unwrap();
+        crate::register_bounded_class::<HybridBounded>().unwrap();
+        crate::register_bounded_class::<SagaBounded>().unwrap();
+        crate::register_bounded_class::<KeepProgressSaga>().unwrap();
+        crate::register_bounded_class::<CleanSaga>().unwrap();
+        crate::register_bounded_class::<FanSaga>().unwrap();
+        crate::register_bounded_class::<StopSaga>().unwrap();
+        crate::register_bounded_class::<ResumeSaga>().unwrap();
+        crate::register_bounded_class::<LeakBounded>().unwrap();
+        crate::register_bounded_class::<UndoSaga>().unwrap();
+        crate::register_bounded_class::<ChatLoop>().unwrap();
+        crate::register_bounded_class::<LoopSagaAllOrNothing>().unwrap();
+        crate::register_bounded_class::<LoopSagaKeepProgress>().unwrap();
+        crate::register_bounded_class::<RetryBounded>().unwrap();
+        crate::register_bounded_class::<RetryFailFastBounded>().unwrap();
+        crate::register_bounded_class::<RetrySlowBackoffBounded>().unwrap();
 
         let mut node = RunnerNode::new("test-ns".to_string());
 

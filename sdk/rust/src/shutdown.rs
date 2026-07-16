@@ -56,12 +56,12 @@ const SHUTDOWN_PAYLOAD_ID: &str = "control_command";
 /// and serializing each instance via `segment_state::serialize_operative_state`.
 pub type OperativeSnapshotFn = Box<dyn Fn() -> Vec<(String, Vec<u8>)> + Send + Sync>;
 
-/// Bridge between the user-facing `Flezha` handle and the per-instance
+/// Bridge between the user-facing `FlezhaRunner` handle and the per-runner
 /// runtime state required for a graceful shutdown sequence.
 ///
-/// Bridges are registered in the global [`bridges_vec`] so the SIGTERM
-/// handler can iterate every active SDK in the process. `Flezha::Drop`
-/// triggers the same sequence directly.
+/// The runner's bridge is registered in the global [`active_bridge`] slot so
+/// the SIGTERM handler can reach it. `FlezhaRunner::Drop` triggers the same
+/// sequence directly.
 pub struct ShutdownBridge {
     /// Latest `Arc<FlezhaStream>` for the control channel. Updated by
     /// the coordinator on initial open and on every reconnect; cleared
@@ -183,9 +183,9 @@ impl ShutdownBridge {
 // only see `&mut RunnerNode`, so a global keyed by reference_id is
 // the simplest plumbing.
 //
-// `BRIDGES` lets a single SIGTERM handler thread drive shutdown across
-// every active SDK in the process. The Flezha public API allows multiple
-// `new()` calls; each registers its bridge here.
+// `ACTIVE_BRIDGE` gives the SIGTERM handler thread the runner's bridge. The
+// singleton guard allows one runner at a time; a restarted runner replaces
+// the previous (already-shut-down) runner's bridge.
 // ---------------------------------------------------------------------------
 
 /// Result carried by a controller reply to an SDK-initiated request:
@@ -232,20 +232,20 @@ pub fn signal_result(reference_id: &str, result: AckResult) {
     }
 }
 
-fn bridges_vec() -> &'static Mutex<Vec<Arc<ShutdownBridge>>> {
-    static BRIDGES: OnceLock<Mutex<Vec<Arc<ShutdownBridge>>>> = OnceLock::new();
-    BRIDGES.get_or_init(|| Mutex::new(Vec::new()))
+fn active_bridge() -> &'static Mutex<Option<Arc<ShutdownBridge>>> {
+    static ACTIVE_BRIDGE: OnceLock<Mutex<Option<Arc<ShutdownBridge>>>> = OnceLock::new();
+    ACTIVE_BRIDGE.get_or_init(|| Mutex::new(None))
 }
 
 pub fn register_bridge(bridge: Arc<ShutdownBridge>) {
-    bridges_vec().lock().unwrap().push(bridge);
+    *active_bridge().lock().unwrap() = Some(bridge);
     install_sigterm_handler();
 }
 
 /// Installs a one-shot SIGTERM handler on the first call. Subsequent
-/// calls are no-ops via `std::sync::Once`. The handler iterates every
-/// registered bridge, runs graceful shutdown synchronously, then exits
-/// the process — Kubernetes' grace period is the outer bound.
+/// calls are no-ops via `std::sync::Once`. The handler runs the active
+/// bridge's graceful shutdown synchronously, then exits the process —
+/// Kubernetes' grace period is the outer bound.
 fn install_sigterm_handler() {
     static INSTALLED: Once = Once::new();
     INSTALLED.call_once(|| {
@@ -254,9 +254,8 @@ fn install_sigterm_handler() {
                 thread::spawn(move || {
                     if signals.forever().next().is_some() {
                         eprintln!("[flezha] SIGTERM received; running graceful shutdown");
-                        let bridges: Vec<Arc<ShutdownBridge>> =
-                            bridges_vec().lock().unwrap().clone();
-                        for bridge in &bridges {
+                        let bridge = active_bridge().lock().unwrap().clone();
+                        if let Some(bridge) = bridge {
                             bridge.run_graceful_shutdown();
                         }
                         std::process::exit(0);
