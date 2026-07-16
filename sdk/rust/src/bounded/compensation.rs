@@ -10,7 +10,7 @@
 //! is compensated.
 //!
 //! The planner is **pure** so both rollback modes are testable without driving
-//! the executor. v1 runs the structured chain as a single pass, so it always
+//! the runner. v1 runs the structured chain as a single pass, so it always
 //! produces exactly one in-flight iteration and zero committed iterations; the
 //! `committed` parameter and the keep-progress branch are exercised by the unit
 //! tests and will carry the structured-loop follow-up unchanged.

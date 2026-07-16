@@ -10,29 +10,29 @@ use flz_transport::transport::{protocol, FlezhaStream};
 use flz_transport::utility::path_helper;
 
 use super::CommandAction;
-use crate::executor::fast::OperativeDispatchHandle;
-use crate::executor::ExecutorNode;
 use crate::pb::ConnectSocket;
+use crate::runner::fast::OperativeDispatchHandle;
+use crate::runner::RunnerNode;
 use crate::segment::flusher::{SendError, SendFrameFn};
 use crate::segment::segment_state_sink;
 
 impl CommandAction for ConnectSocket {
     fn handle(
         &self,
-        executor: &mut ExecutorNode,
+        runner: &mut RunnerNode,
         _message: &str,
         _errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
         match get_transport_type() {
-            TransportType::Uds => handle_uds(self, executor),
-            TransportType::Quic => handle_quic(self, executor),
+            TransportType::Uds => handle_uds(self, runner),
+            TransportType::Quic => handle_quic(self, runner),
         }
     }
 }
 
-fn handle_uds(cmd: &ConnectSocket, executor: &mut ExecutorNode) -> (String, Vec<u8>) {
-    let io_streams = executor.get_io_streams();
-    let executor_id = executor.get_executor_id();
+fn handle_uds(cmd: &ConnectSocket, runner: &mut RunnerNode) -> (String, Vec<u8>) {
+    let io_streams = runner.get_io_streams();
+    let runner_id = runner.get_runner_id();
 
     // Pair each primary with its secondary explicitly. Controller→SDK reads
     // on primary; SDK→Controller writes on secondary. Putting reads + writes
@@ -41,8 +41,8 @@ fn handle_uds(cmd: &ConnectSocket, executor: &mut ExecutorNode) -> (String, Vec<
     let mut stream_pairs: Vec<(FlezhaStream, Arc<FlezhaStream>)> = Vec::new();
 
     for key in 0..cmd.sockets_count {
-        let primary = connect_unix(&executor_id, "primary".to_string());
-        let secondary = connect_unix(&executor_id, "secondary".to_string());
+        let primary = connect_unix(&runner_id, "primary".to_string());
+        let secondary = connect_unix(&runner_id, "secondary".to_string());
 
         let secondary_for_store = FlezhaStream::Unix(secondary.try_clone().unwrap());
         io_streams.write().unwrap().insert(key, secondary_for_store);
@@ -52,16 +52,14 @@ fn handle_uds(cmd: &ConnectSocket, executor: &mut ExecutorNode) -> (String, Vec<
     }
 
     install_segment_state_sink_from_pairs(&stream_pairs);
-    spawn_listener_uds(executor, stream_pairs);
+    spawn_listener_uds(runner, stream_pairs);
     ("connect_sockets".to_string(), Vec::new())
 }
 
-fn handle_quic(cmd: &ConnectSocket, executor: &mut ExecutorNode) -> (String, Vec<u8>) {
-    let io_streams = executor.get_io_streams();
+fn handle_quic(cmd: &ConnectSocket, runner: &mut RunnerNode) -> (String, Vec<u8>) {
+    let io_streams = runner.get_io_streams();
 
-    let quic_client = executor
-        .get_quic_client()
-        .expect("QUIC client not available");
+    let quic_client = runner.get_quic_client().expect("QUIC client not available");
 
     let mut stream_pairs: Vec<(FlezhaStream, Arc<FlezhaStream>)> = Vec::new();
 
@@ -88,7 +86,7 @@ fn handle_quic(cmd: &ConnectSocket, executor: &mut ExecutorNode) -> (String, Vec
     }
 
     install_segment_state_sink_from_pairs(&stream_pairs);
-    spawn_listener_quic(executor, stream_pairs);
+    spawn_listener_quic(runner, stream_pairs);
     ("connect_sockets".to_string(), Vec::new())
 }
 
@@ -123,13 +121,13 @@ fn install_segment_state_sink_from_pairs(pairs: &[(FlezhaStream, Arc<FlezhaStrea
     }
 }
 
-fn spawn_listener_uds(executor: &ExecutorNode, pairs: Vec<(FlezhaStream, Arc<FlezhaStream>)>) {
-    let handle = executor.operative_dispatch_handle();
+fn spawn_listener_uds(runner: &RunnerNode, pairs: Vec<(FlezhaStream, Arc<FlezhaStream>)>) {
+    let handle = runner.operative_dispatch_handle();
     let _ = thread::spawn(move || listen_incoming_uds(pairs, handle));
 }
 
-fn spawn_listener_quic(executor: &ExecutorNode, pairs: Vec<(FlezhaStream, Arc<FlezhaStream>)>) {
-    let handle = executor.operative_dispatch_handle();
+fn spawn_listener_quic(runner: &RunnerNode, pairs: Vec<(FlezhaStream, Arc<FlezhaStream>)>) {
+    let handle = runner.operative_dispatch_handle();
     let _ = thread::spawn(move || listen_incoming_quic(pairs, handle));
 }
 
@@ -200,13 +198,13 @@ fn listen_incoming_quic(
     }
 }
 
-fn connect_unix(executor_id: &str, stream_type: String) -> UnixStream {
-    let socket_path = path_helper::stream_socket_path(executor_id, stream_type);
+fn connect_unix(runner_id: &str, stream_type: String) -> UnixStream {
+    let socket_path = path_helper::stream_socket_path(runner_id, stream_type);
 
-    // The controller binds the per-executor data sockets immediately before
+    // The controller binds the per-runner data sockets immediately before
     // sending ConnectSocket, but bind+connect can race on busy CI. Retry with
     // bounded backoff (up to ~3s) before giving up; matches the control
-    // channel's own open_with_retry pattern in `executor::control_unit`.
+    // channel's own open_with_retry pattern in `runner::control_unit`.
     let mut attempt = 0u32;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
     loop {

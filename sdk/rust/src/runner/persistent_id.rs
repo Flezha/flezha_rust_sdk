@@ -1,6 +1,6 @@
-//! Self-owned, durable **stable identity** for the executor.
+//! Self-owned, durable **stable identity** for the runner.
 //!
-//! Created once on first boot and persisted at `FLEZHA_EXECUTOR_ID_PATH`
+//! Created once on first boot and persisted at `FLEZHA_RUNNER_ID_PATH`
 //! (atomically: temp file + `rename`). The controller trusts this value as the
 //! operative-binding key, so it must survive a process restart on the same
 //! node. Derived for readability as `"<namespace>-<profile_hash8>-<rand6>"`
@@ -11,15 +11,15 @@
 //! Degradation (no writable path): a fresh per-boot id is generated, cached in
 //! memory for the life of the process (so reconnects present the SAME id), and
 //! a single `warn` is logged. A restart then presents a NEW id whose old
-//! binding ages out via `FLEZHA_EXECUTOR_KEEPALIVE` — i.e. reconnect-as-new.
-//! The executor never refuses to start or crashes on missing persistence.
+//! binding ages out via `FLEZHA_RUNNER_KEEPALIVE` — i.e. reconnect-as-new.
+//! The runner never refuses to start or crashes on missing persistence.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-const ENV_ID_PATH: &str = "FLEZHA_EXECUTOR_ID_PATH";
-const DEFAULT_ID_PATH: &str = "/var/lib/flezha-executor/id";
+const ENV_ID_PATH: &str = "FLEZHA_RUNNER_ID_PATH";
+const DEFAULT_ID_PATH: &str = "/var/lib/flezha-runner/id";
 
 // One stable id per process: derive-or-load runs once and reconnects within the
 // same process return the SAME id — critical for the degraded, no-persist case
@@ -32,7 +32,7 @@ pub fn id_path() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from(DEFAULT_ID_PATH))
 }
 
-/// The executor's stable identity for this process. Loads the persisted id if
+/// The runner's stable identity for this process. Loads the persisted id if
 /// present; otherwise derives one from `namespace` + the declared factory set,
 /// persists it best-effort, and caches it. Subsequent calls (including every
 /// reconnect) return the same cached value.
@@ -50,11 +50,11 @@ fn derive_or_load(path: &Path, namespace: &str, factory_ids: &[String]) -> Strin
     let id = derive_id(namespace, factory_ids);
 
     if let Err(e) = persist_to(path, &id) {
-        // Degradation per the executor-identity capability: no binding
-        // continuity across restart, but the executor runs normally.
+        // Degradation per the runner-identity capability: no binding
+        // continuity across restart, but the runner runs normally.
         tracing::warn!(
             target: "flezha",
-            "executor stable-id persist failed at {:?}: {} — using a fresh per-boot id \
+            "runner stable-id persist failed at {:?}: {} — using a fresh per-boot id \
              (no binding continuity across restart)",
             path, e
         );
@@ -65,8 +65,8 @@ fn derive_or_load(path: &Path, namespace: &str, factory_ids: &[String]) -> Strin
 
 /// `"<namespace>-<profile_hash8>-<rand6>"`. The profile hash is order-independent
 /// (factory ids are sorted first) and dependency-free (FNV-1a), so the same
-/// executor profile reads the same way across boots; the random suffix keeps two
-/// fresh executors of the same profile distinct on first boot.
+/// runner profile reads the same way across boots; the random suffix keeps two
+/// fresh runners of the same profile distinct on first boot.
 fn derive_id(namespace: &str, factory_ids: &[String]) -> String {
     let mut ids: Vec<&str> = factory_ids.iter().map(String::as_str).collect();
     ids.sort_unstable();
@@ -87,9 +87,9 @@ fn profile_hash8(sorted_ids: &[&str]) -> String {
 
 fn rand6() -> String {
     // Dependency-free entropy: clock noise (the shared `nonce_suffix` helper)
-    // mixed with the pid is enough to keep two fresh executors distinct —
+    // mixed with the pid is enough to keep two fresh runners distinct —
     // cryptographic randomness is not needed, since the persistence path already
-    // scopes uniqueness per executor.
+    // scopes uniqueness per runner.
     let nanos = crate::util::nonce_suffix() as u64;
     let mut seed = nanos ^ ((std::process::id() as u64) << 32) ^ nanos.rotate_left(17);
     const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";

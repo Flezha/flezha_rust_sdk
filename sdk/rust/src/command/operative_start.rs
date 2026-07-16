@@ -2,13 +2,13 @@ use prost::Message;
 
 use super::CommandAction;
 use crate::bounded::spec::BoundedSpec;
-use crate::executor::ExecutorNode;
 use crate::pb::{AddOperative, AddOperativeResponse};
+use crate::runner::RunnerNode;
 
 impl CommandAction for AddOperative {
     fn handle(
         &self,
-        executor: &mut ExecutorNode,
+        runner: &mut RunnerNode,
         _message: &str,
         errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
@@ -24,11 +24,11 @@ impl CommandAction for AddOperative {
 
         // Idempotent on reconnect: the controller re-issues AddOperative for
         // every UnboundedOperative instance ProcessHub still has tagged to this
-        // executor's profile after a restart. If the instance is already
+        // runner's profile after a restart. If the instance is already
         // in the local registry, skip without re-registering — keeps
         // the existing per-Segment state intact and prevents
         // duplicate-init crashes.
-        if executor.has_operative(&instance_id) {
+        if runner.has_operative(&instance_id) {
             return (
                 "start_operative".to_string(),
                 metadata_response(kind, &factory_id),
@@ -37,7 +37,7 @@ impl CommandAction for AddOperative {
 
         match kind {
             "bounded" => {
-                if !executor.start_bounded_resumable(
+                if !runner.start_bounded_resumable(
                     factory_id.clone(),
                     instance_id.clone(),
                     self.init_values.clone(),
@@ -49,26 +49,24 @@ impl CommandAction for AddOperative {
                     ));
                 }
             }
-            "unbounded" => {
-                match executor.start_operative(factory_id.clone(), instance_id.clone()) {
-                    Some(instance) => {
-                        if !self.init_values.is_empty() {
-                            if let Err(e) = crate::command::segment_state::apply_init_values(
-                                &instance,
-                                &self.init_values,
-                            ) {
-                                errors.push(e);
-                            }
+            "unbounded" => match runner.start_operative(factory_id.clone(), instance_id.clone()) {
+                Some(instance) => {
+                    if !self.init_values.is_empty() {
+                        if let Err(e) = crate::command::segment_state::apply_init_values(
+                            &instance,
+                            &self.init_values,
+                        ) {
+                            errors.push(e);
                         }
                     }
-                    None => {
-                        errors.push(format!(
-                            "UnboundedOperative class with factory_id {} is not registered",
-                            factory_id
-                        ));
-                    }
                 }
-            }
+                None => {
+                    errors.push(format!(
+                        "UnboundedOperative class with factory_id {} is not registered",
+                        factory_id
+                    ));
+                }
+            },
             other => {
                 errors.push(format!(
                     "unknown compute-unit kind '{}' for unit {}",

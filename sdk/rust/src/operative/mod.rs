@@ -19,7 +19,7 @@ use crate::channel::ChannelBuilder;
 /// State persistence (added by `operative-state-persistence-rust`):
 ///
 /// - [`Self::PERSISTENCE_ENABLED`] — frozen-at-instance-start toggle.
-///   Default `true`. The executor can override via the operative-start
+///   Default `true`. The runner can override via the operative-start
 ///   metadata key `operative_persistence.<OperativeClass>`. When `false`, the
 ///   per-Process flusher drains-and-discards Changes for this UnboundedOperative's
 ///   Segments (no wire I/O, no controller contact).
@@ -37,7 +37,7 @@ pub trait UnboundedOperative: Send + Sync + 'static {
 
     /// Class-level persistence toggle. The runtime resolves the final
     /// value at instance start by checking the operative-start metadata
-    /// (executor override) first; if no override is present, this const
+    /// (runner override) first; if no override is present, this const
     /// is used. Frozen on the `UnboundedInstance` at construction; runtime
     /// changes only take effect on the next `stop_operative` + `start_operative`
     /// cycle.

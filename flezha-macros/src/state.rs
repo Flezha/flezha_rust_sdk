@@ -168,9 +168,9 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
             #(#variants),*
         }
 
-        impl ::flezha_executor::Change for #change_ident {}
+        impl ::flezha_runner::Change for #change_ident {}
 
-        impl ::flezha_executor::DerivedState for #state_ident {
+        impl ::flezha_runner::DerivedState for #state_ident {
             type Change = #change_ident;
             fn apply_change(state: &mut Self, change: &Self::Change) {
                 match change {
@@ -184,9 +184,9 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
             #(#mutator_sigs)*
         }
 
-        impl<'__sh, __S> #mut_trait_ident for ::flezha_executor::StateHandle<'__sh, __S>
+        impl<'__sh, __S> #mut_trait_ident for ::flezha_runner::StateHandle<'__sh, __S>
         where
-            __S: ::flezha_executor::Operation<State = #state_ident, Change = #change_ident>,
+            __S: ::flezha_runner::Operation<State = #state_ident, Change = #change_ident>,
         {
             #(#mutator_impls)*
         }

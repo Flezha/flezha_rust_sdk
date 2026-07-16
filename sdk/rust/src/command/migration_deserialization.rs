@@ -6,17 +6,17 @@
 
 use super::CommandAction;
 use crate::command::segment_state::apply_init_values;
-use crate::executor::ExecutorNode;
 use crate::pb::MigrationDeserialization;
+use crate::runner::RunnerNode;
 
 impl CommandAction for MigrationDeserialization {
     fn handle(
         &self,
-        executor: &mut ExecutorNode,
+        runner: &mut RunnerNode,
         _message: &str,
         errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
-        match executor.start_operative(self.factory_id.clone(), self.operative_id.clone()) {
+        match runner.start_operative(self.factory_id.clone(), self.operative_id.clone()) {
             Some(instance) => {
                 if !self.serialized_state.is_empty() {
                     let json_str = match std::str::from_utf8(&self.serialized_state) {

@@ -10,10 +10,10 @@ use prost::Message;
 
 #[test]
 fn operation_message_always_returns_unsupported() {
-    use flezha_executor::pb::OperationMessageResponse;
+    use flezha_runner::pb::OperationMessageResponse;
 
     // Synthesize the byte response the handler would write.
-    // (Constructing ExecutorNode requires the full SDK boot path;
+    // (Constructing RunnerNode requires the full SDK boot path;
     //  the handler doesn't read it for OperationMessage anymore, so a
     //  unit-level check on the response shape is sufficient.)
     let canonical = OperationMessageResponse {

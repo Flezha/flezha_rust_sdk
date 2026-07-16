@@ -1,14 +1,14 @@
 //! Persistence-toggle resolution per `operative-state-persistence-rust/design.md`
-//! and the umbrella spec scenario "Executor-side runtime override".
+//! and the umbrella spec scenario "Runner-side runtime override".
 //!
 //! Three-way precedence:
-//!   1. Executor override (`operative_persistence.<OperativeClass>` in operative-start
+//!   1. Runner override (`operative_persistence.<OperativeClass>` in operative-start
 //!      metadata) wins if present.
 //!   2. Otherwise, the UnboundedOperative's class const `UnboundedOperative::PERSISTENCE_ENABLED`.
 //!   3. The trait default of the const is `true`.
 //!
 //! Frozen at instance start: the resolved value is bound on
-//! `UnboundedInstance` at construction; subsequent executor config changes
+//! `UnboundedInstance` at construction; subsequent runner config changes
 //! only take effect on the next `stop_operative` + `start_operative` cycle.
 
 /// Resolve the persistence flag for an UnboundedOperative instance. The controller's

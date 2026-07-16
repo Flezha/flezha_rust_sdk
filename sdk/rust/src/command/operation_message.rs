@@ -9,15 +9,15 @@
 use prost::Message;
 
 use super::CommandAction;
-use crate::executor::ExecutorNode;
 use crate::pb::{OperationMessage, OperationMessageResponse};
+use crate::runner::RunnerNode;
 
 const UNSUPPORTED_ERROR: &str = "operative does not support handle_message";
 
 impl CommandAction for OperationMessage {
     fn handle(
         &self,
-        _executor: &mut ExecutorNode,
+        _runner: &mut RunnerNode,
         _message: &str,
         _errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {

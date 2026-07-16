@@ -16,16 +16,16 @@ use crate::operative::instance::UnboundedInstance;
 /// once by `fast::start`. Lets components outside the coordinator (e.g.
 /// the segment-state sink on a broken-pipe flood) request a control
 /// reconnect without threading the `Sender` through every layer.
-static RECONNECT_TRIGGER: OnceLock<Mutex<Sender<ExecutorMessage>>> = OnceLock::new();
+static RECONNECT_TRIGGER: OnceLock<Mutex<Sender<RunnerMessage>>> = OnceLock::new();
 
-pub(crate) fn install_reconnect_trigger(otx: Sender<ExecutorMessage>) {
+pub(crate) fn install_reconnect_trigger(otx: Sender<RunnerMessage>) {
     let _ = RECONNECT_TRIGGER.set(Mutex::new(otx));
 }
 
 /// Send a message to the coordinator from outside its thread, so control- and
 /// secondary-stream writes stay single-threaded. No-op when the trigger is not
 /// installed (e.g. unit tests).
-pub(crate) fn coordinator_send(msg: ExecutorMessage) {
+pub(crate) fn coordinator_send(msg: RunnerMessage) {
     if let Some(lock) = RECONNECT_TRIGGER.get() {
         if let Ok(tx) = lock.lock() {
             let _ = tx.send(msg);
@@ -34,9 +34,9 @@ pub(crate) fn coordinator_send(msg: ExecutorMessage) {
 }
 
 /// Ask the coordinator to drive a control-channel reconnect. `reason` is one of
-/// the canonical strings documented on [`ExecutorMessage::Reconnect`].
+/// the canonical strings documented on [`RunnerMessage::Reconnect`].
 pub(crate) fn request_reconnect(reason: &'static str) {
-    coordinator_send(ExecutorMessage::Reconnect(reason));
+    coordinator_send(RunnerMessage::Reconnect(reason));
 }
 
 /// Whether a coordinator channel is installed — `false` only for
@@ -49,7 +49,7 @@ pub(crate) fn coordinator_installed() -> bool {
 /// Route a bounded's output to the coordinator (written on a secondary stream
 /// tagged with `operative_id`; the controller fans it out to the unit's plugins).
 pub(crate) fn emit_bounded_output(operative_id: String, payload: Vec<u8>) {
-    coordinator_send(ExecutorMessage::EmitBoundedOutput {
+    coordinator_send(RunnerMessage::EmitBoundedOutput {
         operative_id,
         payload,
     });
@@ -64,7 +64,7 @@ pub(crate) fn emit_control_request(
     reference_id: String,
     command: crate::pb::command_request::Command,
 ) {
-    coordinator_send(ExecutorMessage::EmitControlRequest {
+    coordinator_send(RunnerMessage::EmitControlRequest {
         reference_id,
         command,
     });
@@ -79,7 +79,7 @@ pub(crate) fn emit_bounded_completed(
     error: String,
     result: Vec<u8>,
 ) {
-    coordinator_send(ExecutorMessage::EmitBoundedCompleted {
+    coordinator_send(RunnerMessage::EmitBoundedCompleted {
         operative_id,
         status,
         error,
@@ -87,8 +87,8 @@ pub(crate) fn emit_bounded_completed(
     });
 }
 
-/// Serializes every test that mutates the process-global executor env vars
-/// (`FLEZHA_EXECUTOR_ID_PATH`, `FLEZHA_CONTROL_*`). These knobs are shared
+/// Serializes every test that mutates the process-global runner env vars
+/// (`FLEZHA_RUNNER_ID_PATH`, `FLEZHA_CONTROL_*`). These knobs are shared
 /// across the whole crate, so the lock lives here (not in one child module)
 /// and is poison-tolerant: a failed assertion inside one holder must not
 /// cascade-fail the unrelated tests that merely share the lock.
@@ -106,11 +106,11 @@ pub(crate) fn env_test_guard() -> std::sync::MutexGuard<'static, ()> {
 /// bypasses this channel entirely (per-Segment mailboxes are pushed
 /// directly by the stream readers); only control-plane traffic flows
 /// through here.
-pub enum ExecutorMessage {
+pub enum RunnerMessage {
     HandleCommandAction(String, Vec<u8>, HashMap<String, String>),
     ReturnOperatives,
     /// Drive a reconnect with a structured reason for the observer log.
-    /// The re-opened control stream re-presents the executor's stable id in
+    /// The re-opened control stream re-presents the runner's stable id in
     /// its connect handshake (no separate reconnect frame). Reason is one of
     /// `control_stream_broken | read_error | write_error |
     /// keepalive_timeout | controller_requested | broken_pipe_flood`.
@@ -148,7 +148,7 @@ pub enum ExecutorMessage {
     },
 }
 
-pub enum ExecutorStatus {
+pub enum RunnerStatus {
     Starting,
     Running,
     Stopped,
@@ -157,7 +157,7 @@ pub enum ExecutorStatus {
 // reason: ReturnOperatives carries the same public shape returned by Flezha::get_operatives()
 #[allow(clippy::type_complexity)]
 pub enum ClientResponseMessage {
-    ExecutorIdConfirmation,
+    RunnerIdConfirmation,
     /// Snapshot of live UnboundedOperative instances. Returned to `Flezha::get_operatives()`
     /// callers — the public-API shape is preserved for backward
     /// compatibility, but each entry is now an `Arc<UnboundedInstance>` rather
@@ -165,4 +165,4 @@ pub enum ClientResponseMessage {
     ReturnOperatives(Arc<RwLock<HashMap<String, Arc<Mutex<Arc<UnboundedInstance>>>>>>),
 }
 
-pub use fast::{start, ExecutorNode};
+pub use fast::{start, RunnerNode};

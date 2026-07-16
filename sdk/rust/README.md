@@ -1,6 +1,6 @@
-# flezha_executor
+# flezha_runner
 
-Rust SDK for the Flezha executor platform.
+Rust SDK for the Flezha runner platform.
 
 ## Public API workflow
 
@@ -11,7 +11,7 @@ After any public-API-affecting change:
 2. Re-record the baseline:
 
    ```
-   cargo public-api -p flezha_executor > sdk/rust/public-api.txt
+   cargo public-api -p flezha_runner > sdk/rust/public-api.txt
    ```
 
 3. Review the diff in your PR. Treat new pub items as additive;
@@ -23,7 +23,7 @@ After any public-API-affecting change:
 
 - `bench-internals` — exposes internal dispatch types for the crate's
   own benches/tests. NOT a stable API.
-- `testing` — exposes `flezha_executor::testing::OperationTestHarness`
+- `testing` — exposes `flezha_runner::testing::OperationTestHarness`
   for downstream crates that want replay-equality tests.
 
 ## Architecture

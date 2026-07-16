@@ -9,13 +9,13 @@
 //! No `CommandResponse` payload — this is a one-way notification.
 
 use super::CommandAction;
-use crate::executor::ExecutorNode;
 use crate::pb::SegmentMailboxStatus;
+use crate::runner::RunnerNode;
 
 impl CommandAction for SegmentMailboxStatus {
     fn handle(
         &self,
-        _executor: &mut ExecutorNode,
+        _runner: &mut RunnerNode,
         _message: &str,
         _errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {

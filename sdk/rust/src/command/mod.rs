@@ -7,15 +7,13 @@ use flz_transport::transport::FlezhaStream;
 use prost::Message;
 
 use crate::command;
-use crate::executor::ExecutorNode;
 use crate::pb::command_request::Command;
 use crate::pb::{CommandRequest, CommandResponse};
+use crate::runner::RunnerNode;
 
 mod bounded_stop;
 mod compact;
 mod credit;
-mod executor_assign;
-mod executor_disconnect;
 mod migration_deserialization;
 mod migration_serialization;
 mod operation_message;
@@ -24,6 +22,8 @@ mod operative_stop;
 mod park_ack;
 mod ping;
 mod restore;
+mod runner_assign;
+mod runner_disconnect;
 mod segment_apply_state;
 pub mod segment_state;
 mod segment_status;
@@ -32,7 +32,7 @@ mod streams_connect;
 pub trait CommandAction {
     fn handle(
         &self,
-        executor: &mut ExecutorNode,
+        runner: &mut RunnerNode,
         command_struct: &str,
         errors: &mut Vec<String>,
     ) -> (String, Vec<u8>);
@@ -40,14 +40,14 @@ pub trait CommandAction {
 
 pub enum CommandActionType {
     Regular(Box<dyn CommandAction>),
-    ExecutorDisconnect(Box<dyn CommandAction>),
+    RunnerDisconnect(Box<dyn CommandAction>),
     /// Controller -> SDK reply to an SDK-initiated request
-    /// (`ExecutorShutdownAck`, `OpCommitResponse`). Wake the waiter
+    /// (`RunnerShutdownAck`, `OpCommitResponse`). Wake the waiter
     /// registered under the request's `reference_id` with the carried
     /// outcome. No `CommandResponse` is written — the controller sent this
     /// as its own `CommandRequest`, not in reply to one we sent.
     AckSignal(crate::shutdown::AckResult),
-    /// Defensive: SDK should never receive `ExecutorShutdownNotification`
+    /// Defensive: SDK should never receive `RunnerShutdownNotification`
     /// (it's the SDK->controller direction). Logged and dropped if a buggy
     /// or future controller ever emits one.
     NotificationIgnore,
@@ -96,7 +96,7 @@ pub fn get_handler(_payload_id: &str, message: &[u8]) -> Result<FrameOutcome, Co
     let reference_id = wrapper_command.reference_id;
 
     let command_handler = match wrapper_command.command {
-        Some(Command::AssignExecutorId(proto_ch)) => CommandActionType::Regular(Box::new(proto_ch)),
+        Some(Command::AssignRunnerId(proto_ch)) => CommandActionType::Regular(Box::new(proto_ch)),
         Some(Command::ConnectSocket(proto_ch)) => CommandActionType::Regular(Box::new(proto_ch)),
         Some(Command::AddOperative(proto_ch)) => CommandActionType::Regular(Box::new(proto_ch)),
         Some(Command::RemOperative(proto_ch)) => CommandActionType::Regular(Box::new(proto_ch)),
@@ -107,19 +107,19 @@ pub fn get_handler(_payload_id: &str, message: &[u8]) -> Result<FrameOutcome, Co
             CommandActionType::Regular(Box::new(proto_ch))
         }
         Some(Command::SegmentState(proto_ch)) => CommandActionType::Regular(Box::new(proto_ch)),
-        Some(Command::ExecutorDisconnect(proto_ch)) => {
-            CommandActionType::ExecutorDisconnect(Box::new(proto_ch))
+        Some(Command::RunnerDisconnect(proto_ch)) => {
+            CommandActionType::RunnerDisconnect(Box::new(proto_ch))
         }
         Some(Command::OperationMessage(proto_ch)) => CommandActionType::Regular(Box::new(proto_ch)),
         Some(Command::SegmentApplyState(proto_ch)) => {
             CommandActionType::Regular(Box::new(proto_ch))
         }
-        Some(Command::ExecutorShutdownNotification(_)) => CommandActionType::NotificationIgnore,
-        Some(Command::ExecutorShutdownAck(_)) => CommandActionType::AckSignal(Ok(())),
+        Some(Command::RunnerShutdownNotification(_)) => CommandActionType::NotificationIgnore,
+        Some(Command::RunnerShutdownAck(_)) => CommandActionType::AckSignal(Ok(())),
         Some(Command::RestoreInitState(proto_ch)) => CommandActionType::Regular(Box::new(proto_ch)),
         // SDK is the SENDER for the response variants — receiving them
         // is a protocol bug. Drop the message, log it like the other
-        // direction-mistake (`ExecutorShutdownNotification`).
+        // direction-mistake (`RunnerShutdownNotification`).
         Some(Command::RestoreInitStateResponse(_)) => CommandActionType::NotificationIgnore,
         Some(Command::CompactSegment(proto_ch)) => CommandActionType::Regular(Box::new(proto_ch)),
         Some(Command::CompactSegmentResponse(_)) => CommandActionType::NotificationIgnore,
@@ -128,13 +128,13 @@ pub fn get_handler(_payload_id: &str, message: &[u8]) -> Result<FrameOutcome, Co
         }
         Some(Command::Ping(proto_ch)) => CommandActionType::Regular(Box::new(proto_ch)),
         // Retired reconnect machinery. The SDK no longer sends
-        // `ExecutorReconnected` (it re-presents its stable id every connect) and
+        // `RunnerReconnected` (it re-presents its stable id every connect) and
         // the controller no longer mints-and-reassigns ids (reconnect is a
         // controller-side binding swap), so neither is handled — drop and log.
-        Some(Command::ExecutorReconnected(_)) => CommandActionType::NotificationIgnore,
-        Some(Command::ReassignExecutorId(_)) => CommandActionType::NotificationIgnore,
+        Some(Command::RunnerReconnected(_)) => CommandActionType::NotificationIgnore,
+        Some(Command::ReassignRunnerId(_)) => CommandActionType::NotificationIgnore,
         // SDK is the SENDER for BoundedCompleted — receiving it is a protocol
-        // bug. Drop and log, like `ExecutorShutdownNotification`.
+        // bug. Drop and log, like `RunnerShutdownNotification`.
         Some(Command::BoundedCompleted(_)) => CommandActionType::NotificationIgnore,
         // Cooperative external stop for a bounded operative (Controller -> SDK):
         // trip the driver's cancellation token via the BoundedStop handler.
@@ -180,7 +180,7 @@ fn ack_result(error: String) -> Result<(), String> {
 }
 
 pub fn handle_command(
-    executor: &mut ExecutorNode,
+    runner: &mut RunnerNode,
     stream: &FlezhaStream,
     payload_id: &str,
     message: &[u8],
@@ -215,7 +215,7 @@ pub fn handle_command(
         FrameOutcome::PeerClosed => {
             // The control-channel reader (`payloader::extract_payload`)
             // is the canonical detector of EOF and emits
-            // `ExecutorMessage::Reconnect` on its own io::Error path.
+            // `RunnerMessage::Reconnect` on its own io::Error path.
             // Dropping this frame here is a defence-in-depth no-op in
             // case a 0-byte payload ever flows in band.
             return;
@@ -225,14 +225,14 @@ pub fn handle_command(
 
     match handler_type {
         CommandActionType::Regular(handler) => {
-            let reply = command::exec_control(executor, handler, payload_id, message, reference_id);
+            let reply = command::exec_control(runner, handler, payload_id, message, reference_id);
             if let Err(e) = (&*stream).write_all(&reply) {
                 eprintln!("[flezha] Failed to write command response: {}", e);
             }
         }
 
-        CommandActionType::ExecutorDisconnect(handler) => {
-            let reply = command::exec_control(executor, handler, payload_id, message, reference_id);
+        CommandActionType::RunnerDisconnect(handler) => {
+            let reply = command::exec_control(runner, handler, payload_id, message, reference_id);
             if let Err(e) = (&*stream).write_all(&reply) {
                 eprintln!("[flezha] Failed to write disconnect response: {}", e);
             }
@@ -243,12 +243,12 @@ pub fn handle_command(
 
         CommandActionType::AckSignal(result) => {
             // Suppress unused-variable warnings for unused params.
-            let _ = executor;
+            let _ = runner;
             crate::shutdown::signal_result(&reference_id, result);
         }
 
         CommandActionType::NotificationIgnore => {
-            let _ = executor;
+            let _ = runner;
             eprintln!(
                 "[flezha] Received an unexpected controller->SDK command the SDK does \
                  not handle (ref={}); ignoring.",
@@ -259,7 +259,7 @@ pub fn handle_command(
 }
 
 fn exec_control(
-    executor: &mut ExecutorNode,
+    runner: &mut RunnerNode,
     handler: Box<dyn CommandAction>,
     payload_id: &str,
     message: &[u8],
@@ -269,7 +269,7 @@ fn exec_control(
     let mut status = String::from("success");
 
     let message_str = std::str::from_utf8(message).unwrap_or("");
-    let (_payload_id, raw_data) = handler.handle(executor, message_str, &mut errors);
+    let (_payload_id, raw_data) = handler.handle(runner, message_str, &mut errors);
 
     if !errors.is_empty() {
         status = "error".to_string();
@@ -332,11 +332,9 @@ mod tests {
     fn well_formed_request_returns_command_variant() {
         let request = CommandRequest {
             reference_id: "ref-shutdown".to_string(),
-            command: Some(Command::ExecutorShutdownAck(
-                crate::pb::ExecutorShutdownAck {
-                    operative_id: "".to_string(),
-                },
-            )),
+            command: Some(Command::RunnerShutdownAck(crate::pb::RunnerShutdownAck {
+                operative_id: "".to_string(),
+            })),
         };
 
         let bytes = request.encode_to_vec();
@@ -360,11 +358,9 @@ mod tests {
 
         let valid_request = CommandRequest {
             reference_id: "y".to_string(),
-            command: Some(Command::ExecutorShutdownAck(
-                crate::pb::ExecutorShutdownAck {
-                    operative_id: "".to_string(),
-                },
-            )),
+            command: Some(Command::RunnerShutdownAck(crate::pb::RunnerShutdownAck {
+                operative_id: "".to_string(),
+            })),
         }
         .encode_to_vec();
 

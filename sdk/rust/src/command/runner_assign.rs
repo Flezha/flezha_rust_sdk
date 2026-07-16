@@ -1,11 +1,11 @@
 use super::CommandAction;
-use crate::executor::{ExecutorNode, ExecutorStatus};
-use crate::pb::AssignExecutorId;
+use crate::pb::AssignRunnerId;
+use crate::runner::{RunnerNode, RunnerStatus};
 
-impl CommandAction for AssignExecutorId {
+impl CommandAction for AssignRunnerId {
     fn handle(
         &self,
-        executor: &mut ExecutorNode,
+        runner: &mut RunnerNode,
         _message: &str,
         _errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
@@ -14,9 +14,9 @@ impl CommandAction for AssignExecutorId {
         // Registry/StreamChannel names. It is NOT persisted — the durable
         // identity is the self-owned stable id (see `persistent_id`), which the
         // SDK already presented in the connect handshake.
-        executor.assign_executor_id(self.executor_id.clone());
-        executor.set_status(ExecutorStatus::Running);
+        runner.assign_runner_id(self.runner_id.clone());
+        runner.set_status(RunnerStatus::Running);
 
-        ("assign_executor_id".to_string(), Vec::new())
+        ("assign_runner_id".to_string(), Vec::new())
     }
 }

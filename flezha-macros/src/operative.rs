@@ -125,7 +125,7 @@ pub fn expand(item: TokenStream) -> syn::Result<TokenStream> {
         let cons = &pair[1];
         let hop_name = format!("__hop{}", i + 1);
         quote! {
-            c.channel::<<#prod as ::flezha_executor::Operation>::Output>(#hop_name)
+            c.channel::<<#prod as ::flezha_runner::Operation>::Output>(#hop_name)
                 .from::<#prod>()
                 .into::<#cons>();
         }
@@ -134,9 +134,9 @@ pub fn expand(item: TokenStream) -> syn::Result<TokenStream> {
     Ok(quote! {
         #[doc(hidden)]
         struct #operative_ident;
-        impl ::flezha_executor::UnboundedOperative for #operative_ident {
+        impl ::flezha_runner::UnboundedOperative for #operative_ident {
             fn factory_id() -> &'static str { #id }
-            fn channels(c: &mut ::flezha_executor::ChannelBuilder) {
+            fn channels(c: &mut ::flezha_runner::ChannelBuilder) {
                 c.input::<#input_ty>("input").into::<#first_operation>();
                 #(#hops)*
                 c.channel::<#plugin_ty>(#plugin_name)
@@ -144,10 +144,10 @@ pub fn expand(item: TokenStream) -> syn::Result<TokenStream> {
                     .to_plugin(#plugin_name);
             }
         }
-        ::flezha_executor::inventory::submit! {
-            ::flezha_executor::AutoOperative::new(
-                <#operative_ident as ::flezha_executor::UnboundedOperative>::factory_id,
-                || ::flezha_executor::register_unbounded::<#operative_ident>(),
+        ::flezha_runner::inventory::submit! {
+            ::flezha_runner::AutoOperative::new(
+                <#operative_ident as ::flezha_runner::UnboundedOperative>::factory_id,
+                || ::flezha_runner::register_unbounded::<#operative_ident>(),
             )
         }
     })

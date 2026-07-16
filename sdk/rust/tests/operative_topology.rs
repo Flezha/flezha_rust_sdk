@@ -8,11 +8,11 @@
 
 use std::sync::Arc;
 
-use flezha_executor::channel::ChannelBuilder;
-use flezha_executor::operation::{Operation, OperationCtx, OperationError};
-use flezha_executor::operative::builder::build_topology_for;
-use flezha_executor::state::{Change, NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_executor::UnboundedOperative;
+use flezha_runner::channel::ChannelBuilder;
+use flezha_runner::operation::{Operation, OperationCtx, OperationError};
+use flezha_runner::operative::builder::build_topology_for;
+use flezha_runner::state::{Change, NoChange, RestoreInitPayload, StateHandle, WallClock};
+use flezha_runner::UnboundedOperative;
 
 mod common;
 
@@ -146,7 +146,7 @@ impl UnboundedOperative for DynamicOnlyOperative {
 
 #[test]
 fn dynamic_mode_is_accepted_and_classified() {
-    use flezha_executor::operative::topology::SegmentingMode;
+    use flezha_runner::operative::topology::SegmentingMode;
     let topology = build_topology_for::<DynamicOnlyOperative>().expect("dynamic mode accepted");
     assert_eq!(topology.operations.len(), 1);
     assert_eq!(topology.operations[0].mode, SegmentingMode::Dynamic);
@@ -274,14 +274,11 @@ fn default_capacity_is_1024_in_topology() {
 
 #[test]
 fn operative_instance_creates_segments() {
-    use flezha_executor::__dispatch_internals as bi;
+    use flezha_runner::__dispatch_internals as bi;
     let topology = build_topology_for::<StaticOperative>().expect("topology");
     let pool = Arc::new(bi::WorkStealingPool::with_size(2));
-    let instance = flezha_executor::operative::UnboundedInstance::new(
-        topology,
-        Arc::from("instance-id"),
-        pool,
-    );
+    let instance =
+        flezha_runner::operative::UnboundedInstance::new(topology, Arc::from("instance-id"), pool);
     assert_eq!(instance.segments.len(), 1);
     assert_eq!(instance.segments[0].len(), 3);
     assert_eq!(instance.segment_key_to_idx[0].get("a"), Some(&0));
@@ -371,7 +368,7 @@ fn keyed_channel_without_plugin_wire_is_rejected() {
     };
     assert!(err.errors.iter().any(|e| matches!(
         e,
-        flezha_executor::channel::builder::BuildTopologyError::KeyedChannelWithoutPluginWire {
+        flezha_runner::channel::builder::BuildTopologyError::KeyedChannelWithoutPluginWire {
             channel: "hop"
         }
     )));
@@ -386,7 +383,7 @@ impl Operation for FrozenLogicalOperation {
     type Output = String;
     type State = ();
     type Change = NoChange;
-    type Clock = flezha_executor::state::LogicalClock;
+    type Clock = flezha_runner::state::LogicalClock;
     type Config = ();
     fn name() -> &'static str {
         "frozen_logical_operation"
@@ -420,7 +417,7 @@ fn logical_clock_without_persistent_changes_is_rejected_at_build() {
     };
     assert!(err.errors.iter().any(|e| matches!(
         e,
-        flezha_executor::channel::builder::BuildTopologyError::UnservableClock {
+        flezha_runner::channel::builder::BuildTopologyError::UnservableClock {
             operation: "frozen_logical_operation",
             clock_type: "LogicalClock",
         }

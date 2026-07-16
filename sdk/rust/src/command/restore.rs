@@ -1,7 +1,7 @@
 //! Inbound `RestoreInitState`: controller → SDK warm restart of a Segment.
 //!
 //! The controller ships the persisted snapshot + WAL change-log for a
-//! Segment after an executor restart / rebind. This handler locates the
+//! Segment after a runner restart / rebind. This handler locates the
 //! live `SegmentSlot` whose wire identity matches `segment_id` and
 //! rebuilds its (type-erased) state in place via the dispatcher's
 //! `restore_state` — so a operative that summed to N comes back at N instead of
@@ -18,8 +18,8 @@ use std::sync::Arc;
 use prost::Message;
 
 use super::CommandAction;
-use crate::executor::ExecutorNode;
 use crate::pb::{RestoreInitState, RestoreInitStateResponse};
+use crate::runner::RunnerNode;
 use crate::segment::restore::iter_change_log_records;
 use crate::segment::SegmentSlot;
 use crate::util::LockRecover;
@@ -27,13 +27,13 @@ use crate::util::LockRecover;
 impl CommandAction for RestoreInitState {
     fn handle(
         &self,
-        executor: &mut ExecutorNode,
+        runner: &mut RunnerNode,
         _message: &str,
         errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
-        let terminal_seq = if let Some(slot) = find_segment_slot(executor, &self.segment_id) {
+        let terminal_seq = if let Some(slot) = find_segment_slot(runner, &self.segment_id) {
             restore_into_slot(&slot, self, errors)
-        } else if let Some((instance, slot)) = executor.find_bounded_segment(&self.segment_id) {
+        } else if let Some((instance, slot)) = runner.find_bounded_segment(&self.segment_id) {
             // Durable bounded Segment: rebuild its committed state in place and
             // release one count on the driver's crash-resume gate. The frame
             // landed regardless of apply success, so the gate never stalls on a
@@ -214,8 +214,8 @@ fn handoff_items(items: &[crate::pb::OpHandoffItem]) -> Vec<(u32, Vec<u8>)> {
 /// the controller uses for `segment_id` (`[rc_len][rc][sh_len][sh][pk_len][pk]`),
 /// so a byte-equal match is exact. Returns a cloned `Arc` so the operative-registry
 /// locks are released before the (potentially slow) state rebuild.
-fn find_segment_slot(executor: &ExecutorNode, segment_id: &[u8]) -> Option<Arc<SegmentSlot>> {
-    let view = executor.get_operatives();
+fn find_segment_slot(runner: &RunnerNode, segment_id: &[u8]) -> Option<Arc<SegmentSlot>> {
+    let view = runner.get_operatives();
     let guard = match view.read() {
         Ok(g) => g,
         Err(poisoned) => poisoned.into_inner(),

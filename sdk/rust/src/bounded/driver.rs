@@ -35,8 +35,8 @@ use super::spec::{BoundedSpec, OpTree};
 use super::{BoundedCollectSink, BoundedCtx, BoundedError, BoundedRunFn, LoopMode, RollbackMode};
 use crate::channel::builder::BuildSegmentArgs;
 use crate::channel::{ChannelId, ChannelKind, OperationId, RetryPolicy};
-use crate::executor::work_stealing_pool::WorkStealingPool;
 use crate::operative::topology::{OperationDescriptor, OperativeTopology, SegmentingMode};
+use crate::runner::work_stealing_pool::WorkStealingPool;
 use crate::segment::flusher::SegmentFlusher;
 use crate::segment::segment_state_sink::{
     COMPENSATION_DONE_PAYLOAD_ID, COMPENSATION_INTENT_PAYLOAD_ID,
@@ -116,7 +116,7 @@ impl ChainCtx<'_> {
     /// straight to the wire rather than being staged into an outbox nobody
     /// would ever flush.
     fn journaling(&self) -> bool {
-        self.persistence_enabled && crate::executor::coordinator_installed()
+        self.persistence_enabled && crate::runner::coordinator_installed()
     }
 
     /// The operation descriptor at a tree node (= its `stage_idx` / wire
@@ -130,7 +130,7 @@ impl ChainCtx<'_> {
 
 /// Spawn the bounded driver for one already-registered instance on a dedicated
 /// thread. Fire-and-forget: the thread exits at terminal teardown. The caller
-/// ([`ExecutorNode::start_bounded_resumable`](crate::executor::ExecutorNode))
+/// ([`RunnerNode::start_bounded_resumable`](crate::runner::RunnerNode))
 /// builds + registers the [`BoundedInstance`] **synchronously**, before the
 /// `AddOperative` frame is ACKed, so an inbox frame / `BoundedStop` / restore
 /// arriving right after is never lost to a startup race.
@@ -152,7 +152,7 @@ pub(crate) fn spawn(
         // terminal failure so the controller does not wait forever. The registry
         // entry is dropped by the controller's stop_operative on the completion.
         deregister_flushers(&instance.stage_segments);
-        crate::executor::emit_bounded_completed(
+        crate::runner::emit_bounded_completed(
             instance.instance_id.to_string(),
             "error".to_string(),
             format!("failed to spawn bounded driver thread: {e}"),
@@ -204,7 +204,7 @@ fn run(
 
     match outcome {
         RunOutcome::Terminal(status, error, result) => {
-            crate::executor::emit_bounded_completed(
+            crate::runner::emit_bounded_completed(
                 instance.instance_id.to_string(),
                 status,
                 error,
@@ -742,7 +742,7 @@ fn park(ctx: &ChainCtx, iter: u32) -> RunOutcome {
             .unwrap_or_default();
         (now + after).as_millis() as u64
     });
-    crate::executor::emit_control_request(
+    crate::runner::emit_control_request(
         format!(
             "iter-park-{}-{}-{}",
             ctx.instance_id,
@@ -1075,7 +1075,7 @@ fn ship_and_await(
         crate::util::nonce_suffix()
     );
     let rx = crate::shutdown::register_pending_ack(reference_id.clone());
-    crate::executor::emit_control_request(reference_id.clone(), command);
+    crate::runner::emit_control_request(reference_id.clone(), command);
 
     // Chunked wait so a cooperative cancel is observed promptly.
     let deadline = Instant::now() + OP_COMMIT_ACK_TIMEOUT;
@@ -1571,7 +1571,7 @@ impl BoundedCollectSink for BoundedSegmentSink {
         if self.staging {
             self.staged.push((channel.to_string(), bytes));
         } else {
-            crate::executor::emit_bounded_output(self.instance_id.to_string(), bytes);
+            crate::runner::emit_bounded_output(self.instance_id.to_string(), bytes);
         }
     }
 }

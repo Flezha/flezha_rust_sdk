@@ -22,7 +22,7 @@ The protobuf files are pre-generated and stored in `src/generated/`. This approa
 ### When to Regenerate
 
 You only need to regenerate the protobuf files when:
-- The `../../protobufs/executor_commands.proto` file changes
+- The `../../protobufs/runner_commands.proto` file changes
 - You want to update to a newer version of `prost`
 
 ### How to Regenerate
@@ -66,8 +66,8 @@ This script will:
 ### Important Notes
 
 - **Always commit the generated files** to the repository
-- The generated files are in `src/generated/executor_commands.rs`
-- The library includes these files using `include!("generated/executor_commands.rs")`
+- The generated files are in `src/generated/runner_commands.rs`
+- The library includes these files using `include!("generated/runner_commands.rs")`
 - The current `build.rs` is essentially a no-op for normal builds
 
 ### Project Structure
@@ -76,7 +76,7 @@ This script will:
 sdk/rust/
 ├── src/
 │   ├── generated/
-│   │   └── executor_commands.rs  # Generated protobuf code (committed)
+│   │   └── runner_commands.rs  # Generated protobuf code (committed)
 │   ├── lib.rs                    # Includes the generated code
 │   └── ...
 ├── build.rs                      # No-op build script

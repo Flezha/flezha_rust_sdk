@@ -39,8 +39,8 @@ use flz_transport::transport::FlezhaStream;
 pub use restore::{RestoreError, RestoreInitPayload};
 
 use crate::channel::OperationId;
-use crate::executor::mailbox::Mailbox;
-use crate::executor::work_stealing_pool::WorkStealingPool;
+use crate::runner::mailbox::Mailbox;
+use crate::runner::work_stealing_pool::WorkStealingPool;
 
 /// Erased payload moving through the inter-operation mailbox. The `value`
 /// is `Arc<dyn Any + Send + Sync>` (the consumer downcasts to its own
@@ -204,7 +204,7 @@ impl Default for BlockParker {
 
 /// Process-global count of payloads dispatched through `drain_segment`.
 /// Shipped in every `data_heartbeat` frame's metadata so the controller can
-/// tell "executor alive but dispatch wedged" apart from "executor healthy" —
+/// tell "runner alive but dispatch wedged" apart from "runner healthy" —
 /// the 2026-06-10 freeze was invisible to every heartbeat-level signal.
 pub static DISPATCHES_COMPLETED: AtomicU64 = AtomicU64::new(0);
 
@@ -250,7 +250,7 @@ pub struct SegmentSlot {
     pub flush_buffer: Arc<Mutex<Box<dyn flusher::FlushableBuffer>>>,
     /// Frozen-at-instance-start persistence flag. Resolved by
     /// `operative::persistence::resolve_persistence_enabled` from the
-    /// executor override + UnboundedOperative class const at `UnboundedInstance::new`
+    /// runner override + UnboundedOperative class const at `UnboundedInstance::new`
     /// time and propagated here.
     pub persistence_enabled: bool,
     /// Per-Segment WAL seq counter. The flusher fetches-and-adds once
@@ -372,7 +372,7 @@ pub trait OperationDispatcher: Send + Sync + 'static {
     /// persisted `RestoreInitState` payload (snapshot + WAL change-log),
     /// returning the terminal seq applied. Type-erased entry point so the
     /// control-channel `RestoreInitState` handler — which has no `S` — can
-    /// re-seed a live segment after an executor restart. Mirrors the
+    /// re-seed a live segment after a runner restart. Mirrors the
     /// downcast pattern used by `dispatch`.
     fn restore_state(
         &self,

@@ -1,4 +1,4 @@
-# Changelog — `flezha_executor` (Rust SDK)
+# Changelog — `flezha_runner` (Rust SDK)
 
 All notable changes to the Rust SDK crate.
 
@@ -54,11 +54,11 @@ All notable changes to the Rust SDK crate.
   are observed in arrival order.
 - `OperativeRunner::ThreadSpawn`: per-invocation OS thread spawn retained.
 - Reconnect semantics: exponential backoff (200 ms → 30 s cap), state
-  reset on unexpected drop, no reconnect on `ExecutorDisconnect`.
-- Command dispatch (`AssignExecutorId`, `ConnectSocket`,
+  reset on unexpected drop, no reconnect on `RunnerDisconnect`.
+- Command dispatch (`AssignRunnerId`, `ConnectSocket`,
   `AddOperative`, `RemOperative`, `SegmentState`,
   `MigrationSerialization`, `MigrationDeserialization`,
-  `ExecutorDisconnect`) produces byte-identical `CommandResponse`
+  `RunnerDisconnect`) produces byte-identical `CommandResponse`
   bytes.
 - Public API surface unchanged: `new`, `Flezha`, `register_factory`,
   `OperativeHandler`, `OperativeInput` / `OperativeOutput` /
@@ -67,8 +67,8 @@ All notable changes to the Rust SDK crate.
 
 ### Added (internal)
 
-- `executor/mailbox.rs`, `executor/work_stealing_pool.rs`,
-  `executor/fast.rs` — the fast-dispatch internals.
+- `runner/mailbox.rs`, `runner/work_stealing_pool.rs`,
+  `runner/fast.rs` — the fast-dispatch internals.
 - `operative::factory_registry::OperativeRegistry` /
   `OperativeSlot` — DashMap-backed live registry.
 - `benches/dispatch.rs` — Criterion throughput + latency micro-benches.

@@ -1,4 +1,4 @@
-#[derive(flezha_executor::State)]
+#[derive(flezha_runner::State)]
 enum E {
     A,
 }

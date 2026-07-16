@@ -5,10 +5,10 @@
 // `Channel<T>` handle that does not expose `.on_full`, so this fails at
 // the call site.
 
-use flezha_executor::channel::ChannelBuilder;
-use flezha_executor::operation::{Operation, OperationCtx, OperationError};
-use flezha_executor::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_executor::OverflowPolicy;
+use flezha_runner::channel::ChannelBuilder;
+use flezha_runner::operation::{Operation, OperationCtx, OperationError};
+use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
+use flezha_runner::OverflowPolicy;
 
 #[derive(Default)]
 struct PluginProducer;

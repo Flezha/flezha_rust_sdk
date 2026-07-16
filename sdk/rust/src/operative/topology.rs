@@ -81,7 +81,7 @@ pub struct OperativeTopology {
     pub factory_id: &'static str,
     /// Captured `UnboundedOperative::PERSISTENCE_ENABLED` const at registration.
     /// `UnboundedInstance::new` resolves the final per-instance flag using
-    /// this const + the executor override from operative-start metadata.
+    /// this const + the runner override from operative-start metadata.
     pub persistence_enabled_const: bool,
     /// Effectively-once delivery tier, declared via
     /// `ChannelBuilder::effectively_once()`. Frozen at registration;

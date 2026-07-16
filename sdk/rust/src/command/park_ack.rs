@@ -5,14 +5,14 @@
 //! control coordinator and never blocks.
 
 use super::CommandAction;
-use crate::executor::ExecutorNode;
 use crate::pb::ParkPayloadAck;
+use crate::runner::RunnerNode;
 use crate::segment::park;
 
 impl CommandAction for ParkPayloadAck {
     fn handle(
         &self,
-        _executor: &mut ExecutorNode,
+        _runner: &mut RunnerNode,
         _message: &str,
         _errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {

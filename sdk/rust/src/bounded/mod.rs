@@ -23,14 +23,14 @@
 //!
 //! ```ignore
 //! struct Greet;
-//! impl flezha_executor::BoundedOperative for Greet {
+//! impl flezha_runner::BoundedOperative for Greet {
 //!     fn factory_id() -> &'static str { "greet" }
-//!     fn run(ctx: &mut flezha_executor::BoundedCtx, args: &str) -> Result<(), flezha_executor::BoundedError> {
+//!     fn run(ctx: &mut flezha_runner::BoundedCtx, args: &str) -> Result<(), flezha_runner::BoundedError> {
 //!         ctx.complete(format!("hello {args}").into_bytes());
 //!         Ok(())
 //!     }
 //! }
-//! flezha_executor::register_bounded::<Greet>();
+//! flezha_runner::register_bounded::<Greet>();
 //! ```
 
 pub(crate) mod compensation;
@@ -67,7 +67,7 @@ pub enum LoopMode {
     /// One iteration per inbox item (the chat-turn shape): each iteration is
     /// seeded by the next post-start input through the entry channel. A
     /// durable instance whose inbox stays empty past the idle threshold at a
-    /// committed boundary **parks** — it is evicted from the executor and
+    /// committed boundary **parks** — it is evicted from the runner and
     /// rehydrated by the next input or its wake deadline
     /// (`bounded-durable-suspension`).
     PerInput,
@@ -320,7 +320,7 @@ impl BoundedCtx {
     /// instead stages into the operation's transactional outbox
     /// (`bounded-transactional-outbox`).
     pub fn emit(&mut self, bytes: impl Into<Vec<u8>>) -> Result<(), BoundedError> {
-        crate::executor::emit_bounded_output(self.instance_id.to_string(), bytes.into());
+        crate::runner::emit_bounded_output(self.instance_id.to_string(), bytes.into());
         Ok(())
     }
 
@@ -392,13 +392,13 @@ mod tests {
 
     use super::*;
     use crate::command::CommandAction;
-    use crate::executor::fast::ExecutorNode;
-    use crate::executor::{install_reconnect_trigger, ExecutorMessage};
     use crate::operation::change::{Change, NoChange};
     use crate::operation::clock::WallClock;
     use crate::operation::{Operation, OperationCtx, OperationError, StateHandle};
     use crate::operative::registry::{Operative, OperativeRegistry};
     use crate::pb::{AddOperative, BoundedStop};
+    use crate::runner::fast::RunnerNode;
+    use crate::runner::{install_reconnect_trigger, RunnerMessage};
     use crate::segment::restore::RestoreInitPayload;
 
     static EMIT_RUNS: AtomicUsize = AtomicUsize::new(0);
@@ -2234,7 +2234,7 @@ mod tests {
     // a single shared channel stays unambiguous.
     #[test]
     fn bounded_driver_scenarios() {
-        let (tx, rx) = crossbeam::channel::unbounded::<ExecutorMessage>();
+        let (tx, rx) = crossbeam::channel::unbounded::<RunnerMessage>();
         install_reconnect_trigger(tx);
 
         // Durable bounded operatives in this test ship WAL frames through the
@@ -2283,7 +2283,7 @@ mod tests {
         crate::register_bounded::<RetryFailFastBounded>();
         crate::register_bounded::<RetrySlowBackoffBounded>();
 
-        let mut node = ExecutorNode::new("test-ns".to_string());
+        let mut node = RunnerNode::new("test-ns".to_string());
 
         // --- run-sugar: run once, args echoed, status "ok" ---
         EMIT_RUNS.store(0, Ordering::SeqCst);
@@ -3349,8 +3349,8 @@ mod tests {
     /// (exactly what the RestoreInitState handler would note), release the
     /// restore gate, and drain it to completion.
     fn resume_chain_with_journal(
-        node: &ExecutorNode,
-        rx: &Receiver<ExecutorMessage>,
+        node: &RunnerNode,
+        rx: &Receiver<RunnerMessage>,
         id: &str,
         journal: instance::JournalResume,
     ) -> (Vec<Vec<u8>>, (String, String, Vec<u8>)) {
@@ -3459,10 +3459,7 @@ mod tests {
     /// "Output" is what reaches the plugins: a `run`-sugar / opted-out emit
     /// straight off the wire, plus a structured operative's staged outbox once
     /// its op commits (the fake controller flushes it on ack).
-    fn drain(
-        rx: &Receiver<ExecutorMessage>,
-        id: &str,
-    ) -> (Vec<Vec<u8>>, (String, String, Vec<u8>)) {
+    fn drain(rx: &Receiver<RunnerMessage>, id: &str) -> (Vec<Vec<u8>>, (String, String, Vec<u8>)) {
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut outs = Vec::new();
         loop {
@@ -3471,7 +3468,7 @@ mod tests {
                 .recv_timeout(remaining)
                 .unwrap_or_else(|_| panic!("timed out waiting for bounded {id}"));
             match msg {
-                ExecutorMessage::EmitBoundedOutput {
+                RunnerMessage::EmitBoundedOutput {
                     operative_id,
                     payload,
                 } if operative_id == id => {
@@ -3481,13 +3478,13 @@ mod tests {
                         .push((operative_id, payload.clone()));
                     outs.push(payload);
                 }
-                ExecutorMessage::EmitBoundedCompleted {
+                RunnerMessage::EmitBoundedCompleted {
                     operative_id,
                     status,
                     error,
                     result,
                 } if operative_id == id => return (outs, (status, error, result)),
-                ExecutorMessage::EmitControlRequest {
+                RunnerMessage::EmitControlRequest {
                     reference_id,
                     command,
                 } => {
@@ -3512,7 +3509,7 @@ mod tests {
 
     /// Block until a specific output frame for `id` is observed (used to confirm
     /// an interactive instance is live before stopping it).
-    fn wait_for_output(rx: &Receiver<ExecutorMessage>, id: &str, payload: &[u8]) {
+    fn wait_for_output(rx: &Receiver<RunnerMessage>, id: &str, payload: &[u8]) {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -3520,7 +3517,7 @@ mod tests {
                 .recv_timeout(remaining)
                 .unwrap_or_else(|_| panic!("timed out waiting for output from {id}"));
             match msg {
-                ExecutorMessage::EmitControlRequest {
+                RunnerMessage::EmitControlRequest {
                     reference_id,
                     command,
                 } => {
@@ -3530,7 +3527,7 @@ mod tests {
                         return;
                     }
                 }
-                ExecutorMessage::EmitBoundedOutput {
+                RunnerMessage::EmitBoundedOutput {
                     operative_id,
                     payload: p,
                 } => {

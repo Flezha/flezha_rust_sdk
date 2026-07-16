@@ -6,7 +6,7 @@
 //! "Vec::push only" hot-path commitment.
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use flezha_executor::state::{Change, CoalesceKey};
+use flezha_runner::state::{Change, CoalesceKey};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Clone)]

@@ -8,12 +8,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use flezha_executor::channel::ChannelBuilder;
-use flezha_executor::operation::OperationError;
-use flezha_executor::segment::flusher::{SendError, SendFrameFn};
-use flezha_executor::segment::park::{self, ParkBody};
-use flezha_executor::segment::segment_state_sink::{install_global_sink, PARK_PAYLOAD_PAYLOAD_ID};
-use flezha_executor::UnboundedOperative;
+use flezha_runner::channel::ChannelBuilder;
+use flezha_runner::operation::OperationError;
+use flezha_runner::segment::flusher::{SendError, SendFrameFn};
+use flezha_runner::segment::park::{self, ParkBody};
+use flezha_runner::segment::segment_state_sink::{install_global_sink, PARK_PAYLOAD_PAYLOAD_ID};
+use flezha_runner::UnboundedOperative;
 
 mod common;
 use common::{dispatch_input, dummy_stream, setup, wait_until};

@@ -6,9 +6,9 @@ use std::sync::{Arc, Mutex, Weak};
 use std::thread::JoinHandle;
 
 use crate::channel::builder::BuildSegmentArgs;
-use crate::executor::work_stealing_pool::WorkStealingPool;
 use crate::operative::persistence::resolve_persistence_enabled;
 use crate::operative::topology::{OperativeTopology, SegmentingMode};
+use crate::runner::work_stealing_pool::WorkStealingPool;
 use crate::segment::dynamic::{spawn_reaper, DynamicSegmentRegistry};
 use crate::segment::SegmentSlot;
 
@@ -31,15 +31,15 @@ pub struct UnboundedInstance {
     reaper_stop: Arc<AtomicBool>,
     reaper_handles: Mutex<Vec<JoinHandle<()>>>,
     /// Frozen-at-instance-start persistence flag. Resolved from the
-    /// UnboundedOperative class const + executor override; propagated to every
-    /// `SegmentSlot`. Subsequent executor config changes do not
+    /// UnboundedOperative class const + runner override; propagated to every
+    /// `SegmentSlot`. Subsequent runner config changes do not
     /// affect this instance — only `stop_operative` + `start_operative` cycles
     /// pick up new values.
     persistence_enabled: bool,
 }
 
 impl UnboundedInstance {
-    /// Construct a fresh `UnboundedInstance` with no executor persistence
+    /// Construct a fresh `UnboundedInstance` with no runner persistence
     /// override. Equivalent to
     /// `UnboundedInstance::with_persistence_override(.., None)`.
     pub fn new(
@@ -50,8 +50,8 @@ impl UnboundedInstance {
         Self::with_persistence_override(topology, instance_id, pool, None)
     }
 
-    /// Construct a fresh `UnboundedInstance` with an explicit executor
-    /// override for `operative_persistence.<OperativeClass>`. The executor
+    /// Construct a fresh `UnboundedInstance` with an explicit runner
+    /// override for `operative_persistence.<OperativeClass>`. The runner
     /// override (when `Some`) wins over the class const.
     pub fn with_persistence_override(
         topology: Arc<OperativeTopology>,
@@ -159,7 +159,7 @@ impl UnboundedInstance {
     }
 
     /// Stop and join this instance's reaper threads. Called by
-    /// `ExecutorNode::stop_operative`; idempotent and a no-op for non-dynamic
+    /// `RunnerNode::stop_operative`; idempotent and a no-op for non-dynamic
     /// instances (no reapers).
     pub fn shutdown_reapers(&self) {
         self.reaper_stop

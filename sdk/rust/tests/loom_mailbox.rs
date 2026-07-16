@@ -1,6 +1,6 @@
 //! Loom model check for the mailbox CAS dance.
 //!
-//! The real `Mailbox` in `executor/mailbox.rs` uses `SegQueue` (from
+//! The real `Mailbox` in `runner/mailbox.rs` uses `SegQueue` (from
 //! crossbeam) and submits drain closures into a work-stealing pool. Neither
 //! is loom-friendly. This file mirrors ONLY the CAS+drain logic against
 //! loom's primitives so loom can exhaustively enumerate thread interleavings

@@ -1,4 +1,4 @@
-//! Rust SDK for the Flezha executor platform.
+//! Rust SDK for the Flezha runner platform.
 //!
 //! # Dispatch model
 //!
@@ -12,10 +12,10 @@
 //! # Worked example (sticky ordering, with persistent state)
 //!
 //! ```no_run
-//! use flezha_executor::{
+//! use flezha_runner::{
 //!     register_unbounded, ChannelBuilder, UnboundedOperative, Operation, OperationCtx, OperationError,
 //! };
-//! use flezha_executor::state::{
+//! use flezha_runner::state::{
 //!     Change, NoChange, RestoreInitPayload, StateHandle, WallClock,
 //! };
 //! use serde::{Deserialize, Serialize};
@@ -63,7 +63,7 @@
 //! }
 //!
 //! register_unbounded::<AppendOperative>();
-//! let _ = flezha_executor::new("my_namespace".to_string());
+//! let _ = flezha_runner::new("my_namespace".to_string());
 //! # fn _ref() -> Option<NoChange> { None }
 //! ```
 //!
@@ -77,7 +77,7 @@
 //! The SDK's reconnect loop runs forever with capped exponential
 //! backoff. On every successful reconnect the controller re-issues
 //! `AddOperative` for every UnboundedOperative instance ProcessHub still has tagged
-//! to this executor's profile. The handler is idempotent on duplicate
+//! to this runner's profile. The handler is idempotent on duplicate
 //! `operative_id`: if the local registry already contains the instance
 //! it logs and returns without re-registering, so the existing
 //! per-Segment state is preserved across the reconnect.
@@ -92,9 +92,9 @@
 pub mod bounded;
 pub mod channel;
 pub mod command;
-mod executor;
 pub mod operation;
 pub mod operative;
+mod runner;
 pub mod segment;
 mod shutdown;
 mod util;
@@ -104,7 +104,7 @@ pub mod testing;
 
 /// One-stop import path for the `operative-state-persistence-rust` trait
 /// surface. Bring everything into scope with
-/// `use flezha_executor::state::*;` to write Operations that declare
+/// `use flezha_runner::state::*;` to write Operations that declare
 /// `Change` types and route mutations through `state.apply(...)`.
 pub mod state {
     pub use crate::operation::change::{Change, CoalesceKey, NoChange};
@@ -175,22 +175,22 @@ pub fn register_inventory_operatives() {
     }
 }
 
-use crate::executor::{ClientResponseMessage, ExecutorMessage};
 use crate::operative::instance::UnboundedInstance;
+use crate::runner::{ClientResponseMessage, RunnerMessage};
 use crate::shutdown::ShutdownBridge;
 
 pub mod pb {
     #[cfg(not(rust_analyzer))]
-    include!("generated/executor_commands.rs");
+    include!("generated/runner_commands.rs");
     #[cfg(rust_analyzer)]
-    include!("generated/executor_commands.rs");
+    include!("generated/runner_commands.rs");
 }
 
 /// Register an UnboundedOperative class with the SDK. Calls `R::channels(...)` once,
 /// freezes the resulting topology in the global class registry, and
 /// makes the class spawnable via the controller's `flz operative start
 /// <factory_id>` command (which routes to `start_operative` on the
-/// `ExecutorNode`).
+/// `RunnerNode`).
 ///
 /// Idempotent on the same `factory_id` — re-registration overwrites
 /// the prior topology. Panics if `R::channels` produced an invalid
@@ -218,19 +218,19 @@ pub fn register_bounded<T: BoundedOperative>() {
 
 pub struct Flezha {
     id: String,
-    executor_tx: Arc<Mutex<crossbeam::channel::Sender<ExecutorMessage>>>,
+    runner_tx: Arc<Mutex<crossbeam::channel::Sender<RunnerMessage>>>,
     client_rx: Arc<Mutex<crossbeam::channel::Receiver<ClientResponseMessage>>>,
-    _executor_thread: Option<std::thread::JoinHandle<()>>,
+    _runner_thread: Option<std::thread::JoinHandle<()>>,
     shutdown_bridge: Arc<ShutdownBridge>,
 }
 
 impl Flezha {
     fn new(id: String) -> Flezha {
-        // Harvest single-operation auto-wire + `operative!` operatives before the executor
+        // Harvest single-operation auto-wire + `operative!` operatives before the runner
         // starts so the class registry is complete by the time AddOperative arrives.
         register_inventory_operatives();
 
-        let (otx, orx): (Sender<ExecutorMessage>, Receiver<ExecutorMessage>) =
+        let (otx, orx): (Sender<RunnerMessage>, Receiver<RunnerMessage>) =
             crossbeam::channel::unbounded();
         let (ctx, irx): (
             Sender<ClientResponseMessage>,
@@ -240,7 +240,7 @@ impl Flezha {
         let shutdown_bridge = ShutdownBridge::new();
         shutdown::register_bridge(Arc::clone(&shutdown_bridge));
 
-        let executor_thread = executor::start(
+        let runner_thread = runner::start(
             id.clone(),
             (otx.clone(), orx),
             ctx,
@@ -251,15 +251,15 @@ impl Flezha {
             .recv()
             .expect("Failed to receive namespace confirmation")
         {
-            ClientResponseMessage::ExecutorIdConfirmation => {}
+            ClientResponseMessage::RunnerIdConfirmation => {}
             _ => panic!("Unexpected message type received"),
         }
 
         Flezha {
             id: id.clone(),
-            executor_tx: Arc::new(Mutex::new(otx)),
+            runner_tx: Arc::new(Mutex::new(otx)),
             client_rx: Arc::new(Mutex::new(irx)),
-            _executor_thread: Some(executor_thread),
+            _runner_thread: Some(runner_thread),
             shutdown_bridge,
         }
     }
@@ -281,10 +281,10 @@ impl Flezha {
     pub fn get_operatives(
         &self,
     ) -> Arc<RwLock<HashMap<String, Arc<Mutex<Arc<UnboundedInstance>>>>>> {
-        self.executor_tx
+        self.runner_tx
             .lock()
             .unwrap()
-            .send(ExecutorMessage::ReturnOperatives)
+            .send(RunnerMessage::ReturnOperatives)
             .expect("Failed to send ReturnOperatives message");
 
         let response = self
@@ -322,7 +322,7 @@ impl Drop for Flezha {
 #[cfg(feature = "bench-internals")]
 #[doc(hidden)]
 pub mod __dispatch_internals {
-    pub use crate::executor::fast::OperativeDispatchHandle;
-    pub use crate::executor::mailbox::Mailbox;
-    pub use crate::executor::work_stealing_pool::WorkStealingPool;
+    pub use crate::runner::fast::OperativeDispatchHandle;
+    pub use crate::runner::mailbox::Mailbox;
+    pub use crate::runner::work_stealing_pool::WorkStealingPool;
 }

@@ -12,19 +12,19 @@ use std::sync::Arc;
 use serde_json::{Map, Value};
 
 use super::CommandAction;
-use crate::executor::ExecutorNode;
 use crate::operative::instance::UnboundedInstance;
 use crate::pb::SegmentState;
+use crate::runner::RunnerNode;
 use crate::util::LockRecover;
 
 impl CommandAction for SegmentState {
     fn handle(
         &self,
-        executor: &mut ExecutorNode,
+        runner: &mut RunnerNode,
         _message: &str,
         errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
-        match executor.get_unbounded(&self.operative_id) {
+        match runner.get_unbounded(&self.operative_id) {
             Some(instance) => {
                 let payload = serialize_operative_state(&instance);
                 ("segment_state".to_string(), payload)

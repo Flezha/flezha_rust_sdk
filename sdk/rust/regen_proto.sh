@@ -18,7 +18,7 @@ if ! command -v protoc &> /dev/null; then
 fi
 
 # Check if we have the proto file
-PROTO_FILE="../../protobufs/executor_commands.proto"
+PROTO_FILE="../../protobufs/runner_commands.proto"
 if [ ! -f "$PROTO_FILE" ]; then
     echo "Error: Proto file not found: $PROTO_FILE"
     exit 1
@@ -33,7 +33,7 @@ use std::fs;
 use std::path::Path;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let proto_file = "../../protobufs/executor_commands.proto";
+    let proto_file = "../../protobufs/runner_commands.proto";
     let proto_file = fs::canonicalize(proto_file)?;
     let proto_file_str = proto_file.to_string_lossy().to_string();
     let proto_dir = proto_file.parent().unwrap();
@@ -57,14 +57,22 @@ prost-build = "0.13.5"
 EOF
 
 # Set the temporary build script
-mv build.rs build.rs.backup
+HAD_BUILD_RS=0
+if [ -f build.rs ]; then
+    HAD_BUILD_RS=1
+    mv build.rs build.rs.backup
+fi
 mv temp_build.rs build.rs
 
 # Build to generate the files
 cargo build
 
 # Restore original files
-mv build.rs.backup build.rs
+if [ "$HAD_BUILD_RS" -eq 1 ]; then
+    mv build.rs.backup build.rs
+else
+    rm build.rs
+fi
 mv Cargo.toml.backup Cargo.toml
 
 echo "Successfully regenerated protobuf files!"

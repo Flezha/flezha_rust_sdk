@@ -1,4 +1,4 @@
-//! Sender-side credit window for the executor → controller state stream.
+//! Sender-side credit window for the runner → controller state stream.
 //!
 //! The controller offers a byte window via the `CreditWindowInit` control
 //! command; [`arm`] adopts it and the ack rides back as the command's
@@ -15,7 +15,7 @@
 //!  * the park is a bounded `Condvar` wait loop (50 ms recheck), so a lost
 //!    grant degrades to a retry loop with warnings, never a silent freeze;
 //!  * [`CREDIT_PARKED`] advances on every wait iteration, so a credit-parked
-//!    executor classifies as fed-but-parked in the liveness self-report.
+//!    runner classifies as fed-but-parked in the liveness self-report.
 //!
 //! A frame larger than the whole window is sent once the window is fully
 //! replenished (single-frame overshoot); the controller mirrors this by
@@ -34,7 +34,7 @@ const WARN_AFTER: Duration = Duration::from_secs(5);
 
 /// Process-global count of credit-park wait iterations. Shipped in every
 /// `data_heartbeat` frame's metadata; advancing while `dispatches` is frozen
-/// means the executor is parked on credit, not wedged.
+/// means the runner is parked on credit, not wedged.
 pub static CREDIT_PARKED: AtomicU64 = AtomicU64::new(0);
 
 pub fn credit_parked() -> u64 {

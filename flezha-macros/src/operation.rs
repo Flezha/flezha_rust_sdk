@@ -113,14 +113,14 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
     let (state_ty_tokens, change_ty_tokens, apply_change_item, state_binding, mut_use) =
         match &state_param {
             Some((pat, ty)) => {
-                let handle_bind = quote! { mut #pat: ::flezha_executor::StateHandle<'_, Self> };
+                let handle_bind = quote! { mut #pat: ::flezha_runner::StateHandle<'_, Self> };
                 let mut_use = mut_trait_use(ty);
                 (
                     quote! { #ty },
-                    quote! { <#ty as ::flezha_executor::DerivedState>::Change },
+                    quote! { <#ty as ::flezha_runner::DerivedState>::Change },
                     quote! {
                         fn apply_change(state: &mut Self::State, change: &Self::Change) {
-                            <#ty as ::flezha_executor::DerivedState>::apply_change(state, change);
+                            <#ty as ::flezha_runner::DerivedState>::apply_change(state, change);
                         }
                     },
                     handle_bind,
@@ -129,9 +129,9 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             }
             None => (
                 quote! { () },
-                quote! { ::flezha_executor::NoChange },
+                quote! { ::flezha_runner::NoChange },
                 quote! {},
-                quote! { _: ::flezha_executor::StateHandle<'_, Self> },
+                quote! { _: ::flezha_runner::StateHandle<'_, Self> },
                 quote! {},
             ),
         };
@@ -144,7 +144,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         (Some(_), Some(init_path)) => quote! {
             fn init_state(
                 __flezha_operation_key: ::core::option::Option<&str>,
-                _: ::core::option::Option<::flezha_executor::RestoreInitPayload<'_>>,
+                _: ::core::option::Option<::flezha_runner::RestoreInitPayload<'_>>,
             ) -> Self::State {
                 #init_path(__flezha_operation_key)
             }
@@ -152,7 +152,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         (Some((_, ty)), None) => quote! {
             fn init_state(
                 _: ::core::option::Option<&str>,
-                _: ::core::option::Option<::flezha_executor::RestoreInitPayload<'_>>,
+                _: ::core::option::Option<::flezha_runner::RestoreInitPayload<'_>>,
             ) -> Self::State {
                 <#ty as ::core::default::Default>::default()
             }
@@ -162,7 +162,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         (None, _) => quote! {
             fn init_state(
                 _: ::core::option::Option<&str>,
-                _: ::core::option::Option<::flezha_executor::RestoreInitPayload<'_>>,
+                _: ::core::option::Option<::flezha_runner::RestoreInitPayload<'_>>,
             ) -> Self::State {
             }
         },
@@ -171,7 +171,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
     // --- Clock. ---
     let clock_ty = match &args.clock {
         Some(c) => quote! { #c },
-        None => quote! { ::flezha_executor::WallClock },
+        None => quote! { ::flezha_runner::WallClock },
     };
 
     // --- run body: bind input + state, run user body, emit the output. ---
@@ -223,9 +223,9 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         ),
     };
     let ctx_bind = if output.emits() {
-        quote! { __flezha_ctx: &mut ::flezha_executor::OperationCtx<'_> }
+        quote! { __flezha_ctx: &mut ::flezha_runner::OperationCtx<'_> }
     } else {
-        quote! { _flezha_ctx: &mut ::flezha_executor::OperationCtx<'_> }
+        quote! { _flezha_ctx: &mut ::flezha_runner::OperationCtx<'_> }
     };
 
     // --- Optional Operation-trait overrides. ---
@@ -291,19 +291,19 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         quote! {
             #[doc(hidden)]
             #vis struct #operative_ident;
-            impl ::flezha_executor::UnboundedOperative for #operative_ident {
+            impl ::flezha_runner::UnboundedOperative for #operative_ident {
                 fn factory_id() -> &'static str { #id }
-                fn channels(c: &mut ::flezha_executor::ChannelBuilder) {
+                fn channels(c: &mut ::flezha_runner::ChannelBuilder) {
                     c.input::<#input_ty>("input") #on_full .into::<#struct_ident>();
                     c.channel::<#output_ty_tokens>(#sink)
                         .from::<#struct_ident>()
                         .to_plugin(#sink);
                 }
             }
-            ::flezha_executor::inventory::submit! {
-                ::flezha_executor::AutoOperative::new(
-                    <#operative_ident as ::flezha_executor::UnboundedOperative>::factory_id,
-                    || ::flezha_executor::register_unbounded::<#operative_ident>(),
+            ::flezha_runner::inventory::submit! {
+                ::flezha_runner::AutoOperative::new(
+                    <#operative_ident as ::flezha_runner::UnboundedOperative>::factory_id,
+                    || ::flezha_runner::register_unbounded::<#operative_ident>(),
                 )
             }
         }
@@ -315,7 +315,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         #[derive(::core::default::Default)]
         #vis struct #struct_ident;
 
-        impl ::flezha_executor::Operation for #struct_ident {
+        impl ::flezha_runner::Operation for #struct_ident {
             type Input = #input_ty;
             type Output = #output_ty_tokens;
             type State = #state_ty_tokens;
@@ -336,7 +336,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                 #input_pat: Self::Input,
                 #state_binding,
                 #ctx_bind,
-            ) -> ::core::result::Result<(), ::flezha_executor::OperationError> {
+            ) -> ::core::result::Result<(), ::flezha_runner::OperationError> {
                 #[allow(unused_imports)]
                 #mut_use
                 #run_emit
@@ -425,7 +425,7 @@ fn on_full_call(on_full: &Option<syn::Ident>) -> syn::Result<TokenStream> {
                 "#[flezha::operation] `on_full` must be one of: block, drop_newest, drop_oldest",
             )),
         };
-    Ok(quote! { .on_full(::flezha_executor::OverflowPolicy::#variant) })
+    Ok(quote! { .on_full(::flezha_runner::OverflowPolicy::#variant) })
 }
 
 fn parse_args(attr: TokenStream) -> syn::Result<OperationArgs> {

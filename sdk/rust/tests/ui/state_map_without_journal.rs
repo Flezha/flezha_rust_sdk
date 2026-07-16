@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-#[derive(flezha_executor::State)]
+#[derive(flezha_runner::State)]
 struct S {
     m: HashMap<String, f64>,
 }

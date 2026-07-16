@@ -1,4 +1,4 @@
-#[flezha_executor::operation(keys = ["a", "b"])]
+#[flezha_runner::operation(keys = ["a", "b"])]
 fn f(a: String) -> Vec<u8> {
     a.into_bytes()
 }

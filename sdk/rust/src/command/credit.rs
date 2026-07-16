@@ -11,14 +11,14 @@
 use prost::Message;
 
 use super::CommandAction;
-use crate::executor::ExecutorNode;
 use crate::pb::{CreditGrant, CreditWindowAck, CreditWindowInit};
+use crate::runner::RunnerNode;
 use crate::segment::credit;
 
 impl CommandAction for CreditWindowInit {
     fn handle(
         &self,
-        _executor: &mut ExecutorNode,
+        _runner: &mut RunnerNode,
         _message: &str,
         _errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
@@ -35,7 +35,7 @@ impl CommandAction for CreditWindowInit {
 impl CommandAction for CreditGrant {
     fn handle(
         &self,
-        _executor: &mut ExecutorNode,
+        _runner: &mut RunnerNode,
         _message: &str,
         _errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {

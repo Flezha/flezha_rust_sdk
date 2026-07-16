@@ -124,7 +124,7 @@ pub struct BuildSegmentArgs<'a> {
     /// `persistence_enabled` field; the per-process flusher inspects it
     /// at drain time to decide whether to call `send_frame`.
     pub persistence_enabled: bool,
-    pub pool: Arc<crate::executor::work_stealing_pool::WorkStealingPool>,
+    pub pool: Arc<crate::runner::work_stealing_pool::WorkStealingPool>,
 }
 
 /// Plugin sink attached to an `InterOperation` channel via

@@ -25,13 +25,13 @@ use flz_transport::transport::FlezhaStream;
 use crate::bounded::{BoundedCollectSink, BoundedError};
 use crate::channel::builder::BuildSegmentArgs;
 use crate::channel::{ChannelId, ChannelKind, OperationId, OverflowPolicy, RetryPolicy};
-use crate::executor::mailbox::Mailbox;
 use crate::operation::change::NoChange;
 use crate::operation::ctx::EmitSink;
 use crate::operation::state_handle::StateHandle;
 use crate::operation::{Operation, OperationCtx, OperationError};
 use crate::operative::instance::UnboundedInstance;
 use crate::operative::topology::{BeyondWindowPolicy, OperativeTopology};
+use crate::runner::mailbox::Mailbox;
 use crate::segment::correction::Lateness;
 use crate::segment::flusher::{
     encode_segment_identity, FlushableBuffer, SegmentFlusher, TypedBuffer,

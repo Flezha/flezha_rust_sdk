@@ -17,7 +17,7 @@ use prost::Message;
 use tracing::warn;
 
 use super::work_stealing_pool::WorkStealingPool;
-use super::{control_unit, ClientResponseMessage, ExecutorMessage, ExecutorStatus};
+use super::{control_unit, ClientResponseMessage, RunnerMessage, RunnerStatus};
 use crate::command;
 use crate::operative::instance::UnboundedInstance;
 use crate::operative::registry::{get_class as get_operative_class, Operative, OperativeRegistry};
@@ -26,30 +26,30 @@ use crate::pb::{BoundedCompleted as PbBoundedCompleted, CommandRequest};
 use crate::shutdown::ShutdownBridge;
 use crate::util::nonce_suffix;
 
-pub struct ExecutorNode {
-    executor_id: String,
+pub struct RunnerNode {
+    runner_id: String,
     _namespace: String,
     operative_registry: Arc<OperativeRegistry>,
     pool: Arc<WorkStealingPool>,
     shared_io_streams: Arc<RwLock<HashMap<u32, FlezhaStream>>>,
     quic_client: Option<Arc<QuicClient>>,
-    status: ExecutorStatus,
+    status: RunnerStatus,
 }
 
-impl ExecutorNode {
-    pub fn new(namespace: String) -> ExecutorNode {
+impl RunnerNode {
+    pub fn new(namespace: String) -> RunnerNode {
         let operative_registry = Arc::new(OperativeRegistry::new());
         let pool = Arc::new(WorkStealingPool::new());
         let shared_io_streams = Arc::new(RwLock::new(HashMap::new()));
 
-        ExecutorNode {
-            executor_id: "undefined".to_string(),
+        RunnerNode {
+            runner_id: "undefined".to_string(),
             _namespace: namespace,
             operative_registry,
             pool,
             shared_io_streams,
             quic_client: None,
-            status: ExecutorStatus::Starting,
+            status: RunnerStatus::Starting,
         }
     }
 
@@ -194,15 +194,15 @@ impl ExecutorNode {
         Arc::clone(&self.shared_io_streams)
     }
 
-    pub fn get_executor_id(&self) -> String {
-        self.executor_id.clone()
+    pub fn get_runner_id(&self) -> String {
+        self.runner_id.clone()
     }
 
-    pub fn assign_executor_id(&mut self, executor_id: String) {
-        self.executor_id = executor_id;
+    pub fn assign_runner_id(&mut self, runner_id: String) {
+        self.runner_id = runner_id;
     }
 
-    pub fn set_status(&mut self, status: ExecutorStatus) {
+    pub fn set_status(&mut self, status: RunnerStatus) {
         self.status = status;
     }
 
@@ -217,19 +217,19 @@ impl ExecutorNode {
 
 pub fn start(
     namespace: String,
-    (otx, orx): (Sender<ExecutorMessage>, Receiver<ExecutorMessage>),
+    (otx, orx): (Sender<RunnerMessage>, Receiver<RunnerMessage>),
     ctx: Sender<ClientResponseMessage>,
     shutdown_bridge: Arc<ShutdownBridge>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
-        let mut executor = ExecutorNode::new(namespace.clone());
+        let mut runner = RunnerNode::new(namespace.clone());
 
         // Capture a registry snapshot closure now so the shutdown bridge
         // can enumerate live UnboundedOperative instances without going through the
         // coordinator channel. Survives reconnects since the registry
         // Arc is stable.
         {
-            let registry = Arc::clone(&executor.operative_registry);
+            let registry = Arc::clone(&runner.operative_registry);
             shutdown_bridge.set_snapshot_fn(Box::new(move || {
                 registry
                     .snapshot_unbounded()
@@ -252,7 +252,7 @@ pub fn start(
         let otx_arc = Arc::new(Mutex::new(otx));
         let (_control_thread, mut control_stream, quic_client) =
             control_unit::open(namespace.clone(), ctx_arc.clone(), otx_arc.clone());
-        executor.set_quic_client(quic_client);
+        runner.set_quic_client(quic_client);
         shutdown_bridge.set_control_stream(Some(Arc::clone(&control_stream)));
 
         // Jittered control-channel keepalive. The timer only signals this
@@ -271,18 +271,18 @@ pub fn start(
             let message = orx.recv().expect("Failed to receive coordinator message");
 
             match message {
-                ExecutorMessage::HandleCommandAction(payload_id, message, _metadata) => {
-                    command::handle_command(&mut executor, &control_stream, &payload_id, &message);
+                RunnerMessage::HandleCommandAction(payload_id, message, _metadata) => {
+                    command::handle_command(&mut runner, &control_stream, &payload_id, &message);
                 }
-                ExecutorMessage::ReturnOperatives => {
-                    return_operatives(&executor, ctx_arc.clone());
+                RunnerMessage::ReturnOperatives => {
+                    return_operatives(&runner, ctx_arc.clone());
                 }
-                ExecutorMessage::Reconnect(reason) => {
-                    if matches!(executor.status, ExecutorStatus::Stopped) {
+                RunnerMessage::Reconnect(reason) => {
+                    if matches!(runner.status, RunnerStatus::Stopped) {
                         continue;
                     }
                     handle_reconnect(
-                        &mut executor,
+                        &mut runner,
                         &mut control_stream,
                         &namespace,
                         &otx_arc,
@@ -290,22 +290,22 @@ pub fn start(
                     );
                     shutdown_bridge.set_control_stream(Some(Arc::clone(&control_stream)));
                 }
-                ExecutorMessage::SendControlKeepalive => {
+                RunnerMessage::SendControlKeepalive => {
                     // A failed keepalive write means the control stream died;
                     // the reader loop detects the same and drives reconnect, so
                     // just drop this tick.
                     let _ = control_unit::send_keepalive_ping(&control_stream);
                 }
-                ExecutorMessage::SendDataHeartbeat => {
-                    send_data_heartbeat(&executor.shared_io_streams);
+                RunnerMessage::SendDataHeartbeat => {
+                    send_data_heartbeat(&runner.shared_io_streams);
                 }
-                ExecutorMessage::EmitBoundedOutput {
+                RunnerMessage::EmitBoundedOutput {
                     operative_id,
                     payload,
                 } => {
-                    write_bounded_output(&executor.shared_io_streams, &operative_id, &payload);
+                    write_bounded_output(&runner.shared_io_streams, &operative_id, &payload);
                 }
-                ExecutorMessage::EmitBoundedCompleted {
+                RunnerMessage::EmitBoundedCompleted {
                     operative_id,
                     status,
                     error,
@@ -327,7 +327,7 @@ pub fn start(
                         );
                     }
                 }
-                ExecutorMessage::EmitControlRequest {
+                RunnerMessage::EmitControlRequest {
                     reference_id,
                     command,
                 } => {
@@ -420,8 +420,8 @@ fn send_data_heartbeat(io_streams: &RwLock<HashMap<u32, FlezhaStream>>) {
     }
 }
 
-fn return_operatives(executor: &ExecutorNode, ctx_arc: Arc<Mutex<Sender<ClientResponseMessage>>>) {
-    let operatives = executor.get_operatives();
+fn return_operatives(runner: &RunnerNode, ctx_arc: Arc<Mutex<Sender<ClientResponseMessage>>>) {
+    let operatives = runner.get_operatives();
     ctx_arc
         .lock()
         .unwrap()
@@ -431,28 +431,28 @@ fn return_operatives(executor: &ExecutorNode, ctx_arc: Arc<Mutex<Sender<ClientRe
 
 /// Re-establish the control stream while preserving the SDK's
 /// in-memory state. The previous behaviour cleared
-/// `shared_io_streams`, `operative_registry`, and the `executor_id` —
-/// that is what caused the May 25 silent freeze (executor sat empty
+/// `shared_io_streams`, `operative_registry`, and the `runner_id` —
+/// that is what caused the May 25 silent freeze (runner sat empty
 /// while the controller still believed the binding was live). The
 /// `executor-controller-connection-healing` capability now requires:
 ///
 ///   * `operative_registry` and `shared_io_streams` are retained across
 ///     reconnect (in-flight per-Segment mailbox work keeps draining); the
-///     existing `executor_id` is kept until the controller assigns a fresh
-///     session token via `AssignExecutorId` on the re-opened stream.
+///     existing `runner_id` is kept until the controller assigns a fresh
+///     session token via `AssignRunnerId` on the re-opened stream.
 ///   * A `tracing::warn!` line is emitted with the upstream-derived
 ///     `reason` so kubectl logs surface every reconnect.
-///   * The re-opened control stream re-presents the executor's stable id in
+///   * The re-opened control stream re-presents the runner's stable id in
 ///     its connect handshake, so the controller resolves the reconnect as a
 ///     binding swap — there is no separate reconnect frame.
 fn handle_reconnect(
-    executor: &mut ExecutorNode,
+    runner: &mut RunnerNode,
     control_stream: &mut Arc<FlezhaStream>,
     namespace: &str,
-    otx_arc: &Arc<Mutex<Sender<ExecutorMessage>>>,
+    otx_arc: &Arc<Mutex<Sender<RunnerMessage>>>,
     reason: &str,
 ) {
-    let previous_id = executor.get_executor_id();
+    let previous_id = runner.get_runner_id();
     warn!(
         target: "flezha",
         "[flezha] control-channel reconnect reason={} previous_id={}",
@@ -460,19 +460,19 @@ fn handle_reconnect(
         previous_id
     );
 
-    executor.set_status(ExecutorStatus::Stopped);
+    runner.set_status(RunnerStatus::Stopped);
 
     let (_, new_stream, new_quic) =
         control_unit::open_reconnect(namespace.to_string(), otx_arc.clone());
 
     *control_stream = new_stream;
-    executor.set_quic_client(new_quic);
+    runner.set_quic_client(new_quic);
 
     // Resume processing dispatch traffic against the preserved
     // registry — without `set_status(Running)` the per-Segment
     // mailboxes drain into a paused state and the controller sees
     // the SDK as a black hole even though its registry is intact.
-    executor.set_status(ExecutorStatus::Running);
+    runner.set_status(RunnerStatus::Running);
 }
 
 /// Stream-reader handle for the UnboundedOperative model. Cheap to clone; carries a
@@ -609,33 +609,33 @@ impl OperativeDispatchHandle {
 
 #[cfg(test)]
 mod reconnect_tests {
-    //! Exercises the reconnect-preservation contract: `executor_id` and the
+    //! Exercises the reconnect-preservation contract: `runner_id` and the
     //! in-memory `operative_registry` survive `handle_reconnect`'s status flap
     //! (the May 25 silent-freeze regression cleared them). The reconnect
-    //! re-presents the executor's stable id via the connect handshake — there
+    //! re-presents the runner's stable id via the connect handshake — there
     //! is no separate reconnect frame — so the controller resolves it as a
     //! binding swap; that controller-side path is covered by the Elixir suite
     //! and the cross-language matrix.
     use super::*;
 
     #[test]
-    fn executor_id_and_registry_are_preserved_across_status_flap() {
-        let mut executor = ExecutorNode::new("ns".to_string());
-        executor.assign_executor_id("e-abc".to_string());
-        // ExecutorNode has no public `operative_registry.len()` so we drive
+    fn runner_id_and_registry_are_preserved_across_status_flap() {
+        let mut runner = RunnerNode::new("ns".to_string());
+        runner.assign_runner_id("e-abc".to_string());
+        // RunnerNode has no public `operative_registry.len()` so we drive
         // the state-preservation assertion through the public surface
-        // that handle_reconnect uses: the executor_id and the
+        // that handle_reconnect uses: the runner_id and the
         // shared_io_streams handle pointer should be stable across the
         // status flap handle_reconnect performs.
-        let original_id = executor.get_executor_id();
-        let streams_before = Arc::as_ptr(&executor.get_io_streams());
+        let original_id = runner.get_runner_id();
+        let streams_before = Arc::as_ptr(&runner.get_io_streams());
 
-        // What handle_reconnect actually does to the executor state:
-        executor.set_status(ExecutorStatus::Stopped);
-        executor.set_status(ExecutorStatus::Running);
+        // What handle_reconnect actually does to the runner state:
+        runner.set_status(RunnerStatus::Stopped);
+        runner.set_status(RunnerStatus::Running);
 
-        assert_eq!(executor.get_executor_id(), original_id);
-        let streams_after = Arc::as_ptr(&executor.get_io_streams());
+        assert_eq!(runner.get_runner_id(), original_id);
+        let streams_after = Arc::as_ptr(&runner.get_io_streams());
         assert_eq!(
             streams_before, streams_after,
             "shared_io_streams handle must survive handle_reconnect"

@@ -18,10 +18,10 @@ use flz_transport::service::payloader;
 
 use crate::channel::builder::BuildSegmentArgs;
 use crate::channel::OperationId;
-use crate::executor::work_stealing_pool::WorkStealingPool;
 use crate::operative::dispatcher::drain_segment;
 use crate::operative::instance::UnboundedInstance;
 use crate::operative::topology::OperativeTopology;
+use crate::runner::work_stealing_pool::WorkStealingPool;
 use crate::segment::flusher::SegmentFlusher;
 use crate::segment::{segment_state_sink, SegmentSlot};
 

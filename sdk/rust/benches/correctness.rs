@@ -31,13 +31,13 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use criterion::{criterion_group, criterion_main, Criterion};
-use flezha_executor::channel::ChannelBuilder;
-use flezha_executor::operation::{Operation, OperationCtx, OperationError};
-use flezha_executor::operative::builder::build_topology_for;
-use flezha_executor::operative::registry::OperativeRegistry;
-use flezha_executor::operative::UnboundedInstance;
-use flezha_executor::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_executor::{__dispatch_internals as bi, OverflowPolicy, UnboundedOperative};
+use flezha_runner::channel::ChannelBuilder;
+use flezha_runner::operation::{Operation, OperationCtx, OperationError};
+use flezha_runner::operative::builder::build_topology_for;
+use flezha_runner::operative::registry::OperativeRegistry;
+use flezha_runner::operative::UnboundedInstance;
+use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
+use flezha_runner::{OverflowPolicy, UnboundedOperative, __dispatch_internals as bi};
 use flz_transport::transport::FlezhaStream;
 
 // Helpers — duplicated from `dispatch.rs` per `operative-bench-harness/design.md`
@@ -288,8 +288,8 @@ fn throughput_static_fanout(c: &mut Criterion) {
 // (`effectively-once-output` §6.3); the tier-off number doubles as the
 // zero-delta guard for the default path.
 
-use flezha_executor::segment::flusher::{SendError, SendFrameFn};
-use flezha_executor::segment::segment_state_sink;
+use flezha_runner::segment::flusher::{SendError, SendFrameFn};
+use flezha_runner::segment::segment_state_sink;
 use serde::{Deserialize, Serialize};
 
 static TIER_OFF_COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -297,7 +297,7 @@ static TIER_ON_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Serialize, Deserialize)]
 struct BumpChange;
-impl flezha_executor::state::Change for BumpChange {}
+impl flezha_runner::state::Change for BumpChange {}
 
 macro_rules! tier_bench_operation {
     ($op:ident, $name:literal, $counter:ident) => {

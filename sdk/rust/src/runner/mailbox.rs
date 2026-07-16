@@ -40,7 +40,7 @@ use std::sync::Arc;
 
 use crossbeam::queue::ArrayQueue;
 
-use crate::executor::work_stealing_pool::{Task, WorkStealingPool};
+use crate::runner::work_stealing_pool::{Task, WorkStealingPool};
 use crate::segment::SegmentCounters;
 
 /// Returned by `push_and_maybe_submit` when the bounded queue rejects the

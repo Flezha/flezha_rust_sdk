@@ -13,13 +13,13 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use bi::OperativeDispatchHandle;
-use flezha_executor::channel::ChannelBuilder;
-use flezha_executor::operation::{Operation, OperationCtx, OperationError};
-use flezha_executor::operative::builder::build_topology_for;
-use flezha_executor::operative::registry::OperativeRegistry;
-use flezha_executor::operative::UnboundedInstance;
-use flezha_executor::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_executor::{OverflowPolicy, UnboundedOperative, __dispatch_internals as bi};
+use flezha_runner::channel::ChannelBuilder;
+use flezha_runner::operation::{Operation, OperationCtx, OperationError};
+use flezha_runner::operative::builder::build_topology_for;
+use flezha_runner::operative::registry::OperativeRegistry;
+use flezha_runner::operative::UnboundedInstance;
+use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
+use flezha_runner::{OverflowPolicy, UnboundedOperative, __dispatch_internals as bi};
 
 mod common;
 use common::{dispatch_input, dummy_stream, setup, wait_until};
@@ -1035,7 +1035,7 @@ static WAL_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct AddChange(i64);
-impl flezha_executor::state::Change for AddChange {}
+impl flezha_runner::state::Change for AddChange {}
 
 #[derive(Default)]
 struct FlushOrderOperation;
@@ -1091,8 +1091,8 @@ impl UnboundedOperative for FlushOrderOperative {
 
 #[test]
 fn change_is_flushed_before_output_is_emitted() {
-    use flezha_executor::segment::flusher::{SendError, SendFrameFn};
-    use flezha_executor::segment::segment_state_sink;
+    use flezha_runner::segment::flusher::{SendError, SendFrameFn};
+    use flezha_runner::segment::segment_state_sink;
 
     let _serial = WAL_TEST_LOCK.lock().unwrap();
     FLUSH_ORDER_LOG.lock().unwrap().clear();
@@ -1168,7 +1168,7 @@ fn operation_panic_does_not_wedge_the_segment() {
     let _acker = std::thread::spawn(|| {
         for _ in 0..200 {
             for nonce in 0..32 {
-                flezha_executor::segment::park::complete_ack(&format!(
+                flezha_runner::segment::park::complete_ack(&format!(
                     "panic-instance/panic_operation/#{nonce}"
                 ));
             }
@@ -1356,7 +1356,7 @@ fn read_frames(sock: &mut UnixStream, expected: usize, timeout: Duration) -> Vec
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct TickChange;
-impl flezha_executor::state::Change for TickChange {}
+impl flezha_runner::state::Change for TickChange {}
 
 /// Keyed operation: applies one change per input, emits the input under
 /// itself as the natural key.
@@ -1500,7 +1500,7 @@ test_operation!(PlainPluginOperation, "plain_plugin_operation", String => String
 /// `len = 16 + change.len()`, trailing crc over `header + change`.
 fn wal_record<S: Operation>(seq: u64, change_bytes: &[u8]) -> Vec<u8> {
     let header =
-        flezha_executor::segment::header::HeaderTemplate::for_operation::<S>().stamp(change_bytes);
+        flezha_runner::segment::header::HeaderTemplate::for_operation::<S>().stamp(change_bytes);
     let mut record = Vec::new();
     record.extend_from_slice(&seq.to_be_bytes());
     record.extend_from_slice(&((16 + change_bytes.len()) as u32).to_be_bytes());
@@ -1634,7 +1634,7 @@ impl UnboundedOperative for TierOperative {
 /// input arrived with — and no output frame appears on the primary stream.
 #[test]
 fn tier_emits_ride_the_state_sink_as_one_effect_record() {
-    use flezha_executor::segment::flusher::EffectRecordBody;
+    use flezha_runner::segment::flusher::EffectRecordBody;
 
     let _serial = WAL_TEST_LOCK.lock().unwrap();
     install_capturing_tier_sink();
@@ -1767,7 +1767,7 @@ impl Operation for LogicalNowOperation {
     type Output = String;
     type State = i64;
     type Change = TickChange;
-    type Clock = flezha_executor::state::LogicalClock;
+    type Clock = flezha_runner::state::LogicalClock;
     type Config = ();
     fn name() -> &'static str {
         "logical_now_operation"
@@ -1881,7 +1881,7 @@ fn logical_clock_serves_change_seq_and_survives_restore_rearm() {
 static REPLAY_OBSERVED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 struct TradeTime;
-impl flezha_executor::operation::TimeExtractor<String> for TradeTime {
+impl flezha_runner::operation::TimeExtractor<String> for TradeTime {
     fn extract(input: &String) -> u64 {
         input.parse().unwrap_or(0)
     }
@@ -1894,7 +1894,7 @@ impl Operation for ReplayOperation {
     type Output = String;
     type State = ();
     type Change = NoChange;
-    type Clock = flezha_executor::operation::EventTimeFrom<TradeTime>;
+    type Clock = flezha_runner::operation::EventTimeFrom<TradeTime>;
     type Config = ();
     fn name() -> &'static str {
         "replay_operation"
@@ -2008,7 +2008,7 @@ impl Operation for HighWaterOperation {
     type Output = String;
     type State = ();
     type Change = NoChange;
-    type Clock = flezha_executor::operation::EventTimeFrom<TradeTime>;
+    type Clock = flezha_runner::operation::EventTimeFrom<TradeTime>;
     type Config = ();
     fn name() -> &'static str {
         "high_water_operation"
@@ -2112,8 +2112,8 @@ fn a_replay_does_not_lower_the_event_time_high_water() {
 // ---------------------------------------------------------------------------
 
 /// Decode every `segment_effect_record` the tier sink captured, in order.
-fn captured_effect_bodies() -> Vec<flezha_executor::segment::flusher::EffectRecordBody> {
-    use flezha_executor::segment::flusher::EffectRecordBody;
+fn captured_effect_bodies() -> Vec<flezha_runner::segment::flusher::EffectRecordBody> {
+    use flezha_runner::segment::flusher::EffectRecordBody;
 
     TIER_SINK_FRAMES
         .lock()
@@ -2135,8 +2135,8 @@ fn captured_effect_bodies() -> Vec<flezha_executor::segment::flusher::EffectReco
 }
 
 fn install_capturing_tier_sink() {
-    use flezha_executor::segment::flusher::{SendError, SendFrameFn};
-    use flezha_executor::segment::segment_state_sink;
+    use flezha_runner::segment::flusher::{SendError, SendFrameFn};
+    use flezha_runner::segment::segment_state_sink;
 
     TIER_SINK_FRAMES.lock().unwrap().clear();
     let sink: SendFrameFn = Arc::new(|payload_id: &str, frame: &[u8]| -> Result<(), SendError> {
@@ -2315,7 +2315,7 @@ fn a_park_closes_the_checkpoint_interval() {
 /// controller re-forwards the inputs that produced them.
 #[test]
 fn a_restore_discards_the_open_interval() {
-    use flezha_executor::segment::flusher::{FlushableBuffer, TypedBuffer};
+    use flezha_runner::segment::flusher::{FlushableBuffer, TypedBuffer};
 
     let mut buf: TypedBuffer<CheckpointOperation> = TypedBuffer::default();
     buf.staged.push(TickChange);

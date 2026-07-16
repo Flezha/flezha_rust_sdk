@@ -10,12 +10,12 @@ use std::sync::{Arc, Barrier, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use flezha_executor::channel::ChannelBuilder;
-use flezha_executor::operation::{Operation, OperationCtx, OperationError};
-use flezha_executor::operative::UnboundedInstance;
-use flezha_executor::segment::dynamic::DynamicSegmentRegistry;
-use flezha_executor::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_executor::UnboundedOperative;
+use flezha_runner::channel::ChannelBuilder;
+use flezha_runner::operation::{Operation, OperationCtx, OperationError};
+use flezha_runner::operative::UnboundedInstance;
+use flezha_runner::segment::dynamic::DynamicSegmentRegistry;
+use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
+use flezha_runner::UnboundedOperative;
 
 mod common;
 use common::{dispatch_input, dummy_stream, setup, wait_until};

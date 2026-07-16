@@ -4,14 +4,14 @@
 //! handle, or an explicit `disconnect()` — the SDK serializes each
 //! currently-running operative's state via the same per-driver path used
 //! for `MigrationSerialization` and emits one
-//! `ExecutorShutdownNotification` per operative on the control channel.
+//! `RunnerShutdownNotification` per operative on the control channel.
 //! The controller overwrites its `Overwatch.state.snapshot` with the supplied
-//! binary so the next reconnecting executor picks up the executor's true
+//! binary so the next reconnecting runner picks up the runner's true
 //! final state — see ship-fresh-state-on-sdk-shutdown.
 //!
 //! ## Timing contract
 //!
-//! - The SDK awaits `ExecutorShutdownAck` per operative with a **2 s
+//! - The SDK awaits `RunnerShutdownAck` per operative with a **2 s
 //!   per-operative timeout**, parallelised across operatives so total
 //!   wait is bounded by 2 s (not 2N s).
 //! - The per-operative serializer step is capped at the controller's
@@ -131,8 +131,8 @@ impl ShutdownBridge {
 
             let request = pb::CommandRequest {
                 reference_id: reference_id.clone(),
-                command: Some(pb::command_request::Command::ExecutorShutdownNotification(
-                    pb::ExecutorShutdownNotification {
+                command: Some(pb::command_request::Command::RunnerShutdownNotification(
+                    pb::RunnerShutdownNotification {
                         operative_id: operative_id.clone(),
                         serialized_state,
                     },
@@ -147,7 +147,7 @@ impl ShutdownBridge {
 
             if let Err(e) = (&*stream).write_all(&payload) {
                 eprintln!(
-                    "[flezha] Failed to write ExecutorShutdownNotification for {}: {}",
+                    "[flezha] Failed to write RunnerShutdownNotification for {}: {}",
                     operative_id, e
                 );
                 drop_pending_ack(&reference_id);
@@ -160,7 +160,7 @@ impl ShutdownBridge {
                 Ok(_) => {}
                 Err(_) => {
                     eprintln!(
-                        "[flezha] ExecutorShutdownAck timeout for {}",
+                        "[flezha] RunnerShutdownAck timeout for {}",
                         operative_id_for_thread
                     );
                     drop_pending_ack(&reference_id_for_thread);
@@ -177,10 +177,10 @@ impl ShutdownBridge {
 // ---------------------------------------------------------------------------
 // Process-global registries.
 //
-// `PENDING_ACKS` lets the controller->SDK `ExecutorShutdownAck` command handler
-// (in `command::executor_shutdown_ack`) signal a per-operative wait
+// `PENDING_ACKS` lets the controller->SDK `RunnerShutdownAck` command handler
+// (in `command::runner_shutdown_ack`) signal a per-operative wait
 // channel without needing access to the originating bridge — handlers
-// only see `&mut ExecutorNode`, so a global keyed by reference_id is
+// only see `&mut RunnerNode`, so a global keyed by reference_id is
 // the simplest plumbing.
 //
 // `BRIDGES` lets a single SIGTERM handler thread drive shutdown across
@@ -189,7 +189,7 @@ impl ShutdownBridge {
 // ---------------------------------------------------------------------------
 
 /// Result carried by a controller reply to an SDK-initiated request:
-/// `Ok(())` for a bare ack (`ExecutorShutdownAck`), `Err(reason)` when the
+/// `Ok(())` for a bare ack (`RunnerShutdownAck`), `Err(reason)` when the
 /// reply reports a failure (`OpCommitResponse.error`).
 pub type AckResult = Result<(), String>;
 
@@ -213,7 +213,7 @@ pub(crate) fn drop_pending_ack(reference_id: &str) {
 }
 
 /// Wake the waiter registered under `reference_id` with the controller's
-/// reply outcome — `Ok(())` from `ExecutorShutdownAck`, the carried result
+/// reply outcome — `Ok(())` from `RunnerShutdownAck`, the carried result
 /// from `OpCommitResponse`. A missing entry is logged and ignored (the wait
 /// already timed out and dropped its registration).
 pub fn signal_result(reference_id: &str, result: AckResult) {
@@ -330,7 +330,7 @@ mod tests {
     }
 
     #[test]
-    fn graceful_shutdown_emits_framed_executor_shutdown_notification() {
+    fn graceful_shutdown_emits_framed_runner_shutdown_notification() {
         let snapshot = b"final-state-bytes".to_vec();
         let (bridge, mut controller_side) = build_bridge_with_operative("p1", snapshot.clone());
 
@@ -353,8 +353,8 @@ mod tests {
             .expect("decode CommandRequest from shutdown frame");
 
         let notif = match request.command.expect("oneof command set") {
-            pb::command_request::Command::ExecutorShutdownNotification(n) => n,
-            other => panic!("expected ExecutorShutdownNotification, got {:?}", other),
+            pb::command_request::Command::RunnerShutdownNotification(n) => n,
+            other => panic!("expected RunnerShutdownNotification, got {:?}", other),
         };
 
         assert_eq!(notif.operative_id, "p1");

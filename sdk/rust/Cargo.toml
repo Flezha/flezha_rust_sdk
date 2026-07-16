@@ -1,16 +1,16 @@
 [package]
-name = "flezha_executor"
+name = "flezha_runner"
 version = "0.1.0"
 edition = "2021"
 
 # The `no_run` example in src/lib.rs is illustrative documentation; the
 # workspace-wide `cargo test` collects two `flz_transport` metadata
 # files in `target/debug/deps` (one from flz_nif's cdylib build, one
-# from flezha_executor's rlib dep) and the doctest's separate compile
+# from flezha_runner's rlib dep) and the doctest's separate compile
 # step intermittently picks the wrong one, surfacing as `E0460: found
 # possibly newer version of crate flz_transport`. Disable doctest
 # collection here so the workspace test is stable; the example still
-# compiles on demand via `cargo test --doc -p flezha_executor` against
+# compiles on demand via `cargo test --doc -p flezha_runner` against
 # a clean dep dir.
 [lib]
 doctest = false
@@ -21,7 +21,7 @@ default = []
 # constructors) for the crate's own benches/tests. NOT a stable public API.
 # Only enabled by the `[[bench]]` targets via `required-features`.
 bench-internals = []
-# Exposes `flezha_executor::testing::OperationTestHarness` for downstream
+# Exposes `flezha_runner::testing::OperationTestHarness` for downstream
 # crates that want to write replay-equality tests. Test code in this crate
 # also compiles the surface under `cfg(test)` regardless of the feature.
 testing = []

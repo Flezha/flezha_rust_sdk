@@ -212,7 +212,7 @@ pub fn send(payload_id: &str, frame: Vec<u8>) {
             reason = RECONNECT_REASON,
             "outbound write-failure flood crossed threshold; requesting control reconnect"
         );
-        crate::executor::request_reconnect(RECONNECT_REASON);
+        crate::runner::request_reconnect(RECONNECT_REASON);
     }
 }
 

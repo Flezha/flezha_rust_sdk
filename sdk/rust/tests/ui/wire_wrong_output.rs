@@ -2,9 +2,9 @@
 // Should fail with a clear "expected TradeMsg, found Candle" trait-bound
 // error pointing at the `.from::<ProducesCandle>()` call.
 
-use flezha_executor::channel::ChannelBuilder;
-use flezha_executor::operation::{Operation, OperationCtx, OperationError};
-use flezha_executor::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
+use flezha_runner::channel::ChannelBuilder;
+use flezha_runner::operation::{Operation, OperationCtx, OperationError};
+use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
 
 struct TradeMsg;
 struct Candle;

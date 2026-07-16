@@ -14,7 +14,7 @@ pub mod command_request {
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Command {
         #[prost(message, tag = "2")]
-        AssignExecutorId(super::AssignExecutorId),
+        AssignRunnerId(super::AssignRunnerId),
         #[prost(message, tag = "3")]
         ConnectSocket(super::ConnectSocket),
         #[prost(message, tag = "4")]
@@ -28,15 +28,15 @@ pub mod command_request {
         #[prost(message, tag = "8")]
         SegmentState(super::SegmentState),
         #[prost(message, tag = "9")]
-        ExecutorDisconnect(super::ExecutorDisconnect),
+        RunnerDisconnect(super::RunnerDisconnect),
         #[prost(message, tag = "10")]
         OperationMessage(super::OperationMessage),
         #[prost(message, tag = "11")]
         SegmentApplyState(super::SegmentApplyState),
         #[prost(message, tag = "12")]
-        ExecutorShutdownNotification(super::ExecutorShutdownNotification),
+        RunnerShutdownNotification(super::RunnerShutdownNotification),
         #[prost(message, tag = "13")]
-        ExecutorShutdownAck(super::ExecutorShutdownAck),
+        RunnerShutdownAck(super::RunnerShutdownAck),
         #[prost(message, tag = "14")]
         RestoreInitState(super::RestoreInitState),
         #[prost(message, tag = "15")]
@@ -50,9 +50,9 @@ pub mod command_request {
         #[prost(message, tag = "19")]
         Ping(super::Ping),
         #[prost(message, tag = "20")]
-        ExecutorReconnected(super::ExecutorReconnected),
+        RunnerReconnected(super::RunnerReconnected),
         #[prost(message, tag = "21")]
-        ReassignExecutorId(super::ReassignExecutorId),
+        ReassignRunnerId(super::ReassignRunnerId),
         #[prost(message, tag = "22")]
         BoundedCompleted(super::BoundedCompleted),
         #[prost(message, tag = "23")]
@@ -89,9 +89,9 @@ pub struct CommandResponse {
     pub raw_data: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct AssignExecutorId {
+pub struct AssignRunnerId {
     #[prost(string, tag = "1")]
-    pub executor_id: ::prost::alloc::string::String,
+    pub runner_id: ::prost::alloc::string::String,
 }
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct ConnectSocket {
@@ -160,7 +160,7 @@ pub struct SegmentState {
     pub operative_id: ::prost::alloc::string::String,
 }
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
-pub struct ExecutorDisconnect {}
+pub struct RunnerDisconnect {}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct OperationMessage {
     #[prost(string, tag = "1")]
@@ -175,7 +175,7 @@ pub struct OperationMessageResponse {
     #[prost(string, tag = "2")]
     pub error: ::prost::alloc::string::String,
 }
-/// Inverse of SegmentState. Sent by the Controller to an Executor SDK to
+/// Inverse of SegmentState. Sent by the Controller to a Runner SDK to
 /// prime a freshly-spawned Operative's GenServer/struct state from a
 /// previously-captured `state_binary`. Round-trips with the same opaque
 /// SDK-internal serialization used by SegmentState. SDKs that do not
@@ -192,7 +192,7 @@ pub struct SegmentApplyState {
 }
 /// Sent by the SDK to the Controller on graceful shutdown (SIGTERM, Drop of
 /// the SDK handle, explicit disconnect()) for each currently-running
-/// Operative. Carries the Executor's freshest in-memory state binary so the
+/// Operative. Carries the Runner's freshest in-memory state binary so the
 /// Controller can overwrite Overwatch.state.snapshot before the next
 /// AddOperative reissue (see executor-controller-connection-healing
 /// capability).
@@ -206,13 +206,13 @@ pub struct SegmentApplyState {
 /// unknown-field handling; older SDKs that do not emit it fall back to the
 /// periodic-snapshot freshness shipped by heal-connections-on-restart.
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ExecutorShutdownNotification {
+pub struct RunnerShutdownNotification {
     #[prost(string, tag = "1")]
     pub operative_id: ::prost::alloc::string::String,
     #[prost(bytes = "vec", tag = "2")]
     pub serialized_state: ::prost::alloc::vec::Vec<u8>,
 }
-/// Controller's reply to ExecutorShutdownNotification. Carries no state — its
+/// Controller's reply to RunnerShutdownNotification. Carries no state — its
 /// purpose is purely to unblock the SDK's bounded ack-wait so the SDK can
 /// proceed to exit. The Controller emits the ack as soon as the snapshot cast
 /// is enqueued on the Overwatch GenServer (not after the cast has been applied).
@@ -221,7 +221,7 @@ pub struct ExecutorShutdownNotification {
 /// notification. The SDK awaits this with a per-Operative 2 s timeout
 /// (parallelised across Operatives) and exits regardless after the timeout.
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ExecutorShutdownAck {
+pub struct RunnerShutdownAck {
     #[prost(string, tag = "1")]
     pub operative_id: ::prost::alloc::string::String,
 }
@@ -260,7 +260,7 @@ pub struct OpOutboxItem {
 /// Controller appends ONE `op_committed` entry carrying handoff AND outbox
 /// to the instance's op-journal, fsyncs, replies OpCommitResponse, and only
 /// then flushes the outbox; the driver starts the next operation after the
-/// successful reply. Direction is reversed like ExecutorShutdownNotification:
+/// successful reply. Direction is reversed like RunnerShutdownNotification:
 /// SDK -> Controller over the "control_command" payload_id; old Controllers
 /// ignore the unknown variant via Protox unknown-field handling. `iter` is 0
 /// for the single-pass chain (the durable-loop follow-up increments it).
@@ -337,7 +337,7 @@ pub struct IterCommitResponse {
 /// at the committed boundary of iteration `iter` and past the idle threshold:
 /// it has torn its own run down WITHOUT a BoundedCompleted (this is not a
 /// terminal outcome). The Controller journals `parked(iter\[, wake_deadline_ms\])`
-/// and evicts the instance from the executor; the registry keeps it `suspended`
+/// and evicts the instance from the runner; the registry keeps it `suspended`
 /// until a new inbox append — or the wake deadline — rehydrates it
 /// (bounded-durable-suspension). `wake_deadline_ms` is 0 when the operative
 /// declared no durable timer.
@@ -505,7 +505,7 @@ pub struct PingResponse {
     pub nonce: ::prost::alloc::string::String,
 }
 /// SDK -> Controller, emitted as the FIRST frame on every newly-established
-/// control stream after `handle_reconnect` runs. Preserves the executor's
+/// control stream after `handle_reconnect` runs. Preserves the runner's
 /// identity across the reconnect so the Controller can compute a binding
 /// delta instead of re-issuing every operative. `reason` is one of
 /// `control_stream_broken | read_error | write_error | keepalive_timeout
@@ -513,7 +513,7 @@ pub struct PingResponse {
 /// variant silently skip it; new SDKs against an old Controller therefore
 /// degrade to the pre-change "re-issue everything" behaviour.
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ExecutorReconnected {
+pub struct RunnerReconnected {
     #[prost(string, tag = "1")]
     pub previous_id: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
@@ -522,12 +522,12 @@ pub struct ExecutorReconnected {
     pub reason: ::prost::alloc::string::String,
 }
 /// Controller -> SDK. Issued only when the Controller has reassigned the
-/// SDK's bindings to a different executor session during the disconnect
-/// window (i.e. `bindings_for_executor(previous_id)` is empty). The SDK
-/// updates its in-memory `executor_id` in place; subsequent
-/// `ExecutorReconnected` emissions carry the new id.
+/// SDK's bindings to a different runner session during the disconnect
+/// window (i.e. `bindings_for_runner(previous_id)` is empty). The SDK
+/// updates its in-memory `runner_id` in place; subsequent
+/// `RunnerReconnected` emissions carry the new id.
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ReassignExecutorId {
+pub struct ReassignRunnerId {
     #[prost(string, tag = "1")]
     pub new_id: ::prost::alloc::string::String,
 }
@@ -539,7 +539,7 @@ pub struct ReassignExecutorId {
 /// the same stop/teardown path as an explicit stop (deregister-on-completion)
 /// so a finished bounded operative is removed from the durable registry and
 /// never replayed on boot or misjudged by convergence. Direction is reversed
-/// like ExecutorShutdownNotification: SDK -> Controller over the
+/// like RunnerShutdownNotification: SDK -> Controller over the
 /// "control_command" payload_id; old Controllers ignore the unknown variant via
 /// Protox unknown-field handling.
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -553,7 +553,7 @@ pub struct BoundedCompleted {
     #[prost(bytes = "vec", tag = "4")]
     pub result: ::prost::alloc::vec::Vec<u8>,
 }
-/// Controller -> SDK. Offers credit-grant flow control for the executor's
+/// Controller -> SDK. Offers credit-grant flow control for the runner's
 /// state stream. `stream_id` is an opaque credit-session id minted fresh per
 /// stream attach — grants carry it, and a reconnect re-runs the handshake with
 /// a new id so grants in flight for a dead session are discardable by

@@ -16,9 +16,9 @@ use prost::Message;
 use serde::Serialize;
 
 use super::ClientResponseMessage;
-use crate::executor::ExecutorMessage;
 use crate::operative::registry::class_factory_ids;
 use crate::pb::Ping;
+use crate::runner::RunnerMessage;
 use crate::util::nonce_suffix;
 
 /// Reader-thread handle + write stream + optional QUIC client returned by
@@ -40,7 +40,7 @@ struct ControlInitMessage {
     namespace: String,
     factory_ids: Vec<String>,
     factories: Vec<FactoryInfo>,
-    /// The executor's self-owned **stable identity** (see `persistent_id`).
+    /// The runner's self-owned **stable identity** (see `persistent_id`).
     /// Present on EVERY connect — initial and reconnect alike — and trusted by
     /// the controller as the operative-binding key. On reconnect the controller
     /// re-points this identity's existing bindings onto the new session token.
@@ -51,20 +51,20 @@ struct ControlInitMessage {
 pub fn open(
     namespace: String,
     itx: Arc<Mutex<Sender<ClientResponseMessage>>>,
-    otx: Arc<Mutex<Sender<ExecutorMessage>>>,
+    otx: Arc<Mutex<Sender<RunnerMessage>>>,
 ) -> ControlConn {
     open_with_retry(namespace, Some(itx), otx)
 }
 
 /// Reconnection entry point — no startup confirmation sent.
-pub fn open_reconnect(namespace: String, otx: Arc<Mutex<Sender<ExecutorMessage>>>) -> ControlConn {
+pub fn open_reconnect(namespace: String, otx: Arc<Mutex<Sender<RunnerMessage>>>) -> ControlConn {
     open_with_retry(namespace, None, otx)
 }
 
 fn open_with_retry(
     namespace: String,
     itx: Option<Arc<Mutex<Sender<ClientResponseMessage>>>>,
-    otx: Arc<Mutex<Sender<ExecutorMessage>>>,
+    otx: Arc<Mutex<Sender<RunnerMessage>>>,
 ) -> ControlConn {
     let mut attempt = 0u32;
     let max_backoff = Duration::from_secs(30);
@@ -100,7 +100,7 @@ fn open_with_retry(
 fn try_open(
     namespace: String,
     itx: Option<Arc<Mutex<Sender<ClientResponseMessage>>>>,
-    otx: Arc<Mutex<Sender<ExecutorMessage>>>,
+    otx: Arc<Mutex<Sender<RunnerMessage>>>,
 ) -> Result<ControlConn, String> {
     match get_transport_type() {
         TransportType::Uds => {
@@ -114,7 +114,7 @@ fn try_open(
 fn try_open_uds(
     namespace: String,
     itx: Option<Arc<Mutex<Sender<ClientResponseMessage>>>>,
-    otx: Arc<Mutex<Sender<ExecutorMessage>>>,
+    otx: Arc<Mutex<Sender<RunnerMessage>>>,
 ) -> Result<(thread::JoinHandle<()>, Arc<FlezhaStream>), String> {
     let socket_path = path_helper::control_socket_path();
 
@@ -129,7 +129,7 @@ fn try_open_uds(
 fn try_open_quic(
     namespace: String,
     itx: Option<Arc<Mutex<Sender<ClientResponseMessage>>>>,
-    otx: Arc<Mutex<Sender<ExecutorMessage>>>,
+    otx: Arc<Mutex<Sender<RunnerMessage>>>,
 ) -> Result<ControlConn, String> {
     let address = flz_transport::transport::config::quic_address();
     let ca_cert_path = flz_transport::transport::config::ca_cert_path();
@@ -154,7 +154,7 @@ fn sock_conn(
     namespace: String,
     stream_box: Arc<FlezhaStream>,
     itx: Option<Arc<Mutex<Sender<ClientResponseMessage>>>>,
-    otx: Arc<Mutex<Sender<ExecutorMessage>>>,
+    otx: Arc<Mutex<Sender<RunnerMessage>>>,
 ) -> (thread::JoinHandle<()>, Arc<FlezhaStream>) {
     let stream_clone = Arc::clone(&stream_box);
 
@@ -180,7 +180,7 @@ fn sock_conn(
             let _ = otx
                 .lock()
                 .unwrap()
-                .send(ExecutorMessage::Reconnect("write_error"));
+                .send(RunnerMessage::Reconnect("write_error"));
             return;
         }
 
@@ -188,7 +188,7 @@ fn sock_conn(
         if let Some(itx) = itx {
             itx.lock()
                 .unwrap()
-                .send(ClientResponseMessage::ExecutorIdConfirmation)
+                .send(ClientResponseMessage::RunnerIdConfirmation)
                 .unwrap();
         }
 
@@ -201,7 +201,7 @@ fn sock_conn(
                     let _ = stream_clone.set_read_timeout(Some(live.current_deadline()));
                     otx.lock()
                         .unwrap()
-                        .send(ExecutorMessage::HandleCommandAction(
+                        .send(RunnerMessage::HandleCommandAction(
                             payload_id, message, metadata,
                         ))
                         .unwrap();
@@ -225,7 +225,7 @@ fn sock_conn(
                                 e
                             );
                         }
-                        let _ = otx.lock().unwrap().send(ExecutorMessage::Reconnect(reason));
+                        let _ = otx.lock().unwrap().send(RunnerMessage::Reconnect(reason));
                         break;
                     }
                 },
@@ -238,7 +238,7 @@ fn sock_conn(
 
 /// Build a control-channel keepalive ping frame: a bare `Ping` on the
 /// dedicated `control_ping` payload. The controller echoes it (re-arming the
-/// executor's steady-state idle watchdog); on a wedged controller no echo
+/// runner's steady-state idle watchdog); on a wedged controller no echo
 /// arrives and the watchdog fires. Pure so it is unit-testable.
 fn build_keepalive_ping() -> Vec<u8> {
     let ping = Ping {
@@ -252,7 +252,7 @@ fn build_keepalive_ping() -> Vec<u8> {
 }
 
 /// Write a keepalive ping on the current control stream. Routed through the
-/// coordinator (see `ExecutorMessage::SendControlKeepalive`) so control writes
+/// coordinator (see `RunnerMessage::SendControlKeepalive`) so control writes
 /// stay single-threaded and never interleave with command replies.
 pub(crate) fn send_keepalive_ping(stream: &FlezhaStream) -> io::Result<()> {
     let frame = build_keepalive_ping();
@@ -267,19 +267,19 @@ pub(crate) fn send_keepalive_ping(stream: &FlezhaStream) -> io::Result<()> {
 }
 
 /// Spawn the keepalive timer. It only signals the coordinator (it never writes
-/// the stream itself), so it can live for the executor's whole lifetime and
+/// the stream itself), so it can live for the runner's whole lifetime and
 /// always pings whatever the current control stream is. Jittered so a fleet
 /// does not ping in lockstep.
-pub(crate) fn spawn_keepalive(otx: Arc<Mutex<Sender<ExecutorMessage>>>) -> thread::JoinHandle<()> {
+pub(crate) fn spawn_keepalive(otx: Arc<Mutex<Sender<RunnerMessage>>>) -> thread::JoinHandle<()> {
     thread::spawn(move || loop {
         thread::sleep(liveness::jittered(liveness::control_keepalive_interval()));
         if otx
             .lock()
             .unwrap()
-            .send(ExecutorMessage::SendControlKeepalive)
+            .send(RunnerMessage::SendControlKeepalive)
             .is_err()
         {
-            // Coordinator gone (executor shutting down) — stop the timer.
+            // Coordinator gone (runner shutting down) — stop the timer.
             break;
         }
     })
@@ -290,24 +290,24 @@ pub(crate) fn spawn_keepalive(otx: Arc<Mutex<Sender<ExecutorMessage>>>) -> threa
 /// reconnects and stops when the coordinator channel closes. Jittered so a
 /// fleet does not heartbeat in lockstep.
 pub(crate) fn spawn_data_heartbeat(
-    otx: Arc<Mutex<Sender<ExecutorMessage>>>,
+    otx: Arc<Mutex<Sender<RunnerMessage>>>,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || loop {
         thread::sleep(liveness::jittered(liveness::data_heartbeat_interval()));
         if otx
             .lock()
             .unwrap()
-            .send(ExecutorMessage::SendDataHeartbeat)
+            .send(RunnerMessage::SendDataHeartbeat)
             .is_err()
         {
-            // Coordinator gone (executor shutting down) — stop the timer.
+            // Coordinator gone (runner shutting down) — stop the timer.
             break;
         }
     })
 }
 
 /// Map a control-stream read error to one of the five `reason` strings
-/// the controller-side `[:flezha, :executor, :reconnected]` telemetry
+/// the controller-side `[:flezha, :runner, :reconnected]` telemetry
 /// expects. A post-ack timeout means the keepalive watchdog tripped; a
 /// pre-ack timeout means the channel was never registered. Anything
 /// non-timeout is treated as a stream break.
@@ -342,7 +342,7 @@ fn send_init_msg(namespace: String, stream_clone: Arc<FlezhaStream>) -> io::Resu
         .collect();
 
     // Loaded once per process (cached); the controller binds operatives to it.
-    let stable_id = crate::executor::persistent_id::stable_id(&namespace, &factory_ids);
+    let stable_id = crate::runner::persistent_id::stable_id(&namespace, &factory_ids);
 
     let control_init_message = ControlInitMessage {
         namespace,
@@ -416,14 +416,14 @@ mod tests {
     // The liveness env knobs are process-global; tests that set them
     // serialize on the crate-wide poison-tolerant lock so a failure in one
     // never cascades into the others (and so they also serialize against
-    // the `fast` tests that touch FLEZHA_EXECUTOR_ID_PATH).
-    use crate::executor::env_test_guard;
+    // the `fast` tests that touch FLEZHA_RUNNER_ID_PATH).
+    use crate::runner::env_test_guard;
 
-    // fails when: the executor connects to a controller that accepts the
-    // control socket but never sends the assign-executor-id ack (a controller
+    // fails when: the runner connects to a controller that accepts the
+    // control socket but never sends the assign-runner-id ack (a controller
     // mid-shutdown / being replaced), and the SDK blocks the control reader
     // forever instead of reconnecting. This is the production warm-restart
-    // hang: the executor stayed "Connected" to the draining controller, never
+    // hang: the runner stayed "Connected" to the draining controller, never
     // reached the new one, so no operative was ever re-registered.
     #[test]
     fn reconnects_when_controller_never_acknowledges() {
@@ -434,7 +434,7 @@ mod tests {
         let (sdk_end, ctrl_end) = UnixStream::pair().unwrap();
 
         // Fake non-servicing controller: drain the init frame, then hold the
-        // connection open and stay silent — never acknowledges the executor.
+        // connection open and stay silent — never acknowledges the runner.
         let ctrl = thread::spawn(move || {
             let mut ctrl_end = ctrl_end;
             let mut buf = [0u8; 1024];
@@ -455,7 +455,7 @@ mod tests {
 
         let reconnected = matches!(
             orx.recv_timeout(Duration::from_secs(2)),
-            Ok(ExecutorMessage::Reconnect(_))
+            Ok(RunnerMessage::Reconnect(_))
         );
         assert!(
             reconnected,
@@ -471,7 +471,7 @@ mod tests {
     // fails when: the control channel completes its handshake (first frame
     // acked) but the controller then wedges (half-open / hung) without a clean
     // close — the pre-change reader cleared its deadline (`set_read_timeout
-    // (None)`) and blocked forever, so the executor sat "Connected" to a dead
+    // (None)`) and blocked forever, so the runner sat "Connected" to a dead
     // controller. The steady-state idle watchdog must drive reconnect.
     #[test]
     fn reconnects_when_controller_wedges_after_handshake() {
@@ -510,8 +510,8 @@ mod tests {
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
         while std::time::Instant::now() < deadline {
             match orx.recv_timeout(Duration::from_millis(200)) {
-                Ok(ExecutorMessage::HandleCommandAction(..)) => saw_command = true,
-                Ok(ExecutorMessage::Reconnect(_)) => {
+                Ok(RunnerMessage::HandleCommandAction(..)) => saw_command = true,
+                Ok(RunnerMessage::Reconnect(_)) => {
                     reconnected = true;
                     break;
                 }
@@ -534,7 +534,7 @@ mod tests {
     // The handshake presents the self-owned stable identity on EVERY connect
     // (initial and reconnect alike): the controller resolves a reconnect from
     // the always-present stable id + existing bindings, so the retired
-    // `previous_executor_id` field is gone and there is no initial-only gate.
+    // `previous_runner_id` field is gone and there is no initial-only gate.
     #[test]
     fn handshake_presents_a_non_empty_stable_id_on_initial_connect() {
         let _guard = env_test_guard();
@@ -561,8 +561,8 @@ mod tests {
             "initial connect must present a non-empty stable_id, got: {json}"
         );
         assert!(
-            !json.contains("previous_executor_id"),
-            "the retired previous_executor_id field must be gone, got: {json}"
+            !json.contains("previous_runner_id"),
+            "the retired previous_runner_id field must be gone, got: {json}"
         );
     }
 

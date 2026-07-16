@@ -9,10 +9,10 @@ use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use flezha_executor::__dispatch_internals::{OperativeDispatchHandle, WorkStealingPool};
-use flezha_executor::operative::builder::build_topology_for;
-use flezha_executor::operative::registry::OperativeRegistry;
-use flezha_executor::operative::{UnboundedInstance, UnboundedOperative};
+use flezha_runner::__dispatch_internals::{OperativeDispatchHandle, WorkStealingPool};
+use flezha_runner::operative::builder::build_topology_for;
+use flezha_runner::operative::registry::OperativeRegistry;
+use flezha_runner::operative::{UnboundedInstance, UnboundedOperative};
 use flz_transport::transport::FlezhaStream;
 
 /// A throwaway secondary stream for dispatch calls that never write back.
@@ -56,43 +56,43 @@ macro_rules! test_operation {
      |$inp:tt, $st:tt, $ctx:tt| $body:block) => {
         #[derive(Default)]
         struct $operation;
-        impl flezha_executor::operation::Operation for $operation {
+        impl flezha_runner::operation::Operation for $operation {
             type Input = $input;
             type Output = $output;
             type State = $state;
-            type Change = flezha_executor::state::NoChange;
-            type Clock = flezha_executor::state::WallClock;
+            type Change = flezha_runner::state::NoChange;
+            type Clock = flezha_runner::state::WallClock;
             type Config = ();
             fn name() -> &'static str { $name }
             fn init_state(
                 _: ::std::option::Option<&str>,
-                _: ::std::option::Option<flezha_executor::state::RestoreInitPayload<'_>>,
+                _: ::std::option::Option<flezha_runner::state::RestoreInitPayload<'_>>,
             ) -> $state {
                 ::std::default::Default::default()
             }
             fn run(
                 &mut self,
                 $inp: $input,
-                $st: flezha_executor::operation::StateHandle<'_, Self>,
-                $ctx: &mut flezha_executor::operation::OperationCtx<'_>,
-            ) -> ::std::result::Result<(), flezha_executor::operation::OperationError> $body
+                $st: flezha_runner::operation::StateHandle<'_, Self>,
+                $ctx: &mut flezha_runner::operation::OperationCtx<'_>,
+            ) -> ::std::result::Result<(), flezha_runner::operation::OperationError> $body
         }
     };
     ($operation:ident, $name:literal, $input:ty => $output:ty, $state:ty, cap $cap:literal,
      |$inp:tt, $st:tt, $ctx:tt| $body:block) => {
         #[derive(Default)]
         struct $operation;
-        impl flezha_executor::operation::Operation for $operation {
+        impl flezha_runner::operation::Operation for $operation {
             type Input = $input;
             type Output = $output;
             type State = $state;
-            type Change = flezha_executor::state::NoChange;
-            type Clock = flezha_executor::state::WallClock;
+            type Change = flezha_runner::state::NoChange;
+            type Clock = flezha_runner::state::WallClock;
             type Config = ();
             fn name() -> &'static str { $name }
             fn init_state(
                 _: ::std::option::Option<&str>,
-                _: ::std::option::Option<flezha_executor::state::RestoreInitPayload<'_>>,
+                _: ::std::option::Option<flezha_runner::state::RestoreInitPayload<'_>>,
             ) -> $state {
                 ::std::default::Default::default()
             }
@@ -101,9 +101,9 @@ macro_rules! test_operation {
             fn run(
                 &mut self,
                 $inp: $input,
-                $st: flezha_executor::operation::StateHandle<'_, Self>,
-                $ctx: &mut flezha_executor::operation::OperationCtx<'_>,
-            ) -> ::std::result::Result<(), flezha_executor::operation::OperationError> $body
+                $st: flezha_runner::operation::StateHandle<'_, Self>,
+                $ctx: &mut flezha_runner::operation::OperationCtx<'_>,
+            ) -> ::std::result::Result<(), flezha_runner::operation::OperationError> $body
         }
     };
 }

@@ -1,4 +1,4 @@
-#[derive(flezha_executor::State)]
+#[derive(flezha_runner::State)]
 struct T(u32);
 
 fn main() {}

@@ -237,7 +237,7 @@ pub fn build_topology_for<R: crate::operative::UnboundedOperative>(
 /// override on the Operation wins over `FLEZHA_MAILBOX_CAPACITY`, which wins
 /// over the built-in default. Out-of-range values fail registration with
 /// the offending Operation's name; an unparseable env var falls through to
-/// the default rather than failing (executors tolerate typos in env
+/// the default rather than failing (runners tolerate typos in env
 /// values during development).
 pub(crate) fn resolve_mailbox_capacity(
     operation_name: &'static str,

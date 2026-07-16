@@ -1,10 +1,10 @@
-# Public API surface — flezha_executor
+# Public API surface — flezha_runner
 #
 # This file is a human-curated baseline of the crate's public surface.
 # To re-record it after a public-API change:
 #
 #   cargo install cargo-public-api
-#   cargo public-api -p flezha_executor > sdk/rust/public-api.txt
+#   cargo public-api -p flezha_runner > sdk/rust/public-api.txt
 #
 # CI may diff this file against a fresh `cargo public-api` invocation
 # in a follow-up change; until then this file is informational and a

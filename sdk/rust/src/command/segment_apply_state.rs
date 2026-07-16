@@ -5,17 +5,17 @@
 //! dispatcher exposes its apply hook.
 
 use super::CommandAction;
-use crate::executor::ExecutorNode;
 use crate::pb::SegmentApplyState;
+use crate::runner::RunnerNode;
 
 impl CommandAction for SegmentApplyState {
     fn handle(
         &self,
-        executor: &mut ExecutorNode,
+        runner: &mut RunnerNode,
         _message: &str,
         errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
-        if !executor.has_operative(&self.operative_id) {
+        if !runner.has_operative(&self.operative_id) {
             errors.push(format!(
                 "UnboundedOperative instance with id {} not found",
                 self.operative_id

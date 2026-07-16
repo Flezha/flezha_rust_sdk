@@ -3,9 +3,9 @@
 // does not expose `also_to_plugin_with`. This pin guards against a
 // future refactor that accidentally relaxes the type-system constraint.
 
-use flezha_executor::channel::ChannelBuilder;
-use flezha_executor::operation::{Operation, OperationCtx, OperationError};
-use flezha_executor::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
+use flezha_runner::channel::ChannelBuilder;
+use flezha_runner::operation::{Operation, OperationCtx, OperationError};
+use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
 
 #[derive(Default)]
 struct PluginProducer;

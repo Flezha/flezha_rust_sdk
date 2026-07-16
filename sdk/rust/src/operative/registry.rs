@@ -4,7 +4,7 @@
 //! the immutable `Arc<OperativeTopology>` produced by `register_unbounded::<R>()`.
 //! Looked up by controller-facing `factory_id` when `AddOperative` arrives.
 //!
-//! `OperativeRegistry`: per-`ExecutorNode`; one entry per
+//! `OperativeRegistry`: per-`RunnerNode`; one entry per
 //! `AddOperative` (instance_id). Reuses the DashMap pattern from the
 //! pre-change `OperativeRegistry` so concurrent reader/writer access is
 //! operationed. Values are a sealed [`Operative`] — operative or bounded — so the
