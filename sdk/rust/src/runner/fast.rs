@@ -607,14 +607,41 @@ impl OperativeDispatchHandle {
             None => return,
         };
 
+        // Effectively-once tier: the controller stamps the durable input-log
+        // offset on the forwarded frame; thread it to the invocation so the
+        // atomic effect record carries the same offset as consumed-offset.
+        let consumed_offset = metadata
+            .get("flz.offset")
+            .and_then(|s| s.parse::<u64>().ok());
+        let replay = metadata.contains_key("flz.replay");
+
+        // Typed entries (`sdk-graph-authoring`): a failing parse is classified
+        // like a failing invocation and rides the channel's retry→DLQ ladder,
+        // so keep the wire bytes for the re-attempts and the park record.
+        // Passthrough `Vec<u8>`/`String` entries keep the pre-change
+        // drop-and-log path (no clone on the hot path).
+        let retry_bytes = channel.entry_parsed.then(|| payload.clone());
         let typed_payload = match &channel.wrap_input {
             Some(wrap) => match wrap(payload) {
                 Ok(p) => p,
                 Err(e) => {
-                    eprintln!(
-                        "[flezha] operative {} channel `{}`: wrap_input failed: {}",
-                        instance_id, channel.name, e
-                    );
+                    match retry_bytes {
+                        Some(bytes) => crate::operative::dispatcher::spawn_entry_parse_ladder(
+                            crate::operative::dispatcher::EntryParseLadder {
+                                instance: Arc::clone(&instance),
+                                channel_id,
+                                bytes,
+                                first_error: e,
+                                stream,
+                                consumed_offset,
+                                replay,
+                            },
+                        ),
+                        None => eprintln!(
+                            "[flezha] operative {} channel `{}`: wrap_input failed: {}",
+                            instance_id, channel.name, e
+                        ),
+                    }
                     return;
                 }
             },
@@ -627,13 +654,6 @@ impl OperativeDispatchHandle {
             }
         };
 
-        // Effectively-once tier: the controller stamps the durable input-log
-        // offset on the forwarded frame; thread it to the invocation so the
-        // atomic effect record carries the same offset as consumed-offset.
-        let consumed_offset = metadata
-            .get("flz.offset")
-            .and_then(|s| s.parse::<u64>().ok());
-
         crate::operative::dispatcher::route_to_consumers(
             &instance,
             &channel.consumers,
@@ -641,7 +661,7 @@ impl OperativeDispatchHandle {
             &typed_payload,
             &stream,
             consumed_offset,
-            metadata.contains_key("flz.replay"),
+            replay,
         );
     }
 }
@@ -686,7 +706,7 @@ mod remove_factory_tests {
         fn factory_id() -> &'static str {
             "remove_factory_seam_probe"
         }
-        fn channels(c: &mut ChannelBuilder) {
+        fn channels(c: &ChannelBuilder) {
             c.input::<String>("in").into::<SeamOp>();
         }
     }

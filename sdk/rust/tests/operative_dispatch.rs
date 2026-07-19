@@ -38,7 +38,7 @@ impl UnboundedOperative for AppendOperative {
     fn factory_id() -> &'static str {
         "append_operative"
     }
-    fn channels(c: &mut ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("input").into::<AppendOperation>();
     }
 }
@@ -107,7 +107,7 @@ impl UnboundedOperative for ConcurrencyProbeOperative {
     fn factory_id() -> &'static str {
         "concurrency_probe_operative"
     }
-    fn channels(c: &mut ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .into::<ConcurrencyProbeOperation>();
     }
@@ -245,7 +245,7 @@ impl UnboundedOperative for ParallelOperative {
     fn factory_id() -> &'static str {
         "parallel_operative"
     }
-    fn channels(c: &mut ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("input").into::<ParallelStaticOperation>();
     }
 }
@@ -306,7 +306,7 @@ impl UnboundedOperative for UnboundedA {
     fn factory_id() -> &'static str {
         "ns_operative_a"
     }
-    fn channels(c: &mut ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("input").into::<CountingOperation>();
     }
 }
@@ -316,7 +316,7 @@ impl UnboundedOperative for UnboundedB {
     fn factory_id() -> &'static str {
         "ns_operative_b"
     }
-    fn channels(c: &mut ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("input").into::<CountingOperation>();
     }
 }
@@ -360,10 +360,10 @@ impl UnboundedOperative for MetaRejectOperative {
     fn factory_id() -> &'static str {
         "meta_reject_operative"
     }
-    fn channels(c: &mut ChannelBuilder) {
-        c.input::<String>("input").into::<MetaProducerOperation>();
-        c.channel::<String>("hop")
-            .from::<MetaProducerOperation>()
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("input")
+            .into::<MetaProducerOperation>()
+            .named("hop")
             .into::<MetaConsumerOperation>();
     }
 }
@@ -408,7 +408,7 @@ impl UnboundedOperative for BlockStressOperative {
     fn factory_id() -> &'static str {
         "block_stress_operative"
     }
-    fn channels(c: &mut ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<Vec<u8>>("input")
             .on_full(OverflowPolicy::Block)
             .into::<BlockStressOperation>();
@@ -491,7 +491,7 @@ impl UnboundedOperative for DropNewestOperative {
     fn factory_id() -> &'static str {
         "drop_newest_operative"
     }
-    fn channels(c: &mut ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<Vec<u8>>("input").into::<DropNewestOperation>();
     }
 }
@@ -567,7 +567,7 @@ impl UnboundedOperative for DropOldestOperative {
     fn factory_id() -> &'static str {
         "drop_oldest_operative"
     }
-    fn channels(c: &mut ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<Vec<u8>>("input")
             .on_full(OverflowPolicy::DropOldest)
             .into::<DropOldestOperation>();
@@ -654,11 +654,11 @@ impl UnboundedOperative for InterOperationDefaultBlockOperative {
     fn factory_id() -> &'static str {
         "inter_operation_default_block_operative"
     }
-    fn channels(c: &mut ChannelBuilder) {
-        c.input::<String>("input").into::<InterOperationProducer>();
+    fn channels(c: &ChannelBuilder) {
         // No `.on_full(...)` — exercises the default `Block` for inter-operation.
-        c.channel::<String>("hop")
-            .from::<InterOperationProducer>()
+        c.input::<String>("input")
+            .into::<InterOperationProducer>()
+            .named("hop")
             .into::<InterOperationConsumer>();
     }
 }
@@ -696,7 +696,7 @@ impl UnboundedOperative for StickyBoundedOperative {
     fn factory_id() -> &'static str {
         "sticky_bounded_operative"
     }
-    fn channels(c: &mut ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<Vec<u8>>("input")
             .on_full(OverflowPolicy::Block)
             .into::<StickyBoundedOperation>();
@@ -787,7 +787,7 @@ impl UnboundedOperative for WireOperativeADefault {
     fn factory_id() -> &'static str {
         "wire_operative_a_default"
     }
-    fn channels(c: &mut ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<Vec<u8>>("input").into::<WireSlowAOperation>();
     }
 }
@@ -797,7 +797,7 @@ impl UnboundedOperative for WireOperativeABlock {
     fn factory_id() -> &'static str {
         "wire_operative_a_block"
     }
-    fn channels(c: &mut ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<Vec<u8>>("input")
             .on_full(OverflowPolicy::Block)
             .into::<WireSlowAOperation>();
@@ -809,7 +809,7 @@ impl UnboundedOperative for WireOperativeB {
     fn factory_id() -> &'static str {
         "wire_operative_b"
     }
-    fn channels(c: &mut ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<Vec<u8>>("input").into::<WireFastBOperation>();
     }
 }
@@ -1077,11 +1077,11 @@ impl UnboundedOperative for FlushOrderOperative {
     fn factory_id() -> &'static str {
         "flush_order_operative"
     }
-    fn channels(c: &mut ChannelBuilder) {
-        c.input::<String>("input").into::<FlushOrderOperation>();
-        c.channel::<String>("out")
-            .from::<FlushOrderOperation>()
-            .also_to_plugin_with("probe", |_v: &String| {
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("input")
+            .into::<FlushOrderOperation>()
+            .named("out")
+            .also_output_with("probe", |_v: &String| {
                 FLUSH_ORDER_LOG.lock().unwrap().push("emit");
                 Vec::new()
             })
@@ -1151,7 +1151,7 @@ impl UnboundedOperative for PanicOperative {
     fn factory_id() -> &'static str {
         "panic_operative"
     }
-    fn channels(c: &mut ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("input").into::<PanicOperation>();
     }
 }
@@ -1234,11 +1234,11 @@ impl UnboundedOperative for BlockDeadlockOperative {
     fn factory_id() -> &'static str {
         "block_deadlock_operative"
     }
-    fn channels(c: &mut ChannelBuilder) {
-        c.input::<String>("input").into::<BlockProducerOperation>();
+    fn channels(c: &ChannelBuilder) {
         // Inter-operation channel: OverflowPolicy defaults to Block.
-        c.channel::<String>("blocked_out")
-            .from::<BlockProducerOperation>()
+        c.input::<String>("input")
+            .into::<BlockProducerOperation>()
+            .named("blocked_out")
             .into::<BlockedConsumerOperation>();
     }
 }
@@ -1395,12 +1395,12 @@ impl UnboundedOperative for KeyedStampOperative {
     fn factory_id() -> &'static str {
         "keyed_stamp_operative"
     }
-    fn channels(c: &mut ChannelBuilder) {
-        c.input::<String>("input").into::<KeyedStampOperation>();
-        c.channel::<String>("out")
-            .from::<KeyedStampOperation>()
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("input")
+            .into::<KeyedStampOperation>()
+            .named("out")
             .keyed()
-            .to_plugin("kafka");
+            .output("kafka");
     }
 }
 
@@ -1457,11 +1457,11 @@ fn non_keyed_frame_is_byte_identical_to_prechange_layout() {
         fn factory_id() -> &'static str {
             "plain_plugin_operative"
         }
-        fn channels(c: &mut ChannelBuilder) {
-            c.input::<String>("input").into::<PlainPluginOperation>();
-            c.channel::<String>("out")
-                .from::<PlainPluginOperation>()
-                .to_plugin("kafka");
+        fn channels(c: &ChannelBuilder) {
+            c.input::<String>("input")
+                .into::<PlainPluginOperation>()
+                .named("out")
+                .output("kafka");
         }
     }
 
@@ -1617,13 +1617,13 @@ impl UnboundedOperative for TierOperative {
     fn factory_id() -> &'static str {
         "tier_operative"
     }
-    fn channels(c: &mut ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.effectively_once();
-        c.input::<String>("input").into::<TierStampOperation>();
-        c.channel::<String>("out")
-            .from::<TierStampOperation>()
+        c.input::<String>("input")
+            .into::<TierStampOperation>()
+            .named("out")
             .keyed()
-            .to_plugin("kafka");
+            .output("kafka");
     }
 }
 
@@ -1802,10 +1802,10 @@ impl UnboundedOperative for LogicalNowOperative {
     fn factory_id() -> &'static str {
         "logical_now_operative"
     }
-    fn channels(c: &mut ChannelBuilder) {
-        c.input::<String>("input").into::<LogicalNowOperation>();
-        c.channel::<String>("hop")
-            .from::<LogicalNowOperation>()
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("input")
+            .into::<LogicalNowOperation>()
+            .named("hop")
             .into::<LogicalNowSinkOperation>();
     }
 }
@@ -1916,14 +1916,14 @@ impl UnboundedOperative for ReplayOperative {
     fn factory_id() -> &'static str {
         "replay_operative"
     }
-    fn channels(c: &mut ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.effectively_once();
         c.correction_window(600_000);
-        c.input::<String>("input").into::<ReplayOperation>();
-        c.channel::<String>("out")
-            .from::<ReplayOperation>()
+        c.input::<String>("input")
+            .into::<ReplayOperation>()
+            .named("out")
             .keyed()
-            .to_plugin("kafka");
+            .output("kafka");
     }
 }
 
@@ -2030,14 +2030,14 @@ impl UnboundedOperative for HighWaterOperative {
     fn factory_id() -> &'static str {
         "high_water_operative"
     }
-    fn channels(c: &mut ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.effectively_once();
         c.correction_window(600_000);
-        c.input::<String>("input").into::<HighWaterOperation>();
-        c.channel::<String>("out")
-            .from::<HighWaterOperation>()
+        c.input::<String>("input")
+            .into::<HighWaterOperation>()
+            .named("out")
             .keyed()
-            .to_plugin("kafka");
+            .output("kafka");
     }
 }
 
@@ -2199,14 +2199,14 @@ impl UnboundedOperative for CheckpointOperative {
     fn factory_id() -> &'static str {
         "checkpoint_operative"
     }
-    fn channels(c: &mut ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.effectively_once();
         c.checkpoint_ack();
-        c.input::<String>("input").into::<CheckpointOperation>();
-        c.channel::<String>("out")
-            .from::<CheckpointOperation>()
+        c.input::<String>("input")
+            .into::<CheckpointOperation>()
+            .named("out")
             .keyed()
-            .to_plugin("kafka");
+            .output("kafka");
     }
 }
 

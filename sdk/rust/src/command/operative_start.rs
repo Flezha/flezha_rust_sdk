@@ -144,7 +144,7 @@ fn metadata_response(kind: &str, factory_id: &str) -> Vec<u8> {
     if let Some(ops) = declared_ops(kind, factory_id, |spec, node| {
         spec.topology
             .as_ref()
-            .and_then(|t| t.operation(spec.tree.order[node]))
+            .and_then(|t| t.operation(spec.dag.order[node]))
             .is_some_and(|op| op.compensate_overridden)
     }) {
         metadata.insert("compensable_ops".to_string(), ops);
@@ -154,7 +154,7 @@ fn metadata_response(kind: &str, factory_id: &str) -> Vec<u8> {
     // committed, and the controller derives that from the journal alone —
     // which needs the leaf set (bounded-branching D4).
     if let Some(ops) = declared_ops(kind, factory_id, |spec, node| {
-        spec.tree.children[node].is_empty()
+        spec.dag.children[node].is_empty()
     }) {
         metadata.insert("leaf_ops".to_string(), ops);
     }
@@ -180,7 +180,7 @@ fn declared_ops(
     let spec = crate::bounded::registry::get_class(factory_id)?;
     spec.topology.as_ref()?;
     Some(
-        (0..spec.tree.len())
+        (0..spec.dag.len())
             .filter(|&node| select(&spec, node))
             .map(|node| node.to_string())
             .collect::<Vec<_>>()

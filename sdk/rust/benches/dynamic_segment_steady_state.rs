@@ -84,7 +84,7 @@ impl UnboundedOperative for SteadyDynOperative {
     fn factory_id() -> &'static str {
         "steady_dyn_operative"
     }
-    fn channels(c: &mut ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<Vec<u8>>("input")
             .on_full(OverflowPolicy::Block)
             .into::<SteadyDynOperation>();

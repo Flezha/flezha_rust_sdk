@@ -57,7 +57,7 @@
 //! struct AppendOperative;
 //! impl UnboundedOperative for AppendOperative {
 //!     fn factory_id() -> &'static str { "appender" }
-//!     fn channels(c: &mut ChannelBuilder) {
+//!     fn channels(c: &ChannelBuilder) {
 //!         c.input::<String>("input").into::<AppendOperation>();
 //!     }
 //! }
@@ -128,7 +128,7 @@ use std::sync::{Arc, Condvar, Mutex, RwLock, Weak};
 pub use bounded::spec::BuildBoundedError;
 pub use bounded::{BoundedCtx, BoundedError, BoundedOperative, LoopMode, RollbackMode};
 pub use channel::builder::TopologyIssue;
-pub use channel::{Channel, ChannelBuilder, OverflowPolicy, RetryPolicy};
+pub use channel::{Channel, ChannelBuilder, EntryStream, OverflowPolicy, RetryPolicy, Stream};
 use crossbeam::channel::{Receiver, Sender};
 /// Authoring sugar. `#[flezha::operation]`, `#[derive(flezha::State)]`, and
 /// `flezha::operative!` expand to the trait surface above; see
@@ -306,7 +306,7 @@ impl Flezha {
     /// # struct MyOperative;
     /// # impl flezha_runner::UnboundedOperative for MyOperative {
     /// #     fn factory_id() -> &'static str { "my_operative" }
-    /// #     fn channels(_c: &mut flezha_runner::ChannelBuilder) {}
+    /// #     fn channels(_c: &flezha_runner::ChannelBuilder) {}
     /// # }
     /// # fn main() -> Result<(), FlezhaError> {
     /// Flezha::create_runner("my_app")?.define_unbounded::<MyOperative>()?.run()?;

@@ -2,16 +2,19 @@
 //! `UnboundedOperative::channels`) and produces a frozen `Arc<OperativeTopology>`.
 //!
 //! Build-time validation:
-//! - reject duplicate channel names
-//! - reject channels declared but never wired with `.from`
-//! - reject multi-producer (also blocked by the type system)
+//! - reject duplicate channel names (derived, `.named(...)`-overridden, and
+//!   entry names share one per-operative namespace)
+//! - enforce the shared graph-shape rule (`sdk-graph-authoring`): one entry
+//!   channel, every node reachable from it, no cycles — fan-out and fan-in
+//!   are both legal
 //! - reject `segment_for` default impl on operations with non-empty
 //!   `operation_keys()` per `design.md` Open Question 1 (resolved via the
 //!   `SEGMENT_FOR_OVERRIDDEN` const sentinel on the `Operation` trait)
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::channel::builder::{ChannelBuilder, TopologyIssue};
+use crate::channel::builder::{BuilderState, ChannelBuilder, TopologyIssue};
 use crate::channel::{ChannelDescriptor, ChannelKind, PluginSink};
 use crate::operative::topology::{
     AckGranularity, OperationDescriptor, OperativeTopology, SegmentingMode,
@@ -39,6 +42,78 @@ pub struct TopologyBuildError {
     pub errors: Vec<TopologyIssue>,
 }
 
+/// Result of the shared graph-shape walk (`sdk-graph-authoring`): Kahn
+/// topological order over the operation nodes plus reachability from the
+/// entry. One walk serves both the unbounded validation and the bounded
+/// `OpDag` construction — the shape rule is one rule, so its mechanism is one
+/// mechanism.
+pub(crate) struct GraphOrder {
+    /// Node ids in Kahn topological order (FIFO — for a tree this is exactly
+    /// BFS from the root, so bounded `op_idx` numbering stays stable).
+    pub order: Vec<crate::channel::OperationId>,
+    /// Node id → position in `order`; `usize::MAX` for a node on a cycle.
+    pub pos: Vec<usize>,
+    /// First node unreachable from the roots, if any (meaningful only when
+    /// the graph is acyclic — a cycle already explains unreachability).
+    pub unreachable: Option<crate::channel::OperationId>,
+    /// First node Kahn left over — on (or strictly downstream of) a cycle.
+    pub on_cycle: Option<crate::channel::OperationId>,
+}
+
+/// Walk `n` nodes over `edges` (one entry per channel: producer → consumers),
+/// rooted at `roots` (the entry channel's consumers).
+pub(crate) fn graph_order(
+    n: usize,
+    edges: &[(crate::channel::OperationId, &[crate::channel::OperationId])],
+    roots: &[crate::channel::OperationId],
+) -> GraphOrder {
+    let mut adjacency: Vec<Vec<usize>> = vec![Vec::new(); n];
+    let mut indegree = vec![0usize; n];
+    for (producer, consumers) in edges {
+        for &c in *consumers {
+            adjacency[*producer as usize].push(c as usize);
+            indegree[c as usize] += 1;
+        }
+    }
+
+    let mut reachable = vec![false; n];
+    let mut stack: Vec<usize> = roots.iter().map(|&r| r as usize).collect();
+    while let Some(node) = stack.pop() {
+        if std::mem::replace(&mut reachable[node], true) {
+            continue;
+        }
+        stack.extend(adjacency[node].iter().copied());
+    }
+    let unreachable = (0..n)
+        .find(|&i| !reachable[i])
+        .map(|i| i as crate::channel::OperationId);
+
+    let mut queue: std::collections::VecDeque<usize> =
+        (0..n).filter(|&i| indegree[i] == 0).collect();
+    let mut order = Vec::with_capacity(n);
+    let mut pos = vec![usize::MAX; n];
+    while let Some(node) = queue.pop_front() {
+        pos[node] = order.len();
+        order.push(node as crate::channel::OperationId);
+        for &child in &adjacency[node] {
+            indegree[child] -= 1;
+            if indegree[child] == 0 {
+                queue.push_back(child);
+            }
+        }
+    }
+    let on_cycle = (0..n)
+        .find(|&i| pos[i] == usize::MAX)
+        .map(|i| i as crate::channel::OperationId);
+
+    GraphOrder {
+        order,
+        pos,
+        unreachable,
+        on_cycle,
+    }
+}
+
 pub fn build_topology(
     factory_id: &'static str,
     builder: ChannelBuilder,
@@ -55,16 +130,62 @@ pub fn build_topology_with_persistence(
     builder: ChannelBuilder,
     persistence_enabled_const: bool,
 ) -> Result<Arc<OperativeTopology>, TopologyBuildError> {
-    let ChannelBuilder {
+    let BuilderState {
         channels,
-        name_to_id,
         operations,
         operation_name_to_id,
         mut errors,
         effectively_once,
         correction,
         ack_granularity,
-    } = builder;
+    } = builder.into_state();
+
+    // One per-operative channel namespace: derived names (producer node
+    // identity), `.named(...)` overrides, and entry names all collide here.
+    let mut name_to_id: HashMap<&'static str, u32> = HashMap::new();
+    for (id, entry) in channels.iter().enumerate() {
+        if name_to_id.insert(entry.name, id as u32).is_some() {
+            errors.push(TopologyIssue::DuplicateChannel(entry.name));
+        }
+    }
+
+    // Shared graph-shape rule (`sdk-graph-authoring`): one entry channel
+    // feeding the graph, every node reachable from it, no cycles. Fan-out and
+    // fan-in are both legal; at-most-one output channel per node holds by
+    // construction of the stream-handle builder.
+    if !operations.is_empty() {
+        let mut entry_ids = channels
+            .iter()
+            .filter(|c| c.kind == ChannelKind::Entry)
+            .map(|c| c.name);
+        let first_entry = entry_ids.next();
+        if let (Some(first), Some(second)) = (first_entry, entry_ids.next()) {
+            errors.push(TopologyIssue::MultipleEntryChannels { first, second });
+        }
+
+        let edges: Vec<_> = channels
+            .iter()
+            .filter_map(|c| c.producer.map(|p| (p, c.consumers.as_slice())))
+            .collect();
+        let roots: Vec<_> = channels
+            .iter()
+            .filter(|c| c.kind == ChannelKind::Entry)
+            .flat_map(|c| c.consumers.iter().copied())
+            .collect();
+        let shape = graph_order(operations.len(), &edges, &roots);
+        if let Some(node) = shape.on_cycle {
+            errors.push(TopologyIssue::Cycle {
+                operation: operations[node as usize].name,
+            });
+        } else if let Some(node) = shape.unreachable {
+            // Defensive: the stream-handle builder only creates nodes by
+            // wiring from the entry, so an unreachable acyclic node cannot
+            // normally arise. A cycle already explains unreachability.
+            errors.push(TopologyIssue::UnreachableOperation {
+                operation: operations[node as usize].name,
+            });
+        }
+    }
 
     // Correction replays the durable input log against a rewound baseline.
     // Without the tier there is no durable input log to replay — inputs are
@@ -91,11 +212,8 @@ pub fn build_topology_with_persistence(
     // Build channel descriptors and validate.
     let mut channel_descs: Vec<ChannelDescriptor> = Vec::with_capacity(channels.len());
     for entry in channels {
-        if entry.producer.is_none() && entry.kind != ChannelKind::Entry {
-            errors.push(TopologyIssue::UnwiredChannel { name: entry.name });
-        }
         // Identity stamps only exist on plugin frames; a keyed channel
-        // must have a plugin wire (pure `to_plugin` or hybrid sink).
+        // must have a plugin wire (pure `output` or hybrid sink).
         if entry.keyed && entry.kind != ChannelKind::PluginBound && entry.plugin_sink.is_none() {
             errors.push(TopologyIssue::KeyedChannelWithoutPluginWire {
                 channel: entry.name,
@@ -123,6 +241,7 @@ pub fn build_topology_with_persistence(
             consumers: entry.consumers,
             plugin_name: entry.plugin_name.map(Arc::from),
             wrap_input: entry.wrap_input,
+            entry_parsed: entry.entry_parsed,
             plugin_serializer: entry.plugin_serializer,
             plugin_sink,
             keyed: entry.keyed,
@@ -192,7 +311,7 @@ pub fn build_topology_with_persistence(
             idle_ttl: entry.idle_ttl,
             max_segments: entry.max_segments,
             operation_key_erased: entry.operation_key_erased,
-            input_channel_id: entry.input_channel_id,
+            input_channel_ids: entry.input_channel_ids,
             output_channel_id: entry.output_channel_id,
             input_type_id: entry.input_type_id,
             output_type_id: entry.output_type_id,
@@ -228,8 +347,8 @@ pub fn build_topology_with_persistence(
 /// final per-instance flag.
 pub fn build_topology_for<R: crate::operative::UnboundedOperative>(
 ) -> Result<Arc<OperativeTopology>, TopologyBuildError> {
-    let mut cb = ChannelBuilder::new();
-    R::channels(&mut cb);
+    let cb = ChannelBuilder::new();
+    R::channels(&cb);
     build_topology_with_persistence(R::factory_id(), cb, R::PERSISTENCE_ENABLED)
 }
 
@@ -316,25 +435,25 @@ mod tests {
 
     #[test]
     fn effectively_once_with_keyed_plugin_channel_builds() {
-        let mut cb = ChannelBuilder::new();
+        let cb = ChannelBuilder::new();
         cb.effectively_once();
-        cb.input::<String>("in").into::<TierOp>();
-        cb.channel::<String>("out")
-            .from::<TierOp>()
+        cb.input::<String>("in")
+            .into::<TierOp>()
+            .named("out")
             .keyed()
-            .to_plugin("kafka");
+            .output("kafka");
         let topology = build_topology("tier_keyed_ok", cb).expect("topology");
         assert!(topology.effectively_once);
     }
 
     #[test]
     fn effectively_once_rejects_unkeyed_plugin_channel() {
-        let mut cb = ChannelBuilder::new();
+        let cb = ChannelBuilder::new();
         cb.effectively_once();
-        cb.input::<String>("in").into::<TierOp>();
-        cb.channel::<String>("out")
-            .from::<TierOp>()
-            .to_plugin("kafka");
+        cb.input::<String>("in")
+            .into::<TierOp>()
+            .named("out")
+            .output("kafka");
         let err = match build_topology("tier_unkeyed_plugin", cb) {
             Err(e) => e,
             Ok(_) => panic!("unkeyed plugin channel must fail under the tier"),
@@ -347,12 +466,12 @@ mod tests {
 
     #[test]
     fn effectively_once_rejects_unkeyed_hybrid_sink() {
-        let mut cb = ChannelBuilder::new();
+        let cb = ChannelBuilder::new();
         cb.effectively_once();
-        cb.input::<String>("in").into::<TierOp>();
-        cb.channel::<String>("mid")
-            .from::<TierOp>()
-            .also_to_plugin_with("kafka", |s: &String| s.as_bytes().to_vec());
+        cb.input::<String>("in")
+            .into::<TierOp>()
+            .named("mid")
+            .also_output_with("kafka", |s: &String| s.as_bytes().to_vec());
         let err = match build_topology("tier_unkeyed_hybrid", cb) {
             Err(e) => e,
             Ok(_) => panic!("unkeyed hybrid sink must fail under the tier"),
@@ -365,7 +484,7 @@ mod tests {
 
     #[test]
     fn default_topology_is_not_effectively_once() {
-        let mut cb = ChannelBuilder::new();
+        let cb = ChannelBuilder::new();
         cb.input::<String>("in").into::<TierOp>();
         let topology = build_topology("tier_default_off", cb).expect("topology");
         assert!(!topology.effectively_once);
@@ -373,11 +492,11 @@ mod tests {
 
     #[test]
     fn non_tier_unkeyed_plugin_channel_still_builds() {
-        let mut cb = ChannelBuilder::new();
-        cb.input::<String>("in").into::<TierOp>();
-        cb.channel::<String>("out")
-            .from::<TierOp>()
-            .to_plugin("kafka");
+        let cb = ChannelBuilder::new();
+        cb.input::<String>("in")
+            .into::<TierOp>()
+            .named("out")
+            .output("kafka");
         let topology = build_topology("no_tier_unkeyed_ok", cb).expect("topology");
         assert!(!topology.effectively_once);
     }
@@ -493,16 +612,16 @@ mod tests {
         window_ms: u64,
         tier: bool,
     ) -> ChannelBuilder {
-        let mut cb = ChannelBuilder::new();
+        let cb = ChannelBuilder::new();
         if tier {
             cb.effectively_once();
         }
         cb.correction_window(window_ms);
-        cb.input::<String>("in").into::<S>();
-        cb.channel::<String>("out")
-            .from::<S>()
+        cb.input::<String>("in")
+            .into::<S>()
+            .named("out")
             .keyed()
-            .to_plugin("kafka");
+            .output("kafka");
         cb
     }
 
@@ -523,27 +642,27 @@ mod tests {
 
     #[test]
     fn checkpoint_ack_with_the_tier_builds() {
-        let mut cb = ChannelBuilder::new();
+        let cb = ChannelBuilder::new();
         cb.effectively_once();
         cb.checkpoint_ack();
-        cb.input::<String>("in").into::<TierOp>();
-        cb.channel::<String>("out")
-            .from::<TierOp>()
+        cb.input::<String>("in")
+            .into::<TierOp>()
+            .named("out")
             .keyed()
-            .to_plugin("kafka");
+            .output("kafka");
         let topology = build_topology("checkpoint_ok", cb).expect("topology");
         assert_eq!(topology.ack_granularity, AckGranularity::Checkpoint);
     }
 
     #[test]
     fn per_input_is_the_default_ack_granularity() {
-        let mut cb = ChannelBuilder::new();
+        let cb = ChannelBuilder::new();
         cb.effectively_once();
-        cb.input::<String>("in").into::<TierOp>();
-        cb.channel::<String>("out")
-            .from::<TierOp>()
+        cb.input::<String>("in")
+            .into::<TierOp>()
+            .named("out")
             .keyed()
-            .to_plugin("kafka");
+            .output("kafka");
         let topology = build_topology("per_input_default", cb).expect("topology");
         assert_eq!(topology.ack_granularity, AckGranularity::PerInput);
     }
@@ -553,12 +672,12 @@ mod tests {
         // The checkpoint is where the tier's consumed-offset advances; off the
         // tier there is no durable offset to hold back, and no durable input
         // log to replay the interval from.
-        let mut cb = ChannelBuilder::new();
+        let cb = ChannelBuilder::new();
         cb.checkpoint_ack();
-        cb.input::<String>("in").into::<TierOp>();
-        cb.channel::<String>("out")
-            .from::<TierOp>()
-            .to_plugin("kafka");
+        cb.input::<String>("in")
+            .into::<TierOp>()
+            .named("out")
+            .output("kafka");
 
         let err = build_topology("checkpoint_no_tier", cb)
             .err()
@@ -624,7 +743,7 @@ mod tests {
 
     #[test]
     fn the_beyond_window_policy_is_declarable() {
-        let mut cb = correction_builder::<EventTimeOp>(600_000, true);
+        let cb = correction_builder::<EventTimeOp>(600_000, true);
         cb.beyond_window_policy(BeyondWindowPolicy::Drop);
         let topology = build_topology("correction_drop", cb).expect("topology");
 

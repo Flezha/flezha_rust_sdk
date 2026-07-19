@@ -14,9 +14,10 @@
 //!   delivers post-start input) and, for a structured durable class, the
 //!   crash-resume gate held until the Controller's Segment restores land;
 //! - runs the body — `run`-sugar ([`run_sugar`]) or the structured operation
-//!   tree ([`run_structured`], a child operation runs only after its parent
-//!   commits, sibling branches and the segments inside each operation run in
-//!   parallel on the pool, count-based barrier between levels);
+//!   DAG ([`run_structured`], a child operation runs only after every producer
+//!   feeding it commits, sibling branches and the segments inside each
+//!   operation run in parallel on the pool, count-based barrier between
+//!   levels);
 //! - converges every exit trigger on the single `BoundedCompleted` teardown,
 //!   emitting status (`ok | error | cancelled`) plus the result payload.
 
@@ -31,7 +32,7 @@ use crossbeam::channel::{unbounded, Receiver, RecvTimeoutError};
 
 use super::compensation::{plan_compensation, SegmentRun, StageRecord, StagedOutput};
 use super::instance::{BoundedInstance, CommittedOp, InboxItem, JournalResume};
-use super::spec::{BoundedSpec, OpTree};
+use super::spec::{BoundedSpec, OpDag};
 use super::{BoundedCollectSink, BoundedCtx, BoundedError, BoundedRunFn, LoopMode, RollbackMode};
 use crate::channel::builder::BuildSegmentArgs;
 use crate::channel::{ChannelId, ChannelKind, OperationId, RetryPolicy};
@@ -82,14 +83,14 @@ struct StageOut {
 }
 
 /// Read-only context threaded through one structured chain run: the topology,
-/// the resolved operation tree, the running instance (its id + saga
+/// the resolved operation DAG, the running instance (its id + saga
 /// crash-resume markers), the work pool, the pre-built per-stage segments, the
 /// rollback mode, and whether the class is durable (gates the saga compensation
 /// records). Bundled so the chain driver and the compensator take it by
 /// reference instead of a long parameter list.
 struct ChainCtx<'a> {
     topology: &'a Arc<OperativeTopology>,
-    tree: &'a OpTree,
+    dag: &'a OpDag,
     instance: &'a BoundedInstance,
     instance_id: &'a Arc<str>,
     pool: &'a Arc<WorkStealingPool>,
@@ -119,12 +120,12 @@ impl ChainCtx<'_> {
         self.persistence_enabled && crate::runner::coordinator_installed()
     }
 
-    /// The operation descriptor at a tree node (= its `stage_idx` / wire
+    /// The operation descriptor at a DAG node (= its `stage_idx` / wire
     /// `op_idx`).
     fn op(&self, node: usize) -> &OperationDescriptor {
         self.topology
-            .operation(self.tree.order[node])
-            .expect("tree operation present in topology")
+            .operation(self.dag.order[node])
+            .expect("dag operation present in topology")
     }
 }
 
@@ -256,8 +257,8 @@ fn classify(
     RunOutcome::Terminal(status, error, result)
 }
 
-/// Structured path: walk the operation tree. A child operation starts only when
-/// every segment of its parent has finished and the parent's commit is acked
+/// Structured path: walk the operation DAG. A child operation starts only when
+/// every producer feeding it has finished and had its commit acked
 /// (count-based barrier); segments — and independent sibling branches — run in
 /// parallel on the pool.
 fn run_structured(
@@ -278,7 +279,7 @@ fn run_structured(
     // frames. The run's flusher entries are deregistered in `run`'s teardown.
     let ctx = ChainCtx {
         topology,
-        tree: &spec.tree,
+        dag: &spec.dag,
         instance,
         instance_id: &instance.instance_id,
         pool,
@@ -293,7 +294,7 @@ fn run_structured(
     drive_chain(&ctx, args, &instance.cancel)
 }
 
-/// Build every stage's Segments for a structured spec, in tree order. Called
+/// Build every stage's Segments for a structured spec, in DAG order. Called
 /// synchronously by `start_bounded_resumable` so the Segments are registered
 /// for restore and the resume gate is armed before the driver thread — or any
 /// restore frame — runs. `instance` on each slot is a null `Weak` — the bounded
@@ -308,8 +309,8 @@ pub(crate) fn build_all_stage_segments(
         .topology
         .as_ref()
         .expect("build_all_stage_segments invoked only for a structured spec");
-    let mut stage_segments: Vec<Vec<Arc<SegmentSlot>>> = Vec::with_capacity(spec.tree.len());
-    for &op_id in &spec.tree.order {
+    let mut stage_segments: Vec<Vec<Arc<SegmentSlot>>> = Vec::with_capacity(spec.dag.len());
+    for &op_id in &spec.dag.order {
         let op = topology
             .operation(op_id)
             .expect("chain operation present in topology");
@@ -403,10 +404,10 @@ fn drive_chain(ctx: &ChainCtx, args: &str, cancel: &AtomicBool) -> RunOutcome {
     loop {
         // Completed stages of this iteration, in completion order (parents before
         // children), so an abnormal exit rolls them back in reverse — which for a
-        // tree is reverse-topological.
+        // DAG is reverse-topological.
         let mut completed: Vec<StageRecord> = resumed_stages.take().unwrap_or_default();
 
-        let frontier = match next_iteration_seed(
+        let start = match next_iteration_seed(
             ctx,
             args,
             iter,
@@ -415,11 +416,11 @@ fn drive_chain(ctx: &ChainCtx, args: &str, cancel: &AtomicBool) -> RunOutcome {
             carry.take(),
             cancel,
         ) {
-            IterationSeed::Frontier(frontier, consumed) => {
+            IterationSeed::Frontier(start, consumed) => {
                 if let Some(offset) = consumed {
                     consumed_offset = offset;
                 }
-                frontier
+                start
             }
             // The loop ran out of work (single pass done, chained loop released
             // an empty batch, inbox closed): a clean terminal.
@@ -440,7 +441,7 @@ fn drive_chain(ctx: &ChainCtx, args: &str, cancel: &AtomicBool) -> RunOutcome {
             }
         };
 
-        match run_iteration(ctx, iter, frontier, cancel, &mut completed) {
+        match run_iteration(ctx, iter, start, cancel, &mut completed) {
             Ok(terminal_batch) => {
                 // Iteration boundary (`bounded-durable-loop`): journal
                 // `iter_committed`, snapshot the segments, flush the iteration's
@@ -458,7 +459,7 @@ fn drive_chain(ctx: &ChainCtx, args: &str, cancel: &AtomicBool) -> RunOutcome {
                 committed.push(completed);
                 carry = Some(terminal_batch);
                 iter += 1;
-                // Every iteration after the resumed one runs the whole tree.
+                // Every iteration after the resumed one runs the whole graph.
                 committed_nodes.clear();
             }
             Err((status, error)) => {
@@ -469,16 +470,43 @@ fn drive_chain(ctx: &ChainCtx, args: &str, cancel: &AtomicBool) -> RunOutcome {
     }
 }
 
-/// One tree node scheduled to run, with the batch it consumes.
+/// One DAG node scheduled to run, with the batch it consumes.
 type Runnable = (usize, Vec<Value>);
 
-/// Run one iteration of the operation tree, starting from `frontier` (the root
-/// on a fresh pass; the uncommitted subtrees whose parent already committed on a
-/// mid-iteration resume) and advancing level by level: every node in a frontier
-/// runs its segments on the pool together — sibling branches are independent, so
-/// they interleave — joins on one barrier, commits, and releases its children
-/// into the next frontier. Each completed stage is recorded into `completed` in
-/// that order, which is topological (a parent always precedes its children).
+/// Where an iteration starts: the immediately runnable nodes plus, for a
+/// mid-iteration resume over a join, the contributions already banked for
+/// nodes still waiting on an uncommitted producer.
+#[derive(Default)]
+struct IterationStart {
+    /// Nodes whose every producer is satisfied, with their input batches.
+    ready: Vec<Runnable>,
+    /// Accumulated input batches of nodes with producers still outstanding
+    /// (journaled handoffs of committed producers, on a resume).
+    pending: HashMap<usize, Vec<Value>>,
+    /// Producers still outstanding per waiting node.
+    waiting: HashMap<usize, usize>,
+}
+
+impl IterationStart {
+    /// A fresh pass: the DAG root over the seed batch.
+    fn fresh(batch: Vec<Value>) -> Self {
+        Self {
+            ready: vec![(0, batch)],
+            ..Default::default()
+        }
+    }
+}
+
+/// Run one iteration of the operation DAG, starting from `start` (the root on
+/// a fresh pass; the uncommitted subgraphs on a mid-iteration resume) and
+/// advancing frontier by frontier: every runnable node runs its segments on
+/// the pool together — sibling branches are independent, so they interleave —
+/// joins on one barrier, commits, and **accumulates** its released batch into
+/// each child. A child becomes runnable only once every one of its producers
+/// has committed (`bounded-branching` fan-in), so a join is dispatched exactly
+/// once, with the concatenation of all its producers' outputs. Each completed
+/// stage is recorded into `completed` in completion order, which is
+/// topological (every producer precedes its consumers).
 ///
 /// `Ok` carries the batch the leaves released — the operative is complete
 /// exactly when the frontier empties, i.e. when every leaf has committed. `Err`
@@ -487,11 +515,16 @@ type Runnable = (usize, Vec<Value>);
 fn run_iteration(
     ctx: &ChainCtx,
     iter: u32,
-    mut frontier: Vec<Runnable>,
+    start: IterationStart,
     cancel: &AtomicBool,
     completed: &mut Vec<StageRecord>,
 ) -> Result<Vec<Value>, (String, String)> {
     let mut leaf_batch: Vec<Value> = Vec::new();
+    let IterationStart {
+        ready: mut frontier,
+        mut pending,
+        mut waiting,
+    } = start;
 
     while !frontier.is_empty() {
         // A cooperative stop before a level starts is partial progress: stop
@@ -547,12 +580,26 @@ fn run_iteration(
                 continue;
             }
 
-            let children = &ctx.tree.children[node];
+            let children = &ctx.dag.children[node];
             if children.is_empty() {
                 leaf_batch.extend(out.batch);
             } else {
                 for &child in children {
-                    next.push((child, out.batch.clone()));
+                    // Accumulate — never overwrite — this producer's released
+                    // output into the child's input batch; the child runs once
+                    // all its producers have committed.
+                    pending
+                        .entry(child)
+                        .or_default()
+                        .extend(out.batch.iter().map(Arc::clone));
+                    let outstanding = waiting
+                        .entry(child)
+                        .or_insert_with(|| ctx.dag.parents[child].len());
+                    *outstanding -= 1;
+                    if *outstanding == 0 {
+                        waiting.remove(&child);
+                        next.push((child, pending.remove(&child).unwrap_or_default()));
+                    }
                 }
             }
         }
@@ -566,45 +613,67 @@ fn run_iteration(
     Ok(leaf_batch)
 }
 
-/// The starting frontier of a mid-iteration resume: every uncommitted node whose
-/// parent the journal records committed, seeded from that parent's journaled
-/// handoff — filtered to the channel this child consumes, so a branch only ever
-/// re-seeds from its own edge.
-fn resumed_frontier(
+/// The start of a mid-iteration resume: every uncommitted node with at least
+/// one committed producer gets that producer's journaled handoff — filtered to
+/// the producer's own output channel, so a branch only ever re-seeds from its
+/// own edge. A node whose producers all committed is immediately runnable; a
+/// join with one committed and one uncommitted producer banks the journaled
+/// contribution and waits for the fresh one (`bounded-branching`
+/// crash-resume).
+fn resumed_start(
     ctx: &ChainCtx,
     resume: &JournalResume,
     committed: &[usize],
-) -> Result<Vec<Runnable>, String> {
-    let mut frontier = Vec::new();
-    for node in 0..ctx.tree.len() {
+) -> Result<IterationStart, String> {
+    let mut start = IterationStart::default();
+    for node in 0..ctx.dag.len() {
         if committed.contains(&node) {
             continue;
         }
-        let Some(parent) = ctx.tree.parents[node] else {
-            continue;
-        };
-        if !committed.contains(&parent) {
+        let parents = &ctx.dag.parents[node];
+        let committed_parents: Vec<usize> = parents
+            .iter()
+            .copied()
+            .filter(|p| committed.contains(p))
+            .collect();
+        if committed_parents.is_empty() {
+            // The root (no parents) is never here — a mid-iteration resume
+            // implies the root committed — and a deeper node with no committed
+            // parent becomes runnable through the normal accumulate flow.
             continue;
         }
-        let handoff = resume
-            .op_handoffs
-            .iter()
-            .find(|edge| edge.op_idx as usize == parent)
-            .map(|edge| edge.handoff.as_slice())
-            .unwrap_or_default();
-        let batch = seed_from_journal(ctx, handoff, ctx.op(node).input_channel_id)?;
-        frontier.push((node, batch));
+        let mut batch: Vec<Value> = Vec::new();
+        for parent in &committed_parents {
+            let handoff = resume
+                .op_handoffs
+                .iter()
+                .find(|edge| edge.op_idx as usize == *parent)
+                .map(|edge| edge.handoff.as_slice())
+                .unwrap_or_default();
+            batch.extend(seed_from_journal(
+                ctx,
+                handoff,
+                ctx.op(*parent).output_channel_id,
+            )?);
+        }
+        let outstanding = parents.len() - committed_parents.len();
+        if outstanding == 0 {
+            start.ready.push((node, batch));
+        } else {
+            start.pending.insert(node, batch);
+            start.waiting.insert(node, outstanding);
+        }
     }
-    Ok(frontier)
+    Ok(start)
 }
 
 /// How the next iteration is seeded.
 enum IterationSeed {
-    /// Start the iteration from this runnable frontier — the root alone on a
-    /// fresh pass, the uncommitted subtrees on a mid-iteration resume.
+    /// Start the iteration here — the root alone on a fresh pass, the
+    /// uncommitted subgraphs on a mid-iteration resume.
     /// `Some(offset)` when an inbox item supplied the seed (the offset the
     /// iteration commit records as consumed).
-    Frontier(Vec<Runnable>, Option<u64>),
+    Frontier(IterationStart, Option<u64>),
     /// The loop has no more work: terminate cleanly.
     Done,
     /// The inbox is empty at a committed boundary past the idle threshold:
@@ -621,8 +690,8 @@ enum IterationSeed {
 ///
 /// A mid-iteration resume (`committed` non-empty — the journal already records
 /// operations of this iteration committed) starts at exactly the uncommitted
-/// subtrees whose parent did commit. Otherwise the iteration starts at the tree
-/// root, seeded by the loop's shape: the spawn args (single pass / first
+/// subgraphs whose producers did commit. Otherwise the iteration starts at the
+/// graph root, seeded by the loop's shape: the spawn args (single pass / first
 /// iteration), the next inbox item (`PerInput`), or the previous iteration's
 /// terminal handoff (`Chained`).
 fn next_iteration_seed(
@@ -635,8 +704,8 @@ fn next_iteration_seed(
     cancel: &AtomicBool,
 ) -> IterationSeed {
     if !committed.is_empty() {
-        return match resumed_frontier(ctx, resume, committed) {
-            Ok(frontier) => IterationSeed::Frontier(frontier, None),
+        return match resumed_start(ctx, resume, committed) {
+            Ok(start) => IterationSeed::Frontier(start, None),
             Err(e) => IterationSeed::Failed(e),
         };
     }
@@ -664,7 +733,7 @@ fn next_iteration_seed(
             if batch.is_empty() {
                 IterationSeed::Done
             } else {
-                IterationSeed::Frontier(root(batch), None)
+                IterationSeed::Frontier(IterationStart::fresh(batch), None)
             }
         }
 
@@ -689,15 +758,9 @@ fn next_iteration_seed(
 
 fn seed_or_fail(seeded: Result<Vec<Value>, String>, consumed: Option<u64>) -> IterationSeed {
     match seeded {
-        Ok(batch) => IterationSeed::Frontier(root(batch), consumed),
+        Ok(batch) => IterationSeed::Frontier(IterationStart::fresh(batch), consumed),
         Err(e) => IterationSeed::Failed(e),
     }
-}
-
-/// The frontier a fresh iteration starts from: the tree root (node 0, the entry
-/// channel's consumer) over the seed batch.
-fn root(batch: Vec<Value>) -> Vec<Runnable> {
-    vec![(0, batch)]
 }
 
 /// Block for the next inbox item. `None` on a cooperative stop, on a closed
@@ -980,10 +1043,10 @@ fn commit_iteration(
     // The terminal handoff re-seeds iteration N+1 of a handoff-chained loop
     // after a crash; an inbox-driven loop re-seeds from its inbox instead and
     // ships whatever the terminal operation released (empty when it has no
-    // codec'd output channel, and for a branching tree, which has no single
+    // codec'd output channel, and for a branching graph, which has no single
     // terminal operation — registration refuses to chain a loop over one).
     let terminal_channel = ctx
-        .tree
+        .dag
         .single_leaf()
         .and_then(|leaf| ctx.op(leaf).output_channel_id);
     let handoff = encode_handoff(ctx, terminal_channel, batch)
@@ -1355,10 +1418,10 @@ fn partition(op: &OperationDescriptor, segment_count: usize, batch: &[Value]) ->
     buckets
 }
 
-/// Run one frontier — every currently-runnable tree node — on the pool and join
+/// Run one frontier — every currently-runnable DAG node — on the pool and join
 /// on a single count-based barrier. All of a node's segments and all the nodes
-/// of the frontier are submitted together: the nodes are independent subtrees,
-/// so sibling branches genuinely interleave on the pool. A failing segment
+/// of the frontier are submitted together: the nodes are independent, so
+/// sibling branches genuinely interleave on the pool. A failing segment
 /// climbs its retry ladder in place ([`SegmentJob::run_with_retry`]); its
 /// siblings keep their completed results buffered and are never re-run.
 ///

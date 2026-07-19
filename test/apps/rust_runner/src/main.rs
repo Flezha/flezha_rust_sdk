@@ -23,7 +23,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .define_unbounded::<CompareFilterOperative>()?
         .define_unbounded::<StaticSegmentOperative>()?
         .define_unbounded::<SegmentingStressOperative>()?
-        .define_unbounded::<BoundedMailboxOperative>()?
+        .define_unbounded::<BoundedMailboxBlockOperative>()?
+        .define_unbounded::<BoundedMailboxDropNewestOperative>()?
+        .define_unbounded::<BoundedMailboxDropOldestOperative>()?
         .define_unbounded::<StatefulCounterOperative>()?
         .define_unbounded::<CoalescingCounterOperative>()?
         .define_unbounded::<PersistenceOffOperative>()?
@@ -46,6 +48,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .define_bounded::<ChatRewindBounded>()?
         .define_bounded::<RetryBounded>()?
         .define_bounded::<BranchBounded>()?
+        .define_bounded::<DiamondBounded>()?
         .run()?;
     Ok(())
 }
@@ -223,11 +226,11 @@ impl BoundedOperative for CommitBlockBounded {
     fn factory_id() -> &'static str {
         "commit_block_bounded"
     }
-    fn operations(c: &mut ChannelBuilder) {
-        c.input::<String>("in").into::<CommitA>();
-        c.channel::<String>("mid")
+    fn operations(c: &ChannelBuilder) {
+        c.input::<String>("in")
+            .into::<CommitA>()
+            .named("mid")
             .codec()
-            .from::<CommitA>()
             .into::<BlockB>();
     }
 }
@@ -243,11 +246,11 @@ impl BoundedOperative for OptOutCommitBlockBounded {
         "optout_commit_block"
     }
     const PERSISTENCE_ENABLED: bool = false;
-    fn operations(c: &mut ChannelBuilder) {
-        c.input::<String>("in").into::<CommitA>();
-        c.channel::<String>("mid")
-            .from::<CommitA>()
-            .also_to_plugin_with("optout_sink", |s: &String| {
+    fn operations(c: &ChannelBuilder) {
+        c.input::<String>("in")
+            .into::<CommitA>()
+            .named("mid")
+            .also_output_with("optout_sink", |s: &String| {
                 format!("a-ran:{s}").into_bytes()
             })
             .into::<BlockB>();
@@ -294,14 +297,14 @@ impl BoundedOperative for TierCommitBlockBounded {
     fn factory_id() -> &'static str {
         "tier_commit_block_bounded"
     }
-    fn operations(c: &mut ChannelBuilder) {
+    fn operations(c: &ChannelBuilder) {
         c.effectively_once();
-        c.input::<String>("in").into::<TierCommitA>();
-        c.channel::<String>("mid")
+        c.input::<String>("in")
+            .into::<TierCommitA>()
+            .named("mid")
             .codec()
-            .from::<TierCommitA>()
             .keyed()
-            .also_to_plugin_with("tier_sink", |s: &String| s.as_bytes().to_vec())
+            .also_output_with("tier_sink", |s: &String| s.as_bytes().to_vec())
             .into::<BlockB>();
     }
 }
@@ -326,15 +329,14 @@ impl BoundedOperative for SagaBlockBounded {
     fn factory_id() -> &'static str {
         "saga_block_bounded"
     }
-    fn operations(c: &mut ChannelBuilder) {
-        c.input::<String>("in").into::<SagaA>();
-        c.channel::<String>("s1")
+    fn operations(c: &ChannelBuilder) {
+        c.input::<String>("in")
+            .into::<SagaA>()
+            .named("s1")
             .codec()
-            .from::<SagaA>()
-            .into::<SagaB>();
-        c.channel::<String>("s2")
+            .into::<SagaB>()
+            .named("s2")
             .codec()
-            .from::<SagaB>()
             .into::<SagaC>();
     }
 }
@@ -350,12 +352,12 @@ impl BoundedOperative for OutboxBlockBounded {
     fn factory_id() -> &'static str {
         "outbox_block_bounded"
     }
-    fn operations(c: &mut ChannelBuilder) {
-        c.input::<String>("in").into::<CommitA>();
-        c.channel::<String>("mid")
+    fn operations(c: &ChannelBuilder) {
+        c.input::<String>("in")
+            .into::<CommitA>()
+            .named("mid")
             .codec()
-            .from::<CommitA>()
-            .also_to_plugin_with("outbox_sink", |s: &String| {
+            .also_output_with("outbox_sink", |s: &String| {
                 format!("a-out:{s}").into_bytes()
             })
             .into::<BlockB>();
@@ -387,12 +389,12 @@ impl BoundedOperative for UndoOutboxBounded {
     fn factory_id() -> &'static str {
         "undo_outbox_bounded"
     }
-    fn operations(c: &mut ChannelBuilder) {
-        c.input::<String>("in").into::<UndoOutboxA>();
-        c.channel::<String>("mid")
+    fn operations(c: &ChannelBuilder) {
+        c.input::<String>("in")
+            .into::<UndoOutboxA>()
+            .named("mid")
             .codec()
-            .from::<UndoOutboxA>()
-            .also_to_plugin_with("undo_sink", |s: &String| format!("out:{s}").into_bytes())
+            .also_output_with("undo_sink", |s: &String| format!("out:{s}").into_bytes())
             .into::<UndoC>();
     }
 }
@@ -414,7 +416,7 @@ impl BoundedOperative for UndoOutboxBounded {
 //     blocking. A, B and C have all completed, so the rollback must unwind the
 //     two branches before the root they share: `undo-c`, `undo-b`, `undo-a`.
 //
-// The inter-op channels are hybrid (`also_to_plugin_with`), which is what makes
+// The inter-op channels are hybrid (`also_output_with`), which is what makes
 // a non-leaf operation's forward and undo output visible at the sink.
 const BRANCH_FAIL_ENV: &str = "FLEZHA_BRANCH_FAIL";
 
@@ -500,27 +502,155 @@ impl BoundedOperative for BranchBounded {
     fn retry_attempts() -> u32 {
         0
     }
-    fn operations(c: &mut ChannelBuilder) {
-        c.input::<String>("in").into::<BranchA>();
+    fn operations(c: &ChannelBuilder) {
         // One channel, two consumers: THE fan-out. Both branches read exactly
-        // what BranchA released on it.
-        c.channel::<String>("mid")
+        // what BranchA released on it (held handle, wired twice).
+        let mid = c
+            .input::<String>("in")
+            .into::<BranchA>()
+            .named("mid")
             .codec()
-            .from::<BranchA>()
-            .also_to_plugin_with("branch_sink", |s: &String| format!("a:{s}").into_bytes())
-            .into::<BranchB>()
-            .into::<BranchC>();
-        c.channel::<String>("bmid")
+            .also_output_with("branch_sink", |s: &String| format!("a:{s}").into_bytes());
+        mid.into::<BranchB>()
+            .named("bmid")
             .codec()
-            .from::<BranchB>()
-            .also_to_plugin_with("branch_sink", |s: &String| format!("b:{s}").into_bytes())
-            .into::<BranchD>();
-        c.channel::<String>("c_out")
-            .from::<BranchC>()
-            .to_plugin("branch_sink");
-        c.channel::<String>("d_out")
-            .from::<BranchD>()
-            .to_plugin("branch_sink");
+            .also_output_with("branch_sink", |s: &String| format!("b:{s}").into_bytes())
+            .into::<BranchD>()
+            .named("d_out")
+            .output("branch_sink");
+        mid.into::<BranchC>().named("c_out").output("branch_sink");
+    }
+}
+
+// `diamond_bounded`: the fan-in DAG (`bounded-branching` D4).
+//
+//     DiamA ─┬─▶ DiamB1 ─▶ DiamB2(blocks) ─┬─▶ DiamJoin
+//            └─▶ DiamC ────────────────────┘
+//
+// The join accumulates BOTH arms' outputs and is dispatched exactly once,
+// after both commit. DiamB2 BLOCKS until the resumed runner sets the release
+// env — one level BELOW its sibling arm, because siblings commit at one level
+// barrier — so a SIGKILL lands with A, B1 and C committed and B2 mid-run: the
+// respawn re-runs B2 alone, and the join runs once with C's JOURNALED handoff
+// banked and B2's fresh output appended — `c:` appears exactly once across
+// both runs.
+durable_step!(DiamA, "diam_a");
+durable_step!(DiamB1, "diam_b1");
+
+// Blocks BEFORE its durable change + emit, so the kill window is deterministic:
+// B2 is always the uncommitted producer while the sibling arm committed.
+#[derive(Default)]
+struct DiamB2;
+impl Operation for DiamB2 {
+    type Input = String;
+    type Output = String;
+    type State = SeenState;
+    type Change = Insert;
+    type Clock = WallClock;
+    type Config = ();
+    fn name() -> &'static str {
+        "diam_b2"
+    }
+    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> SeenState {
+        SeenState::default()
+    }
+    fn apply_change(state: &mut SeenState, change: &Insert) {
+        state.items.insert(change.0.clone());
+    }
+    fn run(
+        &mut self,
+        input: String,
+        mut state: StateHandle<'_, Self>,
+        ctx: &mut OperationCtx<'_>,
+    ) -> Result<(), OperationError> {
+        block_until_released();
+        state.apply(Insert("diam_b".to_string()));
+        ctx.emit::<String>(format!("b:{input}"))
+    }
+}
+
+#[derive(Default)]
+struct DiamC;
+impl Operation for DiamC {
+    type Input = String;
+    type Output = String;
+    type State = SeenState;
+    type Change = Insert;
+    type Clock = WallClock;
+    type Config = ();
+    fn name() -> &'static str {
+        "diam_c"
+    }
+    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> SeenState {
+        SeenState::default()
+    }
+    fn apply_change(state: &mut SeenState, change: &Insert) {
+        state.items.insert(change.0.clone());
+    }
+    fn run(
+        &mut self,
+        input: String,
+        mut state: StateHandle<'_, Self>,
+        ctx: &mut OperationCtx<'_>,
+    ) -> Result<(), OperationError> {
+        state.apply(Insert("diam_c".to_string()));
+        ctx.emit::<String>(format!("c:{input}"))
+    }
+}
+
+// The join: one `j:`-tagged record per accumulated contribution.
+#[derive(Default)]
+struct DiamJoin;
+impl Operation for DiamJoin {
+    type Input = String;
+    type Output = String;
+    type State = ();
+    type Change = NoChange;
+    type Clock = WallClock;
+    type Config = ();
+    fn name() -> &'static str {
+        "diam_join"
+    }
+    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
+    fn run(
+        &mut self,
+        input: String,
+        _state: StateHandle<'_, Self>,
+        ctx: &mut OperationCtx<'_>,
+    ) -> Result<(), OperationError> {
+        ctx.emit::<String>(format!("j:{input}"))
+    }
+}
+
+struct DiamondBounded;
+impl BoundedOperative for DiamondBounded {
+    fn factory_id() -> &'static str {
+        "diamond_bounded"
+    }
+    fn operations(c: &ChannelBuilder) {
+        // Held handle wired twice = fan-out; two streams naming DiamJoin
+        // (unnamed, same class) = the fan-in.
+        let fan = c
+            .input::<String>("in")
+            .into::<DiamA>()
+            .named("dfan")
+            .codec()
+            .also_output_with("diamond_sink", |s: &String| format!("a:{s}").into_bytes());
+        fan.into::<DiamB1>()
+            .named("db1")
+            .codec()
+            .into::<DiamB2>()
+            .named("db2")
+            .codec()
+            .also_output_with("diamond_sink", |s: &String| s.clone().into_bytes())
+            .into::<DiamJoin>();
+        fan.into::<DiamC>()
+            .named("dc")
+            .codec()
+            .also_output_with("diamond_sink", |s: &String| s.clone().into_bytes())
+            .into::<DiamJoin>()
+            .named("j_out")
+            .output("diamond_sink");
     }
 }
 
@@ -580,16 +710,15 @@ impl BoundedOperative for RetryBounded {
     fn factory_id() -> &'static str {
         "retry_bounded"
     }
-    fn operations(c: &mut ChannelBuilder) {
-        c.input::<String>("in").into::<RetryA>();
-        c.channel::<String>("mid")
+    fn operations(c: &ChannelBuilder) {
+        c.input::<String>("in")
+            .into::<RetryA>()
+            .named("mid")
             .codec()
-            .from::<RetryA>()
-            .also_to_plugin_with("retry_sink", |s: &String| format!("res:{s}").into_bytes())
-            .into::<RetryFlaky>();
-        c.channel::<String>("out")
-            .from::<RetryFlaky>()
-            .to_plugin("retry_sink");
+            .also_output_with("retry_sink", |s: &String| format!("res:{s}").into_bytes())
+            .into::<RetryFlaky>()
+            .named("out")
+            .output("retry_sink");
     }
 }
 
@@ -746,15 +875,14 @@ impl BoundedOperative for ChatRewindBounded {
     fn max_duration() -> Option<Duration> {
         Some(Duration::from_secs(600))
     }
-    fn operations(c: &mut ChannelBuilder) {
-        c.input::<String>("in").into::<ChatTurn>();
-        c.channel::<String>("mid")
+    fn operations(c: &ChannelBuilder) {
+        c.input::<String>("in")
+            .into::<ChatTurn>()
+            .named("mid")
             .codec()
-            .from::<ChatTurn>()
-            .into::<ChatReplyUndoable>();
-        c.channel::<String>("out")
-            .from::<ChatReplyUndoable>()
-            .to_plugin("chat_sink");
+            .into::<ChatReplyUndoable>()
+            .named("out")
+            .output("chat_sink");
     }
 }
 
@@ -774,15 +902,14 @@ impl BoundedOperative for ChatLoopBounded {
     fn max_duration() -> Option<Duration> {
         Some(Duration::from_secs(600))
     }
-    fn operations(c: &mut ChannelBuilder) {
-        c.input::<String>("in").into::<ChatTurn>();
-        c.channel::<String>("mid")
+    fn operations(c: &ChannelBuilder) {
+        c.input::<String>("in")
+            .into::<ChatTurn>()
+            .named("mid")
             .codec()
-            .from::<ChatTurn>()
-            .into::<ChatReply>();
-        c.channel::<String>("out")
-            .from::<ChatReply>()
-            .to_plugin("chat_sink");
+            .into::<ChatReply>()
+            .named("out")
+            .output("chat_sink");
     }
 }
 
@@ -849,13 +976,12 @@ impl UnboundedOperative for DynamicSegmentOperative {
     fn factory_id() -> &'static str {
         "dynamic_segment"
     }
-    fn channels(c: &mut ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .on_full(OverflowPolicy::Block)
-            .into::<DynamicSegmentOperation>();
-        c.channel::<Vec<u8>>("kafka")
-            .from::<DynamicSegmentOperation>()
-            .to_plugin("test_kafka");
+            .into::<DynamicSegmentOperation>()
+            .named("kafka")
+            .output("test_kafka");
     }
 }
 
@@ -892,11 +1018,11 @@ impl UnboundedOperative for DoNothingOperative {
     fn factory_id() -> &'static str {
         "do_nothing"
     }
-    fn channels(c: &mut ChannelBuilder) {
-        c.input::<String>("input").into::<DoNothingOperation>();
-        c.channel::<Vec<u8>>("echo")
-            .from::<DoNothingOperation>()
-            .to_plugin("do_nothing_echo");
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("input")
+            .into::<DoNothingOperation>()
+            .named("echo")
+            .output("do_nothing_echo");
     }
 }
 
@@ -953,11 +1079,11 @@ impl UnboundedOperative for StoreInputOperative {
     fn factory_id() -> &'static str {
         "store_input"
     }
-    fn channels(c: &mut ChannelBuilder) {
-        c.input::<String>("input").into::<StoreInputOperation>();
-        c.channel::<String>("sink")
-            .from::<StoreInputOperation>()
-            .to_plugin("store_input_sink");
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("input")
+            .into::<StoreInputOperation>()
+            .named("sink")
+            .output("store_input_sink");
     }
 }
 
@@ -1026,17 +1152,16 @@ impl UnboundedOperative for TierStoreOperative {
     fn factory_id() -> &'static str {
         "tier_store"
     }
-    fn channels(c: &mut ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.effectively_once();
         // 300 ms backoff base keeps the min-watermark freeze observable
         // (~0.9 s from first failure to park) in the DLQ e2e.
         c.input::<String>("input")
             .retry_backoff_ms(300)
-            .into::<TierStoreOperation>();
-        c.channel::<String>("sink")
-            .from::<TierStoreOperation>()
+            .into::<TierStoreOperation>()
+            .named("sink")
             .keyed()
-            .to_plugin("tier_sink");
+            .output("tier_sink");
     }
 }
 
@@ -1092,15 +1217,14 @@ impl UnboundedOperative for CheckpointStoreOperative {
     fn factory_id() -> &'static str {
         "checkpoint_store"
     }
-    fn channels(c: &mut ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.effectively_once();
         c.checkpoint_ack();
         c.input::<String>("input")
-            .into::<CheckpointStoreOperation>();
-        c.channel::<String>("sink")
-            .from::<CheckpointStoreOperation>()
+            .into::<CheckpointStoreOperation>()
+            .named("sink")
             .keyed()
-            .to_plugin("tier_sink");
+            .output("tier_sink");
     }
 }
 
@@ -1183,14 +1307,14 @@ impl UnboundedOperative for CandleOperative {
     fn factory_id() -> &'static str {
         "candle"
     }
-    fn channels(c: &mut ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.effectively_once();
         c.correction_window(600_000);
-        c.input::<String>("input").into::<CandleOperation>();
-        c.channel::<String>("sink")
-            .from::<CandleOperation>()
+        c.input::<String>("input")
+            .into::<CandleOperation>()
+            .named("sink")
             .keyed()
-            .to_plugin("tier_sink");
+            .output("tier_sink");
     }
 }
 
@@ -1236,15 +1360,14 @@ impl UnboundedOperative for PoisonProbeOperative {
     fn factory_id() -> &'static str {
         "poison_probe"
     }
-    fn channels(c: &mut ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         // Small backoff keeps the park fast in the e2e; the budget stays
         // at the default 3 attempts.
         c.input::<String>("input")
             .retry_backoff_ms(25)
-            .into::<PoisonProbeOperation>();
-        c.channel::<String>("out")
-            .from::<PoisonProbeOperation>()
-            .to_plugin("probe_sink");
+            .into::<PoisonProbeOperation>()
+            .named("out")
+            .output("probe_sink");
     }
 }
 
@@ -1311,11 +1434,11 @@ impl UnboundedOperative for ResumeProbeOperative {
     fn factory_id() -> &'static str {
         "resume_probe"
     }
-    fn channels(c: &mut ChannelBuilder) {
-        c.input::<String>("input").into::<ResumeProbeOperation>();
-        c.channel::<Vec<u8>>("total")
-            .from::<ResumeProbeOperation>()
-            .to_plugin("resume_probe_out");
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("input")
+            .into::<ResumeProbeOperation>()
+            .named("total")
+            .output("resume_probe_out");
     }
 }
 
@@ -1372,11 +1495,11 @@ impl UnboundedOperative for CompareFilterOperative {
     fn factory_id() -> &'static str {
         "compare_filter"
     }
-    fn channels(c: &mut ChannelBuilder) {
-        c.input::<String>("input").into::<CompareFilterOperation>();
-        c.channel::<String>("sink")
-            .from::<CompareFilterOperation>()
-            .to_plugin("compare_filter_sink");
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("input")
+            .into::<CompareFilterOperation>()
+            .named("sink")
+            .output("compare_filter_sink");
     }
 }
 
@@ -1467,14 +1590,13 @@ impl UnboundedOperative for StaticSegmentOperative {
     fn factory_id() -> &'static str {
         "static_segment"
     }
-    fn channels(c: &mut ChannelBuilder) {
-        c.input::<String>("input").into::<StaticEntryOperation>();
-        c.channel::<String>("hop")
-            .from::<StaticEntryOperation>()
-            .into::<StaticDownstreamOperation>();
-        c.channel::<Vec<u8>>("kafka")
-            .from::<StaticDownstreamOperation>()
-            .to_plugin("test_kafka");
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("input")
+            .into::<StaticEntryOperation>()
+            .named("hop")
+            .into::<StaticDownstreamOperation>()
+            .named("kafka")
+            .output("test_kafka");
     }
 }
 
@@ -1607,20 +1729,17 @@ impl UnboundedOperative for SegmentingStressOperative {
     fn factory_id() -> &'static str {
         "segmenting_stress"
     }
-    fn channels(c: &mut ChannelBuilder) {
-        c.input::<String>("input").into::<StressOperationA>();
-        c.channel::<String>("a_to_b")
-            .from::<StressOperationA>()
-            .into::<StressOperationB>();
-        c.channel::<String>("b_to_c")
-            .from::<StressOperationB>()
-            .into::<StressOperationC>();
-        c.channel::<String>("c_to_d")
-            .from::<StressOperationC>()
-            .into::<StressOperationD>();
-        c.channel::<Vec<u8>>("echo")
-            .from::<StressOperationD>()
-            .to_plugin("segmenting_stress_echo");
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("input")
+            .into::<StressOperationA>()
+            .named("a_to_b")
+            .into::<StressOperationB>()
+            .named("b_to_c")
+            .into::<StressOperationC>()
+            .named("c_to_d")
+            .into::<StressOperationD>()
+            .named("echo")
+            .output("segmenting_stress_echo");
     }
 }
 
@@ -1749,31 +1868,47 @@ impl Operation for DropOldestTestOperation {
     }
 }
 
-struct BoundedMailboxOperative;
-impl UnboundedOperative for BoundedMailboxOperative {
+// One operative per overflow policy: the graph-shape rule
+// (`sdk-graph-authoring`) allows exactly one entry channel per operative, so
+// the former three-entry BoundedMailboxOperative is now three classes.
+struct BoundedMailboxBlockOperative;
+impl UnboundedOperative for BoundedMailboxBlockOperative {
     fn factory_id() -> &'static str {
-        "bounded_mailbox"
+        "bounded_mailbox_block"
     }
-    fn channels(c: &mut ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("block_input")
             .on_full(OverflowPolicy::Block)
-            .into::<BlockTestOperation>();
-        c.channel::<Vec<u8>>("block_echo")
-            .from::<BlockTestOperation>()
-            .to_plugin("bounded_mailbox_echo");
+            .into::<BlockTestOperation>()
+            .named("block_echo")
+            .output("bounded_mailbox_echo");
+    }
+}
 
+struct BoundedMailboxDropNewestOperative;
+impl UnboundedOperative for BoundedMailboxDropNewestOperative {
+    fn factory_id() -> &'static str {
+        "bounded_mailbox_drop_newest"
+    }
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("drop_newest_input")
-            .into::<DropNewestTestOperation>();
-        c.channel::<Vec<u8>>("drop_newest_echo")
-            .from::<DropNewestTestOperation>()
-            .to_plugin("bounded_mailbox_echo");
+            .into::<DropNewestTestOperation>()
+            .named("drop_newest_echo")
+            .output("bounded_mailbox_echo");
+    }
+}
 
+struct BoundedMailboxDropOldestOperative;
+impl UnboundedOperative for BoundedMailboxDropOldestOperative {
+    fn factory_id() -> &'static str {
+        "bounded_mailbox_drop_oldest"
+    }
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("drop_oldest_input")
             .on_full(OverflowPolicy::DropOldest)
-            .into::<DropOldestTestOperation>();
-        c.channel::<Vec<u8>>("drop_oldest_echo")
-            .from::<DropOldestTestOperation>()
-            .to_plugin("bounded_mailbox_echo");
+            .into::<DropOldestTestOperation>()
+            .named("drop_oldest_echo")
+            .output("bounded_mailbox_echo");
     }
 }
 
@@ -1828,10 +1963,10 @@ impl UnboundedOperative for StatefulCounterOperative {
     fn factory_id() -> &'static str {
         "stateful_counter"
     }
-    fn channels(c: &mut ChannelBuilder) {
-        c.input::<String>("input").into::<CounterEntryOperation>();
-        c.channel::<i64>("ticks")
-            .from::<CounterEntryOperation>()
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("input")
+            .into::<CounterEntryOperation>()
+            .named("ticks")
             .into::<CounterOperation>();
     }
 }
@@ -1965,10 +2100,10 @@ impl UnboundedOperative for CoalescingCounterOperative {
     fn factory_id() -> &'static str {
         "coalescing_counter"
     }
-    fn channels(c: &mut ChannelBuilder) {
-        c.input::<String>("input").into::<TickEntryOperation>();
-        c.channel::<TickInput>("ticks")
-            .from::<TickEntryOperation>()
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("input")
+            .into::<TickEntryOperation>()
+            .named("ticks")
             .into::<TickOperation>();
     }
 }
@@ -1984,11 +2119,10 @@ impl UnboundedOperative for PersistenceOffOperative {
     fn factory_id() -> &'static str {
         "persistence_off_counter"
     }
-    fn channels(c: &mut ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
-            .into::<PersistenceOffEntryOperation>();
-        c.channel::<i64>("ticks")
-            .from::<PersistenceOffEntryOperation>()
+            .into::<PersistenceOffEntryOperation>()
+            .named("ticks")
             .into::<PersistenceOffCounterOperation>();
     }
     const PERSISTENCE_ENABLED: bool = false;
@@ -2049,7 +2183,7 @@ impl Operation for PersistenceOffCounterOperation {
 
 // -- HybridChannelOperative -------------------------------------------------------
 //
-// Demonstrates `also_to_plugin_with(...)`: the producer Operation emits a
+// Demonstrates `also_output_with(...)`: the producer Operation emits a
 // `u32` value that fans out to an inter-operation consumer and is also
 // serialized to bytes for the `hybrid_indicators` plugin. The
 // serializer panics on the sentinel `0xDEADBEEF` so an operator can
@@ -2115,11 +2249,11 @@ impl UnboundedOperative for HybridChannelOperative {
     fn factory_id() -> &'static str {
         "hybrid_channel"
     }
-    fn channels(c: &mut ChannelBuilder) {
-        c.input::<String>("input").into::<HybridProducerOperation>();
-        c.channel::<u32>("hybrid_indicator")
-            .from::<HybridProducerOperation>()
-            .also_to_plugin_with("hybrid_indicators", |v: &u32| {
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("input")
+            .into::<HybridProducerOperation>()
+            .named("hybrid_indicator")
+            .also_output_with("hybrid_indicators", |v: &u32| {
                 if *v == 0xDEAD_BEEF {
                     panic!("hybrid_indicators: serializer rejected sentinel 0xDEADBEEF");
                 }
@@ -2226,14 +2360,13 @@ impl UnboundedOperative for MixedOperative {
     fn factory_id() -> &'static str {
         "mixed_operative"
     }
-    fn channels(c: &mut ChannelBuilder) {
-        c.input::<String>("input").into::<MixedMacroEntry>();
-        c.channel::<String>("hop")
-            .from::<MixedMacroEntry>()
-            .into::<MixedHandDownstream>();
-        c.channel::<Vec<u8>>("kafka")
-            .from::<MixedHandDownstream>()
-            .to_plugin("test_kafka");
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("input")
+            .into::<MixedMacroEntry>()
+            .named("hop")
+            .into::<MixedHandDownstream>()
+            .named("kafka")
+            .output("test_kafka");
     }
 }
 

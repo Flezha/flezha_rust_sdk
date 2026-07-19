@@ -87,24 +87,47 @@ pub use operation::WallClock;
 #     pub fn replay_emits_equal(&self, inputs: &[S::Input]) -> Result<(), EmitStreamMismatch>;
 #     pub fn emitted_meta(&self) -> Vec<Option<&HashMap<String, String>>>;
 
-# Channel fan-out-to-plugin surface:
+# Graph-builder surface (`sdk-graph-authoring`, in `channel/builder.rs`):
 #
-# Builder methods (in `channel/builder.rs`):
+#   pub struct ChannelBuilder { /* RefCell interior; methods take &self */ }
+#     pub fn input<T: DeserializeOwned + Send + Sync>(&self, name: &'static str) -> EntryStream<'_, T>;
+#     pub fn input_with<T, P>(&self, name: &'static str, parser: P) -> EntryStream<'_, T>
+#       where P: Fn(Vec<u8>) -> Result<T, String> + Send + Sync + 'static;
+#     # effectively_once / checkpoint_ack / correction_window / beyond_window_policy (&self)
 #
-#   impl<'b, T: 'static + Send + Sync> ChannelDeclWithProducer<'b, T> {
-#       pub fn also_to_plugin_with<F>(self, plugin_name: &'static str, serializer: F) -> Self
-#       where
-#           F: Fn(&T) -> Vec<u8> + Send + Sync + 'static;
-#       pub fn keyed(self) -> Self;   # output-identity opt-in; requires a plugin wire
-#   }
+#   pub struct EntryStream<'b, T>;   # Copy; borrows the builder
+#     pub fn into<S: Operation<Input = T>>(self) -> Stream<'b, S::Output>;
+#     pub fn into_named<S: Operation<Input = T>>(self, node_name: &'static str) -> Stream<'b, S::Output>;
+#     pub fn on_full / retry_max / retry_backoff_ms -> Self;
 #
-# `BuildTopologyError` variants:
+#   pub struct Stream<'b, T>;        # Copy; the producer-first output-stream handle
+#     pub fn into<S: Operation<Input = T>>(self) -> Stream<'b, S::Output>;
+#     pub fn into_named<S: Operation<Input = T>>(self, node_name: &'static str) -> Stream<'b, S::Output>;
+#     pub fn branch<const N: usize>(self, arms: [&dyn Fn(Stream<'b, T>); N]) -> Self;  # >= 2 arms
+#     pub fn named / keyed / on_full / retry_max / retry_backoff_ms / codec / codec_with -> Self;
+#     pub fn also_output_with<F>(self, plugin_name: &'static str, serializer: F) -> Self
+#       where F: Fn(&T) -> Vec<u8> + Send + Sync + 'static;
+#     pub fn also_output(self, plugin_name: &'static str) -> Self where T: Serialize;
+#     pub fn output(self, plugin_name: &'static str) -> Channel<T> where T: Serialize;  # terminal
 #
-#   pub enum BuildTopologyError {
-#       /* existing variants unchanged */
+#   Removed: ChannelDecl, ChannelDeclWithProducer, EntryChannel, EntryChannelType,
+#   channel::<T>("name"), .from::<S>(), to_plugin, also_to_plugin_with.
+#   Trait signatures: UnboundedOperative::channels(c: &ChannelBuilder),
+#   BoundedOperative::operations(c: &ChannelBuilder)  (was &mut).
+#
+# `TopologyIssue` variants (renamed from BuildTopologyError by
+# `sdk-runner-entrypoint-redesign`):
+#
+#   pub enum TopologyIssue {
+#       /* existing variants unchanged; UnwiredChannel + MultiProducer removed */
 #       DuplicatePluginSink { channel: &'static str },
 #       KeyedChannelWithoutPluginWire { channel: &'static str },
 #       UnservableClock { operation: &'static str, clock_type: &'static str },
+#       NodeIdentityCollision { name: &'static str },
+#       BranchTooFewArms { arms: usize },
+#       Cycle { operation: &'static str },
+#       MultipleEntryChannels { first: &'static str, second: &'static str },
+#       UnreachableOperation { operation: &'static str },
 #   }
 #
 # `OperationError` variants:

@@ -79,7 +79,7 @@ impl UnboundedOperative for TransientOperative {
     fn factory_id() -> &'static str {
         "transient_operative"
     }
-    fn channels(c: &mut ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .retry_backoff_ms(1)
             .into::<TransientOperation>();
@@ -143,7 +143,7 @@ impl UnboundedOperative for NonRetryableOperative {
     fn factory_id() -> &'static str {
         "non_retryable_operative"
     }
-    fn channels(c: &mut ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .retry_backoff_ms(1)
             .into::<NonRetryableOperation>();
@@ -211,7 +211,7 @@ impl UnboundedOperative for PanickyOperative {
     fn factory_id() -> &'static str {
         "panicky_operative"
     }
-    fn channels(c: &mut ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .retry_backoff_ms(1)
             .into::<PanickyOperation>();
@@ -263,5 +263,87 @@ fn panic_parity_exhausts_budget_then_parks_and_continues() {
         PANIC_RUNS.load(Ordering::SeqCst),
         4,
         "poison ran 3 attempts, healthy ran once"
+    );
+}
+
+// ----- Typed-entry parse failure rides the same ladder -----
+
+static TYPED_OK: AtomicUsize = AtomicUsize::new(0);
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+struct TypedOrder {
+    id: u64,
+}
+
+test_operation!(TypedOrderOperation, "typed_order_operation", TypedOrder => String, (), |_input, _state, _ctx| {
+    TYPED_OK.fetch_add(1, Ordering::SeqCst);
+    Ok(())
+});
+
+struct TypedEntryOperative;
+impl UnboundedOperative for TypedEntryOperative {
+    fn factory_id() -> &'static str {
+        "typed_entry_operative"
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.input::<TypedOrder>("orders")
+            .retry_backoff_ms(1)
+            .into::<TypedOrderOperation>();
+    }
+}
+
+/// `sdk-graph-authoring` typed entries: a payload failing the entry parser
+/// on every attempt of the channel's retry budget parks to the DLQ under
+/// the entry channel's identity; the consumer is never invoked with a
+/// partial value, and a valid payload still flows.
+#[test]
+fn entry_parse_failure_exhausts_budget_then_parks() {
+    let _g = SINK_LOCK.lock().unwrap();
+    let parked = install_auto_acking_sink();
+    let (handle, _instance) = setup::<TypedEntryOperative>("typed-entry-instance", 2);
+    let stream = dummy_stream();
+
+    dispatch_input(
+        &handle,
+        "typed-entry-instance",
+        "orders",
+        b"not json".to_vec(),
+        &stream,
+    );
+    dispatch_input(
+        &handle,
+        "typed-entry-instance",
+        "orders",
+        br#"{"id":1}"#.to_vec(),
+        &stream,
+    );
+
+    assert!(
+        wait_until(
+            || TYPED_OK.load(Ordering::SeqCst) == 1,
+            Duration::from_secs(5)
+        ),
+        "a valid payload flows past the unparseable one"
+    );
+    assert!(
+        wait_until(
+            || !parked.lock().unwrap().is_empty(),
+            Duration::from_secs(5)
+        ),
+        "the unparseable payload parks"
+    );
+    let entries = parked.lock().unwrap().clone();
+    assert_eq!(entries.len(), 1, "exactly one park");
+    assert_eq!(
+        entries[0].entry.attempts, 3,
+        "the parse consumed the channel's whole retry budget"
+    );
+    assert_eq!(entries[0].entry.channel, "orders");
+    assert_eq!(entries[0].entry.payload, Some(b"not json".to_vec()));
+    assert!(entries[0].entry.error.contains("JSON"));
+    assert_eq!(
+        TYPED_OK.load(Ordering::SeqCst),
+        1,
+        "the consumer never sees a partial value"
     );
 }

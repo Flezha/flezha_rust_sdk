@@ -58,7 +58,7 @@ impl UnboundedOperative for ProbeOperativeA {
     fn factory_id() -> &'static str {
         "lifecycle_probe_a"
     }
-    fn channels(c: &mut ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("in").into::<PassOp>();
     }
 }
@@ -68,7 +68,7 @@ impl UnboundedOperative for ProbeOperativeB {
     fn factory_id() -> &'static str {
         "lifecycle_probe_b"
     }
-    fn channels(c: &mut ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("in").into::<PassOp>();
     }
 }
@@ -78,20 +78,23 @@ impl UnboundedOperative for ProbeOperativeC {
     fn factory_id() -> &'static str {
         "lifecycle_probe_c"
     }
-    fn channels(c: &mut ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("in").into::<PassOp>();
     }
 }
 
-/// Declares a channel and never wires it — `define_unbounded` must report
-/// this as `Err(FlezhaError::InvalidTopology)`, not panic.
+/// Declares a `.keyed()` channel without a plugin wire — `define_unbounded`
+/// must report this as `Err(FlezhaError::InvalidTopology)`, not panic.
 struct UnwiredOperative;
 impl UnboundedOperative for UnwiredOperative {
     fn factory_id() -> &'static str {
         "lifecycle_unwired"
     }
-    fn channels(c: &mut ChannelBuilder) {
-        c.channel::<String>("dangling");
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("in")
+            .into::<PassOp>()
+            .named("dangling")
+            .keyed();
     }
 }
 
@@ -222,14 +225,14 @@ fn runner_lifecycle_and_singleton_guard() {
     let err = broken
         .define_unbounded::<UnwiredOperative>()
         .err()
-        .expect("unwired channel must fail declaration");
+        .expect("keyed channel without a plugin wire must fail declaration");
     assert!(
         matches!(err, FlezhaError::InvalidTopology(_)),
         "expected InvalidTopology, got: {err}"
     );
     assert!(
         err.to_string().contains("dangling"),
-        "error should name the unwired channel, got: {err}"
+        "error should name the offending channel, got: {err}"
     );
     // ...and the failed define left nothing declared: removing it is NotDefined.
     assert!(matches!(

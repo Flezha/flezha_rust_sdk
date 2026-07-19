@@ -103,7 +103,7 @@ impl UnboundedOperative for SingleSegmentOperative {
     fn factory_id() -> &'static str {
         "single_segment_operative"
     }
-    fn channels(c: &mut ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         // Opt the entry channel into Block so the bench measures the
         // dispatch hot path without DropNewest-induced losses (the
         // microbench bursts 100K msgs at default capacity 1024). Drops
@@ -215,7 +215,7 @@ impl UnboundedOperative for StaticFanoutOperative {
     fn factory_id() -> &'static str {
         "static_fanout_operative"
     }
-    fn channels(c: &mut ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<Vec<u8>>("input")
             .on_full(OverflowPolicy::Block)
             .into::<FanoutOperation>();
@@ -342,14 +342,13 @@ impl UnboundedOperative for TierOffOperative {
     fn factory_id() -> &'static str {
         "tier_off_bench_operative"
     }
-    fn channels(c: &mut ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<Vec<u8>>("input")
             .on_full(OverflowPolicy::Block)
-            .into::<TierOffOperation>();
-        c.channel::<Vec<u8>>("out")
-            .from::<TierOffOperation>()
+            .into::<TierOffOperation>()
+            .named("out")
             .keyed()
-            .to_plugin("bench");
+            .output("bench");
     }
 }
 
@@ -358,15 +357,14 @@ impl UnboundedOperative for TierOnOperative {
     fn factory_id() -> &'static str {
         "tier_on_bench_operative"
     }
-    fn channels(c: &mut ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.effectively_once();
         c.input::<Vec<u8>>("input")
             .on_full(OverflowPolicy::Block)
-            .into::<TierOnOperation>();
-        c.channel::<Vec<u8>>("out")
-            .from::<TierOnOperation>()
+            .into::<TierOnOperation>()
+            .named("out")
             .keyed()
-            .to_plugin("bench");
+            .output("bench");
     }
 }
 

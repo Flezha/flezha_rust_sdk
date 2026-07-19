@@ -47,7 +47,7 @@ macro_rules! dyn_operation_base {
         struct $operative;
         impl UnboundedOperative for $operative {
             fn factory_id() -> &'static str { $factory }
-            fn channels(c: &mut ChannelBuilder) { c.input::<String>("inp").into::<$operation>(); }
+            fn channels(c: &ChannelBuilder) { c.input::<String>("inp").into::<$operation>(); }
         }
     };
 }

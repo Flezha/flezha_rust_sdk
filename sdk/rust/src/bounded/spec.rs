@@ -1,41 +1,41 @@
 //! Bounded class spec: the frozen authoring result produced at registration.
 //!
 //! A bounded operative is authored either as bare [`run`](super::BoundedOperative::run)
-//! sugar (no declared operations) or as a structured **tree** of
+//! sugar (no declared operations) or as a structured **DAG** of
 //! Operations/Channels/Segments via
 //! [`operations`](super::BoundedOperative::operations). `build_spec` runs the
-//! declaration once, validates it (single-rooted tree, no joins, no dynamic
-//! segments, self-terminating), and freezes the result for every spawn of the
-//! class.
+//! declaration once, validates it (single-rooted acyclic graph — fan-out and
+//! fan-in both legal, no dynamic segments, self-terminating), and freezes the
+//! result for every spawn of the class.
 
-use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
 use super::{BoundedOperative, BoundedRunFn, LoopMode, RollbackMode};
 use crate::channel::builder::ChannelBuilder;
 use crate::channel::{ChannelKind, OperationId, RetryPolicy};
-use crate::operative::builder::build_topology;
+use crate::operative::builder::{build_topology, graph_order};
 use crate::operative::topology::{OperativeTopology, SegmentingMode};
 
-/// The static operation tree of a structured bounded class (`bounded-branching`).
+/// The static operation DAG of a structured bounded class (`bounded-branching`).
 ///
-/// `order` holds every operation in **BFS order from the root**, so a node's
-/// index — which is also its `stage_idx` and its wire `op_idx` — is always lower
-/// than its children's. That numbering is load-bearing: completion order is
-/// therefore a topological order, and reversing it (what `plan_compensation`
-/// already does) is reverse-topological compensation. A linear chain is the
-/// single-branch case: every node has exactly one child.
+/// `order` holds every operation in **Kahn topological order from the root**,
+/// so every producer of a node — a fan-in has several — sits at a lower index
+/// than the node itself. A node's index is also its `stage_idx` and its wire
+/// `op_idx`. That numbering is load-bearing: completion order is topological,
+/// and reversing it (what `plan_compensation` already does) is
+/// reverse-topological compensation — a join is undone before any of its
+/// producers. A linear chain is the single-branch case.
 #[derive(Debug, Default)]
-pub(crate) struct OpTree {
+pub(crate) struct OpDag {
     pub order: Vec<OperationId>,
-    /// Index of each node's parent (`None` for the root), positionally.
-    pub parents: Vec<Option<usize>>,
+    /// Indexes of each node's producers (empty for the root), positionally.
+    pub parents: Vec<Vec<usize>>,
     /// Indexes of each node's children — the consumers of its output channel.
     pub children: Vec<Vec<usize>>,
 }
 
-impl OpTree {
+impl OpDag {
     pub fn len(&self) -> usize {
         self.order.len()
     }
@@ -46,7 +46,7 @@ impl OpTree {
         (0..self.len()).filter(|&i| self.children[i].is_empty())
     }
 
-    /// The single leaf, when the tree has exactly one — the terminal operation
+    /// The single leaf, when the graph has exactly one — the terminal operation
     /// whose batch a handoff-chained loop re-seeds from, and whose output
     /// channel an iteration commit journals.
     pub fn single_leaf(&self) -> Option<usize> {
@@ -64,9 +64,9 @@ pub(crate) struct BoundedSpec {
     pub run: BoundedRunFn,
     /// Structured topology, or `None` for run-sugar.
     pub topology: Option<Arc<OperativeTopology>>,
-    /// Operations as a static tree rooted at the entry channel's consumer.
+    /// Operations as a static DAG rooted at the entry channel's consumer.
     /// Empty for run-sugar.
-    pub tree: OpTree,
+    pub dag: OpDag,
     /// Optional wall-clock backstop applied by the driver.
     pub max_duration: Option<Duration>,
     /// Saga rollback scope applied on abnormal termination.
@@ -90,7 +90,7 @@ impl std::fmt::Debug for BoundedSpec {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BoundedSpec")
             .field("structured", &self.topology.is_some())
-            .field("tree_len", &self.tree.len())
+            .field("dag_len", &self.dag.len())
             .field("max_duration", &self.max_duration)
             .field("rollback_mode", &self.rollback_mode)
             .field("loop_mode", &self.loop_mode)
@@ -116,12 +116,10 @@ pub enum BuildBoundedError {
     NoEntryChannel { factory_id: &'static str },
 
     #[error(
-        "bounded operative `{factory_id}` declares operation `{operation}` as the consumer of \
-         more than one channel; a bounded topology is a tree — fan-out is supported, fan-in \
-         (joining two branches) is not. Merge the producers into one operation, or let the \
-         branches stay independent"
+        "bounded operative `{factory_id}` declares operation `{operation}` on a cycle; a \
+         bounded topology is a DAG — an operation's output may never reach its own input"
     )]
-    FanIn {
+    Cycle {
         factory_id: &'static str,
         operation: String,
     },
@@ -151,8 +149,8 @@ pub enum BuildBoundedError {
     #[error(
         "bounded operative `{factory_id}` declares a handoff-chained loop over a branching \
          topology ({leaves} terminal operations); iteration N+1 is seeded from iteration N's \
-         terminal batch, which a tree with several leaves does not define. Use \
-         `LoopMode::PerInput`, or keep the chained loop linear"
+         terminal batch, which a graph with several leaves does not define. Use \
+         `LoopMode::PerInput`, or keep the chained loop converging on one terminal"
     )]
     BranchingChainedLoop {
         factory_id: &'static str,
@@ -177,7 +175,7 @@ pub enum BuildBoundedError {
 
     #[error(
         "bounded operative `{factory_id}` declares operation `{operation}` that is not reachable \
-         from the entry channel; every operation must hang off the one tree rooted there"
+         from the entry channel; every operation must hang off the one graph rooted there"
     )]
     Disconnected {
         factory_id: &'static str,
@@ -227,7 +225,7 @@ pub enum BuildBoundedError {
 
 /// Build and validate the spec for a bounded class. Empty `operations()`
 /// selects the run-sugar path; a non-empty declaration is validated as a
-/// static tree.
+/// static DAG.
 pub(crate) fn build_spec<T: BoundedOperative>() -> Result<BoundedSpec, BuildBoundedError> {
     let factory_id = T::factory_id();
 
@@ -239,11 +237,11 @@ pub(crate) fn build_spec<T: BoundedOperative>() -> Result<BoundedSpec, BuildBoun
 
     let retry = retry_policy::<T>(factory_id)?;
 
-    let mut cb = ChannelBuilder::new();
-    T::operations(&mut cb);
+    let cb = ChannelBuilder::new();
+    T::operations(&cb);
 
     // No declared operations ⇒ run-sugar. A loop needs a chain to iterate.
-    if cb.operations.is_empty() {
+    if !cb.has_operations() {
         if T::loop_mode() != LoopMode::Once {
             return Err(BuildBoundedError::LoopWithoutChain { factory_id });
         }
@@ -251,7 +249,7 @@ pub(crate) fn build_spec<T: BoundedOperative>() -> Result<BoundedSpec, BuildBoun
         return Ok(BoundedSpec {
             run: T::run as BoundedRunFn,
             topology: None,
-            tree: OpTree::default(),
+            dag: OpDag::default(),
             max_duration: T::max_duration(),
             rollback_mode: T::rollback_mode(),
             loop_mode: LoopMode::Once,
@@ -265,15 +263,15 @@ pub(crate) fn build_spec<T: BoundedOperative>() -> Result<BoundedSpec, BuildBoun
         factory_id,
         detail: format!("{e}"),
     })?;
-    let tree = build_tree(factory_id, &topology)?;
+    let dag = build_dag(factory_id, &topology)?;
 
     // A handoff-chained loop re-seeds iteration N+1 from iteration N's terminal
-    // batch, so "the terminal operation" must be unambiguous — a branching tree
-    // has no single terminal batch to carry forward.
-    if T::loop_mode() == LoopMode::Chained && tree.single_leaf().is_none() {
+    // batch, so "the terminal operation" must be unambiguous — a graph with
+    // several leaves has no single terminal batch to carry forward.
+    if T::loop_mode() == LoopMode::Chained && dag.single_leaf().is_none() {
         return Err(BuildBoundedError::BranchingChainedLoop {
             factory_id,
-            leaves: tree.leaves().count(),
+            leaves: dag.leaves().count(),
         });
     }
 
@@ -297,9 +295,9 @@ pub(crate) fn build_spec<T: BoundedOperative>() -> Result<BoundedSpec, BuildBoun
         // serializable — otherwise a crash mid-loop would silently resume with
         // an empty seed and read as "converged".
         if T::loop_mode() == LoopMode::Chained {
-            let terminal = tree
+            let terminal = dag
                 .single_leaf()
-                .and_then(|leaf| topology.operation(tree.order[leaf]))
+                .and_then(|leaf| topology.operation(dag.order[leaf]))
                 .expect("a chained loop has a single leaf (checked above)");
             let codec_ok = terminal
                 .output_channel_id
@@ -317,7 +315,7 @@ pub(crate) fn build_spec<T: BoundedOperative>() -> Result<BoundedSpec, BuildBoun
     Ok(BoundedSpec {
         run: T::run as BoundedRunFn,
         topology: Some(topology),
-        tree,
+        dag,
         max_duration: T::max_duration(),
         rollback_mode: T::rollback_mode(),
         loop_mode: T::loop_mode(),
@@ -347,18 +345,19 @@ fn retry_policy<T: BoundedOperative>(
     })
 }
 
-/// Resolve the execution tree of a structured bounded's operations and reject
-/// anything that is not one connected, single-rooted tree (fan-in, an operation
-/// producing two channels, several roots, cycles, disconnected operations,
-/// dynamic segmentation, no entry channel).
+/// Resolve the execution DAG of a structured bounded's operations and reject
+/// anything outside the shared graph-shape rule (`sdk-graph-authoring`): one
+/// entry-rooted connected acyclic graph — fan-out and fan-in both legal — with
+/// at most one output channel per operation, no dynamic segmentation.
 ///
-/// Nodes come out in BFS order from the root, so a parent's index always
-/// precedes its children's — the invariant the completion and compensation
-/// orders rest on.
-fn build_tree(
+/// Nodes come out in **Kahn topological order** from the root, so every
+/// producer's index precedes its consumers' — for a join, *all* of them. That
+/// is the invariant the completion and compensation orders rest on (BFS, the
+/// former walk, enqueued a join on its first producer and broke it).
+fn build_dag(
     factory_id: &'static str,
     topology: &OperativeTopology,
-) -> Result<OpTree, BuildBoundedError> {
+) -> Result<OpDag, BuildBoundedError> {
     // Bounded has no `dynamic_segments?` capability.
     for op in &topology.operations {
         if op.mode == SegmentingMode::Dynamic {
@@ -368,24 +367,12 @@ fn build_tree(
             });
         }
     }
-    // Degree checks first, so the walk below can assume a tree and every
-    // rejection names its node rather than a symptom of it. An operation
-    // consuming two channels is a join; producing two is unroutable (the
-    // topology keeps one `output_channel_id`, so the second would be silently
-    // orphaned).
+    // An operation producing two channels is unroutable (the topology keeps
+    // one `output_channel_id`, so the second would be silently orphaned).
+    // Structurally impossible on the stream-handle builder; kept as
+    // defense-in-depth.
     for (idx, op) in topology.operations.iter().enumerate() {
         let op_id = idx as OperationId;
-        let incoming = topology
-            .channels
-            .iter()
-            .filter(|c| c.consumers.contains(&op_id))
-            .count();
-        if incoming > 1 {
-            return Err(BuildBoundedError::FanIn {
-                factory_id,
-                operation: op.name.to_string(),
-            });
-        }
         let outgoing = topology
             .channels
             .iter()
@@ -412,54 +399,51 @@ fn build_tree(
             consumers: entry.consumers.len(),
         });
     }
+    let root = entry.consumers[0];
 
-    let mut tree = OpTree {
-        order: vec![entry.consumers[0]],
-        parents: vec![None],
-        children: vec![Vec::new()],
-    };
-    let mut seen: HashSet<OperationId> = HashSet::from([entry.consumers[0]]);
-
-    // Breadth-first: every node's children are appended before the next level
-    // is expanded, so `order` is a topological order and `parent < child`.
-    let mut node = 0usize;
-    while node < tree.len() {
-        let op = topology
-            .operation(tree.order[node])
-            .expect("tree operation present in topology");
-        let downstream: &[OperationId] = op
-            .output_channel_id
-            .and_then(|cid| topology.channel(cid))
-            .map_or(&[], |ch| ch.consumers.as_slice());
-
-        for &child_op in downstream {
-            // In-degree is already ≤ 1, so the only way back to a seen node is a
-            // cycle — which the reachability check below reports as disconnected.
-            if !seen.insert(child_op) {
-                continue;
-            }
-            let child = tree.len();
-            tree.order.push(child_op);
-            tree.parents.push(Some(node));
-            tree.children.push(Vec::new());
-            tree.children[node].push(child);
-        }
-        node += 1;
-    }
-
-    if tree.len() != topology.operations.len() {
-        let disconnected = topology
-            .operations
-            .iter()
-            .enumerate()
-            .find(|(i, _)| !seen.contains(&(*i as OperationId)))
-            .map(|(_, op)| op.name.to_string())
-            .unwrap_or_default();
+    // The shared graph-shape walk (`operative::builder::graph_order`) — one
+    // mechanism for both SDK-level validation and the bounded execution order.
+    // Reachability is named first, so a genuinely disconnected operation is
+    // not reported as a cycle symptom; a leftover Kahn node is on a cycle.
+    // Kahn pop-in-FIFO from the root yields exactly the former BFS numbering
+    // for a tree, so journaled `op_idx` values keep their meaning.
+    let n = topology.operations.len();
+    let edges: Vec<_> = topology
+        .channels
+        .iter()
+        .filter_map(|c| c.producer.map(|p| (p, c.consumers.as_slice())))
+        .collect();
+    let shape = graph_order(n, &edges, &[root]);
+    if let Some(node) = shape.unreachable.filter(|_| shape.on_cycle.is_none()) {
         return Err(BuildBoundedError::Disconnected {
             factory_id,
-            operation: disconnected,
+            operation: topology.operations[node as usize].name.to_string(),
+        });
+    }
+    if let Some(node) = shape.on_cycle {
+        return Err(BuildBoundedError::Cycle {
+            factory_id,
+            operation: topology.operations[node as usize].name.to_string(),
         });
     }
 
-    Ok(tree)
+    let mut dag = OpDag {
+        order: shape.order,
+        parents: vec![Vec::new(); n],
+        children: vec![Vec::new(); n],
+    };
+    for (producer, consumers) in &edges {
+        for &c in *consumers {
+            dag.children[shape.pos[*producer as usize]].push(shape.pos[c as usize]);
+            dag.parents[shape.pos[c as usize]].push(shape.pos[*producer as usize]);
+        }
+    }
+    for children in &mut dag.children {
+        children.sort_unstable();
+    }
+    for parents in &mut dag.parents {
+        parents.sort_unstable();
+    }
+
+    Ok(dag)
 }

@@ -147,6 +147,47 @@ pub trait Operation: Send + Sync + 'static + Default {
     /// Constructor from typed Config. Default invokes `Self::default()`,
     /// which requires `Config = ()` (`Self: Default` is already part of
     /// the trait bound).
+    ///
+    /// This is the sanctioned path for a **parameterized operation** — one
+    /// class serving several configurations, each instance constructed from
+    /// the typed config carried in the operative-start metadata:
+    ///
+    /// ```
+    /// use flezha_runner::operation::{Operation, OperationCtx, OperationError};
+    /// use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
+    ///
+    /// #[derive(serde::Deserialize)]
+    /// struct SmaConfig {
+    ///     window: usize,
+    /// }
+    ///
+    /// #[derive(Default)]
+    /// struct Sma {
+    ///     window: usize,
+    /// }
+    ///
+    /// impl Operation for Sma {
+    ///     type Input = f64;
+    ///     type Output = f64;
+    ///     type State = ();
+    ///     type Change = NoChange;
+    ///     type Clock = WallClock;
+    ///     type Config = SmaConfig;
+    ///     fn name() -> &'static str { "sma" }
+    ///     fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
+    ///     fn from_config(cfg: SmaConfig) -> Self {
+    ///         Sma { window: cfg.window }
+    ///     }
+    ///     fn run(
+    ///         &mut self,
+    ///         _input: f64,
+    ///         _state: StateHandle<'_, Self>,
+    ///         _ctx: &mut OperationCtx<'_>,
+    ///     ) -> Result<(), OperationError> {
+    ///         Ok(())
+    ///     }
+    /// }
+    /// ```
     fn from_config(_cfg: Self::Config) -> Self {
         // The default impl is monomorphized per Operation; Operations with a
         // non-`()` Config must override.

@@ -1,4 +1,4 @@
-//! Per-emit cost of hybrid channels (`also_to_plugin_with`) vs. pure
+//! Per-emit cost of hybrid channels (`also_output_with`) vs. pure
 //! inter-operation and pure plugin-bound channels. Establishes that the
 //! hybrid path is `inter-operation fan-out + serializer call`, with the
 //! serializer paying the same fixed cost regardless of consumer count.
@@ -6,7 +6,7 @@
 //! Five bench configurations:
 //! - `pure_inter_operation_1c`  — pure inter-operation, 1 consumer
 //! - `pure_inter_operation_3c`  — pure inter-operation, 3 consumers
-//! - `pure_plugin_bound`    — pure `to_plugin(...)` channel
+//! - `pure_plugin_bound`    — pure `output(...)` channel
 //! - `hybrid_1c`            — hybrid, 1 consumer + plugin sink
 //! - `hybrid_3c`            — hybrid, 3 consumers + plugin sink
 //!
@@ -124,12 +124,11 @@ impl UnboundedOperative for Pure1Operative {
     fn factory_id() -> &'static str {
         "bench_pure_inter_operation_1c"
     }
-    fn channels(c: &mut ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<Vec<u8>>("input")
             .on_full(OverflowPolicy::Block)
-            .into::<Pure1Producer>();
-        c.channel::<u32>("out")
-            .from::<Pure1Producer>()
+            .into::<Pure1Producer>()
+            .named("out")
             .into::<Pure1Consumer>();
     }
 }
@@ -196,19 +195,19 @@ impl UnboundedOperative for Pure3Operative {
     fn factory_id() -> &'static str {
         "bench_pure_inter_operation_3c"
     }
-    fn channels(c: &mut ChannelBuilder) {
-        c.input::<Vec<u8>>("input")
+    fn channels(c: &ChannelBuilder) {
+        let out = c
+            .input::<Vec<u8>>("input")
             .on_full(OverflowPolicy::Block)
-            .into::<Pure3Producer>();
-        c.channel::<u32>("out")
-            .from::<Pure3Producer>()
-            .into::<Pure3ConsumerA>()
-            .into::<Pure3ConsumerB>()
-            .into::<Pure3ConsumerC>();
+            .into::<Pure3Producer>()
+            .named("out");
+        out.into::<Pure3ConsumerA>();
+        out.into::<Pure3ConsumerB>();
+        out.into::<Pure3ConsumerC>();
     }
 }
 
-// ---------- pure plugin-bound (`to_plugin`) ----------
+// ---------- pure plugin-bound (`output`) ----------
 
 #[derive(Default)]
 struct PluginBoundProducer;
@@ -239,13 +238,12 @@ impl UnboundedOperative for PluginBoundOperative {
     fn factory_id() -> &'static str {
         "bench_pure_plugin_bound"
     }
-    fn channels(c: &mut ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<Vec<u8>>("input")
             .on_full(OverflowPolicy::Block)
-            .into::<PluginBoundProducer>();
-        c.channel::<Vec<u8>>("out")
-            .from::<PluginBoundProducer>()
-            .to_plugin("bench_plugin_bound");
+            .into::<PluginBoundProducer>()
+            .named("out")
+            .output("bench_plugin_bound");
     }
 }
 
@@ -303,13 +301,12 @@ impl UnboundedOperative for Hybrid1Operative {
     fn factory_id() -> &'static str {
         "bench_hybrid_1c"
     }
-    fn channels(c: &mut ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<Vec<u8>>("input")
             .on_full(OverflowPolicy::Block)
-            .into::<Hybrid1Producer>();
-        c.channel::<u32>("out")
-            .from::<Hybrid1Producer>()
-            .also_to_plugin_with("bench_hybrid_plugin_1c", |v: &u32| v.to_be_bytes().to_vec())
+            .into::<Hybrid1Producer>()
+            .named("out")
+            .also_output_with("bench_hybrid_plugin_1c", |v: &u32| v.to_be_bytes().to_vec())
             .into::<Hybrid1Consumer>();
     }
 }
@@ -376,16 +373,16 @@ impl UnboundedOperative for Hybrid3Operative {
     fn factory_id() -> &'static str {
         "bench_hybrid_3c"
     }
-    fn channels(c: &mut ChannelBuilder) {
-        c.input::<Vec<u8>>("input")
+    fn channels(c: &ChannelBuilder) {
+        let out = c
+            .input::<Vec<u8>>("input")
             .on_full(OverflowPolicy::Block)
-            .into::<Hybrid3Producer>();
-        c.channel::<u32>("out")
-            .from::<Hybrid3Producer>()
-            .also_to_plugin_with("bench_hybrid_plugin_3c", |v: &u32| v.to_be_bytes().to_vec())
-            .into::<Hybrid3ConsumerA>()
-            .into::<Hybrid3ConsumerB>()
-            .into::<Hybrid3ConsumerC>();
+            .into::<Hybrid3Producer>()
+            .named("out")
+            .also_output_with("bench_hybrid_plugin_3c", |v: &u32| v.to_be_bytes().to_vec());
+        out.into::<Hybrid3ConsumerA>();
+        out.into::<Hybrid3ConsumerB>();
+        out.into::<Hybrid3ConsumerC>();
     }
 }
 

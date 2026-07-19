@@ -115,19 +115,14 @@ pub fn expand(item: TokenStream) -> syn::Result<TokenStream> {
     let plugin_ty = &def.plugin_ty;
     let plugin_name = &def.plugin_name;
     let first_operation = &def.operations[0];
-    let last_operation = def.operations.last().unwrap();
 
     let operative_ident = format_ident!("__FlezhaOperative_{}", sanitize_ident(&def.id));
 
-    // Inter-operation hops carry the producer's `Output` type.
-    let hops = def.operations.windows(2).enumerate().map(|(i, pair)| {
-        let prod = &pair[0];
-        let cons = &pair[1];
-        let hop_name = format!("__hop{}", i + 1);
+    // Chained hops on the stream handle; each `.into` returns the consumed
+    // operation's output stream.
+    let hops = def.operations.iter().skip(1).map(|cons| {
         quote! {
-            c.channel::<<#prod as ::flezha_runner::Operation>::Output>(#hop_name)
-                .from::<#prod>()
-                .into::<#cons>();
+            let stream = stream.into::<#cons>();
         }
     });
 
@@ -136,12 +131,13 @@ pub fn expand(item: TokenStream) -> syn::Result<TokenStream> {
         struct #operative_ident;
         impl ::flezha_runner::UnboundedOperative for #operative_ident {
             fn factory_id() -> &'static str { #id }
-            fn channels(c: &mut ::flezha_runner::ChannelBuilder) {
-                c.input::<#input_ty>("input").into::<#first_operation>();
+            fn channels(c: &::flezha_runner::ChannelBuilder) {
+                let stream = c.input::<#input_ty>("input").into::<#first_operation>();
                 #(#hops)*
-                c.channel::<#plugin_ty>(#plugin_name)
-                    .from::<#last_operation>()
-                    .to_plugin(#plugin_name);
+                // Pins the declared plugin payload type against the terminal
+                // operation's `Output`.
+                let stream: ::flezha_runner::Stream<'_, #plugin_ty> = stream;
+                stream.named(#plugin_name).output(#plugin_name);
             }
         }
         ::flezha_runner::inventory::submit! {

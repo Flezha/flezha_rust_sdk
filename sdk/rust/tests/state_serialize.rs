@@ -59,7 +59,7 @@ impl UnboundedOperative for CounterOperative {
     fn factory_id() -> &'static str {
         "counter_operative"
     }
-    fn channels(c: &mut ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("input").into::<CounterOperation>();
     }
 }
@@ -133,7 +133,7 @@ impl UnboundedOperative for OhlcOperative {
     fn factory_id() -> &'static str {
         "ohlc_operative"
     }
-    fn channels(c: &mut ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("input").into::<OhlcOperation>();
     }
 }

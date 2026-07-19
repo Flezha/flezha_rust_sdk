@@ -14,7 +14,7 @@ pub use topology::OperativeTopology;
 use crate::channel::ChannelBuilder;
 
 /// One UnboundedOperative class. Implementors declare a stable `factory_id` and the
-/// per-class topology of channels + operations via `channels(&mut c)`.
+/// per-class topology of channels + operations via `channels(&c)`.
 ///
 /// State persistence (added by `operative-state-persistence-rust`):
 ///
@@ -32,8 +32,11 @@ pub trait UnboundedOperative: Send + Sync + 'static {
     /// controller's `flz operative start <factory_id>` looks this up.
     fn factory_id() -> &'static str;
 
-    /// One-shot topology declaration.
-    fn channels(c: &mut ChannelBuilder);
+    /// One-shot topology declaration on the producer-first graph builder
+    /// (`sdk-graph-authoring`): `c.input::<T>("name").into::<A>()...`.
+    /// Stream handles borrow `c`, so they cannot outlive this call — the
+    /// topology freezes when it returns.
+    fn channels(c: &ChannelBuilder);
 
     /// Class-level persistence toggle. The runtime resolves the final
     /// value at instance start by checking the operative-start metadata

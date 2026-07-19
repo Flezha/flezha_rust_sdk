@@ -9,11 +9,11 @@
 #[cfg_attr(miri, ignore)]
 fn ui_compile_fail() {
     let t = trybuild::TestCases::new();
-    t.compile_fail("tests/ui/wire_wrong_output.rs");
     t.compile_fail("tests/ui/wire_wrong_input.rs");
     t.compile_fail("tests/ui/entry_channel_disallowed_type.rs");
     t.compile_fail("tests/ui/plugin_bound_disallows_on_full.rs");
-    t.compile_fail("tests/ui/also_to_plugin_with_after_to_plugin.rs");
+    t.compile_fail("tests/ui/also_output_after_output.rs");
+    t.compile_fail("tests/ui/stream_handle_cannot_escape.rs");
 
     // Authoring-sugar macros (`simplify-sdk-authoring`).
     t.compile_fail("tests/ui/operation_zero_inputs.rs");

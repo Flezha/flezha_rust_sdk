@@ -224,15 +224,15 @@ mod tests {
         fn factory_id() -> &'static str {
             "dummy_operative_persistence_test"
         }
-        fn channels(c: &mut ChannelBuilder) {
+        fn channels(c: &ChannelBuilder) {
             c.input::<String>("input").into::<DummyOperation>();
         }
     }
 
     #[test]
     fn persistence_flag_frozen_at_construction_with_const_default() {
-        let mut cb = ChannelBuilder::new();
-        DummyOperative::channels(&mut cb);
+        let cb = ChannelBuilder::new();
+        DummyOperative::channels(&cb);
         let topology = build_topology_with_persistence(
             DummyOperative::factory_id(),
             cb,
@@ -246,8 +246,8 @@ mod tests {
 
     #[test]
     fn operator_override_wins_over_const() {
-        let mut cb = ChannelBuilder::new();
-        DummyOperative::channels(&mut cb);
+        let cb = ChannelBuilder::new();
+        DummyOperative::channels(&cb);
         let topology = build_topology_with_persistence(
             DummyOperative::factory_id(),
             cb,

@@ -48,7 +48,10 @@ pub struct OperationDescriptor {
     /// Type-erased `Operation::operation_key`. `Some` only for dynamic-mode
     /// Operations; the dispatch path calls it to derive the segment key.
     pub operation_key_erased: Option<OperationKeyFn>,
-    pub input_channel_id: Option<ChannelId>,
+    /// Channels this operation consumes. Several = fan-in (the node receives
+    /// the accumulated contributions of all its producers); empty only for an
+    /// operation never wired as a consumer.
+    pub input_channel_ids: Vec<ChannelId>,
     pub output_channel_id: Option<ChannelId>,
     pub input_type_id: std::any::TypeId,
     pub output_type_id: std::any::TypeId,

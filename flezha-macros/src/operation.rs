@@ -293,11 +293,11 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             #vis struct #operative_ident;
             impl ::flezha_runner::UnboundedOperative for #operative_ident {
                 fn factory_id() -> &'static str { #id }
-                fn channels(c: &mut ::flezha_runner::ChannelBuilder) {
-                    c.input::<#input_ty>("input") #on_full .into::<#struct_ident>();
-                    c.channel::<#output_ty_tokens>(#sink)
-                        .from::<#struct_ident>()
-                        .to_plugin(#sink);
+                fn channels(c: &::flezha_runner::ChannelBuilder) {
+                    let stream = c.input::<#input_ty>("input") #on_full .into::<#struct_ident>();
+                    // Pins the sink payload type against the operation's `Output`.
+                    let stream: ::flezha_runner::Stream<'_, #output_ty_tokens> = stream;
+                    stream.named(#sink).output(#sink);
                 }
             }
             ::flezha_runner::inventory::submit! {

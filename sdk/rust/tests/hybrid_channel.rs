@@ -1,4 +1,4 @@
-//! Section 2 unit tests for hybrid channels (`also_to_plugin_with`).
+//! Section 2 unit tests for hybrid channels (`also_output_with`).
 //!
 //! Each test uses the live dispatcher: an entry channel feeds bytes
 //! into a producer Operation, which calls `ctx.emit(typed_value)` on a
@@ -85,11 +85,11 @@ impl UnboundedOperative for SingleHybridOperative {
     fn factory_id() -> &'static str {
         "hybrid_single"
     }
-    fn channels(c: &mut ChannelBuilder) {
-        c.input::<String>("input").into::<SingleProducer>();
-        c.channel::<u32>("hybrid_out")
-            .from::<SingleProducer>()
-            .also_to_plugin_with("plugin_a", |v: &u32| v.to_be_bytes().to_vec())
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("input")
+            .into::<SingleProducer>()
+            .named("hybrid_out")
+            .also_output_with("plugin_a", |v: &u32| v.to_be_bytes().to_vec())
             .into::<SingleConsumer>();
     }
 }
@@ -159,17 +159,18 @@ impl UnboundedOperative for ThreeHybridOperative {
     fn factory_id() -> &'static str {
         "hybrid_three"
     }
-    fn channels(c: &mut ChannelBuilder) {
-        c.input::<String>("input").into::<ThreeProducer>();
-        c.channel::<u32>("three_out")
-            .from::<ThreeProducer>()
-            .also_to_plugin_with("plugin_three", |v: &u32| {
+    fn channels(c: &ChannelBuilder) {
+        let out = c
+            .input::<String>("input")
+            .into::<ThreeProducer>()
+            .named("three_out")
+            .also_output_with("plugin_three", |v: &u32| {
                 SERIALIZER_CALLS.fetch_add(1, Ordering::SeqCst);
                 v.to_be_bytes().to_vec()
-            })
-            .into::<ThreeConsumerA>()
-            .into::<ThreeConsumerB>()
-            .into::<ThreeConsumerC>();
+            });
+        out.into::<ThreeConsumerA>();
+        out.into::<ThreeConsumerB>();
+        out.into::<ThreeConsumerC>();
     }
 }
 
@@ -235,11 +236,11 @@ impl UnboundedOperative for PanicHybridOperative {
     fn factory_id() -> &'static str {
         "hybrid_panic"
     }
-    fn channels(c: &mut ChannelBuilder) {
-        c.input::<String>("input").into::<PanicProducer>();
-        c.channel::<u32>("panic_out")
-            .from::<PanicProducer>()
-            .also_to_plugin_with("plugin_panic", |v: &u32| {
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("input")
+            .into::<PanicProducer>()
+            .named("panic_out")
+            .also_output_with("plugin_panic", |v: &u32| {
                 if *v == 13 {
                     panic!("test serializer rejected 13");
                 }
@@ -298,7 +299,7 @@ fn hybrid_serializer_panic_is_caught() {
     assert_eq!(body, &5u32.to_be_bytes().to_vec());
 }
 
-// ---------- 2.8: duplicate also_to_plugin_with rejected at registration ----------
+// ---------- 2.8: duplicate also_output_with rejected at registration ----------
 
 test_operation!(DupProducer, "hybrid_dup_producer", String => u32, (), |_input, _state, _ctx| {
     Ok(())
@@ -309,12 +310,12 @@ impl UnboundedOperative for DupHybridOperative {
     fn factory_id() -> &'static str {
         "hybrid_dup"
     }
-    fn channels(c: &mut ChannelBuilder) {
-        c.input::<String>("input").into::<DupProducer>();
-        c.channel::<u32>("dup_out")
-            .from::<DupProducer>()
-            .also_to_plugin_with("plugin_a", |v: &u32| v.to_be_bytes().to_vec())
-            .also_to_plugin_with("plugin_b", |v: &u32| v.to_be_bytes().to_vec());
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("input")
+            .into::<DupProducer>()
+            .named("dup_out")
+            .also_output_with("plugin_a", |v: &u32| v.to_be_bytes().to_vec())
+            .also_output_with("plugin_b", |v: &u32| v.to_be_bytes().to_vec());
     }
 }
 
@@ -359,11 +360,11 @@ impl UnboundedOperative for MetaHybridOperative {
     fn factory_id() -> &'static str {
         "hybrid_meta"
     }
-    fn channels(c: &mut ChannelBuilder) {
-        c.input::<String>("input").into::<MetaProducer>();
-        c.channel::<u32>("meta_out")
-            .from::<MetaProducer>()
-            .also_to_plugin_with("plugin_meta", |v: &u32| v.to_be_bytes().to_vec())
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("input")
+            .into::<MetaProducer>()
+            .named("meta_out")
+            .also_output_with("plugin_meta", |v: &u32| v.to_be_bytes().to_vec())
             .into::<MetaConsumer>();
     }
 }
@@ -434,10 +435,10 @@ impl UnboundedOperative for PureOperative {
     fn factory_id() -> &'static str {
         "hybrid_pure"
     }
-    fn channels(c: &mut ChannelBuilder) {
-        c.input::<String>("input").into::<PureProducer>();
-        c.channel::<u32>("pure_out")
-            .from::<PureProducer>()
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("input")
+            .into::<PureProducer>()
+            .named("pure_out")
             .into::<PureConsumer>();
     }
 }

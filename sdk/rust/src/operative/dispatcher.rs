@@ -891,7 +891,7 @@ impl<'a> SegmentEmitSink<'a> {
 
         // `sink.name` is informational on the SDK side (the wire frame
         // routes by `channel: String`); kept for parity with
-        // `to_plugin(...)` semantics and useful for diagnostics.
+        // `output(...)` semantics and useful for diagnostics.
         let _plugin_name = &sink.name;
         send_plugin_frame(&self.stream, &instance.instance_id, &bytes, &metadata);
         Ok(())
@@ -946,7 +946,7 @@ impl<'a> EmitSink for SegmentEmitSink<'a> {
 
         let serialize = descriptor.plugin_serializer.as_ref().ok_or_else(|| {
             OperationError::Custom(format!(
-                "plugin channel `{}` is missing a serializer (use .to_plugin(name) at \
+                "plugin channel `{}` is missing a serializer (use .output(name) at \
                  declaration time)",
                 descriptor.name
             ))
@@ -1024,8 +1024,8 @@ impl<'a> BoundedCollectAdapter<'a> {
     }
 
     /// Serialize a plugin-bound value via the producer-edge channel's
-    /// serializer (pure `to_plugin`) or hybrid plugin sink
-    /// (`also_to_plugin_with`) and route the bytes: into the invocation's
+    /// serializer (pure `output`) or hybrid plugin sink
+    /// (`also_output_with`) and route the bytes: into the invocation's
     /// effect record under the tier, else to the bounded plugin wire.
     fn route_plugin(
         &mut self,
@@ -1095,7 +1095,7 @@ impl<'a> EmitSink for BoundedCollectAdapter<'a> {
         key: Option<String>,
     ) -> Result<(), OperationError> {
         self.reject_key(&key)?;
-        // Hybrid `also_to_plugin_with`: collect for the next stage AND route
+        // Hybrid `also_output_with`: collect for the next stage AND route
         // a serialized copy to the plugin wire / effect record.
         if self.has_plugin_sink() {
             self.route_plugin(&value, key, meta)?;
@@ -1252,6 +1252,95 @@ pub(crate) fn enqueue(slot: &Arc<SegmentSlot>, payload: SegmentPayload, policy: 
 /// static-mode operations route by `segment_for_erased` key lookup;
 /// dynamic-mode operations derive a key via `operation_key` and lazily create the
 /// Segment through the per-Operation `DynamicSegmentRegistry`.
+/// A poison entry payload climbing its channel's retry→DLQ ladder off the
+/// wire-reader thread (`sdk-graph-authoring` typed entries): the failing parse
+/// is re-attempted per the channel's retry budget — the parser contract says
+/// deterministic, so this is expected to fail identically — and then parked to
+/// the dead-letter queue under the entry channel's identity, exactly like a
+/// retry-exhausted invocation.
+pub(crate) struct EntryParseLadder {
+    pub instance: Arc<UnboundedInstance>,
+    pub channel_id: u32,
+    pub bytes: Vec<u8>,
+    pub first_error: String,
+    pub stream: Arc<flz_transport::transport::FlezhaStream>,
+    pub consumed_offset: Option<u64>,
+    pub replay: bool,
+}
+
+pub(crate) fn spawn_entry_parse_ladder(ladder: EntryParseLadder) {
+    let spawned = std::thread::Builder::new()
+        .name("flezha-entry-parse-park".to_string())
+        .spawn(move || run_entry_parse_ladder(ladder));
+    if let Err(e) = spawned {
+        eprintln!("[flezha] failed to spawn entry-parse park thread: {e}");
+    }
+}
+
+fn run_entry_parse_ladder(ladder: EntryParseLadder) {
+    let channel = ladder
+        .instance
+        .topology
+        .channel(ladder.channel_id)
+        .expect("entry channel present in topology");
+    let wrap = channel
+        .wrap_input
+        .as_ref()
+        .expect("parsed entry channel carries a wrap_input");
+    let label = format!("entry channel `{}`", channel.name);
+
+    let mut attempt: u32 = 1; // the wire-path parse was attempt 1
+    let mut error = ladder.first_error;
+    while attempt < channel.retry.max_attempts {
+        let delay =
+            crate::segment::retry::note_failed_attempt(&label, attempt, channel.retry, &error);
+        crate::util::sleep_interruptible(delay, None);
+        attempt += 1;
+        match wrap(ladder.bytes.clone()) {
+            // A parser violating the determinism contract may succeed on a
+            // re-attempt; deliver rather than drop.
+            Ok(typed) => {
+                route_to_consumers(
+                    &ladder.instance,
+                    &channel.consumers,
+                    channel.overflow_policy,
+                    &typed,
+                    &ladder.stream,
+                    ladder.consumed_offset,
+                    ladder.replay,
+                );
+                return;
+            }
+            Err(e) => error = e,
+        }
+    }
+
+    crate::segment::park::PARKED_TOTAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    eprintln!(
+        "[flezha] {} parking unparseable payload to DLQ after {} attempt(s): {}",
+        label, attempt, error
+    );
+    let identity = crate::segment::flusher::encode_segment_identity(
+        &ladder.instance.instance_id,
+        &channel.name,
+        "_entry",
+    );
+    let body = crate::segment::park::ParkBody {
+        park_id: crate::segment::park::mint_park_id(&format!(
+            "{}/{}/_entry",
+            ladder.instance.instance_id, channel.name
+        )),
+        origin_offset: ladder.consumed_offset,
+        entry: crate::segment::flusher::DlqEntryBody {
+            channel: channel.name.to_string(),
+            error,
+            attempts: attempt,
+            payload: Some(ladder.bytes),
+        },
+    };
+    crate::segment::park::park_blocking(&identity, &body);
+}
+
 pub(crate) fn route_to_consumers(
     instance: &UnboundedInstance,
     consumer_ids: &[OperationId],
@@ -1613,9 +1702,12 @@ pub fn build_segment_slot<S: Operation>(args: BuildSegmentArgs<'_>) -> Arc<Segme
         .and_then(|id| topology.channel(id));
     // Retry-then-park policy rides the operation's input channel; an
     // unwired input keeps the defaults (park still works, channel unnamed).
+    // A fan-in node has several input channels; the first wired one names
+    // its DLQ entries and carries its retry ladder.
     let input_channel = operation_desc
-        .input_channel_id
-        .and_then(|id| topology.channel(id));
+        .input_channel_ids
+        .first()
+        .and_then(|&id| topology.channel(id));
     // `flz.segment` stamp: same triple the WAL identity encodes, readable.
     let segment_label: Arc<str> = Arc::from(format!(
         "{}/{}/{}",
@@ -1732,12 +1824,12 @@ mod tests {
         fn factory_id() -> &'static str {
             "bounded_keyed_operative"
         }
-        fn channels(c: &mut ChannelBuilder) {
-            c.input::<String>("in").into::<KeyedOp>();
-            c.channel::<String>("out")
-                .from::<KeyedOp>()
+        fn channels(c: &ChannelBuilder) {
+            c.input::<String>("in")
+                .into::<KeyedOp>()
+                .named("out")
                 .keyed()
-                .to_plugin("kafka");
+                .output("kafka");
         }
     }
 

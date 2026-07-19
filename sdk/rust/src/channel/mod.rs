@@ -3,17 +3,15 @@
 //! Hot-path uses interned `u32` channel IDs from a `OperativeTopology`; the
 //! `Channel<T>` handle is phantom-typed so wiring errors fire at compile
 //! time. Channel names are de-duplicated and assigned sequential IDs at
-//! `define_unbounded::<R>()` time and frozen for the process lifetime.
+//! `define_unbounded::<R>()` time and frozen with the topology.
 
 use std::any::Any;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
 pub mod builder;
-pub mod entry_type;
 
-pub use builder::{ChannelBuilder, ChannelDecl, ChannelDeclWithProducer, EntryChannel};
-pub use entry_type::EntryChannelType;
+pub use builder::{ChannelBuilder, EntryStream, Stream};
 
 pub type ChannelId = u32;
 pub type OperationId = u32;
@@ -95,7 +93,7 @@ impl Default for RetryPolicy {
     }
 }
 
-/// Hybrid plugin sink: the runtime form of `also_to_plugin_with(...)`.
+/// Hybrid plugin sink: the runtime form of `also_output_with(...)`.
 /// Lives alongside an `InterOperation` channel's consumer fan-out so a
 /// single emit reaches both consumer mailboxes (typed) and the named
 /// plugin (serialized to bytes).
@@ -115,12 +113,16 @@ pub struct ChannelDescriptor {
     /// arrive already typed via `ctx.emit`. For plugin-bound channels:
     /// `None` — handled by the producer-side serializer.
     pub wrap_input: Option<EntryWrapFn>,
+    /// Entry channels whose `wrap_input` is a real parser (typed JSON or a
+    /// custom `input_with` parser): a failing decode rides this channel's
+    /// retry→DLQ ladder instead of the passthrough drop-and-log path.
+    pub entry_parsed: bool,
     /// For pure `PluginBound` channels: serialize the typed payload to
     /// wire bytes. For other kinds: `None`. Hybrid channels populate
     /// `plugin_sink` instead.
     pub plugin_serializer: Option<PluginSerializeFn>,
     /// For hybrid `InterOperation` channels declared with
-    /// `also_to_plugin_with(...)`: the named plugin sink. Mutually
+    /// `also_output_with(...)` / `also_output(...)`: the named plugin sink. Mutually
     /// exclusive with `plugin_serializer` / `plugin_name`.
     pub plugin_sink: Option<PluginSink>,
     /// Output-identity opt-in (`.keyed()`): plugin emits require a natural

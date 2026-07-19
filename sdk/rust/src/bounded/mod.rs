@@ -83,7 +83,7 @@ pub enum LoopMode {
 
 /// One bounded operative class. The bare [`run`](Self::run) form is the
 /// trivial single-Operation, single-Segment case; override
-/// [`operations`](Self::operations) to grow into an explicit linear chain of
+/// [`operations`](Self::operations) to grow into an explicit DAG of
 /// Operations/Channels/Segments without rewriting unrelated code. Capabilities
 /// attach to the kind, not here — choosing the bounded kind is sufficient.
 pub trait BoundedOperative: Send + Sync + 'static {
@@ -106,13 +106,15 @@ pub trait BoundedOperative: Send + Sync + 'static {
         ))
     }
 
-    /// Structured form: declare a **linear chain** of Operations/Channels/
-    /// Segments on the same `ChannelBuilder` an unbounded operative uses. The
-    /// default is empty, selecting the [`run`](Self::run)-sugar path. A
-    /// non-empty declaration is run sequentially by the bounded driver
-    /// (operation `N+1` starts only when every segment of operation `N` has
-    /// finished). Branching is rejected at registration.
-    fn operations(_c: &mut ChannelBuilder) {}
+    /// Structured form: declare a static **DAG** of Operations/Channels/
+    /// Segments on the same graph builder an unbounded operative uses. The
+    /// default is empty, selecting the [`run`](Self::run)-sugar path. The
+    /// bounded driver runs the declaration in topological order: an operation
+    /// becomes runnable only after **every** producer feeding it has committed
+    /// — fan-out branches interleave independently, and a fan-in node is
+    /// dispatched once, with the accumulated batch of all its producers.
+    /// Cycles are rejected at registration.
+    fn operations(_c: &ChannelBuilder) {}
 
     /// Optional wall-clock backstop. `None` (the default) means no duration
     /// bound; when `Some`, the SDK cooperatively cancels in-flight work once
@@ -554,11 +556,11 @@ mod tests {
         fn factory_id() -> &'static str {
             "test-echo-structured"
         }
-        fn operations(c: &mut ChannelBuilder) {
-            c.input::<String>("in").into::<EchoOp>();
-            c.channel::<String>("out")
-                .from::<EchoOp>()
-                .to_plugin("sink");
+        fn operations(c: &ChannelBuilder) {
+            c.input::<String>("in")
+                .into::<EchoOp>()
+                .named("out")
+                .output("sink");
         }
     }
 
@@ -610,46 +612,17 @@ mod tests {
         }
     }
 
-    #[derive(Default)]
-    struct Stage3;
-    impl Operation for Stage3 {
-        type Input = String;
-        type Output = String;
-        type State = ();
-        type Change = NoChange;
-        type Clock = WallClock;
-        type Config = ();
-        fn name() -> &'static str {
-            "bounded_stage3"
-        }
-        fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-        fn run(
-            &mut self,
-            input: String,
-            _state: StateHandle<'_, Self>,
-            ctx: &mut OperationCtx<'_>,
-        ) -> Result<(), OperationError> {
-            ctx.emit(format!("{input}-3"))?;
-            Ok(())
-        }
-    }
-
     /// `bounded-branching`: Stage1 fans out to Stage2 and EchoOp on one channel,
     /// each branch ending at its own plugin sink. The edge is (channel,
     /// consumer), so both branches read exactly what Stage1 released on `mid`.
-    fn tree_chain(c: &mut ChannelBuilder) {
-        c.input::<String>("in").into::<Stage1>();
-        c.channel::<String>("mid")
-            .codec()
-            .from::<Stage1>()
-            .into::<Stage2>()
-            .into::<EchoOp>();
-        c.channel::<String>("out_b")
-            .from::<Stage2>()
-            .to_plugin("sink");
-        c.channel::<String>("out_c")
-            .from::<EchoOp>()
-            .to_plugin("sink");
+    fn tree_chain(c: &ChannelBuilder) {
+        let mid = c
+            .input::<String>("in")
+            .into::<Stage1>()
+            .named("mid")
+            .codec();
+        mid.into::<Stage2>().named("out_b").output("sink");
+        mid.into::<EchoOp>().named("out_c").output("sink");
     }
 
     struct TreeBounded;
@@ -657,7 +630,7 @@ mod tests {
         fn factory_id() -> &'static str {
             "test-tree-bounded"
         }
-        fn operations(c: &mut ChannelBuilder) {
+        fn operations(c: &ChannelBuilder) {
             tree_chain(c);
         }
     }
@@ -668,15 +641,14 @@ mod tests {
         fn factory_id() -> &'static str {
             "test-chain-bounded"
         }
-        fn operations(c: &mut ChannelBuilder) {
-            c.input::<String>("in").into::<Stage1>();
-            c.channel::<String>("mid")
+        fn operations(c: &ChannelBuilder) {
+            c.input::<String>("in")
+                .into::<Stage1>()
+                .named("mid")
                 .codec()
-                .from::<Stage1>()
-                .into::<Stage2>();
-            c.channel::<String>("out")
-                .from::<Stage2>()
-                .to_plugin("sink");
+                .into::<Stage2>()
+                .named("out")
+                .output("sink");
         }
     }
 
@@ -697,15 +669,14 @@ mod tests {
         fn max_duration() -> Option<Duration> {
             Some(Duration::from_secs(30))
         }
-        fn operations(c: &mut ChannelBuilder) {
-            c.input::<String>("in").into::<Stage1>();
-            c.channel::<String>("mid")
+        fn operations(c: &ChannelBuilder) {
+            c.input::<String>("in")
+                .into::<Stage1>()
+                .named("mid")
                 .codec()
-                .from::<Stage1>()
-                .into::<Stage2>();
-            c.channel::<String>("out")
-                .from::<Stage2>()
-                .to_plugin("sink");
+                .into::<Stage2>()
+                .named("out")
+                .output("sink");
         }
     }
 
@@ -793,7 +764,7 @@ mod tests {
         fn max_duration() -> Option<Duration> {
             Some(Duration::from_secs(30))
         }
-        fn operations(c: &mut ChannelBuilder) {
+        fn operations(c: &ChannelBuilder) {
             loop_saga_chain(c);
         }
     }
@@ -816,20 +787,19 @@ mod tests {
         fn max_duration() -> Option<Duration> {
             Some(Duration::from_secs(30))
         }
-        fn operations(c: &mut ChannelBuilder) {
+        fn operations(c: &ChannelBuilder) {
             loop_saga_chain(c);
         }
     }
 
-    fn loop_saga_chain(c: &mut ChannelBuilder) {
-        c.input::<String>("in").into::<LoopReserve>();
-        c.channel::<String>("mid")
+    fn loop_saga_chain(c: &ChannelBuilder) {
+        c.input::<String>("in")
+            .into::<LoopReserve>()
+            .named("mid")
             .codec()
-            .from::<LoopReserve>()
-            .into::<LoopMaybeFail>();
-        c.channel::<String>("out")
-            .from::<LoopMaybeFail>()
-            .to_plugin("sink");
+            .into::<LoopMaybeFail>()
+            .named("out")
+            .output("sink");
     }
 
     /// A loop declared on a `run`-sugar class: no chain to iterate.
@@ -856,15 +826,14 @@ mod tests {
         fn loop_mode() -> LoopMode {
             LoopMode::Chained
         }
-        fn operations(c: &mut ChannelBuilder) {
-            c.input::<String>("in").into::<Stage1>();
-            c.channel::<String>("mid")
+        fn operations(c: &ChannelBuilder) {
+            c.input::<String>("in")
+                .into::<Stage1>()
+                .named("mid")
                 .codec()
-                .from::<Stage1>()
-                .into::<Stage2>();
-            c.channel::<String>("out")
-                .from::<Stage2>()
-                .to_plugin("sink");
+                .into::<Stage2>()
+                .named("out")
+                .output("sink");
         }
     }
 
@@ -953,13 +922,14 @@ mod tests {
         fn factory_id() -> &'static str {
             "test-fan-bounded"
         }
-        fn operations(c: &mut ChannelBuilder) {
-            c.input::<String>("in").into::<SplitOp>();
-            c.channel::<String>("mid")
+        fn operations(c: &ChannelBuilder) {
+            c.input::<String>("in")
+                .into::<SplitOp>()
+                .named("mid")
                 .codec()
-                .from::<SplitOp>()
-                .into::<FanOp>();
-            c.channel::<String>("out").from::<FanOp>().to_plugin("sink");
+                .into::<FanOp>()
+                .named("out")
+                .output("sink");
         }
     }
 
@@ -970,10 +940,13 @@ mod tests {
         fn factory_id() -> &'static str {
             "test-fan-optout-bounded"
         }
-        fn operations(c: &mut ChannelBuilder) {
-            c.input::<String>("in").into::<SplitOp>();
-            c.channel::<String>("mid").from::<SplitOp>().into::<FanOp>();
-            c.channel::<String>("out").from::<FanOp>().to_plugin("sink");
+        fn operations(c: &ChannelBuilder) {
+            c.input::<String>("in")
+                .into::<SplitOp>()
+                .named("mid")
+                .into::<FanOp>()
+                .named("out")
+                .output("sink");
         }
         const PERSISTENCE_ENABLED: bool = false;
     }
@@ -1026,23 +999,22 @@ mod tests {
         }
     }
 
-    /// Hybrid inter-operation channel (`also_to_plugin_with`): Stage1's output
+    /// Hybrid inter-operation channel (`also_output_with`): Stage1's output
     /// both feeds Stage2 AND is serialized to a plugin sink.
     struct HybridBounded;
     impl BoundedOperative for HybridBounded {
         fn factory_id() -> &'static str {
             "test-hybrid-bounded"
         }
-        fn operations(c: &mut ChannelBuilder) {
-            c.input::<String>("in").into::<HybridStage1>();
-            c.channel::<String>("mid")
+        fn operations(c: &ChannelBuilder) {
+            c.input::<String>("in")
+                .into::<HybridStage1>()
+                .named("mid")
                 .codec()
-                .from::<HybridStage1>()
-                .also_to_plugin_with("midsink", |s: &String| format!("mid:{s}").into_bytes())
-                .into::<HybridStage2>();
-            c.channel::<String>("out")
-                .from::<HybridStage2>()
-                .to_plugin("out");
+                .also_output_with("midsink", |s: &String| format!("mid:{s}").into_bytes())
+                .into::<HybridStage2>()
+                .named("out")
+                .output("out");
         }
     }
 
@@ -1230,25 +1202,23 @@ mod tests {
         fn factory_id() -> &'static str {
             "test-tree-saga"
         }
-        fn operations(c: &mut ChannelBuilder) {
-            c.input::<String>("in").into::<SagaReserve>();
-            c.channel::<String>("t1")
+        fn operations(c: &ChannelBuilder) {
+            let t1 = c
+                .input::<String>("in")
+                .into::<SagaReserve>()
+                .named("t1")
+                .codec();
+            t1.into::<SagaCharge>()
+                .named("t2")
                 .codec()
-                .from::<SagaReserve>()
-                .into::<SagaCharge>()
-                .into::<SagaArchive>();
-            c.channel::<String>("t2")
-                .codec()
-                .from::<SagaCharge>()
-                .into::<SagaShipFails>();
+                .into::<SagaShipFails>()
+                .named("t_ship")
+                .output("sink");
             // The archive leaf releases an inter-op batch nobody consumes: it
             // stays a leaf, and its retained output is what its undo reverses
             // (a plugin-bound leaf would stage instead of collect, leaving the
             // hook nothing to name).
-            c.channel::<String>("t_out").codec().from::<SagaArchive>();
-            c.channel::<String>("t_ship")
-                .from::<SagaShipFails>()
-                .to_plugin("sink");
+            t1.into::<SagaArchive>().named("t_out").codec();
         }
     }
 
@@ -1257,19 +1227,17 @@ mod tests {
         fn factory_id() -> &'static str {
             "test-saga-bounded"
         }
-        fn operations(c: &mut ChannelBuilder) {
-            c.input::<String>("in").into::<SagaReserve>();
-            c.channel::<String>("c1")
+        fn operations(c: &ChannelBuilder) {
+            c.input::<String>("in")
+                .into::<SagaReserve>()
+                .named("c1")
                 .codec()
-                .from::<SagaReserve>()
-                .into::<SagaCharge>();
-            c.channel::<String>("c2")
+                .into::<SagaCharge>()
+                .named("c2")
                 .codec()
-                .from::<SagaCharge>()
-                .into::<SagaShipFails>();
-            c.channel::<String>("out")
-                .from::<SagaShipFails>()
-                .to_plugin("sink");
+                .into::<SagaShipFails>()
+                .named("out")
+                .output("sink");
         }
     }
 
@@ -1285,19 +1253,17 @@ mod tests {
         fn rollback_mode() -> RollbackMode {
             RollbackMode::KeepProgress
         }
-        fn operations(c: &mut ChannelBuilder) {
-            c.input::<String>("in").into::<SagaReserve>();
-            c.channel::<String>("c1")
+        fn operations(c: &ChannelBuilder) {
+            c.input::<String>("in")
+                .into::<SagaReserve>()
+                .named("c1")
                 .codec()
-                .from::<SagaReserve>()
-                .into::<SagaCharge>();
-            c.channel::<String>("c2")
+                .into::<SagaCharge>()
+                .named("c2")
                 .codec()
-                .from::<SagaCharge>()
-                .into::<SagaShipFails>();
-            c.channel::<String>("out")
-                .from::<SagaShipFails>()
-                .to_plugin("sink");
+                .into::<SagaShipFails>()
+                .named("out")
+                .output("sink");
         }
     }
 
@@ -1307,19 +1273,17 @@ mod tests {
         fn factory_id() -> &'static str {
             "test-clean-saga"
         }
-        fn operations(c: &mut ChannelBuilder) {
-            c.input::<String>("in").into::<SagaReserve>();
-            c.channel::<String>("c1")
+        fn operations(c: &ChannelBuilder) {
+            c.input::<String>("in")
+                .into::<SagaReserve>()
+                .named("c1")
                 .codec()
-                .from::<SagaReserve>()
-                .into::<SagaCharge>();
-            c.channel::<String>("c2")
+                .into::<SagaCharge>()
+                .named("c2")
                 .codec()
-                .from::<SagaCharge>()
-                .into::<EchoOp>();
-            c.channel::<String>("out")
-                .from::<EchoOp>()
-                .to_plugin("sink");
+                .into::<EchoOp>()
+                .named("out")
+                .output("sink");
         }
     }
 
@@ -1415,19 +1379,17 @@ mod tests {
         fn factory_id() -> &'static str {
             "test-fan-saga"
         }
-        fn operations(c: &mut ChannelBuilder) {
-            c.input::<String>("in").into::<SplitOp>();
-            c.channel::<String>("mid")
+        fn operations(c: &ChannelBuilder) {
+            c.input::<String>("in")
+                .into::<SplitOp>()
+                .named("mid")
                 .codec()
-                .from::<SplitOp>()
-                .into::<SagaFan>();
-            c.channel::<String>("mid2")
+                .into::<SagaFan>()
+                .named("mid2")
                 .codec()
-                .from::<SagaFan>()
-                .into::<FailLast>();
-            c.channel::<String>("out")
-                .from::<FailLast>()
-                .to_plugin("sink");
+                .into::<FailLast>()
+                .named("out")
+                .output("sink");
         }
     }
 
@@ -1480,15 +1442,14 @@ mod tests {
         fn factory_id() -> &'static str {
             "test-stop-saga"
         }
-        fn operations(c: &mut ChannelBuilder) {
-            c.input::<String>("in").into::<StopReserve>();
-            c.channel::<String>("mid")
+        fn operations(c: &ChannelBuilder) {
+            c.input::<String>("in")
+                .into::<StopReserve>()
+                .named("mid")
                 .codec()
-                .from::<StopReserve>()
-                .into::<EchoOp>();
-            c.channel::<String>("out")
-                .from::<EchoOp>()
-                .to_plugin("sink");
+                .into::<EchoOp>()
+                .named("out")
+                .output("sink");
         }
     }
 
@@ -1599,11 +1560,11 @@ mod tests {
         fn factory_id() -> &'static str {
             "test-leak-bounded"
         }
-        fn operations(c: &mut ChannelBuilder) {
-            c.input::<String>("in").into::<EmitThenFail>();
-            c.channel::<String>("out")
-                .from::<EmitThenFail>()
-                .to_plugin("sink");
+        fn operations(c: &ChannelBuilder) {
+            c.input::<String>("in")
+                .into::<EmitThenFail>()
+                .named("out")
+                .output("sink");
         }
     }
 
@@ -1653,16 +1614,15 @@ mod tests {
         fn factory_id() -> &'static str {
             "test-undo-saga"
         }
-        fn operations(c: &mut ChannelBuilder) {
-            c.input::<String>("in").into::<UndoEmit>();
-            c.channel::<String>("mid")
+        fn operations(c: &ChannelBuilder) {
+            c.input::<String>("in")
+                .into::<UndoEmit>()
+                .named("mid")
                 .codec()
-                .from::<UndoEmit>()
-                .also_to_plugin_with("undosink", |s: &String| s.clone().into_bytes())
-                .into::<FailLast>();
-            c.channel::<String>("out")
-                .from::<FailLast>()
-                .to_plugin("sink");
+                .also_output_with("undosink", |s: &String| s.clone().into_bytes())
+                .into::<FailLast>()
+                .named("out")
+                .output("sink");
         }
     }
 
@@ -1672,19 +1632,17 @@ mod tests {
         fn factory_id() -> &'static str {
             "test-resume-saga"
         }
-        fn operations(c: &mut ChannelBuilder) {
-            c.input::<String>("in").into::<ResumeUndoA>();
-            c.channel::<String>("c1")
+        fn operations(c: &ChannelBuilder) {
+            c.input::<String>("in")
+                .into::<ResumeUndoA>()
+                .named("c1")
                 .codec()
-                .from::<ResumeUndoA>()
-                .into::<ResumeUndoB>();
-            c.channel::<String>("c2")
+                .into::<ResumeUndoB>()
+                .named("c2")
                 .codec()
-                .from::<ResumeUndoB>()
-                .into::<SagaShipFails>();
-            c.channel::<String>("out")
-                .from::<SagaShipFails>()
-                .to_plugin("sink");
+                .into::<SagaShipFails>()
+                .named("out")
+                .output("sink");
         }
     }
 
@@ -1789,19 +1747,17 @@ mod tests {
         }
     }
 
-    fn retry_chain(c: &mut ChannelBuilder) {
-        c.input::<String>("in").into::<SplitOp>();
-        c.channel::<String>("mid")
+    fn retry_chain(c: &ChannelBuilder) {
+        c.input::<String>("in")
+            .into::<SplitOp>()
+            .named("mid")
             .codec()
-            .from::<SplitOp>()
-            .into::<RetryReserve>();
-        c.channel::<String>("mid2")
+            .into::<RetryReserve>()
+            .named("mid2")
             .codec()
-            .from::<RetryReserve>()
-            .into::<FlakyFan>();
-        c.channel::<String>("out")
-            .from::<FlakyFan>()
-            .to_plugin("sink");
+            .into::<FlakyFan>()
+            .named("out")
+            .output("sink");
     }
 
     /// Split → Reserve(compensable) → FlakyFan(even/odd). Default 3-attempt
@@ -1814,7 +1770,7 @@ mod tests {
         fn retry_backoff() -> Duration {
             Duration::from_millis(10)
         }
-        fn operations(c: &mut ChannelBuilder) {
+        fn operations(c: &ChannelBuilder) {
             retry_chain(c);
         }
     }
@@ -1829,7 +1785,7 @@ mod tests {
         fn retry_attempts() -> u32 {
             0
         }
-        fn operations(c: &mut ChannelBuilder) {
+        fn operations(c: &ChannelBuilder) {
             retry_chain(c);
         }
     }
@@ -1844,7 +1800,7 @@ mod tests {
         fn retry_backoff() -> Duration {
             Duration::from_secs(30)
         }
-        fn operations(c: &mut ChannelBuilder) {
+        fn operations(c: &ChannelBuilder) {
             retry_chain(c);
         }
     }
@@ -1857,6 +1813,142 @@ mod tests {
         ODD_FAILURES.store(failures, Ordering::SeqCst);
         ODD_NON_RETRYABLE.store(non_retryable, Ordering::SeqCst);
         let _ = drain_comp_log();
+    }
+
+    // ---- fan-in / diamond ops (`bounded-branching` fan-in accumulates) ------
+
+    /// Observation log for the diamond scenarios: forward runs append here so
+    /// join dispatch order (after BOTH producers) is assertable.
+    static DIAMOND_LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    fn diamond_log(entry: String) {
+        DIAMOND_LOG.lock().unwrap().push(entry);
+    }
+    fn drain_diamond_log() -> Vec<String> {
+        std::mem::take(&mut *DIAMOND_LOG.lock().unwrap())
+    }
+
+    macro_rules! diamond_op {
+        ($ty:ident, $name:literal, $tag:literal) => {
+            #[derive(Default)]
+            struct $ty;
+            impl Operation for $ty {
+                type Input = String;
+                type Output = String;
+                type State = ();
+                type Change = NoChange;
+                type Clock = WallClock;
+                type Config = ();
+                fn name() -> &'static str {
+                    $name
+                }
+                fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
+                fn run(
+                    &mut self,
+                    input: String,
+                    _state: StateHandle<'_, Self>,
+                    ctx: &mut OperationCtx<'_>,
+                ) -> Result<(), OperationError> {
+                    diamond_log(format!("{}:{input}", $tag));
+                    ctx.emit(format!("{}:{input}", $tag))?;
+                    Ok(())
+                }
+                const COMPENSATE_OVERRIDDEN: bool = true;
+                fn compensate(
+                    &mut self,
+                    completed_output: Vec<Arc<String>>,
+                    _state: StateHandle<'_, Self>,
+                    _ctx: &mut OperationCtx<'_>,
+                ) -> Result<(), OperationError> {
+                    for out in &completed_output {
+                        comp_log(format!("undo-{}:{out}", $tag));
+                    }
+                    Ok(())
+                }
+            }
+        };
+    }
+
+    diamond_op!(DiamondA, "diamond_a", "a");
+    diamond_op!(DiamondB, "diamond_b", "b");
+    diamond_op!(DiamondC, "diamond_c", "c");
+    diamond_op!(DiamondJoin, "bounded_join_op", "j");
+
+    /// The diamond A→(B,C)→D: both branch outputs accumulate into the one
+    /// join node (two unnamed mentions unify), which closes plugin-bound.
+    struct DiamondBounded;
+    impl BoundedOperative for DiamondBounded {
+        fn factory_id() -> &'static str {
+            "test-diamond-bounded"
+        }
+        fn operations(c: &ChannelBuilder) {
+            let a = c
+                .input::<String>("in")
+                .into::<DiamondA>()
+                .named("d_fan")
+                .codec();
+            a.into::<DiamondB>()
+                .named("d_b")
+                .codec()
+                .into::<DiamondJoin>();
+            a.into::<DiamondC>()
+                .named("d_c")
+                .codec()
+                .into::<DiamondJoin>()
+                .named("d_out")
+                .output("sink");
+        }
+    }
+
+    /// Kahn-shape twin used by the registration test (no driver run).
+    struct JoinBounded;
+    impl BoundedOperative for JoinBounded {
+        fn factory_id() -> &'static str {
+            "test-join-bounded-shape"
+        }
+        fn operations(c: &ChannelBuilder) {
+            let mid = c
+                .input::<String>("in")
+                .into::<Stage1>()
+                .named("mid")
+                .codec();
+            mid.into::<Stage2>()
+                .named("join_b")
+                .codec()
+                .into::<DiamondJoin>();
+            mid.into::<EchoOp>()
+                .named("join_c")
+                .codec()
+                .into::<DiamondJoin>();
+        }
+    }
+
+    /// Diamond whose join feeds a failing tail: A→(B,C)→D→ship(fails). The
+    /// abort must undo the join BEFORE either producer, and the shared root
+    /// last (reverse-topological compensation over a DAG).
+    struct DiamondSaga;
+    impl BoundedOperative for DiamondSaga {
+        fn factory_id() -> &'static str {
+            "test-diamond-saga"
+        }
+        fn operations(c: &ChannelBuilder) {
+            let a = c
+                .input::<String>("in")
+                .into::<DiamondA>()
+                .named("d_fan")
+                .codec();
+            let join = a
+                .into::<DiamondB>()
+                .named("d_b")
+                .codec()
+                .into::<DiamondJoin>()
+                .named("d_join")
+                .codec();
+            a.into::<DiamondC>()
+                .named("d_c")
+                .codec()
+                .into::<DiamondJoin>();
+            join.into::<SagaShipFails>().named("d_out").output("sink");
+        }
     }
 
     // ---- non-driver unit tests ----------------------------------------------
@@ -1926,7 +2018,7 @@ mod tests {
             spec.topology.is_none(),
             "bare run() ⇒ run-sugar (no topology)"
         );
-        assert!(spec.tree.order.is_empty());
+        assert!(spec.dag.order.is_empty());
     }
 
     #[test]
@@ -1935,7 +2027,7 @@ mod tests {
         let topology = spec.topology.as_ref().expect("structured ⇒ topology");
         // Chain is ordered entry-consumer → terminal: Stage1 then Stage2.
         let names: Vec<&str> = spec
-            .tree
+            .dag
             .order
             .iter()
             .map(|&id| topology.operation(id).unwrap().name.as_ref())
@@ -1962,9 +2054,11 @@ mod tests {
             fn factory_id() -> &'static str {
                 "test-no-codec-bounded"
             }
-            fn operations(c: &mut ChannelBuilder) {
-                c.input::<String>("in").into::<Stage1>();
-                c.channel::<String>("mid").from::<Stage1>().into::<Stage2>();
+            fn operations(c: &ChannelBuilder) {
+                c.input::<String>("in")
+                    .into::<Stage1>()
+                    .named("mid")
+                    .into::<Stage2>();
             }
         }
         let err = spec::build_spec::<NoCodec>().expect_err("durable class needs the codec");
@@ -1982,9 +2076,11 @@ mod tests {
                 "test-no-codec-optout-bounded"
             }
             const PERSISTENCE_ENABLED: bool = false;
-            fn operations(c: &mut ChannelBuilder) {
-                c.input::<String>("in").into::<Stage1>();
-                c.channel::<String>("mid").from::<Stage1>().into::<Stage2>();
+            fn operations(c: &ChannelBuilder) {
+                c.input::<String>("in")
+                    .into::<Stage1>()
+                    .named("mid")
+                    .into::<Stage2>();
             }
         }
         spec::build_spec::<NoCodecOptOut>().expect("opted-out classes may omit the codec");
@@ -2017,7 +2113,7 @@ mod tests {
         // iteration from its inbox, never from the terminal handoff.
         let spec = spec::build_spec::<ChatLoop>().expect("PerInput loop registers");
         assert_eq!(spec.loop_mode, LoopMode::PerInput);
-        assert_eq!(spec.tree.len(), 2);
+        assert_eq!(spec.dag.len(), 2);
     }
 
     /// `bounded-segment-retry` policy surface: the defaults land on the shared
@@ -2043,7 +2139,7 @@ mod tests {
             fn retry_backoff() -> Duration {
                 Duration::ZERO
             }
-            fn operations(c: &mut ChannelBuilder) {
+            fn operations(c: &ChannelBuilder) {
                 retry_chain(c);
             }
         }
@@ -2053,18 +2149,18 @@ mod tests {
         }
     }
 
-    /// `bounded-branching` registration validation. A tree is accepted (with its
-    /// nodes BFS-numbered, parents before children — the invariant that makes
-    /// completion order topological and its reverse a valid compensation order);
-    /// every non-tree shape is refused, naming the node.
+    /// `bounded-branching` registration validation. A DAG is accepted (with its
+    /// nodes in Kahn topological order, every producer before its consumers —
+    /// the invariant that makes completion order topological and its reverse a
+    /// valid compensation order); a cycle is refused, naming a node on it.
     #[test]
-    fn tree_topology_is_validated() {
+    fn dag_topology_is_validated() {
         // A→(B,C): one channel, two consumers. The edge is (channel, consumer),
         // so both branches read what Stage1 released on `mid`.
         let spec = spec::build_spec::<TreeBounded>().expect("a fan-out tree registers");
         let topology = spec.topology.as_ref().expect("structured ⇒ topology");
         let names: Vec<&str> = spec
-            .tree
+            .dag
             .order
             .iter()
             .map(|&id| topology.operation(id).unwrap().name.as_ref())
@@ -2072,96 +2168,86 @@ mod tests {
         assert_eq!(
             names,
             vec!["bounded_stage1", "bounded_stage2", "bounded_echo_op"],
-            "BFS order: the root, then its children"
+            "Kahn order: the root, then its children (= the former BFS numbering)"
         );
-        assert_eq!(spec.tree.parents, vec![None, Some(0), Some(0)]);
-        assert_eq!(spec.tree.children, vec![vec![1, 2], vec![], vec![]]);
-        assert_eq!(spec.tree.leaves().collect::<Vec<_>>(), vec![1, 2]);
+        assert_eq!(spec.dag.parents, vec![vec![], vec![0], vec![0]]);
+        assert_eq!(spec.dag.children, vec![vec![1, 2], vec![], vec![]]);
+        assert_eq!(spec.dag.leaves().collect::<Vec<_>>(), vec![1, 2]);
         assert!(
-            spec.tree.single_leaf().is_none(),
+            spec.dag.single_leaf().is_none(),
             "two leaves ⇒ no single terminal operation"
         );
-        for (node, parent) in spec.tree.parents.iter().enumerate() {
-            if let Some(p) = parent {
-                assert!(*p < node, "a parent's index always precedes its children's");
+        for (node, parents) in spec.dag.parents.iter().enumerate() {
+            for p in parents {
+                assert!(
+                    *p < node,
+                    "a producer's index always precedes its consumers'"
+                );
             }
         }
 
         // A linear chain is the single-branch case, unchanged.
         let linear = spec::build_spec::<ChainBounded>().expect("linear still registers");
-        assert_eq!(linear.tree.children, vec![vec![1], vec![]]);
-        assert_eq!(linear.tree.single_leaf(), Some(1));
+        assert_eq!(linear.dag.children, vec![vec![1], vec![]]);
+        assert_eq!(linear.dag.single_leaf(), Some(1));
 
-        // A join — two channels feeding one operation — is not a tree.
-        struct FanIn;
-        impl BoundedOperative for FanIn {
-            fn factory_id() -> &'static str {
-                "test-fan-in-bounded"
+        // A join — two streams feeding one node — registers, and Kahn numbers
+        // BOTH producers before it (BFS would have enqueued the join on its
+        // first producer).
+        match spec::build_spec::<JoinBounded>() {
+            Ok(spec) => {
+                let topology = spec.topology.as_ref().expect("structured ⇒ topology");
+                let names: Vec<&str> = spec
+                    .dag
+                    .order
+                    .iter()
+                    .map(|&id| topology.operation(id).unwrap().name.as_ref())
+                    .collect();
+                assert_eq!(
+                    names,
+                    vec![
+                        "bounded_stage1",
+                        "bounded_stage2",
+                        "bounded_echo_op",
+                        "bounded_join_op"
+                    ]
+                );
+                assert_eq!(spec.dag.parents[3], vec![1, 2], "the join has two parents");
+                assert_eq!(
+                    spec.dag.leaves().collect::<Vec<_>>(),
+                    vec![3],
+                    "the join is the single leaf"
+                );
             }
-            fn operations(c: &mut ChannelBuilder) {
-                c.input::<String>("in").into::<Stage1>();
-                c.channel::<String>("mid")
-                    .from::<Stage1>()
-                    .into::<Stage2>()
-                    .into::<EchoOp>();
-                // Both branches now feed Stage3: fan-in.
-                c.channel::<String>("join_b")
-                    .from::<Stage2>()
-                    .into::<Stage3>();
-                c.channel::<String>("join_c")
-                    .from::<EchoOp>()
-                    .into::<Stage3>();
-            }
-        }
-        match spec::build_spec::<FanIn>().expect_err("a join is not a tree") {
-            spec::BuildBoundedError::FanIn { operation, .. } => {
-                assert_eq!(operation, "bounded_stage3", "the error names the join node");
-            }
-            other => panic!("expected FanIn, got {other:?}"),
-        }
-
-        // Two output channels from one operation: `Operation::Output` is one
-        // type on one channel, so the second could never be routed.
-        struct TwoOutputs;
-        impl BoundedOperative for TwoOutputs {
-            fn factory_id() -> &'static str {
-                "test-two-outputs-bounded"
-            }
-            fn operations(c: &mut ChannelBuilder) {
-                c.input::<String>("in").into::<Stage1>();
-                c.channel::<String>("to_b")
-                    .from::<Stage1>()
-                    .into::<Stage2>();
-                c.channel::<String>("to_c")
-                    .from::<Stage1>()
-                    .into::<EchoOp>();
-            }
-        }
-        match spec::build_spec::<TwoOutputs>().expect_err("one operation, one output channel") {
-            spec::BuildBoundedError::MultipleOutputChannels { operation, .. } => {
-                assert_eq!(operation, "bounded_stage1");
-            }
-            other => panic!("expected MultipleOutputChannels, got {other:?}"),
+            Err(e) => panic!("a join must register (fan-in accumulates): {e}"),
         }
 
-        // The tree hangs off the entry channel, so an unwired entry channel roots
-        // nothing.
-        struct NoRoot;
-        impl BoundedOperative for NoRoot {
+        // A cycle is refused with an error identifying it (surfaced through the
+        // shared topology validation).
+        struct Cyclic;
+        impl BoundedOperative for Cyclic {
             fn factory_id() -> &'static str {
-                "test-no-root-bounded"
+                "test-cyclic-bounded"
             }
-            fn operations(c: &mut ChannelBuilder) {
-                c.input::<String>("in");
-                c.channel::<String>("mid")
+            fn operations(c: &ChannelBuilder) {
+                c.input::<String>("in")
+                    .into::<Stage1>()
+                    .named("mid")
                     .codec()
-                    .from::<Stage1>()
-                    .into::<Stage2>();
+                    .into::<Stage2>()
+                    .named("back")
+                    .codec()
+                    .into::<Stage1>();
             }
         }
-        match spec::build_spec::<NoRoot>().expect_err("a bounded tree has one root") {
-            spec::BuildBoundedError::EntryRoot { consumers, .. } => assert_eq!(consumers, 0),
-            other => panic!("expected EntryRoot, got {other:?}"),
+        match spec::build_spec::<Cyclic>().expect_err("a cycle is refused") {
+            spec::BuildBoundedError::Topology { detail, .. } => {
+                assert!(
+                    detail.contains("Cycle") || detail.contains("cycle"),
+                    "the refusal identifies the cycle: {detail}"
+                );
+            }
+            other => panic!("expected the shared cycle refusal, got {other:?}"),
         }
 
         // A handoff-chained loop over a branching tree has no single terminal
@@ -2174,7 +2260,7 @@ mod tests {
             fn loop_mode() -> LoopMode {
                 LoopMode::Chained
             }
-            fn operations(c: &mut ChannelBuilder) {
+            fn operations(c: &ChannelBuilder) {
                 tree_chain(c);
             }
         }
@@ -2221,7 +2307,7 @@ mod tests {
             fn factory_id() -> &'static str {
                 "test-dyn-bounded"
             }
-            fn operations(c: &mut ChannelBuilder) {
+            fn operations(c: &ChannelBuilder) {
                 c.input::<String>("in").into::<DynOp>();
             }
         }
@@ -2289,6 +2375,8 @@ mod tests {
         crate::register_bounded_class::<RetryBounded>().unwrap();
         crate::register_bounded_class::<RetryFailFastBounded>().unwrap();
         crate::register_bounded_class::<RetrySlowBackoffBounded>().unwrap();
+        crate::register_bounded_class::<DiamondBounded>().unwrap();
+        crate::register_bounded_class::<DiamondSaga>().unwrap();
 
         let mut node = RunnerNode::new("test-ns".to_string());
 
@@ -2904,6 +2992,140 @@ mod tests {
             count_wal_frames(INTENT),
             0,
             "a compensation-resume records no new intent (forward chain not re-run)"
+        );
+
+        // --- bounded-branching fan-in: the join runs once, after BOTH
+        // producers committed, with the accumulated batch ---
+        let _ = drain_diamond_log();
+        let _ = drain_op_commits();
+        assert!(node.start_bounded(
+            "test-diamond-bounded".into(),
+            "diamond-1".into(),
+            "x".into()
+        ));
+        let (outs, done) = drain(&rx, "diamond-1");
+        assert_eq!(done.0, "ok");
+        assert_eq!(
+            outs,
+            vec![b"j:b:a:x".to_vec(), b"j:c:a:x".to_vec()],
+            "the join's input batch accumulates BOTH producers' outputs (B's first: sibling order)"
+        );
+        assert_eq!(
+            drain_op_commits()
+                .iter()
+                .map(|c| c.op_idx)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2, 3],
+            "one commit per node — the join commits exactly once, after both producers"
+        );
+        let log = drain_diamond_log();
+        let first_join = log
+            .iter()
+            .position(|e| e.starts_with("j:"))
+            .expect("the join ran");
+        assert!(
+            log[..first_join].iter().any(|e| e.starts_with("b:"))
+                && log[..first_join].iter().any(|e| e.starts_with("c:")),
+            "both producers ran before the join was dispatched: {log:?}"
+        );
+        assert_eq!(
+            log.iter().filter(|e| e.starts_with("j:")).count(),
+            2,
+            "the join processed each contribution exactly once"
+        );
+
+        // --- bounded-branching crash-resume over a join: one journaled and one
+        // fresh producer — the committed branch never re-runs, and the join
+        // accumulates B's JOURNALED handoff with C's fresh output ---
+        let _ = drain_diamond_log();
+        assert!(node.start_bounded_resumable(
+            "test-diamond-bounded".into(),
+            "diamond-r".into(),
+            "x".into(),
+            1,
+        ));
+        let da_id = crate::segment::flusher::encode_segment_identity("diamond-r", "diamond_a", "");
+        let (diamond_inst, _slot) = node
+            .find_bounded_segment(&da_id)
+            .expect("a durable diamond Segment is reachable by the restore handler");
+        let diamond_spec =
+            registry::get_class("test-diamond-bounded").expect("diamond class registered");
+        let diamond_topo = diamond_spec.topology.as_ref().expect("structured");
+        let d_fan = diamond_topo.lookup_channel_id("d_fan").unwrap();
+        let d_b = diamond_topo.lookup_channel_id("d_b").unwrap();
+        let enc = |s: &str| postcard::to_allocvec(&s.to_string()).unwrap();
+        diamond_inst.note_op_journal(instance::JournalResume {
+            committed_op_idxs: vec![0, 1],
+            op_handoffs: vec![
+                instance::EdgeHandoff {
+                    op_idx: 0,
+                    handoff: vec![(d_fan, enc("a:x"))],
+                },
+                instance::EdgeHandoff {
+                    op_idx: 1,
+                    handoff: vec![(d_b, enc("b:a:x"))],
+                },
+            ],
+            committed_ops: vec![
+                instance::CommittedOp {
+                    op_idx: 0,
+                    iter: 0,
+                    segments_ran: vec![da_id.clone()],
+                },
+                instance::CommittedOp {
+                    op_idx: 1,
+                    iter: 0,
+                    segments_ran: Vec::new(),
+                },
+            ],
+            ..Default::default()
+        });
+        diamond_inst.note_restored();
+        let (outs, done) = drain(&rx, "diamond-r");
+        assert_eq!(done.0, "ok");
+        let log = drain_diamond_log();
+        assert!(
+            !log.iter()
+                .any(|e| e.starts_with("a:") || e.starts_with("b:")),
+            "committed producers do not re-run: {log:?}"
+        );
+        assert_eq!(
+            log.iter().filter(|e| e.starts_with("c:")).count(),
+            1,
+            "only the uncommitted branch re-runs"
+        );
+        assert_eq!(
+            outs,
+            vec![b"j:b:a:x".to_vec(), b"j:c:a:x".to_vec()],
+            "the join runs once, with B's journaled handoff banked and C's fresh output appended"
+        );
+        assert_eq!(
+            drain_op_commits()
+                .iter()
+                .map(|c| c.op_idx)
+                .collect::<Vec<_>>(),
+            vec![2, 3],
+            "the resume commits only C and the join"
+        );
+
+        // --- bounded-branching reverse-topological undo: the join is undone
+        // before either producer, the shared root last ---
+        let _ = drain_comp_log();
+        let _ = drain_diamond_log();
+        let _ = drain_op_commits();
+        assert!(node.start_bounded("test-diamond-saga".into(), "diamond-s".into(), "x".into()));
+        let (_o, done) = drain(&rx, "diamond-s");
+        assert_eq!(done.0, "error");
+        assert_eq!(
+            drain_comp_log(),
+            vec![
+                "undo-j:j:b:a:x".to_string(),
+                "undo-j:j:c:a:x".to_string(),
+                "undo-c:c:a:x".to_string(),
+                "undo-b:b:a:x".to_string(),
+                "undo-a:a:x".to_string(),
+            ],
+            "reverse-topological over the DAG: join first, shared root last"
         );
 
         // --- bounded-durable-loop: one iteration per inbox item, each ending in

@@ -1,11 +1,13 @@
-// `c.input::<RawTrade>("...")` where RawTrade is not Vec<u8> or String.
-// Should fail with the sealed `EntryChannelType` trait-bound error.
+// `c.input::<RawTrade>("...")` where RawTrade implements neither
+// DeserializeOwned nor the passthrough types (`Vec<u8>` / `String`).
+// Should fail with the `DeserializeOwned` trait-bound error — a typed
+// entry must be decodable at the entry edge.
 
 use flezha_runner::channel::ChannelBuilder;
 
 struct RawTrade;
 
-fn declare(c: &mut ChannelBuilder) {
+fn declare(c: &ChannelBuilder) {
     c.input::<RawTrade>("trade.raw");
 }
 

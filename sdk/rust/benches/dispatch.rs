@@ -90,7 +90,7 @@ impl UnboundedOperative for RegressionOperative {
     fn factory_id() -> &'static str {
         "regression_bench_operative"
     }
-    fn channels(c: &mut ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         // Opt the entry channel into Block: the bench bursts 10K msgs
         // per operative against the default capacity-1024 mailbox; under
         // DropNewest the producer side would drop frames mid-burst and
@@ -314,22 +314,19 @@ impl UnboundedOperative for SegmentingStressBenchOperative {
     fn factory_id() -> &'static str {
         "segmenting_stress_bench_operative"
     }
-    fn channels(c: &mut ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         // Opt the entry channel into Block to avoid DropNewest losses
         // during the 20K-msg-per-operative burst against the cap-1024
         // mailbox. Inter-operation channels keep their default Block
         // policy, which preserves ordering through the pipeline.
         c.input::<Vec<u8>>("input")
             .on_full(OverflowPolicy::Block)
-            .into::<StressBenchOperationA>();
-        c.channel::<Vec<u8>>("a_to_b")
-            .from::<StressBenchOperationA>()
-            .into::<StressBenchOperationB>();
-        c.channel::<Vec<u8>>("b_to_c")
-            .from::<StressBenchOperationB>()
-            .into::<StressBenchOperationC>();
-        c.channel::<Vec<u8>>("c_to_d")
-            .from::<StressBenchOperationC>()
+            .into::<StressBenchOperationA>()
+            .named("a_to_b")
+            .into::<StressBenchOperationB>()
+            .named("b_to_c")
+            .into::<StressBenchOperationC>()
+            .named("c_to_d")
             .into::<StressBenchOperationD>();
     }
 }

@@ -1,6 +1,7 @@
-// `c.channel::<TradeMsg>("...").from::<S>().into::<C>()` where C::Input =
-// Candle. Should fail with a clear "expected TradeMsg, found Candle"
-// trait-bound error pointing at the `.into::<ConsumesCandle>()` call.
+// `stream.into::<C>()` where the stream's payload is TradeMsg but
+// C::Input = Candle. Should fail with a clear "expected TradeMsg, found
+// Candle" trait-bound error pointing at the `.into::<ConsumesCandle>()`
+// call — the channel payload type comes from the producer's `Output`.
 
 use flezha_runner::channel::ChannelBuilder;
 use flezha_runner::operation::{Operation, OperationCtx, OperationError};
@@ -14,7 +15,7 @@ struct Candle;
 #[derive(Default)]
 struct ProducesTrade;
 impl Operation for ProducesTrade {
-    type Input = ();
+    type Input = String;
     type Output = TradeMsg;
     type State = ();
     type Change = NoChange;
@@ -22,7 +23,7 @@ impl Operation for ProducesTrade {
     type Config = ();
     fn name() -> &'static str { "produces_trade" }
     fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(&mut self, _: (), _: StateHandle<'_, Self>, _: &mut OperationCtx<'_>) -> Result<(), OperationError> {
+    fn run(&mut self, _: String, _: StateHandle<'_, Self>, _: &mut OperationCtx<'_>) -> Result<(), OperationError> {
         Ok(())
     }
 }
@@ -43,9 +44,9 @@ impl Operation for ConsumesCandle {
     }
 }
 
-fn declare(c: &mut ChannelBuilder) {
-    c.channel::<TradeMsg>("trade.parsed")
-        .from::<ProducesTrade>()
+fn declare(c: &ChannelBuilder) {
+    c.input::<String>("in")
+        .into::<ProducesTrade>()
         .into::<ConsumesCandle>();
 }
 

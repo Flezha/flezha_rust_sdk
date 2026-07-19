@@ -98,7 +98,7 @@ pub(crate) trait EmitSink {
     fn is_plugin_bound(&self) -> bool;
 
     /// True iff the channel is `InterOperation` with a `plugin_sink`
-    /// attached via `also_to_plugin_with(...)`. Hybrid emits route
+    /// attached via `also_output_with(...)`. Hybrid emits route
     /// through `emit_inter_operation{,_with_meta}` rather than `emit_plugin`.
     fn has_plugin_sink(&self) -> bool {
         false
@@ -173,8 +173,8 @@ impl<'a> OperationCtx<'a> {
 
     /// Emit a typed value on the producer-edge channel for this Operation.
     /// `C` must match `Operation::Output`; the channel id was cached at
-    /// operative-build time from the `c.channel::<T>("name").from::<S>()`
-    /// wiring, so this call performs no name lookups. On a `.keyed()`
+    /// operative-build time from the producer's output-stream wiring
+    /// (`.into::<S>()`), so this call performs no name lookups. On a `.keyed()`
     /// channel this fails with `KeyRequiredOnKeyedChannel` — use
     /// [`Self::emit_keyed`].
     pub fn emit<C>(&mut self, value: C) -> Result<(), OperationError>
@@ -186,7 +186,7 @@ impl<'a> OperationCtx<'a> {
 
     /// Emit with user-attached string-keyed metadata. Valid on
     /// plugin-bound channels and on hybrid (`InterOperation` +
-    /// `also_to_plugin_with`) channels. Pure inter-operation channels with
+    /// `also_output_with`) channels. Pure inter-operation channels with
     /// no plugin sink return `MetadataNotAllowedOnInterOperationChannel`.
     /// Keys in the reserved `flz.` namespace are rejected.
     pub fn emit_with_meta<C>(
