@@ -6,7 +6,7 @@ pub(crate) mod persistent_id;
 pub(crate) mod work_stealing_pool;
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crossbeam::channel::Sender;
 
@@ -146,12 +146,24 @@ pub enum RunnerMessage {
         result: Vec<u8>,
     },
     /// An SDK-initiated control request (the bounded driver's `OpCommit` /
-    /// `IterCommit` / `IterPark`); the coordinator writes it verbatim under the
+    /// `IterCommit` / `IterPark`, or a post-start define/remove's
+    /// `UpdateFactories`); the coordinator writes it verbatim under the
     /// caller's `reference_id`, which the controller echoes on its reply to wake
-    /// the registered waiter. Routed here so control writes stay single-threaded.
+    /// the registered waiter (when one is registered — `UpdateFactories` is
+    /// fire-and-forget). Routed here so control writes stay single-threaded.
     EmitControlRequest {
         reference_id: String,
         command: crate::pb::command_request::Command,
+    },
+    /// `FlezhaRunner::remove_unbounded` / `remove_bounded` on a started
+    /// runner. Handled on the coordinator loop so the live-instance check is
+    /// serialized with `AddOperative` handling by construction: either the
+    /// add lands first and the removal refuses, or the removal lands first
+    /// and the add fails as an unknown factory. Replies
+    /// [`ClientResponseMessage::RemoveFactoryResult`].
+    RemoveFactory {
+        factory_id: String,
+        bounded: bool,
     },
 }
 
@@ -161,15 +173,15 @@ pub enum RunnerStatus {
     Stopped,
 }
 
-// reason: ReturnOperatives carries the same public shape returned by FlezhaRunner::operatives()
-#[allow(clippy::type_complexity)]
 pub enum ClientResponseMessage {
     RunnerIdConfirmation,
-    /// Snapshot of live UnboundedOperative instances. Returned to `FlezhaRunner::operatives()`
-    /// callers — the public-API shape is preserved for backward
-    /// compatibility, but each entry is now an `Arc<UnboundedInstance>` rather
-    /// than `Arc<Mutex<OperativeBox>>`.
-    ReturnOperatives(Arc<RwLock<HashMap<String, Arc<Mutex<Arc<UnboundedInstance>>>>>>),
+    /// Snapshot of live UnboundedOperative instances, returned to
+    /// `FlezhaRunner::operatives()` callers.
+    ReturnOperatives(HashMap<String, Arc<UnboundedInstance>>),
+    /// Reply to [`RunnerMessage::RemoveFactory`]: `Ok(())` = the class was
+    /// unregistered; `Err(n)` = `n` live instances exist and the type stays
+    /// defined.
+    RemoveFactoryResult(Result<(), usize>),
 }
 
 pub use fast::{start, RunnerNode};

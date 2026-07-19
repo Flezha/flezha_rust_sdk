@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     spawn_stdin_eof_exit();
-    Flezha::new_runner(namespace())?
+    Flezha::create_runner(namespace())?
         .define_unbounded::<DoNothingOperative>()?
         .define_unbounded::<StoreInputOperative>()?
         .define_unbounded::<CompareFilterOperative>()?
@@ -2514,7 +2514,7 @@ mod macro_twin_tests {
             );
         }
         // The mixed operative is declared explicitly, as before.
-        Flezha::new_runner("sugar_test")
+        Flezha::create_runner("sugar_test")
             .unwrap()
             .define_unbounded::<MixedOperative>()
             .unwrap();

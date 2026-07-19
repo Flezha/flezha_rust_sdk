@@ -31,7 +31,7 @@
 //!     }
 //! }
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! flezha_runner::Flezha::new_runner("my_app")?.define_bounded::<Greet>()?.run()?;
+//! flezha_runner::Flezha::create_runner("my_app")?.define_bounded::<Greet>()?.run()?;
 //! # Ok(())
 //! # }
 //! ```
@@ -1896,8 +1896,12 @@ mod tests {
     #[test]
     fn registry_holds_bounded_as_sealed_variant() {
         let reg = OperativeRegistry::new();
-        let (instance, _inbox_rx) =
-            crate::bounded::instance::BoundedInstance::new(Arc::from("t1"), Vec::new(), 0);
+        let (instance, _inbox_rx) = crate::bounded::instance::BoundedInstance::new(
+            Arc::from("t1"),
+            Arc::from("t1-factory"),
+            Vec::new(),
+            0,
+        );
         reg.register_bounded(instance);
 
         assert!(reg.contains("t1"));

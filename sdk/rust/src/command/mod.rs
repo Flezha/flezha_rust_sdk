@@ -149,11 +149,12 @@ pub fn get_handler(_payload_id: &str, message: &[u8]) -> Result<FrameOutcome, Co
         // Dead-letter park durability ack (Controller -> SDK): wakes the
         // dispatch thread parked in `segment::park::park_blocking`.
         Some(Command::ParkPayloadAck(proto_ch)) => CommandActionType::Regular(Box::new(proto_ch)),
-        // SDK is the SENDER for OpCommit / IterCommit / IterPark — receiving one
-        // is a protocol bug.
+        // SDK is the SENDER for OpCommit / IterCommit / IterPark /
+        // UpdateFactories — receiving one is a protocol bug.
         Some(Command::OpCommit(_)) => CommandActionType::NotificationIgnore,
         Some(Command::IterCommit(_)) => CommandActionType::NotificationIgnore,
         Some(Command::IterPark(_)) => CommandActionType::NotificationIgnore,
+        Some(Command::UpdateFactories(_)) => CommandActionType::NotificationIgnore,
         // Op-journal durability replies (Controller -> SDK): wake the bounded
         // driver blocked at the op-commit / iteration-commit barrier; a non-empty
         // error terminates the run abnormally.

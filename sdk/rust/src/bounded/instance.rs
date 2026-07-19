@@ -46,6 +46,10 @@ pub struct InboxItem {
 
 pub struct BoundedInstance {
     pub instance_id: Arc<str>,
+    /// The class this instance was spawned from — attributes live instances
+    /// to a factory during a `remove_bounded` check (unbounded instances
+    /// carry it via their topology).
+    pub factory_id: Arc<str>,
     /// Tripped by `BoundedStop` / `RemOperative` / `max_duration`; observed by
     /// the driver's loops + `recv` within ≤200 ms.
     pub cancel: Arc<AtomicBool>,
@@ -126,12 +130,14 @@ impl BoundedInstance {
     /// is the crash-resume restore count (0 for fresh / run-sugar / opted-out).
     pub fn new(
         instance_id: Arc<str>,
+        factory_id: Arc<str>,
         stage_segments: Vec<Vec<Arc<SegmentSlot>>>,
         expected: usize,
     ) -> (Arc<Self>, Receiver<InboxItem>) {
         let (inbox_tx, inbox_rx) = unbounded();
         let instance = Arc::new(Self {
             instance_id,
+            factory_id,
             cancel: Arc::new(AtomicBool::new(false)),
             inbox_tx,
             stage_segments,
@@ -261,7 +267,13 @@ mod tests {
     /// An instance with no Segments — enough to exercise the resume-count logic
     /// (which never touches `stage_segments`) without building real slots.
     fn gate(expected: usize) -> Arc<BoundedInstance> {
-        BoundedInstance::new(Arc::from("gate-test"), Vec::new(), expected).0
+        BoundedInstance::new(
+            Arc::from("gate-test"),
+            Arc::from("gate-factory"),
+            Vec::new(),
+            expected,
+        )
+        .0
     }
 
     #[test]

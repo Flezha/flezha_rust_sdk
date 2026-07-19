@@ -130,42 +130,48 @@ pub use operation::WallClock;
 #       pub serializer: PluginSerializeFn,
 #   }
 
-# Entry point + runner lifecycle (`runner-lifecycle-singleton-api`).
-# REMOVED (no back-compat shim): `pub fn new(namespace) -> Flezha`,
-# `pub fn register_unbounded<R>()`, `pub fn register_bounded<T>()`,
-# the instance-returning `Flezha` struct.
+# Entry point + runner lifecycle (`sdk-runner-entrypoint-redesign`).
+# REMOVED (no back-compat shim): `RunnerBuilder`, `Flezha::new_runner`,
+# `RunnerStartError`, `RunnerError`, `FlezhaRunner::id`, the
+# `Arc<RwLock<..Mutex..>>` `operatives()` view, and the old
+# `channel::builder::BuildTopologyError` name (now `TopologyIssue`; the
+# per-kind `TopologyBuildError` keeps its name).
 
 pub use bounded::spec::BuildBoundedError;
-pub use channel::builder::BuildTopologyError;
+pub use channel::builder::TopologyIssue;
 pub use operative::builder::TopologyBuildError;
 
 #   pub struct Flezha;                     # static-only entry point
 #   impl Flezha {
-#       pub fn new_runner(namespace: impl Into<String>) -> Result<RunnerBuilder, RunnerStartError>;
+#       pub fn create_runner(namespace: impl Into<String>) -> Result<FlezhaRunner, FlezhaError>;
 #       pub fn current_runner() -> Option<Arc<FlezhaRunner>>;
 #   }
 #
-#   pub struct RunnerBuilder;              # consumed by start()/run()
-#   impl RunnerBuilder {
-#       pub fn define_unbounded<R: UnboundedOperative>(self) -> Result<Self, TopologyBuildError>;
-#       pub fn define_bounded<T: BoundedOperative>(self) -> Result<Self, BuildBoundedError>;
-#       pub fn start(self) -> Result<FlezhaRunner, RunnerStartError>;
-#       pub fn run(self) -> Result<(), RunnerError>;
-#   }
-#
-#   pub struct FlezhaRunner;               # Drop = graceful shutdown (owning handle)
+#   pub struct FlezhaRunner;               # create → mutate → start on one object;
+#                                          # Drop of a STARTED owner = graceful shutdown
 #   impl FlezhaRunner {
-#       pub fn id(&self) -> &str;
-#       pub fn operatives(&self) -> Arc<RwLock<HashMap<String, Arc<Mutex<Arc<UnboundedInstance>>>>>>;
-#       pub fn await_termination(&self);
+#       pub fn namespace(&self) -> &str;
+#       pub fn define_unbounded<R: UnboundedOperative>(&self) -> Result<&Self, FlezhaError>;
+#       pub fn define_bounded<T: BoundedOperative>(&self) -> Result<&Self, FlezhaError>;
+#       pub fn remove_unbounded<R: UnboundedOperative>(&self) -> Result<&Self, FlezhaError>;
+#       pub fn remove_bounded<T: BoundedOperative>(&self) -> Result<&Self, FlezhaError>;
+#       pub fn start(&self) -> Result<&Self, FlezhaError>;     # slot claimed here (CAS)
+#       pub fn run(&self) -> Result<(), FlezhaError>;          # start + await_termination
+#       pub fn operatives(&self) -> Result<HashMap<String, Arc<UnboundedInstance>>, FlezhaError>;
+#       pub fn await_termination(&self) -> Result<(), FlezhaError>;
 #   }
 #
-#   pub enum RunnerStartError {            # thiserror
-#       AlreadyRunning { namespace: String },
+#   pub enum FlezhaError {                 # thiserror; the ONE chain error
 #       InvalidNamespace,
-#       NoOperativeDeclared,
+#       AlreadyRunning { namespace: String },
 #       ConnectFailed(String),
+#       InvalidTopology(#[from] TopologyBuildError),
+#       InvalidBounded(#[from] BuildBoundedError),
+#       DuplicateFactoryId { factory_id: String },
+#       NotDefined { factory_id: String },
+#       OperativeTypeInUse { factory_id: String, live_instances: usize },
+#       NotStarted,
+#       RunnerUnavailable(String),
 #   }
-#   pub type RunnerError = RunnerStartError;
 #
 #   #[doc(hidden)] pub fn __register_unbounded<R: UnboundedOperative>();  # macro plumbing only

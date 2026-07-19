@@ -5,7 +5,7 @@ pub struct CommandRequest {
     pub reference_id: ::prost::alloc::string::String,
     #[prost(
         oneof = "command_request::Command",
-        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32"
+        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33"
     )]
     pub command: ::core::option::Option<command_request::Command>,
 }
@@ -75,6 +75,8 @@ pub mod command_request {
         IterCommitResponse(super::IterCommitResponse),
         #[prost(message, tag = "32")]
         IterPark(super::IterPark),
+        #[prost(message, tag = "33")]
+        UpdateFactories(super::UpdateFactories),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -601,6 +603,30 @@ pub struct CreditGrant {
 pub struct ParkPayloadAck {
     #[prost(string, tag = "1")]
     pub park_id: ::prost::alloc::string::String,
+}
+/// One declared operative factory: the controller-facing factory id plus a
+/// human-readable description, mirroring the connect init frame's factory
+/// entries.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct FactoryDecl {
+    #[prost(string, tag = "1")]
+    pub id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub description: ::prost::alloc::string::String,
+}
+/// SDK -> Controller. Ships the runner's FULL current factory set after a
+/// post-start define or remove (sdk-runner-entrypoint-redesign). Full-set
+/// semantics make delivery idempotent; the reconnect init frame remains the
+/// resync of record, so a lost frame self-heals. Fire-and-forget: the
+/// Controller does not ack (it gates no durability barrier — a stale
+/// placement fails at the SDK's AddOperative handler and convergence
+/// re-places). Direction is reversed like RunnerShutdownNotification:
+/// SDK -> Controller over the "control_command" payload_id; old Controllers
+/// ignore the unknown variant via Protox unknown-field handling.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct UpdateFactories {
+    #[prost(message, repeated, tag = "1")]
+    pub factories: ::prost::alloc::vec::Vec<FactoryDecl>,
 }
 /// Controller -> SDK. Cooperative external stop for a bounded operative
 /// (`flz operative stop`), distinct from the hard `RemOperative` teardown: the

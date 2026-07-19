@@ -117,6 +117,7 @@ impl RunnerNode {
             .unwrap_or_default();
         let (instance, inbox_rx) = crate::bounded::instance::BoundedInstance::new(
             Arc::clone(&id),
+            Arc::from(factory_id.as_str()),
             stage_segments,
             resume_segment_count as usize,
         );
@@ -124,6 +125,24 @@ impl RunnerNode {
             .register_bounded(Arc::clone(&instance));
         crate::bounded::driver::spawn(spec, instance, inbox_rx, args, Arc::clone(&self.pool));
         true
+    }
+
+    /// The live-instance check + class unregistration behind
+    /// [`RunnerMessage::RemoveFactory`]. MUST run on the coordinator loop —
+    /// that is what serializes it with `AddOperative` handling and makes the
+    /// check race-free. `Err(n)` = `n` live instances exist; the type stays
+    /// registered.
+    pub(crate) fn remove_factory(&self, factory_id: &str, bounded: bool) -> Result<(), usize> {
+        let live = self.operative_registry.count_by_factory(factory_id);
+        if live > 0 {
+            return Err(live);
+        }
+        if bounded {
+            crate::bounded::registry::unregister_class(factory_id);
+        } else {
+            crate::operative::registry::unregister_class(factory_id);
+        }
+        Ok(())
     }
 
     pub fn stop_operative(&self, instance_id: &str) -> bool {
@@ -179,15 +198,10 @@ impl RunnerNode {
         self._namespace.clone()
     }
 
-    /// Public-API view: snapshot of live UnboundedOperative instances. Mirrors the
-    /// pre-`operative-mvp-rust` `FlezhaRunner::operatives()` shape so external
-    /// inspectors that walk the registry continue to work.
-    // reason: returned shape is the public API; splitting it would break external inspectors
-    #[allow(clippy::type_complexity)]
-    pub fn get_operatives(
-        &self,
-    ) -> Arc<RwLock<HashMap<String, Arc<Mutex<Arc<UnboundedInstance>>>>>> {
-        crate::operative::registry::snapshot_as_operative_view(&self.operative_registry)
+    /// Snapshot of live UnboundedOperative instances — the
+    /// `FlezhaRunner::operatives()` view.
+    pub fn get_operatives(&self) -> HashMap<String, Arc<UnboundedInstance>> {
+        self.operative_registry.snapshot_unbounded()
     }
 
     pub fn get_io_streams(&self) -> Arc<RwLock<HashMap<u32, FlezhaStream>>> {
@@ -217,6 +231,7 @@ impl RunnerNode {
 
 pub fn start(
     namespace: String,
+    declared: Arc<RwLock<Vec<String>>>,
     (otx, orx): (Sender<RunnerMessage>, Receiver<RunnerMessage>),
     ctx: Sender<ClientResponseMessage>,
     shutdown_bridge: Arc<ShutdownBridge>,
@@ -250,8 +265,12 @@ pub fn start(
         // flood without a handle threaded through every layer.
         super::install_reconnect_trigger(otx.clone());
         let otx_arc = Arc::new(Mutex::new(otx));
-        let (_control_thread, mut control_stream, quic_client) =
-            control_unit::open(namespace.clone(), ctx_arc.clone(), otx_arc.clone());
+        let (_control_thread, mut control_stream, quic_client) = control_unit::open(
+            namespace.clone(),
+            Arc::clone(&declared),
+            ctx_arc.clone(),
+            otx_arc.clone(),
+        );
         runner.set_quic_client(quic_client);
         shutdown_bridge.set_control_stream(Some(Arc::clone(&control_stream)));
 
@@ -289,6 +308,7 @@ pub fn start(
                         &mut runner,
                         &mut control_stream,
                         &namespace,
+                        &declared,
                         &otx_arc,
                         reason,
                     );
@@ -346,6 +366,18 @@ pub fn start(
                             "[flezha] SDK-initiated control request write failed: {}", e
                         );
                     }
+                }
+                RunnerMessage::RemoveFactory {
+                    factory_id,
+                    bounded,
+                } => {
+                    // Serialized with AddOperative by construction (same loop),
+                    // so the live-instance check cannot race a placement.
+                    let result = runner.remove_factory(&factory_id, bounded);
+                    let _ = ctx_arc
+                        .lock()
+                        .unwrap()
+                        .send(ClientResponseMessage::RemoveFactoryResult(result));
                 }
             }
         }
@@ -426,11 +458,13 @@ fn send_data_heartbeat(io_streams: &RwLock<HashMap<u32, FlezhaStream>>) {
 
 fn return_operatives(runner: &RunnerNode, ctx_arc: Arc<Mutex<Sender<ClientResponseMessage>>>) {
     let operatives = runner.get_operatives();
-    ctx_arc
+    // A closed client channel means the owning handle is gone mid-request;
+    // dropping the reply is the only sane outcome — never panic the
+    // coordinator.
+    let _ = ctx_arc
         .lock()
         .unwrap()
-        .send(ClientResponseMessage::ReturnOperatives(operatives))
-        .expect("Failed to send operatives response");
+        .send(ClientResponseMessage::ReturnOperatives(operatives));
 }
 
 /// Re-establish the control stream while preserving the SDK's
@@ -453,6 +487,7 @@ fn handle_reconnect(
     runner: &mut RunnerNode,
     control_stream: &mut Arc<FlezhaStream>,
     namespace: &str,
+    declared: &Arc<RwLock<Vec<String>>>,
     otx_arc: &Arc<Mutex<Sender<RunnerMessage>>>,
     reason: &str,
 ) {
@@ -467,7 +502,7 @@ fn handle_reconnect(
     runner.set_status(RunnerStatus::Stopped);
 
     let (_, new_stream, new_quic) =
-        control_unit::open_reconnect(namespace.to_string(), otx_arc.clone());
+        control_unit::open_reconnect(namespace.to_string(), Arc::clone(declared), otx_arc.clone());
 
     *control_stream = new_stream;
     runner.set_quic_client(new_quic);
@@ -607,6 +642,90 @@ impl OperativeDispatchHandle {
             &stream,
             consumed_offset,
             metadata.contains_key("flz.replay"),
+        );
+    }
+}
+
+#[cfg(test)]
+mod remove_factory_tests {
+    //! The live-instance refusal at the coordinator seam
+    //! (`RunnerNode::remove_factory`): a factory with live instances refuses
+    //! and stays registered; once the last instance stops, the removal
+    //! unregisters the class.
+    use super::*;
+    use crate::operation::state_handle::StateHandle;
+    use crate::operation::{NoChange, Operation, OperationCtx, OperationError, WallClock};
+    use crate::segment::restore::RestoreInitPayload;
+    use crate::{ChannelBuilder, UnboundedOperative};
+
+    #[derive(Default)]
+    struct SeamOp;
+    impl Operation for SeamOp {
+        type Input = String;
+        type Output = String;
+        type State = ();
+        type Change = NoChange;
+        type Clock = WallClock;
+        type Config = ();
+        fn name() -> &'static str {
+            "remove_factory_seam_op"
+        }
+        fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
+        fn run(
+            &mut self,
+            _: String,
+            _: StateHandle<'_, Self>,
+            _: &mut OperationCtx<'_>,
+        ) -> Result<(), OperationError> {
+            Ok(())
+        }
+    }
+
+    struct SeamOperative;
+    impl UnboundedOperative for SeamOperative {
+        fn factory_id() -> &'static str {
+            "remove_factory_seam_probe"
+        }
+        fn channels(c: &mut ChannelBuilder) {
+            c.input::<String>("in").into::<SeamOp>();
+        }
+    }
+
+    #[test]
+    fn removal_refuses_while_instances_live_and_unregisters_after() {
+        let runner = RunnerNode::new("seam_ns".to_string());
+        crate::register_unbounded_class::<SeamOperative>().expect("valid topology");
+
+        runner
+            .start_operative(
+                "remove_factory_seam_probe".to_string(),
+                "seam-inst-1".to_string(),
+            )
+            .expect("instance spawns");
+
+        assert_eq!(
+            runner.remove_factory("remove_factory_seam_probe", false),
+            Err(1),
+            "a live instance must refuse the removal with its count"
+        );
+        assert!(
+            crate::operative::registry::get_class("remove_factory_seam_probe").is_some(),
+            "a refused removal must leave the type registered"
+        );
+
+        assert!(runner.stop_operative("seam-inst-1"));
+        assert_eq!(
+            runner.remove_factory("remove_factory_seam_probe", false),
+            Ok(())
+        );
+        assert!(
+            crate::operative::registry::get_class("remove_factory_seam_probe").is_none(),
+            "the removal must unregister the class"
+        );
+        // Idempotent on an unknown id (registry contract).
+        assert_eq!(
+            runner.remove_factory("remove_factory_seam_probe", false),
+            Ok(())
         );
     }
 }

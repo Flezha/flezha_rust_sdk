@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 
-use crate::channel::builder::{BuildTopologyError, ChannelBuilder};
+use crate::channel::builder::{ChannelBuilder, TopologyIssue};
 use crate::channel::{ChannelDescriptor, ChannelKind, PluginSink};
 use crate::operative::topology::{
     AckGranularity, OperationDescriptor, OperativeTopology, SegmentingMode,
@@ -36,7 +36,7 @@ pub const ENV_MAILBOX_CAPACITY: &str = "FLEZHA_MAILBOX_CAPACITY";
 #[derive(Debug, thiserror::Error)]
 #[error("operative topology validation failed: {errors:?}")]
 pub struct TopologyBuildError {
-    pub errors: Vec<BuildTopologyError>,
+    pub errors: Vec<TopologyIssue>,
 }
 
 pub fn build_topology(
@@ -73,10 +73,10 @@ pub fn build_topology_with_persistence(
     // already forces every plugin channel keyed, which is correction's other
     // hard prerequisite: a bumped epoch can only overwrite by natural key.)
     if correction.is_some() && !effectively_once {
-        errors.push(BuildTopologyError::CorrectionWithoutTier);
+        errors.push(TopologyIssue::CorrectionWithoutTier);
     }
     if correction.is_some_and(|c| c.window_ms == 0) {
-        errors.push(BuildTopologyError::CorrectionWindowZero);
+        errors.push(TopologyIssue::CorrectionWindowZero);
     }
 
     // The checkpoint is where the tier's consumed-offset advances; off the
@@ -85,19 +85,19 @@ pub fn build_topology_with_persistence(
     // outputs are absorbed by sink dedup — is already enforced for the whole
     // tier by `UnkeyedChannelUnderEffectivelyOnce` below.
     if ack_granularity == AckGranularity::Checkpoint && !effectively_once {
-        errors.push(BuildTopologyError::CheckpointAckWithoutTier);
+        errors.push(TopologyIssue::CheckpointAckWithoutTier);
     }
 
     // Build channel descriptors and validate.
     let mut channel_descs: Vec<ChannelDescriptor> = Vec::with_capacity(channels.len());
     for entry in channels {
         if entry.producer.is_none() && entry.kind != ChannelKind::Entry {
-            errors.push(BuildTopologyError::UnwiredChannel { name: entry.name });
+            errors.push(TopologyIssue::UnwiredChannel { name: entry.name });
         }
         // Identity stamps only exist on plugin frames; a keyed channel
         // must have a plugin wire (pure `to_plugin` or hybrid sink).
         if entry.keyed && entry.kind != ChannelKind::PluginBound && entry.plugin_sink.is_none() {
-            errors.push(BuildTopologyError::KeyedChannelWithoutPluginWire {
+            errors.push(TopologyIssue::KeyedChannelWithoutPluginWire {
                 channel: entry.name,
             });
         }
@@ -108,7 +108,7 @@ pub fn build_topology_with_persistence(
             && !entry.keyed
             && (entry.kind == ChannelKind::PluginBound || entry.plugin_sink.is_some())
         {
-            errors.push(BuildTopologyError::UnkeyedChannelUnderEffectivelyOnce {
+            errors.push(TopologyIssue::UnkeyedChannelUnderEffectivelyOnce {
                 channel: entry.name,
             });
         }
@@ -136,17 +136,17 @@ pub fn build_topology_with_persistence(
     let mut operation_descs: Vec<OperationDescriptor> = Vec::with_capacity(operations.len());
     for entry in operations {
         if !entry.segment_keys.is_empty() && !entry.segment_for_overridden {
-            errors.push(BuildTopologyError::SegmentForMissing { name: entry.name });
+            errors.push(TopologyIssue::SegmentForMissing { name: entry.name });
         }
         // A Operation declares static keys OR dynamic operation_key(), never both.
         if entry.operation_key_overridden && !entry.segment_keys.is_empty() {
-            errors.push(BuildTopologyError::StaticAndDynamic { name: entry.name });
+            errors.push(TopologyIssue::StaticAndDynamic { name: entry.name });
         }
         // Build-time clock validation: LogicalClock serves the durable
         // change seq, which never advances for a NoChange Operation — fail
         // fast instead of serving a clock frozen at 0.
         if entry.clock_type_name == "LogicalClock" && entry.change_is_nochange {
-            errors.push(BuildTopologyError::UnservableClock {
+            errors.push(TopologyIssue::UnservableClock {
                 operation: entry.name,
                 clock_type: entry.clock_type_name,
             });
@@ -155,7 +155,7 @@ pub fn build_topology_with_persistence(
         // clock is the wall or the change seq has no event time, so the sort
         // key does not exist and lateness is undefined.
         if correction.is_some() && !entry.clock_is_event_time {
-            errors.push(BuildTopologyError::CorrectionWithoutEventTime {
+            errors.push(TopologyIssue::CorrectionWithoutEventTime {
                 operation: entry.name,
                 clock_type: entry.clock_type_name,
             });
@@ -243,7 +243,7 @@ pub(crate) fn resolve_mailbox_capacity(
     operation_name: &'static str,
     declared: usize,
     overridden: bool,
-) -> Result<usize, BuildTopologyError> {
+) -> Result<usize, TopologyIssue> {
     let env_value = std::env::var(ENV_MAILBOX_CAPACITY).ok();
     resolve_mailbox_capacity_inner(operation_name, declared, overridden, env_value.as_deref())
 }
@@ -256,7 +256,7 @@ pub(crate) fn resolve_mailbox_capacity_inner(
     declared: usize,
     overridden: bool,
     env_value: Option<&str>,
-) -> Result<usize, BuildTopologyError> {
+) -> Result<usize, TopologyIssue> {
     let resolved = if overridden {
         declared
     } else {
@@ -267,17 +267,14 @@ pub(crate) fn resolve_mailbox_capacity_inner(
     validate_capacity(operation_name, resolved)
 }
 
-fn validate_capacity(
-    operation_name: &'static str,
-    value: usize,
-) -> Result<usize, BuildTopologyError> {
+fn validate_capacity(operation_name: &'static str, value: usize) -> Result<usize, TopologyIssue> {
     if value == 0 {
-        return Err(BuildTopologyError::MailboxCapacityZero {
+        return Err(TopologyIssue::MailboxCapacityZero {
             operation: operation_name,
         });
     }
     if value > MAX_MAILBOX_CAPACITY {
-        return Err(BuildTopologyError::MailboxCapacityTooLarge {
+        return Err(TopologyIssue::MailboxCapacityTooLarge {
             operation: operation_name,
             value,
         });
@@ -344,7 +341,7 @@ mod tests {
         };
         assert!(err.errors.iter().any(|e| matches!(
             e,
-            BuildTopologyError::UnkeyedChannelUnderEffectivelyOnce { channel: "out" }
+            TopologyIssue::UnkeyedChannelUnderEffectivelyOnce { channel: "out" }
         )));
     }
 
@@ -362,7 +359,7 @@ mod tests {
         };
         assert!(err.errors.iter().any(|e| matches!(
             e,
-            BuildTopologyError::UnkeyedChannelUnderEffectivelyOnce { channel: "mid" }
+            TopologyIssue::UnkeyedChannelUnderEffectivelyOnce { channel: "mid" }
         )));
     }
 
@@ -418,7 +415,7 @@ mod tests {
         // Override path: explicit 0 is rejected.
         let err = resolve_mailbox_capacity_inner("ohlc", 0, true, None).unwrap_err();
         match err {
-            BuildTopologyError::MailboxCapacityZero { operation } => assert_eq!(operation, "ohlc"),
+            TopologyIssue::MailboxCapacityZero { operation } => assert_eq!(operation, "ohlc"),
             other => panic!("expected MailboxCapacityZero, got {other:?}"),
         }
     }
@@ -428,7 +425,7 @@ mod tests {
         let err = resolve_mailbox_capacity_inner("ohlc", MAX_MAILBOX_CAPACITY + 1, true, None)
             .unwrap_err();
         match err {
-            BuildTopologyError::MailboxCapacityTooLarge { operation, value } => {
+            TopologyIssue::MailboxCapacityTooLarge { operation, value } => {
                 assert_eq!(operation, "ohlc");
                 assert_eq!(value, MAX_MAILBOX_CAPACITY + 1);
             }
@@ -443,7 +440,7 @@ mod tests {
         let err = resolve_mailbox_capacity_inner("ohlc", 0, true, Some("4096")).unwrap_err();
         assert!(matches!(
             err,
-            BuildTopologyError::MailboxCapacityZero { operation: "ohlc" }
+            TopologyIssue::MailboxCapacityZero { operation: "ohlc" }
         ));
     }
 
@@ -570,7 +567,7 @@ mod tests {
         assert!(err
             .errors
             .iter()
-            .any(|e| matches!(e, BuildTopologyError::CheckpointAckWithoutTier)));
+            .any(|e| matches!(e, TopologyIssue::CheckpointAckWithoutTier)));
     }
 
     #[test]
@@ -587,7 +584,7 @@ mod tests {
         assert!(err
             .errors
             .iter()
-            .any(|e| matches!(e, BuildTopologyError::CorrectionWithoutTier)));
+            .any(|e| matches!(e, TopologyIssue::CorrectionWithoutTier)));
     }
 
     #[test]
@@ -603,7 +600,7 @@ mod tests {
 
         assert!(err.errors.iter().any(|e| matches!(
             e,
-            BuildTopologyError::CorrectionWithoutEventTime {
+            TopologyIssue::CorrectionWithoutEventTime {
                 clock_type: "WallClock",
                 ..
             }
@@ -622,7 +619,7 @@ mod tests {
         assert!(err
             .errors
             .iter()
-            .any(|e| matches!(e, BuildTopologyError::CorrectionWindowZero)));
+            .any(|e| matches!(e, TopologyIssue::CorrectionWindowZero)));
     }
 
     #[test]

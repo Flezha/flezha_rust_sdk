@@ -12,7 +12,7 @@
 //! map values pointer-sized.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 
 use lazy_static::lazy_static;
 
@@ -37,8 +37,17 @@ lazy_static! {
         RwLock::new(HashMap::new());
 }
 
+/// Overwrite-on-insert: re-registering a factory id replaces its topology,
+/// so a restarted runner generation (or a re-run inventory harvest) is
+/// idempotent rather than a collision.
 pub fn register_class(factory_id: &'static str, topology: Arc<OperativeTopology>) {
     CLASS_REGISTRY.write().unwrap().insert(factory_id, topology);
+}
+
+/// On-demand removal (`FlezhaRunner::remove_unbounded`). Idempotent on an
+/// unknown id.
+pub fn unregister_class(factory_id: &str) {
+    CLASS_REGISTRY.write().unwrap().remove(factory_id);
 }
 
 pub fn get_class(factory_id: &str) -> Option<Arc<OperativeTopology>> {
@@ -122,6 +131,19 @@ impl OperativeRegistry {
         self.inner.remove(instance_id).map(|(_, v)| v)
     }
 
+    /// Live instances of `factory_id`, both kinds — the removal check's
+    /// input. Run on the coordinator loop so it is serialized with
+    /// `AddOperative` handling.
+    pub fn count_by_factory(&self, factory_id: &str) -> usize {
+        self.inner
+            .iter()
+            .filter(|r| match &**r.value() {
+                Operative::Unbounded(ri) => ri.topology.factory_id == factory_id,
+                Operative::Bounded(bi) => &*bi.factory_id == factory_id,
+            })
+            .count()
+    }
+
     pub fn contains(&self, instance_id: &str) -> bool {
         self.inner.contains_key(instance_id)
     }
@@ -155,23 +177,4 @@ impl Default for OperativeRegistry {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Public-API view that mirrors today's `Flezha::get_operatives()` shape.
-/// Returned as `Arc<RwLock<HashMap<String, Arc<Mutex<…>>>>>` so external
-/// consumers (test apps, observability wrappers) can iterate without
-/// touching DashMap internals. The inner Mutex is a placeholder kept for
-/// API compatibility — `UnboundedInstance` is itself shared via Arc and does
-/// not require a Mutex on the read path.
-// reason: return shape mirrors Flezha::get_operatives() public API; splitting would break external inspectors
-#[allow(clippy::type_complexity)]
-pub fn snapshot_as_operative_view(
-    registry: &OperativeRegistry,
-) -> Arc<RwLock<HashMap<String, Arc<Mutex<Arc<UnboundedInstance>>>>>> {
-    let snapshot = registry.snapshot_unbounded();
-    let mapped: HashMap<String, Arc<Mutex<Arc<UnboundedInstance>>>> = snapshot
-        .into_iter()
-        .map(|(k, v)| (k, Arc::new(Mutex::new(v))))
-        .collect();
-    Arc::new(RwLock::new(mapped))
 }

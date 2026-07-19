@@ -7,23 +7,28 @@ Rust SDK for the Flezha runner platform.
 ```rust
 use flezha_runner::Flezha;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    Flezha::new_runner("my_app")?          // the namespace
-        .define_unbounded::<MyOperative>()? // declare before start()/run()
+fn main() -> Result<(), flezha_runner::FlezhaError> {
+    Flezha::create_runner("my_app")?        // the namespace
+        .define_unbounded::<MyOperative>()? // legal before AND after start()/run()
         .run()?;                            // connect + block until shutdown
     Ok(())
 }
 ```
 
 `run()` is `start()` + `await_termination()` — the one-liner for a standalone
-binary. Embedding into a larger app? `start()` returns a `FlezhaRunner` handle
-and keeps your thread; dropping it runs the graceful-shutdown sequence, and
-`Flezha::current_runner()` reaches it from anywhere. At most one runner runs
-per process: a second `start()` returns
-`Err(RunnerStartError::AlreadyRunning { .. })` naming the running namespace.
-Invalid topologies surface as `Err(TopologyBuildError)` at the
-`define_unbounded` call site — no panics. Lifecycle vocabulary:
-`docs/sdk_naming_conventions.md`.
+binary. Embedding into a larger app? `start()` keeps your thread — bind the
+runner (`let runner = Flezha::create_runner(ns)?.start()?;`, a chained
+temporary would Drop and shut it down at statement end); dropping it runs the
+graceful-shutdown sequence, and `Flezha::current_runner()` reaches it from
+anywhere. Types are dynamic: `define_unbounded`/`define_bounded` and their
+inverses `remove_unbounded`/`remove_bounded` are legal before and after
+`start()` (a post-start change ships `UpdateFactories` to the controller);
+starting with zero declared types is legal. At most one runner is started per
+process: a second `start()` returns
+`Err(FlezhaError::AlreadyRunning { .. })` naming the running namespace. Every
+fallible call returns `Result<_, FlezhaError>` — the whole chain compiles
+under a single `?`; invalid topologies surface at the `define_unbounded` call
+site — no panics. Lifecycle vocabulary: `docs/sdk_naming_conventions.md`.
 
 ## Public API workflow
 

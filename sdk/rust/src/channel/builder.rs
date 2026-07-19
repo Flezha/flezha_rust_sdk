@@ -171,7 +171,7 @@ pub(crate) struct ChannelEntry {
 
 /// Reasons `UnboundedOperative::channels(c)` declarations fail at registration time.
 #[derive(Debug, thiserror::Error)]
-pub enum BuildTopologyError {
+pub enum TopologyIssue {
     #[error("channel `{0}` declared more than once on this operative")]
     DuplicateChannel(&'static str),
 
@@ -281,7 +281,7 @@ pub struct ChannelBuilder {
     pub(crate) name_to_id: HashMap<&'static str, u32>,
     pub(crate) operations: Vec<OperationEntry>,
     pub(crate) operation_name_to_id: HashMap<&'static str, u32>,
-    pub(crate) errors: Vec<BuildTopologyError>,
+    pub(crate) errors: Vec<TopologyIssue>,
     pub(crate) effectively_once: bool,
     pub(crate) correction: Option<crate::operative::topology::CorrectionPolicy>,
     pub(crate) ack_granularity: crate::operative::topology::AckGranularity,
@@ -412,7 +412,7 @@ impl ChannelBuilder {
 
     fn declare_channel(&mut self, name: &'static str, kind: ChannelKind) -> u32 {
         if self.name_to_id.contains_key(name) {
-            self.errors.push(BuildTopologyError::DuplicateChannel(name));
+            self.errors.push(TopologyIssue::DuplicateChannel(name));
         }
         let id = self.channels.len() as u32;
         self.channels.push(ChannelEntry {
@@ -515,7 +515,7 @@ impl ChannelBuilder {
 fn set_retry_max(builder: &mut ChannelBuilder, channel_id: u32, max_attempts: u32) {
     let entry = &mut builder.channels[channel_id as usize];
     if max_attempts == 0 {
-        builder.errors.push(BuildTopologyError::RetryMaxZero {
+        builder.errors.push(TopologyIssue::RetryMaxZero {
             channel: entry.name,
         });
         return;
@@ -698,7 +698,7 @@ impl<'b, T: 'static + Send + Sync> ChannelDecl<'b, T> {
         if entry.producer.is_some() {
             self.builder
                 .errors
-                .push(BuildTopologyError::MultiProducer { name: self.name });
+                .push(TopologyIssue::MultiProducer { name: self.name });
         } else {
             entry.producer = Some(operation_id);
         }
@@ -788,7 +788,7 @@ impl<'b, T: 'static + Send + Sync> ChannelDeclWithProducer<'b, T> {
     /// once per emit regardless of consumer count.
     ///
     /// Calling `also_to_plugin_with` twice on the same channel is a
-    /// registration error (`BuildTopologyError::DuplicatePluginSink`);
+    /// registration error (`TopologyIssue::DuplicatePluginSink`);
     /// the first call wins.
     pub fn also_to_plugin_with<F>(self, plugin_name: &'static str, serializer: F) -> Self
     where
@@ -798,7 +798,7 @@ impl<'b, T: 'static + Send + Sync> ChannelDeclWithProducer<'b, T> {
         if entry.plugin_sink.is_some() {
             self.builder
                 .errors
-                .push(BuildTopologyError::DuplicatePluginSink {
+                .push(TopologyIssue::DuplicatePluginSink {
                     channel: entry.name,
                 });
             return self;

@@ -15,8 +15,9 @@ use flz_transport::utility::path_helper;
 use prost::Message;
 use serde::Serialize;
 
+use std::sync::RwLock;
+
 use super::ClientResponseMessage;
-use crate::operative::registry::class_factory_ids;
 use crate::pb::Ping;
 use crate::runner::RunnerMessage;
 use crate::util::nonce_suffix;
@@ -50,19 +51,25 @@ struct ControlInitMessage {
 /// Initial connection with retry and startup confirmation.
 pub fn open(
     namespace: String,
+    declared: Arc<RwLock<Vec<String>>>,
     itx: Arc<Mutex<Sender<ClientResponseMessage>>>,
     otx: Arc<Mutex<Sender<RunnerMessage>>>,
 ) -> ControlConn {
-    open_with_retry(namespace, Some(itx), otx)
+    open_with_retry(namespace, declared, Some(itx), otx)
 }
 
 /// Reconnection entry point — no startup confirmation sent.
-pub fn open_reconnect(namespace: String, otx: Arc<Mutex<Sender<RunnerMessage>>>) -> ControlConn {
-    open_with_retry(namespace, None, otx)
+pub fn open_reconnect(
+    namespace: String,
+    declared: Arc<RwLock<Vec<String>>>,
+    otx: Arc<Mutex<Sender<RunnerMessage>>>,
+) -> ControlConn {
+    open_with_retry(namespace, declared, None, otx)
 }
 
 fn open_with_retry(
     namespace: String,
+    declared: Arc<RwLock<Vec<String>>>,
     itx: Option<Arc<Mutex<Sender<ClientResponseMessage>>>>,
     otx: Arc<Mutex<Sender<RunnerMessage>>>,
 ) -> ControlConn {
@@ -70,7 +77,12 @@ fn open_with_retry(
     let max_backoff = Duration::from_secs(30);
 
     loop {
-        match try_open(namespace.clone(), itx.clone(), otx.clone()) {
+        match try_open(
+            namespace.clone(),
+            Arc::clone(&declared),
+            itx.clone(),
+            otx.clone(),
+        ) {
             Ok(result) => {
                 if attempt > 0 {
                     eprintln!("[flezha] Connected after {} attempts", attempt);
@@ -99,20 +111,22 @@ fn open_with_retry(
 
 fn try_open(
     namespace: String,
+    declared: Arc<RwLock<Vec<String>>>,
     itx: Option<Arc<Mutex<Sender<ClientResponseMessage>>>>,
     otx: Arc<Mutex<Sender<RunnerMessage>>>,
 ) -> Result<ControlConn, String> {
     match get_transport_type() {
         TransportType::Uds => {
-            let (handle, stream) = try_open_uds(namespace, itx, otx)?;
+            let (handle, stream) = try_open_uds(namespace, declared, itx, otx)?;
             Ok((handle, stream, None))
         }
-        TransportType::Quic => try_open_quic(namespace, itx, otx),
+        TransportType::Quic => try_open_quic(namespace, declared, itx, otx),
     }
 }
 
 fn try_open_uds(
     namespace: String,
+    declared: Arc<RwLock<Vec<String>>>,
     itx: Option<Arc<Mutex<Sender<ClientResponseMessage>>>>,
     otx: Arc<Mutex<Sender<RunnerMessage>>>,
 ) -> Result<(thread::JoinHandle<()>, Arc<FlezhaStream>), String> {
@@ -123,11 +137,12 @@ fn try_open_uds(
 
     let stream_box = Arc::new(FlezhaStream::Unix(stream));
 
-    Ok(sock_conn(namespace, stream_box, itx, otx))
+    Ok(sock_conn(namespace, declared, stream_box, itx, otx))
 }
 
 fn try_open_quic(
     namespace: String,
+    declared: Arc<RwLock<Vec<String>>>,
     itx: Option<Arc<Mutex<Sender<ClientResponseMessage>>>>,
     otx: Arc<Mutex<Sender<RunnerMessage>>>,
 ) -> Result<ControlConn, String> {
@@ -145,13 +160,14 @@ fn try_open_quic(
 
     let stream_box = Arc::new(FlezhaStream::Quic(control_stream));
 
-    let (handle, stream) = sock_conn(namespace, stream_box, itx, otx);
+    let (handle, stream) = sock_conn(namespace, declared, stream_box, itx, otx);
 
     Ok((handle, stream, Some(client)))
 }
 
 fn sock_conn(
     namespace: String,
+    declared: Arc<RwLock<Vec<String>>>,
     stream_box: Arc<FlezhaStream>,
     itx: Option<Arc<Mutex<Sender<ClientResponseMessage>>>>,
     otx: Arc<Mutex<Sender<RunnerMessage>>>,
@@ -170,7 +186,7 @@ fn sock_conn(
         // reconnect): the controller resolves a reconnect from the
         // always-present stable id + the existing bindings (a binding swap), so
         // there is no separate reconnect frame and no `itx`-gated behaviour.
-        if let Err(e) = send_init_msg(namespace, stream_clone.clone()) {
+        if let Err(e) = send_init_msg(namespace, &declared, stream_clone.clone()) {
             tracing::warn!(
                 target: "flezha::transport",
                 kind = ?e.kind(),
@@ -327,12 +343,15 @@ fn classify_reconnect_reason(e: &io::Error, acked: bool) -> &'static str {
     }
 }
 
-fn send_init_msg(namespace: String, stream_clone: Arc<FlezhaStream>) -> io::Result<()> {
-    let factory_ids: Vec<String> = class_factory_ids()
-        .iter()
-        .chain(crate::bounded::registry::bounded_factory_ids().iter())
-        .map(|s| s.to_string())
-        .collect();
+/// Serialize the runner's per-runner `declared` factory set into the connect
+/// init frame — read at write time, so every reconnect naturally resyncs
+/// post-start defines/removes (the init frame is the resync of record).
+fn send_init_msg(
+    namespace: String,
+    declared: &RwLock<Vec<String>>,
+    stream_clone: Arc<FlezhaStream>,
+) -> io::Result<()> {
+    let factory_ids: Vec<String> = declared.read().unwrap().clone();
     let factories: Vec<FactoryInfo> = factory_ids
         .iter()
         .map(|id| FactoryInfo {
@@ -448,6 +467,7 @@ mod tests {
 
         let _ = sock_conn(
             "test_ns".to_string(),
+            Arc::new(RwLock::new(vec!["probe".to_string()])),
             stream,
             Some(Arc::new(Mutex::new(itx))),
             Arc::new(Mutex::new(otx)),
@@ -498,6 +518,7 @@ mod tests {
 
         let _ = sock_conn(
             "test_ns".to_string(),
+            Arc::new(RwLock::new(vec!["probe".to_string()])),
             stream,
             Some(Arc::new(Mutex::new(itx))),
             Arc::new(Mutex::new(otx)),
@@ -547,6 +568,7 @@ mod tests {
         // Some(itx) marks this as an initial connect.
         let _ = sock_conn(
             "test_ns".to_string(),
+            Arc::new(RwLock::new(vec!["probe".to_string()])),
             stream,
             Some(Arc::new(Mutex::new(itx))),
             Arc::new(Mutex::new(otx)),
@@ -579,6 +601,7 @@ mod tests {
         // None marks this as a reconnect.
         let _ = sock_conn(
             "test_ns".to_string(),
+            Arc::new(RwLock::new(vec!["probe".to_string()])),
             stream,
             None,
             Arc::new(Mutex::new(otx)),

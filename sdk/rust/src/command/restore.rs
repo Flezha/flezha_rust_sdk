@@ -215,18 +215,7 @@ fn handoff_items(items: &[crate::pb::OpHandoffItem]) -> Vec<(u32, Vec<u8>)> {
 /// so a byte-equal match is exact. Returns a cloned `Arc` so the operative-registry
 /// locks are released before the (potentially slow) state rebuild.
 fn find_segment_slot(runner: &RunnerNode, segment_id: &[u8]) -> Option<Arc<SegmentSlot>> {
-    let view = runner.get_operatives();
-    let guard = match view.read() {
-        Ok(g) => g,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-
-    for inst_mutex in guard.values() {
-        let instance = match inst_mutex.lock() {
-            Ok(g) => Arc::clone(&g),
-            Err(poisoned) => Arc::clone(&poisoned.into_inner()),
-        };
-
+    for instance in runner.get_operatives().values() {
         for operation_segments in instance.segments.iter() {
             for slot in operation_segments.iter() {
                 if slot.segment_identity.as_slice() == segment_id {

@@ -15,11 +15,19 @@ lazy_static! {
         RwLock::new(HashMap::new());
 }
 
+/// Overwrite-on-insert: re-registering a factory id replaces its spec, so a
+/// restarted runner generation is idempotent rather than a collision.
 pub(crate) fn register_class(factory_id: &'static str, spec: BoundedSpec) {
     BOUNDED_CLASS_REGISTRY
         .write()
         .unwrap()
         .insert(factory_id, Arc::new(spec));
+}
+
+/// On-demand removal (`FlezhaRunner::remove_bounded`). Idempotent on an
+/// unknown id.
+pub(crate) fn unregister_class(factory_id: &str) {
+    BOUNDED_CLASS_REGISTRY.write().unwrap().remove(factory_id);
 }
 
 pub(crate) fn get_class(factory_id: &str) -> Option<Arc<BoundedSpec>> {
