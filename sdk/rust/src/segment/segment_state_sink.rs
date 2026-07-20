@@ -63,6 +63,14 @@ pub const COMPENSATION_DONE_PAYLOAD_ID: &str = "compensation_done";
 /// `ParkPayloadAck` control command once the entry is fsynced.
 pub const PARK_PAYLOAD_PAYLOAD_ID: &str = "park_payload";
 
+/// Data-stream payload-id for a per-Segment state snapshot (compaction,
+/// SDK → controller): the postcard-encoded `S::State` captured at a
+/// `change_seq` the Segment has reached, same frame layout as
+/// `segment_state_change`. The controller writes the snapshot file, truncates
+/// the WAL up to that seq, and clears the in-flight compaction. Rides the same
+/// reliable sink so a snapshot produced mid-reconnect is not lost.
+pub const SEGMENT_STATE_SNAPSHOT_PAYLOAD_ID: &str = "segment_state_snapshot";
+
 const ENV_RING_CAPACITY: &str = "FLEZHA_RECONNECT_RING_CAPACITY";
 const DEFAULT_RING_CAPACITY: usize = 1024;
 const ENV_FLOOD_THRESHOLD: &str = "FLEZHA_BROKEN_PIPE_RECONNECT_THRESHOLD";

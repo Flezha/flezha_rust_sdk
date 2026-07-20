@@ -435,6 +435,23 @@ pub trait OperationDispatcher: Send + Sync + 'static {
         change_log_bytes: &[u8],
         operation_key: Option<&str>,
     ) -> Result<u64, crate::segment::restore::RestoreError>;
+
+    /// Compaction: serialize the type-erased segment `state` into a
+    /// `segment_state_snapshot` wire frame the restore path decodes. Drains any
+    /// pending buffered changes first so the snapshot's state and its stamped
+    /// seq cannot tear (design D3): after the drain the in-memory state equals
+    /// the WAL the controller holds, and the frame is stamped with the highest
+    /// change seq the snapshot already contains — the controller keeps only WAL
+    /// records strictly above it. Returns `(frame, snapshot_seq, body_len)`.
+    /// Type-erased entry point so the control-channel `CompactSegment` handler
+    /// — which has no `S` — can produce a snapshot without the JSON migration
+    /// serializer. Mirrors `restore_state`; the body is postcard, the codec
+    /// `restore.rs` decodes.
+    fn snapshot_frame(
+        &self,
+        state: &mut Box<dyn Any + Send>,
+        flush_buffer: &mut Box<dyn flusher::FlushableBuffer>,
+    ) -> Result<(Vec<u8>, u64, usize), String>;
 }
 
 /// Forward to the section-2 dispatcher implementation.

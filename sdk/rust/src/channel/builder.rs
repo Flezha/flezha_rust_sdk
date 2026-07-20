@@ -80,6 +80,11 @@ pub(crate) struct OperationEntry {
     /// Drives the precedence rule in `resolve_mailbox_capacity`.
     pub mailbox_capacity_overridden: bool,
 
+    /// `Operation::compact_after_bytes()` captured at registration time. The
+    /// controller resolves the per-Segment WAL size compaction trigger from it,
+    /// shipped in the `AddOperative` response metadata.
+    pub compact_after_bytes: usize,
+
     /// Build a per-segment slot. The closure captures the Operation type
     /// statically so the segment mailbox carries `Arc<S::Input>` items
     /// and `Operation::run` is called with the typed signature.
@@ -596,6 +601,7 @@ impl BuilderState {
                 == std::any::TypeId::of::<crate::operation::NoChange>(),
             mailbox_capacity: S::mailbox_capacity(),
             mailbox_capacity_overridden: S::MAILBOX_CAPACITY_OVERRIDDEN,
+            compact_after_bytes: S::compact_after_bytes(),
             build_segment,
             segment_for_erased,
             operation_key_erased,

@@ -317,6 +317,7 @@ pub fn build_topology_with_persistence(
             output_type_id: entry.output_type_id,
             mailbox_capacity: resolved_capacity,
             mailbox_capacity_overridden: entry.mailbox_capacity_overridden,
+            compact_after_bytes: entry.compact_after_bytes,
             build_segment: entry.build_segment,
             segment_for_erased: entry.segment_for_erased,
             serialize_state: entry.serialize_state,

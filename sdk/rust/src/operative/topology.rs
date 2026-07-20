@@ -63,6 +63,10 @@ pub struct OperationDescriptor {
     /// Carried for diagnostics so a future tooling change can show which
     /// Operations opted into an explicit capacity.
     pub mailbox_capacity_overridden: bool,
+    /// `Operation::compact_after_bytes()` captured at registration time —
+    /// the per-Segment WAL size threshold the controller resolves for
+    /// compaction, announced in the `AddOperative` response metadata.
+    pub compact_after_bytes: usize,
     pub build_segment: SegmentBuilder,
     pub segment_for_erased: SegmentForFn,
     /// JSON-serialize a Segment's typed state via the per-Operation fn

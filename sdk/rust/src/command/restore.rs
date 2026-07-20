@@ -213,7 +213,10 @@ fn handoff_items(items: &[crate::pb::OpHandoffItem]) -> Vec<(u32, Vec<u8>)> {
 /// the controller uses for `segment_id` (`[rc_len][rc][sh_len][sh][pk_len][pk]`),
 /// so a byte-equal match is exact. Returns a cloned `Arc` so the operative-registry
 /// locks are released before the (potentially slow) state rebuild.
-fn find_segment_slot(runner: &RunnerNode, segment_id: &[u8]) -> Option<Arc<SegmentSlot>> {
+pub(crate) fn find_segment_slot(
+    runner: &RunnerNode,
+    segment_id: &[u8],
+) -> Option<Arc<SegmentSlot>> {
     for instance in runner.get_operatives().values() {
         for operation_segments in instance.segments.iter() {
             for slot in operation_segments.iter() {

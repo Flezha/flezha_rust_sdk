@@ -32,6 +32,12 @@ pub const DEFAULT_OPERATION_APPLY_CHANGE_PANIC_MESSAGE: &str =
      Implement `fn apply_change(state: &mut Self::State, change: &Self::Change)` to fold \
      the Change into the State deterministically.";
 
+/// Default per-Segment WAL size compaction threshold (8 MiB), in lockstep with
+/// the controller's `:default_compact_after_bytes`. The single source both the
+/// `Operation::compact_after_bytes` default and the `AddOperative` metadata
+/// "omit when equal to the default" check read.
+pub const DEFAULT_COMPACT_AFTER_BYTES: usize = 8 * 1024 * 1024;
+
 /// One Operation in an UnboundedOperative topology. Stateless dispatcher; per-segment
 /// State is held by the runtime and threaded through `run` via a
 /// [`StateHandle`].
@@ -141,7 +147,7 @@ pub trait Operation: Send + Sync + 'static + Default {
     /// driven per `operative-state-persistence-controller`. Default 8 MiB,
     /// in lockstep with the controller's `:default_compact_after_bytes`.
     fn compact_after_bytes() -> usize {
-        8 * 1024 * 1024
+        DEFAULT_COMPACT_AFTER_BYTES
     }
 
     /// Constructor from typed Config. Default invokes `Self::default()`,

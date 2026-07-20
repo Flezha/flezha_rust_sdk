@@ -135,6 +135,22 @@ fn metadata_response(kind: &str, factory_id: &str) -> Vec<u8> {
         if topology.ack_granularity == AckGranularity::Checkpoint {
             metadata.insert("ack_granularity".to_string(), "checkpoint".to_string());
         }
+
+        // The per-Segment WAL size compaction trigger. The controller resolves
+        // it per operative_class, so ship the most conservative (smallest)
+        // declared threshold across this operative's operations — only when it
+        // differs from the shared default, keeping an unchanged class's reply
+        // byte-identical.
+        if let Some(min_bytes) = topology
+            .operations
+            .iter()
+            .map(|op| op.compact_after_bytes)
+            .min()
+        {
+            if min_bytes != crate::operation::DEFAULT_COMPACT_AFTER_BYTES {
+                metadata.insert("compact_after_bytes".to_string(), min_bytes.to_string());
+            }
+        }
     }
 
     // The tree positions whose operation declares `compensate`. A rewind can

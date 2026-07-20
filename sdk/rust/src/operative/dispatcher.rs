@@ -742,6 +742,50 @@ impl<S: Operation> OperationDispatcher for OperationDispatcherImpl<S> {
         }
         Ok(terminal)
     }
+
+    fn snapshot_frame(
+        &self,
+        state: &mut Box<dyn Any + Send>,
+        flush_buffer: &mut Box<dyn FlushableBuffer>,
+    ) -> Result<(Vec<u8>, u64, usize), String> {
+        // Drain any buffered-but-unshipped changes FIRST, so the snapshot's
+        // state and its seq are captured together (design D3). After the drain
+        // the in-memory state equals the shipped WAL and `change_seq` is one
+        // past the last shipped record — so stamping the snapshot with
+        // `change_seq - 1` (the highest seq it already contains) lets the
+        // controller `truncate_up_to(seq)` — which keeps records STRICTLY above
+        // it — drop exactly the records the snapshot folds and no more.
+        crate::segment::flusher::flush_one(
+            &mut **flush_buffer,
+            &self.flush.segment_identity,
+            &self.flush.change_seq,
+            &self.flush.header,
+            self.flush.persistence_enabled,
+        );
+
+        let typed = state
+            .downcast_ref::<SegmentState<S>>()
+            .ok_or_else(|| "snapshot_frame: state type mismatch for operation".to_string())?;
+        // Postcard — the codec `segment/restore.rs` decodes — NOT the JSON
+        // migration serializer `build_state_fns` produces.
+        let body = postcard::to_allocvec(&typed.state)
+            .map_err(|e| format!("snapshot_frame: postcard state encode failed: {e}"))?;
+
+        let seq = self
+            .flush
+            .change_seq
+            .load(Ordering::Acquire)
+            .saturating_sub(1);
+        let header = self.flush.header.stamp(&body);
+        let frame = crate::segment::flusher::build_segment_frame(
+            &self.flush.segment_identity,
+            seq,
+            &header,
+            &body,
+        );
+        let size = body.len();
+        Ok((frame, seq, size))
+    }
 }
 
 /// Synchronous drain of the producing segment's pending changes onto
@@ -1902,5 +1946,102 @@ mod tests {
         assert_eq!(captured[0].channel, "out");
         assert_eq!(captured[0].key, "BTC/1m");
         assert_eq!(captured[0].payload, b"v".to_vec());
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize)]
+    struct AddChange(i64);
+    impl crate::operation::change::Change for AddChange {}
+
+    #[derive(Default)]
+    struct CounterOp;
+    impl Operation for CounterOp {
+        type Input = String;
+        type Output = String;
+        type State = i64;
+        type Change = AddChange;
+        type Clock = crate::operation::WallClock;
+        type Config = ();
+        fn name() -> &'static str {
+            "snapshot_counter_op"
+        }
+        fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> i64 {
+            0
+        }
+        fn apply_change(state: &mut i64, change: &AddChange) {
+            *state += change.0;
+        }
+        fn run(
+            &mut self,
+            _: String,
+            _: StateHandle<'_, Self>,
+            _: &mut OperationCtx<'_>,
+        ) -> Result<(), OperationError> {
+            Ok(())
+        }
+    }
+
+    /// A snapshot produced by `snapshot_frame` here decodes, through the exact
+    /// restore path, back to the state the Segment held (task 2.6). Stamps the
+    /// highest seq the snapshot already contains (`change_seq - 1`), so the
+    /// controller's `truncate_up_to` — which keeps records strictly above it —
+    /// drops exactly what the snapshot folds.
+    #[test]
+    fn snapshot_frame_round_trips_through_restore() {
+        use crate::segment::restore::init_segment_with_payload;
+
+        let dispatcher = OperationDispatcherImpl::<CounterOp>::new(
+            0,
+            None,
+            ChannelKind::InterOperation,
+            None,
+            false,
+            None,
+            RetryPolicy::default(),
+            Arc::from("inst/op/"),
+            FlushWiring {
+                segment_identity: Arc::new(encode_segment_identity("inst", "op", "")),
+                change_seq: Arc::new(AtomicU64::new(3)),
+                header: HeaderTemplate::for_operation::<CounterOp>(),
+                persistence_enabled: false,
+                effectively_once: false,
+                checkpoint_ack: false,
+                correction: None,
+                event_time_high_water: Arc::new(AtomicI64::new(-1)),
+            },
+        );
+
+        let mut state: Box<dyn Any + Send> = Box::new(SegmentState::<CounterOp> {
+            operation: CounterOp,
+            state: 115i64,
+        });
+        let mut buffer: Box<dyn FlushableBuffer> = Box::new(TypedBuffer::<CounterOp>::default());
+
+        let (frame, seq, size) = dispatcher
+            .snapshot_frame(&mut state, &mut buffer)
+            .expect("snapshot_frame must succeed for a live-typed state");
+        assert_eq!(
+            seq, 2,
+            "change_seq 3 - 1 = the highest seq the snapshot folds"
+        );
+
+        // Extract the postcard body (header-less, exactly what the controller
+        // ships back as RestoreInitState.snapshot_bytes) from the wire frame.
+        let pid_len = u16::from_be_bytes([frame[0], frame[1]]) as usize;
+        let body_len_off = 2 + pid_len + 8 + 16;
+        let body_len =
+            u32::from_be_bytes(frame[body_len_off..body_len_off + 4].try_into().unwrap()) as usize;
+        let body = &frame[body_len_off + 4..body_len_off + 4 + body_len];
+        assert_eq!(size, body.len(), "reported byte size is the body length");
+
+        let payload = RestoreInitPayload {
+            snapshot_bytes: body,
+            change_log_bytes: &[],
+        };
+        let restored = init_segment_with_payload::<CounterOp>(None, Some(&payload))
+            .expect("the snapshot body must decode through the restore path");
+        assert_eq!(
+            restored, 115,
+            "snapshot round-trips back to the original state"
+        );
     }
 }
