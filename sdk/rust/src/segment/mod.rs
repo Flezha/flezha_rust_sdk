@@ -41,6 +41,7 @@ pub use restore::{RestoreError, RestoreInitPayload};
 use crate::channel::OperationId;
 use crate::runner::mailbox::Mailbox;
 use crate::runner::work_stealing_pool::WorkStealingPool;
+use crate::util::LockRecover;
 
 /// Erased payload moving through the inter-operation mailbox. The `value`
 /// is `Arc<dyn Any + Send + Sync>` (the consumer downcasts to its own
@@ -213,12 +214,22 @@ pub static DISPATCHES_COMPLETED: AtomicU64 = AtomicU64::new(0);
 /// metadata; a climbing value flags sustained backpressure.
 pub static BLOCKED_PARK_EPISODES: AtomicU64 = AtomicU64::new(0);
 
+/// Process-global count of queued inputs a restore discarded. Also shipped in
+/// heartbeat metadata: a discard is correct only where the controller
+/// re-forwards from a durable log, so a climbing value is the operator's one
+/// handle on how much a rebind threw away.
+pub static RESTORE_DISCARDED_INPUTS: AtomicU64 = AtomicU64::new(0);
+
 pub fn dispatches_completed() -> u64 {
     DISPATCHES_COMPLETED.load(Ordering::Relaxed)
 }
 
 pub fn blocked_park_episodes() -> u64 {
     BLOCKED_PARK_EPISODES.load(Ordering::Relaxed)
+}
+
+pub fn restore_discarded_inputs() -> u64 {
+    RESTORE_DISCARDED_INPUTS.load(Ordering::Relaxed)
 }
 
 pub struct SegmentSlot {
@@ -316,6 +327,45 @@ impl SegmentSlot {
     pub fn counters(&self) -> &SegmentCounters {
         self.mailbox.counters()
     }
+
+    /// Drop an open checkpoint interval's staged changes. A restore re-seats
+    /// the Segment on a past in which they were never applied, and the
+    /// controller re-forwards the inputs that produced them.
+    pub fn discard_staged_interval(&self) {
+        self.flush_buffer.lock_recover().discard_staged();
+    }
+
+    /// Drop a half-filled correction slice: it belongs to a past the restore
+    /// replaced, and releasing it later would order its inputs behind the very
+    /// replay meant to re-order them. Unlike the mailbox this applies to every
+    /// class — a slice only ever exists for one the controller re-forwards.
+    pub fn discard_replay_slice(&self) {
+        self.replay_buffer.lock_recover().clear();
+        self.replay_depth.store(0, Ordering::Relaxed);
+        self.replay_open.store(false, Ordering::Release);
+    }
+
+    /// Restore-time disposition of queued input: drop it only where the
+    /// controller will hand it back. It journals inputs before forwarding for
+    /// the effectively-once tier (input log) and for durable bounded instances
+    /// (op inbox), and for nothing else — so a plain stateful Operative's
+    /// mailbox is the only copy its input has, and clearing it is data loss.
+    /// Where the log does exist, keeping the queue would double-apply it and,
+    /// during a correction, re-order it behind the replayed slice.
+    ///
+    /// A bounded Segment reaches this too, and is inert: its driver feeds
+    /// stages directly, so the mailbox is never pushed to.
+    ///
+    /// Returns the number of items discarded, counted into
+    /// [`RESTORE_DISCARDED_INPUTS`].
+    pub fn discard_queued_input_on_restore(&self) -> usize {
+        if !self.topology.effectively_once {
+            return 0;
+        }
+        let discarded = self.mailbox.clear();
+        RESTORE_DISCARDED_INPUTS.fetch_add(discarded as u64, Ordering::Relaxed);
+        discarded
+    }
 }
 
 pub trait OperationDispatcher: Send + Sync + 'static {
@@ -328,6 +378,10 @@ pub trait OperationDispatcher: Send + Sync + 'static {
     );
 
     fn operation_id(&self) -> OperationId;
+
+    /// This Segment's readable `instance/operation/key` identity — the same
+    /// string the `flz.segment` stamp carries, built once at construction.
+    fn segment_label(&self) -> &str;
 
     /// The payload's event time, or `None` when this Operation's clock is not
     /// `EventTimeFrom` — i.e. when there is no event time to order by.

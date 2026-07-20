@@ -218,14 +218,21 @@ impl<Payload: Send + 'static> Mailbox<Payload> {
         self.queue.pop()
     }
 
-    /// Discard every queued item, unparking any producers waiting on space.
+    /// Discard every queued item, returning how many were dropped.
     ///
-    /// Used by the restore path: a Segment re-seated on a rewound or recovered
-    /// past has queued inputs that belong to a state which no longer exists,
-    /// and every one of them is durable in the input log the controller is
-    /// about to re-forward.
-    pub fn clear(&self) {
-        while self.queue.pop().is_some() {}
+    /// Used by the restore path, and only for a class whose inputs the
+    /// controller journals before forwarding — it re-forwards them, so the
+    /// queue is a subset of the durable log. A journal-less class's queue is
+    /// the only copy of its input; see
+    /// [`SegmentSlot::discard_queued_input_on_restore`].
+    ///
+    /// [`SegmentSlot::discard_queued_input_on_restore`]: crate::segment::SegmentSlot::discard_queued_input_on_restore
+    pub fn clear(&self) -> usize {
+        let mut discarded = 0;
+        while self.queue.pop().is_some() {
+            discarded += 1;
+        }
+        discarded
     }
 }
 

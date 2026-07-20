@@ -2334,3 +2334,55 @@ fn a_restore_discards_the_open_interval() {
         "a restore must drop the open interval"
     );
 }
+
+/// Spec "Journaled input may be discarded" / "Un-journaled input is not
+/// silently destroyed": the restore-time mailbox clear is conditional on the
+/// controller re-forwarding what it drops. It journals inputs before
+/// forwarding for the effectively-once tier and for nothing else, so a plain
+/// stateful class's queue is the only copy its input has.
+#[test]
+fn a_restore_discards_queued_input_only_where_the_controller_re_forwards_it() {
+    use flezha_runner::segment::{make_segment_payload, restore_discarded_inputs};
+
+    let (_tier_handle, tier) = setup::<TierOperative>("restore-mailbox-tier", 1);
+    let (_plain_handle, plain) = setup::<KeyedStampOperative>("restore-mailbox-plain", 1);
+    let (stream, _observer) = stream_pair();
+
+    for instance in [&tier, &plain] {
+        let value: Arc<dyn std::any::Any + Send + Sync> = Arc::new("queued".to_string());
+        assert!(
+            instance.segments[0][0]
+                .mailbox
+                .try_push(make_segment_payload(&value, &stream, None, false))
+                .is_ok(),
+            "mailbox has room"
+        );
+    }
+
+    let before = restore_discarded_inputs();
+    let tier_discarded = tier.segments[0][0].discard_queued_input_on_restore();
+    let plain_discarded = plain.segments[0][0].discard_queued_input_on_restore();
+
+    assert_eq!(
+        tier_discarded, 1,
+        "a tier input is durable in the input log the controller re-forwards; \
+         keeping it would double-apply it"
+    );
+    assert!(
+        tier.segments[0][0].mailbox.is_empty(),
+        "the tier mailbox must be drained"
+    );
+    assert_eq!(
+        plain_discarded, 0,
+        "a journal-less class's queued input exists nowhere else — dropping it is data loss"
+    );
+    assert!(
+        !plain.segments[0][0].mailbox.is_empty(),
+        "the journal-less mailbox must survive the restore"
+    );
+    assert_eq!(
+        restore_discarded_inputs() - before,
+        1,
+        "every discard must be counted, or the loss leaves no trace"
+    );
+}

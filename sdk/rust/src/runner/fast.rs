@@ -448,6 +448,10 @@ fn send_data_heartbeat(io_streams: &RwLock<HashMap<u32, FlezhaStream>>) {
         "credit_parked".to_string(),
         crate::segment::credit::credit_parked().to_string(),
     );
+    metadata.insert(
+        "restore_discarded_inputs".to_string(),
+        crate::segment::restore_discarded_inputs().to_string(),
+    );
     let frame = payloader::build_from_binary(liveness::DATA_HEARTBEAT_PAYLOAD_ID, &[], metadata);
     let streams = io_streams.read().unwrap();
     for stream in streams.values() {

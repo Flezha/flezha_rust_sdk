@@ -22,7 +22,6 @@ use crate::pb::{RestoreInitState, RestoreInitStateResponse};
 use crate::runner::RunnerNode;
 use crate::segment::restore::iter_change_log_records;
 use crate::segment::SegmentSlot;
-use crate::util::LockRecover;
 
 impl CommandAction for RestoreInitState {
     fn handle(
@@ -119,23 +118,23 @@ fn restore_into_slot(
             slot.change_seq.store(t + 1, Ordering::Release);
 
             // A restore re-seats the Segment on a different past — the crash's,
-            // or (for a correction) a deliberately rewound one. Anything the
-            // old past left in flight belongs to a state that no longer exists:
-            // the mailbox holds inputs the controller is about to re-forward
-            // from the durable log anyway (every tier input is journaled before
-            // it is forwarded, so the log is a superset of the mailbox), and a
-            // half-filled replay buffer belongs to a slice that was abandoned.
-            // Keeping either would double-apply them, and — worse — apply them
-            // *after* the replayed slice in arrival order, reintroducing the
-            // exact mis-ordering a correction exists to repair. An open
-            // checkpoint interval is the same story: its changes were never
-            // acknowledged, so the restored state does not contain them and
-            // the re-forwarded inputs will produce them again.
-            slot.mailbox.clear();
-            slot.replay_buffer.lock_recover().clear();
-            slot.replay_depth.store(0, Ordering::Relaxed);
-            slot.replay_open.store(false, Ordering::Release);
-            slot.flush_buffer.lock_recover().discard_staged();
+            // or (for a correction) a deliberately rewound one. An open
+            // checkpoint interval's changes were never acknowledged, so the
+            // restored state does not contain them and the re-forwarded inputs
+            // produce them again; a half-filled replay buffer belongs to a
+            // slice that was abandoned. Both go, on every class.
+            slot.discard_staged_interval();
+            slot.discard_replay_slice();
+            // The mailbox goes only where the controller re-forwards it; the
+            // slot owns that rule.
+            let discarded = slot.discard_queued_input_on_restore();
+            if discarded > 0 {
+                eprintln!(
+                    "[flezha] restore discarded {discarded} queued input(s) for segment {} \
+                     — the controller re-forwards them from the durable input log",
+                    slot.dispatcher.segment_label()
+                );
+            }
 
             let cursors = restore_cursors(&cmd.change_log_bytes);
             // Effectively-once: remember the highest input-log offset the

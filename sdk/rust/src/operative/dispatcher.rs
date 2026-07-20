@@ -540,6 +540,10 @@ impl<S: Operation> OperationDispatcher for OperationDispatcherImpl<S> {
         self.operation_id
     }
 
+    fn segment_label(&self) -> &str {
+        &self.segment_label
+    }
+
     fn event_time_of(&self, payload: &SegmentPayload) -> Option<u64> {
         if !<S::Clock as crate::operation::Clock>::IS_EVENT_TIME {
             return None;
