@@ -45,6 +45,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .define_bounded::<OutboxBlockBounded>()?
         .define_bounded::<UndoOutboxBounded>()?
         .define_bounded::<ChatLoopBounded>()?
+        .define_bounded::<StatelessLoopBounded>()?
         .define_bounded::<ChatRewindBounded>()?
         .define_bounded::<RetryBounded>()?
         .define_bounded::<BranchBounded>()?
@@ -790,6 +791,39 @@ impl Operation for ChatReply {
         ctx: &mut OperationCtx<'_>,
     ) -> Result<(), OperationError> {
         ctx.emit::<String>(format!("reply:{input}"))
+    }
+}
+
+// -- StatelessLoopBounded -------------------------------------------------------
+//
+// The same durable PER_INPUT loop as `ChatLoopBounded`, minus its stateful
+// first operation: `ChatReply` alone holds NO per-Segment state, so nothing
+// writes a Segment WAL, the controller has nothing to restore, and it ships no
+// `RestoreInitState` on a rehydrating bind. The instance's op-journal therefore
+// reaches the driver only if it rides the bind itself — deliver it on the
+// restore frame and every turn after the first commits at iteration 0 again,
+// collides with iteration 0's `outbox_flushed` marker, and has its staged
+// output journaled but never delivered.
+
+struct StatelessLoopBounded;
+impl BoundedOperative for StatelessLoopBounded {
+    fn factory_id() -> &'static str {
+        "stateless_loop_bounded"
+    }
+    fn loop_mode() -> LoopMode {
+        LoopMode::PerInput
+    }
+    fn self_terminating() -> bool {
+        false
+    }
+    fn max_duration() -> Option<Duration> {
+        Some(Duration::from_secs(600))
+    }
+    fn operations(c: &ChannelBuilder) {
+        c.input::<String>("in")
+            .into::<ChatReply>()
+            .named("out")
+            .output("chat_sink");
     }
 }
 

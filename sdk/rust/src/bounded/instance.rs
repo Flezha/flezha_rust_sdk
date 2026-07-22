@@ -34,6 +34,23 @@ fn marker_set(set: &Mutex<HashSet<Vec<u8>>>) -> std::sync::MutexGuard<'_, HashSe
     set.lock().unwrap_or_else(|p| p.into_inner())
 }
 
+/// One journaled forward op commit in the driver's form.
+fn committed_op(op: &crate::pb::OpCommittedOp) -> CommittedOp {
+    CommittedOp {
+        op_idx: op.op_idx,
+        iter: op.iter,
+        segments_ran: op.segments_ran.clone(),
+    }
+}
+
+/// A journaled handoff batch as the driver's seed form: channel-id-tagged bytes.
+fn handoff_items(items: &[crate::pb::OpHandoffItem]) -> Vec<(u32, Vec<u8>)> {
+    items
+        .iter()
+        .map(|item| (item.channel_id, item.payload.clone()))
+        .collect()
+}
+
 /// One post-start input delivered to a running bounded instance: the payload
 /// plus the durable-inbox offset the controller assigned it
 /// (`bounded-durable-suspension`). `offset` is `0` when the input was not
@@ -72,12 +89,14 @@ pub struct BoundedInstance {
     /// Segment identities whose compensation already ran before the crash
     /// (`RestoreInitState.has_compensation_done`) — skipped on resume.
     compensation_done: Mutex<HashSet<Vec<u8>>>,
-    /// Committed op-journal state shipped back via `RestoreInitState.op_journal`
-    /// on crash-resume (`bounded-op-journal`). `Some` ⇒ the driver skips the
-    /// journaled operations and seeds the first uncommitted one from the
-    /// handoff. Every restore frame of the bind carries the same state, so
-    /// repeated notes are idempotent overwrites.
-    op_journal: Mutex<Option<JournalResume>>,
+    /// Committed op-journal state shipped back via `AddOperative.op_journal`
+    /// on crash-resume (`bounded-op-journal`). `Some` ⇒ the driver enters the
+    /// journaled iteration, skips the operations committed in it, and seeds the
+    /// first uncommitted one from the handoff. It is instance-scoped, so it
+    /// rides the bind rather than a per-Segment restore — a class with no
+    /// per-Segment state gets no restore. Set at construction, so it needs no
+    /// interior mutability and is readable without a lock.
+    op_journal: Option<JournalResume>,
 }
 
 /// Committed op-journal state for one crash-resume. `iter` is the iteration to
@@ -125,14 +144,37 @@ pub struct CommittedOp {
     pub segments_ran: Vec<Vec<u8>>,
 }
 
+impl From<&crate::pb::OpJournalState> for JournalResume {
+    fn from(journal: &crate::pb::OpJournalState) -> Self {
+        Self {
+            committed_op_idxs: journal.committed_op_idxs.clone(),
+            iter: journal.iter,
+            handoff: handoff_items(&journal.handoff),
+            op_handoffs: journal
+                .op_handoffs
+                .iter()
+                .map(|edge| EdgeHandoff {
+                    op_idx: edge.op_idx,
+                    handoff: handoff_items(&edge.handoff),
+                })
+                .collect(),
+            committed_ops: journal.committed_ops.iter().map(committed_op).collect(),
+            consumed_offset: journal.consumed_offset,
+            rewind_undo: journal.rewind_undo.iter().map(committed_op).collect(),
+        }
+    }
+}
+
 impl BoundedInstance {
     /// Build the instance and return the driver's inbox `Receiver`. `expected`
-    /// is the crash-resume restore count (0 for fresh / run-sugar / opted-out).
+    /// is the crash-resume restore count (0 for fresh / run-sugar / opted-out)
+    /// and `op_journal` the resume state the bind carried (`None` when fresh).
     pub fn new(
         instance_id: Arc<str>,
         factory_id: Arc<str>,
         stage_segments: Vec<Vec<Arc<SegmentSlot>>>,
         expected: usize,
+        op_journal: Option<JournalResume>,
     ) -> (Arc<Self>, Receiver<InboxItem>) {
         let (inbox_tx, inbox_rx) = unbounded();
         let instance = Arc::new(Self {
@@ -146,24 +188,14 @@ impl BoundedInstance {
             restored_cv: Condvar::new(),
             compensation_intents: Mutex::new(HashSet::new()),
             compensation_done: Mutex::new(HashSet::new()),
-            op_journal: Mutex::new(None),
+            op_journal,
         });
         (instance, inbox_rx)
     }
 
-    /// Record the shipped-back op-journal state (crash-resume). Overwrites —
-    /// every restore frame of one bind carries the same snapshot.
-    pub fn note_op_journal(&self, resume: JournalResume) {
-        *self.op_journal.lock().unwrap_or_else(|p| p.into_inner()) = Some(resume);
-    }
-
-    /// The shipped-back op-journal state, if any. Cloned so the driver reads
-    /// it without holding the lock across the chain run.
+    /// The op-journal state the bind carried, if any.
     pub fn op_journal_resume(&self) -> Option<JournalResume> {
-        self.op_journal
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .clone()
+        self.op_journal.clone()
     }
 
     /// Whether any Segment's compensation-done marker was shipped back — the
@@ -272,6 +304,7 @@ mod tests {
             Arc::from("gate-factory"),
             Vec::new(),
             expected,
+            None,
         )
         .0
     }

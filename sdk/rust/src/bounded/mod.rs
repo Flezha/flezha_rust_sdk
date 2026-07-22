@@ -1993,6 +1993,7 @@ mod tests {
             Arc::from("t1-factory"),
             Vec::new(),
             0,
+            None,
         );
         reg.register_bounded(instance);
 
@@ -2646,6 +2647,7 @@ mod tests {
             init_values: "argz".into(),
             kind: "bounded".into(),
             resume_segment_count: 0,
+            op_journal: None,
         };
         let mut errors = Vec::new();
         add.handle(&mut node, "", &mut errors);
@@ -2664,6 +2666,7 @@ mod tests {
             init_values: "".into(),
             kind: "bounded".into(),
             resume_segment_count: 0,
+            op_journal: None,
         };
         let mut errors_bad = Vec::new();
         add_bad.handle(&mut node, "", &mut errors_bad);
@@ -2677,6 +2680,7 @@ mod tests {
             init_values: "".into(),
             kind: "continuous".into(),
             resume_segment_count: 0,
+            op_journal: None,
         };
         let mut errors_unknown = Vec::new();
         add_unknown.handle(&mut node, "", &mut errors_unknown);
@@ -2723,6 +2727,7 @@ mod tests {
             "resume-inst".into(),
             "a,bb".into(),
             1,
+            None,
         ));
         // The bounded Segments are now reachable by wire identity — the restore
         // handler could not see them before this change (the unbounded lookup
@@ -2955,6 +2960,7 @@ mod tests {
             "resume-saga".into(),
             "x".into(),
             1,
+            None,
         ));
         let a_id =
             crate::segment::flusher::encode_segment_identity("resume-saga", "resume_undo_a", "");
@@ -3038,23 +3044,14 @@ mod tests {
         // fresh producer — the committed branch never re-runs, and the join
         // accumulates B's JOURNALED handoff with C's fresh output ---
         let _ = drain_diamond_log();
-        assert!(node.start_bounded_resumable(
-            "test-diamond-bounded".into(),
-            "diamond-r".into(),
-            "x".into(),
-            1,
-        ));
         let da_id = crate::segment::flusher::encode_segment_identity("diamond-r", "diamond_a", "");
-        let (diamond_inst, _slot) = node
-            .find_bounded_segment(&da_id)
-            .expect("a durable diamond Segment is reachable by the restore handler");
         let diamond_spec =
             registry::get_class("test-diamond-bounded").expect("diamond class registered");
         let diamond_topo = diamond_spec.topology.as_ref().expect("structured");
         let d_fan = diamond_topo.lookup_channel_id("d_fan").unwrap();
         let d_b = diamond_topo.lookup_channel_id("d_b").unwrap();
         let enc = |s: &str| postcard::to_allocvec(&s.to_string()).unwrap();
-        diamond_inst.note_op_journal(instance::JournalResume {
+        let diamond_journal = instance::JournalResume {
             committed_op_idxs: vec![0, 1],
             op_handoffs: vec![
                 instance::EdgeHandoff {
@@ -3079,7 +3076,17 @@ mod tests {
                 },
             ],
             ..Default::default()
-        });
+        };
+        assert!(node.start_bounded_resumable(
+            "test-diamond-bounded".into(),
+            "diamond-r".into(),
+            "x".into(),
+            1,
+            Some(diamond_journal),
+        ));
+        let (diamond_inst, _slot) = node
+            .find_bounded_segment(&da_id)
+            .expect("a durable diamond Segment is reachable by the restore handler");
         diamond_inst.note_restored();
         let (outs, done) = drain(&rx, "diamond-r");
         assert_eq!(done.0, "ok");
@@ -3185,34 +3192,34 @@ mod tests {
 
         // --- resume-at-iteration: a journal recording iterations 0-1 committed
         // enters iteration 2 — the committed turns never re-run ---
+        let s1_id =
+            crate::segment::flusher::encode_segment_identity("chat-2", "bounded_stage1", "");
         assert!(node.start_bounded_resumable(
             "test-chat-loop".into(),
             "chat-2".into(),
             "ignored".into(),
             1,
+            Some(instance::JournalResume {
+                iter: 2,
+                consumed_offset: 7,
+                committed_ops: vec![
+                    instance::CommittedOp {
+                        op_idx: 0,
+                        iter: 0,
+                        segments_ran: vec![s1_id.clone()],
+                    },
+                    instance::CommittedOp {
+                        op_idx: 1,
+                        iter: 0,
+                        segments_ran: Vec::new(),
+                    },
+                ],
+                ..Default::default()
+            }),
         ));
-        let s1_id =
-            crate::segment::flusher::encode_segment_identity("chat-2", "bounded_stage1", "");
         let (chat2, _slot) = node
             .find_bounded_segment(&s1_id)
             .expect("the loop's Segment is reachable by the restore handler");
-        chat2.note_op_journal(instance::JournalResume {
-            iter: 2,
-            consumed_offset: 7,
-            committed_ops: vec![
-                instance::CommittedOp {
-                    op_idx: 0,
-                    iter: 0,
-                    segments_ran: vec![s1_id.clone()],
-                },
-                instance::CommittedOp {
-                    op_idx: 1,
-                    iter: 0,
-                    segments_ran: Vec::new(),
-                },
-            ],
-            ..Default::default()
-        });
         chat2.note_restored();
         assert!(chat2.push_inbox(b"third".to_vec(), 9));
 
@@ -3252,29 +3259,34 @@ mod tests {
             ),
         ] {
             let _ = drain_comp_log();
-            assert!(node.start_bounded_resumable(factory.into(), id.into(), "ignored".into(), 1));
             let seg = crate::segment::flusher::encode_segment_identity(id, "loop_reserve", "");
+            // Journal: iteration 0 committed both of its operations.
+            assert!(node.start_bounded_resumable(
+                factory.into(),
+                id.into(),
+                "ignored".into(),
+                1,
+                Some(instance::JournalResume {
+                    iter: 1,
+                    consumed_offset: 2,
+                    committed_ops: vec![
+                        instance::CommittedOp {
+                            op_idx: 0,
+                            iter: 0,
+                            segments_ran: vec![seg.clone()],
+                        },
+                        instance::CommittedOp {
+                            op_idx: 1,
+                            iter: 0,
+                            segments_ran: Vec::new(),
+                        },
+                    ],
+                    ..Default::default()
+                }),
+            ));
             let (inst, _slot) = node
                 .find_bounded_segment(&seg)
                 .expect("the loop saga's Segment is reachable by the restore handler");
-            // Journal: iteration 0 committed both of its operations.
-            inst.note_op_journal(instance::JournalResume {
-                iter: 1,
-                consumed_offset: 2,
-                committed_ops: vec![
-                    instance::CommittedOp {
-                        op_idx: 0,
-                        iter: 0,
-                        segments_ran: vec![seg.clone()],
-                    },
-                    instance::CommittedOp {
-                        op_idx: 1,
-                        iter: 0,
-                        segments_ran: Vec::new(),
-                    },
-                ],
-                ..Default::default()
-            });
             inst.note_restored();
             assert!(inst.push_inbox(b"boom".to_vec(), 5));
 
@@ -3296,16 +3308,7 @@ mod tests {
         // definition, so the undo must be forced all-or-nothing whatever the
         // class's crash rollback mode says.
         let id = "loop-rewind";
-        assert!(node.start_bounded_resumable(
-            "test-loop-saga-keep".into(),
-            id.into(),
-            "ignored".into(),
-            1
-        ));
         let seg = crate::segment::flusher::encode_segment_identity(id, "loop_reserve", "");
-        let (inst, _slot) = node
-            .find_bounded_segment(&seg)
-            .expect("the loop saga's Segment is reachable by the restore handler");
         // Rewound to iteration 0: iteration 0 stays committed, iterations 1 and 2
         // are outstanding undo, and the loop resumes at 1.
         let undo_op = |op_idx: u32, iter: u32, segments_ran: Vec<Vec<u8>>| instance::CommittedOp {
@@ -3313,18 +3316,27 @@ mod tests {
             iter,
             segments_ran,
         };
-        inst.note_op_journal(instance::JournalResume {
-            iter: 1,
-            consumed_offset: 1,
-            committed_ops: vec![undo_op(0, 0, vec![seg.clone()]), undo_op(1, 0, Vec::new())],
-            rewind_undo: vec![
-                undo_op(0, 1, vec![seg.clone()]),
-                undo_op(1, 1, Vec::new()),
-                undo_op(0, 2, vec![seg.clone()]),
-                undo_op(1, 2, Vec::new()),
-            ],
-            ..Default::default()
-        });
+        assert!(node.start_bounded_resumable(
+            "test-loop-saga-keep".into(),
+            id.into(),
+            "ignored".into(),
+            1,
+            Some(instance::JournalResume {
+                iter: 1,
+                consumed_offset: 1,
+                committed_ops: vec![undo_op(0, 0, vec![seg.clone()]), undo_op(1, 0, Vec::new())],
+                rewind_undo: vec![
+                    undo_op(0, 1, vec![seg.clone()]),
+                    undo_op(1, 1, Vec::new()),
+                    undo_op(0, 2, vec![seg.clone()]),
+                    undo_op(1, 2, Vec::new()),
+                ],
+                ..Default::default()
+            }),
+        ));
+        let (inst, _slot) = node
+            .find_bounded_segment(&seg)
+            .expect("the loop saga's Segment is reachable by the restore handler");
         inst.note_restored();
         // The resumed turn fails, so the run reaches a terminal state (the fake
         // controller must stay in `drain` to ack the undo commits).
@@ -3508,37 +3520,37 @@ mod tests {
         // only C re-runs — seeded from A's journaled edge, not from B's ---
         let _ = drain_op_commits();
         let id = "tree-resume";
+        let root_seg = crate::segment::flusher::encode_segment_identity(id, "bounded_stage1", "");
+        // Channel ids follow declaration order: `in` = 0, `mid` = 1.
         assert!(node.start_bounded_resumable(
             "test-tree-bounded".into(),
             id.into(),
             "ignored-args".into(),
             1,
+            Some(instance::JournalResume {
+                committed_op_idxs: vec![0, 1],
+                op_handoffs: vec![instance::EdgeHandoff {
+                    op_idx: 0,
+                    handoff: vec![(1, postcard::to_allocvec(&"resumed-1".to_string()).unwrap())],
+                }],
+                committed_ops: vec![
+                    instance::CommittedOp {
+                        op_idx: 0,
+                        iter: 0,
+                        segments_ran: vec![root_seg.clone()],
+                    },
+                    instance::CommittedOp {
+                        op_idx: 1,
+                        iter: 0,
+                        segments_ran: Vec::new(),
+                    },
+                ],
+                ..Default::default()
+            }),
         ));
-        let root_seg = crate::segment::flusher::encode_segment_identity(id, "bounded_stage1", "");
         let (inst, _slot) = node
             .find_bounded_segment(&root_seg)
             .expect("the tree's root Segment is reachable by the restore handler");
-        // Channel ids follow declaration order: `in` = 0, `mid` = 1.
-        inst.note_op_journal(instance::JournalResume {
-            committed_op_idxs: vec![0, 1],
-            op_handoffs: vec![instance::EdgeHandoff {
-                op_idx: 0,
-                handoff: vec![(1, postcard::to_allocvec(&"resumed-1".to_string()).unwrap())],
-            }],
-            committed_ops: vec![
-                instance::CommittedOp {
-                    op_idx: 0,
-                    iter: 0,
-                    segments_ran: vec![root_seg.clone()],
-                },
-                instance::CommittedOp {
-                    op_idx: 1,
-                    iter: 0,
-                    segments_ran: Vec::new(),
-                },
-            ],
-            ..Default::default()
-        });
         inst.note_restored();
         let (outs, done) = drain(&rx, id);
         assert_eq!(done.0, "ok");
@@ -3574,9 +3586,9 @@ mod tests {
         );
     }
 
-    /// Respawn `test-chain-bounded` as a crash-resume carrying `journal`
-    /// (exactly what the RestoreInitState handler would note), release the
-    /// restore gate, and drain it to completion.
+    /// Respawn `test-chain-bounded` as a crash-resume carrying `journal` on the
+    /// bind (exactly what the AddOperative handler passes), release the restore
+    /// gate, and drain it to completion.
     fn resume_chain_with_journal(
         node: &RunnerNode,
         rx: &Receiver<RunnerMessage>,
@@ -3588,12 +3600,12 @@ mod tests {
             id.into(),
             "ignored-args".into(),
             1,
+            Some(journal),
         ));
         let s1_id = crate::segment::flusher::encode_segment_identity(id, "bounded_stage1", "");
         let (inst, _slot) = node
             .find_bounded_segment(&s1_id)
             .expect("chain segment reachable by the restore handler");
-        inst.note_op_journal(journal);
         inst.note_restored();
         drain(rx, id)
     }

@@ -81,14 +81,16 @@ impl RunnerNode {
     /// stop), and converges on a single `BoundedCompleted` teardown. Returns
     /// `false` when no bounded class is registered.
     pub fn start_bounded(&self, factory_id: String, instance_id: String, args: String) -> bool {
-        self.start_bounded_resumable(factory_id, instance_id, args, 0)
+        self.start_bounded_resumable(factory_id, instance_id, args, 0, None)
     }
 
     /// Spawn a bounded unit that may be **resuming** after a crash: a durable
     /// structured driver holds its first Operation until `resume_segment_count`
     /// per-Segment restores have landed (the Controller ships one
     /// `RestoreInitState` per persisted Segment). `0` ⇒ a fresh spawn / a
-    /// run-sugar or opted-out class ⇒ run immediately. See
+    /// run-sugar or opted-out class ⇒ run immediately. `op_journal` is the
+    /// instance's committed op state, which rides the bind because a durable
+    /// class with no per-Segment state ships no restore at all. See
     /// [`crate::bounded::instance`].
     pub fn start_bounded_resumable(
         &self,
@@ -96,6 +98,7 @@ impl RunnerNode {
         instance_id: String,
         args: String,
         resume_segment_count: u32,
+        op_journal: Option<crate::bounded::instance::JournalResume>,
     ) -> bool {
         if self.operative_registry.contains(&instance_id) {
             return true;
@@ -120,6 +123,7 @@ impl RunnerNode {
             Arc::from(factory_id.as_str()),
             stage_segments,
             resume_segment_count as usize,
+            op_journal,
         );
         self.operative_registry
             .register_bounded(Arc::clone(&instance));

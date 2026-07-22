@@ -42,6 +42,7 @@ impl CommandAction for AddOperative {
                     instance_id.clone(),
                     self.init_values.clone(),
                     self.resume_segment_count,
+                    self.op_journal.as_ref().map(Into::into),
                 ) {
                     errors.push(format!(
                         "BoundedOperative class with factory_id {} is not registered",

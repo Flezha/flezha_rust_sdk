@@ -121,6 +121,15 @@ pub struct AddOperative {
     /// 0 for a fresh spawn, an unbounded operative, or an opted-out bounded one.
     #[prost(uint32, tag = "5")]
     pub resume_segment_count: u32,
+    /// Bounded op-journal crash-resume (bounded-op-journal): the instance's
+    /// committed op indexes + latest journaled handoff. Instance-scoped, so it
+    /// rides the bind itself rather than a per-Segment restore — a durable
+    /// bounded class with no per-Segment state ships no RestoreInitState at all,
+    /// and would otherwise resume at iteration 0 on every wake.
+    /// Absent when the instance has no journal (fresh spawn, opted-out class,
+    /// unbounded operative) — the driver then keeps the re-run-from-top behaviour.
+    #[prost(message, optional, tag = "6")]
+    pub op_journal: ::core::option::Option<OpJournalState>,
 }
 /// SDK -> Controller, as the CommandResponse raw_data of AddOperative.
 /// Carries the operative class's SDK-side declarations (operative metadata)
@@ -442,14 +451,6 @@ pub struct RestoreInitState {
     pub has_compensation_intent: bool,
     #[prost(bool, tag = "5")]
     pub has_compensation_done: bool,
-    /// Bounded op-journal crash-resume (bounded-op-journal): the instance's
-    /// committed op indexes + latest journaled handoff, shipped in the same
-    /// restore exchange as the compensation markers (no second round-trip).
-    /// Absent when the instance has no journal (fresh spawn, opted-out class,
-    /// unbounded operative, pre-upgrade instance) — the driver then keeps the
-    /// re-run-from-top behaviour.
-    #[prost(message, optional, tag = "6")]
-    pub op_journal: ::core::option::Option<OpJournalState>,
 }
 /// SDK acknowledgement after applying a `RestoreInitState`. `terminal_seq`
 /// is the highest WAL seq folded into State; the Controller expects the next
