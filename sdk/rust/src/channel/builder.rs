@@ -222,16 +222,7 @@ pub enum TopologyIssue {
     )]
     Cycle { operation: &'static str },
 
-    #[error(
-        "operative declares more than one entry channel (`{first}` and `{second}`); the graph \
-         is fed by exactly one entry"
-    )]
-    MultipleEntryChannels {
-        first: &'static str,
-        second: &'static str,
-    },
-
-    #[error("operation `{operation}` is not reachable from the entry channel")]
+    #[error("operation `{operation}` is not reachable from any entry channel")]
     UnreachableOperation { operation: &'static str },
 
     #[error(

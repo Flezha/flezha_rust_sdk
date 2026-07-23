@@ -126,7 +126,6 @@ pub use operation::WallClock;
 #       NodeIdentityCollision { name: &'static str },
 #       BranchTooFewArms { arms: usize },
 #       Cycle { operation: &'static str },
-#       MultipleEntryChannels { first: &'static str, second: &'static str },
 #       UnreachableOperation { operation: &'static str },
 #   }
 #

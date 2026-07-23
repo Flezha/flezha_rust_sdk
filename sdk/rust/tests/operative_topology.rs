@@ -684,7 +684,11 @@ fn a_cycle_is_refused() {
 }
 
 #[test]
-fn a_second_entry_channel_is_refused() {
+fn multiple_entry_channels_build() {
+    // A single operative may declare several entry channels — one per external
+    // source (e.g. a market pipeline reading a trade feed and an order-book
+    // feed on distinct channels). The controller routes each frame to its
+    // entry by `metadata["channel"]`. Both entries and their subgraphs resolve.
     struct TwoEntries;
     impl UnboundedOperative for TwoEntries {
         fn factory_id() -> &'static str {
@@ -695,17 +699,16 @@ fn a_second_entry_channel_is_refused() {
             c.input::<String>("in_b").into::<GraphStage2>();
         }
     }
-    let err = match build_topology_for::<TwoEntries>() {
-        Ok(_) => panic!("two entries must fail"),
-        Err(e) => e,
-    };
-    assert!(err.errors.iter().any(|e| matches!(
-        e,
-        flezha_runner::channel::builder::TopologyIssue::MultipleEntryChannels {
-            first: "in_a",
-            second: "in_b",
-        }
-    )));
+    let topology = build_topology_for::<TwoEntries>()
+        .expect("multiple entry channels must build a valid topology");
+    let entries: Vec<&str> = topology
+        .channels
+        .iter()
+        .filter(|c| c.kind == flezha_runner::channel::ChannelKind::Entry)
+        .map(|c| &*c.name)
+        .collect();
+    assert_eq!(entries.len(), 2, "both entry channels are retained");
+    assert!(entries.contains(&"in_a") && entries.contains(&"in_b"));
 }
 
 // ---- typed entry inputs ---------------------------------------------------

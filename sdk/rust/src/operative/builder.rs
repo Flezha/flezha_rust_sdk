@@ -149,20 +149,15 @@ pub fn build_topology_with_persistence(
         }
     }
 
-    // Shared graph-shape rule (`sdk-graph-authoring`): one entry channel
-    // feeding the graph, every node reachable from it, no cycles. Fan-out and
-    // fan-in are both legal; at-most-one output channel per node holds by
-    // construction of the stream-handle builder.
+    // Shared graph-shape rule (`sdk-graph-authoring`): one OR MORE entry
+    // channels feed the graph, every node reachable from some entry, no
+    // cycles. Multiple entries let one operative ingest several external
+    // sources (e.g. a market pipeline consuming a trade feed and an
+    // order-book feed on distinct channels); the controller routes each frame
+    // to its entry by `metadata["channel"]`, falling back to the first entry
+    // when unset. Fan-out and fan-in are both legal; at-most-one output
+    // channel per node holds by construction of the stream-handle builder.
     if !operations.is_empty() {
-        let mut entry_ids = channels
-            .iter()
-            .filter(|c| c.kind == ChannelKind::Entry)
-            .map(|c| c.name);
-        let first_entry = entry_ids.next();
-        if let (Some(first), Some(second)) = (first_entry, entry_ids.next()) {
-            errors.push(TopologyIssue::MultipleEntryChannels { first, second });
-        }
-
         let edges: Vec<_> = channels
             .iter()
             .filter_map(|c| c.producer.map(|p| (p, c.consumers.as_slice())))
