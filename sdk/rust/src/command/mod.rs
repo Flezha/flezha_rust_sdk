@@ -115,7 +115,7 @@ pub fn get_handler(_payload_id: &str, message: &[u8]) -> Result<FrameOutcome, Co
             CommandActionType::Regular(Box::new(proto_ch))
         }
         Some(Command::RunnerShutdownNotification(_)) => CommandActionType::NotificationIgnore,
-        Some(Command::RunnerShutdownAck(_)) => CommandActionType::AckSignal(Ok(())),
+        Some(Command::RunnerShutdownAck(_)) => CommandActionType::AckSignal(Ok(String::new())),
         Some(Command::RestoreInitState(proto_ch)) => CommandActionType::Regular(Box::new(proto_ch)),
         // SDK is the SENDER for the response variants — receiving them
         // is a protocol bug. Drop the message, log it like the other
@@ -155,6 +155,18 @@ pub fn get_handler(_payload_id: &str, message: &[u8]) -> Result<FrameOutcome, Co
         Some(Command::IterCommit(_)) => CommandActionType::NotificationIgnore,
         Some(Command::IterPark(_)) => CommandActionType::NotificationIgnore,
         Some(Command::UpdateFactories(_)) => CommandActionType::NotificationIgnore,
+        // SDK is the SENDER for the spawn request — receiving one is a
+        // protocol bug.
+        Some(Command::SpawnBoundedRequest(_)) => CommandActionType::NotificationIgnore,
+        // Operation-requested spawn resolved (Controller -> SDK): wakes the
+        // requester's `SpawnHandle` with the outcome.
+        Some(Command::SpawnBoundedResponse(reply)) => {
+            CommandActionType::AckSignal(if reply.error.is_empty() {
+                Ok(reply.outcome)
+            } else {
+                Err(reply.error)
+            })
+        }
         // Op-journal durability replies (Controller -> SDK): wake the bounded
         // driver blocked at the op-commit / iteration-commit barrier; a non-empty
         // error terminates the run abnormally.
@@ -172,9 +184,9 @@ pub fn get_handler(_payload_id: &str, message: &[u8]) -> Result<FrameOutcome, Co
 
 /// A durability reply's `error` field as the waiter's ack result: empty ⇒ the
 /// journal entry is durable, non-empty ⇒ the run terminates abnormally.
-fn ack_result(error: String) -> Result<(), String> {
+fn ack_result(error: String) -> crate::shutdown::AckResult {
     if error.is_empty() {
-        Ok(())
+        Ok(String::new())
     } else {
         Err(error)
     }
@@ -345,6 +357,34 @@ mod tests {
             FrameOutcome::Command(_, ref_id) => assert_eq!(ref_id, "ref-shutdown"),
             FrameOutcome::PeerClosed => panic!("well-formed request must not be PeerClosed"),
         }
+    }
+
+    #[test]
+    fn a_spawn_reply_wakes_the_requesters_handle_with_its_outcome() {
+        let reply = |outcome: &str, error: &str| {
+            let bytes = CommandRequest {
+                reference_id: "ref-spawn".to_string(),
+                command: Some(Command::SpawnBoundedResponse(
+                    crate::pb::SpawnBoundedResponse {
+                        outcome: outcome.to_string(),
+                        error: error.to_string(),
+                    },
+                )),
+            }
+            .encode_to_vec();
+
+            match get_handler("payload", &bytes).expect("spawn reply must decode") {
+                FrameOutcome::Command(CommandActionType::AckSignal(result), ref_id) => {
+                    assert_eq!(ref_id, "ref-spawn");
+                    result
+                }
+                other => panic!("spawn reply must route to AckSignal, got {:?}", other),
+            }
+        };
+
+        assert_eq!(reply("spawned", ""), Ok("spawned".to_string()));
+        assert_eq!(reply("delivered", ""), Ok("delivered".to_string()));
+        assert_eq!(reply("refused", "quota"), Err("quota".to_string()));
     }
 
     #[test]

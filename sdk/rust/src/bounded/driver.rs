@@ -1144,7 +1144,7 @@ fn ship_and_await(
     let deadline = Instant::now() + OP_COMMIT_ACK_TIMEOUT;
     loop {
         match rx.recv_timeout(OP_COMMIT_ACK_CHUNK) {
-            Ok(Ok(())) => return Ok(()),
+            Ok(Ok(_)) => return Ok(()),
             Ok(Err(e)) => {
                 return Err(format!("{what} {idx} refused by controller: {e}"));
             }

@@ -6,6 +6,7 @@ pub mod change;
 pub mod clock;
 pub mod ctx;
 pub mod error;
+pub mod spawn;
 pub mod state_handle;
 
 use std::sync::Arc;
@@ -18,6 +19,7 @@ pub use ctx::{OperationCtx, StableId};
 pub use error::OperationError;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+pub use spawn::{IfRunning, SpawnError, SpawnHandle, SpawnOutcome};
 pub use state_handle::StateHandle;
 
 use crate::segment::restore::RestoreInitPayload;

@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::operation::error::OperationError;
+use crate::operation::spawn::{self, IfRunning, SpawnHandle, SpawnOutcome};
 
 /// Reserved metadata namespace: runtime identity stamps (`flz.segment`,
 /// `flz.seq`, `flz.key`) live here; user-supplied keys with this prefix
@@ -26,6 +27,7 @@ pub struct OperationCtx<'a> {
     segment_identity: &'a [u8],
     stable_id_ordinal: Cell<u32>,
     checkpoint: bool,
+    replay: bool,
 }
 
 /// Replay-stable 128-bit identifier returned by [`OperationCtx::stable_id`].
@@ -125,7 +127,16 @@ impl<'a> OperationCtx<'a> {
             segment_identity,
             stable_id_ordinal: Cell::new(0),
             checkpoint: false,
+            replay: false,
         }
+    }
+
+    /// Mark the invocation as a replay of already-processed input. Set by the
+    /// dispatcher from the segment payload; it is what makes
+    /// [`Self::spawn_bounded`] a live-processing-only side effect.
+    pub(crate) fn during_replay(mut self, replay: bool) -> Self {
+        self.replay = replay;
+        self
     }
 
     /// Close the current checkpoint interval: every input folded in since the
@@ -169,6 +180,42 @@ impl<'a> OperationCtx<'a> {
         let ordinal = self.stable_id_ordinal.get();
         self.stable_id_ordinal.set(ordinal + 1);
         StableId::derive(self.segment_identity, self.invocation_seq, ordinal)
+    }
+
+    /// Ask the controller for a bounded instance: start `factory_id` under
+    /// `instance_id` if that id is free, otherwise apply `if_running`
+    /// ([`IfRunning::Deliver`] feeds the running instance, [`IfRunning::Error`]
+    /// reports [`SpawnError::AlreadyRunning`]). `payload` is the instance's
+    /// first input on a spawn, one more input on a delivery.
+    ///
+    /// Returns immediately. The request cannot fault this operation: a refusal,
+    /// an unreachable controller, or an unknown factory surfaces only through
+    /// the returned [`SpawnHandle`] — or, if the handle is dropped unobserved,
+    /// as one warning line.
+    ///
+    /// Concurrent requests for one `instance_id` race-resolve controller-side:
+    /// exactly one spawns and every other payload is delivered to it.
+    ///
+    /// Spawning is a side effect of **live** processing. Replayed input — a
+    /// crash-resume or a late-input correction re-running this invocation —
+    /// issues no request and answers [`SpawnOutcome::SkippedOnReplay`], so a
+    /// replay never doubles the workers a run created.
+    pub fn spawn_bounded(
+        &self,
+        instance_id: impl Into<String>,
+        factory_id: impl Into<String>,
+        payload: impl Into<Vec<u8>>,
+        if_running: IfRunning,
+    ) -> SpawnHandle {
+        let (instance_id, factory_id) = (instance_id.into(), factory_id.into());
+        if self.replay {
+            return SpawnHandle::resolved(
+                instance_id,
+                factory_id,
+                Ok(SpawnOutcome::SkippedOnReplay),
+            );
+        }
+        spawn::request(instance_id, factory_id, payload.into(), if_running)
     }
 
     /// Emit a typed value on the producer-edge channel for this Operation.

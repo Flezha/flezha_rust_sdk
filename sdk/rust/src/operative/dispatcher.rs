@@ -409,7 +409,8 @@ impl<S: Operation> OperationDispatcher for OperationDispatcherImpl<S> {
             };
 
             let mut ctx =
-                OperationCtx::new(&mut sink, now, invocation_seq, &self.flush.segment_identity);
+                OperationCtx::new(&mut sink, now, invocation_seq, &self.flush.segment_identity)
+                    .during_replay(replay);
             let handle = StateHandle::<S>::new(&mut typed_state.state, &buffer_cell);
 
             // Contain a operation panic so it can't poison the held `state` lock.

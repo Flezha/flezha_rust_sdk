@@ -188,10 +188,11 @@ impl ShutdownBridge {
 // the previous (already-shut-down) runner's bridge.
 // ---------------------------------------------------------------------------
 
-/// Result carried by a controller reply to an SDK-initiated request:
-/// `Ok(())` for a bare ack (`RunnerShutdownAck`), `Err(reason)` when the
-/// reply reports a failure (`OpCommitResponse.error`).
-pub type AckResult = Result<(), String>;
+/// Result carried by a controller reply to an SDK-initiated request. The `Ok`
+/// payload is whatever the reply reports beyond "it worked" — empty for a bare
+/// ack (`RunnerShutdownAck`, `OpCommitResponse`), the resolved outcome for a
+/// `SpawnBoundedResponse`. `Err(reason)` is a reply that reports a failure.
+pub type AckResult = Result<String, String>;
 
 fn pending_acks_map() -> &'static Mutex<HashMap<String, mpsc::SyncSender<AckResult>>> {
     static PENDING_ACKS: OnceLock<Mutex<HashMap<String, mpsc::SyncSender<AckResult>>>> =
@@ -363,7 +364,7 @@ mod tests {
         // Now signal the ack so the wait thread releases. Closing the
         // socket on the controller side without acking would also work but
         // we exercise the happy path explicitly.
-        signal_result(&request.reference_id, Ok(()));
+        signal_result(&request.reference_id, Ok(String::new()));
         run_handle.join().expect("shutdown thread joins");
     }
 
@@ -397,7 +398,7 @@ mod tests {
         // Matches the post-timeout cleanup race: the wait thread already
         // dropped its registration; a late ack arrives and finds nothing.
         // Must not panic.
-        signal_result("never-registered-ref", Ok(()));
+        signal_result("never-registered-ref", Ok(String::new()));
     }
 
     #[test]

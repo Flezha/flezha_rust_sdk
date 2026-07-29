@@ -2321,13 +2321,15 @@ mod tests {
 
     // ---- single driver-observation test --------------------------------------
     //
-    // Owns the process-global coordinator trigger (no other lib test installs
-    // it) so it can observe the EmitBoundedOutput / EmitBoundedCompleted
-    // messages the driver routes through the coordinator. Scenarios run
-    // strictly sequentially (each drained to its completion before the next) so
-    // a single shared channel stays unambiguous.
+    // Installs the process-global coordinator trigger so it can observe the
+    // EmitBoundedOutput / EmitBoundedCompleted messages the driver routes
+    // through it; the shared runner-state lock keeps that install exclusive
+    // against the other tests that install one. Scenarios run strictly
+    // sequentially (each drained to its completion before the next) so a
+    // single shared channel stays unambiguous.
     #[test]
     fn bounded_driver_scenarios() {
+        let _runner_guard = crate::runner::env_test_guard();
         let (tx, rx) = crossbeam::channel::unbounded::<RunnerMessage>();
         install_reconnect_trigger(tx);
 
@@ -3668,12 +3670,12 @@ mod tests {
                 let flushed: Vec<Vec<u8>> =
                     commit.outbox.iter().map(|o| o.payload.clone()).collect();
                 OP_COMMITS.lock().unwrap().push(commit);
-                crate::shutdown::signal_result(&reference_id, Ok(()));
+                crate::shutdown::signal_result(&reference_id, Ok(String::new()));
                 flushed
             }
             Command::IterCommit(commit) => {
                 ITER_COMMITS.lock().unwrap().push(commit);
-                crate::shutdown::signal_result(&reference_id, Ok(()));
+                crate::shutdown::signal_result(&reference_id, Ok(String::new()));
                 Vec::new()
             }
             Command::IterPark(park) => {

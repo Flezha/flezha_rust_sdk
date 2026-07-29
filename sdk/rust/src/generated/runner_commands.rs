@@ -5,7 +5,7 @@ pub struct CommandRequest {
     pub reference_id: ::prost::alloc::string::String,
     #[prost(
         oneof = "command_request::Command",
-        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33"
+        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35"
     )]
     pub command: ::core::option::Option<command_request::Command>,
 }
@@ -77,6 +77,10 @@ pub mod command_request {
         IterPark(super::IterPark),
         #[prost(message, tag = "33")]
         UpdateFactories(super::UpdateFactories),
+        #[prost(message, tag = "34")]
+        SpawnBoundedRequest(super::SpawnBoundedRequest),
+        #[prost(message, tag = "35")]
+        SpawnBoundedResponse(super::SpawnBoundedResponse),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -640,4 +644,39 @@ pub struct UpdateFactories {
 pub struct BoundedStop {
     #[prost(string, tag = "1")]
     pub operative_id: ::prost::alloc::string::String,
+}
+/// SDK -> Controller. An operation asked for a bounded instance
+/// (`ctx.spawn_bounded`): spawn `factory_id` under `instance_id` if that id is
+/// free, otherwise apply `if_running`. The namespace is NOT carried — the
+/// Controller takes it from the control channel the request arrived on, which
+/// is what makes cross-namespace spawning impossible by construction rather
+/// than by validation. `payload` becomes the instance's first inbox frame on a
+/// spawn, or one more inbox frame on a delivery; empty means "spawn only".
+/// `if_running` is "deliver" (default; empty reads as deliver) or "error".
+/// Rides the "control_command" payload_id like the other SDK-initiated
+/// variants; old Controllers ignore it via Protox unknown-field handling, so
+/// the requester simply times out.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SpawnBoundedRequest {
+    #[prost(string, tag = "1")]
+    pub instance_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub factory_id: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "3")]
+    pub payload: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag = "4")]
+    pub if_running: ::prost::alloc::string::String,
+}
+/// Controller -> SDK reply to SpawnBoundedRequest, carrying the originating
+/// request's reference_id so the SDK wakes the requester's result handle.
+/// `outcome` is one of `spawned | delivered | already_running |
+/// factory_unknown | refused`; `error` details a `refused` (quota, shutdown,
+/// start failure) and is empty otherwise. The reply never faults the
+/// requesting operation — it only resolves its handle.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SpawnBoundedResponse {
+    #[prost(string, tag = "1")]
+    pub outcome: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub error: ::prost::alloc::string::String,
 }

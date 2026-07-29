@@ -33,10 +33,20 @@ pub(crate) fn install_reconnect_trigger(otx: Sender<RunnerMessage>) {
 /// secondary-stream writes stay single-threaded. No-op when the trigger is not
 /// installed (e.g. unit tests).
 pub(crate) fn coordinator_send(msg: RunnerMessage) {
-    if let Some(lock) = RECONNECT_TRIGGER.get() {
-        if let Ok(tx) = lock.lock() {
-            let _ = tx.send(msg);
-        }
+    let _ = coordinator_try_send(msg);
+}
+
+/// [`coordinator_send`] that reports whether the message actually reached a
+/// coordinator: `false` when none is installed, and when the installed trigger
+/// points at a channel nobody reads any more (a closed runner's stale sender).
+/// Callers that would otherwise wait for a reply that can never come use this.
+pub(crate) fn coordinator_try_send(msg: RunnerMessage) -> bool {
+    match RECONNECT_TRIGGER.get() {
+        Some(lock) => match lock.lock() {
+            Ok(tx) => tx.send(msg).is_ok(),
+            Err(_) => false,
+        },
+        None => false,
     }
 }
 
@@ -94,11 +104,12 @@ pub(crate) fn emit_bounded_completed(
     });
 }
 
-/// Serializes every test that mutates the process-global runner env vars
-/// (`FLEZHA_RUNNER_ID_PATH`, `FLEZHA_CONTROL_*`). These knobs are shared
-/// across the whole crate, so the lock lives here (not in one child module)
-/// and is poison-tolerant: a failed assertion inside one holder must not
-/// cascade-fail the unrelated tests that merely share the lock.
+/// Serializes every test that mutates process-global runner state: the env
+/// knobs (`FLEZHA_RUNNER_ID_PATH`, `FLEZHA_CONTROL_*`) and the coordinator
+/// trigger a test installs to observe what the runtime routes through it. Both
+/// are shared across the whole crate, so the lock lives here (not in one child
+/// module) and is poison-tolerant: a failed assertion inside one holder must
+/// not cascade-fail the unrelated tests that merely share the lock.
 #[cfg(test)]
 static ENV_TEST_LOCK: Mutex<()> = Mutex::new(());
 

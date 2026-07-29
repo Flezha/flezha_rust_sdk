@@ -37,6 +37,10 @@ pub use operation::NoChange;
 pub use operation::Operation;
 pub use operation::OperationCtx;
 pub use operation::OperationError;
+pub use operation::IfRunning;
+pub use operation::SpawnError;
+pub use operation::SpawnHandle;
+pub use operation::SpawnOutcome;
 pub use operation::StableId;
 pub use operation::StateHandle;
 pub use operation::TimeExtractor;
@@ -68,6 +72,17 @@ pub use operation::WallClock;
 #   pub fn emit_with_meta<C>(&mut self, value: C, meta: HashMap<String, String>) -> Result<(), OperationError>;
 #   pub fn emit_keyed<C>(&mut self, key: impl Into<String>, value: C) -> Result<(), OperationError>;
 #   pub fn emit_keyed_with_meta<C>(&mut self, key: impl Into<String>, value: C, meta: HashMap<String, String>) -> Result<(), OperationError>;
+#   pub fn spawn_bounded(&self, instance_id: impl Into<String>, factory_id: impl Into<String>, payload: impl Into<Vec<u8>>, if_running: IfRunning) -> SpawnHandle;
+#
+# Operation-requested spawn (`add-operation-requested-spawn`):
+#
+#   pub enum IfRunning { Deliver, Error }                     # Deliver is Default
+#   pub enum SpawnOutcome { Spawned, Delivered, SkippedOnReplay }
+#   pub enum SpawnError { AlreadyRunning(String), FactoryUnknown(String), Refused(String), Timeout, Unavailable }
+#   impl SpawnHandle {
+#       pub fn wait(self) -> Result<SpawnOutcome, SpawnError>;
+#       pub fn try_result(&mut self) -> Option<Result<SpawnOutcome, SpawnError>>;
+#   }
 #
 # Trait surface on `UnboundedOperative`:
 #

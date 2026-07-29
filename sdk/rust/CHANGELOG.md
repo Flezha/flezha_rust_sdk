@@ -4,6 +4,26 @@ All notable changes to the Rust SDK crate.
 
 ## Unreleased
 
+### Operation-requested spawn (`add-operation-requested-spawn`)
+
+- **`OperationCtx::spawn_bounded(instance_id, factory_id, payload, if_running)`**
+  — spawn-or-deliver a bounded instance from inside any operation. A free id
+  starts `factory_id` with `payload` as its first input; a taken id receives it
+  as one more input (`IfRunning::Deliver`) or reports
+  `SpawnError::AlreadyRunning` (`IfRunning::Error`). Always in the requester's
+  own namespace.
+- **Fire-and-forget with a result**: returns a `SpawnHandle` immediately. Every
+  failure resolves that handle rather than the operation's `run` — `wait()` /
+  `try_result()` read it, and a handle dropped unobserved reports a failure to
+  the log via one process-wide reaper thread.
+- **Live processing only**: a replayed invocation (crash resume, late-input
+  correction) issues no request and answers `SpawnOutcome::SkippedOnReplay`.
+- New public items: `IfRunning`, `SpawnOutcome`, `SpawnError`, `SpawnHandle`,
+  re-exported from `flezha_runner::operation`. Example:
+  `examples/spawn_bounded_worker.rs`.
+- **Wire**: additive `SpawnBoundedRequest` (tag 34) / `SpawnBoundedResponse`
+  (tag 35). Requires a controller of the same release.
+
 ### Determinism contract + output identity (`deterministic-effects-and-output-identity`)
 
 - **BREAKING: `Clock::now()` removed.** The runtime evaluates the declared
