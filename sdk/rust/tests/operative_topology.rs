@@ -37,7 +37,10 @@ fn single_mode_segment_creation() {
     assert_eq!(topology.channels.len(), 1);
     assert!(topology.operations[0].segment_keys.is_empty());
     assert_eq!(topology.operations[0].input_channel_ids, vec![0]);
-    assert_eq!(topology.channels[0].consumers, vec![0]);
+    assert_eq!(
+        topology.channels[0].consumer_ids().collect::<Vec<_>>(),
+        vec![0]
+    );
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -452,7 +455,14 @@ fn topo_shape(
     (
         t.channels
             .iter()
-            .map(|c| (c.name.to_string(), c.kind, c.producer, c.consumers.clone()))
+            .map(|c| {
+                (
+                    c.name.to_string(),
+                    c.kind,
+                    c.producer,
+                    c.consumer_ids().collect::<Vec<_>>(),
+                )
+            })
             .collect(),
         t.operations.iter().map(|o| o.name.to_string()).collect(),
     )

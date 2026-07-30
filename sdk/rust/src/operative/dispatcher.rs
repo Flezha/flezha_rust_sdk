@@ -862,30 +862,6 @@ impl<'a> SegmentEmitSink<'a> {
         Ok((instance, cid))
     }
 
-    /// Fan out a typed value to every inter-operation consumer's mailbox
-    /// per the channel's `OverflowPolicy`. Shared between hybrid and
-    /// pure-`InterOperation` paths.
-    fn fan_out_to_consumers(
-        &self,
-        instance: &UnboundedInstance,
-        descriptor: &crate::channel::ChannelDescriptor,
-        value: &Arc<dyn Any + Send + Sync>,
-    ) -> Result<(), OperationError> {
-        // An inter-operation emit is never a replay member: the downstream
-        // Operation receives the corrected outputs already in order, and a
-        // slice it could never see the end of would hold its drain forever.
-        route_to_consumers(
-            instance,
-            &descriptor.consumers,
-            descriptor.overflow_policy,
-            value,
-            &self.stream,
-            self.consumed_offset,
-            false,
-        );
-        Ok(())
-    }
-
     /// Append the output-identity stamps for a keyed-channel plugin frame.
     /// Runs after user metadata is merged so stamps can never be
     /// clobbered; no-op (and no cost) for non-keyed channels.
@@ -970,7 +946,17 @@ impl<'a> EmitSink for SegmentEmitSink<'a> {
                 .ok_or_else(|| OperationError::UnknownChannel {
                     channel: format!("<channel id {}>", cid),
                 })?;
-        self.fan_out_to_consumers(&instance, descriptor, &value)?;
+        // An inter-operation emit is never a replay member: the downstream
+        // Operation receives the corrected outputs already in order, and a
+        // slice it could never see the end of would hold its drain forever.
+        route_to_consumers(
+            &instance,
+            descriptor,
+            &value,
+            &self.stream,
+            self.consumed_offset,
+            false,
+        );
         if let Some(sink) = descriptor.plugin_sink.as_ref() {
             self.emit_plugin_sink(&instance, descriptor, sink, &value, meta, key)?;
         }
@@ -1351,8 +1337,7 @@ fn run_entry_parse_ladder(ladder: EntryParseLadder) {
             Ok(typed) => {
                 route_to_consumers(
                     &ladder.instance,
-                    &channel.consumers,
-                    channel.overflow_policy,
+                    channel,
                     &typed,
                     &ladder.stream,
                     ladder.consumed_offset,
@@ -1390,21 +1375,33 @@ fn run_entry_parse_ladder(ladder: EntryParseLadder) {
     crate::segment::park::park_blocking(&identity, &body);
 }
 
+/// Route one channel value to every subscribed consumer, each through its own
+/// edge's merge mapping. The one seam a `ConsumerEdge` mapping is applied on:
+/// the wire-reader path (live delivery and the controller's re-forwarded replay
+/// slice) and an inter-operation emit both come through here, so the two can
+/// never drift.
 pub(crate) fn route_to_consumers(
     instance: &UnboundedInstance,
-    consumer_ids: &[OperationId],
-    policy: OverflowPolicy,
+    channel: &crate::channel::ChannelDescriptor,
     value: &Arc<dyn Any + Send + Sync>,
     stream: &Arc<FlezhaStream>,
     consumed_offset: Option<u64>,
     replay: bool,
 ) {
     use crate::operative::topology::SegmentingMode;
-    for &consumer_operation_id in consumer_ids {
+    let policy = channel.overflow_policy;
+    for edge in &channel.consumers {
+        let consumer_operation_id = edge.operation;
         let consumer = match instance.topology.operation(consumer_operation_id) {
             Some(s) => s,
             None => continue,
         };
+        // A merged subscription lifts this channel's payload into the
+        // consumer's `Input` sum type before anything downstream sees it, so
+        // `segment_for` / `operation_key` and the mailbox all carry the mapped
+        // value — on live delivery and on replay alike.
+        let mapped = edge.map_value(value);
+        let value = mapped.as_ref().unwrap_or(value);
         match consumer.mode {
             SegmentingMode::Dynamic => {
                 let registry = match instance

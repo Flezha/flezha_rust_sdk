@@ -147,6 +147,19 @@ pub enum BuildBoundedError {
     },
 
     #[error(
+        "bounded operative `{factory_id}` merges entry channel `{channel}` into operation \
+         `{operation}`; a bounded operative is seeded from its spawn args (and, for a `PerInput` \
+         loop, its inbox items) through ONE entry channel, and neither carries the channel a \
+         payload arrived on — so an entry channel cannot be one merge source among several. \
+         Merge the output streams of two or more of this operative's operations instead"
+    )]
+    MergeFromEntryChannel {
+        factory_id: &'static str,
+        channel: String,
+        operation: String,
+    },
+
+    #[error(
         "bounded operative `{factory_id}` declares a handoff-chained loop over a branching \
          topology ({leaves} terminal operations); iteration N+1 is seeded from iteration N's \
          terminal batch, which a graph with several leaves does not define. Use \
@@ -386,7 +399,26 @@ fn build_dag(
         }
     }
 
-    // The entry channel seeds the root operation from the spawn args.
+    // The entry channel seeds the root operation from the spawn args. The seed
+    // is a bare payload — it names no channel — so a merge mapping on an entry
+    // edge could never be selected, and every entry channel past the first
+    // would be unreadable. Refuse the shape rather than accept one that cannot
+    // run (`multi-input-operations`).
+    for channel in topology
+        .channels
+        .iter()
+        .filter(|c| c.kind == ChannelKind::Entry)
+    {
+        if let Some(edge) = channel.consumers.iter().find(|e| e.map.is_some()) {
+            return Err(BuildBoundedError::MergeFromEntryChannel {
+                factory_id,
+                channel: channel.name.to_string(),
+                operation: topology.operations[edge.operation as usize]
+                    .name
+                    .to_string(),
+            });
+        }
+    }
     let entry = topology
         .channels
         .iter()
@@ -399,7 +431,7 @@ fn build_dag(
             consumers: entry.consumers.len(),
         });
     }
-    let root = entry.consumers[0];
+    let root = entry.consumers[0].operation;
 
     // The shared graph-shape walk (`operative::builder::graph_order`) — one
     // mechanism for both SDK-level validation and the bounded execution order.
@@ -411,7 +443,8 @@ fn build_dag(
     let edges: Vec<_> = topology
         .channels
         .iter()
-        .filter_map(|c| c.producer.map(|p| (p, c.consumers.as_slice())))
+        .filter_map(|c| c.producer.map(|p| (p, c)))
+        .flat_map(|(p, c)| c.consumer_ids().map(move |id| (p, id)))
         .collect();
     let shape = graph_order(n, &edges, &[root]);
     if let Some(node) = shape.unreachable.filter(|_| shape.on_cycle.is_none()) {
@@ -432,11 +465,9 @@ fn build_dag(
         parents: vec![Vec::new(); n],
         children: vec![Vec::new(); n],
     };
-    for (producer, consumers) in &edges {
-        for &c in *consumers {
-            dag.children[shape.pos[*producer as usize]].push(shape.pos[c as usize]);
-            dag.parents[shape.pos[c as usize]].push(shape.pos[*producer as usize]);
-        }
+    for &(producer, consumer) in &edges {
+        dag.children[shape.pos[producer as usize]].push(shape.pos[consumer as usize]);
+        dag.parents[shape.pos[consumer as usize]].push(shape.pos[producer as usize]);
     }
     for children in &mut dag.children {
         children.sort_unstable();

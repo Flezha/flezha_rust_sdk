@@ -110,5 +110,9 @@ required-features = ["bench-internals"]
 name = "dynamic_segment"
 required-features = ["bench-internals"]
 
+[[test]]
+name = "merged_input"
+required-features = ["bench-internals"]
+
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(rust_analyzer)", "cfg(loom)"] }

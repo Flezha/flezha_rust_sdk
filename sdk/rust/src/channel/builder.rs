@@ -26,7 +26,9 @@ use std::sync::Arc;
 
 use serde::de::DeserializeOwned;
 
-use crate::channel::{Channel, ChannelKind, OperationId, OverflowPolicy};
+use crate::channel::{
+    Channel, ChannelId, ChannelKind, ConsumerEdge, MergeMapFn, OperationId, OverflowPolicy,
+};
 use crate::operation::Operation;
 
 /// Type-erased dispatcher factory for one Operation. Stored on
@@ -50,8 +52,9 @@ pub(crate) struct OperationEntry {
     /// bounded driver consults the resolved descriptor flag to fire saga
     /// compensation only for operations that declared a `compensate` hook.
     pub compensate_overridden: bool,
-    /// Channels this node consumes. Several = fan-in: the node receives the
-    /// accumulated contributions of all its producers.
+    /// Channels this node consumes. Several = a fan-in, or a merge whose
+    /// edges each map into this node's `Input`: either way the node receives
+    /// the accumulated contributions of all its producers.
     pub input_channel_ids: Vec<u32>,
     pub output_channel_id: Option<u32>,
     /// Erased input-type marker: matches the consumer-edge's
@@ -121,9 +124,14 @@ pub(crate) struct OperationEntry {
     pub deserialize_state: DeserializeStateFn,
 }
 
-pub(crate) type SegmentForFn = Arc<dyn Fn(&dyn Any) -> Vec<&'static str> + Send + Sync + 'static>;
+/// One author callback erased behind `&dyn Any` — how every typed declaration
+/// is stored, whatever it returns. Built by [`erase`]; the public `MergeMapFn`
+/// and `PluginSerializeFn` are this same shape spelled out.
+pub(crate) type ErasedFn<R> = Arc<dyn Fn(&dyn Any) -> R + Send + Sync + 'static>;
 
-pub(crate) type OperationKeyFn = Arc<dyn Fn(&dyn Any) -> Option<String> + Send + Sync + 'static>;
+pub(crate) type SegmentForFn = ErasedFn<Vec<&'static str>>;
+
+pub(crate) type OperationKeyFn = ErasedFn<Option<String>>;
 
 pub(crate) type SerializeStateFn =
     Arc<dyn Fn(&Box<dyn Any + Send>) -> Result<serde_json::Value, String> + Send + Sync + 'static>;
@@ -168,7 +176,7 @@ pub(crate) struct ChannelEntry {
     pub name: &'static str,
     pub kind: ChannelKind,
     pub producer: Option<OperationId>,
-    pub consumers: Vec<OperationId>,
+    pub consumers: Vec<ConsumerEdge>,
     pub plugin_name: Option<&'static str>,
     pub wrap_input: Option<crate::channel::EntryWrapFn>,
     /// Entry channels whose `wrap_input` is a real parser (typed JSON or a
@@ -316,6 +324,31 @@ pub enum TopologyIssue {
          durable offset to hold back (nor a durable input log to replay the interval from)"
     )]
     CheckpointAckWithoutTier,
+
+    #[error(
+        "merge into operation `{operation}` declares {sources} source channel(s); a merge \
+         consumes two or more — wire a single source with `.into::<Op>()` instead"
+    )]
+    MergeTooFewSources {
+        operation: &'static str,
+        sources: usize,
+    },
+
+    #[error(
+        "merge subscribes channel `{channel}` twice; each merge source must be a distinct \
+         channel (one mapping per channel into the merged input)"
+    )]
+    DuplicateMergeSource { channel: &'static str },
+
+    #[error(
+        "channel `{channel}` already feeds operation `{operation}`; an edge carries exactly one \
+         merge mapping or none, so a merge source may not re-wire an edge declared by `.into` or \
+         by another merge"
+    )]
+    MergeSourceAlreadyWired {
+        channel: &'static str,
+        operation: &'static str,
+    },
 }
 
 /// Mutable topology under construction, behind the builder's `RefCell` so the
@@ -484,6 +517,64 @@ impl ChannelBuilder {
         self.entry_channel(name, wrap, true)
     }
 
+    /// Open a **merged** subscription: one operation fed by two or more source
+    /// channels, each supplying a mapping from its payload into the
+    /// operation's `Input` sum type (`multi-input-operations`).
+    ///
+    /// ```ignore
+    /// c.merge::<SignalInput>()
+    ///     .from(ticker, SignalInput::Ticker)
+    ///     .from(config, SignalInput::Config)
+    ///     .into::<DetectorOperation>();
+    /// ```
+    ///
+    /// Sources may be entry streams (sealed payloads) or another operation's
+    /// output stream, freely mixed — on an **unbounded** operative. A bounded
+    /// operative is seeded from its spawn args through one entry channel and
+    /// nothing on that path says which channel a payload arrived on, so a
+    /// bounded merge over an entry channel is refused at registration
+    /// (`BuildBoundedError::MergeFromEntryChannel`); its sources are the
+    /// output streams of two or more of its operations.
+    ///
+    /// `segment_for` / `operation_key` are evaluated on the **mapped** value,
+    /// so per-source segmentation is encoded in the sum type. Per-source FIFO
+    /// order is preserved; nothing is guaranteed across sources — correlate in
+    /// the operation's own state.
+    ///
+    /// The mappings MUST be pure: they run on live delivery and again on WAL
+    /// replay, and a replay that disagreed with the live run would restore a
+    /// state the live run never had. They must also be total — a mapping
+    /// returns `I`, not `Result<I, _>`, so unlike an entry parser it has no
+    /// error to hand the channel's retry→DLQ ladder. Do the fallible work in
+    /// the operation, on the sum type.
+    ///
+    /// A panicking mapping is contained everywhere it can be: on an
+    /// inter-operation source it is caught as the producing operation's panic
+    /// (unbounded) or turned into a terminal chain error the saga compensates
+    /// (bounded). The one unguarded seam is an unbounded entry-channel source,
+    /// where the mapping runs on the wire-reader path — the same exposure the
+    /// entry parser there already carries. `docs/multi_input_operations.md`
+    /// tabulates it.
+    ///
+    /// A source's payload must be [`Clone`]: the mapping is handed the
+    /// channel's value by reference and clones it, where a plain `.into`
+    /// forwards the existing `Arc`.
+    ///
+    /// `Operation::Input == I` is enforced at the `.into::<Op>()` call site by
+    /// the compiler. Fewer than two sources, the same channel twice, or a
+    /// source whose edge into this operation is already wired all fail at
+    /// registration ([`TopologyIssue::MergeTooFewSources`] /
+    /// [`TopologyIssue::DuplicateMergeSource`] /
+    /// [`TopologyIssue::MergeSourceAlreadyWired`]).
+    pub fn merge<I: Send + Sync + 'static>(&self) -> Merge<'_, I> {
+        Merge {
+            builder: self,
+            sources: Vec::new(),
+            declared: 0,
+            _phantom: PhantomData,
+        }
+    }
+
     fn entry_channel<T: Send + Sync + 'static>(
         &self,
         name: &'static str,
@@ -542,12 +633,8 @@ impl BuilderState {
         }
         let id = self.operations.len() as u32;
 
-        let segment_for_erased: SegmentForFn = Arc::new(|input: &dyn Any| {
-            let typed = input
-                .downcast_ref::<S::Input>()
-                .expect("segment_for: input type mismatch");
-            S::segment_for(typed)
-        });
+        let segment_for_erased: SegmentForFn =
+            erase::<S::Input, _, _>("segment_for", S::segment_for);
 
         // Dynamic mode = overrides operation_key() with an empty operation_keys().
         // The erased operation_key closure is captured only for that shape;
@@ -555,12 +642,7 @@ impl BuilderState {
         // declare-one-or-the-other rule.
         let operation_key_erased: Option<OperationKeyFn> =
             if S::OPERATION_KEY_OVERRIDDEN && S::operation_keys().is_empty() {
-                Some(Arc::new(|input: &dyn Any| {
-                    let typed = input
-                        .downcast_ref::<S::Input>()
-                        .expect("operation_key: input type mismatch");
-                    S::operation_key(typed)
-                }))
+                Some(erase::<S::Input, _, _>("operation_key", S::operation_key))
             } else {
                 None
             };
@@ -626,15 +708,40 @@ impl BuilderState {
         node_name: Option<&'static str>,
     ) -> u32 {
         let consumer = self.register_node::<S>(node_name);
+        self.attach_consumer(channel_id, consumer, None);
+        consumer
+    }
+
+    /// Record one consumer subscription on a channel. `map` is the merge
+    /// mapping for a `merge::<I>().from(..)` source and `None` for the
+    /// single-input `into` form, where the channel's payload already IS the
+    /// consumer's `Input`.
+    ///
+    /// Re-declaring an existing mapping-free edge is the fan-in / repeated
+    /// `.into` case and stays a no-op. Re-declaring one where either side
+    /// carries a mapping is refused rather than silently dropped — the edge
+    /// would otherwise keep whichever mapping was declared first and deliver
+    /// the wrong value forever.
+    fn attach_consumer(&mut self, channel_id: u32, consumer: u32, map: Option<MergeMapFn>) {
         let entry = &mut self.channels[channel_id as usize];
-        if !entry.consumers.contains(&consumer) {
-            entry.consumers.push(consumer);
+        match entry.consumers.iter().find(|e| e.operation == consumer) {
+            Some(existing) if existing.map.is_some() || map.is_some() => {
+                let channel = entry.name;
+                let operation = self.operations[consumer as usize].name;
+                self.errors
+                    .push(TopologyIssue::MergeSourceAlreadyWired { channel, operation });
+                return;
+            }
+            Some(_) => {}
+            None => entry.consumers.push(ConsumerEdge {
+                operation: consumer,
+                map,
+            }),
         }
         let op = &mut self.operations[consumer as usize];
         if !op.input_channel_ids.contains(&channel_id) {
             op.input_channel_ids.push(channel_id);
         }
-        consumer
     }
 }
 
@@ -758,6 +865,154 @@ fn default_plugin_serializer<T: serde::Serialize + Send + Sync + 'static>(
             eprintln!("[flezha] default plugin serialization failed: {e}");
             Vec::new()
         })
+    })
+}
+
+/// A channel handle usable as a [`merge`](ChannelBuilder::merge) source:
+/// either an [`EntryStream`] (sealed payload off the wire) or a [`Stream`]
+/// (another operation's output). Implemented for both, so the two are freely
+/// mixed in one merge.
+pub trait MergeSource<'b> {
+    /// The payload the source channel carries — the mapping's argument type.
+    type Payload: Clone + Send + Sync + 'static;
+
+    /// The channel this source subscribes on, materializing a producer's
+    /// output channel if it did not exist yet.
+    fn merge_channel_id(self) -> ChannelId;
+}
+
+impl<'b, T: Clone + Send + Sync + 'static> MergeSource<'b> for EntryStream<'b, T> {
+    type Payload = T;
+
+    fn merge_channel_id(self) -> ChannelId {
+        self.channel_id
+    }
+}
+
+impl<'b, T: Clone + Send + Sync + 'static> MergeSource<'b> for Stream<'b, T> {
+    type Payload = T;
+
+    fn merge_channel_id(self) -> ChannelId {
+        self.with_channel(|_, cid| cid)
+    }
+}
+
+/// A merged subscription under construction: the sources declared so far for
+/// one consumer whose `Input` is the sum type `I`. Built by
+/// [`ChannelBuilder::merge`] and closed by [`into`](Merge::into).
+///
+/// Nothing is recorded on the topology until `into`, so a merge left unclosed
+/// declares no edges at all — silently. `must_use` is what makes that a
+/// compiler warning rather than a graph that is quietly missing a consumer.
+#[must_use = "a merge declares nothing until it is closed with `.into::<Op>()`"]
+pub struct Merge<'b, I> {
+    builder: &'b ChannelBuilder,
+    sources: Vec<(ChannelId, MergeMapFn)>,
+    /// Every `.from` the author wrote, including ones already refused. The
+    /// arity check reads this so a duplicated source is reported once, as a
+    /// duplicate — not also as a merge that declared too few.
+    declared: usize,
+    _phantom: PhantomData<fn() -> I>,
+}
+
+impl<'b, I: Send + Sync + 'static> Merge<'b, I> {
+    /// Add one source channel with the mapping that lifts its payload into the
+    /// merged input. Subscribing the same channel twice is a registration
+    /// error naming that channel.
+    pub fn from<S, F>(mut self, source: S, map: F) -> Self
+    where
+        S: MergeSource<'b>,
+        F: Fn(S::Payload) -> I + Send + Sync + 'static,
+    {
+        let channel_id = source.merge_channel_id();
+        self.declared += 1;
+        if self
+            .sources
+            .iter()
+            .any(|(existing, _)| *existing == channel_id)
+        {
+            let mut st = self.builder.state.borrow_mut();
+            let channel = st.channels[channel_id as usize].name;
+            st.errors
+                .push(TopologyIssue::DuplicateMergeSource { channel });
+            return self;
+        }
+        self.sources
+            .push((channel_id, erase_merge_map::<S::Payload, I, F>(map)));
+        self
+    }
+
+    /// Close the merge on its consumer and return **the consumer's** output
+    /// stream handle, so a merged node chains like any other. Compile-time
+    /// bound: `S::Input == I`.
+    pub fn into<S: Operation<Input = I>>(self) -> Stream<'b, S::Output> {
+        self.wire::<S>(None)
+    }
+
+    /// Like [`into`](Merge::into), but the consumer is a distinct named node
+    /// (the `sdk-graph-authoring` node-identity rule).
+    pub fn into_named<S: Operation<Input = I>>(
+        self,
+        node_name: &'static str,
+    ) -> Stream<'b, S::Output> {
+        self.wire::<S>(Some(node_name))
+    }
+
+    fn wire<S: Operation<Input = I>>(
+        self,
+        node_name: Option<&'static str>,
+    ) -> Stream<'b, S::Output> {
+        let mut st = self.builder.state.borrow_mut();
+        let node = st.register_node::<S>(node_name);
+        if self.declared < 2 {
+            let operation = st.operations[node as usize].name;
+            st.errors.push(TopologyIssue::MergeTooFewSources {
+                operation,
+                sources: self.declared,
+            });
+        }
+        for (channel_id, map) in self.sources {
+            st.attach_consumer(channel_id, node, Some(map));
+        }
+        drop(st);
+        Stream {
+            builder: self.builder,
+            node,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+/// Erase one author callback — `segment_for`, `operation_key`, a merge
+/// mapping, a hybrid plugin serializer. The downcast is a build-time
+/// invariant (the callback is installed by the same wiring that declared the
+/// payload type), so `what` names the declaration only for the impossible
+/// case. An erasure whose downcast failure is a *reported* error rather than
+/// an impossibility — the inter-op codec — needs a `Result` and stays
+/// hand-written.
+fn erase<T, R, F>(what: &'static str, f: F) -> ErasedFn<R>
+where
+    T: 'static,
+    F: Fn(&T) -> R + Send + Sync + 'static,
+{
+    Arc::new(move |value: &dyn Any| {
+        f(value
+            .downcast_ref::<T>()
+            .unwrap_or_else(|| panic!("{what}: type mismatch (build-time invariant)")))
+    })
+}
+
+/// Type-erase one merge mapping, which the author writes over an owned payload
+/// (`Fn(T) -> I`) while the routing seam holds only a reference — hence the
+/// clone a plain `.into` never pays.
+fn erase_merge_map<T, I, F>(map: F) -> MergeMapFn
+where
+    T: Clone + Send + Sync + 'static,
+    I: Send + Sync + 'static,
+    F: Fn(T) -> I + Send + Sync + 'static,
+{
+    erase::<T, _, _>("merge mapping", move |value: &T| {
+        Arc::new(map(value.clone())) as Arc<dyn Any + Send + Sync>
     })
 }
 
@@ -1007,12 +1262,7 @@ impl<'b, T: 'static + Send + Sync> Stream<'b, T> {
         F: Fn(&T) -> Vec<u8> + Send + Sync + 'static,
     {
         let serializer_erased: crate::channel::PluginSerializeFn =
-            Arc::new(move |val: &dyn Any| -> Vec<u8> {
-                let typed = val
-                    .downcast_ref::<T>()
-                    .expect("hybrid plugin serializer: type mismatch (build-time invariant)");
-                serializer(typed)
-            });
+            erase::<T, _, _>("hybrid plugin serializer", serializer);
         self.attach_plugin_sink(plugin_name, serializer_erased)
     }
 

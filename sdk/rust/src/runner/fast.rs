@@ -664,8 +664,7 @@ impl OperativeDispatchHandle {
 
         crate::operative::dispatcher::route_to_consumers(
             &instance,
-            &channel.consumers,
-            channel.overflow_policy,
+            channel,
             &typed_payload,
             &stream,
             consumed_offset,

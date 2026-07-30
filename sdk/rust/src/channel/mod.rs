@@ -11,10 +11,41 @@ use std::sync::Arc;
 
 pub mod builder;
 
-pub use builder::{ChannelBuilder, EntryStream, Stream};
+pub use builder::{ChannelBuilder, EntryStream, Merge, MergeSource, Stream};
 
 pub type ChannelId = u32;
 pub type OperationId = u32;
+
+/// A merge subscription's mapping from a source channel's payload into the
+/// consuming operation's `Input` sum type (`multi-input-operations`). Erased
+/// from the `Fn(T) -> I` the author wrote; the caller guarantees the value is
+/// a `T` because the edge was declared against that channel's payload type.
+///
+/// The mapping MUST be pure — it runs on live delivery and again on WAL
+/// replay, and the two must agree — the same contract entry parsers and
+/// output serializers carry.
+pub type MergeMapFn = Arc<dyn Fn(&dyn Any) -> Arc<dyn Any + Send + Sync> + Send + Sync + 'static>;
+
+/// One consumer subscription on a channel. A plain `.into::<Op>()` carries no
+/// mapping (the channel's payload IS the consumer's `Input`); a
+/// `merge::<I>().from(stream, map)` subscription carries the mapping that
+/// lifts this channel's payload into the merged `Input`.
+#[derive(Clone)]
+pub struct ConsumerEdge {
+    pub operation: OperationId,
+    pub map: Option<MergeMapFn>,
+}
+
+impl ConsumerEdge {
+    /// Apply this edge's mapping, or `None` when the payload is already the
+    /// consumer's input type (the single-input case pays nothing).
+    pub(crate) fn map_value(
+        &self,
+        value: &Arc<dyn Any + Send + Sync>,
+    ) -> Option<Arc<dyn Any + Send + Sync>> {
+        self.map.as_ref().map(|f| f(value.as_ref()))
+    }
+}
 
 /// Phantom-typed channel handle. The `id` is the index into
 /// `OperativeTopology::channels`; the `T` parameter exists only for
@@ -106,7 +137,8 @@ pub struct ChannelDescriptor {
     pub name: Arc<str>,
     pub kind: ChannelKind,
     pub producer: Option<OperationId>,
-    pub consumers: Vec<OperationId>,
+    /// Consumer subscriptions, each carrying its optional merge mapping.
+    pub consumers: Vec<ConsumerEdge>,
     pub plugin_name: Option<Arc<str>>,
     /// For entry channels: convert wire bytes into the typed payload
     /// (`Arc<S::Input>`). For inter-operation channels: `None` — payloads
@@ -143,6 +175,14 @@ pub struct ChannelDescriptor {
     /// journaled at the op-commit barrier and re-seeded on crash-resume
     /// (`bounded-op-journal`). `None` elsewhere.
     pub codec: Option<ChannelCodec>,
+}
+
+impl ChannelDescriptor {
+    /// The consuming operations, mappings stripped — what the graph-shape
+    /// walks and the bounded DAG builder need.
+    pub fn consumer_ids(&self) -> impl Iterator<Item = OperationId> + '_ {
+        self.consumers.iter().map(|e| e.operation)
+    }
 }
 
 /// Typed→bytes / bytes→typed codec pair for an inter-operation channel's

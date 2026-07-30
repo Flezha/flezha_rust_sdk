@@ -60,20 +60,19 @@ pub(crate) struct GraphOrder {
     pub on_cycle: Option<crate::channel::OperationId>,
 }
 
-/// Walk `n` nodes over `edges` (one entry per channel: producer → consumers),
-/// rooted at `roots` (the entry channel's consumers).
+/// Walk `n` nodes over `edges` (producer → consumer pairs), rooted at `roots`
+/// (the entry channel's consumers). Merge mappings are irrelevant to shape, so
+/// an edge is a pair of operation ids.
 pub(crate) fn graph_order(
     n: usize,
-    edges: &[(crate::channel::OperationId, &[crate::channel::OperationId])],
+    edges: &[(crate::channel::OperationId, crate::channel::OperationId)],
     roots: &[crate::channel::OperationId],
 ) -> GraphOrder {
     let mut adjacency: Vec<Vec<usize>> = vec![Vec::new(); n];
     let mut indegree = vec![0usize; n];
-    for (producer, consumers) in edges {
-        for &c in *consumers {
-            adjacency[*producer as usize].push(c as usize);
-            indegree[c as usize] += 1;
-        }
+    for &(producer, consumer) in edges {
+        adjacency[producer as usize].push(consumer as usize);
+        indegree[consumer as usize] += 1;
     }
 
     let mut reachable = vec![false; n];
@@ -160,12 +159,13 @@ pub fn build_topology_with_persistence(
     if !operations.is_empty() {
         let edges: Vec<_> = channels
             .iter()
-            .filter_map(|c| c.producer.map(|p| (p, c.consumers.as_slice())))
+            .filter_map(|c| c.producer.map(|p| (p, c)))
+            .flat_map(|(p, c)| c.consumers.iter().map(move |e| (p, e.operation)))
             .collect();
         let roots: Vec<_> = channels
             .iter()
             .filter(|c| c.kind == ChannelKind::Entry)
-            .flat_map(|c| c.consumers.iter().copied())
+            .flat_map(|c| c.consumers.iter().map(|e| e.operation))
             .collect();
         let shape = graph_order(operations.len(), &edges, &roots);
         if let Some(node) = shape.on_cycle {

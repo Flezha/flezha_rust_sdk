@@ -22,7 +22,7 @@ use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock}
 use flezha_runner::{OverflowPolicy, UnboundedOperative, __dispatch_internals as bi};
 
 mod common;
-use common::{dispatch_input, dummy_stream, setup, wait_until};
+use common::{dispatch_input, dispatch_marked, dummy_stream, setup, wait_until};
 
 // ----- Per-segment ordering (single mode) -----
 
@@ -1927,26 +1927,6 @@ impl UnboundedOperative for ReplayOperative {
     }
 }
 
-/// Dispatch one wire frame with explicit metadata (the replay marks ride there).
-fn dispatch_marked(
-    handle: &OperativeDispatchHandle,
-    payload: &str,
-    stream: &Arc<FlezhaStream>,
-    marks: &[(&str, &str)],
-) {
-    let mut md = HashMap::new();
-    md.insert("channel".to_string(), "input".to_string());
-    for (k, v) in marks {
-        md.insert(k.to_string(), v.to_string());
-    }
-    handle.dispatch(
-        "replay-instance",
-        payload.as_bytes().to_vec(),
-        &md,
-        Arc::clone(stream),
-    );
-}
-
 #[test]
 fn a_replayed_slice_dispatches_in_event_time_order() {
     REPLAY_OBSERVED.lock().unwrap().clear();
@@ -1958,7 +1938,9 @@ fn a_replayed_slice_dispatches_in_event_time_order() {
     for (offset, event_time) in [(1, "300"), (2, "100"), (3, "200")] {
         dispatch_marked(
             &handle,
-            event_time,
+            "replay-instance",
+            "input",
+            event_time.as_bytes().to_vec(),
             &stream,
             &[("flz.replay", "1"), ("flz.offset", &offset.to_string())],
         );
@@ -1975,13 +1957,27 @@ fn a_replayed_slice_dispatches_in_event_time_order() {
     // The controller closes the slice. A broadcast, not a mark on the last
     // input — an input reaches one Segment by key, so a mark would strand every
     // other Segment's buffered slice.
-    dispatch_marked(&handle, "", &stream, &[("flz.replay_end", "1")]);
+    dispatch_marked(
+        &handle,
+        "replay-instance",
+        "input",
+        Vec::new(),
+        &stream,
+        &[("flz.replay_end", "1")],
+    );
 
     // Post-slice live traffic. It must land AFTER the whole slice even though
     // it arrives while the slice is still buffered: the slice is older, and a
     // live input that jumped it would re-create the mis-ordering the correction
     // just repaired.
-    dispatch_marked(&handle, "600", &stream, &[("flz.offset", "4")]);
+    dispatch_marked(
+        &handle,
+        "replay-instance",
+        "input",
+        b"600".to_vec(),
+        &stream,
+        &[("flz.offset", "4")],
+    );
 
     assert!(
         wait_until(

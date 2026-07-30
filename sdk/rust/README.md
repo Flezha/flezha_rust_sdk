@@ -71,8 +71,8 @@ fn channels(c: &ChannelBuilder) {
 
     // Two consumers on one channel: both receive every value Validate
     // releases. Each arm is an ordinary statement that keeps its own chain.
-    validated.into::<FraudCheck>().into::<Merge>();
-    validated.into::<Receipt>().into::<Merge>(); // same class ⇒ same node: a join
+    validated.into::<FraudCheck>().into::<Verdicts>();
+    validated.into::<Receipt>().into::<Verdicts>(); // same class ⇒ same node: a join
 }
 ```
 
@@ -86,10 +86,10 @@ add a name:
 fn channels(c: &ChannelBuilder) {
     c.input::<OrderEvent>("orders").into::<Validate>().branch([
         &|b| {
-            b.into::<FraudCheck>().into::<Merge>();
+            b.into::<FraudCheck>().into::<Verdicts>();
         },
         &|b| {
-            b.into::<Receipt>().into::<Merge>();
+            b.into::<Receipt>().into::<Verdicts>();
         },
     ]);
 }
@@ -104,6 +104,20 @@ One class can sit at several graph positions via named nodes
 identity. Graphs must be acyclic; per-channel config (`codec`, `keyed`,
 `on_full`, `retry_max`, `retry_backoff_ms`) chains on the handle; the hybrid
 tap is `also_output_with(name, serializer)` / `also_output(name)`.
+
+An operation that needs **two feeds** — a data stream plus a live config
+stream, a join of two computed streams — subscribes them with `merge`, which
+maps each source's payload into one author-declared sum-type `Input`:
+
+```rust
+c.merge::<DetectorInput>()
+    .from(readings, DetectorInput::Reading)
+    .from(config, DetectorInput::Threshold)
+    .into::<Detector>();
+```
+
+Per-source FIFO is preserved and nothing is ordered across sources; see
+`docs/multi_input_operations.md`.
 
 ### A fuller graph: named nodes, a hybrid tap, a keyed sink
 
@@ -130,10 +144,10 @@ impl UnboundedOperative for RiskOperative {
 
         // One class, two nodes: each keeps its own per-segment state under
         // its node identity (state dirs, journals, diagnostics). Both arms
-        // name the same (unnamed) Merge class, so their verdicts fan IN —
-        // either arm's `.into::<Merge>()` returns the one join's handle.
-        let verdicts = validated.into_named::<Filter>("fraud_filter").into::<Merge>();
-        validated.into_named::<Filter>("spam_filter").into::<Merge>();
+        // name the same (unnamed) Verdicts class, so their verdicts fan IN —
+        // either arm's `.into::<Verdicts>()` returns the one join's handle.
+        let verdicts = validated.into_named::<Filter>("fraud_filter").into::<Verdicts>();
+        validated.into_named::<Filter>("spam_filter").into::<Verdicts>();
 
         // The join's output closes plugin-bound and keyed: every emit calls
         // ctx.emit_keyed(key, value) and frames carry flz.* identity stamps,

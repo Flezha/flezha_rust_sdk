@@ -128,7 +128,9 @@ use std::sync::{Arc, Condvar, Mutex, RwLock, Weak};
 pub use bounded::spec::BuildBoundedError;
 pub use bounded::{BoundedCtx, BoundedError, BoundedOperative, LoopMode, RollbackMode};
 pub use channel::builder::TopologyIssue;
-pub use channel::{Channel, ChannelBuilder, EntryStream, OverflowPolicy, RetryPolicy, Stream};
+pub use channel::{
+    Channel, ChannelBuilder, EntryStream, Merge, MergeSource, OverflowPolicy, RetryPolicy, Stream,
+};
 use crossbeam::channel::{Receiver, Sender};
 /// Authoring sugar. `#[flezha::operation]`, `#[derive(flezha::State)]`, and
 /// `flezha::operative!` expand to the trait surface above; see

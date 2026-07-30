@@ -1951,6 +1951,97 @@ mod tests {
         }
     }
 
+    /// The merged input of the fan-in below (`multi-input-operations`): the two
+    /// producers carry the same payload type, so only the mapping tells the
+    /// join which branch a contribution came from.
+    #[derive(Clone, Debug)]
+    enum MergedJoinInput {
+        B(String),
+        C(String),
+    }
+
+    /// The diamond's join re-authored as a merge: same two producers, but the
+    /// node consumes one sum type and learns its source from the mapping.
+    #[derive(Default)]
+    struct MergeJoinOp;
+    impl Operation for MergeJoinOp {
+        type Input = MergedJoinInput;
+        type Output = String;
+        type State = ();
+        type Change = NoChange;
+        type Clock = WallClock;
+        type Config = ();
+        fn name() -> &'static str {
+            "bounded_merge_join_op"
+        }
+        fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
+        fn run(
+            &mut self,
+            input: MergedJoinInput,
+            _state: StateHandle<'_, Self>,
+            ctx: &mut OperationCtx<'_>,
+        ) -> Result<(), OperationError> {
+            let label = match input {
+                MergedJoinInput::B(s) => format!("mb:{s}"),
+                MergedJoinInput::C(s) => format!("mc:{s}"),
+            };
+            diamond_log(label.clone());
+            ctx.emit(label)?;
+            Ok(())
+        }
+    }
+
+    /// A→(B,C)→merge(D): the fan-in wired as a merge, so the driver must apply
+    /// each edge's mapping both where it accumulates a producer's released
+    /// batch and where a resume re-seeds from the journaled handoff.
+    struct MergeBounded;
+    impl BoundedOperative for MergeBounded {
+        fn factory_id() -> &'static str {
+            "test-merge-bounded"
+        }
+        fn operations(c: &ChannelBuilder) {
+            let a = c
+                .input::<String>("in")
+                .into::<DiamondA>()
+                .named("m_fan")
+                .codec();
+            let b = a.into::<DiamondB>().named("m_b").codec();
+            let cc = a.into::<DiamondC>().named("m_c").codec();
+            c.merge::<MergedJoinInput>()
+                .from(b, MergedJoinInput::B)
+                .from(cc, MergedJoinInput::C)
+                .into::<MergeJoinOp>()
+                .named("m_out")
+                .output("sink");
+        }
+    }
+
+    /// The same chain whose merge mapping panics. A mapping is the one author
+    /// closure on a bounded chain that runs on the driver thread rather than
+    /// inside a segment invocation, so without containment its unwind would
+    /// take the driver thread with it and the instance would never report.
+    struct PanickingMergeBounded;
+    impl BoundedOperative for PanickingMergeBounded {
+        fn factory_id() -> &'static str {
+            "test-panic-merge-bounded"
+        }
+        fn operations(c: &ChannelBuilder) {
+            let a = c
+                .input::<String>("in")
+                .into::<DiamondA>()
+                .named("pm_fan")
+                .codec();
+            let b = a.into::<DiamondB>().named("pm_b").codec();
+            let cc = a.into::<DiamondC>().named("pm_c").codec();
+            c.merge::<MergedJoinInput>()
+                .from(b, |_: String| panic!("merge mapping blew up"))
+                .from(cc, MergedJoinInput::C)
+                .into::<MergeJoinOp>()
+                .named("pm_out")
+                .output("sink");
+        }
+    }
+
     // ---- non-driver unit tests ----------------------------------------------
 
     #[test]
@@ -2251,6 +2342,45 @@ mod tests {
             other => panic!("expected the shared cycle refusal, got {other:?}"),
         }
 
+        // `multi-input-operations`: a bounded seed is a bare payload naming no
+        // channel, so an entry channel cannot be one merge source among
+        // several — the mapping could not be selected and every entry channel
+        // past the first would be unreadable. Refused by name, at definition
+        // time, instead of accepted and failing every invocation on a type
+        // mismatch.
+        struct EntryMergeBounded;
+        impl BoundedOperative for EntryMergeBounded {
+            fn factory_id() -> &'static str {
+                "test-entry-merge-bounded"
+            }
+            fn operations(c: &ChannelBuilder) {
+                c.merge::<MergedJoinInput>()
+                    .from(c.input::<String>("in"), MergedJoinInput::B)
+                    .from(c.input::<String>("also"), MergedJoinInput::C)
+                    .into::<MergeJoinOp>();
+            }
+        }
+        match spec::build_spec::<EntryMergeBounded>()
+            .expect_err("a bounded merge over an entry channel is refused")
+        {
+            spec::BuildBoundedError::MergeFromEntryChannel {
+                channel, operation, ..
+            } => {
+                assert_eq!(channel, "in");
+                assert_eq!(operation, "bounded_merge_join_op");
+            }
+            other => panic!("expected MergeFromEntryChannel, got {other:?}"),
+        }
+
+        // The inter-op form of the same merge is the supported one and still
+        // registers, with the merged node as a two-parent inner node.
+        let merged = spec::build_spec::<MergeBounded>().expect("an inter-op merge registers");
+        assert_eq!(
+            merged.dag.parents[3],
+            vec![1, 2],
+            "the merged join has both producers as parents"
+        );
+
         // A handoff-chained loop over a branching tree has no single terminal
         // batch to seed iteration N+1 from.
         struct BranchingChained;
@@ -2380,6 +2510,8 @@ mod tests {
         crate::register_bounded_class::<RetrySlowBackoffBounded>().unwrap();
         crate::register_bounded_class::<DiamondBounded>().unwrap();
         crate::register_bounded_class::<DiamondSaga>().unwrap();
+        crate::register_bounded_class::<MergeBounded>().unwrap();
+        crate::register_bounded_class::<PanickingMergeBounded>().unwrap();
 
         let mut node = RunnerNode::new("test-ns".to_string());
 
@@ -3053,28 +3185,33 @@ mod tests {
         let d_fan = diamond_topo.lookup_channel_id("d_fan").unwrap();
         let d_b = diamond_topo.lookup_channel_id("d_b").unwrap();
         let enc = |s: &str| postcard::to_allocvec(&s.to_string()).unwrap();
-        let diamond_journal = instance::JournalResume {
+        // The journal a diamond-shaped chain leaves when A (the fan) and B (one
+        // branch) committed before the crash: each producer's edge handoff, plus
+        // the segments each of them ran. Shared by the branching resume below and
+        // by both merge resumes — the shape is the same, only the channels and
+        // the segments each op ran differ.
+        let ab_committed = |fan: u32, b: u32, a_segs, b_segs| instance::JournalResume {
             committed_op_idxs: vec![0, 1],
             op_handoffs: vec![
                 instance::EdgeHandoff {
                     op_idx: 0,
-                    handoff: vec![(d_fan, enc("a:x"))],
+                    handoff: vec![(fan, enc("a:x"))],
                 },
                 instance::EdgeHandoff {
                     op_idx: 1,
-                    handoff: vec![(d_b, enc("b:a:x"))],
+                    handoff: vec![(b, enc("b:a:x"))],
                 },
             ],
             committed_ops: vec![
                 instance::CommittedOp {
                     op_idx: 0,
                     iter: 0,
-                    segments_ran: vec![da_id.clone()],
+                    segments_ran: a_segs,
                 },
                 instance::CommittedOp {
                     op_idx: 1,
                     iter: 0,
-                    segments_ran: Vec::new(),
+                    segments_ran: b_segs,
                 },
             ],
             ..Default::default()
@@ -3084,7 +3221,7 @@ mod tests {
             "diamond-r".into(),
             "x".into(),
             1,
-            Some(diamond_journal),
+            Some(ab_committed(d_fan, d_b, vec![da_id.clone()], Vec::new())),
         ));
         let (diamond_inst, _slot) = node
             .find_bounded_segment(&da_id)
@@ -3135,6 +3272,158 @@ mod tests {
                 "undo-a:a:x".to_string(),
             ],
             "reverse-topological over the DAG: join first, shared root last"
+        );
+
+        // --- multi-input-operations: the same fan-in wired as a merge. Each
+        // producer's contribution reaches the join through ITS edge's mapping,
+        // so a node whose Input is neither producer's Output still dispatches ---
+        let _ = drain_diamond_log();
+        let _ = drain_op_commits();
+        assert!(node.start_bounded("test-merge-bounded".into(), "merge-1".into(), "x".into()));
+        let (outs, done) = drain(&rx, "merge-1");
+        assert_eq!(done.0, "ok");
+        assert_eq!(
+            outs,
+            vec![b"mb:b:a:x".to_vec(), b"mc:c:a:x".to_vec()],
+            "each contribution arrives mapped by the edge it came in on"
+        );
+
+        // --- and the journal re-seed maps too: B's handoff is decoded with the
+        // channel's codec, then lifted by the same mapping the live run used ---
+        let _ = drain_diamond_log();
+        let _ = drain_op_commits();
+        let ma_id = crate::segment::flusher::encode_segment_identity("merge-r", "diamond_a", "");
+        let merge_spec = registry::get_class("test-merge-bounded").expect("merge class registered");
+        let merge_topo = merge_spec.topology.as_ref().expect("structured");
+        let m_fan = merge_topo.lookup_channel_id("m_fan").unwrap();
+        let m_b = merge_topo.lookup_channel_id("m_b").unwrap();
+        assert!(node.start_bounded_resumable(
+            "test-merge-bounded".into(),
+            "merge-r".into(),
+            "x".into(),
+            1,
+            Some(ab_committed(m_fan, m_b, vec![ma_id.clone()], Vec::new())),
+        ));
+        let (merge_inst, _slot) = node
+            .find_bounded_segment(&ma_id)
+            .expect("a durable merge Segment is reachable by the restore handler");
+        merge_inst.note_restored();
+        let (outs, done) = drain(&rx, "merge-r");
+        assert_eq!(done.0, "ok");
+        assert_eq!(
+            outs,
+            vec![b"mb:b:a:x".to_vec(), b"mc:c:a:x".to_vec()],
+            "the resumed join banks B's journaled handoff mapped, C's fresh output mapped"
+        );
+
+        // --- a panicking mapping is CONTAINED. It runs on the driver thread,
+        // outside any segment invocation, so an unguarded unwind would kill the
+        // thread before `emit_bounded_completed` and strand the instance ---
+        let _ = drain_comp_log();
+        let _ = drain_diamond_log();
+        let _ = drain_op_commits();
+        assert!(node.start_bounded(
+            "test-panic-merge-bounded".into(),
+            "merge-panic".into(),
+            "x".into()
+        ));
+        let (outs, done) = drain(&rx, "merge-panic");
+        assert_eq!(
+            done.0, "error",
+            "the operative still REPORTS — the panic did not take the driver with it"
+        );
+        assert!(
+            done.1.contains("merge mapping panicked") && done.1.contains("merge mapping blew up"),
+            "the terminal error names the mapping and carries the panic message: {:?}",
+            done.1
+        );
+        assert!(outs.is_empty(), "the join never ran, so nothing shipped");
+        // The saga fires over exactly what was RECORDED as completed when the
+        // abort began: the producer whose edge blew up (B) and its parent (A),
+        // reverse-topologically. C ran in the same level but the abort returns
+        // before its stage record is pushed, so it is not undone — the same
+        // mid-level shape a failing op commit has always had. Asserted as an
+        // exact list so the Java arm is pinned to it, not merely compatible.
+        let comp = drain_comp_log();
+        assert_eq!(
+            comp,
+            vec!["undo-b:b:a:x".to_string(), "undo-a:a:x".to_string()],
+            "the contained mapping panic compensates the recorded stages, in reverse"
+        );
+        let panic_log = drain_diamond_log();
+        assert!(
+            panic_log.contains(&"c:a:x".to_string()),
+            "the sibling DID run in the same level (and is deliberately not in the \
+             undo list above): {panic_log:?}"
+        );
+
+        // --- the SECOND mapping site: a crash-resume re-seed. `resumed_start`
+        // maps a committed producer's JOURNALED handoff into its uncommitted
+        // consumers, on the driver thread and before any stage runs, so it needs
+        // the same containment as the forward release — and here the undo scope
+        // is the journal's own stages ---
+        let _ = drain_comp_log();
+        let _ = drain_diamond_log();
+        let _ = drain_op_commits();
+        let pa_id =
+            crate::segment::flusher::encode_segment_identity("merge-panic-r", "diamond_a", "");
+        let pb_id =
+            crate::segment::flusher::encode_segment_identity("merge-panic-r", "diamond_b", "");
+        let panic_spec =
+            registry::get_class("test-panic-merge-bounded").expect("panic merge class registered");
+        let panic_topo = panic_spec.topology.as_ref().expect("structured");
+        let pm_fan = panic_topo.lookup_channel_id("pm_fan").unwrap();
+        let pm_b = panic_topo.lookup_channel_id("pm_b").unwrap();
+        WAL_FRAMES.lock().unwrap().clear();
+        assert!(node.start_bounded_resumable(
+            "test-panic-merge-bounded".into(),
+            "merge-panic-r".into(),
+            "x".into(),
+            1,
+            Some(ab_committed(
+                pm_fan,
+                pm_b,
+                vec![pa_id.clone()],
+                vec![pb_id.clone()],
+            )),
+        ));
+        let (panic_inst, _slot) = node
+            .find_bounded_segment(&pa_id)
+            .expect("a durable resumed Segment is reachable by the restore handler");
+        panic_inst.note_restored();
+        let (outs, done) = drain(&rx, "merge-panic-r");
+        assert_eq!(
+            done.0, "error",
+            "a mapping that panics while re-seeding still REPORTS"
+        );
+        assert!(
+            done.1.contains("merge mapping panicked") && done.1.contains("merge mapping blew up"),
+            "the terminal error names the mapping: {:?}",
+            done.1
+        );
+        assert!(outs.is_empty(), "no stage ran, so nothing shipped");
+        // The journaled stages ARE the undo scope here — `drive_chain` seeds the
+        // resumed iteration's completed list from the journal. The comp log is
+        // NOT the signal to read: `diamond_op!` logs once per completed output
+        // and a journal-rebuilt SegmentRun carries none, so a real compensation
+        // leaves it empty. The compensation-done markers the sink already
+        // captures are, and they carry the segment they undid.
+        let done_frames: Vec<Vec<u8>> = WAL_FRAMES
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(pid, _)| pid == DONE)
+            .map(|(_, frame)| frame.clone())
+            .collect();
+        let carries = |frame: &[u8], id: &[u8]| frame.windows(id.len()).any(|w| w == id);
+        assert_eq!(
+            done_frames.len(),
+            2,
+            "both journaled stages were compensated"
+        );
+        assert!(
+            carries(&done_frames[0], &pb_id) && carries(&done_frames[1], &pa_id),
+            "reverse-topological: B's segment is undone before A's"
         );
 
         // --- bounded-durable-loop: one iteration per inbox item, each ending in

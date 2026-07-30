@@ -108,6 +108,7 @@ pub use operation::WallClock;
 #     pub fn input<T: DeserializeOwned + Send + Sync>(&self, name: &'static str) -> EntryStream<'_, T>;
 #     pub fn input_with<T, P>(&self, name: &'static str, parser: P) -> EntryStream<'_, T>
 #       where P: Fn(Vec<u8>) -> Result<T, String> + Send + Sync + 'static;
+#     pub fn merge<I: Send + Sync + 'static>(&self) -> Merge<'_, I>;
 #     # effectively_once / checkpoint_ack / correction_window / beyond_window_policy (&self)
 #
 #   pub struct EntryStream<'b, T>;   # Copy; borrows the builder
@@ -124,6 +125,21 @@ pub use operation::WallClock;
 #       where F: Fn(&T) -> Vec<u8> + Send + Sync + 'static;
 #     pub fn also_output(self, plugin_name: &'static str) -> Self where T: Serialize;
 #     pub fn output(self, plugin_name: &'static str) -> Channel<T> where T: Serialize;  # terminal
+#
+#   Multi-input operations (`add-multi-input-operations`):
+#
+#   pub trait MergeSource<'b> {                 # impl'd for EntryStream and Stream
+#       type Payload: Clone + Send + Sync + 'static;
+#       fn merge_channel_id(self) -> ChannelId;
+#   }
+#
+#   pub struct Merge<'b, I>;                    # built by ChannelBuilder::merge
+#                                               # Merge + MergeSource are re-exported
+#                                               # at the crate root beside Stream
+#     pub fn from<S, F>(self, source: S, map: F) -> Self
+#       where S: MergeSource<'b>, F: Fn(S::Payload) -> I + Send + Sync + 'static;
+#     pub fn into<S: Operation<Input = I>>(self) -> Stream<'b, S::Output>;
+#     pub fn into_named<S: Operation<Input = I>>(self, node_name: &'static str) -> Stream<'b, S::Output>;
 #
 #   Removed: ChannelDecl, ChannelDeclWithProducer, EntryChannel, EntryChannelType,
 #   channel::<T>("name"), .from::<S>(), to_plugin, also_to_plugin_with.
@@ -142,6 +158,16 @@ pub use operation::WallClock;
 #       BranchTooFewArms { arms: usize },
 #       Cycle { operation: &'static str },
 #       UnreachableOperation { operation: &'static str },
+#       MergeTooFewSources { operation: &'static str, sources: usize },
+#       DuplicateMergeSource { channel: &'static str },
+#       MergeSourceAlreadyWired { channel: &'static str, operation: &'static str },
+#   }
+#
+# `BuildBoundedError` variants (`bounded::spec`):
+#
+#   pub enum BuildBoundedError {
+#       /* existing variants unchanged */
+#       MergeFromEntryChannel { factory_id: &'static str, channel: String, operation: String },
 #   }
 #
 # `OperationError` variants:
@@ -160,7 +186,17 @@ pub use operation::WallClock;
 #       /* existing fields unchanged */
 #       pub plugin_sink: Option<PluginSink>,
 #       pub keyed: bool,
+#       pub consumers: Vec<ConsumerEdge>,
 #   }
+#     pub fn consumer_ids(&self) -> impl Iterator<Item = OperationId> + '_;
+#
+#   pub struct ConsumerEdge {
+#       pub operation: OperationId,
+#       pub map: Option<MergeMapFn>,
+#   }
+#
+#   pub type MergeMapFn =
+#       Arc<dyn Fn(&dyn Any) -> Arc<dyn Any + Send + Sync> + Send + Sync + 'static>;
 #
 #   pub struct PluginSink {
 #       pub name: Arc<str>,

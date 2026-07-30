@@ -35,7 +35,7 @@ use super::instance::{BoundedInstance, CommittedOp, InboxItem, JournalResume};
 use super::spec::{BoundedSpec, OpDag};
 use super::{BoundedCollectSink, BoundedCtx, BoundedError, BoundedRunFn, LoopMode, RollbackMode};
 use crate::channel::builder::BuildSegmentArgs;
-use crate::channel::{ChannelId, ChannelKind, OperationId, RetryPolicy};
+use crate::channel::{ChannelId, ChannelKind, MergeMapFn, OperationId, RetryPolicy};
 use crate::operative::topology::{OperationDescriptor, OperativeTopology, SegmentingMode};
 use crate::runner::work_stealing_pool::WorkStealingPool;
 use crate::segment::flusher::SegmentFlusher;
@@ -127,6 +127,54 @@ impl ChainCtx<'_> {
             .operation(self.dag.order[node])
             .expect("dag operation present in topology")
     }
+
+    /// The merge mapping declared on the edge from `producer`'s output channel
+    /// into `child` (`multi-input-operations`), or `None` for the single-input
+    /// case where the producer's `Output` already IS the consumer's `Input`.
+    fn edge_map(&self, producer: usize, child: usize) -> Option<&MergeMapFn> {
+        let channel_id = self.op(producer).output_channel_id?;
+        let target = self.dag.order[child];
+        self.topology
+            .channel(channel_id)?
+            .consumers
+            .iter()
+            .find(|e| e.operation == target)
+            .and_then(|e| e.map.as_ref())
+    }
+}
+
+/// Extend `dest` with a producer's released batch, lifted through the edge's
+/// merge mapping when it declares one. Shared by the forward accumulate and the
+/// journal re-seed so a resumed merge sees exactly what the live one did; an
+/// unmapped edge — every single-input chain — moves its values straight in.
+///
+/// The mapping is author code, and unlike every other author closure on a
+/// bounded chain it runs on the driver thread rather than inside a segment
+/// invocation — so it is contained here the way `run_collecting` contains an
+/// operation body: an unwind becomes an error the chain aborts and compensates
+/// on, instead of killing the driver thread and leaving the instance with no
+/// `BoundedCompleted`. Retrying is not offered: a mapping is required to be
+/// pure, so a re-run would panic identically.
+fn extend_mapped(
+    dest: &mut Vec<Value>,
+    map: Option<&MergeMapFn>,
+    batch: impl Iterator<Item = Value>,
+) -> Result<(), String> {
+    let Some(f) = map else {
+        dest.extend(batch);
+        return Ok(());
+    };
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        for value in batch {
+            dest.push(f(value.as_ref()));
+        }
+    }))
+    .map_err(|panic| {
+        format!(
+            "merge mapping panicked: {}",
+            crate::operation::error::format_panic(panic)
+        )
+    })
 }
 
 /// Spawn the bounded driver for one already-registered instance on a dedicated
@@ -587,11 +635,15 @@ fn run_iteration(
                 for &child in children {
                     // Accumulate — never overwrite — this producer's released
                     // output into the child's input batch; the child runs once
-                    // all its producers have committed.
-                    pending
-                        .entry(child)
-                        .or_default()
-                        .extend(out.batch.iter().map(Arc::clone));
+                    // all its producers have committed. A merged child receives
+                    // each producer's contribution through that edge's mapping.
+                    if let Err(e) = extend_mapped(
+                        pending.entry(child).or_default(),
+                        ctx.edge_map(node, child),
+                        out.batch.iter().map(Arc::clone),
+                    ) {
+                        return Err(abnormal_status(cancel, e));
+                    }
                     let outstanding = waiting
                         .entry(child)
                         .or_insert_with(|| ctx.dag.parents[child].len());
@@ -650,11 +702,8 @@ fn resumed_start(
                 .find(|edge| edge.op_idx as usize == *parent)
                 .map(|edge| edge.handoff.as_slice())
                 .unwrap_or_default();
-            batch.extend(seed_from_journal(
-                ctx,
-                handoff,
-                ctx.op(*parent).output_channel_id,
-            )?);
+            let seeded = seed_from_journal(ctx, handoff, ctx.op(*parent).output_channel_id)?;
+            extend_mapped(&mut batch, ctx.edge_map(*parent, node), seeded.into_iter())?;
         }
         let outstanding = parents.len() - committed_parents.len();
         if outstanding == 0 {

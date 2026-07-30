@@ -4,6 +4,51 @@ All notable changes to the Rust SDK crate.
 
 ## Unreleased
 
+### Multi-input operations (`add-multi-input-operations`)
+
+- **`ChannelBuilder::merge::<I>()`** — subscribe two or more source channels to
+  ONE operation whose `Input` is an author-declared sum type, each `.from(source,
+  map)` supplying the mapping from that channel's payload into it:
+  `c.merge::<SignalInput>().from(ticker, SignalInput::Ticker).from(config,
+  SignalInput::Config).into::<Detector>()`. Entry streams and inter-operation
+  streams are both valid sources on an unbounded operative (`MergeSource`,
+  implemented for `EntryStream` and `Stream`), freely mixed; see the bounded
+  restriction below. Single-input `.into` is unchanged.
+- **Purely a subscription-time construct**: `Operation` is untouched, so
+  dispatch, state, `segment_for`, retry/DLQ and the emit APIs all see one type.
+  `segment_for` / `operation_key` are evaluated on the **mapped** value.
+- **A merge mapping is contained on the bounded driver thread.** It is the only
+  author closure on a bounded chain running outside a segment invocation, so
+  `extend_mapped` catches its unwind and reports it as a terminal chain error, and
+  the instance still reports. An unguarded one would skip
+  `emit_bounded_completed` and strand it. At the **forward** accumulate site the
+  saga unwinds the stages recorded as completed — the producer whose edge blew
+  up among them, since the mapping runs after that stage's record and commit —
+  and Java unwinds the same set in the same order; a sibling still in flight in
+  the same level is not unwound, as for any other mid-level abort. At the
+  **crash-resume re-seed** site Rust also unwinds the journaled stages (the
+  resumed iteration's completed list is seeded from the journal); the Java arm
+  does not, a pre-existing gap in its resumed chains recorded under "Known
+  limitation" in `docs/multi_input_operations.md`. `Merge` is `#[must_use]`: a merge left unclosed by
+  `.into` declares no edges at all.
+- **Per-source FIFO is preserved; nothing is ordered across sources** — the
+  guarantee two independent consumers already had. Mappings MUST be pure: they
+  run on live delivery and again on WAL replay, the same contract entry parsers
+  carry.
+- New `TopologyIssue` variants `MergeTooFewSources`, `DuplicateMergeSource` and
+  `MergeSourceAlreadyWired` (a source may not re-wire an edge `.into` or another
+  merge already declared — the mapping would otherwise be silently dropped); a
+  mapped type that is not the operation's `Input` is a compile error at
+  `.into::<Op>()`.
+- **Bounded merges consume inter-operation channels only.** The bounded seed is
+  a bare payload naming no channel, so an entry channel as one merge source
+  among several is refused at registration with
+  `BuildBoundedError::MergeFromEntryChannel` rather than accepted and failing
+  every invocation. Unbounded merges accept entry channels.
+- `ChannelDescriptor::consumers` is now `Vec<ConsumerEdge>` (operation id plus
+  the optional mapping); `consumer_ids()` is the id-only view.
+- No wire change and no controller change. Example: `examples/merged_input.rs`.
+
 ### Operation-requested spawn (`add-operation-requested-spawn`)
 
 - **`OperationCtx::spawn_bounded(instance_id, factory_id, payload, if_running)`**

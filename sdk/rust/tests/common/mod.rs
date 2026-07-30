@@ -116,7 +116,23 @@ pub fn dispatch_input(
     payload: Vec<u8>,
     stream: &Arc<FlezhaStream>,
 ) {
+    dispatch_marked(handle, operative_id, channel, payload, stream, &[]);
+}
+
+/// Dispatch one wire frame carrying extra metadata — the controller's
+/// `flz.replay` / `flz.offset` / `flz.replay_end` marks ride there.
+pub fn dispatch_marked(
+    handle: &OperativeDispatchHandle,
+    operative_id: &str,
+    channel: &str,
+    payload: Vec<u8>,
+    stream: &Arc<FlezhaStream>,
+    marks: &[(&str, &str)],
+) {
     let mut md = HashMap::new();
     md.insert("channel".to_string(), channel.to_string());
+    for (k, v) in marks {
+        md.insert(k.to_string(), v.to_string());
+    }
     handle.dispatch(operative_id, payload, &md, Arc::clone(stream));
 }
