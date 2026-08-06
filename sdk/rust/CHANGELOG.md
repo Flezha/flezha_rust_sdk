@@ -4,6 +4,37 @@ All notable changes to the Rust SDK crate.
 
 ## Unreleased
 
+### Live Entity read (`entity-state-live-query`)
+
+- **The `EntityState` command gained a selector**, so the state an operator asks
+  for is the only state serialized: `EntityState { operative_id, procedure,
+  entity_key }`, where an empty string means absent. No selector is the
+  whole-Operative migration/handover shape and encodes byte-identically to
+  before. `entity_key` without `procedure` is refused — an Entity key is unique
+  only within its Procedure.
+- **Dynamic-mode Entities are serialized**, keyed by whatever the live registry
+  holds. The whole-Operative shape previously omitted them entirely.
+- **`command::entity_state::serialize_selected_state`** is the public entry
+  point: it returns `(json, Option<seq>)`, the seq present only when the selector
+  named exactly one Entity. `serialize_operative_state` keeps its signature and
+  is now that call with an empty selector. Refusal strings lead with a canonical
+  token (`entity_key_without_procedure`, `procedure_not_found`,
+  `entity_not_found`, `entity_evicted`).
+- **Serialization takes the Entity's state lock and does NOT drain pending
+  changes**, so the value returned includes changes not yet flushed to the WAL —
+  the read reports `flz.change_seq` on the reply frame's metadata rather than
+  hiding that. It triggers no compaction, snapshot or truncation.
+- **`CommandAction` gained a defaulted `reply`** returning
+  `(payload_id, raw_data, HashMap<String, String>)` — the frame metadata a
+  command's answer stamps. Every handler but `EntityState` inherits the default,
+  which forwards to `handle` with no metadata, so their frames are unchanged.
+- **`DynamicEntityRegistry::recently_evicted`** exposes a bounded (1024-key)
+  trace of what the reaper evicted, so a read can answer "idle-evicted" rather
+  than "never existed". Beyond the cap it degrades to the latter, which is the
+  safe direction.
+- Example: `sdk/rust/examples/live_state_read.rs`. Docs:
+  `docs/entity_state_live_query.md`.
+
 ### Stream transforms and edge keying (`stream-dsl-keyby-and-transforms`)
 
 - **BREAKING — `Procedure::entity_key` and `const ENTITY_KEY_OVERRIDDEN` are
