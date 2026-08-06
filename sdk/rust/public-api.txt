@@ -298,3 +298,34 @@ pub use operative::builder::TopologyBuildError;
 #   }
 #
 #   #[doc(hidden)] pub fn __register_unbounded<R: UnboundedOperative>();  # macro plumbing only
+
+# Live Entity read (`entity-state-live-query`). The `EntityState` command
+# gained a selector; the serializer that answers it is public because the
+# migration/handover path and the integration tests both call it.
+#
+#   pub mod command::entity_state {
+#       pub const CHANGE_SEQ_META_KEY: &str;          # "flz.change_seq"
+#       pub const ENTITY_KEY_WITHOUT_PROCEDURE: &str; # refusal tokens
+#       pub const PROCEDURE_NOT_FOUND: &str;
+#       pub const ENTITY_NOT_FOUND: &str;
+#       pub const ENTITY_EVICTED: &str;
+#
+#       pub struct StateSelector<'a> {
+#           pub procedure: Option<&'a str>,
+#           pub entity_key: Option<&'a str>,
+#       }
+#
+#       pub fn serialize_operative_state(&Arc<UnboundedInstance>) -> Vec<u8>;
+#       pub fn serialize_selected_state(
+#           &Arc<UnboundedInstance>, StateSelector<'_>,
+#       ) -> Result<(Vec<u8>, Option<u64>), String>;   # (json, seq of a single Entity)
+#   }
+#
+#   CHANGED: `CommandAction` gained a defaulted `reply` returning
+#   `(payload_id, raw_data, HashMap<String, String>)` — the frame metadata a
+#   command's answer stamps. Every handler but `EntityState` inherits the
+#   default, which forwards to `handle` with no metadata.
+#
+#   ADDED: `DynamicEntityRegistry::recently_evicted(&self, key: &str) -> bool`
+#   — the bounded eviction trace that lets a live read say "idle-evicted"
+#   rather than "never existed".

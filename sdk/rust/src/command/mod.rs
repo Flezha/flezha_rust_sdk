@@ -36,6 +36,21 @@ pub trait CommandAction {
         command_struct: &str,
         errors: &mut Vec<String>,
     ) -> (String, Vec<u8>);
+
+    /// Reply payload plus the metadata to stamp on its frame. Overridden only
+    /// by commands whose answer carries more than bytes — `EntityState` stamps
+    /// `flz.change_seq` for a single selected Entity. The default forwards to
+    /// [`Self::handle`] with no metadata, which is what every other command
+    /// wants and keeps their frames byte-identical.
+    fn reply(
+        &self,
+        runner: &mut RunnerNode,
+        command_struct: &str,
+        errors: &mut Vec<String>,
+    ) -> (String, Vec<u8>, HashMap<String, String>) {
+        let (payload_id, raw_data) = self.handle(runner, command_struct, errors);
+        (payload_id, raw_data, HashMap::new())
+    }
 }
 
 pub enum CommandActionType {
@@ -280,7 +295,7 @@ fn exec_control(
     let mut status = String::from("success");
 
     let message_str = std::str::from_utf8(message).unwrap_or("");
-    let (_payload_id, raw_data) = handler.handle(runner, message_str, &mut errors);
+    let (_payload_id, raw_data, metadata) = handler.reply(runner, message_str, &mut errors);
 
     if !errors.is_empty() {
         status = "error".to_string();
@@ -295,7 +310,7 @@ fn exec_control(
 
     let command_response_bytes = command_response.encode_to_vec();
 
-    payloader::build_from_binary(payload_id, &command_response_bytes, HashMap::new())
+    payloader::build_from_binary(payload_id, &command_response_bytes, metadata)
 }
 
 #[cfg(test)]

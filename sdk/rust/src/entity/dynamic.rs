@@ -7,9 +7,9 @@
 //! [`DynamicEntityRegistry::reap_sweep`]); a later input cold-starts a
 //! fresh Entity.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock, Weak};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -27,6 +27,10 @@ use crate::runner::work_stealing_pool::WorkStealingPool;
 
 const ENV_REAP_INTERVAL_MS: &str = "FLEZHA_REAP_INTERVAL_MS";
 const MAX_SWEEP_INTERVAL: Duration = Duration::from_secs(30);
+/// How many evicted keys the registry remembers so a live read can say
+/// "idle-evicted" rather than "never existed". Bounded — the trace is a
+/// diagnosis aid, not a record.
+const EVICTED_TRACE_CAP: usize = 1024;
 
 /// Monotonic milliseconds since process start. Stamped on every push into a
 /// dynamic Entity's mailbox; read by the reaper. One global anchor keeps
@@ -56,6 +60,10 @@ pub enum GetOrCreateError {
 pub struct DynamicEntityRegistry {
     pub entities: DashMap<String, Arc<EntitySlot>>,
     pub counters: DynamicEntityCounters,
+    /// Keys this reaper evicted, newest last, capped at [`EVICTED_TRACE_CAP`].
+    /// Read only to answer a live read: "idle-evicted" and "never existed"
+    /// serve the same (absent) value but are different diagnoses.
+    evicted: Mutex<VecDeque<String>>,
     procedure_id: ProcedureId,
     max_entities: usize,
     topology: Arc<OperativeTopology>,
@@ -79,6 +87,7 @@ impl DynamicEntityRegistry {
         Self {
             entities: DashMap::new(),
             counters: DynamicEntityCounters::default(),
+            evicted: Mutex::new(VecDeque::new()),
             procedure_id,
             max_entities,
             topology,
@@ -161,7 +170,28 @@ impl DynamicEntityRegistry {
             self.counters
                 .entities_evicted_total
                 .fetch_add(1, Ordering::Relaxed);
+            self.note_evicted(key);
         }
+    }
+
+    /// True when `key` is in the bounded eviction trace. False for a key that
+    /// never had an Entity — and for one evicted longer than
+    /// [`EVICTED_TRACE_CAP`] evictions ago, which then reads as "no Entity by
+    /// that key", the safe direction: it claims no eviction it cannot show.
+    pub fn recently_evicted(&self, key: &str) -> bool {
+        self.evicted
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .any(|k| k == key)
+    }
+
+    fn note_evicted(&self, key: String) {
+        let mut trace = self.evicted.lock().unwrap_or_else(|p| p.into_inner());
+        if trace.len() == EVICTED_TRACE_CAP {
+            trace.pop_front();
+        }
+        trace.push_back(key);
     }
 
     /// Allocate a fresh slot for `key`, wired exactly as the static-mode slots

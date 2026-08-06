@@ -173,6 +173,10 @@ pub struct MigrationDeserialization {
 pub struct EntityState {
     #[prost(string, tag = "1")]
     pub operative_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub procedure: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub entity_key: ::prost::alloc::string::String,
 }
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct RunnerDisconnect {}
