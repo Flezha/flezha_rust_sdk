@@ -1,7 +1,7 @@
 //! Inbound credit-grant flow control commands (controller → SDK).
 //!
 //! `CreditWindowInit` arms the process-global sender window
-//! (`crate::segment::credit`) and acks by returning the encoded
+//! (`crate::entity::credit`) and acks by returning the encoded
 //! `CreditWindowAck` as this command's `CommandResponse` payload — the
 //! controller marks the session credit-speaking on that ack.
 //! `CreditGrant` replenishes the window; both run on the control
@@ -11,9 +11,9 @@
 use prost::Message;
 
 use super::CommandAction;
+use crate::entity::credit;
 use crate::pb::{CreditGrant, CreditWindowAck, CreditWindowInit};
 use crate::runner::RunnerNode;
-use crate::segment::credit;
 
 impl CommandAction for CreditWindowInit {
     fn handle(

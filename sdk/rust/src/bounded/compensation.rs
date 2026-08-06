@@ -1,11 +1,11 @@
 //! Saga compensation planning for the bounded driver.
 //!
-//! The driver records each **completed** stage (the operation + the segments
+//! The driver records each **completed** stage (the procedure + the entities
 //! that ran, with their collected outputs) as it advances. On abnormal
-//! termination — an operation errors, or an external stop trips after partial
+//! termination — a procedure errors, or an external stop trips after partial
 //! progress — [`plan_compensation`] turns those records into the exact rollback
-//! order: completed operations are undone in **reverse**, and within an
-//! operation each segment that ran is compensated once (segment order is
+//! order: completed procedures are undone in **reverse**, and within an
+//! procedure each entity that ran is compensated once (entity order is
 //! irrelevant — independent keys). A clean `ok` produces no records, so nothing
 //! is compensated.
 //!
@@ -20,46 +20,46 @@ use std::sync::Arc;
 
 use super::RollbackMode;
 
-/// Type-erased value a segment collected on its forward run, retained for a
+/// Type-erased value an entity collected on its forward run, retained for a
 /// possible compensation. Downcast back to `Arc<S::Output>` by
-/// `OperationDispatcher::compensate_collecting`.
+/// `ProcedureDispatcher::compensate_collecting`.
 pub(crate) type Value = Arc<dyn Any + Send + Sync>;
 
-/// One serialized plugin-bound output staged by a segment, in the order the
-/// segment produced it: `(plugin channel name, payload bytes)`.
+/// One serialized plugin-bound output staged by an entity, in the order the
+/// entity produced it: `(plugin channel name, payload bytes)`.
 pub(crate) type StagedOutput = (String, Vec<u8>);
 
-/// One segment's contribution to a completed stage: which segment ran, the
-/// inter-operation outputs it collected, and the plugin-bound output it staged
-/// for the operation's transactional outbox. Only segments that actually
-/// processed input are recorded ("an effect"); empty-partition segments never
+/// One entity's contribution to a completed stage: which entity ran, the
+/// inter-procedure outputs it collected, and the plugin-bound output it staged
+/// for the procedure's transactional outbox. Only entities that actually
+/// processed input are recorded ("an effect"); empty-partition entities never
 /// ran and are skipped.
-pub(crate) struct SegmentRun {
-    pub segment_index: usize,
+pub(crate) struct EntityRun {
+    pub entity_index: usize,
     pub outputs: Vec<Value>,
     pub staged: Vec<StagedOutput>,
 }
 
-/// A completed operation in the chain, recorded so it can be rolled back.
-/// `stage_idx` indexes both the chain and the driver's pre-built stage-segment
-/// table, so the compensator resolves the operation descriptor and the segment
+/// A completed procedure in the chain, recorded so it can be rolled back.
+/// `stage_idx` indexes both the chain and the driver's pre-built stage-entity
+/// table, so the compensator resolves the procedure descriptor and the entity
 /// slots from it. `iter` is the loop iteration it ran in, which its `compensated`
 /// journal entry is keyed by (0 for a non-looping chain, and for a record
 /// rebuilt from compensation-intent markers, which carry no iteration).
 pub(crate) struct StageRecord {
     pub stage_idx: usize,
     pub iter: u32,
-    pub segments: Vec<SegmentRun>,
+    pub entities: Vec<EntityRun>,
 }
 
 /// Resolve the rollback order for an abnormal termination.
 ///
 /// `in_flight` is the interrupted iteration's completed stages, in completion
 /// order; it is **always** undone (reverse order). Completion order is
-/// **topological** over the operation tree — the driver records a level of the
+/// **topological** over the procedure tree — the driver records a level of the
 /// frontier before releasing its children, and the journal-rebuilt path sorts by
 /// `stage_idx`, which is BFS-numbered — so reversing it is exactly the
-/// reverse-topological order a tree saga requires: no operation is undone before
+/// reverse-topological order a tree saga requires: no procedure is undone before
 /// its compensated descendants, and independent sibling subtrees unwind in an
 /// unspecified relative order. For a linear chain that degenerates to the exact
 /// reverse of the chain (`bounded-branching` D4a).
@@ -93,12 +93,12 @@ mod tests {
     use super::*;
 
     /// Build a `StageRecord` with no retained outputs (the plan only orders
-    /// stages; per-segment output handling is the dispatcher's job).
+    /// stages; per-entity output handling is the dispatcher's job).
     fn stage(stage_idx: usize) -> StageRecord {
         StageRecord {
             stage_idx,
             iter: 0,
-            segments: Vec::new(),
+            entities: Vec::new(),
         }
     }
 
@@ -143,7 +143,7 @@ mod tests {
             if let Some(p) = p {
                 assert!(
                     position(*p) > position(node),
-                    "operation {p} must be compensated after its descendant {node}"
+                    "procedure {p} must be compensated after its descendant {node}"
                 );
             }
         }

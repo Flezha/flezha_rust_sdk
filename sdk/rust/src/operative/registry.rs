@@ -7,7 +7,7 @@
 //! `OperativeRegistry`: per-`RunnerNode`; one entry per
 //! `AddOperative` (instance_id). Reuses the DashMap pattern from the
 //! pre-change `OperativeRegistry` so concurrent reader/writer access is
-//! operationed. Values are a sealed [`Operative`] — operative or bounded — so the
+//! procedureed. Values are a sealed [`Operative`] — operative or bounded — so the
 //! dispatch boundary resolves the variant once per frame; the `Arc` keeps
 //! map values pointer-sized.
 
@@ -17,15 +17,15 @@ use std::sync::{Arc, RwLock};
 use lazy_static::lazy_static;
 
 use crate::bounded::instance::BoundedInstance;
+use crate::entity::EntitySlot;
 use crate::operative::instance::UnboundedInstance;
 use crate::operative::topology::OperativeTopology;
-use crate::segment::SegmentSlot;
 
 /// A control-plane-managed unit instance. Sealed two-variant enum: a new kind
 /// must be handled at every match, and the 2-variant match keeps the operative hot
 /// path branch-predictable rather than devirtualizing a single variant. Each
 /// variant carries its per-instance runtime state — a bounded operative's
-/// cancel/inbox/Segments live on its [`BoundedInstance`] (no bounded-specific
+/// cancel/inbox/Entities live on its [`BoundedInstance`] (no bounded-specific
 /// process-global).
 pub enum Operative {
     Unbounded(Arc<UnboundedInstance>),
@@ -111,17 +111,17 @@ impl OperativeRegistry {
             })
     }
 
-    /// Locate a live bounded Segment slot by its wire identity, for the inbound
+    /// Locate a live bounded Entity slot by its wire identity, for the inbound
     /// `RestoreInitState` handler (the unbounded scan does not see bounded
-    /// Segments). Returns the owning instance (to record the restore against its
+    /// Entities). Returns the owning instance (to record the restore against its
     /// gate) and the matched slot.
-    pub fn find_bounded_segment(
+    pub fn find_bounded_entity(
         &self,
-        segment_id: &[u8],
-    ) -> Option<(Arc<BoundedInstance>, Arc<SegmentSlot>)> {
+        entity_id: &[u8],
+    ) -> Option<(Arc<BoundedInstance>, Arc<EntitySlot>)> {
         self.inner.iter().find_map(|r| match &**r.value() {
             Operative::Bounded(bi) => bi
-                .segment_by_identity(segment_id)
+                .entity_by_identity(entity_id)
                 .map(|slot| (Arc::clone(bi), slot)),
             Operative::Unbounded(_) => None,
         })

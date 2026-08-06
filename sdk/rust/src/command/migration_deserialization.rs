@@ -1,11 +1,11 @@
-//! `MigrationDeserialization` — restore an UnboundedOperative instance's per-Operation /
-//! per-Segment state from a snapshot blob and register it locally.
+//! `MigrationDeserialization` — restore an UnboundedOperative instance's per-Procedure /
+//! per-Entity state from a snapshot blob and register it locally.
 //! Reuses `apply_init_values` for the state-application path so a
-//! migrated instance ends up with byte-identical Segment state to the
+//! migrated instance ends up with byte-identical Entity state to the
 //! source instance produced by `serialize_operative_state`.
 
 use super::CommandAction;
-use crate::command::segment_state::apply_init_values;
+use crate::command::entity_state::apply_init_values;
 use crate::pb::MigrationDeserialization;
 use crate::runner::RunnerNode;
 

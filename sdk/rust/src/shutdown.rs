@@ -53,7 +53,7 @@ const SHUTDOWN_PAYLOAD_ID: &str = "control_command";
 
 /// Returns `(instance_id, serialized_state_bytes)` per live UnboundedOperative
 /// instance. The closure is responsible for walking the live registry
-/// and serializing each instance via `segment_state::serialize_operative_state`.
+/// and serializing each instance via `entity_state::serialize_operative_state`.
 pub type OperativeSnapshotFn = Box<dyn Fn() -> Vec<(String, Vec<u8>)> + Send + Sync>;
 
 /// Bridge between the user-facing `FlezhaRunner` handle and the per-runner
@@ -190,7 +190,7 @@ impl ShutdownBridge {
 
 /// Result carried by a controller reply to an SDK-initiated request. The `Ok`
 /// payload is whatever the reply reports beyond "it worked" — empty for a bare
-/// ack (`RunnerShutdownAck`, `OpCommitResponse`), the resolved outcome for a
+/// ack (`RunnerShutdownAck`, `ProcCommitResponse`), the resolved outcome for a
 /// `SpawnBoundedResponse`. `Err(reason)` is a reply that reports a failure.
 pub type AckResult = Result<String, String>;
 
@@ -202,7 +202,7 @@ fn pending_acks_map() -> &'static Mutex<HashMap<String, mpsc::SyncSender<AckResu
 
 /// Register a waiter for a controller reply keyed by the outbound request's
 /// `reference_id`. Shared by the graceful-shutdown ack wait and the bounded
-/// driver's op-commit barrier.
+/// driver's proc-commit barrier.
 pub(crate) fn register_pending_ack(reference_id: String) -> mpsc::Receiver<AckResult> {
     let (tx, rx) = mpsc::sync_channel(1);
     pending_acks_map().lock().unwrap().insert(reference_id, tx);
@@ -215,7 +215,7 @@ pub(crate) fn drop_pending_ack(reference_id: &str) {
 
 /// Wake the waiter registered under `reference_id` with the controller's
 /// reply outcome — `Ok(())` from `RunnerShutdownAck`, the carried result
-/// from `OpCommitResponse`. A missing entry is logged and ignored (the wait
+/// from `ProcCommitResponse`. A missing entry is logged and ignored (the wait
 /// already timed out and dropped its registration).
 pub fn signal_result(reference_id: &str, result: AckResult) {
     let entry = pending_acks_map().lock().unwrap().remove(reference_id);

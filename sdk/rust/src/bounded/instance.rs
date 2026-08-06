@@ -1,6 +1,6 @@
 //! Per-`AddOperative` runtime state for a bounded-kind operative: its live
 //! control surface (cancellation token + inbox) plus, for a structured class,
-//! the pre-built Segment slots and the crash-resume gate.
+//! the pre-built Entity slots and the crash-resume gate.
 //!
 //! Held as the [`Operative::Bounded`](crate::operative::registry::Operative)
 //! variant in the shared [`OperativeRegistry`](crate::operative::registry::OperativeRegistry)
@@ -17,11 +17,11 @@ use std::time::{Duration, Instant};
 
 use crossbeam::channel::{unbounded, Receiver, Sender};
 
-use crate::segment::SegmentSlot;
+use crate::entity::EntitySlot;
 
 /// Safety-net cap on the crash-resume wait. The `expected` count is the
 /// authoritative release signal; this only prevents a permanent hold if a
-/// restore never lands (e.g. a controller/SDK persisted-Segment mismatch),
+/// restore never lands (e.g. a controller/SDK persisted-Entity mismatch),
 /// degrading to a best-effort re-run rather than a hung operative.
 const RESUME_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 /// Re-check cadence for the resume wait so a cooperative cancel is observed
@@ -29,22 +29,22 @@ const RESUME_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 const RESUME_WAIT_CHUNK: Duration = Duration::from_millis(200);
 
 /// Lock a compensation-marker set, recovering from a poisoned lock (the sets
-/// only hold shipped-back Segment identities — no invariant to protect).
+/// only hold shipped-back Entity identities — no invariant to protect).
 fn marker_set(set: &Mutex<HashSet<Vec<u8>>>) -> std::sync::MutexGuard<'_, HashSet<Vec<u8>>> {
     set.lock().unwrap_or_else(|p| p.into_inner())
 }
 
-/// One journaled forward op commit in the driver's form.
-fn committed_op(op: &crate::pb::OpCommittedOp) -> CommittedOp {
-    CommittedOp {
-        op_idx: op.op_idx,
-        iter: op.iter,
-        segments_ran: op.segments_ran.clone(),
+/// One journaled forward proc commit in the driver's form.
+fn committed_proc(proc: &crate::pb::ProcCommittedProc) -> CommittedProc {
+    CommittedProc {
+        proc_idx: proc.proc_idx,
+        iter: proc.iter,
+        entities_ran: proc.entities_ran.clone(),
     }
 }
 
 /// A journaled handoff batch as the driver's seed form: channel-id-tagged bytes.
-fn handoff_items(items: &[crate::pb::OpHandoffItem]) -> Vec<(u32, Vec<u8>)> {
+fn handoff_items(items: &[crate::pb::ProcHandoffItem]) -> Vec<(u32, Vec<u8>)> {
     items
         .iter()
         .map(|item| (item.channel_id, item.payload.clone()))
@@ -72,95 +72,95 @@ pub struct BoundedInstance {
     pub cancel: Arc<AtomicBool>,
     /// Inbox feeder; the driver owns the matching `Receiver`.
     inbox_tx: Sender<InboxItem>,
-    /// Pre-built Segments per chain stage (empty for run-sugar). Shared with the
+    /// Pre-built Entities per chain stage (empty for run-sugar). Shared with the
     /// driver; the restore handler rebuilds a slot's state in place before the
     /// gate releases the driver to read it.
-    pub stage_segments: Vec<Vec<Arc<SegmentSlot>>>,
-    /// Number of Segment restores to wait for before the first Operation runs.
+    pub stage_entities: Vec<Vec<Arc<EntitySlot>>>,
+    /// Number of Entity restores to wait for before the first Procedure runs.
     /// `0` ⇒ a fresh spawn / no persisted state / run-sugar ⇒ run immediately.
     expected: usize,
     restored: Mutex<usize>,
     restored_cv: Condvar,
-    /// Segment identities whose operation completed forward and may need undo,
+    /// Entity identities whose procedure completed forward and may need undo,
     /// shipped back via `RestoreInitState.has_compensation_intent` on
     /// crash-resume (saga). Non-empty ⇒ the driver finishes the compensation
     /// instead of re-running the forward chain.
     compensation_intents: Mutex<HashSet<Vec<u8>>>,
-    /// Segment identities whose compensation already ran before the crash
+    /// Entity identities whose compensation already ran before the crash
     /// (`RestoreInitState.has_compensation_done`) — skipped on resume.
     compensation_done: Mutex<HashSet<Vec<u8>>>,
-    /// Committed op-journal state shipped back via `AddOperative.op_journal`
-    /// on crash-resume (`bounded-op-journal`). `Some` ⇒ the driver enters the
-    /// journaled iteration, skips the operations committed in it, and seeds the
+    /// Committed proc-journal state shipped back via `AddOperative.proc_journal`
+    /// on crash-resume (`bounded-proc-journal`). `Some` ⇒ the driver enters the
+    /// journaled iteration, skips the procedures committed in it, and seeds the
     /// first uncommitted one from the handoff. It is instance-scoped, so it
-    /// rides the bind rather than a per-Segment restore — a class with no
-    /// per-Segment state gets no restore. Set at construction, so it needs no
+    /// rides the bind rather than a per-Entity restore — a class with no
+    /// per-Entity state gets no restore. Set at construction, so it needs no
     /// interior mutability and is readable without a lock.
-    op_journal: Option<JournalResume>,
+    proc_journal: Option<JournalResume>,
 }
 
-/// Committed op-journal state for one crash-resume. `iter` is the iteration to
+/// Committed proc-journal state for one crash-resume. `iter` is the iteration to
 /// resume at — the one after the highest journaled `iter_committed`, so a
 /// looping instance never re-runs a committed iteration (`bounded-durable-loop`);
-/// `committed_op_idxs` are the operations already committed inside that
-/// still-in-flight iteration, and `op_handoffs` carries what each of them
+/// `committed_proc_idxs` are the procedures already committed inside that
+/// still-in-flight iteration, and `proc_handoffs` carries what each of them
 /// released, so every uncommitted child branch re-seeds from its own parent's
 /// edge (`bounded-branching`). `handoff` is the previous iteration's terminal
 /// batch, which re-seeds a handoff-chained loop. Both are channel-id-tagged
-/// codec bytes, decoded by the producing channel's inter-op codec at seed time.
-/// `committed_ops` carries every journaled forward op commit with its iteration,
+/// codec bytes, decoded by the producing channel's inter-proc codec at seed time.
+/// `committed_procs` carries every journaled forward proc commit with its iteration,
 /// which the driver folds into the compensation planner's per-iteration
 /// `committed` input.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct JournalResume {
-    pub committed_op_idxs: Vec<u32>,
+    pub committed_proc_idxs: Vec<u32>,
     pub iter: u32,
     pub handoff: Vec<(u32, Vec<u8>)>,
-    pub op_handoffs: Vec<EdgeHandoff>,
-    pub committed_ops: Vec<CommittedOp>,
+    pub proc_handoffs: Vec<EdgeHandoff>,
+    pub committed_procs: Vec<CommittedProc>,
     /// Inbox offset the last committed iteration consumed — the floor a
     /// rehydrated inbox-driven loop reads its next item above.
     pub consumed_offset: u64,
-    /// Operations a rewind unwound that nothing has compensated yet. The driver
+    /// Procedures a rewind unwound that nothing has compensated yet. The driver
     /// undoes them through the ordinary compensation planner before resuming
     /// forward at `iter` (which the journal has already folded back to the
     /// rewound-to iteration). Empty = no rewind pending.
-    pub rewind_undo: Vec<CommittedOp>,
+    pub rewind_undo: Vec<CommittedProc>,
 }
 
-/// What one committed operation of the in-flight iteration released, so its
+/// What one committed procedure of the in-flight iteration released, so its
 /// uncommitted children re-seed from exactly their own parent.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EdgeHandoff {
-    pub op_idx: u32,
+    pub proc_idx: u32,
     pub handoff: Vec<(u32, Vec<u8>)>,
 }
 
-/// One journaled forward op commit, shipped back on resume.
+/// One journaled forward proc commit, shipped back on resume.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CommittedOp {
-    pub op_idx: u32,
+pub struct CommittedProc {
+    pub proc_idx: u32,
     pub iter: u32,
-    pub segments_ran: Vec<Vec<u8>>,
+    pub entities_ran: Vec<Vec<u8>>,
 }
 
-impl From<&crate::pb::OpJournalState> for JournalResume {
-    fn from(journal: &crate::pb::OpJournalState) -> Self {
+impl From<&crate::pb::ProcJournalState> for JournalResume {
+    fn from(journal: &crate::pb::ProcJournalState) -> Self {
         Self {
-            committed_op_idxs: journal.committed_op_idxs.clone(),
+            committed_proc_idxs: journal.committed_proc_idxs.clone(),
             iter: journal.iter,
             handoff: handoff_items(&journal.handoff),
-            op_handoffs: journal
-                .op_handoffs
+            proc_handoffs: journal
+                .proc_handoffs
                 .iter()
                 .map(|edge| EdgeHandoff {
-                    op_idx: edge.op_idx,
+                    proc_idx: edge.proc_idx,
                     handoff: handoff_items(&edge.handoff),
                 })
                 .collect(),
-            committed_ops: journal.committed_ops.iter().map(committed_op).collect(),
+            committed_procs: journal.committed_procs.iter().map(committed_proc).collect(),
             consumed_offset: journal.consumed_offset,
-            rewind_undo: journal.rewind_undo.iter().map(committed_op).collect(),
+            rewind_undo: journal.rewind_undo.iter().map(committed_proc).collect(),
         }
     }
 }
@@ -168,13 +168,13 @@ impl From<&crate::pb::OpJournalState> for JournalResume {
 impl BoundedInstance {
     /// Build the instance and return the driver's inbox `Receiver`. `expected`
     /// is the crash-resume restore count (0 for fresh / run-sugar / opted-out)
-    /// and `op_journal` the resume state the bind carried (`None` when fresh).
+    /// and `proc_journal` the resume state the bind carried (`None` when fresh).
     pub fn new(
         instance_id: Arc<str>,
         factory_id: Arc<str>,
-        stage_segments: Vec<Vec<Arc<SegmentSlot>>>,
+        stage_entities: Vec<Vec<Arc<EntitySlot>>>,
         expected: usize,
-        op_journal: Option<JournalResume>,
+        proc_journal: Option<JournalResume>,
     ) -> (Arc<Self>, Receiver<InboxItem>) {
         let (inbox_tx, inbox_rx) = unbounded();
         let instance = Arc::new(Self {
@@ -182,50 +182,50 @@ impl BoundedInstance {
             factory_id,
             cancel: Arc::new(AtomicBool::new(false)),
             inbox_tx,
-            stage_segments,
+            stage_entities,
             expected,
             restored: Mutex::new(0),
             restored_cv: Condvar::new(),
             compensation_intents: Mutex::new(HashSet::new()),
             compensation_done: Mutex::new(HashSet::new()),
-            op_journal,
+            proc_journal,
         });
         (instance, inbox_rx)
     }
 
-    /// The op-journal state the bind carried, if any.
-    pub fn op_journal_resume(&self) -> Option<JournalResume> {
-        self.op_journal.clone()
+    /// The proc-journal state the bind carried, if any.
+    pub fn proc_journal_resume(&self) -> Option<JournalResume> {
+        self.proc_journal.clone()
     }
 
-    /// Whether any Segment's compensation-done marker was shipped back — the
+    /// Whether any Entity's compensation-done marker was shipped back — the
     /// signal that an undo pass was already in flight before the crash, so
     /// compensation resume outranks journal-gated forward resume.
     pub fn any_compensation_done(&self) -> bool {
         !marker_set(&self.compensation_done).is_empty()
     }
 
-    /// Record the shipped-back saga compensation markers for a Segment (crash-
-    /// resume): `intent` ⇒ its operation completed forward and may need undo;
+    /// Record the shipped-back saga compensation markers for an Entity (crash-
+    /// resume): `intent` ⇒ its procedure completed forward and may need undo;
     /// `done` ⇒ its compensation already ran (skip it on resume).
-    pub fn note_compensation_markers(&self, segment_identity: &[u8], intent: bool, done: bool) {
+    pub fn note_compensation_markers(&self, entity_identity: &[u8], intent: bool, done: bool) {
         if intent {
-            marker_set(&self.compensation_intents).insert(segment_identity.to_vec());
+            marker_set(&self.compensation_intents).insert(entity_identity.to_vec());
         }
         if done {
-            marker_set(&self.compensation_done).insert(segment_identity.to_vec());
+            marker_set(&self.compensation_done).insert(entity_identity.to_vec());
         }
     }
 
-    /// Whether this Segment completed forward and needs undo (drives which hooks
+    /// Whether this Entity completed forward and needs undo (drives which hooks
     /// a crash-resume runs).
-    pub fn has_compensation_intent(&self, segment_identity: &[u8]) -> bool {
-        marker_set(&self.compensation_intents).contains(segment_identity)
+    pub fn has_compensation_intent(&self, entity_identity: &[u8]) -> bool {
+        marker_set(&self.compensation_intents).contains(entity_identity)
     }
 
-    /// Whether this Segment's compensation already ran (skip on resume).
-    pub fn has_compensation_done(&self, segment_identity: &[u8]) -> bool {
-        marker_set(&self.compensation_done).contains(segment_identity)
+    /// Whether this Entity's compensation already ran (skip on resume).
+    pub fn has_compensation_done(&self, entity_identity: &[u8]) -> bool {
+        marker_set(&self.compensation_done).contains(entity_identity)
     }
 
     /// Trip the cancellation token (cooperative `BoundedStop`, hard
@@ -241,24 +241,24 @@ impl BoundedInstance {
         self.inbox_tx.send(InboxItem { payload, offset }).is_ok()
     }
 
-    /// Locate one of this instance's Segment slots by wire identity, for the
+    /// Locate one of this instance's Entity slots by wire identity, for the
     /// inbound `RestoreInitState` handler. `None` if it isn't ours.
-    pub fn segment_by_identity(&self, segment_id: &[u8]) -> Option<Arc<SegmentSlot>> {
-        self.stage_segments
+    pub fn entity_by_identity(&self, entity_id: &[u8]) -> Option<Arc<EntitySlot>> {
+        self.stage_entities
             .iter()
             .flatten()
-            .find(|slot| slot.segment_identity.as_slice() == segment_id)
+            .find(|slot| slot.entity_identity.as_slice() == entity_id)
             .map(Arc::clone)
     }
 
-    /// Record one landed Segment restore and wake a driver waiting on the gate.
+    /// Record one landed Entity restore and wake a driver waiting on the gate.
     pub fn note_restored(&self) {
         let mut n = self.restored.lock().unwrap_or_else(|p| p.into_inner());
         *n += 1;
         self.restored_cv.notify_all();
     }
 
-    /// Hold the calling driver until every expected Segment restore has landed,
+    /// Hold the calling driver until every expected Entity restore has landed,
     /// a cooperative cancel trips, or the safety-net timeout elapses. A no-op
     /// when `expected == 0` (fresh spawn / opted-out / run-sugar).
     pub fn wait_for_restore(&self) {
@@ -277,7 +277,7 @@ impl BoundedInstance {
                     target: "flezha::bounded",
                     expected = self.expected,
                     restored = *n,
-                    "bounded crash-resume timed out waiting for Segment restores; \
+                    "bounded crash-resume timed out waiting for Entity restores; \
                      proceeding with partially-restored state"
                 );
                 return;
@@ -296,8 +296,8 @@ impl BoundedInstance {
 mod tests {
     use super::*;
 
-    /// An instance with no Segments — enough to exercise the resume-count logic
-    /// (which never touches `stage_segments`) without building real slots.
+    /// An instance with no Entities — enough to exercise the resume-count logic
+    /// (which never touches `stage_entities`) without building real slots.
     fn gate(expected: usize) -> Arc<BoundedInstance> {
         BoundedInstance::new(
             Arc::from("gate-test"),

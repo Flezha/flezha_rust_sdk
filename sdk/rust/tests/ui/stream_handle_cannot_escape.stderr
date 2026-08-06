@@ -29,7 +29,7 @@ error[E0521]: borrowed data escapes outside of function
    |            -  - let's call the lifetime of this reference `'1`
    |            |
    |            `c` is a reference that is only valid in the function body
-30 |     let stream = c.input::<String>("in").into::<PassOp>();
+30 |     let stream = c.input::<String>("in").into::<PassProc>();
 31 |     *STASH.lock().unwrap() = Some(stream);
    |      ^^^^^^^^^^^^
    |      |

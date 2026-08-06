@@ -14,9 +14,12 @@ use crate::runner::RunnerNode;
 mod bounded_stop;
 mod compact;
 mod credit;
+mod entity_apply_state;
+pub mod entity_state;
+mod entity_status;
 mod migration_deserialization;
 mod migration_serialization;
-mod operation_message;
+mod operative_message;
 mod operative_start;
 mod operative_stop;
 mod park_ack;
@@ -24,9 +27,6 @@ mod ping;
 mod restore;
 mod runner_assign;
 mod runner_disconnect;
-mod segment_apply_state;
-pub mod segment_state;
-mod segment_status;
 mod streams_connect;
 
 pub trait CommandAction {
@@ -42,7 +42,7 @@ pub enum CommandActionType {
     Regular(Box<dyn CommandAction>),
     RunnerDisconnect(Box<dyn CommandAction>),
     /// Controller -> SDK reply to an SDK-initiated request
-    /// (`RunnerShutdownAck`, `OpCommitResponse`). Wake the waiter
+    /// (`RunnerShutdownAck`, `ProcCommitResponse`). Wake the waiter
     /// registered under the request's `reference_id` with the carried
     /// outcome. No `CommandResponse` is written — the controller sent this
     /// as its own `CommandRequest`, not in reply to one we sent.
@@ -106,14 +106,12 @@ pub fn get_handler(_payload_id: &str, message: &[u8]) -> Result<FrameOutcome, Co
         Some(Command::MigrationDeserialization(proto_ch)) => {
             CommandActionType::Regular(Box::new(proto_ch))
         }
-        Some(Command::SegmentState(proto_ch)) => CommandActionType::Regular(Box::new(proto_ch)),
+        Some(Command::EntityState(proto_ch)) => CommandActionType::Regular(Box::new(proto_ch)),
         Some(Command::RunnerDisconnect(proto_ch)) => {
             CommandActionType::RunnerDisconnect(Box::new(proto_ch))
         }
-        Some(Command::OperationMessage(proto_ch)) => CommandActionType::Regular(Box::new(proto_ch)),
-        Some(Command::SegmentApplyState(proto_ch)) => {
-            CommandActionType::Regular(Box::new(proto_ch))
-        }
+        Some(Command::OperativeMessage(proto_ch)) => CommandActionType::Regular(Box::new(proto_ch)),
+        Some(Command::EntityApplyState(proto_ch)) => CommandActionType::Regular(Box::new(proto_ch)),
         Some(Command::RunnerShutdownNotification(_)) => CommandActionType::NotificationIgnore,
         Some(Command::RunnerShutdownAck(_)) => CommandActionType::AckSignal(Ok(String::new())),
         Some(Command::RestoreInitState(proto_ch)) => CommandActionType::Regular(Box::new(proto_ch)),
@@ -121,9 +119,9 @@ pub fn get_handler(_payload_id: &str, message: &[u8]) -> Result<FrameOutcome, Co
         // is a protocol bug. Drop the message, log it like the other
         // direction-mistake (`RunnerShutdownNotification`).
         Some(Command::RestoreInitStateResponse(_)) => CommandActionType::NotificationIgnore,
-        Some(Command::CompactSegment(proto_ch)) => CommandActionType::Regular(Box::new(proto_ch)),
-        Some(Command::CompactSegmentResponse(_)) => CommandActionType::NotificationIgnore,
-        Some(Command::SegmentMailboxStatus(proto_ch)) => {
+        Some(Command::CompactEntity(proto_ch)) => CommandActionType::Regular(Box::new(proto_ch)),
+        Some(Command::CompactEntityResponse(_)) => CommandActionType::NotificationIgnore,
+        Some(Command::EntityMailboxStatus(proto_ch)) => {
             CommandActionType::Regular(Box::new(proto_ch))
         }
         Some(Command::Ping(proto_ch)) => CommandActionType::Regular(Box::new(proto_ch)),
@@ -147,18 +145,18 @@ pub fn get_handler(_payload_id: &str, message: &[u8]) -> Result<FrameOutcome, Co
         // receiving it as a request is a protocol bug. Drop and log.
         Some(Command::CreditWindowAck(_)) => CommandActionType::NotificationIgnore,
         // Dead-letter park durability ack (Controller -> SDK): wakes the
-        // dispatch thread parked in `segment::park::park_blocking`.
+        // dispatch thread parked in `entity::park::park_blocking`.
         Some(Command::ParkPayloadAck(proto_ch)) => CommandActionType::Regular(Box::new(proto_ch)),
-        // SDK is the SENDER for OpCommit / IterCommit / IterPark /
+        // SDK is the SENDER for ProcCommit / IterCommit / IterPark /
         // UpdateFactories — receiving one is a protocol bug.
-        Some(Command::OpCommit(_)) => CommandActionType::NotificationIgnore,
+        Some(Command::ProcCommit(_)) => CommandActionType::NotificationIgnore,
         Some(Command::IterCommit(_)) => CommandActionType::NotificationIgnore,
         Some(Command::IterPark(_)) => CommandActionType::NotificationIgnore,
         Some(Command::UpdateFactories(_)) => CommandActionType::NotificationIgnore,
         // SDK is the SENDER for the spawn request — receiving one is a
         // protocol bug.
         Some(Command::SpawnBoundedRequest(_)) => CommandActionType::NotificationIgnore,
-        // Operation-requested spawn resolved (Controller -> SDK): wakes the
+        // Procedure-requested spawn resolved (Controller -> SDK): wakes the
         // requester's `SpawnHandle` with the outcome.
         Some(Command::SpawnBoundedResponse(reply)) => {
             CommandActionType::AckSignal(if reply.error.is_empty() {
@@ -167,10 +165,10 @@ pub fn get_handler(_payload_id: &str, message: &[u8]) -> Result<FrameOutcome, Co
                 Err(reply.error)
             })
         }
-        // Op-journal durability replies (Controller -> SDK): wake the bounded
-        // driver blocked at the op-commit / iteration-commit barrier; a non-empty
+        // Proc-journal durability replies (Controller -> SDK): wake the bounded
+        // driver blocked at the proc-commit / iteration-commit barrier; a non-empty
         // error terminates the run abnormally.
-        Some(Command::OpCommitResponse(reply)) => {
+        Some(Command::ProcCommitResponse(reply)) => {
             CommandActionType::AckSignal(ack_result(reply.error))
         }
         Some(Command::IterCommitResponse(reply)) => {

@@ -1,18 +1,18 @@
 //! Per-emit cost of hybrid channels (`also_output_with`) vs. pure
-//! inter-operation and pure plugin-bound channels. Establishes that the
-//! hybrid path is `inter-operation fan-out + serializer call`, with the
+//! inter-procedure and pure plugin-bound channels. Establishes that the
+//! hybrid path is `inter-procedure fan-out + serializer call`, with the
 //! serializer paying the same fixed cost regardless of consumer count.
 //!
 //! Five bench configurations:
-//! - `pure_inter_operation_1c`  — pure inter-operation, 1 consumer
-//! - `pure_inter_operation_3c`  — pure inter-operation, 3 consumers
+//! - `pure_inter_procedure_1c`  — pure inter-procedure, 1 consumer
+//! - `pure_inter_procedure_3c`  — pure inter-procedure, 3 consumers
 //! - `pure_plugin_bound`    — pure `output(...)` channel
 //! - `hybrid_1c`            — hybrid, 1 consumer + plugin sink
 //! - `hybrid_3c`            — hybrid, 3 consumers + plugin sink
 //!
 //! Each iteration drives one emit per operative through the live
 //! dispatcher (`OperativeDispatchHandle::dispatch` on a shared work-stealing
-//! pool). The consumer Operations count receipts atomically so `iter_custom`
+//! pool). The consumer Procedures count receipts atomically so `iter_custom`
 //! waits for full drain before stopping the timer.
 
 use std::collections::HashMap;
@@ -23,10 +23,10 @@ use std::time::{Duration, Instant};
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use flezha_runner::channel::ChannelBuilder;
-use flezha_runner::operation::{Operation, OperationCtx, OperationError};
 use flezha_runner::operative::builder::build_topology_for;
 use flezha_runner::operative::registry::OperativeRegistry;
 use flezha_runner::operative::UnboundedInstance;
+use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError};
 use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
 use flezha_runner::{OverflowPolicy, UnboundedOperative, __dispatch_internals as bi};
 use flz_transport::transport::FlezhaStream;
@@ -70,11 +70,11 @@ static PLUGIN_BOUND_PRODUCE_COUNT: AtomicUsize = AtomicUsize::new(0);
 static HYBRID_1C_COUNT: AtomicUsize = AtomicUsize::new(0);
 static HYBRID_3C_COUNT: AtomicUsize = AtomicUsize::new(0);
 
-// ---------- pure inter-operation, 1 consumer ----------
+// ---------- pure inter-procedure, 1 consumer ----------
 
 #[derive(Default)]
 struct Pure1Producer;
-impl Operation for Pure1Producer {
+impl Procedure for Pure1Producer {
     type Input = Vec<u8>;
     type Output = u32;
     type State = ();
@@ -89,15 +89,15 @@ impl Operation for Pure1Producer {
         &mut self,
         _: Vec<u8>,
         _: StateHandle<'_, Self>,
-        ctx: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         ctx.emit::<u32>(1)
     }
 }
 
 #[derive(Default)]
 struct Pure1Consumer;
-impl Operation for Pure1Consumer {
+impl Procedure for Pure1Consumer {
     type Input = u32;
     type Output = ();
     type State = ();
@@ -112,8 +112,8 @@ impl Operation for Pure1Consumer {
         &mut self,
         _: u32,
         _: StateHandle<'_, Self>,
-        _: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        _: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         PURE_1C_COUNT.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
@@ -122,7 +122,7 @@ impl Operation for Pure1Consumer {
 struct Pure1Operative;
 impl UnboundedOperative for Pure1Operative {
     fn factory_id() -> &'static str {
-        "bench_pure_inter_operation_1c"
+        "bench_pure_inter_procedure_1c"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<Vec<u8>>("input")
@@ -133,11 +133,11 @@ impl UnboundedOperative for Pure1Operative {
     }
 }
 
-// ---------- pure inter-operation, 3 consumers ----------
+// ---------- pure inter-procedure, 3 consumers ----------
 
 #[derive(Default)]
 struct Pure3Producer;
-impl Operation for Pure3Producer {
+impl Procedure for Pure3Producer {
     type Input = Vec<u8>;
     type Output = u32;
     type State = ();
@@ -152,8 +152,8 @@ impl Operation for Pure3Producer {
         &mut self,
         _: Vec<u8>,
         _: StateHandle<'_, Self>,
-        ctx: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         ctx.emit::<u32>(1)
     }
 }
@@ -162,7 +162,7 @@ macro_rules! pure3_consumer {
     ($name:ident, $static:literal) => {
         #[derive(Default)]
         struct $name;
-        impl Operation for $name {
+        impl Procedure for $name {
             type Input = u32;
             type Output = ();
             type State = ();
@@ -177,8 +177,8 @@ macro_rules! pure3_consumer {
                 &mut self,
                 _: u32,
                 _: StateHandle<'_, Self>,
-                _: &mut OperationCtx<'_>,
-            ) -> Result<(), OperationError> {
+                _: &mut ProcedureCtx<'_>,
+            ) -> Result<(), ProcedureError> {
                 PURE_3C_COUNT.fetch_add(1, Ordering::Relaxed);
                 Ok(())
             }
@@ -193,7 +193,7 @@ pure3_consumer!(Pure3ConsumerC, "pure3_c");
 struct Pure3Operative;
 impl UnboundedOperative for Pure3Operative {
     fn factory_id() -> &'static str {
-        "bench_pure_inter_operation_3c"
+        "bench_pure_inter_procedure_3c"
     }
     fn channels(c: &ChannelBuilder) {
         let out = c
@@ -211,7 +211,7 @@ impl UnboundedOperative for Pure3Operative {
 
 #[derive(Default)]
 struct PluginBoundProducer;
-impl Operation for PluginBoundProducer {
+impl Procedure for PluginBoundProducer {
     type Input = Vec<u8>;
     type Output = Vec<u8>;
     type State = ();
@@ -226,8 +226,8 @@ impl Operation for PluginBoundProducer {
         &mut self,
         _: Vec<u8>,
         _: StateHandle<'_, Self>,
-        ctx: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         PLUGIN_BOUND_PRODUCE_COUNT.fetch_add(1, Ordering::Relaxed);
         ctx.emit::<Vec<u8>>(b"x".to_vec())
     }
@@ -251,7 +251,7 @@ impl UnboundedOperative for PluginBoundOperative {
 
 #[derive(Default)]
 struct Hybrid1Producer;
-impl Operation for Hybrid1Producer {
+impl Procedure for Hybrid1Producer {
     type Input = Vec<u8>;
     type Output = u32;
     type State = ();
@@ -266,15 +266,15 @@ impl Operation for Hybrid1Producer {
         &mut self,
         _: Vec<u8>,
         _: StateHandle<'_, Self>,
-        ctx: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         ctx.emit::<u32>(1)
     }
 }
 
 #[derive(Default)]
 struct Hybrid1Consumer;
-impl Operation for Hybrid1Consumer {
+impl Procedure for Hybrid1Consumer {
     type Input = u32;
     type Output = ();
     type State = ();
@@ -289,8 +289,8 @@ impl Operation for Hybrid1Consumer {
         &mut self,
         _: u32,
         _: StateHandle<'_, Self>,
-        _: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        _: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         HYBRID_1C_COUNT.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
@@ -315,7 +315,7 @@ impl UnboundedOperative for Hybrid1Operative {
 
 #[derive(Default)]
 struct Hybrid3Producer;
-impl Operation for Hybrid3Producer {
+impl Procedure for Hybrid3Producer {
     type Input = Vec<u8>;
     type Output = u32;
     type State = ();
@@ -330,8 +330,8 @@ impl Operation for Hybrid3Producer {
         &mut self,
         _: Vec<u8>,
         _: StateHandle<'_, Self>,
-        ctx: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         ctx.emit::<u32>(1)
     }
 }
@@ -340,7 +340,7 @@ macro_rules! hybrid3_consumer {
     ($name:ident, $static:literal) => {
         #[derive(Default)]
         struct $name;
-        impl Operation for $name {
+        impl Procedure for $name {
             type Input = u32;
             type Output = ();
             type State = ();
@@ -355,8 +355,8 @@ macro_rules! hybrid3_consumer {
                 &mut self,
                 _: u32,
                 _: StateHandle<'_, Self>,
-                _: &mut OperationCtx<'_>,
-            ) -> Result<(), OperationError> {
+                _: &mut ProcedureCtx<'_>,
+            ) -> Result<(), ProcedureError> {
                 HYBRID_3C_COUNT.fetch_add(1, Ordering::Relaxed);
                 Ok(())
             }
@@ -440,20 +440,20 @@ fn run_bench<R: UnboundedOperative>(
     group.finish();
 }
 
-fn pure_inter_operation_1c(c: &mut Criterion) {
+fn pure_inter_procedure_1c(c: &mut Criterion) {
     run_bench::<Pure1Operative>(
         c,
-        "pure_inter_operation_1c",
+        "pure_inter_procedure_1c",
         "bench-pure-1c",
         &PURE_1C_COUNT,
         1,
     );
 }
 
-fn pure_inter_operation_3c(c: &mut Criterion) {
+fn pure_inter_procedure_3c(c: &mut Criterion) {
     run_bench::<Pure3Operative>(
         c,
-        "pure_inter_operation_3c",
+        "pure_inter_procedure_3c",
         "bench-pure-3c",
         &PURE_3C_COUNT,
         3,
@@ -480,8 +480,8 @@ fn hybrid_3c(c: &mut Criterion) {
 
 criterion_group!(
     benches,
-    pure_inter_operation_1c,
-    pure_inter_operation_3c,
+    pure_inter_procedure_1c,
+    pure_inter_procedure_3c,
     pure_plugin_bound,
     hybrid_1c,
     hybrid_3c,

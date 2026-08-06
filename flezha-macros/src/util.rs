@@ -39,7 +39,7 @@ pub fn map_kv(ty: &Type) -> Option<(&Type, &Type)> {
     Some((k, v))
 }
 
-/// `do_nothing` → `DoNothing`. Used for the generated operation type name and for
+/// `do_nothing` → `DoNothing`. Used for the generated procedure type name and for
 /// `Set<Field>` / `Push<Field>` change-variant names.
 pub fn snake_ident_to_pascal(ident: &Ident) -> Ident {
     let pascal = snake_to_pascal(&ident.to_string());

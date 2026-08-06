@@ -14,15 +14,15 @@ pub use topology::OperativeTopology;
 use crate::channel::ChannelBuilder;
 
 /// One UnboundedOperative class. Implementors declare a stable `factory_id` and the
-/// per-class topology of channels + operations via `channels(&c)`.
+/// per-class topology of channels + procedures via `channels(&c)`.
 ///
-/// State persistence (added by `operative-state-persistence-rust`):
+/// State persistence (added by `operative-state-persistence`):
 ///
 /// - [`Self::PERSISTENCE_ENABLED`] — frozen-at-instance-start toggle.
 ///   Default `true`. The runner can override via the operative-start
 ///   metadata key `operative_persistence.<OperativeClass>`. When `false`, the
 ///   per-Process flusher drains-and-discards Changes for this UnboundedOperative's
-///   Segments (no wire I/O, no controller contact).
+///   Entities (no wire I/O, no controller contact).
 ///
 /// The runtime calls `R::channels(...)` once at `define_unbounded::<R>()`
 /// time and freezes the resulting topology in an `Arc<OperativeTopology>`

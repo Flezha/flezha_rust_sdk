@@ -1,8 +1,8 @@
-error[E0271]: type mismatch resolving `<ConsumesCandle as Operation>::Input == TradeMsg`
+error[E0271]: type mismatch resolving `<ConsumesCandle as Procedure>::Input == TradeMsg`
   --> tests/ui/wire_wrong_input.rs:50:17
    |
 50 |         .into::<ConsumesCandle>();
-   |                 ^^^^^^^^^^^^^^ type mismatch resolving `<ConsumesCandle as Operation>::Input == TradeMsg`
+   |                 ^^^^^^^^^^^^^^ type mismatch resolving `<ConsumesCandle as Procedure>::Input == TradeMsg`
    |
 note: expected this to be `TradeMsg`
   --> tests/ui/wire_wrong_input.rs:34:18
@@ -12,5 +12,5 @@ note: expected this to be `TradeMsg`
 note: required by a bound in `Stream::<'b, T>::into`
   --> src/channel/builder.rs
    |
-   |     pub fn into<S: Operation<Input = T>>(self) -> Stream<'b, S::Output> {
+   |     pub fn into<S: Procedure<Input = T>>(self) -> Stream<'b, S::Output> {
    |                              ^^^^^^^^^ required by this bound in `Stream::<'b, T>::into`

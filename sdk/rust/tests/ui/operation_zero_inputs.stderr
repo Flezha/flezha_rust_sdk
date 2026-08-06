@@ -1,5 +1,0 @@
-error: #[flezha::operation] expects exactly one by-value input parameter
- --> tests/ui/operation_zero_inputs.rs:2:1
-  |
-2 | fn f() -> Vec<u8> {
-  | ^^

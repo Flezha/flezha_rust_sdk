@@ -14,7 +14,7 @@ use crate::util::snake_to_pascal;
 struct OperativeDef {
     id: String,
     input_ty: Type,
-    operations: Vec<Path>,
+    procedures: Vec<Path>,
     plugin_ty: Type,
     plugin_name: String,
 }
@@ -50,8 +50,8 @@ impl Parse for OperativeDef {
         let input_ty: Type = input.parse()?;
         input.parse::<Token![>]>()?;
 
-        // `-> operation -> operation -> ... -> plugin::<U>("name")`
-        let mut operations: Vec<Path> = Vec::new();
+        // `-> procedure -> procedure -> ... -> plugin::<U>("name")`
+        let mut procedures: Vec<Path> = Vec::new();
         let mut plugin: Option<(Type, String)> = None;
         while input.peek(Token![->]) {
             input.parse::<Token![->]>()?;
@@ -72,7 +72,7 @@ impl Parse for OperativeDef {
                 plugin = Some((ty, name.value()));
                 break;
             }
-            operations.push(input.parse::<Path>()?);
+            procedures.push(input.parse::<Path>()?);
         }
 
         if !input.is_empty() {
@@ -90,17 +90,17 @@ impl Parse for OperativeDef {
             )
         })?;
 
-        if operations.is_empty() {
+        if procedures.is_empty() {
             return Err(syn::Error::new(
                 input_kw.span(),
-                "pipeline must contain at least one operation between `input` and `plugin`",
+                "pipeline must contain at least one procedure between `input` and `plugin`",
             ));
         }
 
         Ok(OperativeDef {
             id: id.value(),
             input_ty,
-            operations,
+            procedures,
             plugin_ty,
             plugin_name,
         })
@@ -114,13 +114,13 @@ pub fn expand(item: TokenStream) -> syn::Result<TokenStream> {
     let input_ty = &def.input_ty;
     let plugin_ty = &def.plugin_ty;
     let plugin_name = &def.plugin_name;
-    let first_operation = &def.operations[0];
+    let first_procedure = &def.procedures[0];
 
     let operative_ident = format_ident!("__FlezhaOperative_{}", sanitize_ident(&def.id));
 
     // Chained hops on the stream handle; each `.into` returns the consumed
-    // operation's output stream.
-    let hops = def.operations.iter().skip(1).map(|cons| {
+    // procedure's output stream.
+    let hops = def.procedures.iter().skip(1).map(|cons| {
         quote! {
             let stream = stream.into::<#cons>();
         }
@@ -132,10 +132,10 @@ pub fn expand(item: TokenStream) -> syn::Result<TokenStream> {
         impl ::flezha_runner::UnboundedOperative for #operative_ident {
             fn factory_id() -> &'static str { #id }
             fn channels(c: &::flezha_runner::ChannelBuilder) {
-                let stream = c.input::<#input_ty>("input").into::<#first_operation>();
+                let stream = c.input::<#input_ty>("input").into::<#first_procedure>();
                 #(#hops)*
                 // Pins the declared plugin payload type against the terminal
-                // operation's `Output`.
+                // procedure's `Output`.
                 let stream: ::flezha_runner::Stream<'_, #plugin_ty> = stream;
                 stream.named(#plugin_name).output(#plugin_name);
             }

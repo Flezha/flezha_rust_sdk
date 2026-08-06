@@ -1,18 +1,18 @@
-//! Retry-then-park dispatcher semantics (`platform-dead-letter-queue`):
+//! Retry-then-park dispatcher semantics (`dead-letter-queue`):
 //! - transient failure recovers within the retry budget (no park)
-//! - `OperationError::non_retryable` parks immediately
-//! - a panicking operation follows the same policy as a returned error
-//!   and the segment continues — never a silent drop
+//! - `ProcedureError::non_retryable` parks immediately
+//! - a panicking procedure follows the same policy as a returned error
+//!   and the entity continues — never a silent drop
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use flezha_runner::channel::ChannelBuilder;
-use flezha_runner::operation::OperationError;
-use flezha_runner::segment::flusher::{SendError, SendFrameFn};
-use flezha_runner::segment::park::{self, ParkBody};
-use flezha_runner::segment::segment_state_sink::{install_global_sink, PARK_PAYLOAD_PAYLOAD_ID};
+use flezha_runner::entity::flusher::{SendError, SendFrameFn};
+use flezha_runner::entity::park::{self, ParkBody};
+use flezha_runner::entity::state_sink::{install_global_sink, PARK_PAYLOAD_PAYLOAD_ID};
+use flezha_runner::procedure::ProcedureError;
 use flezha_runner::UnboundedOperative;
 
 mod common;
@@ -46,7 +46,7 @@ fn install_auto_acking_sink() -> Arc<Mutex<Vec<ParkBody>>> {
     parked
 }
 
-/// Parse the outer segment frame and postcard-decode the `ParkBody`.
+/// Parse the outer entity frame and postcard-decode the `ParkBody`.
 /// Layout: `[pid_len:u16][pid][seq:u64][header:16][body_len:u32][body][crc:u32]`.
 fn decode_park_body(frame: &[u8]) -> Result<ParkBody, String> {
     let pid_len = u16::from_be_bytes([frame[0], frame[1]]) as usize;
@@ -65,9 +65,9 @@ fn decode_park_body(frame: &[u8]) -> Result<ParkBody, String> {
 static TRANSIENT_ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
 static TRANSIENT_OK: AtomicUsize = AtomicUsize::new(0);
 
-test_operation!(TransientOperation, "transient_operation", String => String, (), |_input, _state, _ctx| {
+test_procedure!(TransientProcedure, "transient_procedure", String => String, (), |_input, _state, _ctx| {
     if TRANSIENT_ATTEMPTS.fetch_add(1, Ordering::SeqCst) < 2 {
-        Err(OperationError::Custom("transient".into()))
+        Err(ProcedureError::Custom("transient".into()))
     } else {
         TRANSIENT_OK.fetch_add(1, Ordering::SeqCst);
         Ok(())
@@ -82,7 +82,7 @@ impl UnboundedOperative for TransientOperative {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .retry_backoff_ms(1)
-            .into::<TransientOperation>();
+            .into::<TransientProcedure>();
     }
 }
 
@@ -128,10 +128,10 @@ fn transient_failure_recovers_within_retry_budget() {
 static NON_RETRYABLE_RUNS: AtomicUsize = AtomicUsize::new(0);
 static NON_RETRYABLE_OK: AtomicUsize = AtomicUsize::new(0);
 
-test_operation!(NonRetryableOperation, "non_retryable_operation", String => String, (), |input, _state, _ctx| {
+test_procedure!(NonRetryableProcedure, "non_retryable_procedure", String => String, (), |input, _state, _ctx| {
     NON_RETRYABLE_RUNS.fetch_add(1, Ordering::SeqCst);
     if input == "poison" {
-        Err(OperationError::non_retryable("bad record"))
+        Err(ProcedureError::non_retryable("bad record"))
     } else {
         NON_RETRYABLE_OK.fetch_add(1, Ordering::SeqCst);
         Ok(())
@@ -146,7 +146,7 @@ impl UnboundedOperative for NonRetryableOperative {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .retry_backoff_ms(1)
-            .into::<NonRetryableOperation>();
+            .into::<NonRetryableProcedure>();
     }
 }
 
@@ -177,7 +177,7 @@ fn non_retryable_error_parks_immediately() {
             || NON_RETRYABLE_OK.load(Ordering::SeqCst) == 1,
             Duration::from_secs(5)
         ),
-        "segment must continue past the parked payload"
+        "entity must continue past the parked payload"
     );
     let entries = parked.lock().unwrap().clone();
     assert_eq!(entries.len(), 1, "exactly one park");
@@ -197,7 +197,7 @@ fn non_retryable_error_parks_immediately() {
 static PANIC_RUNS: AtomicUsize = AtomicUsize::new(0);
 static PANIC_OK: AtomicUsize = AtomicUsize::new(0);
 
-test_operation!(PanickyOperation, "panicky_operation", String => String, (), |input, _state, _ctx| {
+test_procedure!(PanickyProcedure, "panicky_procedure", String => String, (), |input, _state, _ctx| {
     PANIC_RUNS.fetch_add(1, Ordering::SeqCst);
     if input == "poison" {
         panic!("kaboom");
@@ -214,7 +214,7 @@ impl UnboundedOperative for PanickyOperative {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .retry_backoff_ms(1)
-            .into::<PanickyOperation>();
+            .into::<PanickyProcedure>();
     }
 }
 
@@ -245,7 +245,7 @@ fn panic_parity_exhausts_budget_then_parks_and_continues() {
             || PANIC_OK.load(Ordering::SeqCst) == 1,
             Duration::from_secs(5)
         ),
-        "segment must continue past the parked payload — never a silent drop"
+        "entity must continue past the parked payload — never a silent drop"
     );
     let entries = parked.lock().unwrap().clone();
     assert_eq!(
@@ -275,7 +275,7 @@ struct TypedOrder {
     id: u64,
 }
 
-test_operation!(TypedOrderOperation, "typed_order_operation", TypedOrder => String, (), |_input, _state, _ctx| {
+test_procedure!(TypedOrderProcedure, "typed_order_procedure", TypedOrder => String, (), |_input, _state, _ctx| {
     TYPED_OK.fetch_add(1, Ordering::SeqCst);
     Ok(())
 });
@@ -288,7 +288,7 @@ impl UnboundedOperative for TypedEntryOperative {
     fn channels(c: &ChannelBuilder) {
         c.input::<TypedOrder>("orders")
             .retry_backoff_ms(1)
-            .into::<TypedOrderOperation>();
+            .into::<TypedOrderProcedure>();
     }
 }
 

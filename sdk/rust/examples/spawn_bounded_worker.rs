@@ -1,5 +1,5 @@
 //! An unbounded detector that hands each interesting event to a short-lived
-//! bounded worker (`add-operation-requested-spawn`).
+//! bounded worker (`procedure-requested-spawn`).
 //!
 //! The pattern this exists for: a stream operative notices something worth
 //! doing real work about, and wants a worker for it — without an external
@@ -17,7 +17,7 @@
 //!         .define_bounded::<Triage>()?
 //!         .run()?;
 
-use flezha_runner::operation::{IfRunning, Operation, OperationCtx, OperationError};
+use flezha_runner::procedure::{IfRunning, Procedure, ProcedureCtx, ProcedureError};
 use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
 use flezha_runner::{
     BoundedCtx, BoundedError, BoundedOperative, ChannelBuilder, UnboundedOperative,
@@ -43,7 +43,7 @@ impl UnboundedOperative for AlertDetector {
 #[derive(Default)]
 struct Detect;
 
-impl Operation for Detect {
+impl Procedure for Detect {
     type Input = String;
     type Output = String;
     type State = ();
@@ -61,8 +61,8 @@ impl Operation for Detect {
         &mut self,
         input: String,
         _state: StateHandle<'_, Self>,
-        ctx: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         let Some(subject) = input.strip_prefix("alert:") else {
             return Ok(());
         };
@@ -70,7 +70,7 @@ impl Operation for Detect {
         // One worker per subject: the first alert spawns it with this payload
         // as its first input, later alerts are delivered to the same instance.
         // The handle is dropped — a failed request logs itself and this
-        // operation carries on emitting.
+        // procedure carries on emitting.
         let _ = ctx.spawn_bounded(
             format!("triage@{subject}"),
             "triage",

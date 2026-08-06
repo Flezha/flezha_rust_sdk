@@ -2,7 +2,7 @@
 //!
 //! One driver runs per started bounded instance on a **dedicated thread** (not
 //! a work-pool worker): a `run`-sugar body may block on its inbox during an
-//! interactive loop, and the structured path joins pool segment sub-tasks —
+//! interactive loop, and the structured path joins pool entity sub-tasks —
 //! running the driver on the shared pool would tie up a worker indefinitely and
 //! a one-worker pool would self-deadlock (the driver blocks on tasks only that
 //! same worker could run). The driver:
@@ -12,11 +12,11 @@
 //!   before the driver started — its cancel token + inbox (so `BoundedStop` /
 //!   `RemOperative` / `max_duration` cancel it and the wire-dispatch path
 //!   delivers post-start input) and, for a structured durable class, the
-//!   crash-resume gate held until the Controller's Segment restores land;
-//! - runs the body — `run`-sugar ([`run_sugar`]) or the structured operation
-//!   DAG ([`run_structured`], a child operation runs only after every producer
-//!   feeding it commits, sibling branches and the segments inside each
-//!   operation run in parallel on the pool, count-based barrier between
+//!   crash-resume gate held until the Controller's Entity restores land;
+//! - runs the body — `run`-sugar ([`run_sugar`]) or the structured procedure
+//!   DAG ([`run_structured`], a child procedure runs only after every producer
+//!   feeding it commits, sibling branches and the entities inside each
+//!   procedure run in parallel on the pool, count-based barrier between
 //!   levels);
 //! - converges every exit trigger on the single `BoundedCompleted` teardown,
 //!   emitting status (`ok | error | cancelled`) plus the result payload.
@@ -30,32 +30,30 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crossbeam::channel::{unbounded, Receiver, RecvTimeoutError};
 
-use super::compensation::{plan_compensation, SegmentRun, StageRecord, StagedOutput};
-use super::instance::{BoundedInstance, CommittedOp, InboxItem, JournalResume};
-use super::spec::{BoundedSpec, OpDag};
+use super::compensation::{plan_compensation, EntityRun, StageRecord, StagedOutput};
+use super::instance::{BoundedInstance, CommittedProc, InboxItem, JournalResume};
+use super::spec::{BoundedSpec, ProcDag};
 use super::{BoundedCollectSink, BoundedCtx, BoundedError, BoundedRunFn, LoopMode, RollbackMode};
-use crate::channel::builder::BuildSegmentArgs;
-use crate::channel::{ChannelId, ChannelKind, MergeMapFn, OperationId, RetryPolicy};
-use crate::operative::topology::{OperationDescriptor, OperativeTopology, SegmentingMode};
+use crate::channel::builder::BuildEntityArgs;
+use crate::channel::{ChannelId, ChannelKind, MergeMapFn, ProcedureId, RetryPolicy};
+use crate::entity::flusher::EntityFlusher;
+use crate::entity::state_sink::{COMPENSATION_DONE_PAYLOAD_ID, COMPENSATION_INTENT_PAYLOAD_ID};
+use crate::entity::EntitySlot;
+use crate::operative::topology::{EntityMode, OperativeTopology, ProcedureDescriptor};
 use crate::runner::work_stealing_pool::WorkStealingPool;
-use crate::segment::flusher::SegmentFlusher;
-use crate::segment::segment_state_sink::{
-    COMPENSATION_DONE_PAYLOAD_ID, COMPENSATION_INTENT_PAYLOAD_ID,
-};
-use crate::segment::SegmentSlot;
 use crate::util::LockRecover;
 
 /// Type-erased value moving between bounded stages.
 type Value = Arc<dyn Any + Send + Sync>;
 
-/// Upper bound on the wait for the controller's `OpCommitResponse` /
+/// Upper bound on the wait for the controller's `ProcCommitResponse` /
 /// `IterCommitResponse` before the run terminates abnormally — the same posture
-/// as any mid-run channel loss (the un-acked op/iteration re-runs on resume,
+/// as any mid-run channel loss (the un-acked proc/iteration re-runs on resume,
 /// at-least-once).
-const OP_COMMIT_ACK_TIMEOUT: Duration = Duration::from_secs(30);
+const PROC_COMMIT_ACK_TIMEOUT: Duration = Duration::from_secs(30);
 /// Re-check cadence during the ack wait so a cooperative cancel is observed
 /// promptly (mirrors the restore gate's `RESUME_WAIT_CHUNK`).
-const OP_COMMIT_ACK_CHUNK: Duration = Duration::from_millis(200);
+const PROC_COMMIT_ACK_CHUNK: Duration = Duration::from_millis(200);
 
 /// How long an inbox-driven loop waits at a committed iteration boundary before
 /// it parks (eviction hysteresis, `bounded-durable-suspension`): a message
@@ -74,27 +72,27 @@ enum RunOutcome {
     Parked,
 }
 
-/// One stage's parallel-join result: the inter-operation `batch` released to the
-/// next stage, plus the per-segment record (which segments ran, with their
+/// One stage's parallel-join result: the inter-procedure `batch` released to the
+/// next stage, plus the per-entity record (which entities ran, with their
 /// collected outputs) retained for a possible saga rollback.
 struct StageOut {
     batch: Vec<Value>,
-    segments: Vec<SegmentRun>,
+    entities: Vec<EntityRun>,
 }
 
 /// Read-only context threaded through one structured chain run: the topology,
-/// the resolved operation DAG, the running instance (its id + saga
-/// crash-resume markers), the work pool, the pre-built per-stage segments, the
+/// the resolved procedure DAG, the running instance (its id + saga
+/// crash-resume markers), the work pool, the pre-built per-stage entities, the
 /// rollback mode, and whether the class is durable (gates the saga compensation
 /// records). Bundled so the chain driver and the compensator take it by
 /// reference instead of a long parameter list.
 struct ChainCtx<'a> {
     topology: &'a Arc<OperativeTopology>,
-    dag: &'a OpDag,
+    dag: &'a ProcDag,
     instance: &'a BoundedInstance,
     instance_id: &'a Arc<str>,
     pool: &'a Arc<WorkStealingPool>,
-    stage_segments: &'a [Vec<Arc<SegmentSlot>>],
+    stage_entities: &'a [Vec<Arc<EntitySlot>>],
     rollback_mode: RollbackMode,
     /// Loop shape: `Once` is the single pass, the others iterate the chain with
     /// a durable commit per iteration (`bounded-durable-loop`).
@@ -104,14 +102,14 @@ struct ChainCtx<'a> {
     /// Post-start input, fed from the wire dispatch path. A `PerInput` loop
     /// seeds each iteration from it.
     inbox: &'a Receiver<InboxItem>,
-    /// Per-segment retry ladder applied inside a stage (`bounded-segment-retry`).
+    /// Per-entity retry ladder applied inside a stage (`bounded-entity-retry`).
     retry: RetryPolicy,
     persistence_enabled: bool,
 }
 
 impl ChainCtx<'_> {
-    /// Whether this run journals its op boundaries — the single gate on both
-    /// the `OpCommit` handshake and output staging. An opted-out class or a
+    /// Whether this run journals its proc boundaries — the single gate on both
+    /// the `ProcCommit` handshake and output staging. An opted-out class or a
     /// transport-less run (unit test / standalone bench, no coordinator) has no
     /// journal to gate a flush on, so its plugin output must keep going
     /// straight to the wire rather than being staged into an outbox nobody
@@ -120,25 +118,25 @@ impl ChainCtx<'_> {
         self.persistence_enabled && crate::runner::coordinator_installed()
     }
 
-    /// The operation descriptor at a DAG node (= its `stage_idx` / wire
-    /// `op_idx`).
-    fn op(&self, node: usize) -> &OperationDescriptor {
+    /// The procedure descriptor at a DAG node (= its `stage_idx` / wire
+    /// `proc_idx`).
+    fn proc(&self, node: usize) -> &ProcedureDescriptor {
         self.topology
-            .operation(self.dag.order[node])
-            .expect("dag operation present in topology")
+            .procedure(self.dag.order[node])
+            .expect("dag procedure present in topology")
     }
 
     /// The merge mapping declared on the edge from `producer`'s output channel
-    /// into `child` (`multi-input-operations`), or `None` for the single-input
+    /// into `child` (`multi-input-procedures`), or `None` for the single-input
     /// case where the producer's `Output` already IS the consumer's `Input`.
     fn edge_map(&self, producer: usize, child: usize) -> Option<&MergeMapFn> {
-        let channel_id = self.op(producer).output_channel_id?;
+        let channel_id = self.proc(producer).output_channel_id?;
         let target = self.dag.order[child];
         self.topology
             .channel(channel_id)?
             .consumers
             .iter()
-            .find(|e| e.operation == target)
+            .find(|e| e.procedure == target)
             .and_then(|e| e.map.as_ref())
     }
 }
@@ -149,9 +147,9 @@ impl ChainCtx<'_> {
 /// unmapped edge — every single-input chain — moves its values straight in.
 ///
 /// The mapping is author code, and unlike every other author closure on a
-/// bounded chain it runs on the driver thread rather than inside a segment
+/// bounded chain it runs on the driver thread rather than inside an entity
 /// invocation — so it is contained here the way `run_collecting` contains an
-/// operation body: an unwind becomes an error the chain aborts and compensates
+/// procedure body: an unwind becomes an error the chain aborts and compensates
 /// on, instead of killing the driver thread and leaving the instance with no
 /// `BoundedCompleted`. Retrying is not offered: a mapping is required to be
 /// pure, so a re-run would panic identically.
@@ -172,7 +170,7 @@ fn extend_mapped(
     .map_err(|panic| {
         format!(
             "merge mapping panicked: {}",
-            crate::operation::error::format_panic(panic)
+            crate::procedure::error::format_panic(panic)
         )
     })
 }
@@ -200,7 +198,7 @@ pub(crate) fn spawn(
         // Spawn failed: deregister this run's flusher entries and report a
         // terminal failure so the controller does not wait forever. The registry
         // entry is dropped by the controller's stop_operative on the completion.
-        deregister_flushers(&instance.stage_segments);
+        deregister_flushers(&instance.stage_entities);
         crate::runner::emit_bounded_completed(
             instance.instance_id.to_string(),
             "error".to_string(),
@@ -227,12 +225,12 @@ fn run(
 
     let outcome = match spec.topology.as_ref() {
         // Structured: hold on the crash-resume gate until the Controller's
-        // Segment restores land, then drive the chain over the restored state.
+        // Entity restores land, then drive the chain over the restored state.
         Some(_) => {
             instance.wait_for_restore();
             run_structured(&spec, &instance, &args, &pool, &inbox_rx)
         }
-        // Run-sugar: no Segments, no restore — a crash re-runs from the top.
+        // Run-sugar: no Entities, no restore — a crash re-runs from the top.
         None => run_sugar(
             spec.run,
             &instance.instance_id,
@@ -246,10 +244,10 @@ fn run(
     if let Some(w) = watcher {
         let _ = w.join();
     }
-    // Deregister this run's per-Segment flusher entries. The registry entry
+    // Deregister this run's per-Entity flusher entries. The registry entry
     // itself stays until the controller's stop_operative teardown, so a
     // duplicate AddOperative before then is idempotent (no re-run).
-    deregister_flushers(&instance.stage_segments);
+    deregister_flushers(&instance.stage_entities);
 
     match outcome {
         RunOutcome::Terminal(status, error, result) => {
@@ -266,7 +264,7 @@ fn run(
     }
 }
 
-/// Run-sugar path: a single implicit Operation/Segment whose body is `run`.
+/// Run-sugar path: a single implicit Procedure/Entity whose body is `run`.
 fn run_sugar(
     run: BoundedRunFn,
     instance_id: &Arc<str>,
@@ -299,15 +297,15 @@ fn classify(
         Ok(Err(e)) => ("error".to_string(), e.to_string()),
         Err(panic) => (
             "error".to_string(),
-            crate::operation::error::format_panic(panic),
+            crate::procedure::error::format_panic(panic),
         ),
     };
     RunOutcome::Terminal(status, error, result)
 }
 
-/// Structured path: walk the operation DAG. A child operation starts only when
+/// Structured path: walk the procedure DAG. A child procedure starts only when
 /// every producer feeding it has finished and had its commit acked
-/// (count-based barrier); segments — and independent sibling branches — run in
+/// (count-based barrier); entities — and independent sibling branches — run in
 /// parallel on the pool.
 fn run_structured(
     spec: &BoundedSpec,
@@ -321,7 +319,7 @@ fn run_structured(
         .as_ref()
         .expect("run_structured invoked only for a structured spec");
 
-    // Segments were built + registered up front by `start_bounded_resumable`
+    // Entities were built + registered up front by `start_bounded_resumable`
     // (so restore could reach them and the resume gate could hold); a durable
     // class has them already restored by the Controller's `RestoreInitState`
     // frames. The run's flusher entries are deregistered in `run`'s teardown.
@@ -331,7 +329,7 @@ fn run_structured(
         instance,
         instance_id: &instance.instance_id,
         pool,
-        stage_segments: &instance.stage_segments,
+        stage_entities: &instance.stage_entities,
         rollback_mode: spec.rollback_mode,
         loop_mode: spec.loop_mode,
         wake_after: spec.wake_after,
@@ -342,45 +340,45 @@ fn run_structured(
     drive_chain(&ctx, args, &instance.cancel)
 }
 
-/// Build every stage's Segments for a structured spec, in DAG order. Called
-/// synchronously by `start_bounded_resumable` so the Segments are registered
+/// Build every stage's Entities for a structured spec, in DAG order. Called
+/// synchronously by `start_bounded_resumable` so the Entities are registered
 /// for restore and the resume gate is armed before the driver thread — or any
 /// restore frame — runs. `instance` on each slot is a null `Weak` — the bounded
 /// collecting path never routes through an `UnboundedInstance`. When the class
-/// is durable, each Segment's applied Changes are flushed to the WAL as they run.
-pub(crate) fn build_all_stage_segments(
+/// is durable, each Entity's applied Changes are flushed to the WAL as they run.
+pub(crate) fn build_all_stage_entities(
     spec: &BoundedSpec,
     instance_id: &Arc<str>,
     pool: &Arc<WorkStealingPool>,
-) -> Vec<Vec<Arc<SegmentSlot>>> {
+) -> Vec<Vec<Arc<EntitySlot>>> {
     let topology = spec
         .topology
         .as_ref()
-        .expect("build_all_stage_segments invoked only for a structured spec");
-    let mut stage_segments: Vec<Vec<Arc<SegmentSlot>>> = Vec::with_capacity(spec.dag.len());
-    for &op_id in &spec.dag.order {
-        let op = topology
-            .operation(op_id)
-            .expect("chain operation present in topology");
-        stage_segments.push(build_stage_segments(
+        .expect("build_all_stage_entities invoked only for a structured spec");
+    let mut stage_entities: Vec<Vec<Arc<EntitySlot>>> = Vec::with_capacity(spec.dag.len());
+    for &proc_id in &spec.dag.order {
+        let proc = topology
+            .procedure(proc_id)
+            .expect("chain procedure present in topology");
+        stage_entities.push(build_stage_entities(
             topology,
             instance_id,
-            op_id,
-            op,
+            proc_id,
+            proc,
             pool,
             spec.persistence_enabled,
         ));
     }
-    stage_segments
+    stage_entities
 }
 
-/// Deregister every per-Segment flusher entry created for a run so the
+/// Deregister every per-Entity flusher entry created for a run so the
 /// process-global flusher does not accumulate dead entries across jobs.
-fn deregister_flushers(stage_segments: &[Vec<Arc<SegmentSlot>>]) {
-    for slots in stage_segments {
+fn deregister_flushers(stage_entities: &[Vec<Arc<EntitySlot>>]) {
+    for slots in stage_entities {
         for slot in slots {
             if let Some(id) = slot.flusher_entry_id {
-                SegmentFlusher::instance().deregister(id);
+                EntityFlusher::instance().deregister(id);
             }
         }
     }
@@ -389,14 +387,14 @@ fn deregister_flushers(stage_segments: &[Vec<Arc<SegmentSlot>>]) {
 fn drive_chain(ctx: &ChainCtx, args: &str, cancel: &AtomicBool) -> RunOutcome {
     // Crash-resume into an in-flight compensation (saga, §4.3): a non-empty
     // reconstruction means the Controller shipped back compensation-intent
-    // markers. Without an op-journal that always means the operative had
+    // markers. Without a proc-journal that always means the operative had
     // terminated abnormally with (some of) its undo outstanding. WITH a
     // journal, intent markers also accumulate during normal forward progress,
     // so only a shipped compensation-done marker — written exclusively by an
     // undo pass — still proves compensation was in flight; otherwise the
-    // journal decides where forward execution resumes (bounded-op-journal).
+    // journal decides where forward execution resumes (bounded-proc-journal).
     let resumed = reconstruct_completed_from_intents(ctx);
-    let journal = ctx.instance.op_journal_resume();
+    let journal = ctx.instance.proc_journal_resume();
     if !resumed.is_empty() && (journal.is_none() || ctx.instance.any_compensation_done()) {
         run_compensation(ctx, &[], &resumed);
         return RunOutcome::Terminal(
@@ -430,7 +428,7 @@ fn drive_chain(ctx: &ChainCtx, args: &str, cancel: &AtomicBool) -> RunOutcome {
     // handoff-chained loop; on resume it comes back from the journal instead.
     let mut carry: Option<Vec<Value>> = None;
 
-    // Resume state, consumed by the first pass: the operations of the in-flight
+    // Resume state, consumed by the first pass: the procedures of the in-flight
     // iteration the journal already records committed are skipped but still
     // recorded as completed, so a later failure rolls them back too. Their
     // uncommitted children are the pass's starting frontier, each re-seeded from
@@ -439,9 +437,9 @@ fn drive_chain(ctx: &ChainCtx, args: &str, cancel: &AtomicBool) -> RunOutcome {
     // The root is index 0, so "the root already committed" IS "this is a
     // mid-iteration resume" — and a journal that somehow records a child without
     // its parent re-runs the whole iteration rather than trusting the fragment.
-    let mut committed_nodes: Vec<usize> = if resume.committed_op_idxs.contains(&0) {
+    let mut committed_nodes: Vec<usize> = if resume.committed_proc_idxs.contains(&0) {
         resume
-            .committed_op_idxs
+            .committed_proc_idxs
             .iter()
             .map(|&i| i as usize)
             .collect()
@@ -492,7 +490,7 @@ fn drive_chain(ctx: &ChainCtx, args: &str, cancel: &AtomicBool) -> RunOutcome {
         match run_iteration(ctx, iter, start, cancel, &mut completed) {
             Ok(terminal_batch) => {
                 // Iteration boundary (`bounded-durable-loop`): journal
-                // `iter_committed`, snapshot the segments, flush the iteration's
+                // `iter_committed`, snapshot the entities, flush the iteration's
                 // staged outbox, release the consumed inbox prefix — then enter
                 // the next iteration. A non-looping chain has no boundary and
                 // finishes here, exactly as before.
@@ -545,9 +543,9 @@ impl IterationStart {
     }
 }
 
-/// Run one iteration of the operation DAG, starting from `start` (the root on
+/// Run one iteration of the procedure DAG, starting from `start` (the root on
 /// a fresh pass; the uncommitted subgraphs on a mid-iteration resume) and
-/// advancing frontier by frontier: every runnable node runs its segments on
+/// advancing frontier by frontier: every runnable node runs its entities on
 /// the pool together — sibling branches are independent, so they interleave —
 /// joins on one barrier, commits, and **accumulates** its released batch into
 /// each child. A child becomes runnable only once every one of its producers
@@ -558,8 +556,8 @@ impl IterationStart {
 ///
 /// `Ok` carries the batch the leaves released — the operative is complete
 /// exactly when the frontier empties, i.e. when every leaf has committed. `Err`
-/// carries the terminal status of an abnormal exit (a failing operation, a
-/// cooperative stop, a refused op commit).
+/// carries the terminal status of an abnormal exit (a failing procedure, a
+/// cooperative stop, a refused proc commit).
 fn run_iteration(
     ctx: &ChainCtx,
     iter: u32,
@@ -585,41 +583,43 @@ fn run_iteration(
         let mut next: Vec<Runnable> = Vec::new();
 
         for (node, out) in level {
-            let op = ctx.op(node);
-            let slots = &ctx.stage_segments[node];
+            let proc = ctx.proc(node);
+            let slots = &ctx.stage_entities[node];
 
-            // Durable saga (§4.3): record this operation's completion — one
-            // compensation-intent marker per segment that ran — so a crash
+            // Durable saga (§4.3): record this procedure's completion — one
+            // compensation-intent marker per entity that ran — so a crash
             // mid-compensation knows what still needs undo. Only for compensable
-            // operations (a hookless op is never rolled back).
-            if op.compensate_overridden {
-                for seg_run in &out.segments {
+            // procedures (a hookless proc is never rolled back).
+            if proc.compensate_overridden {
+                for seg_run in &out.entities {
                     emit_compensation_record(
                         COMPENSATION_INTENT_PAYLOAD_ID,
-                        &slots[seg_run.segment_index].segment_identity,
+                        &slots[seg_run.entity_index].entity_identity,
                         ctx.persistence_enabled,
                     );
                 }
             }
 
-            // Op-boundary commit (bounded-op-journal): journal the stage's
+            // Proc-boundary commit (bounded-proc-journal): journal the stage's
             // completion + handoff on the controller and block until the durable
-            // ack — a child operation must not race ahead of the committed
+            // ack — a child procedure must not race ahead of the committed
             // record. Ordered AFTER the intent markers so a crash between marker
-            // and ack resolves as "op not committed → re-run" (at-least-once).
+            // and ack resolves as "proc not committed → re-run" (at-least-once).
             //
             // A sibling in the same level failed ⇒ the run is already unwinding:
             // this node's work still needs undo (it ran), but committing it —
             // and flushing the outbox that commit carries — would only have to be
             // compensated straight back.
             let commit = match failure {
-                None => commit_op_boundary(ctx, node, iter, op, &out.segments, slots, &out.batch),
+                None => {
+                    commit_proc_boundary(ctx, node, iter, proc, &out.entities, slots, &out.batch)
+                }
                 Some(_) => Ok(()),
             };
             completed.push(StageRecord {
                 stage_idx: node,
                 iter,
-                segments: out.segments,
+                entities: out.entities,
             });
             if let Err(e) = commit {
                 return Err(abnormal_status(cancel, e));
@@ -697,12 +697,12 @@ fn resumed_start(
         let mut batch: Vec<Value> = Vec::new();
         for parent in &committed_parents {
             let handoff = resume
-                .op_handoffs
+                .proc_handoffs
                 .iter()
-                .find(|edge| edge.op_idx as usize == *parent)
+                .find(|edge| edge.proc_idx as usize == *parent)
                 .map(|edge| edge.handoff.as_slice())
                 .unwrap_or_default();
-            let seeded = seed_from_journal(ctx, handoff, ctx.op(*parent).output_channel_id)?;
+            let seeded = seed_from_journal(ctx, handoff, ctx.proc(*parent).output_channel_id)?;
             extend_mapped(&mut batch, ctx.edge_map(*parent, node), seeded.into_iter())?;
         }
         let outstanding = parents.len() - committed_parents.len();
@@ -738,7 +738,7 @@ enum IterationSeed {
 /// Resolve the frontier this iteration starts from.
 ///
 /// A mid-iteration resume (`committed` non-empty — the journal already records
-/// operations of this iteration committed) starts at exactly the uncommitted
+/// procedures of this iteration committed) starts at exactly the uncommitted
 /// subgraphs whose producers did commit. Otherwise the iteration starts at the
 /// graph root, seeded by the loop's shape: the spawn args (single pass / first
 /// iteration), the next inbox item (`PerInput`), or the previous iteration's
@@ -822,7 +822,7 @@ fn wait_for_input(ctx: &ChainCtx, cancel: &AtomicBool) -> Option<InboxItem> {
         if cancel.load(Ordering::Acquire) {
             return None;
         }
-        match ctx.inbox.recv_timeout(OP_COMMIT_ACK_CHUNK) {
+        match ctx.inbox.recv_timeout(PROC_COMMIT_ACK_CHUNK) {
             Ok(item) => return Some(item),
             Err(RecvTimeoutError::Timeout) => {
                 if ctx.journaling() && Instant::now() >= deadline {
@@ -909,7 +909,7 @@ fn seed_bytes(topology: &OperativeTopology, bytes: Vec<u8>) -> Result<Vec<Value>
 }
 
 /// Decode a journaled handoff batch back into typed values via each item's
-/// producing-channel codec (`bounded-op-journal` crash-resume seeding).
+/// producing-channel codec (`bounded-proc-journal` crash-resume seeding).
 ///
 /// `only` restricts the batch to one edge: a resumed child branch consumes just
 /// the values its parent released on the channel that child reads. `None` takes
@@ -931,8 +931,8 @@ fn seed_from_journal(
             .and_then(|c| c.codec.as_ref())
             .ok_or_else(|| {
                 format!(
-                    "journaled handoff references channel id {channel_id} without an inter-op \
-                     codec; cannot re-seed the resumed operation"
+                    "journaled handoff references channel id {channel_id} without an inter-proc \
+                     codec; cannot re-seed the resumed procedure"
                 )
             })?;
         let value = (codec.decode)(bytes.clone())
@@ -948,15 +948,15 @@ fn seed_from_journal(
 /// D2) and the stages of the **still-in-flight iteration**, which a resumed pass
 /// skips but must still be able to roll back. One traversal, one grouping.
 ///
-/// Segment outputs are empty, as on any crash-resume: an operation's collected
-/// inter-operation output was never durable, so a durable compensable operation
-/// persists its undo handle in Segment state (which IS restored), per the
+/// Entity outputs are empty, as on any crash-resume: a procedure's collected
+/// inter-procedure output was never durable, so a durable compensable procedure
+/// persists its undo handle in Entity state (which IS restored), per the
 /// at-least-once author contract.
 fn journaled_stages(
     ctx: &ChainCtx,
     resume: &JournalResume,
 ) -> (Vec<Vec<StageRecord>>, Vec<StageRecord>) {
-    let mut by_iter = stages_by_iter(ctx, &resume.committed_ops);
+    let mut by_iter = stages_by_iter(ctx, &resume.committed_procs);
     // The resume point splits the two: everything below it is committed progress.
     let in_flight = by_iter
         .split_off(&resume.iter)
@@ -965,15 +965,15 @@ fn journaled_stages(
     (by_iter.into_values().collect(), in_flight)
 }
 
-/// Journaled op commits as stage records, grouped by the iteration they ran in
+/// Journaled proc commits as stage records, grouped by the iteration they ran in
 /// and ordered within it by chain position (= completion order). Shared by the
 /// forward resume and the rewind undo, which need the same grouping over
 /// different sets of commits.
-fn stages_by_iter(ctx: &ChainCtx, ops: &[CommittedOp]) -> BTreeMap<u32, Vec<StageRecord>> {
+fn stages_by_iter(ctx: &ChainCtx, procs: &[CommittedProc]) -> BTreeMap<u32, Vec<StageRecord>> {
     let mut by_iter: BTreeMap<u32, Vec<StageRecord>> = BTreeMap::new();
-    for op in ops {
-        if let Some(record) = stage_record(ctx, op.op_idx, op.iter, &op.segments_ran) {
-            by_iter.entry(op.iter).or_default().push(record);
+    for proc in procs {
+        if let Some(record) = stage_record(ctx, proc.proc_idx, proc.iter, &proc.entities_ran) {
+            by_iter.entry(proc.iter).or_default().push(record);
         }
     }
     for stages in by_iter.values_mut() {
@@ -983,26 +983,26 @@ fn stages_by_iter(ctx: &ChainCtx, ops: &[CommittedOp]) -> BTreeMap<u32, Vec<Stag
     by_iter
 }
 
-/// One journaled op commit as a `StageRecord`, resolving each shipped-back wire
-/// segment identity to its slot index. `None` when the operation is not in this
+/// One journaled proc commit as a `StageRecord`, resolving each shipped-back wire
+/// entity identity to its slot index. `None` when the procedure is not in this
 /// build's chain (a topology that changed under a journaled instance).
 fn stage_record(
     ctx: &ChainCtx,
-    op_idx: u32,
+    proc_idx: u32,
     iter: u32,
-    segments_ran: &[Vec<u8>],
+    entities_ran: &[Vec<u8>],
 ) -> Option<StageRecord> {
-    let stage_idx = op_idx as usize;
-    let slots = ctx.stage_segments.get(stage_idx)?;
-    let segments = segments_ran
+    let stage_idx = proc_idx as usize;
+    let slots = ctx.stage_entities.get(stage_idx)?;
+    let entities = entities_ran
         .iter()
         .filter_map(|id| {
             slots
                 .iter()
-                .position(|slot| slot.segment_identity.as_slice() == id.as_slice())
+                .position(|slot| slot.entity_identity.as_slice() == id.as_slice())
         })
-        .map(|segment_index| SegmentRun {
-            segment_index,
+        .map(|entity_index| EntityRun {
+            entity_index,
             outputs: Vec::new(),
             staged: Vec::new(),
         })
@@ -1010,46 +1010,41 @@ fn stage_record(
     Some(StageRecord {
         stage_idx,
         iter,
-        segments,
+        entities,
     })
 }
 
-/// Ship `OpCommit` for a completed stage and block until the controller's
-/// durable `OpCommitResponse` (bounded-op-journal D3). The handoff batch is
-/// serialized through the operation's output-channel codec (validated present
+/// Ship `ProcCommit` for a completed stage and block until the controller's
+/// durable `ProcCommitResponse` (bounded-proc-journal D3). The handoff batch is
+/// serialized through the procedure's output-channel codec (validated present
 /// at registration; a terminal or plugin-bound output has no codec and ships
 /// an empty handoff), and the stage's staged plugin output rides along as the
-/// operation's outbox (`bounded-transactional-outbox`) — journaled with the
+/// procedure's outbox (`bounded-transactional-outbox`) — journaled with the
 /// commit in one durable write, flushed by the controller only afterwards.
 /// Skipped for opted-out classes and transport-less runs (unit tests /
 /// standalone, where no coordinator is installed — mirroring the DLQ park's
 /// sink gate); those never stage, so nothing is stranded. A failed or timed-out
-/// ack is a terminal run error; the un-acked op re-runs on resume, and its
+/// ack is a terminal run error; the un-acked proc re-runs on resume, and its
 /// staged output — never journaled — is simply dropped (at-least-once).
-fn commit_op_boundary(
+fn commit_proc_boundary(
     ctx: &ChainCtx,
     stage_idx: usize,
     iter: u32,
-    op: &OperationDescriptor,
-    segments: &[SegmentRun],
-    slots: &[Arc<SegmentSlot>],
+    proc: &ProcedureDescriptor,
+    entities: &[EntityRun],
+    slots: &[Arc<EntitySlot>],
     batch: &[Value],
 ) -> Result<(), String> {
     if !ctx.journaling() {
         return Ok(());
     }
 
-    let handoff = encode_handoff(ctx, op.output_channel_id, batch)
-        .map_err(|e| format!("op {stage_idx} {e}"))?;
+    let handoff = encode_handoff(ctx, proc.output_channel_id, batch)
+        .map_err(|e| format!("proc {stage_idx} {e}"))?;
 
-    let segments_ran: Vec<Vec<u8>> = segments
+    let entities_ran: Vec<Vec<u8>> = entities
         .iter()
-        .map(|seg_run| {
-            slots[seg_run.segment_index]
-                .segment_identity
-                .as_ref()
-                .clone()
-        })
+        .map(|seg_run| slots[seg_run.entity_index].entity_identity.as_ref().clone())
         .collect();
 
     ship_and_await(
@@ -1057,15 +1052,15 @@ fn commit_op_boundary(
         stage_idx,
         "commit",
         true,
-        crate::pb::command_request::Command::OpCommit(crate::pb::OpCommit {
+        crate::pb::command_request::Command::ProcCommit(crate::pb::ProcCommit {
             operative_id: ctx.instance_id.to_string(),
-            op_idx: stage_idx as u32,
+            proc_idx: stage_idx as u32,
             iter,
-            segments_ran,
+            entities_ran,
             handoff,
-            outbox: segments
+            outbox: entities
                 .iter()
-                .flat_map(|seg_run| outbox_items(&slots[seg_run.segment_index], &seg_run.staged))
+                .flat_map(|seg_run| outbox_items(&slots[seg_run.entity_index], &seg_run.staged))
                 .collect(),
             compensating: false,
         }),
@@ -1075,7 +1070,7 @@ fn commit_op_boundary(
 /// Ship `IterCommit` for a finished loop iteration and block until the
 /// controller's durable `IterCommitResponse` (`bounded-durable-loop` D1): the
 /// journal records `iter_committed(iter, consumed_offset)` with the iteration's
-/// terminal handoff, the instance's segments are snapshotted at the boundary,
+/// terminal handoff, the instance's entities are snapshotted at the boundary,
 /// the iteration's staged outbox is flushed, and the consumed inbox prefix is
 /// released. The next iteration starts only on the successful reply, so a crash
 /// re-runs at most the whole in-flight iteration — never a committed one.
@@ -1091,13 +1086,13 @@ fn commit_iteration(
 
     // The terminal handoff re-seeds iteration N+1 of a handoff-chained loop
     // after a crash; an inbox-driven loop re-seeds from its inbox instead and
-    // ships whatever the terminal operation released (empty when it has no
+    // ships whatever the terminal procedure released (empty when it has no
     // codec'd output channel, and for a branching graph, which has no single
-    // terminal operation — registration refuses to chain a loop over one).
+    // terminal procedure — registration refuses to chain a loop over one).
     let terminal_channel = ctx
         .dag
         .single_leaf()
-        .and_then(|leaf| ctx.op(leaf).output_channel_id);
+        .and_then(|leaf| ctx.proc(leaf).output_channel_id);
     let handoff = encode_handoff(ctx, terminal_channel, batch)
         .map_err(|e| format!("iteration {iter} {e}"))?;
 
@@ -1115,14 +1110,14 @@ fn commit_iteration(
     )
 }
 
-/// Serialize a released batch through its producing channel's inter-op codec.
-/// Empty when the operation has no output channel (a terminal stage) or the
+/// Serialize a released batch through its producing channel's inter-proc codec.
+/// Empty when the procedure has no output channel (a terminal stage) or the
 /// channel carries no codec (a plugin-bound output).
 fn encode_handoff(
     ctx: &ChainCtx,
     channel_id: Option<u32>,
     batch: &[Value],
-) -> Result<Vec<crate::pb::OpHandoffItem>, String> {
+) -> Result<Vec<crate::pb::ProcHandoffItem>, String> {
     let Some(channel_id) = channel_id else {
         return Ok(Vec::new());
     };
@@ -1138,7 +1133,7 @@ fn encode_handoff(
         .iter()
         .map(|value| {
             (codec.encode)(value.as_ref())
-                .map(|payload| crate::pb::OpHandoffItem {
+                .map(|payload| crate::pb::ProcHandoffItem {
                     channel_id,
                     payload,
                 })
@@ -1147,23 +1142,25 @@ fn encode_handoff(
         .collect()
 }
 
-/// One segment's staged plugin output as outbox entries, tagged with the
-/// producing segment's wire identity and the segment-local emit order
-/// (`seq_in_op`) — the controller mints the flush key from that tuple.
-fn outbox_items(slot: &Arc<SegmentSlot>, staged: &[StagedOutput]) -> Vec<crate::pb::OpOutboxItem> {
+/// One entity's staged plugin output as outbox entries, tagged with the
+/// producing entity's wire identity and the entity-local emit order
+/// (`seq_in_proc`) — the controller mints the flush key from that tuple.
+fn outbox_items(slot: &Arc<EntitySlot>, staged: &[StagedOutput]) -> Vec<crate::pb::ProcOutboxItem> {
     staged
         .iter()
         .enumerate()
-        .map(|(seq_in_op, (channel, payload))| crate::pb::OpOutboxItem {
-            segment_id: slot.segment_identity.as_ref().clone(),
-            seq_in_op: seq_in_op as u32,
-            channel: channel.clone(),
-            payload: payload.clone(),
-        })
+        .map(
+            |(seq_in_proc, (channel, payload))| crate::pb::ProcOutboxItem {
+                entity_id: slot.entity_identity.as_ref().clone(),
+                seq_in_proc: seq_in_proc as u32,
+                channel: channel.clone(),
+                payload: payload.clone(),
+            },
+        )
         .collect()
 }
 
-/// Emit one durability handshake — `OpCommit` (forward op boundary or
+/// Emit one durability handshake — `ProcCommit` (forward proc boundary or
 /// compensation undo record) or `IterCommit` (iteration boundary) — and block
 /// until the controller's durable ack. All three are "journal this, then tell me
 /// it is durable" round-trips over the same reference-id-keyed reply path.
@@ -1181,7 +1178,7 @@ fn ship_and_await(
     command: crate::pb::command_request::Command,
 ) -> Result<(), String> {
     let reference_id = format!(
-        "op-commit-{}-{}-{}",
+        "proc-commit-{}-{}-{}",
         ctx.instance_id,
         idx,
         crate::util::nonce_suffix()
@@ -1190,9 +1187,9 @@ fn ship_and_await(
     crate::runner::emit_control_request(reference_id.clone(), command);
 
     // Chunked wait so a cooperative cancel is observed promptly.
-    let deadline = Instant::now() + OP_COMMIT_ACK_TIMEOUT;
+    let deadline = Instant::now() + PROC_COMMIT_ACK_TIMEOUT;
     loop {
-        match rx.recv_timeout(OP_COMMIT_ACK_CHUNK) {
+        match rx.recv_timeout(PROC_COMMIT_ACK_CHUNK) {
             Ok(Ok(_)) => return Ok(()),
             Ok(Err(e)) => {
                 return Err(format!("{what} {idx} refused by controller: {e}"));
@@ -1206,7 +1203,7 @@ fn ship_and_await(
                     crate::shutdown::drop_pending_ack(&reference_id);
                     return Err(format!(
                         "{what} {idx} ack timed out after {}s",
-                        OP_COMMIT_ACK_TIMEOUT.as_secs()
+                        PROC_COMMIT_ACK_TIMEOUT.as_secs()
                     ));
                 }
             }
@@ -1219,10 +1216,10 @@ fn ship_and_await(
 }
 
 /// Roll back an abnormally-terminated chain. The in-flight iteration's completed
-/// operations are always compensated, in reverse order (per
-/// [`plan_compensation`]) and, within an operation, once per segment that ran;
+/// procedures are always compensated, in reverse order (per
+/// [`plan_compensation`]) and, within a procedure, once per entity that ran;
 /// `committed` holds the iterations the journal records as finished, which
-/// keep-progress keeps and all-or-nothing unwinds after it. Operations without a
+/// keep-progress keeps and all-or-nothing unwinds after it. Procedures without a
 /// `compensate` hook are skipped. Best-effort: a failing hook is logged and the
 /// remaining steps still run, so one broken undo cannot strand the rest.
 fn run_compensation(ctx: &ChainCtx, committed: &[Vec<StageRecord>], in_flight: &[StageRecord]) {
@@ -1231,22 +1228,22 @@ fn run_compensation(ctx: &ChainCtx, committed: &[Vec<StageRecord>], in_flight: &
         return;
     }
     for record in plan {
-        let op = ctx.op(record.stage_idx);
-        // Hookless operations take no part in rollback.
-        if !op.compensate_overridden {
+        let proc = ctx.proc(record.stage_idx);
+        // Hookless procedures take no part in rollback.
+        if !proc.compensate_overridden {
             continue;
         }
-        let slots = &ctx.stage_segments[record.stage_idx];
-        for seg_run in &record.segments {
-            let slot = &slots[seg_run.segment_index];
-            // Crash-resume: a segment whose compensation-done marker was shipped
+        let slots = &ctx.stage_entities[record.stage_idx];
+        for seg_run in &record.entities {
+            let slot = &slots[seg_run.entity_index];
+            // Crash-resume: an entity whose compensation-done marker was shipped
             // back already ran its undo — skip it (idempotent by author
             // contract, but re-running wastes work / double-emits records).
-            if ctx.instance.has_compensation_done(&slot.segment_identity) {
+            if ctx.instance.has_compensation_done(&slot.entity_identity) {
                 continue;
             }
-            let sink = compensate_segment(ctx, slot, seg_run);
-            // Journal this segment's undo output BEFORE the done marker: the
+            let sink = compensate_entity(ctx, slot, seg_run);
+            // Journal this entity's undo output BEFORE the done marker: the
             // marker is what stops the hook re-running on resume, so a crash
             // between the two must fall on the side that re-runs the (idempotent)
             // hook rather than the side that loses its undo output. A hook that
@@ -1256,73 +1253,73 @@ fn run_compensation(ctx: &ChainCtx, committed: &[Vec<StageRecord>], in_flight: &
                     ctx,
                     record,
                     "compensation",
-                    vec![slot.segment_identity.as_ref().clone()],
+                    vec![slot.entity_identity.as_ref().clone()],
                     outbox_items(slot, &sink.staged),
                 );
             }
             // Durable saga (§4.3): record this compensation's completion so a
-            // later crash resumes the remainder and skips this segment.
+            // later crash resumes the remainder and skips this entity.
             emit_compensation_record(
                 COMPENSATION_DONE_PAYLOAD_ID,
-                &slot.segment_identity,
+                &slot.entity_identity,
                 ctx.persistence_enabled,
             );
         }
     }
 }
 
-/// Undo the operations a rewind unwound, in reverse iteration and reverse chain
+/// Undo the procedures a rewind unwound, in reverse iteration and reverse chain
 /// order (`bounded-loop-rewind`). Forced all-or-nothing: a rewind unwinds
 /// committed iterations by definition, whatever the class's rollback mode says
 /// about crashes.
 ///
 /// Two things differ from the crash-resume pass. It does not consult the
-/// per-segment compensation-done markers — those are per *segment*, and a segment
+/// per-entity compensation-done markers — those are per *entity*, and an entity
 /// that ran in two rewound iterations must be undone once per iteration. And it
-/// journals exactly one `compensated` entry per operation, **even an empty one**
-/// for a hookless operation: that entry is the durable proof the operation is
+/// journals exactly one `compensated` entry per procedure, **even an empty one**
+/// for a hookless procedure: that entry is the durable proof the procedure is
 /// undone, and without it the journal would re-plan it on every restore. The
 /// journal is therefore the sole authority on what is still outstanding, which is
 /// what makes a crash mid-rewind resume with exactly the remaining work.
-fn run_rewind_undo(ctx: &ChainCtx, unwound: &[CommittedOp]) {
+fn run_rewind_undo(ctx: &ChainCtx, unwound: &[CommittedProc]) {
     let by_iter: Vec<Vec<StageRecord>> = stages_by_iter(ctx, unwound).into_values().collect();
 
     for record in plan_compensation(RollbackMode::AllOrNothing, &by_iter, &[]) {
-        let op = ctx.op(record.stage_idx);
-        let slots = &ctx.stage_segments[record.stage_idx];
+        let proc = ctx.proc(record.stage_idx);
+        let slots = &ctx.stage_entities[record.stage_idx];
 
-        let mut segments_ran = Vec::new();
+        let mut entities_ran = Vec::new();
         let mut outbox = Vec::new();
-        for seg_run in &record.segments {
-            let slot = &slots[seg_run.segment_index];
-            segments_ran.push(slot.segment_identity.as_ref().clone());
-            if op.compensate_overridden {
-                let sink = compensate_segment(ctx, slot, seg_run);
+        for seg_run in &record.entities {
+            let slot = &slots[seg_run.entity_index];
+            entities_ran.push(slot.entity_identity.as_ref().clone());
+            if proc.compensate_overridden {
+                let sink = compensate_entity(ctx, slot, seg_run);
                 outbox.extend(outbox_items(slot, &sink.staged));
             }
         }
 
-        journal_undo(ctx, record, "rewind-undo", segments_ran, outbox);
+        journal_undo(ctx, record, "rewind-undo", entities_ran, outbox);
     }
 }
 
-/// Journal one operation's undo — the `compensated` entry that records it as
+/// Journal one procedure's undo — the `compensated` entry that records it as
 /// reversed, carrying whatever output its hook staged. Shared by the crash-resume
-/// pass (one entry per compensated segment) and the rewind pass (one per
-/// operation, even an empty one). Best-effort: the cancel token is ignored,
+/// pass (one entry per compensated entity) and the rewind pass (one per
+/// procedure, even an empty one). Best-effort: the cancel token is ignored,
 /// because rollback IS the response to that cancel.
 fn journal_undo(
     ctx: &ChainCtx,
     record: &StageRecord,
     what: &str,
-    segments_ran: Vec<Vec<u8>>,
-    outbox: Vec<crate::pb::OpOutboxItem>,
+    entities_ran: Vec<Vec<u8>>,
+    outbox: Vec<crate::pb::ProcOutboxItem>,
 ) {
-    let commit = crate::pb::command_request::Command::OpCommit(crate::pb::OpCommit {
+    let commit = crate::pb::command_request::Command::ProcCommit(crate::pb::ProcCommit {
         operative_id: ctx.instance_id.to_string(),
-        op_idx: record.stage_idx as u32,
+        proc_idx: record.stage_idx as u32,
         iter: record.iter,
-        segments_ran,
+        entities_ran,
         handoff: Vec::new(),
         outbox,
         compensating: true,
@@ -1336,17 +1333,17 @@ fn journal_undo(
     }
 }
 
-/// Run one segment's `compensate` hook and hand back the sink holding whatever
-/// undo output it staged (under that segment's identity, for the `compensated`
+/// Run one entity's `compensate` hook and hand back the sink holding whatever
+/// undo output it staged (under that entity's identity, for the `compensated`
 /// journal entry — `bounded-transactional-outbox` D5). Best-effort: a failing
 /// hook is logged so one broken undo cannot strand the rest of the plan.
-fn compensate_segment(
+fn compensate_entity(
     ctx: &ChainCtx,
-    slot: &Arc<SegmentSlot>,
-    seg_run: &SegmentRun,
-) -> BoundedSegmentSink {
+    slot: &Arc<EntitySlot>,
+    seg_run: &EntityRun,
+) -> BoundedEntitySink {
     let outputs: Vec<Value> = seg_run.outputs.iter().map(Arc::clone).collect();
-    let mut sink = BoundedSegmentSink::new(ctx.instance_id, ctx.journaling());
+    let mut sink = BoundedEntitySink::new(ctx.instance_id, ctx.journaling());
     let mut state = slot.state.lock_recover();
     if let Err(e) =
         slot.dispatcher
@@ -1361,146 +1358,146 @@ fn compensate_segment(
 }
 
 /// Rebuild the completed-stage records to compensate on a crash-resume from the
-/// shipped-back compensation-intent markers: a Segment slot whose identity was
+/// shipped-back compensation-intent markers: an Entity slot whose identity was
 /// marked "intent" completed forward and needs undo. Outputs are empty — an
-/// operation's collected inter-operation output was never durable, so a durable
-/// compensable operation must persist its undo handle in State (which IS
+/// procedure's collected inter-procedure output was never durable, so a durable
+/// compensable procedure must persist its undo handle in State (which IS
 /// restored), per the at-least-once author contract. Stages are gathered in
 /// chain order; [`plan_compensation`] reverses them for the undo pass.
 fn reconstruct_completed_from_intents(ctx: &ChainCtx) -> Vec<StageRecord> {
     let mut completed: Vec<StageRecord> = Vec::new();
-    for (stage_idx, slots) in ctx.stage_segments.iter().enumerate() {
-        let segments: Vec<SegmentRun> = slots
+    for (stage_idx, slots) in ctx.stage_entities.iter().enumerate() {
+        let entities: Vec<EntityRun> = slots
             .iter()
             .enumerate()
-            .filter(|(_, slot)| ctx.instance.has_compensation_intent(&slot.segment_identity))
-            .map(|(segment_index, _)| SegmentRun {
-                segment_index,
+            .filter(|(_, slot)| ctx.instance.has_compensation_intent(&slot.entity_identity))
+            .map(|(entity_index, _)| EntityRun {
+                entity_index,
                 outputs: Vec::new(),
                 staged: Vec::new(),
             })
             .collect();
-        if !segments.is_empty() {
+        if !entities.is_empty() {
             // Intent markers carry no iteration; a pre-journal saga resume has
             // only one pass to undo anyway.
             completed.push(StageRecord {
                 stage_idx,
                 iter: 0,
-                segments,
+                entities,
             });
         }
     }
     completed
 }
 
-/// Ship one saga compensation marker for a Segment through the reliable sink —
+/// Ship one saga compensation marker for an Entity through the reliable sink —
 /// a no-op for an opted-out (non-durable) class, which never crash-resumes.
-fn emit_compensation_record(payload_id: &str, segment_identity: &[u8], persistence_enabled: bool) {
+fn emit_compensation_record(payload_id: &str, entity_identity: &[u8], persistence_enabled: bool) {
     if persistence_enabled {
-        crate::segment::segment_state_sink::send_compensation_record(payload_id, segment_identity);
+        crate::entity::state_sink::send_compensation_record(payload_id, entity_identity);
     }
 }
 
-/// Build the SegmentSlots for one stage: a single slot in Single mode, one per
-/// declared key in Static mode. Reuses the unbounded `build_segment` closure
-/// so per-Segment state + identity are identical to an unbounded operative.
-fn build_stage_segments(
+/// Build the EntitySlots for one stage: a single slot in Single mode, one per
+/// declared key in Static mode. Reuses the unbounded `build_entity` closure
+/// so per-Entity state + identity are identical to an unbounded operative.
+fn build_stage_entities(
     topology: &Arc<OperativeTopology>,
     instance_id: &Arc<str>,
-    op_id: OperationId,
-    op: &OperationDescriptor,
+    proc_id: ProcedureId,
+    proc: &ProcedureDescriptor,
     pool: &Arc<WorkStealingPool>,
     persistence_enabled: bool,
-) -> Vec<Arc<SegmentSlot>> {
-    let build = |operation_key: Option<&str>, segment_index: usize| {
-        (op.build_segment)(BuildSegmentArgs {
+) -> Vec<Arc<EntitySlot>> {
+    let build = |entity_key: Option<&str>, entity_index: usize| {
+        (proc.build_entity)(BuildEntityArgs {
             topology: Arc::clone(topology),
             instance: Weak::new(),
             instance_id: Arc::clone(instance_id),
-            operation_id: op_id,
-            operation_key,
-            segment_index,
+            procedure_id: proc_id,
+            entity_key,
+            entity_index,
             persistence_enabled,
             pool: Arc::clone(pool),
         })
     };
-    match op.mode {
-        SegmentingMode::Single => vec![build(None, 0)],
-        SegmentingMode::Static => op
-            .segment_keys
+    match proc.mode {
+        EntityMode::Single => vec![build(None, 0)],
+        EntityMode::Static => proc
+            .entity_keys
             .iter()
             .enumerate()
             .map(|(idx, key)| build(Some(key), idx))
             .collect(),
-        // Rejected at registration; defensively yield no segments.
-        SegmentingMode::Dynamic => Vec::new(),
+        // Rejected at registration; defensively yield no entities.
+        EntityMode::Dynamic => Vec::new(),
     }
 }
 
-/// Partition an input batch across a stage's segments. Single mode routes every
-/// item to segment 0; Static mode routes by the operation's `segment_for` keys.
-fn partition(op: &OperationDescriptor, segment_count: usize, batch: &[Value]) -> Vec<Vec<Value>> {
-    let mut buckets: Vec<Vec<Value>> = vec![Vec::new(); segment_count];
-    match op.mode {
-        SegmentingMode::Single => {
+/// Partition an input batch across a stage's entities. Single mode routes every
+/// item to entity 0; Static mode routes by the procedure's `entities_for` keys.
+fn partition(proc: &ProcedureDescriptor, entity_count: usize, batch: &[Value]) -> Vec<Vec<Value>> {
+    let mut buckets: Vec<Vec<Value>> = vec![Vec::new(); entity_count];
+    match proc.mode {
+        EntityMode::Single => {
             if let Some(bucket) = buckets.first_mut() {
                 bucket.extend(batch.iter().map(Arc::clone));
             }
         }
-        SegmentingMode::Static => {
-            let key_to_idx: HashMap<&str, usize> = op
-                .segment_keys
+        EntityMode::Static => {
+            let key_to_idx: HashMap<&str, usize> = proc
+                .entity_keys
                 .iter()
                 .enumerate()
                 .map(|(i, k)| (*k, i))
                 .collect();
             for item in batch {
-                for key in (op.segment_for_erased)(item.as_ref()) {
+                for key in (proc.entities_for_erased)(item.as_ref()) {
                     if let Some(&idx) = key_to_idx.get(key) {
                         buckets[idx].push(Arc::clone(item));
                     }
                 }
             }
         }
-        SegmentingMode::Dynamic => {}
+        EntityMode::Dynamic => {}
     }
     buckets
 }
 
 /// Run one frontier — every currently-runnable DAG node — on the pool and join
-/// on a single count-based barrier. All of a node's segments and all the nodes
+/// on a single count-based barrier. All of a node's entities and all the nodes
 /// of the frontier are submitted together: the nodes are independent, so
-/// sibling branches genuinely interleave on the pool. A failing segment
-/// climbs its retry ladder in place ([`SegmentJob::run_with_retry`]); its
+/// sibling branches genuinely interleave on the pool. A failing entity
+/// climbs its retry ladder in place ([`EntityJob::run_with_retry`]); its
 /// siblings keep their completed results buffered and are never re-run.
 ///
 /// Returns the `StageOut` of every node that completed **whole** (ascending by
 /// node, so parents keep preceding children) plus the first error seen. A node
-/// with a failing segment yields nothing: its staged plugin output is dropped
-/// with the error, exactly as a failing stage's always was — a failed operation
-/// leaks nothing. A node whose segments all got an empty partition still yields
-/// an empty `StageOut`: an operation with nothing to do is done.
+/// with a failing entity yields nothing: its staged plugin output is dropped
+/// with the error, exactly as a failing stage's always was — a failed procedure
+/// leaks nothing. A node whose entities all got an empty partition still yields
+/// an empty `StageOut`: a procedure with nothing to do is done.
 fn run_frontier(
     ctx: &ChainCtx,
     frontier: Vec<Runnable>,
 ) -> (Vec<(usize, StageOut)>, Option<BoundedError>) {
-    let (tx, rx) = unbounded::<(usize, usize, Result<SegmentOut, BoundedError>)>();
+    let (tx, rx) = unbounded::<(usize, usize, Result<EntityOut, BoundedError>)>();
     let mut spawned = 0usize;
-    let mut segments: BTreeMap<usize, Vec<SegmentRun>> = frontier
+    let mut entities: BTreeMap<usize, Vec<EntityRun>> = frontier
         .iter()
         .map(|(node, _)| (*node, Vec::new()))
         .collect();
 
     for (node, batch) in &frontier {
-        let slots = &ctx.stage_segments[*node];
-        for (seg_idx, items) in partition(ctx.op(*node), slots.len(), batch)
+        let slots = &ctx.stage_entities[*node];
+        for (seg_idx, items) in partition(ctx.proc(*node), slots.len(), batch)
             .into_iter()
             .enumerate()
         {
             if items.is_empty() {
                 continue;
             }
-            let job = SegmentJob {
+            let job = EntityJob {
                 topology: Arc::clone(ctx.topology),
                 instance_id: Arc::clone(ctx.instance_id),
                 slot: Arc::clone(&slots[seg_idx]),
@@ -1518,16 +1515,16 @@ fn run_frontier(
     }
     drop(tx);
 
-    // Wait for every segment of every node (the barrier) before returning, even
+    // Wait for every entity of every node (the barrier) before returning, even
     // on failure, so nothing is mid-run when the level completes.
     let mut failed: HashSet<usize> = HashSet::new();
     let mut first_err: Option<BoundedError> = None;
     for _ in 0..spawned {
         match rx.recv() {
             Ok((node, seg_idx, Ok((outputs, staged)))) => {
-                if let Some(runs) = segments.get_mut(&node) {
-                    runs.push(SegmentRun {
-                        segment_index: seg_idx,
+                if let Some(runs) = entities.get_mut(&node) {
+                    runs.push(EntityRun {
+                        entity_index: seg_idx,
                         outputs,
                         staged,
                     });
@@ -1540,53 +1537,53 @@ fn run_frontier(
             // A dropped task cannot be attributed to a node, so no node of this
             // level is trusted to have completed.
             Err(_) => {
-                failed.extend(segments.keys().copied());
-                first_err.get_or_insert_with(|| BoundedError::from("bounded segment task dropped"));
+                failed.extend(entities.keys().copied());
+                first_err.get_or_insert_with(|| BoundedError::from("bounded entity task dropped"));
             }
         }
     }
 
-    let level = segments
+    let level = entities
         .into_iter()
         .filter(|(node, _)| !failed.contains(node))
-        .map(|(node, mut segments)| {
-            // Deterministic downstream batch: segments in index order (each
-            // segment's own item order is preserved by `SegmentJob::run`).
-            segments.sort_by_key(|s| s.segment_index);
-            let batch: Vec<Value> = segments
+        .map(|(node, mut entities)| {
+            // Deterministic downstream batch: entities in index order (each
+            // entity's own item order is preserved by `EntityJob::run`).
+            entities.sort_by_key(|s| s.entity_index);
+            let batch: Vec<Value> = entities
                 .iter()
                 .flat_map(|s| s.outputs.iter().map(Arc::clone))
                 .collect();
-            (node, StageOut { batch, segments })
+            (node, StageOut { batch, entities })
         })
         .collect();
     (level, first_err)
 }
 
-/// One segment's stage result: the inter-operation output collected for the
-/// next stage plus the plugin-bound output staged for the operation's outbox.
-type SegmentOut = (Vec<Value>, Vec<StagedOutput>);
+/// One entity's stage result: the inter-procedure output collected for the
+/// next stage plus the plugin-bound output staged for the procedure's outbox.
+type EntityOut = (Vec<Value>, Vec<StagedOutput>);
 
-/// One segment's share of a stage, moved onto a pool thread: everything needed
+/// One entity's share of a stage, moved onto a pool thread: everything needed
 /// to run its batch — and to re-run it on a retry — off the driver thread.
-struct SegmentJob {
+struct EntityJob {
     topology: Arc<OperativeTopology>,
     instance_id: Arc<str>,
-    slot: Arc<SegmentSlot>,
+    slot: Arc<EntitySlot>,
     staging: bool,
     retry: RetryPolicy,
     cancel: Arc<AtomicBool>,
 }
 
-impl SegmentJob {
+impl EntityJob {
     /// Run the batch, climbing the class's retry ladder on a retryable failure
-    /// (`bounded-segment-retry`): the segment re-runs its whole batch from the
+    /// (`bounded-entity-retry`): the entity re-runs its whole batch from the
     /// top — at-least-once, the same idempotency contract crash-resume imposes —
     /// with each attempt collecting into a fresh sink, so a failed attempt's
     /// output is discarded rather than double-counted. A non-retryable error, an
     /// exhausted ladder, or a cancellation during the backoff returns the error
     /// into the caller's abnormal path unchanged.
-    fn run_with_retry(&self, items: Vec<Value>) -> Result<SegmentOut, BoundedError> {
+    fn run_with_retry(&self, items: Vec<Value>) -> Result<EntityOut, BoundedError> {
         let max_attempts = self.retry.max_attempts.max(1);
         let mut items = Some(items);
         let mut attempt: u32 = 1;
@@ -1602,7 +1599,7 @@ impl SegmentJob {
                 Ok(out) => return Ok(out),
                 Err(e) if is_final || e.non_retryable => return Err(e),
                 Err(e) => {
-                    let delay = crate::segment::retry::note_failed_attempt(
+                    let delay = crate::entity::retry::note_failed_attempt(
                         &self.label(),
                         attempt,
                         self.retry,
@@ -1619,13 +1616,13 @@ impl SegmentJob {
         }
     }
 
-    /// One attempt: process the segment's items sequentially (per-segment
-    /// ordering preserved), running `Operation::run` via the monomorphized
-    /// dispatcher's collecting path and gathering the inter-operation output for
-    /// the next stage plus the plugin-bound output staged for the operation's
+    /// One attempt: process the entity's items sequentially (per-entity
+    /// ordering preserved), running `Procedure::run` via the monomorphized
+    /// dispatcher's collecting path and gathering the inter-procedure output for
+    /// the next stage plus the plugin-bound output staged for the procedure's
     /// outbox.
-    fn run(&self, items: Vec<Value>) -> Result<SegmentOut, BoundedError> {
-        let mut sink = BoundedSegmentSink::new(&self.instance_id, self.staging);
+    fn run(&self, items: Vec<Value>) -> Result<EntityOut, BoundedError> {
+        let mut sink = BoundedEntitySink::new(&self.instance_id, self.staging);
         let mut state = self.slot.state.lock_recover();
         for item in items {
             self.slot
@@ -1637,33 +1634,33 @@ impl SegmentJob {
 
     /// The failing work, as the retry log names it.
     fn label(&self) -> String {
-        let operation = self
+        let procedure = self
             .topology
-            .operation(self.slot.operation_id)
-            .map_or("-", |op| op.name.as_ref());
+            .procedure(self.slot.procedure_id)
+            .map_or("-", |proc| proc.name.as_ref());
         format!(
-            "bounded {} operation {} segment {}",
+            "bounded {} procedure {} entity {}",
             self.instance_id,
-            operation,
-            self.slot.operation_key.as_deref().unwrap_or("-")
+            procedure,
+            self.slot.entity_key.as_deref().unwrap_or("-")
         )
     }
 }
 
-/// Per-segment collecting sink for the structured driver. Inter-operation
+/// Per-entity collecting sink for the structured driver. Inter-procedure
 /// output is buffered for the next stage. Plugin-bound output is **staged** for
-/// the operation's transactional outbox when the run commits its op boundaries
-/// (`staging`), so nothing reaches a plugin before the op's journal entry is
+/// the procedure's transactional outbox when the run commits its proc boundaries
+/// (`staging`), so nothing reaches a plugin before the proc's journal entry is
 /// durable; otherwise — an opted-out class or a transport-less run, neither of
 /// which journals — it is forwarded straight to the wire as before.
-struct BoundedSegmentSink {
+struct BoundedEntitySink {
     instance_id: Arc<str>,
     collected: Vec<Value>,
     staged: Vec<StagedOutput>,
     staging: bool,
 }
 
-impl BoundedSegmentSink {
+impl BoundedEntitySink {
     fn new(instance_id: &Arc<str>, staging: bool) -> Self {
         Self {
             instance_id: Arc::clone(instance_id),
@@ -1674,7 +1671,7 @@ impl BoundedSegmentSink {
     }
 }
 
-impl BoundedCollectSink for BoundedSegmentSink {
+impl BoundedCollectSink for BoundedEntitySink {
     fn collect(&mut self, value: Value) {
         self.collected.push(value);
     }

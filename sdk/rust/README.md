@@ -32,9 +32,9 @@ site — no panics. Lifecycle vocabulary: `docs/sdk_naming_conventions.md`.
 
 ## Authoring a topology
 
-Graphs are declared producer-first (`sdk-graph-authoring`): `.into::<Op>()`
-wires a consumer and returns **that operation's** output stream handle, so a
-linear pipeline is one expression. The channel between two operations carries
+Graphs are declared producer-first (`sdk-graph-authoring`): `.into::<Proc>()`
+wires a consumer and returns **that procedure's** output stream handle, so a
+linear pipeline is one expression. The channel between two procedures carries
 the producer's declared `Output` type — no type token, no channel name unless
 you want one (`.named(...)` overrides the name derived from the producer's
 identity; entry names are explicit, they are the operative's address).
@@ -105,7 +105,7 @@ identity. Graphs must be acyclic; per-channel config (`codec`, `keyed`,
 `on_full`, `retry_max`, `retry_backoff_ms`) chains on the handle; the hybrid
 tap is `also_output_with(name, serializer)` / `also_output(name)`.
 
-An operation that needs **two feeds** — a data stream plus a live config
+A procedure that needs **two feeds** — a data stream plus a live config
 stream, a join of two computed streams — subscribes them with `merge`, which
 maps each source's payload into one author-declared sum-type `Input`:
 
@@ -117,7 +117,7 @@ c.merge::<DetectorInput>()
 ```
 
 Per-source FIFO is preserved and nothing is ordered across sources; see
-`docs/multi_input_operations.md`.
+`docs/multi_input_procedures.md`.
 
 ### A fuller graph: named nodes, a hybrid tap, a keyed sink
 
@@ -142,7 +142,7 @@ impl UnboundedOperative for RiskOperative {
             .named("orders.validated")           // overrides the derived name
             .also_output("audit");               // tap: default JSON to `audit`
 
-        // One class, two nodes: each keeps its own per-segment state under
+        // One class, two nodes: each keeps its own per-entity state under
         // its node identity (state dirs, journals, diagnostics). Both arms
         // name the same (unnamed) Verdicts class, so their verdicts fan IN —
         // either arm's `.into::<Verdicts>()` returns the one join's handle.
@@ -165,7 +165,7 @@ channel you chose to `.named(...)`.
 ### A structured bounded DAG
 
 Bounded operatives author on the same builder. A durable class journals each
-op barrier, so inter-op channels declare `.codec()`; a fan-in node runs once,
+proc barrier, so inter-proc channels declare `.codec()`; a fan-in node runs once,
 after **all** its producers committed, with the accumulated batch — and on an
 abnormal exit the saga unwinds reverse-topologically (the join before either
 producer, the shared root last):
@@ -174,8 +174,8 @@ producer, the shared root last):
 struct SettleBounded;
 impl BoundedOperative for SettleBounded {
     fn factory_id() -> &'static str { "settle" }
-    fn retry_attempts() -> u32 { 3 } // per-segment ladder before the saga fires
-    fn operations(c: &ChannelBuilder) {
+    fn retry_attempts() -> u32 { 3 } // per-entity ladder before the saga fires
+    fn procedures(c: &ChannelBuilder) {
         // The diamond: Reserve fans out to Charge and Ledger, whose outputs
         // accumulate into one Reconcile join.
         let reserved = c
@@ -197,10 +197,10 @@ still runs exactly once. Cycles are refused at registration; a chained loop
 (`LoopMode::Chained`) additionally requires the graph to converge on a single
 codec'd terminal.
 
-Parameterized operations use the `Config` associated type: declare
+Parameterized procedures use the `Config` associated type: declare
 `type Config = MyConfig` and build the instance from it in `from_config` —
 the sanctioned path for one class serving several configurations (see the
-`Operation::from_config` rustdoc for a compiling worked example).
+`Procedure::from_config` rustdoc for a compiling worked example).
 
 ## Public API workflow
 
@@ -223,7 +223,7 @@ After any public-API-affecting change:
 
 - `bench-internals` — exposes internal dispatch types for the crate's
   own benches/tests. NOT a stable API.
-- `testing` — exposes `flezha_runner::testing::OperationTestHarness`
+- `testing` — exposes `flezha_runner::testing::ProcedureTestHarness`
   for downstream crates that want replay-equality tests.
 
 ## Architecture

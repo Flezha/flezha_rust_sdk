@@ -26,13 +26,13 @@ pub mod command_request {
         #[prost(message, tag = "7")]
         MigrationDeserialization(super::MigrationDeserialization),
         #[prost(message, tag = "8")]
-        SegmentState(super::SegmentState),
+        EntityState(super::EntityState),
         #[prost(message, tag = "9")]
         RunnerDisconnect(super::RunnerDisconnect),
         #[prost(message, tag = "10")]
-        OperationMessage(super::OperationMessage),
+        OperativeMessage(super::OperativeMessage),
         #[prost(message, tag = "11")]
-        SegmentApplyState(super::SegmentApplyState),
+        EntityApplyState(super::EntityApplyState),
         #[prost(message, tag = "12")]
         RunnerShutdownNotification(super::RunnerShutdownNotification),
         #[prost(message, tag = "13")]
@@ -42,11 +42,11 @@ pub mod command_request {
         #[prost(message, tag = "15")]
         RestoreInitStateResponse(super::RestoreInitStateResponse),
         #[prost(message, tag = "16")]
-        CompactSegment(super::CompactSegment),
+        CompactEntity(super::CompactEntity),
         #[prost(message, tag = "17")]
-        CompactSegmentResponse(super::CompactSegmentResponse),
+        CompactEntityResponse(super::CompactEntityResponse),
         #[prost(message, tag = "18")]
-        SegmentMailboxStatus(super::SegmentMailboxStatus),
+        EntityMailboxStatus(super::EntityMailboxStatus),
         #[prost(message, tag = "19")]
         Ping(super::Ping),
         #[prost(message, tag = "20")]
@@ -66,9 +66,9 @@ pub mod command_request {
         #[prost(message, tag = "27")]
         ParkPayloadAck(super::ParkPayloadAck),
         #[prost(message, tag = "28")]
-        OpCommit(super::OpCommit),
+        ProcCommit(super::ProcCommit),
         #[prost(message, tag = "29")]
-        OpCommitResponse(super::OpCommitResponse),
+        ProcCommitResponse(super::ProcCommitResponse),
         #[prost(message, tag = "30")]
         IterCommit(super::IterCommit),
         #[prost(message, tag = "31")]
@@ -117,23 +117,23 @@ pub struct AddOperative {
     /// "unbounded".
     #[prost(string, tag = "4")]
     pub kind: ::prost::alloc::string::String,
-    /// Number of persisted Segments the Controller will ship RestoreInitState
+    /// Number of persisted Entities the Controller will ship RestoreInitState
     /// for on this (re)bind. Non-zero only when re-binding a durable bounded
     /// operative that has WAL state on disk (crash-resume). A durable bounded
-    /// driver holds its first Operation until this many Segment restores have
+    /// driver holds its first Procedure until this many Entity restores have
     /// landed, so a resumed run reads persisted state instead of cold-starting.
     /// 0 for a fresh spawn, an unbounded operative, or an opted-out bounded one.
     #[prost(uint32, tag = "5")]
-    pub resume_segment_count: u32,
-    /// Bounded op-journal crash-resume (bounded-op-journal): the instance's
-    /// committed op indexes + latest journaled handoff. Instance-scoped, so it
-    /// rides the bind itself rather than a per-Segment restore — a durable
-    /// bounded class with no per-Segment state ships no RestoreInitState at all,
+    pub resume_entity_count: u32,
+    /// Bounded proc-journal crash-resume (bounded-proc-journal): the instance's
+    /// committed proc indexes + latest journaled handoff. Instance-scoped, so it
+    /// rides the bind itself rather than a per-Entity restore — a durable
+    /// bounded class with no per-Entity state ships no RestoreInitState at all,
     /// and would otherwise resume at iteration 0 on every wake.
     /// Absent when the instance has no journal (fresh spawn, opted-out class,
     /// unbounded operative) — the driver then keeps the re-run-from-top behaviour.
     #[prost(message, optional, tag = "6")]
-    pub op_journal: ::core::option::Option<OpJournalState>,
+    pub proc_journal: ::core::option::Option<ProcJournalState>,
 }
 /// SDK -> Controller, as the CommandResponse raw_data of AddOperative.
 /// Carries the operative class's SDK-side declarations (operative metadata)
@@ -170,34 +170,34 @@ pub struct MigrationDeserialization {
     pub serialized_state: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct SegmentState {
+pub struct EntityState {
     #[prost(string, tag = "1")]
     pub operative_id: ::prost::alloc::string::String,
 }
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct RunnerDisconnect {}
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct OperationMessage {
+pub struct OperativeMessage {
     #[prost(string, tag = "1")]
     pub operative_id: ::prost::alloc::string::String,
     #[prost(bytes = "vec", tag = "2")]
     pub payload: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct OperationMessageResponse {
+pub struct OperativeMessageResponse {
     #[prost(bytes = "vec", tag = "1")]
     pub payload: ::prost::alloc::vec::Vec<u8>,
     #[prost(string, tag = "2")]
     pub error: ::prost::alloc::string::String,
 }
-/// Inverse of SegmentState. Sent by the Controller to a Runner SDK to
+/// Inverse of EntityState. Sent by the Controller to a Runner SDK to
 /// prime a freshly-spawned Operative's GenServer/struct state from a
 /// previously-captured `state_binary`. Round-trips with the same opaque
-/// SDK-internal serialization used by SegmentState. SDKs that do not
+/// SDK-internal serialization used by EntityState. SDKs that do not
 /// implement Apply respond with status="error" and error\[\] containing the
 /// canonical token "apply_state_not_supported".
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct SegmentApplyState {
+pub struct EntityApplyState {
     #[prost(string, tag = "1")]
     pub operative_id: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
@@ -209,7 +209,7 @@ pub struct SegmentApplyState {
 /// the SDK handle, explicit disconnect()) for each currently-running
 /// Operative. Carries the Runner's freshest in-memory state binary so the
 /// Controller can overwrite Overwatch.state.snapshot before the next
-/// AddOperative reissue (see executor-controller-connection-healing
+/// AddOperative reissue (see runner-controller-connection-healing
 /// capability).
 ///
 /// Direction is reversed compared to most CommandRequest variants: SDK -> Controller.
@@ -240,78 +240,78 @@ pub struct RunnerShutdownAck {
     #[prost(string, tag = "1")]
     pub operative_id: ::prost::alloc::string::String,
 }
-/// One serialized inter-operation handoff value: the payload bytes produced
+/// One serialized inter-procedure handoff value: the payload bytes produced
 /// by the channel's byte codec, tagged with the producing channel id so a
 /// resume re-seeds through the same channel's decoder.
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct OpHandoffItem {
+pub struct ProcHandoffItem {
     #[prost(uint32, tag = "1")]
     pub channel_id: u32,
     #[prost(bytes = "vec", tag = "2")]
     pub payload: ::prost::alloc::vec::Vec<u8>,
 }
-/// One staged plugin-bound output of an operation, buffered per segment
-/// while the operation ran and shipped at its barrier
-/// (bounded-transactional-outbox). `seq_in_op` orders the entries a single
-/// segment staged during the operation; `channel` is the producing plugin
+/// One staged plugin-bound output of a procedure, buffered per entity
+/// while the procedure ran and shipped at its barrier
+/// (bounded-transactional-outbox). `seq_in_proc` orders the entries a single
+/// entity staged during the procedure; `channel` is the producing plugin
 /// channel's name, carried through to the flushed frame's `channel`
 /// metadata.
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct OpOutboxItem {
+pub struct ProcOutboxItem {
     #[prost(bytes = "vec", tag = "1")]
-    pub segment_id: ::prost::alloc::vec::Vec<u8>,
+    pub entity_id: ::prost::alloc::vec::Vec<u8>,
     #[prost(uint32, tag = "2")]
-    pub seq_in_op: u32,
+    pub seq_in_proc: u32,
     #[prost(string, tag = "3")]
     pub channel: ::prost::alloc::string::String,
     #[prost(bytes = "vec", tag = "4")]
     pub payload: ::prost::alloc::vec::Vec<u8>,
 }
-/// SDK -> Controller, at each operation barrier of a durable structured
-/// bounded operative (bounded-op-journal): operation `op_idx` completed
-/// forward on `segments_ran` (wire segment identities) and released the
-/// serialized `handoff` batch plus the `outbox` its segments staged
+/// SDK -> Controller, at each procedure barrier of a durable structured
+/// bounded operative (bounded-proc-journal): procedure `proc_idx` completed
+/// forward on `entities_ran` (wire entity identities) and released the
+/// serialized `handoff` batch plus the `outbox` its entities staged
 /// (bounded-transactional-outbox — nothing reached a plugin yet). The
-/// Controller appends ONE `op_committed` entry carrying handoff AND outbox
-/// to the instance's op-journal, fsyncs, replies OpCommitResponse, and only
-/// then flushes the outbox; the driver starts the next operation after the
+/// Controller appends ONE `proc_committed` entry carrying handoff AND outbox
+/// to the instance's proc-journal, fsyncs, replies ProcCommitResponse, and only
+/// then flushes the outbox; the driver starts the next procedure after the
 /// successful reply. Direction is reversed like RunnerShutdownNotification:
 /// SDK -> Controller over the "control_command" payload_id; old Controllers
 /// ignore the unknown variant via Protox unknown-field handling. `iter` is 0
 /// for the single-pass chain (the durable-loop follow-up increments it).
 ///
 /// `compensating` marks the undo twin: a `compensate` hook's staged output
-/// for the already-committed operation `op_idx`, journaled as a
-/// `compensated` entry and flushed with comp-marked keys. The per-segment
+/// for the already-committed procedure `proc_idx`, journaled as a
+/// `compensated` entry and flushed with comp-marked keys. The per-entity
 /// compensation markers still decide which hooks run.
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct OpCommit {
+pub struct ProcCommit {
     #[prost(string, tag = "1")]
     pub operative_id: ::prost::alloc::string::String,
     #[prost(uint32, tag = "2")]
-    pub op_idx: u32,
+    pub proc_idx: u32,
     #[prost(uint32, tag = "3")]
     pub iter: u32,
     #[prost(bytes = "vec", repeated, tag = "4")]
-    pub segments_ran: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+    pub entities_ran: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
     #[prost(message, repeated, tag = "5")]
-    pub handoff: ::prost::alloc::vec::Vec<OpHandoffItem>,
+    pub handoff: ::prost::alloc::vec::Vec<ProcHandoffItem>,
     #[prost(message, repeated, tag = "6")]
-    pub outbox: ::prost::alloc::vec::Vec<OpOutboxItem>,
+    pub outbox: ::prost::alloc::vec::Vec<ProcOutboxItem>,
     #[prost(bool, tag = "7")]
     pub compensating: bool,
 }
-/// Controller -> SDK reply to OpCommit, emitted only AFTER the journal
+/// Controller -> SDK reply to ProcCommit, emitted only AFTER the journal
 /// entry is durable (fsync). Carries the originating request's
 /// reference_id so the SDK wakes the blocked driver. A non-empty `error`
 /// (journal write/fsync failure, oversized handoff) terminates the run
 /// abnormally through the existing terminal-error path.
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct OpCommitResponse {
+pub struct ProcCommitResponse {
     #[prost(string, tag = "1")]
     pub operative_id: ::prost::alloc::string::String,
     #[prost(uint32, tag = "2")]
-    pub op_idx: u32,
+    pub proc_idx: u32,
     #[prost(string, tag = "3")]
     pub error: ::prost::alloc::string::String,
 }
@@ -319,9 +319,9 @@ pub struct OpCommitResponse {
 /// structured bounded operative (bounded-durable-loop): iteration `iter`
 /// finished, having consumed the durable inbox up to `consumed_offset` and
 /// released `handoff` as its terminal batch. The Controller appends
-/// `iter_committed(iter, consumed_offset)` to the op-journal, fsyncs, requests
-/// a boundary snapshot for the instance's segments, flushes whatever the
-/// iteration's operations staged, truncates the inbox below the consumed
+/// `iter_committed(iter, consumed_offset)` to the proc-journal, fsyncs, requests
+/// a boundary snapshot for the instance's entities, flushes whatever the
+/// iteration's procedures staged, truncates the inbox below the consumed
 /// offset, and replies IterCommitResponse. The driver enters iteration
 /// `iter + 1` only on the successful reply — a crash before it re-runs the
 /// whole iteration (at-least-once), never the ones below it.
@@ -334,11 +334,11 @@ pub struct IterCommit {
     #[prost(uint64, tag = "3")]
     pub consumed_offset: u64,
     #[prost(message, repeated, tag = "4")]
-    pub handoff: ::prost::alloc::vec::Vec<OpHandoffItem>,
+    pub handoff: ::prost::alloc::vec::Vec<ProcHandoffItem>,
 }
 /// Controller -> SDK reply to IterCommit, emitted only AFTER the journal entry
 /// is durable (fsync). Same reference_id / terminal-error contract as
-/// OpCommitResponse.
+/// ProcCommitResponse.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct IterCommitResponse {
     #[prost(string, tag = "1")]
@@ -365,58 +365,58 @@ pub struct IterPark {
     #[prost(uint64, tag = "3")]
     pub wake_deadline_ms: u64,
 }
-/// One journaled forward op commit, shipped back on crash-resume so the driver
+/// One journaled forward proc commit, shipped back on crash-resume so the driver
 /// can rebuild `plan_compensation`'s per-iteration `committed` input from
-/// durable state (bounded-durable-loop): operation `op_idx` of iteration `iter`
-/// completed forward on `segments_ran`.
+/// durable state (bounded-durable-loop): procedure `proc_idx` of iteration `iter`
+/// completed forward on `entities_ran`.
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct OpCommittedOp {
+pub struct ProcCommittedProc {
     #[prost(uint32, tag = "1")]
-    pub op_idx: u32,
+    pub proc_idx: u32,
     #[prost(uint32, tag = "2")]
     pub iter: u32,
     #[prost(bytes = "vec", repeated, tag = "3")]
-    pub segments_ran: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+    pub entities_ran: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
 }
-/// What one committed operation of the in-flight iteration released, keyed by
-/// its op_idx (bounded-branching). An operation tree re-seeds each uncommitted
+/// What one committed procedure of the in-flight iteration released, keyed by
+/// its proc_idx (bounded-branching). A procedure tree re-seeds each uncommitted
 /// child branch from its own parent's edge, so the resume state carries every
 /// in-flight commit's handoff — not just the latest one's.
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct OpEdgeHandoff {
+pub struct ProcEdgeHandoff {
     #[prost(uint32, tag = "1")]
-    pub op_idx: u32,
+    pub proc_idx: u32,
     #[prost(message, repeated, tag = "2")]
-    pub handoff: ::prost::alloc::vec::Vec<OpHandoffItem>,
+    pub handoff: ::prost::alloc::vec::Vec<ProcHandoffItem>,
 }
-/// Committed op-journal state shipped back on crash-resume
-/// (bounded-op-journal). `iter` is the iteration to resume at — the one after
+/// Committed proc-journal state shipped back on crash-resume
+/// (bounded-proc-journal). `iter` is the iteration to resume at — the one after
 /// the highest journaled `iter_committed` (0 for a non-looping chain);
-/// `committed_op_idxs` are the operations already committed inside that
-/// still-in-flight iteration, which the driver skips, and `op_handoffs` what
+/// `committed_proc_idxs` are the procedures already committed inside that
+/// still-in-flight iteration, which the driver skips, and `proc_handoffs` what
 /// each of them released, which seeds their uncommitted children. `handoff` is
 /// the previous iteration's terminal batch, which re-seeds a handoff-chained
-/// loop. `committed_ops` carries every forward op commit with its iteration
+/// loop. `committed_procs` carries every forward proc commit with its iteration
 /// (compensation planning), `consumed_offset` the inbox offset the last
 /// committed iteration consumed, and `parked` / `wake_deadline_ms` the
 /// suspension record (bounded-durable-suspension).
 ///
-/// `rewind_undo` carries the operations a rewind unwound that have not been
+/// `rewind_undo` carries the procedures a rewind unwound that have not been
 /// compensated yet (bounded-loop-rewind). The driver runs them through the
 /// ordinary compensation planner before resuming forward at `iter`, which the
 /// journal has already folded back to the rewound-to iteration. Each undo
 /// journals a `compensated` entry, so the list shrinks across a crash and
 /// re-planning never double-compensates. Empty = no rewind pending.
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct OpJournalState {
+pub struct ProcJournalState {
     #[prost(uint32, repeated, tag = "1")]
-    pub committed_op_idxs: ::prost::alloc::vec::Vec<u32>,
+    pub committed_proc_idxs: ::prost::alloc::vec::Vec<u32>,
     #[prost(uint32, tag = "2")]
     pub iter: u32,
     #[prost(message, repeated, tag = "3")]
-    pub handoff: ::prost::alloc::vec::Vec<OpHandoffItem>,
+    pub handoff: ::prost::alloc::vec::Vec<ProcHandoffItem>,
     #[prost(message, repeated, tag = "4")]
-    pub committed_ops: ::prost::alloc::vec::Vec<OpCommittedOp>,
+    pub committed_procs: ::prost::alloc::vec::Vec<ProcCommittedProc>,
     #[prost(uint64, tag = "5")]
     pub consumed_offset: u64,
     #[prost(bool, tag = "6")]
@@ -424,30 +424,30 @@ pub struct OpJournalState {
     #[prost(uint64, tag = "7")]
     pub wake_deadline_ms: u64,
     #[prost(message, repeated, tag = "8")]
-    pub rewind_undo: ::prost::alloc::vec::Vec<OpCommittedOp>,
+    pub rewind_undo: ::prost::alloc::vec::Vec<ProcCommittedProc>,
     #[prost(message, repeated, tag = "9")]
-    pub op_handoffs: ::prost::alloc::vec::Vec<OpEdgeHandoff>,
+    pub proc_handoffs: ::prost::alloc::vec::Vec<ProcEdgeHandoff>,
 }
-/// Per-Segment state restore handshake: Controller ships latest snapshot
-/// bytes plus tail-WAL bytes, SDK applies them to the segment's State
-/// before any input is processed. See the per-segment state persistence design.
+/// Per-Entity state restore handshake: Controller ships latest snapshot
+/// bytes plus tail-WAL bytes, SDK applies them to the entity's State
+/// before any input is processed. See the per-entity state persistence design.
 ///
-/// `segment_id` is the structured byte identifier
-/// `[operative_class_len: u8][operative_class][operation_id_len: u8][operation_id]
-///   [segment_key_len: u16 BE][segment_key]`. `change_log_bytes` is
+/// `entity_id` is the structured byte identifier
+/// `[operative_class_len: u8][operative_class][procedure_id_len: u8][procedure_id]
+///   [entity_key_len: u16 BE][entity_key]`. `change_log_bytes` is
 /// the tail of the WAL framed `[seq: u64 BE][len: u32 BE]
 /// [header: 16B][change_bytes][crc32: u32 BE]` records back-to-back.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RestoreInitState {
     #[prost(bytes = "vec", tag = "1")]
-    pub segment_id: ::prost::alloc::vec::Vec<u8>,
+    pub entity_id: ::prost::alloc::vec::Vec<u8>,
     #[prost(bytes = "vec", tag = "2")]
     pub snapshot_bytes: ::prost::alloc::vec::Vec<u8>,
     #[prost(bytes = "vec", tag = "3")]
     pub change_log_bytes: ::prost::alloc::vec::Vec<u8>,
     /// Saga crash-resume (bounded-operative-saga): the Controller sets these
-    /// from the per-Segment compensation markers it persisted for a durable
-    /// bounded operative. `has_compensation_intent` ⇒ this Segment's operation
+    /// from the per-Entity compensation markers it persisted for a durable
+    /// bounded operative. `has_compensation_intent` ⇒ this Entity's procedure
     /// completed forward and may need undo; `has_compensation_done` ⇒ its
     /// compensation already ran (skip it on resume). Both false for a
     /// unbounded operative or a bounded one that never compensated.
@@ -458,40 +458,40 @@ pub struct RestoreInitState {
 }
 /// SDK acknowledgement after applying a `RestoreInitState`. `terminal_seq`
 /// is the highest WAL seq folded into State; the Controller expects the next
-/// `segment_state_change` to carry `seq = terminal_seq + 1`.
+/// `entity_state_change` to carry `seq = terminal_seq + 1`.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RestoreInitStateResponse {
     #[prost(bytes = "vec", tag = "1")]
-    pub segment_id: ::prost::alloc::vec::Vec<u8>,
+    pub entity_id: ::prost::alloc::vec::Vec<u8>,
     #[prost(uint64, tag = "2")]
     pub terminal_seq: u64,
 }
-/// Controller-issued compaction request. The SDK clones the segment's
+/// Controller-issued compaction request. The SDK clones the entity's
 /// `Self::State` under the sticky CAS, serializes it, and replies via
-/// `segment_state_snapshot` then `CompactSegmentResponse`.
+/// `entity_state_snapshot` then `CompactEntityResponse`.
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct CompactSegment {
+pub struct CompactEntity {
     #[prost(bytes = "vec", tag = "1")]
-    pub segment_id: ::prost::alloc::vec::Vec<u8>,
+    pub entity_id: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct CompactSegmentResponse {
+pub struct CompactEntityResponse {
     #[prost(bytes = "vec", tag = "1")]
-    pub segment_id: ::prost::alloc::vec::Vec<u8>,
+    pub entity_id: ::prost::alloc::vec::Vec<u8>,
     #[prost(uint64, tag = "2")]
     pub snapshot_seq: u64,
     #[prost(uint64, tag = "3")]
     pub snapshot_bytes_size: u64,
 }
-/// Back-pressure signal: the Controller's per-Segment WAL outbox is at the
+/// Back-pressure signal: the Controller's per-Entity WAL outbox is at the
 /// high watermark (`status = "full"`) or has drained below the low
-/// watermark (`status = "open"`). The SDK's per-Segment mailbox
+/// watermark (`status = "open"`). The SDK's per-Entity mailbox
 /// observer translates the signal into the channel's declared
 /// `OverflowPolicy`.
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct SegmentMailboxStatus {
+pub struct EntityMailboxStatus {
     #[prost(bytes = "vec", tag = "1")]
-    pub segment_id: ::prost::alloc::vec::Vec<u8>,
+    pub entity_id: ::prost::alloc::vec::Vec<u8>,
     #[prost(string, tag = "2")]
     pub status: ::prost::alloc::string::String,
 }
@@ -569,7 +569,7 @@ pub struct BoundedCompleted {
 /// threshold (informational to the SDK). The SDK acknowledges by returning an
 /// encoded CreditWindowAck as the CommandResponse raw_data; a pre-credit SDK
 /// that does not recognise the variant never acks and keeps the legacy
-/// SegmentMailboxStatus behaviour.
+/// EntityMailboxStatus behaviour.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CreditWindowInit {
     #[prost(string, tag = "1")]
@@ -602,7 +602,7 @@ pub struct CreditGrant {
 }
 /// Controller -> SDK. Durable ack for a `park_payload` data-stream frame:
 /// the dead-letter entry identified by `park_id` is fsynced in the DLQ
-/// store, so the parked segment may drop the poison payload and advance.
+/// store, so the parked entity may drop the poison payload and advance.
 /// One-way; the generic CommandResponse it solicits is ignored.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ParkPayloadAck {
@@ -645,7 +645,7 @@ pub struct BoundedStop {
     #[prost(string, tag = "1")]
     pub operative_id: ::prost::alloc::string::String,
 }
-/// SDK -> Controller. An operation asked for a bounded instance
+/// SDK -> Controller. A procedure asked for a bounded instance
 /// (`ctx.spawn_bounded`): spawn `factory_id` under `instance_id` if that id is
 /// free, otherwise apply `if_running`. The namespace is NOT carried — the
 /// Controller takes it from the control channel the request arrived on, which
@@ -672,7 +672,7 @@ pub struct SpawnBoundedRequest {
 /// `outcome` is one of `spawned | delivered | already_running |
 /// factory_unknown | refused`; `error` details a `refused` (quota, shutdown,
 /// start failure) and is empty otherwise. The reply never faults the
-/// requesting operation — it only resolves its handle.
+/// requesting procedure — it only resolves its handle.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SpawnBoundedResponse {
     #[prost(string, tag = "1")]

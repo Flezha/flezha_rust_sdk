@@ -14,7 +14,7 @@ use crate::operative::instance::UnboundedInstance;
 
 /// Process-global handle to the coordinator's message channel, installed
 /// once by `fast::start`. Lets components outside the coordinator (e.g.
-/// the segment-state sink on a broken-pipe flood) request a control
+/// the entity-state sink on a broken-pipe flood) request a control
 /// reconnect without threading the `Sender` through every layer.
 static RECONNECT_TRIGGER: OnceLock<Mutex<Sender<RunnerMessage>>> = OnceLock::new();
 
@@ -74,8 +74,8 @@ pub(crate) fn emit_bounded_output(operative_id: String, payload: Vec<u8>) {
 
 /// Route an SDK-initiated control request to the coordinator (written verbatim
 /// under the caller's `reference_id`, so the controller's reply — an
-/// `OpCommitResponse` / `IterCommitResponse` carrying the same id — wakes the
-/// waiter the caller registered). Carries the bounded driver's op-boundary
+/// `ProcCommitResponse` / `IterCommitResponse` carrying the same id — wakes the
+/// waiter the caller registered). Carries the bounded driver's proc-boundary
 /// commit, iteration commit, and park frames.
 pub(crate) fn emit_control_request(
     reference_id: String,
@@ -121,7 +121,7 @@ pub(crate) fn env_test_guard() -> std::sync::MutexGuard<'static, ()> {
 }
 
 /// Messages routed through the coordinator channel. Data-plane traffic
-/// bypasses this channel entirely (per-Segment mailboxes are pushed
+/// bypasses this channel entirely (per-Entity mailboxes are pushed
 /// directly by the stream readers); only control-plane traffic flows
 /// through here.
 pub enum RunnerMessage {
@@ -156,7 +156,7 @@ pub enum RunnerMessage {
         error: String,
         result: Vec<u8>,
     },
-    /// An SDK-initiated control request (the bounded driver's `OpCommit` /
+    /// An SDK-initiated control request (the bounded driver's `ProcCommit` /
     /// `IterCommit` / `IterPark`, or a post-start define/remove's
     /// `UpdateFactories`); the coordinator writes it verbatim under the
     /// caller's `reference_id`, which the controller echoes on its reply to wake

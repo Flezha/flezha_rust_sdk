@@ -4,13 +4,13 @@
 // compile error, not a runtime failure.
 
 use flezha_runner::channel::ChannelBuilder;
-use flezha_runner::operation::{Operation, OperationCtx, OperationError};
+use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError};
 use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
 use flezha_runner::Stream;
 
 #[derive(Default)]
-struct PassOp;
-impl Operation for PassOp {
+struct PassProc;
+impl Procedure for PassProc {
     type Input = String;
     type Output = String;
     type State = ();
@@ -19,7 +19,7 @@ impl Operation for PassOp {
     type Config = ();
     fn name() -> &'static str { "pass_op" }
     fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(&mut self, _: String, _: StateHandle<'_, Self>, _: &mut OperationCtx<'_>) -> Result<(), OperationError> {
+    fn run(&mut self, _: String, _: StateHandle<'_, Self>, _: &mut ProcedureCtx<'_>) -> Result<(), ProcedureError> {
         Ok(())
     }
 }
@@ -27,7 +27,7 @@ impl Operation for PassOp {
 static STASH: std::sync::Mutex<Option<Stream<'static, String>>> = std::sync::Mutex::new(None);
 
 fn declare(c: &ChannelBuilder) {
-    let stream = c.input::<String>("in").into::<PassOp>();
+    let stream = c.input::<String>("in").into::<PassProc>();
     *STASH.lock().unwrap() = Some(stream);
 }
 

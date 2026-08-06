@@ -1,5 +1,0 @@
-error: #[flezha::operation] static keys (`keys`/`segment_for`) and dynamic `operation_key` are mutually exclusive (composite mode is not supported)
- --> tests/ui/operation_static_and_dynamic.rs:2:1
-  |
-2 | fn f(a: String) -> Vec<u8> {
-  | ^^

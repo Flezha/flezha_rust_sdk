@@ -1,4 +1,4 @@
-//! Persistence-toggle resolution per `operative-state-persistence-rust/design.md`
+//! Persistence-toggle resolution per `operative-state-persistence/design.md`
 //! and the umbrella spec scenario "Runner-side runtime override".
 //!
 //! Three-way precedence:

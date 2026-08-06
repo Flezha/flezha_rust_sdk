@@ -6,85 +6,85 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::channel::builder::{
-    DeserializeStateFn, OperationKeyFn, SegmentBuilder, SegmentForFn, SerializeStateFn,
+    DeserializeStateFn, EntitiesForFn, EntityBuilder, EntityKeyFn, SerializeStateFn,
 };
-use crate::channel::{ChannelDescriptor, ChannelId, OperationId};
+use crate::channel::{ChannelDescriptor, ChannelId, ProcedureId};
 
-/// How a Operation maps inputs to Segments. Resolved once at registration
-/// from `(operation_keys().is_empty(), OPERATION_KEY_OVERRIDDEN)`:
+/// How a Procedure maps inputs to Entities. Resolved once at registration
+/// from `(entity_keys().is_empty(), ENTITY_KEY_OVERRIDDEN)`:
 /// `(true, false)` → `Single`, `(false, _)` → `Static`,
 /// `(true, true)` → `Dynamic`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SegmentingMode {
-    /// One Segment per Operation; `operation_key()` / `operation_keys()` unused.
+pub enum EntityMode {
+    /// One Entity per Procedure; `entity_key()` / `entity_keys()` unused.
     Single,
-    /// Fixed keyset declared by `operation_keys()`; routed by `segment_for`.
+    /// Fixed keyset declared by `entity_keys()`; routed by `entities_for`.
     Static,
-    /// Unbounded keyset; Segments created lazily by `operation_key()`.
+    /// Unbounded keyset; Entities created lazily by `entity_key()`.
     Dynamic,
 }
 
-/// One Operation's slot in the topology. Pre-resolved channel ids so the
+/// One Procedure's slot in the topology. Pre-resolved channel ids so the
 /// hot path needs zero name lookups.
-pub struct OperationDescriptor {
+pub struct ProcedureDescriptor {
     pub name: Arc<str>,
-    pub segment_keys: Vec<&'static str>,
-    pub segment_for_overridden: bool,
-    pub operation_key_overridden: bool,
-    /// `Operation::COMPENSATE_OVERRIDDEN`, captured at registration. The bounded
-    /// saga driver fires compensation only for operations with this set; a
+    pub entity_keys: Vec<&'static str>,
+    pub entities_for_overridden: bool,
+    pub entity_key_overridden: bool,
+    /// `Procedure::COMPENSATE_OVERRIDDEN`, captured at registration. The bounded
+    /// saga driver fires compensation only for procedures with this set; a
     /// unbounded operative never reads it.
     pub compensate_overridden: bool,
-    /// Segmenting mode resolved at registration. Drives whether the
+    /// Entity mode resolved at registration. Drives whether the
     /// dispatch path routes by static key, single slot, or the dynamic
     /// registry.
-    pub mode: SegmentingMode,
-    /// Dynamic-mode idle-TTL eviction window (`Operation::segment_idle_ttl`).
+    pub mode: EntityMode,
+    /// Dynamic-mode idle-TTL eviction window (`Procedure::entity_idle_ttl`).
     /// `None` (the default) means no eviction; meaningful only when
     /// `mode == Dynamic`.
     pub idle_ttl: Option<Duration>,
-    /// Dynamic-mode soft cap on live Segments (`Operation::max_segments`).
-    pub max_segments: usize,
-    /// Type-erased `Operation::operation_key`. `Some` only for dynamic-mode
-    /// Operations; the dispatch path calls it to derive the segment key.
-    pub operation_key_erased: Option<OperationKeyFn>,
-    /// Channels this operation consumes. Several = fan-in (the node receives
+    /// Dynamic-mode soft cap on live Entities (`Procedure::max_entities`).
+    pub max_entities: usize,
+    /// Type-erased `Procedure::entity_key`. `Some` only for dynamic-mode
+    /// Procedures; the dispatch path calls it to derive the entity key.
+    pub entity_key_erased: Option<EntityKeyFn>,
+    /// Channels this procedure consumes. Several = fan-in (the node receives
     /// the accumulated contributions of all its producers); empty only for an
-    /// operation never wired as a consumer.
+    /// procedure never wired as a consumer.
     pub input_channel_ids: Vec<ChannelId>,
     pub output_channel_id: Option<ChannelId>,
     pub input_type_id: std::any::TypeId,
     pub output_type_id: std::any::TypeId,
-    /// Final per-Segment mailbox capacity for every Segment this
-    /// Operation owns, after applying the override / env-var / default
+    /// Final per-Entity mailbox capacity for every Entity this
+    /// Procedure owns, after applying the override / env-var / default
     /// precedence in `operative::builder::resolve_mailbox_capacity`.
     pub mailbox_capacity: usize,
-    /// `Operation::MAILBOX_CAPACITY_OVERRIDDEN` captured at registration time.
+    /// `Procedure::MAILBOX_CAPACITY_OVERRIDDEN` captured at registration time.
     /// Carried for diagnostics so a future tooling change can show which
-    /// Operations opted into an explicit capacity.
+    /// Procedures opted into an explicit capacity.
     pub mailbox_capacity_overridden: bool,
-    /// `Operation::compact_after_bytes()` captured at registration time —
-    /// the per-Segment WAL size threshold the controller resolves for
+    /// `Procedure::compact_after_bytes()` captured at registration time —
+    /// the per-Entity WAL size threshold the controller resolves for
     /// compaction, announced in the `AddOperative` response metadata.
     pub compact_after_bytes: usize,
-    pub build_segment: SegmentBuilder,
-    pub segment_for_erased: SegmentForFn,
-    /// JSON-serialize a Segment's typed state via the per-Operation fn
-    /// pointer captured at registration time. Used by `SegmentState`
+    pub build_entity: EntityBuilder,
+    pub entities_for_erased: EntitiesForFn,
+    /// JSON-serialize an Entity's typed state via the per-Procedure fn
+    /// pointer captured at registration time. Used by `EntityState`
     /// and `MigrationSerialization` to produce the Decision-10 wire blob.
     pub serialize_state: SerializeStateFn,
-    /// Deserialize a per-Operation JSON value into the type-erased state
-    /// payload that `SegmentSlot::state` holds. Used by
+    /// Deserialize a per-Procedure JSON value into the type-erased state
+    /// payload that `EntitySlot::state` holds. Used by
     /// `apply_init_values` (and `MigrationDeserialization`) to seed
-    /// Segments from the controller-supplied JSON blob.
+    /// Entities from the controller-supplied JSON blob.
     pub deserialize_state: DeserializeStateFn,
 }
 
 pub struct OperativeTopology {
     pub channels: Vec<ChannelDescriptor>,
     pub name_to_id: HashMap<&'static str, ChannelId>,
-    pub operations: Vec<OperationDescriptor>,
-    pub operation_name_to_id: HashMap<&'static str, OperationId>,
+    pub procedures: Vec<ProcedureDescriptor>,
+    pub procedure_name_to_id: HashMap<&'static str, ProcedureId>,
     pub factory_id: &'static str,
     /// Captured `UnboundedOperative::PERSISTENCE_ENABLED` const at registration.
     /// `UnboundedInstance::new` resolves the final per-instance flag using
@@ -118,7 +118,7 @@ pub enum AckGranularity {
     #[default]
     PerInput,
     /// The consumed-offset advances only at an explicit `ctx.checkpoint()`.
-    /// Changes applied in between are held in the Segment's flush buffer and
+    /// Changes applied in between are held in the Entity's flush buffer and
     /// ship — with the offset of the input that closed the interval — as one
     /// fsynced record, so the state a restore sees and the offset it resumes
     /// from can never tear. The interval's inputs are re-forwarded from the
@@ -127,7 +127,7 @@ pub enum AckGranularity {
     Checkpoint,
 }
 
-/// What an operative does about an input that arrives behind its Segment's
+/// What an operative does about an input that arrives behind its Entity's
 /// event-time high-water. Frozen at registration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CorrectionPolicy {
@@ -161,7 +161,7 @@ impl OperativeTopology {
         self.channels.get(id as usize)
     }
 
-    pub fn operation(&self, id: OperationId) -> Option<&OperationDescriptor> {
-        self.operations.get(id as usize)
+    pub fn procedure(&self, id: ProcedureId) -> Option<&ProcedureDescriptor> {
+        self.procedures.get(id as usize)
     }
 }

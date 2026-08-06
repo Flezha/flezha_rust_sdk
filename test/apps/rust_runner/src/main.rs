@@ -3,8 +3,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use std::{env, io, thread};
 
-use flezha_runner::operation::{
-    EventTimeFrom, Operation, OperationCtx, OperationError, TimeExtractor,
+use flezha_runner::procedure::{
+    EventTimeFrom, Procedure, ProcedureCtx, ProcedureError, TimeExtractor,
 };
 use flezha_runner::state::{
     Change, CoalesceKey, NoChange, RestoreInitPayload, StateHandle, WallClock,
@@ -21,8 +21,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .define_unbounded::<DoNothingOperative>()?
         .define_unbounded::<StoreInputOperative>()?
         .define_unbounded::<CompareFilterOperative>()?
-        .define_unbounded::<StaticSegmentOperative>()?
-        .define_unbounded::<SegmentingStressOperative>()?
+        .define_unbounded::<StaticEntityOperative>()?
+        .define_unbounded::<EntityStressOperative>()?
         .define_unbounded::<BoundedMailboxBlockOperative>()?
         .define_unbounded::<BoundedMailboxDropNewestOperative>()?
         .define_unbounded::<BoundedMailboxDropOldestOperative>()?
@@ -31,7 +31,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .define_unbounded::<PersistenceOffOperative>()?
         .define_unbounded::<HybridChannelOperative>()?
         .define_unbounded::<ResumeProbeOperative>()?
-        .define_unbounded::<DynamicSegmentOperative>()?
+        .define_unbounded::<DynamicEntityOperative>()?
         .define_unbounded::<MixedOperative>()?
         .define_unbounded::<TierStoreOperative>()?
         .define_unbounded::<CheckpointStoreOperative>()?
@@ -98,9 +98,9 @@ impl BoundedOperative for EchoBounded {
 // -- Durable structured bounded operatives (crash-resume e2e, §7c.3) ------------
 //
 // `commit_block_bounded` and `saga_block_bounded` are durable-by-default,
-// multi-operation bounded operatives that BLOCK mid-chain on the
+// multi-procedure bounded operatives that BLOCK mid-chain on the
 // `FLEZHA_BOUNDED_E2E_RELEASE` env var so a SIGKILL of the runner lands with
-// earlier operations' Segment state already committed to the WAL. The resumed
+// earlier procedures' Entity state already committed to the WAL. The resumed
 // runner is launched WITH the env set, so the respawned instance restores the
 // committed state (crash-resume) and runs to completion. A shared gate keeps the
 // crash window deterministic — no busy-spin, no wall-clock races.
@@ -118,7 +118,7 @@ fn block_until_released() {
     }
 }
 
-// SET-style Segment state: `apply` is idempotent, so re-running an operation
+// SET-style Entity state: `apply` is idempotent, so re-running a procedure
 // from the same args on resume is a no-op over the restored state (Model A
 // idempotent re-run). `BTreeSet` keeps snapshot bytes deterministic.
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -131,7 +131,7 @@ struct Insert(String);
 impl Change for Insert {}
 
 // A durable `String -> String` step: commits one idempotent Change to the WAL
-// (keyed by the op name, so a resume re-run is a no-op) and passes the input on.
+// (keyed by the proc name, so a resume re-run is a no-op) and passes the input on.
 // With `compensate: |ctx| ...` it declares a saga hook (the given body is the
 // hook, returning `Result`; naming the ctx lets an undo emit its own record);
 // the `commit_a` form omits it so a clean crash-resume re-runs forward instead
@@ -140,7 +140,7 @@ macro_rules! durable_step {
     ($ty:ident, $name:literal $(, compensate: |$ctx:ident| $comp:expr)?) => {
         #[derive(Default)]
         struct $ty;
-        impl Operation for $ty {
+        impl Procedure for $ty {
             type Input = String;
             type Output = String;
             type State = SeenState;
@@ -160,22 +160,22 @@ macro_rules! durable_step {
                 &mut self,
                 input: String,
                 mut state: StateHandle<'_, Self>,
-                ctx: &mut OperationCtx<'_>,
-            ) -> Result<(), OperationError> {
+                ctx: &mut ProcedureCtx<'_>,
+            ) -> Result<(), ProcedureError> {
                 state.apply(Insert($name.to_string()));
                 ctx.emit::<String>(input)
             }
             $(
                 // A crash-resumed compensation reconstructs completed stages with
-                // EMPTY outputs (an operation's collected output was never
+                // EMPTY outputs (a procedure's collected output was never
                 // durable), so a hook that records an undo does so unconditionally.
                 const COMPENSATE_OVERRIDDEN: bool = true;
                 fn compensate(
                     &mut self,
                     _out: Vec<std::sync::Arc<String>>,
                     _state: StateHandle<'_, Self>,
-                    $ctx: &mut OperationCtx<'_>,
-                ) -> Result<(), OperationError> {
+                    $ctx: &mut ProcedureCtx<'_>,
+                ) -> Result<(), ProcedureError> {
                     $comp
                 }
             )?
@@ -189,7 +189,7 @@ macro_rules! stateless_step {
     ($ty:ident, $name:literal, $run:expr) => {
         #[derive(Default)]
         struct $ty;
-        impl Operation for $ty {
+        impl Procedure for $ty {
             type Input = String;
             type Output = String;
             type State = ();
@@ -204,17 +204,17 @@ macro_rules! stateless_step {
                 &mut self,
                 _input: String,
                 _: StateHandle<'_, Self>,
-                _ctx: &mut OperationCtx<'_>,
-            ) -> Result<(), OperationError> {
+                _ctx: &mut ProcedureCtx<'_>,
+            ) -> Result<(), ProcedureError> {
                 $run
             }
         }
     };
 }
 
-// `commit_block_bounded`: op A commits durable state, op B blocks until the
-// resumed runner sets the release env — so a SIGKILL lands with op A's state
-// already on the WAL and op B never finished. Completion is observed
+// `commit_block_bounded`: proc A commits durable state, proc B blocks until the
+// resumed runner sets the release env — so a SIGKILL lands with proc A's state
+// already on the WAL and proc B never finished. Completion is observed
 // controller-side via the finished-job record.
 durable_step!(CommitA, "commit_a");
 stateless_step!(BlockB, "block_b", {
@@ -227,7 +227,7 @@ impl BoundedOperative for CommitBlockBounded {
     fn factory_id() -> &'static str {
         "commit_block_bounded"
     }
-    fn operations(c: &ChannelBuilder) {
+    fn procedures(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<CommitA>()
             .named("mid")
@@ -237,17 +237,17 @@ impl BoundedOperative for CommitBlockBounded {
 }
 
 // `optout_commit_block_bounded`: the opt-out twin of `commit_block_bounded`
-// with a live mid-chain signal — op A's output also reaches a plugin sink, so
+// with a live mid-chain signal — proc A's output also reaches a plugin sink, so
 // the crash-resume e2e can observe the mid-run point without durable state
 // (there is none). A crash + resume re-runs the whole chain from the top, so
-// the sink sees op A's marker once per run and no journal/WAL file exists.
+// the sink sees proc A's marker once per run and no journal/WAL file exists.
 struct OptOutCommitBlockBounded;
 impl BoundedOperative for OptOutCommitBlockBounded {
     fn factory_id() -> &'static str {
         "optout_commit_block"
     }
     const PERSISTENCE_ENABLED: bool = false;
-    fn operations(c: &ChannelBuilder) {
+    fn procedures(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<CommitA>()
             .named("mid")
@@ -258,15 +258,15 @@ impl BoundedOperative for OptOutCommitBlockBounded {
     }
 }
 
-// `tier_commit_block_bounded`: the effectively-once bounded fixture. Op A
+// `tier_commit_block_bounded`: the effectively-once bounded fixture. Proc A
 // commits durable state AND emits `committed:<input>` under a stable key on a
-// keyed hybrid channel (captured into the atomic effect record); op B blocks
+// keyed hybrid channel (captured into the atomic effect record); proc B blocks
 // until the resumed runner sets the release env. A SIGKILL lands with A's
 // effect record durable and B unfinished; the resume re-runs A (idempotent
 // change, deterministic re-emit) and completes.
 #[derive(Default)]
 struct TierCommitA;
-impl Operation for TierCommitA {
+impl Procedure for TierCommitA {
     type Input = String;
     type Output = String;
     type State = SeenState;
@@ -286,8 +286,8 @@ impl Operation for TierCommitA {
         &mut self,
         input: String,
         mut state: StateHandle<'_, Self>,
-        ctx: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         state.apply(Insert("tier_commit_a".to_string()));
         ctx.emit_keyed::<String>("job".to_string(), format!("committed:{input}"))
     }
@@ -298,7 +298,7 @@ impl BoundedOperative for TierCommitBlockBounded {
     fn factory_id() -> &'static str {
         "tier_commit_block_bounded"
     }
-    fn operations(c: &ChannelBuilder) {
+    fn procedures(c: &ChannelBuilder) {
         c.effectively_once();
         c.input::<String>("in")
             .into::<TierCommitA>()
@@ -322,7 +322,7 @@ durable_step!(SagaB, "saga_b", compensate: |_ctx| Ok(()));
 stateless_step!(
     SagaC,
     "saga_c",
-    Err(OperationError::Custom("saga_c always fails".into()))
+    Err(ProcedureError::Custom("saga_c always fails".into()))
 );
 
 struct SagaBlockBounded;
@@ -330,7 +330,7 @@ impl BoundedOperative for SagaBlockBounded {
     fn factory_id() -> &'static str {
         "saga_block_bounded"
     }
-    fn operations(c: &ChannelBuilder) {
+    fn procedures(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<SagaA>()
             .named("s1")
@@ -343,17 +343,17 @@ impl BoundedOperative for SagaBlockBounded {
 }
 
 // `outbox_block_bounded`: the transactional-outbox fixture
-// (`bounded-staged-commit-and-outbox`). Op A commits durable state AND emits
+// (`bounded-staged-commit-and-outbox`). Proc A commits durable state AND emits
 // plugin-bound output on a hybrid channel — STAGED, so it reaches the sink only
-// after the controller has journaled and fsynced A's `op_committed` entry (with
-// the output inside it) and flushed the outbox. Op B blocks, so a SIGKILL lands
+// after the controller has journaled and fsynced A's `proc_committed` entry (with
+// the output inside it) and flushed the outbox. Proc B blocks, so a SIGKILL lands
 // with A committed + flushed and B unfinished.
 struct OutboxBlockBounded;
 impl BoundedOperative for OutboxBlockBounded {
     fn factory_id() -> &'static str {
         "outbox_block_bounded"
     }
-    fn operations(c: &ChannelBuilder) {
+    fn procedures(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<CommitA>()
             .named("mid")
@@ -365,10 +365,10 @@ impl BoundedOperative for OutboxBlockBounded {
     }
 }
 
-// `undo_outbox_bounded`: the compensation half of the transactional outbox. Op
+// `undo_outbox_bounded`: the compensation half of the transactional outbox. Proc
 // UA commits, emits its forward output on a hybrid plugin channel, and declares
 // a `compensate` hook that EMITS an undo record — plugin-bound, so it is staged
-// and rides a `compensated` journal entry rather than the wire. Op C fails
+// and rides a `compensated` journal entry rather than the wire. Proc C fails
 // immediately, so the chain always rolls back; the hook BLOCKS until the release
 // env is set, so on the first runner the undo is emitted-but-never-journaled
 // when the SIGKILL lands — proving staged undo output cannot leak. The resumed
@@ -382,7 +382,7 @@ durable_step!(UndoOutboxA, "undo_outbox_a", compensate: |ctx| {
 stateless_step!(
     UndoC,
     "undo_outbox_c",
-    Err(OperationError::Custom("undo_outbox_c always fails".into()))
+    Err(ProcedureError::Custom("undo_outbox_c always fails".into()))
 );
 
 struct UndoOutboxBounded;
@@ -390,7 +390,7 @@ impl BoundedOperative for UndoOutboxBounded {
     fn factory_id() -> &'static str {
         "undo_outbox_bounded"
     }
-    fn operations(c: &ChannelBuilder) {
+    fn procedures(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<UndoOutboxA>()
             .named("mid")
@@ -400,12 +400,12 @@ impl BoundedOperative for UndoOutboxBounded {
     }
 }
 
-// `branch_bounded`: the operation TREE (`bounded-branching`).
+// `branch_bounded`: the procedure TREE (`bounded-branching`).
 //
 //     BranchA ─┬─▶ BranchB ─▶ BranchD
 //              └─▶ BranchC
 //
-// Every operation commits durable state and compensates by emitting an undo
+// Every procedure commits durable state and compensates by emitting an undo
 // record, so both tree behaviours are observable at one sink:
 //
 //   * crash-resume — BranchD BLOCKS until the resumed runner sets the release
@@ -417,8 +417,8 @@ impl BoundedOperative for UndoOutboxBounded {
 //     blocking. A, B and C have all completed, so the rollback must unwind the
 //     two branches before the root they share: `undo-c`, `undo-b`, `undo-a`.
 //
-// The inter-op channels are hybrid (`also_output_with`), which is what makes
-// a non-leaf operation's forward and undo output visible at the sink.
+// The inter-proc channels are hybrid (`also_output_with`), which is what makes
+// a non-leaf procedure's forward and undo output visible at the sink.
 const BRANCH_FAIL_ENV: &str = "FLEZHA_BRANCH_FAIL";
 
 durable_step!(BranchA, "branch_a", compensate: |ctx| ctx
@@ -429,7 +429,7 @@ durable_step!(BranchB, "branch_b", compensate: |ctx| ctx
 // The sibling leaf: emits straight to the sink, and its undo does too.
 #[derive(Default)]
 struct BranchC;
-impl Operation for BranchC {
+impl Procedure for BranchC {
     type Input = String;
     type Output = String;
     type State = SeenState;
@@ -449,8 +449,8 @@ impl Operation for BranchC {
         &mut self,
         input: String,
         mut state: StateHandle<'_, Self>,
-        ctx: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         state.apply(Insert("branch_c".to_string()));
         ctx.emit::<String>(format!("c:{input}"))
     }
@@ -459,8 +459,8 @@ impl Operation for BranchC {
         &mut self,
         _out: Vec<std::sync::Arc<String>>,
         _state: StateHandle<'_, Self>,
-        ctx: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         ctx.emit::<String>("undo-c".to_string())
     }
 }
@@ -468,7 +468,7 @@ impl Operation for BranchC {
 // The deep leaf under BranchB: blocks (crash-resume), or fails (compensation).
 #[derive(Default)]
 struct BranchD;
-impl Operation for BranchD {
+impl Procedure for BranchD {
     type Input = String;
     type Output = String;
     type State = ();
@@ -483,10 +483,10 @@ impl Operation for BranchD {
         &mut self,
         input: String,
         _state: StateHandle<'_, Self>,
-        ctx: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         if env::var(BRANCH_FAIL_ENV).is_ok() {
-            return Err(OperationError::Custom("branch_d failed".into()));
+            return Err(ProcedureError::Custom("branch_d failed".into()));
         }
         block_until_released();
         ctx.emit::<String>(format!("d:{input}"))
@@ -503,7 +503,7 @@ impl BoundedOperative for BranchBounded {
     fn retry_attempts() -> u32 {
         0
     }
-    fn operations(c: &ChannelBuilder) {
+    fn procedures(c: &ChannelBuilder) {
         // One channel, two consumers: THE fan-out. Both branches read exactly
         // what BranchA released on it (held handle, wired twice).
         let mid = c
@@ -542,7 +542,7 @@ durable_step!(DiamB1, "diam_b1");
 // B2 is always the uncommitted producer while the sibling arm committed.
 #[derive(Default)]
 struct DiamB2;
-impl Operation for DiamB2 {
+impl Procedure for DiamB2 {
     type Input = String;
     type Output = String;
     type State = SeenState;
@@ -562,8 +562,8 @@ impl Operation for DiamB2 {
         &mut self,
         input: String,
         mut state: StateHandle<'_, Self>,
-        ctx: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         block_until_released();
         state.apply(Insert("diam_b".to_string()));
         ctx.emit::<String>(format!("b:{input}"))
@@ -572,7 +572,7 @@ impl Operation for DiamB2 {
 
 #[derive(Default)]
 struct DiamC;
-impl Operation for DiamC {
+impl Procedure for DiamC {
     type Input = String;
     type Output = String;
     type State = SeenState;
@@ -592,8 +592,8 @@ impl Operation for DiamC {
         &mut self,
         input: String,
         mut state: StateHandle<'_, Self>,
-        ctx: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         state.apply(Insert("diam_c".to_string()));
         ctx.emit::<String>(format!("c:{input}"))
     }
@@ -602,7 +602,7 @@ impl Operation for DiamC {
 // The join: one `j:`-tagged record per accumulated contribution.
 #[derive(Default)]
 struct DiamJoin;
-impl Operation for DiamJoin {
+impl Procedure for DiamJoin {
     type Input = String;
     type Output = String;
     type State = ();
@@ -617,8 +617,8 @@ impl Operation for DiamJoin {
         &mut self,
         input: String,
         _state: StateHandle<'_, Self>,
-        ctx: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         ctx.emit::<String>(format!("j:{input}"))
     }
 }
@@ -628,7 +628,7 @@ impl BoundedOperative for DiamondBounded {
     fn factory_id() -> &'static str {
         "diamond_bounded"
     }
-    fn operations(c: &ChannelBuilder) {
+    fn procedures(c: &ChannelBuilder) {
         // Held handle wired twice = fan-out; two streams naming DiamJoin
         // (unnamed, same class) = the fan-in.
         let fan = c
@@ -655,9 +655,9 @@ impl BoundedOperative for DiamondBounded {
     }
 }
 
-// `retry_bounded`: the per-segment retry ladder (`bounded-segment-retry`). Op RA
+// `retry_bounded`: the per-entity retry ladder (`bounded-entity-retry`). Proc RA
 // commits durable state, forwards on a hybrid channel, and compensates by
-// emitting an undo record; op `retry_flaky` fails its first
+// emitting an undo record; proc `retry_flaky` fails its first
 // `FLEZHA_BOUNDED_RETRY_FAILS` attempts (0 by default — the env is what each
 // scenario arms) and then emits `attempt:<n>:<input>`. One armed failure is
 // absorbed by the ladder (the run completes `ok`, the sink sees attempt 2);
@@ -665,7 +665,7 @@ impl BoundedOperative for DiamondBounded {
 // and the run reports `error`.
 const RETRY_FAILS_ENV: &str = "FLEZHA_BOUNDED_RETRY_FAILS";
 
-// Attempts the flaky operation has made in this process (a retry re-runs it in
+// Attempts the flaky procedure has made in this process (a retry re-runs it in
 // place, so an in-memory counter is the whole ladder's view).
 static RETRY_ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
 
@@ -681,7 +681,7 @@ durable_step!(RetryA, "retry_a", compensate: |ctx| ctx
 
 #[derive(Default)]
 struct RetryFlaky;
-impl Operation for RetryFlaky {
+impl Procedure for RetryFlaky {
     type Input = String;
     type Output = String;
     type State = ();
@@ -696,11 +696,11 @@ impl Operation for RetryFlaky {
         &mut self,
         input: String,
         _state: StateHandle<'_, Self>,
-        ctx: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         let attempt = RETRY_ATTEMPTS.fetch_add(1, Ordering::SeqCst) + 1;
         if attempt <= armed_failures() {
-            return Err(OperationError::Custom(format!("flaky attempt {attempt}")));
+            return Err(ProcedureError::Custom(format!("flaky attempt {attempt}")));
         }
         ctx.emit::<String>(format!("attempt:{attempt}:{input}"))
     }
@@ -711,7 +711,7 @@ impl BoundedOperative for RetryBounded {
     fn factory_id() -> &'static str {
         "retry_bounded"
     }
-    fn operations(c: &ChannelBuilder) {
+    fn procedures(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<RetryA>()
             .named("mid")
@@ -724,9 +724,9 @@ impl BoundedOperative for RetryBounded {
 }
 
 // `chat_loop_bounded`: the durable-loop + suspension shape
-// (`bounded-durable-loop-and-suspension`). One iteration per inbox item: op
-// TURN commits the turn to Segment state (so a resumed iteration is visible in
-// the WAL) and emits it; op REPLY emits the answer to the sink. Between turns
+// (`bounded-durable-loop-and-suspension`). One iteration per inbox item: proc
+// TURN commits the turn to Entity state (so a resumed iteration is visible in
+// the WAL) and emits it; proc REPLY emits the answer to the sink. Between turns
 // the loop finds an empty inbox at a committed boundary and PARKS — the
 // instance is evicted from the runner and rehydrated by the next message.
 //
@@ -739,7 +739,7 @@ const CRASH_TURN: &str = "mid-crash";
 
 #[derive(Default)]
 struct ChatTurn;
-impl Operation for ChatTurn {
+impl Procedure for ChatTurn {
     type Input = String;
     type Output = String;
     type State = SeenState;
@@ -759,8 +759,8 @@ impl Operation for ChatTurn {
         &mut self,
         input: String,
         mut state: StateHandle<'_, Self>,
-        ctx: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         if input == CRASH_TURN {
             block_until_released();
         }
@@ -773,7 +773,7 @@ impl Operation for ChatTurn {
 
 #[derive(Default)]
 struct ChatReply;
-impl Operation for ChatReply {
+impl Procedure for ChatReply {
     type Input = String;
     type Output = String;
     type State = ();
@@ -788,8 +788,8 @@ impl Operation for ChatReply {
         &mut self,
         input: String,
         _: StateHandle<'_, Self>,
-        ctx: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         ctx.emit::<String>(format!("reply:{input}"))
     }
 }
@@ -797,9 +797,9 @@ impl Operation for ChatReply {
 // -- StatelessLoopBounded -------------------------------------------------------
 //
 // The same durable PER_INPUT loop as `ChatLoopBounded`, minus its stateful
-// first operation: `ChatReply` alone holds NO per-Segment state, so nothing
-// writes a Segment WAL, the controller has nothing to restore, and it ships no
-// `RestoreInitState` on a rehydrating bind. The instance's op-journal therefore
+// first procedure: `ChatReply` alone holds NO per-Entity state, so nothing
+// writes an Entity WAL, the controller has nothing to restore, and it ships no
+// `RestoreInitState` on a rehydrating bind. The instance's proc-journal therefore
 // reaches the driver only if it rides the bind itself — deliver it on the
 // restore frame and every turn after the first commits at iteration 0 again,
 // collides with iteration 0's `outbox_flushed` marker, and has its staged
@@ -819,7 +819,7 @@ impl BoundedOperative for StatelessLoopBounded {
     fn max_duration() -> Option<Duration> {
         Some(Duration::from_secs(600))
     }
-    fn operations(c: &ChannelBuilder) {
+    fn procedures(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<ChatReply>()
             .named("out")
@@ -829,8 +829,8 @@ impl BoundedOperative for StatelessLoopBounded {
 
 // -- ChatRewindBounded ----------------------------------------------------------
 //
-// `bounded-loop-rewind`: the same chat loop, but its replying operation can be
-// undone. The undo handle lives in Segment State — a rewind's compensation is
+// `bounded-loop-rewind`: the same chat loop, but its replying procedure can be
+// undone. The undo handle lives in Entity State — a rewind's compensation is
 // rebuilt from the journal and is handed NO retained outputs (the at-least-once
 // author contract) — so the hook reads the last thing it said, retracts it, and
 // pops it. Unwinding in reverse iteration order therefore retracts the turns in
@@ -850,7 +850,7 @@ impl Change for ReplyChange {}
 
 #[derive(Default)]
 struct ChatReplyUndoable;
-impl Operation for ChatReplyUndoable {
+impl Procedure for ChatReplyUndoable {
     type Input = String;
     type Output = String;
     type State = ReplyLog;
@@ -875,8 +875,8 @@ impl Operation for ChatReplyUndoable {
         &mut self,
         input: String,
         mut state: StateHandle<'_, Self>,
-        ctx: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         state.apply(ReplyChange::Said(input.clone()));
         ctx.emit::<String>(format!("reply:{input}"))
     }
@@ -885,8 +885,8 @@ impl Operation for ChatReplyUndoable {
         &mut self,
         _completed_output: Vec<std::sync::Arc<String>>,
         mut state: StateHandle<'_, Self>,
-        ctx: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         let Some(turn) = state.said.last().cloned() else {
             return Ok(());
         };
@@ -909,7 +909,7 @@ impl BoundedOperative for ChatRewindBounded {
     fn max_duration() -> Option<Duration> {
         Some(Duration::from_secs(600))
     }
-    fn operations(c: &ChannelBuilder) {
+    fn procedures(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<ChatTurn>()
             .named("mid")
@@ -936,7 +936,7 @@ impl BoundedOperative for ChatLoopBounded {
     fn max_duration() -> Option<Duration> {
         Some(Duration::from_secs(600))
     }
-    fn operations(c: &ChannelBuilder) {
+    fn procedures(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<ChatTurn>()
             .named("mid")
@@ -947,7 +947,7 @@ impl BoundedOperative for ChatLoopBounded {
     }
 }
 
-// -- DynamicSegmentOperative ----------------------------------------------------
+// -- DynamicEntityOperative ----------------------------------------------------
 //
 // Dynamic-mode operative shared by the e2e correctness test and `mix bench
 // --shape dynamic`. Key = text before the first ':' (`"drop"` → None, drop).
@@ -966,8 +966,8 @@ enum DynChange {
 impl Change for DynChange {}
 
 #[derive(Default)]
-struct DynamicSegmentOperation;
-impl Operation for DynamicSegmentOperation {
+struct DynamicEntityProcedure;
+impl Procedure for DynamicEntityProcedure {
     type Input = String;
     type Output = Vec<u8>;
     type State = DynState;
@@ -975,7 +975,7 @@ impl Operation for DynamicSegmentOperation {
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "dynamic_segment_operation"
+        "dynamic_entity_procedure"
     }
     fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> DynState {
         DynState::default()
@@ -984,11 +984,11 @@ impl Operation for DynamicSegmentOperation {
         let DynChange::Push(s) = change;
         state.seen.push(s.clone());
     }
-    const OPERATION_KEY_OVERRIDDEN: bool = true;
-    fn operation_key(input: &String) -> Option<String> {
+    const ENTITY_KEY_OVERRIDDEN: bool = true;
+    fn entity_key(input: &String) -> Option<String> {
         (input != "drop").then(|| input.split(':').next().unwrap_or(input).to_string())
     }
-    fn segment_idle_ttl() -> Option<Duration> {
+    fn entity_idle_ttl() -> Option<Duration> {
         env::var("DYN_TEST_TTL_MS")
             .ok()
             .and_then(|s| s.parse().ok())
@@ -998,22 +998,22 @@ impl Operation for DynamicSegmentOperation {
         &mut self,
         input: String,
         mut state: StateHandle<'_, Self>,
-        ctx: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         state.apply(DynChange::Push(input.clone()));
         ctx.emit::<Vec<u8>>(input.into_bytes())
     }
 }
 
-struct DynamicSegmentOperative;
-impl UnboundedOperative for DynamicSegmentOperative {
+struct DynamicEntityOperative;
+impl UnboundedOperative for DynamicEntityOperative {
     fn factory_id() -> &'static str {
-        "dynamic_segment"
+        "dynamic_entity"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .on_full(OverflowPolicy::Block)
-            .into::<DynamicSegmentOperation>()
+            .into::<DynamicEntityProcedure>()
             .named("kafka")
             .output("test_kafka");
     }
@@ -1025,8 +1025,8 @@ impl UnboundedOperative for DynamicSegmentOperative {
 // inherits `Change = NoChange` so the runtime skips flush-buffer registration.
 
 #[derive(Default)]
-struct DoNothingOperation;
-impl Operation for DoNothingOperation {
+struct DoNothingProcedure;
+impl Procedure for DoNothingProcedure {
     type Input = String;
     type Output = Vec<u8>;
     type State = ();
@@ -1034,15 +1034,15 @@ impl Operation for DoNothingOperation {
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "do_nothing_operation"
+        "do_nothing_procedure"
     }
     fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
     fn run(
         &mut self,
         input: String,
         _: StateHandle<'_, Self>,
-        ctx: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         ctx.emit::<Vec<u8>>(input.into_bytes())
     }
 }
@@ -1054,7 +1054,7 @@ impl UnboundedOperative for DoNothingOperative {
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
-            .into::<DoNothingOperation>()
+            .into::<DoNothingProcedure>()
             .named("echo")
             .output("do_nothing_echo");
     }
@@ -1075,8 +1075,8 @@ enum StoreInputChange {
 impl Change for StoreInputChange {}
 
 #[derive(Default)]
-struct StoreInputOperation;
-impl Operation for StoreInputOperation {
+struct StoreInputProcedure;
+impl Procedure for StoreInputProcedure {
     type Input = String;
     type Output = String;
     type State = StoreInputState;
@@ -1084,7 +1084,7 @@ impl Operation for StoreInputOperation {
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "store_input_operation"
+        "store_input_procedure"
     }
     fn init_state(
         _: Option<&str>,
@@ -1101,8 +1101,8 @@ impl Operation for StoreInputOperation {
         &mut self,
         input: String,
         mut state: StateHandle<'_, Self>,
-        ctx: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         state.apply(StoreInputChange::PushText(input.clone()));
         ctx.emit::<String>(input)
     }
@@ -1115,7 +1115,7 @@ impl UnboundedOperative for StoreInputOperative {
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
-            .into::<StoreInputOperation>()
+            .into::<StoreInputProcedure>()
             .named("sink")
             .output("store_input_sink");
     }
@@ -1141,8 +1141,8 @@ enum TierStoreChange {
 impl Change for TierStoreChange {}
 
 #[derive(Default)]
-struct TierStoreOperation;
-impl Operation for TierStoreOperation {
+struct TierStoreProcedure;
+impl Procedure for TierStoreProcedure {
     type Input = String;
     type Output = String;
     type State = TierStoreState;
@@ -1150,7 +1150,7 @@ impl Operation for TierStoreOperation {
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "tier_store_operation"
+        "tier_store_procedure"
     }
     fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> TierStoreState {
         TierStoreState::default()
@@ -1166,15 +1166,15 @@ impl Operation for TierStoreOperation {
         &mut self,
         input: String,
         mut state: StateHandle<'_, Self>,
-        ctx: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         let (key, value) = input.split_once(':').unwrap_or((input.as_str(), ""));
         let (key, value) = (key.to_string(), value.to_string());
         // Dead-letter e2e: a "poison" value fails every attempt, exhausting
-        // the retry budget so the tier-on atomic park advances the segment
+        // the retry budget so the tier-on atomic park advances the entity
         // past it (and the min-watermark with it).
         if value == "poison" {
-            return Err(OperationError::Custom("poison value".into()));
+            return Err(ProcedureError::Custom("poison value".into()));
         }
         state.apply(TierStoreChange::Set(key.clone(), value.clone()));
         ctx.emit_keyed::<String>(key.clone(), format!("{key}={value}"))
@@ -1192,7 +1192,7 @@ impl UnboundedOperative for TierStoreOperative {
         // (~0.9 s from first failure to park) in the DLQ e2e.
         c.input::<String>("input")
             .retry_backoff_ms(300)
-            .into::<TierStoreOperation>()
+            .into::<TierStoreProcedure>()
             .named("sink")
             .keyed()
             .output("tier_sink");
@@ -1208,8 +1208,8 @@ impl UnboundedOperative for TierStoreOperative {
 // e2e crashes in the middle of.
 
 #[derive(Default)]
-struct CheckpointStoreOperation;
-impl Operation for CheckpointStoreOperation {
+struct CheckpointStoreProcedure;
+impl Procedure for CheckpointStoreProcedure {
     type Input = String;
     type Output = String;
     type State = TierStoreState;
@@ -1217,7 +1217,7 @@ impl Operation for CheckpointStoreOperation {
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "checkpoint_store_operation"
+        "checkpoint_store_procedure"
     }
     fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> TierStoreState {
         TierStoreState::default()
@@ -1233,8 +1233,8 @@ impl Operation for CheckpointStoreOperation {
         &mut self,
         input: String,
         mut state: StateHandle<'_, Self>,
-        ctx: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         let (key, value) = input.split_once(':').unwrap_or((input.as_str(), ""));
         let (key, value) = (key.to_string(), value.to_string());
         if key == "commit" {
@@ -1255,7 +1255,7 @@ impl UnboundedOperative for CheckpointStoreOperative {
         c.effectively_once();
         c.checkpoint_ack();
         c.input::<String>("input")
-            .into::<CheckpointStoreOperation>()
+            .into::<CheckpointStoreProcedure>()
             .named("sink")
             .keyed()
             .output("tier_sink");
@@ -1301,8 +1301,8 @@ impl TimeExtractor<String> for TradeEventTime {
 }
 
 #[derive(Default)]
-struct CandleOperation;
-impl Operation for CandleOperation {
+struct CandleProcedure;
+impl Procedure for CandleProcedure {
     type Input = String;
     type Output = String;
     type State = CandleState;
@@ -1310,7 +1310,7 @@ impl Operation for CandleOperation {
     type Clock = EventTimeFrom<TradeEventTime>;
     type Config = ();
     fn name() -> &'static str {
-        "candle_operation"
+        "candle_procedure"
     }
     fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> CandleState {
         CandleState::default()
@@ -1324,8 +1324,8 @@ impl Operation for CandleOperation {
         &mut self,
         input: String,
         mut state: StateHandle<'_, Self>,
-        ctx: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         // `ctx.now()` IS the extracted event time under an EventTimeFrom clock.
         let event_time = ctx.now();
         state.apply(CandleChange::Fold(event_time));
@@ -1345,25 +1345,25 @@ impl UnboundedOperative for CandleOperative {
         c.effectively_once();
         c.correction_window(600_000);
         c.input::<String>("input")
-            .into::<CandleOperation>()
+            .into::<CandleProcedure>()
             .named("sink")
             .keyed()
             .output("tier_sink");
     }
 }
 
-// -- PoisonProbeOperative (platform-dead-letter-queue e2e) -------------------
+// -- PoisonProbeOperative (dead-letter-queue e2e) -------------------
 //
 // Tier-off retry-then-park probe: `run` fails on the input "poison" until an
 // "antidote" input flips a process-global flag. The e2e parks the poison
-// payload (durable DLQ entry, segment continues), sends the antidote, then
+// payload (durable DLQ entry, entity continues), sends the antidote, then
 // replays the parked entry — which now succeeds and removes it.
 
 static POISON_ANTIDOTE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[derive(Default)]
-struct PoisonProbeOperation;
-impl Operation for PoisonProbeOperation {
+struct PoisonProbeProcedure;
+impl Procedure for PoisonProbeProcedure {
     type Input = String;
     type Output = String;
     type State = ();
@@ -1371,19 +1371,19 @@ impl Operation for PoisonProbeOperation {
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "poison_probe_operation"
+        "poison_probe_procedure"
     }
     fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
     fn run(
         &mut self,
         input: String,
         _state: StateHandle<'_, Self>,
-        ctx: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         if input == "antidote" {
             POISON_ANTIDOTE.store(true, std::sync::atomic::Ordering::SeqCst);
         } else if input == "poison" && !POISON_ANTIDOTE.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err(OperationError::Custom("poison payload".into()));
+            return Err(ProcedureError::Custom("poison payload".into()));
         }
         ctx.emit(format!("ok:{input}"))
     }
@@ -1399,7 +1399,7 @@ impl UnboundedOperative for PoisonProbeOperative {
         // at the default 3 attempts.
         c.input::<String>("input")
             .retry_backoff_ms(25)
-            .into::<PoisonProbeOperation>()
+            .into::<PoisonProbeProcedure>()
             .named("out")
             .output("probe_sink");
     }
@@ -1426,8 +1426,8 @@ enum ResumeProbeChange {
 impl Change for ResumeProbeChange {}
 
 #[derive(Default)]
-struct ResumeProbeOperation;
-impl Operation for ResumeProbeOperation {
+struct ResumeProbeProcedure;
+impl Procedure for ResumeProbeProcedure {
     type Input = String;
     type Output = Vec<u8>;
     type State = ResumeProbeState;
@@ -1435,7 +1435,7 @@ impl Operation for ResumeProbeOperation {
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "resume_probe_operation"
+        "resume_probe_procedure"
     }
     fn init_state(
         _: Option<&str>,
@@ -1454,8 +1454,8 @@ impl Operation for ResumeProbeOperation {
         &mut self,
         input: String,
         mut state: StateHandle<'_, Self>,
-        ctx: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         let delta: i64 = input.parse().unwrap_or(0);
         let new_total = state.total.saturating_add(delta);
         state.apply(ResumeProbeChange::Add(delta));
@@ -1470,7 +1470,7 @@ impl UnboundedOperative for ResumeProbeOperative {
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
-            .into::<ResumeProbeOperation>()
+            .into::<ResumeProbeProcedure>()
             .named("total")
             .output("resume_probe_out");
     }
@@ -1494,8 +1494,8 @@ impl Default for CompareFilterState {
 }
 
 #[derive(Default)]
-struct CompareFilterOperation;
-impl Operation for CompareFilterOperation {
+struct CompareFilterProcedure;
+impl Procedure for CompareFilterProcedure {
     type Input = String;
     type Output = String;
     type State = CompareFilterState;
@@ -1503,7 +1503,7 @@ impl Operation for CompareFilterOperation {
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "compare_filter_operation"
+        "compare_filter_procedure"
     }
     fn init_state(
         _: Option<&str>,
@@ -1515,8 +1515,8 @@ impl Operation for CompareFilterOperation {
         &mut self,
         input: String,
         state: StateHandle<'_, Self>,
-        ctx: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         if state.comparable == input {
             ctx.emit::<String>(input)?;
         }
@@ -1531,13 +1531,13 @@ impl UnboundedOperative for CompareFilterOperative {
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
-            .into::<CompareFilterOperation>()
+            .into::<CompareFilterProcedure>()
             .named("sink")
             .output("compare_filter_sink");
     }
 }
 
-// -- StaticSegmentOperative -----------------------------------------------------
+// -- StaticEntityOperative -----------------------------------------------------
 
 #[derive(Serialize, Deserialize, Clone, Default)]
 struct StaticEntryState {
@@ -1551,8 +1551,8 @@ enum StaticEntryChange {
 impl Change for StaticEntryChange {}
 
 #[derive(Default)]
-struct StaticEntryOperation;
-impl Operation for StaticEntryOperation {
+struct StaticEntryProcedure;
+impl Procedure for StaticEntryProcedure {
     type Input = String;
     type Output = String;
     type State = StaticEntryState;
@@ -1560,7 +1560,7 @@ impl Operation for StaticEntryOperation {
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "static_entry_operation"
+        "static_entry_procedure"
     }
     fn init_state(
         _: Option<&str>,
@@ -1573,11 +1573,11 @@ impl Operation for StaticEntryOperation {
             StaticEntryChange::Push(s) => state.seen.push(s.clone()),
         }
     }
-    fn operation_keys() -> Vec<&'static str> {
+    fn entity_keys() -> Vec<&'static str> {
         vec!["a", "b", "c", "d"]
     }
-    const SEGMENT_FOR_OVERRIDDEN: bool = true;
-    fn segment_for(input: &String) -> Vec<&'static str> {
+    const ENTITIES_FOR_OVERRIDDEN: bool = true;
+    fn entities_for(input: &String) -> Vec<&'static str> {
         match input.chars().next() {
             Some('a') => vec!["a"],
             Some('b') => vec!["b"],
@@ -1589,16 +1589,16 @@ impl Operation for StaticEntryOperation {
         &mut self,
         input: String,
         mut state: StateHandle<'_, Self>,
-        ctx: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         state.apply(StaticEntryChange::Push(input.clone()));
         ctx.emit::<String>(input)
     }
 }
 
 #[derive(Default)]
-struct StaticDownstreamOperation;
-impl Operation for StaticDownstreamOperation {
+struct StaticDownstreamProcedure;
+impl Procedure for StaticDownstreamProcedure {
     type Input = String;
     type Output = Vec<u8>;
     type State = ();
@@ -1606,41 +1606,41 @@ impl Operation for StaticDownstreamOperation {
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "static_downstream_operation"
+        "static_downstream_procedure"
     }
     fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
     fn run(
         &mut self,
         input: String,
         _: StateHandle<'_, Self>,
-        ctx: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         ctx.emit::<Vec<u8>>(input.into_bytes())
     }
 }
 
-struct StaticSegmentOperative;
-impl UnboundedOperative for StaticSegmentOperative {
+struct StaticEntityOperative;
+impl UnboundedOperative for StaticEntityOperative {
     fn factory_id() -> &'static str {
-        "static_segment"
+        "static_entity"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
-            .into::<StaticEntryOperation>()
+            .into::<StaticEntryProcedure>()
             .named("hop")
-            .into::<StaticDownstreamOperation>()
+            .into::<StaticDownstreamProcedure>()
             .named("kafka")
             .output("test_kafka");
     }
 }
 
-// -- SegmentingStressOperative --------------------------------------------------
+// -- EntityStressOperative --------------------------------------------------
 
 const STRESS_KEYS: &[&str] = &["p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7"];
 
 #[derive(Default)]
-struct StressOperationA;
-impl Operation for StressOperationA {
+struct StressProcedureA;
+impl Procedure for StressProcedureA {
     type Input = String;
     type Output = String;
     type State = ();
@@ -1651,26 +1651,26 @@ impl Operation for StressOperationA {
         "stress_a"
     }
     fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
-    fn operation_keys() -> Vec<&'static str> {
+    fn entity_keys() -> Vec<&'static str> {
         STRESS_KEYS.to_vec()
     }
-    const SEGMENT_FOR_OVERRIDDEN: bool = true;
-    fn segment_for(_: &String) -> Vec<&'static str> {
+    const ENTITIES_FOR_OVERRIDDEN: bool = true;
+    fn entities_for(_: &String) -> Vec<&'static str> {
         STRESS_KEYS.to_vec()
     }
     fn run(
         &mut self,
         input: String,
         _: StateHandle<'_, Self>,
-        ctx: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         ctx.emit::<String>(input)
     }
 }
 
 #[derive(Default)]
-struct StressOperationB;
-impl Operation for StressOperationB {
+struct StressProcedureB;
+impl Procedure for StressProcedureB {
     type Input = String;
     type Output = String;
     type State = ();
@@ -1681,26 +1681,26 @@ impl Operation for StressOperationB {
         "stress_b"
     }
     fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
-    fn operation_keys() -> Vec<&'static str> {
+    fn entity_keys() -> Vec<&'static str> {
         STRESS_KEYS.to_vec()
     }
-    const SEGMENT_FOR_OVERRIDDEN: bool = true;
-    fn segment_for(_: &String) -> Vec<&'static str> {
+    const ENTITIES_FOR_OVERRIDDEN: bool = true;
+    fn entities_for(_: &String) -> Vec<&'static str> {
         vec!["p0"]
     }
     fn run(
         &mut self,
         input: String,
         _: StateHandle<'_, Self>,
-        ctx: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         ctx.emit::<String>(input)
     }
 }
 
 #[derive(Default)]
-struct StressOperationC;
-impl Operation for StressOperationC {
+struct StressProcedureC;
+impl Procedure for StressProcedureC {
     type Input = String;
     type Output = String;
     type State = ();
@@ -1711,26 +1711,26 @@ impl Operation for StressOperationC {
         "stress_c"
     }
     fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
-    fn operation_keys() -> Vec<&'static str> {
+    fn entity_keys() -> Vec<&'static str> {
         STRESS_KEYS.to_vec()
     }
-    const SEGMENT_FOR_OVERRIDDEN: bool = true;
-    fn segment_for(_: &String) -> Vec<&'static str> {
+    const ENTITIES_FOR_OVERRIDDEN: bool = true;
+    fn entities_for(_: &String) -> Vec<&'static str> {
         vec!["p0"]
     }
     fn run(
         &mut self,
         input: String,
         _: StateHandle<'_, Self>,
-        ctx: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         ctx.emit::<String>(input)
     }
 }
 
 #[derive(Default)]
-struct StressOperationD;
-impl Operation for StressOperationD {
+struct StressProcedureD;
+impl Procedure for StressProcedureD {
     type Input = String;
     type Output = Vec<u8>;
     type State = ();
@@ -1741,46 +1741,46 @@ impl Operation for StressOperationD {
         "stress_d"
     }
     fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
-    fn operation_keys() -> Vec<&'static str> {
+    fn entity_keys() -> Vec<&'static str> {
         STRESS_KEYS.to_vec()
     }
-    const SEGMENT_FOR_OVERRIDDEN: bool = true;
-    fn segment_for(_: &String) -> Vec<&'static str> {
+    const ENTITIES_FOR_OVERRIDDEN: bool = true;
+    fn entities_for(_: &String) -> Vec<&'static str> {
         vec!["p0"]
     }
     fn run(
         &mut self,
         input: String,
         _: StateHandle<'_, Self>,
-        ctx: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         ctx.emit::<Vec<u8>>(input.into_bytes())
     }
 }
 
-struct SegmentingStressOperative;
-impl UnboundedOperative for SegmentingStressOperative {
+struct EntityStressOperative;
+impl UnboundedOperative for EntityStressOperative {
     fn factory_id() -> &'static str {
-        "segmenting_stress"
+        "entity_stress"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
-            .into::<StressOperationA>()
+            .into::<StressProcedureA>()
             .named("a_to_b")
-            .into::<StressOperationB>()
+            .into::<StressProcedureB>()
             .named("b_to_c")
-            .into::<StressOperationC>()
+            .into::<StressProcedureC>()
             .named("c_to_d")
-            .into::<StressOperationD>()
+            .into::<StressProcedureD>()
             .named("echo")
-            .output("segmenting_stress_echo");
+            .output("entity_stress_echo");
     }
 }
 
 // -- BoundedMailboxOperative ------------------------------------------------------
 
 #[derive(Serialize, Deserialize, Clone, Default)]
-struct BoundedOperationState {
+struct BoundedProcedureState {
     pub processed: u64,
 }
 
@@ -1790,29 +1790,29 @@ enum BoundedChange {
 }
 impl Change for BoundedChange {}
 
-fn apply_inc(state: &mut BoundedOperationState, _: &BoundedChange) {
+fn apply_inc(state: &mut BoundedProcedureState, _: &BoundedChange) {
     state.processed += 1;
 }
 
 #[derive(Default)]
-struct BlockTestOperation;
-impl Operation for BlockTestOperation {
+struct BlockTestProcedure;
+impl Procedure for BlockTestProcedure {
     type Input = String;
     type Output = Vec<u8>;
-    type State = BoundedOperationState;
+    type State = BoundedProcedureState;
     type Change = BoundedChange;
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "block_test_operation"
+        "block_test_procedure"
     }
     fn init_state(
         _: Option<&str>,
         _init_payload: Option<RestoreInitPayload<'_>>,
-    ) -> BoundedOperationState {
-        BoundedOperationState::default()
+    ) -> BoundedProcedureState {
+        BoundedProcedureState::default()
     }
-    fn apply_change(state: &mut BoundedOperationState, change: &BoundedChange) {
+    fn apply_change(state: &mut BoundedProcedureState, change: &BoundedChange) {
         apply_inc(state, change);
     }
     fn mailbox_capacity() -> usize {
@@ -1823,32 +1823,32 @@ impl Operation for BlockTestOperation {
         &mut self,
         input: String,
         mut state: StateHandle<'_, Self>,
-        ctx: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         state.apply(BoundedChange::Inc);
         ctx.emit::<Vec<u8>>(input.into_bytes())
     }
 }
 
 #[derive(Default)]
-struct DropNewestTestOperation;
-impl Operation for DropNewestTestOperation {
+struct DropNewestTestProcedure;
+impl Procedure for DropNewestTestProcedure {
     type Input = String;
     type Output = Vec<u8>;
-    type State = BoundedOperationState;
+    type State = BoundedProcedureState;
     type Change = BoundedChange;
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "drop_newest_test_operation"
+        "drop_newest_test_procedure"
     }
     fn init_state(
         _: Option<&str>,
         _init_payload: Option<RestoreInitPayload<'_>>,
-    ) -> BoundedOperationState {
-        BoundedOperationState::default()
+    ) -> BoundedProcedureState {
+        BoundedProcedureState::default()
     }
-    fn apply_change(state: &mut BoundedOperationState, change: &BoundedChange) {
+    fn apply_change(state: &mut BoundedProcedureState, change: &BoundedChange) {
         apply_inc(state, change);
     }
     fn mailbox_capacity() -> usize {
@@ -1859,32 +1859,32 @@ impl Operation for DropNewestTestOperation {
         &mut self,
         input: String,
         mut state: StateHandle<'_, Self>,
-        ctx: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         state.apply(BoundedChange::Inc);
         ctx.emit::<Vec<u8>>(input.into_bytes())
     }
 }
 
 #[derive(Default)]
-struct DropOldestTestOperation;
-impl Operation for DropOldestTestOperation {
+struct DropOldestTestProcedure;
+impl Procedure for DropOldestTestProcedure {
     type Input = String;
     type Output = Vec<u8>;
-    type State = BoundedOperationState;
+    type State = BoundedProcedureState;
     type Change = BoundedChange;
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "drop_oldest_test_operation"
+        "drop_oldest_test_procedure"
     }
     fn init_state(
         _: Option<&str>,
         _init_payload: Option<RestoreInitPayload<'_>>,
-    ) -> BoundedOperationState {
-        BoundedOperationState::default()
+    ) -> BoundedProcedureState {
+        BoundedProcedureState::default()
     }
-    fn apply_change(state: &mut BoundedOperationState, change: &BoundedChange) {
+    fn apply_change(state: &mut BoundedProcedureState, change: &BoundedChange) {
         apply_inc(state, change);
     }
     fn mailbox_capacity() -> usize {
@@ -1895,8 +1895,8 @@ impl Operation for DropOldestTestOperation {
         &mut self,
         input: String,
         mut state: StateHandle<'_, Self>,
-        ctx: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         state.apply(BoundedChange::Inc);
         ctx.emit::<Vec<u8>>(input.into_bytes())
     }
@@ -1913,7 +1913,7 @@ impl UnboundedOperative for BoundedMailboxBlockOperative {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("block_input")
             .on_full(OverflowPolicy::Block)
-            .into::<BlockTestOperation>()
+            .into::<BlockTestProcedure>()
             .named("block_echo")
             .output("bounded_mailbox_echo");
     }
@@ -1926,7 +1926,7 @@ impl UnboundedOperative for BoundedMailboxDropNewestOperative {
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("drop_newest_input")
-            .into::<DropNewestTestOperation>()
+            .into::<DropNewestTestProcedure>()
             .named("drop_newest_echo")
             .output("bounded_mailbox_echo");
     }
@@ -1940,7 +1940,7 @@ impl UnboundedOperative for BoundedMailboxDropOldestOperative {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("drop_oldest_input")
             .on_full(OverflowPolicy::DropOldest)
-            .into::<DropOldestTestOperation>()
+            .into::<DropOldestTestProcedure>()
             .named("drop_oldest_echo")
             .output("bounded_mailbox_echo");
     }
@@ -1948,7 +1948,7 @@ impl UnboundedOperative for BoundedMailboxDropOldestOperative {
 
 // -- StatefulCounterOperative (Section 6.1) --------------------------------------
 //
-// One Operation `CounterOperation` with `Change = CounterChange { delta: i64 }`,
+// One Procedure `CounterProcedure` with `Change = CounterChange { delta: i64 }`,
 // `apply_change` mutating `state.value += change.delta`, `coalesce_key()`
 // returning `None` (verbatim retention).
 
@@ -1964,8 +1964,8 @@ pub struct CounterChange {
 impl Change for CounterChange {}
 
 #[derive(Default)]
-struct CounterOperation;
-impl Operation for CounterOperation {
+struct CounterProcedure;
+impl Procedure for CounterProcedure {
     type Input = i64;
     type Output = ();
     type State = CounterState;
@@ -1973,7 +1973,7 @@ impl Operation for CounterOperation {
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "counter_operation"
+        "counter_procedure"
     }
     fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) -> CounterState {
         CounterState::default()
@@ -1985,8 +1985,8 @@ impl Operation for CounterOperation {
         &mut self,
         input: i64,
         mut state: StateHandle<'_, Self>,
-        _: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        _: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         state.apply(CounterChange { delta: input });
         Ok(())
     }
@@ -1999,15 +1999,15 @@ impl UnboundedOperative for StatefulCounterOperative {
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
-            .into::<CounterEntryOperation>()
+            .into::<CounterEntryProcedure>()
             .named("ticks")
-            .into::<CounterOperation>();
+            .into::<CounterProcedure>();
     }
 }
 
 #[derive(Default)]
-struct CounterEntryOperation;
-impl Operation for CounterEntryOperation {
+struct CounterEntryProcedure;
+impl Procedure for CounterEntryProcedure {
     type Input = String;
     type Output = i64;
     type State = ();
@@ -2015,15 +2015,15 @@ impl Operation for CounterEntryOperation {
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "counter_entry_operation"
+        "counter_entry_procedure"
     }
     fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
     fn run(
         &mut self,
         input: String,
         _: StateHandle<'_, Self>,
-        ctx: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         let delta: i64 = input.parse().unwrap_or(0);
         ctx.emit::<i64>(delta)
     }
@@ -2052,8 +2052,8 @@ impl Change for TickChange {
 }
 
 #[derive(Default)]
-struct TickOperation;
-impl Operation for TickOperation {
+struct TickProcedure;
+impl Procedure for TickProcedure {
     type Input = TickInput;
     type Output = ();
     type State = TickState;
@@ -2061,7 +2061,7 @@ impl Operation for TickOperation {
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "tick_operation"
+        "tick_procedure"
     }
     fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) -> TickState {
         TickState::default()
@@ -2073,8 +2073,8 @@ impl Operation for TickOperation {
         &mut self,
         input: TickInput,
         mut state: StateHandle<'_, Self>,
-        _: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        _: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         state.apply(TickChange {
             interval: input.interval,
             ts: input.ts,
@@ -2092,8 +2092,8 @@ pub struct TickInput {
 }
 
 #[derive(Default)]
-struct TickEntryOperation;
-impl Operation for TickEntryOperation {
+struct TickEntryProcedure;
+impl Procedure for TickEntryProcedure {
     type Input = String;
     type Output = TickInput;
     type State = ();
@@ -2101,15 +2101,15 @@ impl Operation for TickEntryOperation {
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "tick_entry_operation"
+        "tick_entry_procedure"
     }
     fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
     fn run(
         &mut self,
         input: String,
         _: StateHandle<'_, Self>,
-        ctx: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         // Wire format: `<interval>:<ts>:<delta>`.
         let mut parts = input.splitn(3, ':');
         let interval = parts.next().and_then(|s| s.parse::<u8>().ok()).unwrap_or(0);
@@ -2136,15 +2136,15 @@ impl UnboundedOperative for CoalescingCounterOperative {
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
-            .into::<TickEntryOperation>()
+            .into::<TickEntryProcedure>()
             .named("ticks")
-            .into::<TickOperation>();
+            .into::<TickProcedure>();
     }
 }
 
 // -- PersistenceOffOperative (Section 6.3) ---------------------------------------
 //
-// Same Operation topology as `StatefulCounterOperative` but `PERSISTENCE_ENABLED`
+// Same Procedure topology as `StatefulCounterOperative` but `PERSISTENCE_ENABLED`
 // is `false`. Used by integration tests to verify the toggle-off drain
 // path discards frames without invoking the wire stub.
 
@@ -2155,16 +2155,16 @@ impl UnboundedOperative for PersistenceOffOperative {
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
-            .into::<PersistenceOffEntryOperation>()
+            .into::<PersistenceOffEntryProcedure>()
             .named("ticks")
-            .into::<PersistenceOffCounterOperation>();
+            .into::<PersistenceOffCounterProcedure>();
     }
     const PERSISTENCE_ENABLED: bool = false;
 }
 
 #[derive(Default)]
-struct PersistenceOffEntryOperation;
-impl Operation for PersistenceOffEntryOperation {
+struct PersistenceOffEntryProcedure;
+impl Procedure for PersistenceOffEntryProcedure {
     type Input = String;
     type Output = i64;
     type State = ();
@@ -2172,23 +2172,23 @@ impl Operation for PersistenceOffEntryOperation {
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "persistence_off_entry_operation"
+        "persistence_off_entry_procedure"
     }
     fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
     fn run(
         &mut self,
         input: String,
         _: StateHandle<'_, Self>,
-        ctx: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         let delta: i64 = input.parse().unwrap_or(0);
         ctx.emit::<i64>(delta)
     }
 }
 
 #[derive(Default)]
-struct PersistenceOffCounterOperation;
-impl Operation for PersistenceOffCounterOperation {
+struct PersistenceOffCounterProcedure;
+impl Procedure for PersistenceOffCounterProcedure {
     type Input = i64;
     type Output = ();
     type State = CounterState;
@@ -2196,7 +2196,7 @@ impl Operation for PersistenceOffCounterOperation {
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "persistence_off_counter_operation"
+        "persistence_off_counter_procedure"
     }
     fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) -> CounterState {
         CounterState::default()
@@ -2208,8 +2208,8 @@ impl Operation for PersistenceOffCounterOperation {
         &mut self,
         input: i64,
         mut state: StateHandle<'_, Self>,
-        _: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        _: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         state.apply(CounterChange { delta: input });
         Ok(())
     }
@@ -2217,15 +2217,15 @@ impl Operation for PersistenceOffCounterOperation {
 
 // -- HybridChannelOperative -------------------------------------------------------
 //
-// Demonstrates `also_output_with(...)`: the producer Operation emits a
-// `u32` value that fans out to an inter-operation consumer and is also
+// Demonstrates `also_output_with(...)`: the producer Procedure emits a
+// `u32` value that fans out to an inter-procedure consumer and is also
 // serialized to bytes for the `hybrid_indicators` plugin. The
 // serializer panics on the sentinel `0xDEADBEEF` so an operator can
 // observe the panic-isolation guarantee end-to-end.
 
 #[derive(Default)]
-struct HybridProducerOperation;
-impl Operation for HybridProducerOperation {
+struct HybridProducerProcedure;
+impl Procedure for HybridProducerProcedure {
     type Input = String;
     type Output = u32;
     type State = ();
@@ -2233,20 +2233,20 @@ impl Operation for HybridProducerOperation {
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "hybrid_producer_operation"
+        "hybrid_producer_procedure"
     }
     fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
     fn run(
         &mut self,
         input: String,
         _: StateHandle<'_, Self>,
-        ctx: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         let n: u32 = input.parse().unwrap_or(0);
         match ctx.emit::<u32>(n) {
             Ok(()) => Ok(()),
-            Err(OperationError::PluginSerializerPanic { channel, message }) => {
-                eprintln!("hybrid_producer_operation: serializer panic on `{channel}`: {message}");
+            Err(ProcedureError::PluginSerializerPanic { channel, message }) => {
+                eprintln!("hybrid_producer_procedure: serializer panic on `{channel}`: {message}");
                 Ok(())
             }
             Err(other) => Err(other),
@@ -2255,8 +2255,8 @@ impl Operation for HybridProducerOperation {
 }
 
 #[derive(Default)]
-struct HybridConsumerOperation;
-impl Operation for HybridConsumerOperation {
+struct HybridConsumerProcedure;
+impl Procedure for HybridConsumerProcedure {
     type Input = u32;
     type Output = ();
     type State = ();
@@ -2264,16 +2264,16 @@ impl Operation for HybridConsumerOperation {
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "hybrid_consumer_operation"
+        "hybrid_consumer_procedure"
     }
     fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
     fn run(
         &mut self,
         input: u32,
         _: StateHandle<'_, Self>,
-        _: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
-        println!("hybrid_consumer_operation: received {input}");
+        _: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
+        println!("hybrid_consumer_procedure: received {input}");
         Ok(())
     }
 }
@@ -2285,7 +2285,7 @@ impl UnboundedOperative for HybridChannelOperative {
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
-            .into::<HybridProducerOperation>()
+            .into::<HybridProducerProcedure>()
             .named("hybrid_indicator")
             .also_output_with("hybrid_indicators", |v: &u32| {
                 if *v == 0xDEAD_BEEF {
@@ -2293,38 +2293,38 @@ impl UnboundedOperative for HybridChannelOperative {
                 }
                 v.to_be_bytes().to_vec()
             })
-            .into::<HybridConsumerOperation>();
+            .into::<HybridConsumerProcedure>();
     }
 }
 
 // ---------------------------------------------------------------------------
 // Authoring-sugar twins (`simplify-sdk-authoring`). Each mirrors a
 // hand-written operative above to prove the macros expand to the same trait
-// surface and interoperate with raw operations. See
+// surface and interoperate with raw procedures. See
 // `docs/sdk_authoring_contract.md`.
 // ---------------------------------------------------------------------------
 
-// Single-operation stateless sugar — twin of `DoNothingOperation` / `DoNothingOperative`.
-// Auto-wires input -> operation -> plugin and auto-registers (no `register_unbounded`).
-#[flezha_runner::operation(id = "sugar_do_nothing", sink = "sugar_do_nothing_echo")]
+// Single-procedure stateless sugar — twin of `DoNothingProcedure` / `DoNothingOperative`.
+// Auto-wires input -> procedure -> plugin and auto-registers (no `register_unbounded`).
+#[flezha_runner::procedure(id = "sugar_do_nothing", sink = "sugar_do_nothing_echo")]
 fn sugar_do_nothing(input: String) -> Vec<u8> {
     input.into_bytes()
 }
 
-// Single-operation stateful sugar with `#[derive(flezha::State)]` — twin of
-// `StoreInputOperation` / `StoreInputOperative`.
+// Single-procedure stateful sugar with `#[derive(flezha::State)]` — twin of
+// `StoreInputProcedure` / `StoreInputOperative`.
 #[derive(Serialize, Deserialize, Clone, Default, PartialEq, Debug, flezha_runner::State)]
 struct SugarStoreState {
     text_inputs: Vec<String>,
 }
 
-#[flezha_runner::operation(id = "sugar_store_input", sink = "sugar_store_sink")]
+#[flezha_runner::procedure(id = "sugar_store_input", sink = "sugar_store_sink")]
 fn sugar_store_input(input: String, state: &mut SugarStoreState) -> String {
     state.push_text_inputs(input.clone());
     input
 }
 
-// `operative!` linear-pipeline twin of `StaticSegmentOperative`.
+// `operative!` linear-pipeline twin of `StaticEntityOperative`.
 #[derive(Serialize, Deserialize, Clone, Default, PartialEq, Debug, flezha_runner::State)]
 struct MacroStaticEntryState {
     seen: Vec<String>,
@@ -2339,36 +2339,36 @@ fn macro_static_part(input: &str) -> Vec<&'static str> {
     }
 }
 
-#[flezha_runner::operation(
-    id = "macro_static_entry_operation",
+#[flezha_runner::procedure(
+    id = "macro_static_entry_procedure",
     keys = ["a", "b", "c", "d"],
-    segment_for = macro_static_part
+    entities_for = macro_static_part
 )]
 fn macro_static_entry(input: String, state: &mut MacroStaticEntryState) -> String {
     state.push_seen(input.clone());
     input
 }
 
-#[flezha_runner::operation(id = "macro_static_downstream_operation")]
+#[flezha_runner::procedure(id = "macro_static_downstream_procedure")]
 fn macro_static_downstream(input: String) -> Vec<u8> {
     input.into_bytes()
 }
 
 flezha_runner::operative! {
-    id: "sugar_static_segment",
+    id: "sugar_static_entity",
     pipeline: input::<String> -> MacroStaticEntry -> MacroStaticDownstream -> plugin::<Vec<u8>>("test_kafka")
 }
 
-// Mixed operative: one `#[flezha::operation]` operation wired to one hand-written
-// `impl Operation` operation in an explicit `channels()` body.
-#[flezha_runner::operation(id = "mixed_macro_entry_operation")]
+// Mixed operative: one `#[flezha::procedure]` procedure wired to one hand-written
+// `impl Procedure` procedure in an explicit `channels()` body.
+#[flezha_runner::procedure(id = "mixed_macro_entry_procedure")]
 fn mixed_macro_entry(input: String) -> String {
     input
 }
 
 #[derive(Default)]
 struct MixedHandDownstream;
-impl Operation for MixedHandDownstream {
+impl Procedure for MixedHandDownstream {
     type Input = String;
     type Output = Vec<u8>;
     type State = ();
@@ -2383,8 +2383,8 @@ impl Operation for MixedHandDownstream {
         &mut self,
         input: String,
         _: StateHandle<'_, Self>,
-        ctx: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         ctx.emit::<Vec<u8>>(input.into_bytes())
     }
 }
@@ -2408,15 +2408,15 @@ impl UnboundedOperative for MixedOperative {
 mod macro_twin_tests {
     use std::collections::{HashMap, VecDeque};
 
-    use flezha_runner::testing::OperationTestHarness;
+    use flezha_runner::testing::ProcedureTestHarness;
 
     use super::*;
 
     // -----------------------------------------------------------------------
-    // Canonical keyed-collection reference operation (`expressive-state-journaling`,
+    // Canonical keyed-collection reference procedure (`expressive-state-journaling`,
     // authoring-contract §3 / §6): a rolling per-key window. The sugared form
     // uses `#[journal(map_deque)]` + an `Option<Output>` warmup gate;
-    // `RollingWindowTwin` is the equivalent hand-written `Operation`/`Change`. The
+    // `RollingWindowTwin` is the equivalent hand-written `Procedure`/`Change`. The
     // tests below assert the two are behaviourally identical and that the
     // sugared form survives `replay_equals`.
     // -----------------------------------------------------------------------
@@ -2429,7 +2429,7 @@ mod macro_twin_tests {
         window: HashMap<String, VecDeque<f64>>,
     }
 
-    #[flezha_runner::operation(id = "rolling_window")]
+    #[flezha_runner::procedure(id = "rolling_window")]
     fn rolling_window(input: (String, f64), state: &mut RollingWindowState) -> Option<f64> {
         let (key, value) = input;
         state.push_back_window(key.clone(), value);
@@ -2444,7 +2444,7 @@ mod macro_twin_tests {
         Some(w.iter().sum::<f64>() / ROLLING_WINDOW_N as f64)
     }
 
-    // Hand-written twin: the exact `Operation` / `Change` impl the sugar expands to
+    // Hand-written twin: the exact `Procedure` / `Change` impl the sugar expands to
     // (variant names differ; behaviour does not).
     #[derive(Serialize, Deserialize, Clone, Default, PartialEq, Debug)]
     struct RollingWindowTwinState {
@@ -2460,7 +2460,7 @@ mod macro_twin_tests {
 
     #[derive(Default)]
     struct RollingWindowTwin;
-    impl Operation for RollingWindowTwin {
+    impl Procedure for RollingWindowTwin {
         type Input = (String, f64);
         type Output = f64;
         type State = RollingWindowTwinState;
@@ -2493,8 +2493,8 @@ mod macro_twin_tests {
             &mut self,
             input: (String, f64),
             mut state: StateHandle<'_, Self>,
-            ctx: &mut OperationCtx<'_>,
-        ) -> Result<(), OperationError> {
+            ctx: &mut ProcedureCtx<'_>,
+        ) -> Result<(), ProcedureError> {
             let (key, value) = input;
             state.apply(RollingWindowTwinChange::PushBack(key.clone(), value));
             let len = state.window.get(&key).map(|w| w.len()).unwrap_or(0);
@@ -2526,7 +2526,7 @@ mod macro_twin_tests {
         ticks: u64,
     }
 
-    #[flezha_runner::operation(id = "keyed_collections")]
+    #[flezha_runner::procedure(id = "keyed_collections")]
     fn keyed_collections(input: (String, f64), state: &mut KeyedCollectionsState) {
         let (key, value) = input;
         state.set_last(key.clone(), value);
@@ -2539,9 +2539,9 @@ mod macro_twin_tests {
         state.set_ticks(state.ticks + 1);
     }
 
-    // `init = fn` maps the static segment key to per-segment config the
+    // `init = fn` maps the static entity key to per-entity config the
     // macro's default (`Default::default()`) cannot supply. Mirrors the market
-    // `sma`/`ohlc` operations whose window / bucket come from the operation key.
+    // `sma`/`ohlc` procedures whose window / bucket come from the procedure key.
     #[derive(Serialize, Deserialize, Clone, Default, PartialEq, Debug, flezha_runner::State)]
     struct WindowedState {
         window: usize,
@@ -2549,9 +2549,9 @@ mod macro_twin_tests {
         closes: HashMap<String, Vec<f64>>,
     }
 
-    fn windowed_init(operation_key: Option<&str>) -> WindowedState {
+    fn windowed_init(entity_key: Option<&str>) -> WindowedState {
         WindowedState {
-            window: if operation_key == Some("win_2") { 2 } else { 3 },
+            window: if entity_key == Some("win_2") { 2 } else { 3 },
             closes: HashMap::new(),
         }
     }
@@ -2560,11 +2560,11 @@ mod macro_twin_tests {
         vec!["win_2", "win_3"]
     }
 
-    #[flezha_runner::operation(
+    #[flezha_runner::procedure(
         id = "windowed",
         init = windowed_init,
         keys = ["win_2", "win_3"],
-        segment_for = windowed_part
+        entities_for = windowed_part
     )]
     fn windowed(input: (String, f64), state: &mut WindowedState) -> Option<f64> {
         let (key, value) = input;
@@ -2582,19 +2582,19 @@ mod macro_twin_tests {
     }
 
     // Cross-SDK conformance (`docs/sdk_authoring_contract.md` §6): the reference
-    // operative's operations expand to this exact associated-type mapping. A divergence
+    // operative's procedures expand to this exact associated-type mapping. A divergence
     // is a compile error, not a silent drift. The Java SugarTwinTest asserts the
     // same mapping at runtime.
     fn _reference_operative_conformance()
     where
-        MacroStaticEntry: Operation<
+        MacroStaticEntry: Procedure<
             Input = String,
             Output = String,
             State = MacroStaticEntryState,
             Clock = WallClock,
             Config = (),
         >,
-        MacroStaticDownstream: Operation<
+        MacroStaticDownstream: Procedure<
             Input = String,
             Output = Vec<u8>,
             State = (),
@@ -2610,11 +2610,11 @@ mod macro_twin_tests {
         let inputs = vec!["alpha".to_string(), "beta".to_string()];
         let expected: Vec<Vec<u8>> = vec![b"alpha".to_vec(), b"beta".to_vec()];
 
-        let mut sugar = OperationTestHarness::<SugarDoNothing>::new();
+        let mut sugar = ProcedureTestHarness::<SugarDoNothing>::new();
         sugar.apply_inputs(inputs.clone());
         sugar.expect_emits(&expected);
 
-        let mut hand = OperationTestHarness::<DoNothingOperation>::new();
+        let mut hand = ProcedureTestHarness::<DoNothingProcedure>::new();
         hand.apply_inputs(inputs);
         hand.expect_emits(&expected);
     }
@@ -2623,7 +2623,7 @@ mod macro_twin_tests {
     fn sugar_store_input_journals_and_emits() {
         let inputs = vec!["one".to_string(), "two".to_string()];
 
-        let mut sugar = OperationTestHarness::<SugarStoreInput>::new();
+        let mut sugar = ProcedureTestHarness::<SugarStoreInput>::new();
         sugar.apply_inputs(inputs.clone());
         assert_eq!(sugar.state().text_inputs, inputs);
         sugar
@@ -2633,20 +2633,20 @@ mod macro_twin_tests {
     }
 
     #[test]
-    fn macro_static_entry_segments_and_journals() {
-        // `segment_for` routes by first char; the operation journals every input.
+    fn macro_static_entry_entities_and_journals() {
+        // `entities_for` routes by first char; the procedure journals every input.
         assert_eq!(
-            MacroStaticEntry::segment_for(&"apple".to_string()),
+            MacroStaticEntry::entities_for(&"apple".to_string()),
             vec!["a"]
         );
         assert_eq!(
-            MacroStaticEntry::segment_for(&"zebra".to_string()),
+            MacroStaticEntry::entities_for(&"zebra".to_string()),
             vec!["d"]
         );
-        assert_eq!(MacroStaticEntry::operation_keys(), vec!["a", "b", "c", "d"]);
+        assert_eq!(MacroStaticEntry::entity_keys(), vec!["a", "b", "c", "d"]);
 
         let inputs = vec!["apple".to_string(), "avocado".to_string()];
-        let mut h = OperationTestHarness::<MacroStaticEntry>::new();
+        let mut h = ProcedureTestHarness::<MacroStaticEntry>::new();
         h.apply_inputs(inputs.clone());
         assert_eq!(h.state().seen, inputs);
         h.replay_equals().expect("derived change replay diverged");
@@ -2654,13 +2654,13 @@ mod macro_twin_tests {
     }
 
     #[test]
-    fn mixed_macro_and_hand_operations_run() {
-        // The macro entry operation passes through; the hand operation turns it to bytes.
-        let mut entry = OperationTestHarness::<MixedMacroEntry>::new();
+    fn mixed_macro_and_hand_procedures_run() {
+        // The macro entry procedure passes through; the hand procedure turns it to bytes.
+        let mut entry = ProcedureTestHarness::<MixedMacroEntry>::new();
         entry.apply_inputs(vec!["hi".to_string()]);
         entry.expect_emits(&["hi".to_string()]);
 
-        let mut down = OperationTestHarness::<MixedHandDownstream>::new();
+        let mut down = ProcedureTestHarness::<MixedHandDownstream>::new();
         down.apply_inputs(vec!["hi".to_string()]);
         down.expect_emits(&[b"hi".to_vec()]);
     }
@@ -2673,7 +2673,7 @@ mod macro_twin_tests {
         for id in [
             "sugar_do_nothing",
             "sugar_store_input",
-            "sugar_static_segment",
+            "sugar_static_entity",
         ] {
             assert!(
                 ids.contains(&id),
@@ -2700,10 +2700,10 @@ mod macro_twin_tests {
             ("b".to_string(), 30.0),
         ];
 
-        let mut sugar = OperationTestHarness::<RollingWindow>::new();
+        let mut sugar = ProcedureTestHarness::<RollingWindow>::new();
         sugar.apply_inputs(inputs.clone());
 
-        let mut twin = OperationTestHarness::<RollingWindowTwin>::new();
+        let mut twin = ProcedureTestHarness::<RollingWindowTwin>::new();
         twin.apply_inputs(inputs);
 
         // The generated journaling replays deterministically (4.3).
@@ -2727,7 +2727,7 @@ mod macro_twin_tests {
             ("x".to_string(), 4.0),
             ("y".to_string(), 9.0),
         ];
-        let mut h = OperationTestHarness::<KeyedCollections>::new();
+        let mut h = ProcedureTestHarness::<KeyedCollections>::new();
         h.apply_inputs(inputs);
 
         // map_set keeps the latest per key.
@@ -2744,15 +2744,15 @@ mod macro_twin_tests {
     }
 
     #[test]
-    fn operation_init_maps_segment_key_to_state() {
-        // The `init = fn` hook receives the static segment key, so each
-        // segment starts from key-derived config the macro default can't give.
+    fn procedure_init_maps_entity_key_to_state() {
+        // The `init = fn` hook receives the static entity key, so each
+        // entity starts from key-derived config the macro default can't give.
         assert_eq!(Windowed::init_state(Some("win_2"), None).window, 2);
         assert_eq!(Windowed::init_state(Some("win_3"), None).window, 3);
         // Cold-start / harness default (key absent) falls through to the else arm.
         assert_eq!(Windowed::init_state(None, None).window, 3);
 
-        // Behaviour differs per segment: window 2 emits one bar earlier than
+        // Behaviour differs per entity: window 2 emits one bar earlier than
         // window 3 for the same input stream, and replay stays deterministic.
         let inputs = vec![
             ("a".to_string(), 2.0),
@@ -2761,13 +2761,13 @@ mod macro_twin_tests {
         ];
 
         let mut w2 =
-            OperationTestHarness::<Windowed>::with_initial_state(windowed_init(Some("win_2")));
+            ProcedureTestHarness::<Windowed>::with_initial_state(windowed_init(Some("win_2")));
         w2.apply_inputs(inputs.clone());
         w2.replay_equals().expect("windowed(win_2) replay diverged");
         w2.expect_emits(&[3.0_f64, 5.0]); // means of [2,4] then [4,6]
 
         let mut w3 =
-            OperationTestHarness::<Windowed>::with_initial_state(windowed_init(Some("win_3")));
+            ProcedureTestHarness::<Windowed>::with_initial_state(windowed_init(Some("win_3")));
         w3.apply_inputs(inputs);
         w3.replay_equals().expect("windowed(win_3) replay diverged");
         w3.expect_emits(&[4.0_f64]); // single mean of [2,4,6]

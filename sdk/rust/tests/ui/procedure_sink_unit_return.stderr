@@ -1,0 +1,5 @@
+error: #[flezha::procedure] `sink` requires a non-unit return type to feed the plugin
+ --> tests/ui/procedure_sink_unit_return.rs:2:1
+  |
+2 | fn f(a: String) {
+  | ^^

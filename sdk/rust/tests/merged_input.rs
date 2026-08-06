@@ -1,13 +1,13 @@
-//! `multi-input-operations`: an operation fed by two or more source channels,
+//! `multi-input-procedures`: a procedure fed by two or more source channels,
 //! each subscription mapping its payload into one sum-type `Input`.
 //!
 //! Covers the capability's contract end to end:
-//! - two typed inter-operation channels feeding one operation, whose own
-//!   output keeps behaving like any single-input operation's
-//! - entry channels as merge sources (no parser-operation detour)
+//! - two typed inter-procedure channels feeding one procedure, whose own
+//!   output keeps behaving like any single-input procedure's
+//! - entry channels as merge sources (no parser-procedure detour)
 //! - per-source FIFO under interleaving, with nothing promised across sources
 //! - a replayed slice mapped exactly as the live delivery mapped it
-//! - `segment_for` evaluated on the MAPPED value
+//! - `entities_for` evaluated on the MAPPED value
 //! - the definition-time refusals (fewer than two sources, a duplicated source)
 
 use std::sync::Mutex;
@@ -15,8 +15,8 @@ use std::time::Duration;
 
 use flezha_runner::channel::builder::TopologyIssue;
 use flezha_runner::channel::ChannelBuilder;
-use flezha_runner::operation::{Operation, OperationCtx, OperationError};
 use flezha_runner::operative::builder::build_topology_for;
+use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError};
 use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
 use flezha_runner::UnboundedOperative;
 
@@ -31,7 +31,7 @@ struct Ticker(String);
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Candle(u64);
 
-/// The author-declared sum type a merged operation consumes.
+/// The author-declared sum type a merged procedure consumes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum SignalInput {
     Ticker(Ticker),
@@ -39,7 +39,7 @@ enum SignalInput {
 }
 
 /// The entry-fed merge's input: a data feed plus a live config channel — the
-/// shape a runtime-reconfigurable operation needs. Serde-derived only so one
+/// shape a runtime-reconfigurable procedure needs. Serde-derived only so one
 /// validation case can declare it as an entry channel's payload.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum TunedInput {
@@ -47,20 +47,20 @@ enum TunedInput {
     Config(String),
 }
 
-// ----- 1: two typed channels feed one operation -----
+// ----- 1: two typed channels feed one procedure -----
 
 static SIGNALS: Mutex<Vec<SignalInput>> = Mutex::new(Vec::new());
 static SIGNAL_SINK: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-test_operation!(TickerOperation, "merge_ticker_operation", String => Ticker, (), |input, _state, ctx| {
+test_procedure!(TickerProcedure, "merge_ticker_procedure", String => Ticker, (), |input, _state, ctx| {
     ctx.emit(Ticker(input))
 });
 
-test_operation!(CandleOperation, "merge_candle_operation", String => Candle, (), |input, _state, ctx| {
+test_procedure!(CandleProcedure, "merge_candle_procedure", String => Candle, (), |input, _state, ctx| {
     ctx.emit(Candle(input.len() as u64))
 });
 
-test_operation!(DetectorOperation, "merge_detector_operation", SignalInput => String, (), |input, _state, ctx| {
+test_procedure!(DetectorProcedure, "merge_detector_procedure", SignalInput => String, (), |input, _state, ctx| {
     SIGNALS.lock().unwrap().push(input.clone());
     let label = match input {
         SignalInput::Ticker(t) => format!("ticker:{}", t.0),
@@ -69,7 +69,7 @@ test_operation!(DetectorOperation, "merge_detector_operation", SignalInput => St
     ctx.emit(label)
 });
 
-test_operation!(SignalSinkOperation, "merge_signal_sink_operation", String => String, (), |input, _state, _ctx| {
+test_procedure!(SignalSinkProcedure, "merge_signal_sink_procedure", String => String, (), |input, _state, _ctx| {
     SIGNAL_SINK.lock().unwrap().push(input);
     Ok(())
 });
@@ -81,18 +81,18 @@ impl UnboundedOperative for TypedMergeOperative {
     }
     fn channels(c: &ChannelBuilder) {
         let raw = c.input::<String>("raw");
-        let ticker = raw.into::<TickerOperation>().named("ticker_out");
-        let candles = raw.into::<CandleOperation>().named("ohlc_out");
+        let ticker = raw.into::<TickerProcedure>().named("ticker_out");
+        let candles = raw.into::<CandleProcedure>().named("ohlc_out");
         c.merge::<SignalInput>()
             .from(ticker, SignalInput::Ticker)
             .from(candles, SignalInput::Candle)
-            .into::<DetectorOperation>()
-            .into::<SignalSinkOperation>();
+            .into::<DetectorProcedure>()
+            .into::<SignalSinkProcedure>();
     }
 }
 
 #[test]
-fn two_typed_channels_feed_one_operation() {
+fn two_typed_channels_feed_one_procedure() {
     SIGNALS.lock().unwrap().clear();
     SIGNAL_SINK.lock().unwrap().clear();
     let (handle, _instance) = setup::<TypedMergeOperative>("typed-merge-instance", 4);
@@ -106,7 +106,7 @@ fn two_typed_channels_feed_one_operation() {
         &stream,
     );
 
-    // One raw frame fans out to both producers, so the merged operation sees
+    // One raw frame fans out to both producers, so the merged procedure sees
     // one value per source — through its ordinary `run`, as one type.
     assert!(
         wait_until(
@@ -133,7 +133,7 @@ fn two_typed_channels_feed_one_operation() {
             || SIGNAL_SINK.lock().unwrap().len() == 2,
             Duration::from_secs(5)
         ),
-        "merged operation's output did not reach its consumer: {:?}",
+        "merged procedure's output did not reach its consumer: {:?}",
         SIGNAL_SINK.lock().unwrap()
     );
     let mut emitted = SIGNAL_SINK.lock().unwrap().clone();
@@ -159,7 +159,7 @@ fn tuned_test_guard() -> std::sync::MutexGuard<'static, ()> {
     guard
 }
 
-test_operation!(TunedOperation, "merge_tuned_operation", TunedInput => String, (), |input, _state, _ctx| {
+test_procedure!(TunedProcedure, "merge_tuned_procedure", TunedInput => String, (), |input, _state, _ctx| {
     TUNED.lock().unwrap().push(input);
     Ok(())
 });
@@ -173,7 +173,7 @@ impl UnboundedOperative for EntryMergeOperative {
         c.merge::<TunedInput>()
             .from(c.input::<String>("data"), TunedInput::Data)
             .from(c.input::<String>("config"), TunedInput::Config)
-            .into::<TunedOperation>();
+            .into::<TunedProcedure>();
     }
 }
 
@@ -334,13 +334,13 @@ fn a_replayed_merge_maps_exactly_as_the_live_run_did() {
     );
 }
 
-// ----- 3: segment derivation runs on the MAPPED value -----
+// ----- 3: entity derivation runs on the MAPPED value -----
 
-static PER_SEGMENT: Mutex<Vec<(String, TunedInput)>> = Mutex::new(Vec::new());
+static PER_ENTITY: Mutex<Vec<(String, TunedInput)>> = Mutex::new(Vec::new());
 
 #[derive(Default)]
-struct SegmentedTunedOperation;
-impl Operation for SegmentedTunedOperation {
+struct EntityTunedProcedure;
+impl Procedure for EntityTunedProcedure {
     type Input = TunedInput;
     type Output = String;
     type State = String;
@@ -348,16 +348,16 @@ impl Operation for SegmentedTunedOperation {
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "merge_segmented_tuned_operation"
+        "merge_entity_tuned_procedure"
     }
-    fn init_state(operation_key: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> String {
-        operation_key.unwrap_or("?").to_string()
+    fn init_state(entity_key: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> String {
+        entity_key.unwrap_or("?").to_string()
     }
-    fn operation_keys() -> Vec<&'static str> {
+    fn entity_keys() -> Vec<&'static str> {
         vec!["data", "config"]
     }
-    const SEGMENT_FOR_OVERRIDDEN: bool = true;
-    fn segment_for(input: &TunedInput) -> Vec<&'static str> {
+    const ENTITIES_FOR_OVERRIDDEN: bool = true;
+    fn entities_for(input: &TunedInput) -> Vec<&'static str> {
         match input {
             TunedInput::Data(_) => vec!["data"],
             TunedInput::Config(_) => vec!["config"],
@@ -367,42 +367,42 @@ impl Operation for SegmentedTunedOperation {
         &mut self,
         input: TunedInput,
         state: StateHandle<'_, Self>,
-        _: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
-        PER_SEGMENT.lock().unwrap().push((state.clone(), input));
+        _: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
+        PER_ENTITY.lock().unwrap().push((state.clone(), input));
         Ok(())
     }
 }
 
-struct SegmentedMergeOperative;
-impl UnboundedOperative for SegmentedMergeOperative {
+struct EntityMergeOperative;
+impl UnboundedOperative for EntityMergeOperative {
     fn factory_id() -> &'static str {
-        "segmented_merge_operative"
+        "entity_merge_operative"
     }
     fn channels(c: &ChannelBuilder) {
         c.merge::<TunedInput>()
             .from(c.input::<String>("data"), TunedInput::Data)
             .from(c.input::<String>("config"), TunedInput::Config)
-            .into::<SegmentedTunedOperation>();
+            .into::<EntityTunedProcedure>();
     }
 }
 
 #[test]
-fn segment_for_is_evaluated_on_the_mapped_value() {
-    PER_SEGMENT.lock().unwrap().clear();
-    let (handle, _instance) = setup::<SegmentedMergeOperative>("segmented-merge-instance", 4);
+fn entities_for_is_evaluated_on_the_mapped_value() {
+    PER_ENTITY.lock().unwrap().clear();
+    let (handle, _instance) = setup::<EntityMergeOperative>("entity-merge-instance", 4);
     let stream = dummy_stream();
 
     dispatch_input(
         &handle,
-        "segmented-merge-instance",
+        "entity-merge-instance",
         "data",
         b"d0".to_vec(),
         &stream,
     );
     dispatch_input(
         &handle,
-        "segmented-merge-instance",
+        "entity-merge-instance",
         "config",
         b"c0".to_vec(),
         &stream,
@@ -410,16 +410,16 @@ fn segment_for_is_evaluated_on_the_mapped_value() {
 
     assert!(
         wait_until(
-            || PER_SEGMENT.lock().unwrap().len() == 2,
+            || PER_ENTITY.lock().unwrap().len() == 2,
             Duration::from_secs(5)
         ),
-        "segmented merge did not drain: {:?}",
-        PER_SEGMENT.lock().unwrap()
+        "entity merge did not drain: {:?}",
+        PER_ENTITY.lock().unwrap()
     );
 
     // The routing key came from the sum type, not from the source channel:
-    // `segment_for` never sees the pre-map payload.
-    let mut observed = PER_SEGMENT.lock().unwrap().clone();
+    // `entities_for` never sees the pre-map payload.
+    let mut observed = PER_ENTITY.lock().unwrap().clone();
     observed.sort_by(|a, b| a.0.cmp(&b.0));
     assert_eq!(
         observed,
@@ -440,7 +440,7 @@ impl UnboundedOperative for OneSourceMergeOperative {
     fn channels(c: &ChannelBuilder) {
         c.merge::<TunedInput>()
             .from(c.input::<String>("data"), TunedInput::Data)
-            .into::<TunedOperation>();
+            .into::<TunedProcedure>();
     }
 }
 
@@ -453,7 +453,7 @@ fn a_merge_with_fewer_than_two_sources_is_refused() {
         err.errors.iter().any(|e| matches!(
             e,
             TopologyIssue::MergeTooFewSources {
-                operation: "merge_tuned_operation",
+                procedure: "merge_tuned_procedure",
                 sources: 1
             }
         )),
@@ -472,7 +472,7 @@ impl UnboundedOperative for DuplicateSourceMergeOperative {
         c.merge::<TunedInput>()
             .from(data, TunedInput::Data)
             .from(data, TunedInput::Config)
-            .into::<TunedOperation>();
+            .into::<TunedProcedure>();
     }
 }
 
@@ -502,7 +502,7 @@ fn a_duplicated_merge_source_is_refused_naming_the_channel() {
 /// Two merges closing on ONE consumer that share a source channel — the shape
 /// a graph assembled by helper functions falls into. The second `.from` cannot
 /// be honoured (an edge carries one mapping), so it must be refused rather
-/// than dropped: the operation would otherwise receive the first declaration's
+/// than dropped: the procedure would otherwise receive the first declaration's
 /// value forever, with nothing said at definition time or at runtime.
 struct RewiredMergeSourceOperative;
 impl UnboundedOperative for RewiredMergeSourceOperative {
@@ -514,11 +514,11 @@ impl UnboundedOperative for RewiredMergeSourceOperative {
         c.merge::<TunedInput>()
             .from(data, TunedInput::Data)
             .from(c.input::<String>("config"), TunedInput::Config)
-            .into::<TunedOperation>();
+            .into::<TunedProcedure>();
         c.merge::<TunedInput>()
             .from(data, TunedInput::Config)
             .from(c.input::<String>("extra"), TunedInput::Data)
-            .into::<TunedOperation>();
+            .into::<TunedProcedure>();
     }
 }
 
@@ -532,7 +532,7 @@ fn a_merge_source_may_not_re_wire_an_edge_that_is_already_declared() {
             e,
             TopologyIssue::MergeSourceAlreadyWired {
                 channel: "data",
-                operation: "merge_tuned_operation"
+                procedure: "merge_tuned_procedure"
             }
         )),
         "expected MergeSourceAlreadyWired naming `data`, got {:?}",
@@ -549,11 +549,11 @@ impl UnboundedOperative for PlainThenMergedOperative {
     }
     fn channels(c: &ChannelBuilder) {
         let data = c.input::<TunedInput>("data");
-        data.into::<TunedOperation>();
+        data.into::<TunedProcedure>();
         c.merge::<TunedInput>()
             .from(data, |v: TunedInput| v)
             .from(c.input::<String>("config"), TunedInput::Config)
-            .into::<TunedOperation>();
+            .into::<TunedProcedure>();
     }
 }
 
@@ -567,7 +567,7 @@ fn a_merge_may_not_re_wire_an_edge_a_plain_into_already_declared() {
             e,
             TopologyIssue::MergeSourceAlreadyWired {
                 channel: "data",
-                operation: "merge_tuned_operation"
+                procedure: "merge_tuned_procedure"
             }
         )),
         "expected MergeSourceAlreadyWired naming `data`, got {:?}",

@@ -1,16 +1,16 @@
 //! A detector fed by both its data feed and a live config channel
-//! (`multi-input-operations`).
+//! (`multi-input-procedures`).
 //!
-//! The pattern this exists for: an operation whose behaviour must change while
+//! The pattern this exists for: a procedure whose behaviour must change while
 //! it runs. Without a merge the only ways to reconfigure are to restart the
 //! operative with new env, or to bolt the config onto every data payload —
 //! the first loses the state you were accumulating, the second couples the
 //! producer to the consumer's knobs.
 //!
-//! `c.merge::<I>()` declares the operation's `Input` as one sum type and gives
+//! `c.merge::<I>()` declares the procedure's `Input` as one sum type and gives
 //! each source channel a mapping into it. Everything downstream — `run`,
-//! `segment_for`, state, emit — sees exactly one type, so nothing else about
-//! the operation changes.
+//! `entities_for`, state, emit — sees exactly one type, so nothing else about
+//! the procedure changes.
 //!
 //! Two things worth knowing before you reach for it:
 //!
@@ -29,7 +29,7 @@
 //!     flz operative send thermostat --channel readings --text '{"sensor":"kiln","celsius":812.0}'
 //!     flz operative send thermostat --channel config   --text '{"max_celsius":800.0}'
 
-use flezha_runner::operation::{Operation, OperationCtx, OperationError};
+use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError};
 use flezha_runner::state::{Change, RestoreInitPayload, StateHandle, WallClock};
 use flezha_runner::{ChannelBuilder, UnboundedOperative};
 use serde::{Deserialize, Serialize};
@@ -86,7 +86,7 @@ impl Change for DetectorChange {}
 #[derive(Default)]
 struct Detector;
 
-impl Operation for Detector {
+impl Procedure for Detector {
     type Input = DetectorInput;
     type Output = String;
     type State = DetectorState;
@@ -113,8 +113,8 @@ impl Operation for Detector {
         &mut self,
         input: DetectorInput,
         mut state: StateHandle<'_, Self>,
-        ctx: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         match input {
             // A config frame is an ordinary input: it lands in the same
             // durable state as the readings, so a restart resumes with the
@@ -143,7 +143,7 @@ impl UnboundedOperative for Thermostat {
 
     fn channels(c: &ChannelBuilder) {
         // Two entry channels, one consumer. Either source may equally be
-        // another operation's output stream — `.from` takes both.
+        // another procedure's output stream — `.from` takes both.
         c.merge::<DetectorInput>()
             .from(c.input::<Reading>("readings"), DetectorInput::Reading)
             .from(c.input::<Threshold>("config"), DetectorInput::Threshold)

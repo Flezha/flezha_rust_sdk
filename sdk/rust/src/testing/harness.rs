@@ -1,8 +1,8 @@
-//! `OperationTestHarness::<S>` — replay-equality test harness.
+//! `ProcedureTestHarness::<S>` — replay-equality test harness.
 //!
 //! Tests construct the harness with `new()` (requires `S: Default` and
 //! a `Self::State` derivable from `init_state(None, None)`),
-//! `with_initial_state(state)`, or `with_payload(operation_key, payload)`
+//! `with_initial_state(state)`, or `with_payload(entity_key, payload)`
 //! (replicates the runtime's snapshot + change-log restoration flow).
 //! The harness owns its state, drives `S::run` for each input via
 //! `apply_inputs`, and records emitted values + Changes for inspection.
@@ -11,7 +11,7 @@
 //! it folds the recorded change log against a fresh re-constructed
 //! initial state and asserts byte-equality with the harness's terminal
 //! state (via `serde::Serialize` round-trip). Panics from
-//! `Operation::apply_change` surface as test failures; non-determinism
+//! `Procedure::apply_change` surface as test failures; non-determinism
 //! surfaces as a `ReplayMismatch` carrying serialized expected and
 //! actual states for hex-diff inspection.
 
@@ -20,16 +20,16 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::operation::clock::{wall_now_ms, ClockFor};
-use crate::operation::ctx::EmitSink;
-use crate::operation::{Operation, OperationCtx, OperationError, StateHandle};
+use crate::entity::restore::{init_entity_with_payload, RestoreError, RestoreInitPayload};
 use crate::operative::dispatcher::apply_identity_stamps;
-use crate::segment::restore::{init_segment_with_payload, RestoreError, RestoreInitPayload};
+use crate::procedure::clock::{wall_now_ms, ClockFor};
+use crate::procedure::ctx::EmitSink;
+use crate::procedure::{Procedure, ProcedureCtx, ProcedureError, StateHandle};
 
-/// Segment identity the harness stands in for the runtime's per-slot
-/// identity: feeds `ctx.stable_id()` derivation and the `flz.segment`
+/// Entity identity the harness stands in for the runtime's per-slot
+/// identity: feeds `ctx.stable_id()` derivation and the `flz.entity`
 /// stamp in keyed mode.
-const HARNESS_SEGMENT_IDENTITY: &[u8] = b"<harness>";
+const HARNESS_ENTITY_IDENTITY: &[u8] = b"<harness>";
 
 /// Recorded emit: type-erased value + optional plugin metadata.
 struct Emit {
@@ -47,7 +47,7 @@ pub struct ReplayMismatch {
 
 impl std::fmt::Display for ReplayMismatch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "OperationTestHarness::replay_equals: state divergence")?;
+        writeln!(f, "ProcedureTestHarness::replay_equals: state divergence")?;
         writeln!(f, "  expected ({} bytes):", self.expected_serialized.len())?;
         write_hex(&self.expected_serialized, f)?;
         writeln!(f, "  actual   ({} bytes):", self.actual_serialized.len())?;
@@ -69,8 +69,8 @@ fn write_hex(bytes: &[u8], f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result 
     Ok(())
 }
 
-pub struct OperationTestHarness<S: Operation> {
-    operation: S,
+pub struct ProcedureTestHarness<S: Procedure> {
+    procedure: S,
     state: S::State,
     /// Snapshot of the initial state captured at construction time.
     /// Replayed against `recorded_changes` by [`Self::replay_equals`];
@@ -88,7 +88,7 @@ pub struct OperationTestHarness<S: Operation> {
     wall_pos: Cell<usize>,
 }
 
-impl<S: Operation> OperationTestHarness<S>
+impl<S: Procedure> ProcedureTestHarness<S>
 where
     S::State: serde::Serialize + serde::de::DeserializeOwned,
 {
@@ -100,7 +100,7 @@ where
     }
 }
 
-impl<S: Operation> Default for OperationTestHarness<S>
+impl<S: Procedure> Default for ProcedureTestHarness<S>
 where
     S::State: serde::Serialize + serde::de::DeserializeOwned,
 {
@@ -109,10 +109,10 @@ where
     }
 }
 
-impl<S: Operation> OperationTestHarness<S> {
+impl<S: Procedure> ProcedureTestHarness<S> {
     fn from_state(state: S::State, initial_state_bytes: Vec<u8>) -> Self {
         Self {
-            operation: S::default(),
+            procedure: S::default(),
             state,
             initial_state_bytes,
             recorded_changes: Vec::new(),
@@ -136,13 +136,13 @@ impl<S: Operation> OperationTestHarness<S> {
     /// `RestoreInitPayload`, replicating the runtime's snapshot +
     /// change-log restoration flow.
     pub fn with_payload(
-        operation_key: Option<&str>,
+        entity_key: Option<&str>,
         payload: RestoreInitPayload<'_>,
     ) -> Result<Self, RestoreError>
     where
         S::State: serde::de::DeserializeOwned + serde::Serialize,
     {
-        let state = init_segment_with_payload::<S>(operation_key, Some(&payload))?;
+        let state = init_entity_with_payload::<S>(entity_key, Some(&payload))?;
         let initial_state_bytes = serialize_snapshot(&state);
         Ok(Self::from_state(state, initial_state_bytes))
     }
@@ -211,13 +211,13 @@ impl<S: Operation> OperationTestHarness<S> {
                 ordinal: 0,
             };
             let mut ctx =
-                OperationCtx::new(&mut sink, now, invocation_seq, HARNESS_SEGMENT_IDENTITY);
+                ProcedureCtx::new(&mut sink, now, invocation_seq, HARNESS_ENTITY_IDENTITY);
             let handle = StateHandle::<S>::new(&mut self.state, &recorded);
             // Errors are surfaced as panics in the harness; tests that
             // want to exercise the error path should drive `S::run`
             // directly.
-            if let Err(e) = self.operation.run(input, handle, &mut ctx) {
-                panic!("OperationTestHarness: Operation::run returned Err: {e}");
+            if let Err(e) = self.procedure.run(input, handle, &mut ctx) {
+                panic!("ProcedureTestHarness: Procedure::run returned Err: {e}");
             }
         }
         self.recorded_changes = recorded.into_inner();
@@ -237,7 +237,7 @@ impl<S: Operation> OperationTestHarness<S> {
         assert_eq!(
             self.recorded_changes.as_slice(),
             expected,
-            "OperationTestHarness::expect_changes: recorded changes diverge",
+            "ProcedureTestHarness::expect_changes: recorded changes diverge",
         );
         self
     }
@@ -259,7 +259,7 @@ impl<S: Operation> OperationTestHarness<S> {
         assert_eq!(
             observed.len(),
             expected.len(),
-            "OperationTestHarness::expect_emits: emits of type {} count diverges \
+            "ProcedureTestHarness::expect_emits: emits of type {} count diverges \
              (observed {}, expected {})",
             std::any::type_name::<C>(),
             observed.len(),
@@ -268,7 +268,7 @@ impl<S: Operation> OperationTestHarness<S> {
         for (i, (o, e)) in observed.iter().zip(expected.iter()).enumerate() {
             assert_eq!(
                 *o, e,
-                "OperationTestHarness::expect_emits: divergence at index {i}",
+                "ProcedureTestHarness::expect_emits: divergence at index {i}",
             );
         }
         self
@@ -281,7 +281,7 @@ impl<S: Operation> OperationTestHarness<S> {
     {
         assert_eq!(
             &self.state, expected,
-            "OperationTestHarness::expect_state: state diverges",
+            "ProcedureTestHarness::expect_state: state diverges",
         );
         self
     }
@@ -311,7 +311,7 @@ impl<S: Operation> OperationTestHarness<S> {
         S::State: serde::Serialize + serde::de::DeserializeOwned,
     {
         let initial: S::State = deserialize_snapshot::<S>(&self.initial_state_bytes);
-        let replayed = <OperationTestHarness<S>>::replay(initial, &self.recorded_changes);
+        let replayed = <ProcedureTestHarness<S>>::replay(initial, &self.recorded_changes);
         let expected = canonical_json(&self.state);
         let actual = canonical_json(&replayed);
         if expected == actual {
@@ -329,7 +329,7 @@ impl<S: Operation> OperationTestHarness<S> {
     /// and assert the two serialized emit streams — output bytes plus
     /// metadata including any `flz.*` identity stamps — are identical.
     /// The harness's keyed / wall-clock configuration applies to both
-    /// passes; a scripted wall clock restarts per pass. An Operation that
+    /// passes; a scripted wall clock restarts per pass. A Procedure that
     /// reads ambient time, randomness, or external mutable state fails
     /// here because the passes emit different bytes.
     pub fn replay_emits_equal(&self, inputs: &[S::Input]) -> Result<(), EmitStreamMismatch>
@@ -384,7 +384,7 @@ impl<S: Operation> OperationTestHarness<S> {
                 .ok_or_else(|| EmitStreamMismatch {
                     index: i,
                     detail: format!(
-                        "emit {i} is not the Operation's Output type and cannot be \
+                        "emit {i} is not the Procedure's Output type and cannot be \
                          serialized for comparison"
                     ),
                 })?;
@@ -434,7 +434,7 @@ impl std::fmt::Display for EmitStreamMismatch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "OperationTestHarness::replay_emits_equal: {}",
+            "ProcedureTestHarness::replay_emits_equal: {}",
             self.detail
         )
     }
@@ -454,7 +454,7 @@ fn canonical_json<T: serde::Serialize>(value: &T) -> String {
     v.to_string()
 }
 
-fn deserialize_snapshot<S: Operation>(bytes: &[u8]) -> S::State
+fn deserialize_snapshot<S: Procedure>(bytes: &[u8]) -> S::State
 where
     S::State: serde::de::DeserializeOwned,
 {
@@ -475,10 +475,10 @@ struct RecordingEmitSink<'a> {
 }
 
 impl<'a> EmitSink for RecordingEmitSink<'a> {
-    fn emit_inter_operation(
+    fn emit_inter_procedure(
         &mut self,
         value: Arc<dyn Any + Send + Sync>,
-    ) -> Result<(), OperationError> {
+    ) -> Result<(), ProcedureError> {
         self.emits.push(Emit { value, meta: None });
         Ok(())
     }
@@ -488,12 +488,12 @@ impl<'a> EmitSink for RecordingEmitSink<'a> {
         value: Arc<dyn Any + Send + Sync>,
         meta: Option<HashMap<String, String>>,
         key: Option<String>,
-    ) -> Result<(), OperationError> {
+    ) -> Result<(), ProcedureError> {
         let meta = if self.keyed {
             let mut metadata = meta.unwrap_or_default();
             apply_identity_stamps(
                 &mut metadata,
-                std::str::from_utf8(HARNESS_SEGMENT_IDENTITY).expect("ascii"),
+                std::str::from_utf8(HARNESS_ENTITY_IDENTITY).expect("ascii"),
                 self.seq,
                 &mut self.ordinal,
                 key,

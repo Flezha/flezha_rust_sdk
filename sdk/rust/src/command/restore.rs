@@ -1,11 +1,11 @@
-//! Inbound `RestoreInitState`: controller → SDK warm restart of a Segment.
+//! Inbound `RestoreInitState`: controller → SDK warm restart of an Entity.
 //!
 //! The controller ships the persisted snapshot + WAL change-log for a
-//! Segment after a runner restart / rebind. This handler locates the
-//! live `SegmentSlot` whose wire identity matches `segment_id` and
+//! Entity after a runner restart / rebind. This handler locates the
+//! live `EntitySlot` whose wire identity matches `entity_id` and
 //! rebuilds its (type-erased) state in place via the dispatcher's
 //! `restore_state` — so a operative that summed to N comes back at N instead of
-//! starting empty. It then re-arms the segment's `change_seq` to
+//! starting empty. It then re-arms the entity's `change_seq` to
 //! `terminal_seq + 1` so the next produced frame is contiguous with the
 //! persisted history and the controller does not realign (truncate) the WAL.
 //!
@@ -18,10 +18,10 @@ use std::sync::Arc;
 use prost::Message;
 
 use super::CommandAction;
+use crate::entity::restore::iter_change_log_records;
+use crate::entity::EntitySlot;
 use crate::pb::{RestoreInitState, RestoreInitStateResponse};
 use crate::runner::RunnerNode;
-use crate::segment::restore::iter_change_log_records;
-use crate::segment::SegmentSlot;
 
 impl CommandAction for RestoreInitState {
     fn handle(
@@ -30,19 +30,19 @@ impl CommandAction for RestoreInitState {
         _message: &str,
         errors: &mut Vec<String>,
     ) -> (String, Vec<u8>) {
-        let terminal_seq = if let Some(slot) = find_segment_slot(runner, &self.segment_id) {
+        let terminal_seq = if let Some(slot) = find_entity_slot(runner, &self.entity_id) {
             restore_into_slot(&slot, self, errors)
-        } else if let Some((instance, slot)) = runner.find_bounded_segment(&self.segment_id) {
-            // Durable bounded Segment: rebuild its committed state in place and
+        } else if let Some((instance, slot)) = runner.find_bounded_entity(&self.entity_id) {
+            // Durable bounded Entity: rebuild its committed state in place and
             // release one count on the driver's crash-resume gate. The frame
             // landed regardless of apply success, so the gate never stalls on a
             // corrupt record.
             let t = restore_into_slot(&slot, self, errors);
-            // Saga crash-resume (§4.3): carry the per-Segment compensation markers
+            // Saga crash-resume (§4.3): carry the per-Entity compensation markers
             // the controller persisted so the driver finishes an in-flight undo
-            // (intent) and skips segments already undone (done).
+            // (intent) and skips entities already undone (done).
             instance.note_compensation_markers(
-                &self.segment_id,
+                &self.entity_id,
                 self.has_compensation_intent,
                 self.has_compensation_done,
             );
@@ -65,7 +65,7 @@ impl CommandAction for RestoreInitState {
         };
 
         let response = RestoreInitStateResponse {
-            segment_id: self.segment_id.clone(),
+            entity_id: self.entity_id.clone(),
             terminal_seq,
         };
 
@@ -73,12 +73,12 @@ impl CommandAction for RestoreInitState {
     }
 }
 
-/// Rebuild one live Segment's typed state from the shipped snapshot + change-log
+/// Rebuild one live Entity's typed state from the shipped snapshot + change-log
 /// and re-arm its `change_seq` so post-restore appends stay contiguous (the
 /// controller then skips epoch realign). Shared by the unbounded and bounded
 /// restore paths. Returns the terminal WAL seq (0 on apply failure).
 fn restore_into_slot(
-    slot: &Arc<SegmentSlot>,
+    slot: &Arc<EntitySlot>,
     cmd: &RestoreInitState,
     errors: &mut Vec<String>,
 ) -> u64 {
@@ -90,13 +90,13 @@ fn restore_into_slot(
         &mut guard,
         &cmd.snapshot_bytes,
         &cmd.change_log_bytes,
-        slot.operation_key.as_deref(),
+        slot.entity_key.as_deref(),
     ) {
         Ok(t) => {
             drop(guard);
             slot.change_seq.store(t + 1, Ordering::Release);
 
-            // A restore re-seats the Segment on a different past — the crash's,
+            // A restore re-seats the Entity on a different past — the crash's,
             // or (for a correction) a deliberately rewound one. An open
             // checkpoint interval's changes were never acknowledged, so the
             // restored state does not contain them and the re-forwarded inputs
@@ -109,21 +109,21 @@ fn restore_into_slot(
             let discarded = slot.discard_queued_input_on_restore();
             if discarded > 0 {
                 eprintln!(
-                    "[flezha] restore discarded {discarded} queued input(s) for segment {} \
+                    "[flezha] restore discarded {discarded} queued input(s) for entity {} \
                      — the controller re-forwards them from the durable input log",
-                    slot.dispatcher.segment_label()
+                    slot.dispatcher.entity_label()
                 );
             }
 
             let cursors = restore_cursors(&cmd.change_log_bytes);
             // Effectively-once: remember the highest input-log offset the
             // restored effect records durably consumed, so the crash-replay
-            // re-forward skips already-applied inputs (`drain_segment`).
+            // re-forward skips already-applied inputs (`drain_entity`).
             if let Some(floor) = cursors.consumed_offset {
                 slot.consumed_floor.store(floor as i64, Ordering::Release);
             }
             // Correction: rebuild the event-time high-water, so a resumed
-            // Segment neither mistakes its own history for a flood of late
+            // Entity neither mistakes its own history for a flood of late
             // inputs (high-water too low) nor misses a genuinely late one.
             slot.event_time_high_water.store(
                 cursors.event_time_high_water.map_or(-1, |t| t as i64),
@@ -138,7 +138,7 @@ fn restore_into_slot(
     }
 }
 
-/// Per-Segment cursors folded out of a restore payload's change log.
+/// Per-Entity cursors folded out of a restore payload's change log.
 #[derive(Debug, Default, PartialEq, Eq)]
 struct RestoreCursors {
     /// Highest `consumed_offset` across the effect records; `None` when the log
@@ -153,13 +153,13 @@ struct RestoreCursors {
 }
 
 /// Fold the change-log's effect records (`format_id = 2` at header byte 9) into
-/// the cursors a restored Segment resumes from.
+/// the cursors a restored Entity resumes from.
 fn restore_cursors(change_log_bytes: &[u8]) -> RestoreCursors {
     let mut cursors = RestoreCursors::default();
     for record in iter_change_log_records(change_log_bytes) {
         let Ok(record) = record else { break };
-        if record.header.get(9) == Some(&crate::segment::header::FORMAT_ID_EFFECT_RECORD) {
-            if let Ok(body) = postcard::from_bytes::<crate::segment::flusher::EffectRecordBody>(
+        if record.header.get(9) == Some(&crate::entity::header::FORMAT_ID_EFFECT_RECORD) {
+            if let Ok(body) = postcard::from_bytes::<crate::entity::flusher::EffectRecordBody>(
                 record.change_bytes,
             ) {
                 cursors.consumed_offset = cursors.consumed_offset.max(body.consumed_offset);
@@ -171,19 +171,16 @@ fn restore_cursors(change_log_bytes: &[u8]) -> RestoreCursors {
     cursors
 }
 
-/// Scan every live operative's segments for the slot whose wire identity equals
-/// `segment_id`. The SDK encodes `segment_identity` with the same framing
-/// the controller uses for `segment_id` (`[rc_len][rc][sh_len][sh][pk_len][pk]`),
+/// Scan every live operative's entities for the slot whose wire identity equals
+/// `entity_id`. The SDK encodes `entity_identity` with the same framing
+/// the controller uses for `entity_id` (`[rc_len][rc][sh_len][sh][pk_len][pk]`),
 /// so a byte-equal match is exact. Returns a cloned `Arc` so the operative-registry
 /// locks are released before the (potentially slow) state rebuild.
-pub(crate) fn find_segment_slot(
-    runner: &RunnerNode,
-    segment_id: &[u8],
-) -> Option<Arc<SegmentSlot>> {
+pub(crate) fn find_entity_slot(runner: &RunnerNode, entity_id: &[u8]) -> Option<Arc<EntitySlot>> {
     for instance in runner.get_operatives().values() {
-        for operation_segments in instance.segments.iter() {
-            for slot in operation_segments.iter() {
-                if slot.segment_identity.as_slice() == segment_id {
+        for procedure_entities in instance.entities.iter() {
+            for slot in procedure_entities.iter() {
+                if slot.entity_identity.as_slice() == entity_id {
                     return Some(Arc::clone(slot));
                 }
             }

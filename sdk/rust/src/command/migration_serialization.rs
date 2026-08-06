@@ -1,10 +1,10 @@
-//! `MigrationSerialization` — produces the per-Operation / per-Segment
+//! `MigrationSerialization` — produces the per-Procedure / per-Entity
 //! state blob per `operative-mvp-rust/design.md` Decision 10, then removes
 //! the UnboundedOperative instance from the local registry (the controller is migrating
 //! it elsewhere).
 
 use super::CommandAction;
-use crate::command::segment_state::serialize_operative_state;
+use crate::command::entity_state::serialize_operative_state;
 use crate::pb::MigrationSerialization;
 use crate::runner::RunnerNode;
 

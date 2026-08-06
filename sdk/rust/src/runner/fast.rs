@@ -1,8 +1,8 @@
-//! Per-Segment mailboxes backed by a DashMap registry and a Chase-Lev
+//! Per-Entity mailboxes backed by a DashMap registry and a Chase-Lev
 //! work-stealing pool. The coordinator thread still exists for control-plane
 //! traffic (`HandleCommandAction`, `ReturnOperatives`, `Reconnect`) but
 //! data-plane traffic bypasses it entirely — stream readers push directly
-//! into the targeted UnboundedOperative instance's segment mailboxes.
+//! into the targeted UnboundedOperative instance's entity mailboxes.
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -85,20 +85,20 @@ impl RunnerNode {
     }
 
     /// Spawn a bounded unit that may be **resuming** after a crash: a durable
-    /// structured driver holds its first Operation until `resume_segment_count`
-    /// per-Segment restores have landed (the Controller ships one
-    /// `RestoreInitState` per persisted Segment). `0` ⇒ a fresh spawn / a
-    /// run-sugar or opted-out class ⇒ run immediately. `op_journal` is the
-    /// instance's committed op state, which rides the bind because a durable
-    /// class with no per-Segment state ships no restore at all. See
+    /// structured driver holds its first Procedure until `resume_entity_count`
+    /// per-Entity restores have landed (the Controller ships one
+    /// `RestoreInitState` per persisted Entity). `0` ⇒ a fresh spawn / a
+    /// run-sugar or opted-out class ⇒ run immediately. `proc_journal` is the
+    /// instance's committed proc state, which rides the bind because a durable
+    /// class with no per-Entity state ships no restore at all. See
     /// [`crate::bounded::instance`].
     pub fn start_bounded_resumable(
         &self,
         factory_id: String,
         instance_id: String,
         args: String,
-        resume_segment_count: u32,
-        op_journal: Option<crate::bounded::instance::JournalResume>,
+        resume_entity_count: u32,
+        proc_journal: Option<crate::bounded::instance::JournalResume>,
     ) -> bool {
         if self.operative_registry.contains(&instance_id) {
             return true;
@@ -108,22 +108,22 @@ impl RunnerNode {
             None => return false,
         };
 
-        // Build the Segments (structured; empty for run-sugar) + the instance
+        // Build the Entities (structured; empty for run-sugar) + the instance
         // now — synchronously, before the AddOperative frame is ACKed — and
         // register it so the Controller's RestoreInitState frames reach live
-        // slots and the driver holds its first Operation until the restores land.
+        // slots and the driver holds its first Procedure until the restores land.
         let id: Arc<str> = Arc::from(instance_id.as_str());
-        let stage_segments = spec
+        let stage_entities = spec
             .topology
             .as_ref()
-            .map(|_| crate::bounded::driver::build_all_stage_segments(&spec, &id, &self.pool))
+            .map(|_| crate::bounded::driver::build_all_stage_entities(&spec, &id, &self.pool))
             .unwrap_or_default();
         let (instance, inbox_rx) = crate::bounded::instance::BoundedInstance::new(
             Arc::clone(&id),
             Arc::from(factory_id.as_str()),
-            stage_segments,
-            resume_segment_count as usize,
-            op_journal,
+            stage_entities,
+            resume_entity_count as usize,
+            proc_journal,
         );
         self.operative_registry
             .register_bounded(Arc::clone(&instance));
@@ -180,16 +180,16 @@ impl RunnerNode {
         self.operative_registry.get_bounded(instance_id)
     }
 
-    /// Locate a live bounded Segment slot by wire identity, for the inbound
+    /// Locate a live bounded Entity slot by wire identity, for the inbound
     /// `RestoreInitState` handler.
-    pub(crate) fn find_bounded_segment(
+    pub(crate) fn find_bounded_entity(
         &self,
-        segment_id: &[u8],
+        entity_id: &[u8],
     ) -> Option<(
         Arc<crate::bounded::instance::BoundedInstance>,
-        Arc<crate::segment::SegmentSlot>,
+        Arc<crate::entity::EntitySlot>,
     )> {
-        self.operative_registry.find_bounded_segment(segment_id)
+        self.operative_registry.find_bounded_entity(entity_id)
     }
 
     pub fn operative_dispatch_handle(&self) -> OperativeDispatchHandle {
@@ -256,7 +256,7 @@ pub fn start(
                     .map(|(k, instance)| {
                         (
                             k,
-                            crate::command::segment_state::serialize_operative_state(&instance),
+                            crate::command::entity_state::serialize_operative_state(&instance),
                         )
                     })
                     .collect()
@@ -265,7 +265,7 @@ pub fn start(
 
         let ctx_arc = Arc::new(Mutex::new(ctx));
         // Expose the coordinator channel process-globally so the
-        // segment-state sink can drive a reconnect on a broken-pipe
+        // entity-state sink can drive a reconnect on a broken-pipe
         // flood without a handle threaded through every layer.
         super::install_reconnect_trigger(otx.clone());
         let otx_arc = Arc::new(Mutex::new(otx));
@@ -442,19 +442,19 @@ fn send_data_heartbeat(io_streams: &RwLock<HashMap<u32, FlezhaStream>>) {
     let mut metadata = HashMap::new();
     metadata.insert(
         "dispatches".to_string(),
-        crate::segment::dispatches_completed().to_string(),
+        crate::entity::dispatches_completed().to_string(),
     );
     metadata.insert(
         "blocked_parks".to_string(),
-        crate::segment::blocked_park_episodes().to_string(),
+        crate::entity::blocked_park_episodes().to_string(),
     );
     metadata.insert(
         "credit_parked".to_string(),
-        crate::segment::credit::credit_parked().to_string(),
+        crate::entity::credit::credit_parked().to_string(),
     );
     metadata.insert(
         "restore_discarded_inputs".to_string(),
-        crate::segment::restore_discarded_inputs().to_string(),
+        crate::entity::restore_discarded_inputs().to_string(),
     );
     let frame = payloader::build_from_binary(liveness::DATA_HEARTBEAT_PAYLOAD_ID, &[], metadata);
     let streams = io_streams.read().unwrap();
@@ -480,10 +480,10 @@ fn return_operatives(runner: &RunnerNode, ctx_arc: Arc<Mutex<Sender<ClientRespon
 /// `shared_io_streams`, `operative_registry`, and the `runner_id` —
 /// that is what caused the May 25 silent freeze (runner sat empty
 /// while the controller still believed the binding was live). The
-/// `executor-controller-connection-healing` capability now requires:
+/// `runner-controller-connection-healing` capability now requires:
 ///
 ///   * `operative_registry` and `shared_io_streams` are retained across
-///     reconnect (in-flight per-Segment mailbox work keeps draining); the
+///     reconnect (in-flight per-Entity mailbox work keeps draining); the
 ///     existing `runner_id` is kept until the controller assigns a fresh
 ///     session token via `AssignRunnerId` on the re-opened stream.
 ///   * A `tracing::warn!` line is emitted with the upstream-derived
@@ -516,15 +516,15 @@ fn handle_reconnect(
     runner.set_quic_client(new_quic);
 
     // Resume processing dispatch traffic against the preserved
-    // registry — without `set_status(Running)` the per-Segment
+    // registry — without `set_status(Running)` the per-Entity
     // mailboxes drain into a paused state and the controller sees
     // the SDK as a black hole even though its registry is intact.
     runner.set_status(RunnerStatus::Running);
 }
 
 /// Stream-reader handle for the UnboundedOperative model. Cheap to clone; carries a
-/// reference to the live UnboundedOperative-instance registry. Per-Segment drain
-/// scheduling uses the pool held by `SegmentSlot`.
+/// reference to the live UnboundedOperative-instance registry. Per-Entity drain
+/// scheduling uses the pool held by `EntitySlot`.
 #[derive(Clone)]
 pub struct OperativeDispatchHandle {
     pub registry: Arc<OperativeRegistry>,
@@ -535,8 +535,8 @@ impl OperativeDispatchHandle {
     /// `metadata["channel"]` (or the UnboundedOperative's first declared input
     /// channel as the documented default), wraps the payload bytes via
     /// the channel's `wrap_input`, and pushes the typed
-    /// `Arc<dyn Any + Send + Sync>` onto every consumer Operation's
-    /// segment mailbox.
+    /// `Arc<dyn Any + Send + Sync>` onto every consumer Procedure's
+    /// entity mailbox.
     pub fn dispatch(
         &self,
         instance_id: &str,
@@ -574,9 +574,9 @@ impl OperativeDispatchHandle {
         };
 
         // Late-input correction: the end of a replayed slice is a broadcast, not
-        // an input — an input routes to one Segment by key, so a marker riding
-        // one would strand the slice every *other* Segment buffered. It carries
-        // no payload and never reaches an Operation.
+        // an input — an input routes to one Entity by key, so a marker riding
+        // one would strand the slice every *other* Entity buffered. It carries
+        // no payload and never reaches a Procedure.
         if metadata.contains_key("flz.replay_end") {
             crate::operative::dispatcher::end_replay_slice(&instance);
             return;
@@ -680,14 +680,14 @@ mod remove_factory_tests {
     //! and stays registered; once the last instance stops, the removal
     //! unregisters the class.
     use super::*;
-    use crate::operation::state_handle::StateHandle;
-    use crate::operation::{NoChange, Operation, OperationCtx, OperationError, WallClock};
-    use crate::segment::restore::RestoreInitPayload;
+    use crate::entity::restore::RestoreInitPayload;
+    use crate::procedure::state_handle::StateHandle;
+    use crate::procedure::{NoChange, Procedure, ProcedureCtx, ProcedureError, WallClock};
     use crate::{ChannelBuilder, UnboundedOperative};
 
     #[derive(Default)]
-    struct SeamOp;
-    impl Operation for SeamOp {
+    struct SeamProc;
+    impl Procedure for SeamProc {
         type Input = String;
         type Output = String;
         type State = ();
@@ -702,8 +702,8 @@ mod remove_factory_tests {
             &mut self,
             _: String,
             _: StateHandle<'_, Self>,
-            _: &mut OperationCtx<'_>,
-        ) -> Result<(), OperationError> {
+            _: &mut ProcedureCtx<'_>,
+        ) -> Result<(), ProcedureError> {
             Ok(())
         }
     }
@@ -714,7 +714,7 @@ mod remove_factory_tests {
             "remove_factory_seam_probe"
         }
         fn channels(c: &ChannelBuilder) {
-            c.input::<String>("in").into::<SeamOp>();
+            c.input::<String>("in").into::<SeamProc>();
         }
     }
 

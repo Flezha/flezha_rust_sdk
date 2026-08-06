@@ -1,10 +1,10 @@
 //! Section 2 unit tests for hybrid channels (`also_output_with`).
 //!
 //! Each test uses the live dispatcher: an entry channel feeds bytes
-//! into a producer Operation, which calls `ctx.emit(typed_value)` on a
-//! channel wired to one or more inter-operation consumers and a plugin
+//! into a producer Procedure, which calls `ctx.emit(typed_value)` on a
+//! channel wired to one or more inter-procedure consumers and a plugin
 //! sink. The consumer-side delivery is observed via static state in
-//! the consumer Operation; the plugin-side delivery is observed by reading
+//! the consumer Procedure; the plugin-side delivery is observed by reading
 //! the receiving end of the unix socket pair and parsing wire frames.
 
 use std::collections::HashMap;
@@ -70,12 +70,12 @@ fn single_consumer_observed() -> &'static Mutex<Vec<u32>> {
     CELL.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-test_operation!(SingleProducer, "hybrid_single_producer", String => u32, (), |input, _state, ctx| {
+test_procedure!(SingleProducer, "hybrid_single_producer", String => u32, (), |input, _state, ctx| {
     let n: u32 = input.parse().unwrap_or(0);
     ctx.emit::<u32>(n)
 });
 
-test_operation!(SingleConsumer, "hybrid_single_consumer", u32 => (), (), |input, _state, _ctx| {
+test_procedure!(SingleConsumer, "hybrid_single_consumer", u32 => (), (), |input, _state, _ctx| {
     single_consumer_observed().lock().unwrap().push(input);
     Ok(())
 });
@@ -136,20 +136,20 @@ fn three_consumer_observed_c() -> &'static Mutex<Vec<u32>> {
     C.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-test_operation!(ThreeProducer, "hybrid_three_producer", String => u32, (), |input, _state, ctx| {
+test_procedure!(ThreeProducer, "hybrid_three_producer", String => u32, (), |input, _state, ctx| {
     let n: u32 = input.parse().unwrap_or(0);
     ctx.emit::<u32>(n)
 });
 
-test_operation!(ThreeConsumerA, "hybrid_three_a", u32 => (), (), |input, _state, _ctx| {
+test_procedure!(ThreeConsumerA, "hybrid_three_a", u32 => (), (), |input, _state, _ctx| {
     three_consumer_observed_a().lock().unwrap().push(input);
     Ok(())
 });
-test_operation!(ThreeConsumerB, "hybrid_three_b", u32 => (), (), |input, _state, _ctx| {
+test_procedure!(ThreeConsumerB, "hybrid_three_b", u32 => (), (), |input, _state, _ctx| {
     three_consumer_observed_b().lock().unwrap().push(input);
     Ok(())
 });
-test_operation!(ThreeConsumerC, "hybrid_three_c", u32 => (), (), |input, _state, _ctx| {
+test_procedure!(ThreeConsumerC, "hybrid_three_c", u32 => (), (), |input, _state, _ctx| {
     three_consumer_observed_c().lock().unwrap().push(input);
     Ok(())
 });
@@ -219,14 +219,14 @@ fn panic_emit_results() -> &'static Mutex<Vec<Result<(), String>>> {
     C.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-test_operation!(PanicProducer, "hybrid_panic_producer", String => u32, (), |input, _state, ctx| {
+test_procedure!(PanicProducer, "hybrid_panic_producer", String => u32, (), |input, _state, ctx| {
     let n: u32 = input.parse().unwrap_or(0);
     let outcome = ctx.emit::<u32>(n).map_err(|e| format!("{e}"));
     panic_emit_results().lock().unwrap().push(outcome);
     Ok(())
 });
 
-test_operation!(PanicConsumer, "hybrid_panic_consumer", u32 => (), (), |input, _state, _ctx| {
+test_procedure!(PanicConsumer, "hybrid_panic_consumer", u32 => (), (), |input, _state, _ctx| {
     panic_consumer_observed().lock().unwrap().push(input);
     Ok(())
 });
@@ -301,7 +301,7 @@ fn hybrid_serializer_panic_is_caught() {
 
 // ---------- 2.8: duplicate also_output_with rejected at registration ----------
 
-test_operation!(DupProducer, "hybrid_dup_producer", String => u32, (), |_input, _state, _ctx| {
+test_procedure!(DupProducer, "hybrid_dup_producer", String => u32, (), |_input, _state, _ctx| {
     Ok(())
 });
 
@@ -340,7 +340,7 @@ fn meta_consumer_observed() -> &'static Mutex<Vec<u32>> {
     C.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-test_operation!(MetaProducer, "hybrid_meta_producer", String => u32, (), |input, _state, ctx| {
+test_procedure!(MetaProducer, "hybrid_meta_producer", String => u32, (), |input, _state, ctx| {
     let n: u32 = input.parse().unwrap_or(0);
     let mut meta = HashMap::new();
     meta.insert("trace_id".to_string(), "abc123".to_string());
@@ -350,7 +350,7 @@ test_operation!(MetaProducer, "hybrid_meta_producer", String => u32, (), |input,
     ctx.emit_with_meta::<u32>(n, meta)
 });
 
-test_operation!(MetaConsumer, "hybrid_meta_consumer", u32 => (), (), |input, _state, _ctx| {
+test_procedure!(MetaConsumer, "hybrid_meta_consumer", u32 => (), (), |input, _state, _ctx| {
     meta_consumer_observed().lock().unwrap().push(input);
     Ok(())
 });
@@ -402,7 +402,7 @@ fn emit_with_meta_on_hybrid_channel_forwards_meta_to_plugin_only() {
     );
 }
 
-// ---------- 3.4: emit_with_meta on a pure inter-operation channel ----------
+// ---------- 3.4: emit_with_meta on a pure inter-procedure channel ----------
 
 fn pure_consumer_observed() -> &'static Mutex<Vec<u32>> {
     static C: OnceLock<Mutex<Vec<u32>>> = OnceLock::new();
@@ -414,7 +414,7 @@ fn pure_emit_results() -> &'static Mutex<Vec<Result<(), String>>> {
     C.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-test_operation!(PureProducer, "hybrid_pure_producer", String => u32, (), |input, _state, ctx| {
+test_procedure!(PureProducer, "hybrid_pure_producer", String => u32, (), |input, _state, ctx| {
     let n: u32 = input.parse().unwrap_or(0);
     let mut meta = HashMap::new();
     meta.insert("trace_id".to_string(), "abc123".to_string());
@@ -425,7 +425,7 @@ test_operation!(PureProducer, "hybrid_pure_producer", String => u32, (), |input,
     Ok(())
 });
 
-test_operation!(PureConsumer, "hybrid_pure_consumer", u32 => (), (), |input, _state, _ctx| {
+test_procedure!(PureConsumer, "hybrid_pure_consumer", u32 => (), (), |input, _state, _ctx| {
     pure_consumer_observed().lock().unwrap().push(input);
     Ok(())
 });
@@ -444,7 +444,7 @@ impl UnboundedOperative for PureOperative {
 }
 
 #[test]
-fn emit_with_meta_on_pure_inter_operation_channel_is_rejected() {
+fn emit_with_meta_on_pure_inter_procedure_channel_is_rejected() {
     pure_consumer_observed().lock().unwrap().clear();
     pure_emit_results().lock().unwrap().clear();
 
@@ -458,14 +458,14 @@ fn emit_with_meta_on_pure_inter_operation_channel_is_rejected() {
             || pure_emit_results().lock().unwrap().len() == 1,
             Duration::from_secs(5)
         ),
-        "producer Operation::run did not finish"
+        "producer Procedure::run did not finish"
     );
 
     let outcomes = pure_emit_results().lock().unwrap().clone();
     let msg = outcomes[0].as_ref().expect_err("emit_with_meta must error");
     assert!(
         msg.contains("metadata is only valid") && msg.contains("pure_out"),
-        "expected MetadataNotAllowedOnInterOperationChannel; got: {msg}"
+        "expected MetadataNotAllowedOnInterProcedureChannel; got: {msg}"
     );
 
     // No frame on the wire, no consumer delivery (producer returned the

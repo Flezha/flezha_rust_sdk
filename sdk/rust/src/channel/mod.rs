@@ -14,10 +14,10 @@ pub mod builder;
 pub use builder::{ChannelBuilder, EntryStream, Merge, MergeSource, Stream};
 
 pub type ChannelId = u32;
-pub type OperationId = u32;
+pub type ProcedureId = u32;
 
 /// A merge subscription's mapping from a source channel's payload into the
-/// consuming operation's `Input` sum type (`multi-input-operations`). Erased
+/// consuming procedure's `Input` sum type (`multi-input-procedures`). Erased
 /// from the `Fn(T) -> I` the author wrote; the caller guarantees the value is
 /// a `T` because the edge was declared against that channel's payload type.
 ///
@@ -26,13 +26,13 @@ pub type OperationId = u32;
 /// output serializers carry.
 pub type MergeMapFn = Arc<dyn Fn(&dyn Any) -> Arc<dyn Any + Send + Sync> + Send + Sync + 'static>;
 
-/// One consumer subscription on a channel. A plain `.into::<Op>()` carries no
+/// One consumer subscription on a channel. A plain `.into::<Proc>()` carries no
 /// mapping (the channel's payload IS the consumer's `Input`); a
 /// `merge::<I>().from(stream, map)` subscription carries the mapping that
 /// lifts this channel's payload into the merged `Input`.
 #[derive(Clone)]
 pub struct ConsumerEdge {
-    pub operation: OperationId,
+    pub procedure: ProcedureId,
     pub map: Option<MergeMapFn>,
 }
 
@@ -75,14 +75,14 @@ impl<T> Copy for Channel<T> {}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChannelKind {
     Entry,
-    InterOperation,
+    InterProcedure,
     PluginBound,
 }
 
 /// Per-channel backpressure policy applied at the producer-side push
 /// site when the consumer's bounded mailbox is full. Declared via
 /// `.on_full(...)` on the channel builder; defaults to `DropNewest` for
-/// entry channels and `Block` for inter-operation channels. Plugin-bound
+/// entry channels and `Block` for inter-procedure channels. Plugin-bound
 /// channels have no SDK-side mailbox and ignore this value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OverflowPolicy {
@@ -98,10 +98,10 @@ pub enum OverflowPolicy {
 }
 
 /// Per-channel retry policy applied by the consumer-side dispatcher when an
-/// operation invocation fails (returned error or panic). After
+/// procedure invocation fails (returned error or panic). After
 /// `max_attempts` total attempts — or immediately on an error the author
-/// classified `OperationError::NonRetryable` — the payload is parked to the
-/// controller's dead-letter queue and the segment advances. Declared via
+/// classified `ProcedureError::NonRetryable` — the payload is parked to the
+/// controller's dead-letter queue and the entity advances. Declared via
 /// `.retry_max(...)` / `.retry_backoff_ms(...)` on the channel builder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RetryPolicy {
@@ -125,7 +125,7 @@ impl Default for RetryPolicy {
 }
 
 /// Hybrid plugin sink: the runtime form of `also_output_with(...)`.
-/// Lives alongside an `InterOperation` channel's consumer fan-out so a
+/// Lives alongside an `InterProcedure` channel's consumer fan-out so a
 /// single emit reaches both consumer mailboxes (typed) and the named
 /// plugin (serialized to bytes).
 pub struct PluginSink {
@@ -136,12 +136,12 @@ pub struct PluginSink {
 pub struct ChannelDescriptor {
     pub name: Arc<str>,
     pub kind: ChannelKind,
-    pub producer: Option<OperationId>,
+    pub producer: Option<ProcedureId>,
     /// Consumer subscriptions, each carrying its optional merge mapping.
     pub consumers: Vec<ConsumerEdge>,
     pub plugin_name: Option<Arc<str>>,
     /// For entry channels: convert wire bytes into the typed payload
-    /// (`Arc<S::Input>`). For inter-operation channels: `None` — payloads
+    /// (`Arc<S::Input>`). For inter-procedure channels: `None` — payloads
     /// arrive already typed via `ctx.emit`. For plugin-bound channels:
     /// `None` — handled by the producer-side serializer.
     pub wrap_input: Option<EntryWrapFn>,
@@ -153,7 +153,7 @@ pub struct ChannelDescriptor {
     /// wire bytes. For other kinds: `None`. Hybrid channels populate
     /// `plugin_sink` instead.
     pub plugin_serializer: Option<PluginSerializeFn>,
-    /// For hybrid `InterOperation` channels declared with
+    /// For hybrid `InterProcedure` channels declared with
     /// `also_output_with(...)` / `also_output(...)`: the named plugin sink. Mutually
     /// exclusive with `plugin_serializer` / `plugin_name`.
     pub plugin_sink: Option<PluginSink>,
@@ -169,25 +169,25 @@ pub struct ChannelDescriptor {
     /// Retry-then-park policy applied by this channel's consumer dispatchers.
     /// Plugin-bound channels have no SDK-side consumer and ignore this value.
     pub retry: RetryPolicy,
-    /// Symmetric byte codec for inter-operation payloads, declared via
-    /// `.codec()` / `.codec_with(...)`. Required on every inter-op channel of
+    /// Symmetric byte codec for inter-procedure payloads, declared via
+    /// `.codec()` / `.codec_with(...)`. Required on every inter-proc channel of
     /// a durable structured bounded class so the stage handoff batch can be
-    /// journaled at the op-commit barrier and re-seeded on crash-resume
-    /// (`bounded-op-journal`). `None` elsewhere.
+    /// journaled at the proc-commit barrier and re-seeded on crash-resume
+    /// (`bounded-proc-journal`). `None` elsewhere.
     pub codec: Option<ChannelCodec>,
 }
 
 impl ChannelDescriptor {
-    /// The consuming operations, mappings stripped — what the graph-shape
+    /// The consuming procedures, mappings stripped — what the graph-shape
     /// walks and the bounded DAG builder need.
-    pub fn consumer_ids(&self) -> impl Iterator<Item = OperationId> + '_ {
-        self.consumers.iter().map(|e| e.operation)
+    pub fn consumer_ids(&self) -> impl Iterator<Item = ProcedureId> + '_ {
+        self.consumers.iter().map(|e| e.procedure)
     }
 }
 
-/// Typed→bytes / bytes→typed codec pair for an inter-operation channel's
+/// Typed→bytes / bytes→typed codec pair for an inter-procedure channel's
 /// payload. `encode` receives the type-erased collected value; `decode` is
-/// the inter-op sibling of the entry channel's `wrap_input`.
+/// the inter-proc sibling of the entry channel's `wrap_input`.
 #[derive(Clone)]
 pub struct ChannelCodec {
     pub encode: CodecEncodeFn,

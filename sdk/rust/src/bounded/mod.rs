@@ -2,17 +2,17 @@
 //! possibly-interactive process.
 //!
 //! A bounded operative is spawned with `args`, runs to an exit trigger, and is
-//! then torn down. It reuses the unbounded **building blocks** (Operations,
-//! Channels, Segments, per-Segment state, `ctx.emit`) but drives them under a
+//! then torn down. It reuses the unbounded **building blocks** (Procedures,
+//! Channels, Entities, per-Entity state, `ctx.emit`) but drives them under a
 //! bounded **lifecycle**:
 //!
 //! - **`run` sugar** — the trivial case is a bare
-//!   [`run`](BoundedOperative::run) body: a single implicit Operation/Segment.
-//! - **Structured** — override [`operations`](BoundedOperative::operations) to
-//!   author Operations/Channels/Segments on the same `ChannelBuilder` a
+//!   [`run`](BoundedOperative::run) body: a single implicit Procedure/Entity.
+//! - **Structured** — override [`procedures`](BoundedOperative::procedures) to
+//!   author Procedures/Channels/Entities on the same `ChannelBuilder` a
 //!   unbounded operative uses; the bounded driver runs them **sequentially in
-//!   a linear chain** with a per-operation **count-based barrier** (segments
-//!   within one operation still run in parallel) — see [`driver`].
+//!   a linear chain** with a per-procedure **count-based barrier** (entities
+//!   within one procedure still run in parallel) — see [`driver`].
 //! - **Exit triggers** — the operative terminates on the first of: the chain
 //!   running to quiescence, [`BoundedCtx::complete`], a loop's terminal
 //!   predicate, a declared [`max_duration`](BoundedOperative::max_duration), or
@@ -82,39 +82,39 @@ pub enum LoopMode {
 }
 
 /// One bounded operative class. The bare [`run`](Self::run) form is the
-/// trivial single-Operation, single-Segment case; override
-/// [`operations`](Self::operations) to grow into an explicit DAG of
-/// Operations/Channels/Segments without rewriting unrelated code. Capabilities
+/// trivial single-Procedure, single-Entity case; override
+/// [`procedures`](Self::procedures) to grow into an explicit DAG of
+/// Procedures/Channels/Entities without rewriting unrelated code. Capabilities
 /// attach to the kind, not here — choosing the bounded kind is sufficient.
 pub trait BoundedOperative: Send + Sync + 'static {
     /// Stable, controller-facing factory identifier.
     fn factory_id() -> &'static str;
 
-    /// Run-sugar body: the single-Operation, single-Segment case. Invoked once
+    /// Run-sugar body: the single-Procedure, single-Entity case. Invoked once
     /// per started instance with `args` from `init_values`. Emit output via
     /// `ctx`, optionally call [`BoundedCtx::complete`] with a result, and
     /// return `Ok(())`; returning `Err` is a terminal failure — the retry
     /// ladder ([`retry_attempts`](Self::retry_attempts)) scopes to a structured
-    /// operation's segments, and a `run` body has none.
+    /// procedure's entities, and a `run` body has none.
     ///
     /// The default errors — a class must implement either `run` or
-    /// `operations`. A structured operative (non-empty `operations`) never has
+    /// `procedures`. A structured operative (non-empty `procedures`) never has
     /// `run` invoked.
     fn run(_ctx: &mut BoundedCtx, _args: &str) -> Result<(), BoundedError> {
         Err(BoundedError::from(
-            "BoundedOperative: neither run() nor operations() was implemented",
+            "BoundedOperative: neither run() nor procedures() was implemented",
         ))
     }
 
-    /// Structured form: declare a static **DAG** of Operations/Channels/
-    /// Segments on the same graph builder an unbounded operative uses. The
+    /// Structured form: declare a static **DAG** of Procedures/Channels/
+    /// Entities on the same graph builder an unbounded operative uses. The
     /// default is empty, selecting the [`run`](Self::run)-sugar path. The
-    /// bounded driver runs the declaration in topological order: an operation
+    /// bounded driver runs the declaration in topological order: a procedure
     /// becomes runnable only after **every** producer feeding it has committed
     /// — fan-out branches interleave independently, and a fan-in node is
     /// dispatched once, with the accumulated batch of all its producers.
     /// Cycles are rejected at registration.
-    fn operations(_c: &ChannelBuilder) {}
+    fn procedures(_c: &ChannelBuilder) {}
 
     /// Optional wall-clock backstop. `None` (the default) means no duration
     /// bound; when `Some`, the SDK cooperatively cancels in-flight work once
@@ -138,7 +138,7 @@ pub trait BoundedOperative: Send + Sync + 'static {
     /// iteration durably — journal + boundary snapshot + outbox flush — so a
     /// crash resumes at the iteration after the last committed one, and
     /// [`RollbackMode::KeepProgress`] keeps every committed iteration. Declaring
-    /// a loop on a `run`-sugar class (no `operations`) is rejected at
+    /// a loop on a `run`-sugar class (no `procedures`) is rejected at
     /// registration: there is no chain to iterate.
     fn loop_mode() -> LoopMode {
         LoopMode::Once
@@ -154,18 +154,18 @@ pub trait BoundedOperative: Send + Sync + 'static {
         None
     }
 
-    /// Total attempts a **structured** operation's segment gets before its
-    /// error fails the operation (`bounded-segment-retry`): the first run plus
+    /// Total attempts a **structured** procedure's entity gets before its
+    /// error fails the procedure (`bounded-entity-retry`): the first run plus
     /// the retries. Default 3; `0` or `1` restores fail-fast. Only the failed
-    /// segment re-runs — siblings that completed stay buffered at the barrier —
-    /// and the retry always happens **before** the operation commits, so a
-    /// committed operation is never retried.
+    /// entity re-runs — siblings that completed stay buffered at the barrier —
+    /// and the retry always happens **before** the procedure commits, so a
+    /// committed procedure is never retried.
     ///
-    /// A retried segment re-runs its whole batch for that operation, under the
+    /// A retried entity re-runs its whole batch for that procedure, under the
     /// same at-least-once idempotency contract crash-resume imposes: a failed
-    /// attempt's state changes are already applied, so `Operation::run` must
+    /// attempt's state changes are already applied, so `Procedure::run` must
     /// tolerate re-running over them. Classify a permanent failure with
-    /// [`OperationError::non_retryable`](crate::operation::OperationError::non_retryable)
+    /// [`ProcedureError::non_retryable`](crate::procedure::ProcedureError::non_retryable)
     /// to skip the ladder.
     fn retry_attempts() -> u32 {
         3
@@ -181,7 +181,7 @@ pub trait BoundedOperative: Send + Sync + 'static {
 
     /// Saga rollback scope, applied when the operative terminates abnormally
     /// after partial progress. Default [`RollbackMode::AllOrNothing`] undoes
-    /// every completed operation in reverse, back to the start;
+    /// every completed procedure in reverse, back to the start;
     /// [`RollbackMode::KeepProgress`] keeps each finished loop iteration and
     /// undoes only the in-flight one. The mode is irrelevant for a single-pass
     /// chain (where both behave all-or-nothing) and for an operative with no
@@ -192,9 +192,9 @@ pub trait BoundedOperative: Send + Sync + 'static {
 
     /// Class-level persistence toggle (durable by default, mirroring
     /// [`UnboundedOperative::PERSISTENCE_ENABLED`](crate::operative::UnboundedOperative::PERSISTENCE_ENABLED)).
-    /// When `true`, a structured bounded operative's per-Segment Changes are
+    /// When `true`, a structured bounded operative's per-Entity Changes are
     /// written to the WAL as they apply, so a crash resumes from persisted
-    /// state. When `false`, the per-Segment flush drains and discards Changes
+    /// state. When `false`, the per-Entity flush drains and discards Changes
     /// with no serialization or wire I/O — the operative is in-memory only
     /// (a crash re-runs from the top). The controller resolves this
     /// durable-by-default with a per-class operator opt-out.
@@ -205,11 +205,11 @@ pub trait BoundedOperative: Send + Sync + 'static {
 /// [`BoundedOperative::rollback_mode`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RollbackMode {
-    /// Any failure undoes **all** completed operations in reverse, back to the
+    /// Any failure undoes **all** completed procedures in reverse, back to the
     /// start (the classic saga). The default.
     AllOrNothing,
     /// Each finished loop iteration commits (is kept); a failure undoes only the
-    /// in-flight iteration's completed operations. Within a single iteration —
+    /// in-flight iteration's completed procedures. Within a single iteration —
     /// or a no-loop pass — rollback is all-or-nothing.
     KeepProgress,
 }
@@ -218,10 +218,10 @@ pub enum RollbackMode {
 /// to this `fn` pointer because it takes no `self`.
 pub type BoundedRunFn = fn(&mut BoundedCtx, &str) -> Result<(), BoundedError>;
 
-/// A bounded failure. Retryable by default: inside a structured operation it
-/// first passes through the class's per-segment retry ladder
-/// (`bounded-segment-retry`), and only a `non_retryable` error — or one that
-/// exhausted the ladder — fails the operation.
+/// A bounded failure. Retryable by default: inside a structured procedure it
+/// first passes through the class's per-entity retry ladder
+/// (`bounded-entity-retry`), and only a `non_retryable` error — or one that
+/// exhausted the ladder — fails the procedure.
 #[derive(Debug, Clone)]
 pub struct BoundedError {
     pub message: String,
@@ -231,9 +231,9 @@ pub struct BoundedError {
 
 impl BoundedError {
     /// Classify a failure as permanent (validation error, 4xx-class response):
-    /// the segment is not retried and the operation fails immediately. Mirrors
-    /// [`OperationError::non_retryable`](crate::operation::OperationError::non_retryable),
-    /// which an operation body inside a segment returns to the same effect.
+    /// the entity is not retried and the procedure fails immediately. Mirrors
+    /// [`ProcedureError::non_retryable`](crate::procedure::ProcedureError::non_retryable),
+    /// which a procedure body inside an entity returns to the same effect.
     pub fn non_retryable(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
@@ -242,7 +242,7 @@ impl BoundedError {
     }
 
     /// Build with an explicit classification (dispatcher seam: carries an
-    /// operation's own `NonRetryable` marker through to the bounded ladder).
+    /// procedure's own `NonRetryable` marker through to the bounded ladder).
     pub(crate) fn new(message: impl Into<String>, non_retryable: bool) -> Self {
         Self {
             message: message.into(),
@@ -269,18 +269,18 @@ impl From<&str> for BoundedError {
     }
 }
 
-/// Collecting sink driven by [`crate::segment::OperationDispatcher::run_collecting`]:
-/// inter-operation output is **collected** for handoff to the next stage at the
-/// barrier; plugin-bound output is **staged** (serialized) for the operation's
-/// transactional outbox. The bounded driver implements this per running segment.
+/// Collecting sink driven by [`crate::entity::ProcedureDispatcher::run_collecting`]:
+/// inter-procedure output is **collected** for handoff to the next stage at the
+/// barrier; plugin-bound output is **staged** (serialized) for the procedure's
+/// transactional outbox. The bounded driver implements this per running entity.
 pub trait BoundedCollectSink {
-    /// Collect an inter-operation output value for the next stage's input batch.
+    /// Collect an inter-procedure output value for the next stage's input batch.
     fn collect(&mut self, value: Arc<dyn Any + Send + Sync>);
 
     /// Take an already-serialized plugin-bound output produced on `channel`.
     /// For a durable structured operative the bytes are **staged** until the
-    /// operation's barrier and travel to the controller inside `OpCommit`, so
-    /// nothing reaches a plugin before the op's journal entry is durable
+    /// procedure's barrier and travel to the controller inside `ProcCommit`, so
+    /// nothing reaches a plugin before the proc's journal entry is durable
     /// (`bounded-transactional-outbox`); an opted-out class forwards straight
     /// to the wire (at-least-once, as before).
     fn emit_plugin_bytes(&mut self, channel: &str, bytes: Vec<u8>);
@@ -319,10 +319,10 @@ impl BoundedCtx {
     /// at-least-once, like operative output. Routed through the coordinator so
     /// the stream write stays single-threaded.
     ///
-    /// This is the `run`-sugar path only: with no operations there is no
+    /// This is the `run`-sugar path only: with no procedures there is no
     /// barrier to stage against and no journal entry to gate a flush on, so the
-    /// emit goes straight to the wire. A structured operation's `ctx.emit`
-    /// instead stages into the operation's transactional outbox
+    /// emit goes straight to the wire. A structured procedure's `ctx.emit`
+    /// instead stages into the procedure's transactional outbox
     /// (`bounded-transactional-outbox`).
     pub fn emit(&mut self, bytes: impl Into<Vec<u8>>) -> Result<(), BoundedError> {
         crate::runner::emit_bounded_output(self.instance_id.to_string(), bytes.into());
@@ -397,14 +397,14 @@ mod tests {
 
     use super::*;
     use crate::command::CommandAction;
-    use crate::operation::change::{Change, NoChange};
-    use crate::operation::clock::WallClock;
-    use crate::operation::{Operation, OperationCtx, OperationError, StateHandle};
+    use crate::entity::restore::RestoreInitPayload;
     use crate::operative::registry::{Operative, OperativeRegistry};
     use crate::pb::{AddOperative, BoundedStop};
+    use crate::procedure::change::{Change, NoChange};
+    use crate::procedure::clock::WallClock;
+    use crate::procedure::{Procedure, ProcedureCtx, ProcedureError, StateHandle};
     use crate::runner::fast::RunnerNode;
     use crate::runner::{install_reconnect_trigger, RunnerMessage};
-    use crate::segment::restore::RestoreInitPayload;
 
     static EMIT_RUNS: AtomicUsize = AtomicUsize::new(0);
     static FAIL_RUNS: AtomicUsize = AtomicUsize::new(0);
@@ -425,7 +425,7 @@ mod tests {
     }
 
     /// Run-sugar that always fails (counting its runs: a `run` body has no
-    /// segments to scope a retry to, so it must run exactly once).
+    /// entities to scope a retry to, so it must run exactly once).
     struct FailBounded;
     impl BoundedOperative for FailBounded {
         fn factory_id() -> &'static str {
@@ -524,11 +524,11 @@ mod tests {
         }
     }
 
-    // ---- structured operations + operatives ----------------------------------
+    // ---- structured procedures + operatives ----------------------------------
 
     #[derive(Default)]
-    struct EchoOp;
-    impl Operation for EchoOp {
+    struct EchoProc;
+    impl Procedure for EchoProc {
         type Input = String;
         type Output = String;
         type State = ();
@@ -543,22 +543,22 @@ mod tests {
             &mut self,
             input: String,
             _state: StateHandle<'_, Self>,
-            ctx: &mut OperationCtx<'_>,
-        ) -> Result<(), OperationError> {
+            ctx: &mut ProcedureCtx<'_>,
+        ) -> Result<(), ProcedureError> {
             ctx.emit(format!("echo:{input}"))?;
             Ok(())
         }
     }
 
-    /// Single-Operation structured form, equivalent to `EmitBounded`-style sugar.
+    /// Single-Procedure structured form, equivalent to `EmitBounded`-style sugar.
     struct EchoStructured;
     impl BoundedOperative for EchoStructured {
         fn factory_id() -> &'static str {
             "test-echo-structured"
         }
-        fn operations(c: &ChannelBuilder) {
+        fn procedures(c: &ChannelBuilder) {
             c.input::<String>("in")
-                .into::<EchoOp>()
+                .into::<EchoProc>()
                 .named("out")
                 .output("sink");
         }
@@ -566,7 +566,7 @@ mod tests {
 
     #[derive(Default)]
     struct Stage1;
-    impl Operation for Stage1 {
+    impl Procedure for Stage1 {
         type Input = String;
         type Output = String;
         type State = ();
@@ -581,8 +581,8 @@ mod tests {
             &mut self,
             input: String,
             _state: StateHandle<'_, Self>,
-            ctx: &mut OperationCtx<'_>,
-        ) -> Result<(), OperationError> {
+            ctx: &mut ProcedureCtx<'_>,
+        ) -> Result<(), ProcedureError> {
             ctx.emit(format!("{input}-1"))?;
             Ok(())
         }
@@ -590,7 +590,7 @@ mod tests {
 
     #[derive(Default)]
     struct Stage2;
-    impl Operation for Stage2 {
+    impl Procedure for Stage2 {
         type Input = String;
         type Output = String;
         type State = ();
@@ -605,14 +605,14 @@ mod tests {
             &mut self,
             input: String,
             _state: StateHandle<'_, Self>,
-            ctx: &mut OperationCtx<'_>,
-        ) -> Result<(), OperationError> {
+            ctx: &mut ProcedureCtx<'_>,
+        ) -> Result<(), ProcedureError> {
             ctx.emit(format!("{input}-2"))?;
             Ok(())
         }
     }
 
-    /// `bounded-branching`: Stage1 fans out to Stage2 and EchoOp on one channel,
+    /// `bounded-branching`: Stage1 fans out to Stage2 and EchoProc on one channel,
     /// each branch ending at its own plugin sink. The edge is (channel,
     /// consumer), so both branches read exactly what Stage1 released on `mid`.
     fn tree_chain(c: &ChannelBuilder) {
@@ -622,7 +622,7 @@ mod tests {
             .named("mid")
             .codec();
         mid.into::<Stage2>().named("out_b").output("sink");
-        mid.into::<EchoOp>().named("out_c").output("sink");
+        mid.into::<EchoProc>().named("out_c").output("sink");
     }
 
     struct TreeBounded;
@@ -630,7 +630,7 @@ mod tests {
         fn factory_id() -> &'static str {
             "test-tree-bounded"
         }
-        fn operations(c: &ChannelBuilder) {
+        fn procedures(c: &ChannelBuilder) {
             tree_chain(c);
         }
     }
@@ -641,7 +641,7 @@ mod tests {
         fn factory_id() -> &'static str {
             "test-chain-bounded"
         }
-        fn operations(c: &ChannelBuilder) {
+        fn procedures(c: &ChannelBuilder) {
             c.input::<String>("in")
                 .into::<Stage1>()
                 .named("mid")
@@ -669,7 +669,7 @@ mod tests {
         fn max_duration() -> Option<Duration> {
             Some(Duration::from_secs(30))
         }
-        fn operations(c: &ChannelBuilder) {
+        fn procedures(c: &ChannelBuilder) {
             c.input::<String>("in")
                 .into::<Stage1>()
                 .named("mid")
@@ -680,15 +680,15 @@ mod tests {
         }
     }
 
-    /// Compensable stage-0 op of the loop saga. Its undo logs the number of
+    /// Compensable stage-0 proc of the loop saga. Its undo logs the number of
     /// retained outputs it was handed, which is how the test tells the two
     /// rollback sources apart: the in-flight iteration carries its outputs in
     /// memory (`1`), while an iteration rebuilt from the journal carries none
     /// (`0`) — the documented at-least-once contract, where a durable undo
-    /// handle lives in Segment state.
+    /// handle lives in Entity state.
     #[derive(Default)]
     struct LoopReserve;
-    impl Operation for LoopReserve {
+    impl Procedure for LoopReserve {
         type Input = String;
         type Output = String;
         type State = ();
@@ -703,8 +703,8 @@ mod tests {
             &mut self,
             input: String,
             _state: StateHandle<'_, Self>,
-            ctx: &mut OperationCtx<'_>,
-        ) -> Result<(), OperationError> {
+            ctx: &mut ProcedureCtx<'_>,
+        ) -> Result<(), ProcedureError> {
             ctx.emit(format!("reserved:{input}"))?;
             Ok(())
         }
@@ -713,17 +713,17 @@ mod tests {
             &mut self,
             completed_output: Vec<Arc<String>>,
             _state: StateHandle<'_, Self>,
-            _ctx: &mut OperationCtx<'_>,
-        ) -> Result<(), OperationError> {
+            _ctx: &mut ProcedureCtx<'_>,
+        ) -> Result<(), ProcedureError> {
             comp_log(format!("undo-loop:{}", completed_output.len()));
             Ok(())
         }
     }
 
-    /// Terminal op of the loop saga: fails the iteration whose turn says "boom".
+    /// Terminal proc of the loop saga: fails the iteration whose turn says "boom".
     #[derive(Default)]
     struct LoopMaybeFail;
-    impl Operation for LoopMaybeFail {
+    impl Procedure for LoopMaybeFail {
         type Input = String;
         type Output = String;
         type State = ();
@@ -738,10 +738,10 @@ mod tests {
             &mut self,
             input: String,
             _state: StateHandle<'_, Self>,
-            ctx: &mut OperationCtx<'_>,
-        ) -> Result<(), OperationError> {
+            ctx: &mut ProcedureCtx<'_>,
+        ) -> Result<(), ProcedureError> {
             if input.contains("boom") {
-                return Err(OperationError::Custom("turn failed".into()));
+                return Err(ProcedureError::Custom("turn failed".into()));
             }
             ctx.emit(format!("done:{input}"))?;
             Ok(())
@@ -764,7 +764,7 @@ mod tests {
         fn max_duration() -> Option<Duration> {
             Some(Duration::from_secs(30))
         }
-        fn operations(c: &ChannelBuilder) {
+        fn procedures(c: &ChannelBuilder) {
             loop_saga_chain(c);
         }
     }
@@ -787,7 +787,7 @@ mod tests {
         fn max_duration() -> Option<Duration> {
             Some(Duration::from_secs(30))
         }
-        fn operations(c: &ChannelBuilder) {
+        fn procedures(c: &ChannelBuilder) {
             loop_saga_chain(c);
         }
     }
@@ -816,7 +816,7 @@ mod tests {
         }
     }
 
-    /// A durable handoff-chained loop whose terminal operation emits to a plugin
+    /// A durable handoff-chained loop whose terminal procedure emits to a plugin
     /// (no codec), so iteration N+1 could not be re-seeded after a crash.
     struct ChainedLoopNoCodec;
     impl BoundedOperative for ChainedLoopNoCodec {
@@ -826,7 +826,7 @@ mod tests {
         fn loop_mode() -> LoopMode {
             LoopMode::Chained
         }
-        fn operations(c: &ChannelBuilder) {
+        fn procedures(c: &ChannelBuilder) {
             c.input::<String>("in")
                 .into::<Stage1>()
                 .named("mid")
@@ -837,10 +837,10 @@ mod tests {
         }
     }
 
-    /// Splits the comma-separated args into individual items (one segment).
+    /// Splits the comma-separated args into individual items (one entity).
     #[derive(Default)]
-    struct SplitOp;
-    impl Operation for SplitOp {
+    struct SplitProc;
+    impl Procedure for SplitProc {
         type Input = String;
         type Output = String;
         type State = ();
@@ -855,8 +855,8 @@ mod tests {
             &mut self,
             input: String,
             _state: StateHandle<'_, Self>,
-            ctx: &mut OperationCtx<'_>,
-        ) -> Result<(), OperationError> {
+            ctx: &mut ProcedureCtx<'_>,
+        ) -> Result<(), ProcedureError> {
             for piece in input.split(',') {
                 ctx.emit(piece.to_string())?;
             }
@@ -872,11 +872,11 @@ mod tests {
     struct Inc;
     impl Change for Inc {}
 
-    /// Static-segmented operation: routes items to `even`/`odd` segments by
-    /// length parity, counts per-segment (independent state), emits `<n>:<item>`.
+    /// Static-entity procedure: routes items to `even`/`odd` entities by
+    /// length parity, counts per-entity (independent state), emits `<n>:<item>`.
     #[derive(Default)]
-    struct FanOp;
-    impl Operation for FanOp {
+    struct FanProc;
+    impl Procedure for FanProc {
         type Input = String;
         type Output = String;
         type State = CountState;
@@ -886,11 +886,11 @@ mod tests {
         fn name() -> &'static str {
             "bounded_fan_op"
         }
-        fn operation_keys() -> Vec<&'static str> {
+        fn entity_keys() -> Vec<&'static str> {
             vec!["even", "odd"]
         }
-        const SEGMENT_FOR_OVERRIDDEN: bool = true;
-        fn segment_for(input: &String) -> Vec<&'static str> {
+        const ENTITIES_FOR_OVERRIDDEN: bool = true;
+        fn entities_for(input: &String) -> Vec<&'static str> {
             if input.len().is_multiple_of(2) {
                 vec!["even"]
             } else {
@@ -907,8 +907,8 @@ mod tests {
             &mut self,
             input: String,
             mut state: StateHandle<'_, Self>,
-            ctx: &mut OperationCtx<'_>,
-        ) -> Result<(), OperationError> {
+            ctx: &mut ProcedureCtx<'_>,
+        ) -> Result<(), ProcedureError> {
             state.apply(Inc);
             let n = state.n;
             ctx.emit(format!("{n}:{input}"))?;
@@ -916,18 +916,18 @@ mod tests {
         }
     }
 
-    /// Split → fan-out across static segments → plugin.
+    /// Split → fan-out across static entities → plugin.
     struct FanBounded;
     impl BoundedOperative for FanBounded {
         fn factory_id() -> &'static str {
             "test-fan-bounded"
         }
-        fn operations(c: &ChannelBuilder) {
+        fn procedures(c: &ChannelBuilder) {
             c.input::<String>("in")
-                .into::<SplitOp>()
+                .into::<SplitProc>()
                 .named("mid")
                 .codec()
-                .into::<FanOp>()
+                .into::<FanProc>()
                 .named("out")
                 .output("sink");
         }
@@ -940,11 +940,11 @@ mod tests {
         fn factory_id() -> &'static str {
             "test-fan-optout-bounded"
         }
-        fn operations(c: &ChannelBuilder) {
+        fn procedures(c: &ChannelBuilder) {
             c.input::<String>("in")
-                .into::<SplitOp>()
+                .into::<SplitProc>()
                 .named("mid")
-                .into::<FanOp>()
+                .into::<FanProc>()
                 .named("out")
                 .output("sink");
         }
@@ -953,7 +953,7 @@ mod tests {
 
     #[derive(Default)]
     struct HybridStage1;
-    impl Operation for HybridStage1 {
+    impl Procedure for HybridStage1 {
         type Input = String;
         type Output = String;
         type State = ();
@@ -968,8 +968,8 @@ mod tests {
             &mut self,
             input: String,
             _state: StateHandle<'_, Self>,
-            ctx: &mut OperationCtx<'_>,
-        ) -> Result<(), OperationError> {
+            ctx: &mut ProcedureCtx<'_>,
+        ) -> Result<(), ProcedureError> {
             ctx.emit(format!("h:{input}"))?;
             Ok(())
         }
@@ -977,7 +977,7 @@ mod tests {
 
     #[derive(Default)]
     struct HybridStage2;
-    impl Operation for HybridStage2 {
+    impl Procedure for HybridStage2 {
         type Input = String;
         type Output = String;
         type State = ();
@@ -992,21 +992,21 @@ mod tests {
             &mut self,
             input: String,
             _state: StateHandle<'_, Self>,
-            ctx: &mut OperationCtx<'_>,
-        ) -> Result<(), OperationError> {
+            ctx: &mut ProcedureCtx<'_>,
+        ) -> Result<(), ProcedureError> {
             ctx.emit(format!("final:{input}"))?;
             Ok(())
         }
     }
 
-    /// Hybrid inter-operation channel (`also_output_with`): Stage1's output
+    /// Hybrid inter-procedure channel (`also_output_with`): Stage1's output
     /// both feeds Stage2 AND is serialized to a plugin sink.
     struct HybridBounded;
     impl BoundedOperative for HybridBounded {
         fn factory_id() -> &'static str {
             "test-hybrid-bounded"
         }
-        fn operations(c: &ChannelBuilder) {
+        fn procedures(c: &ChannelBuilder) {
             c.input::<String>("in")
                 .into::<HybridStage1>()
                 .named("mid")
@@ -1021,14 +1021,14 @@ mod tests {
     // ---- saga compensation operatives (Phase 2 §4) --------------------------
 
     /// Process-global compensation observation log. The driver-observation test
-    /// owns it (like `EMIT_RUNS`); compensable operations append a marker so
-    /// rollback order and per-segment firing are assertable without wire
-    /// plumbing (a compensable inter-operation op's `ctx.emit` is collected, not
+    /// owns it (like `EMIT_RUNS`); compensable procedures append a marker so
+    /// rollback order and per-entity firing are assertable without wire
+    /// plumbing (a compensable inter-procedure proc's `ctx.emit` is collected, not
     /// wired).
     static COMPENSATION_LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
     // Captures the `(payload_id, frame)` pairs a durable bounded ships to the
-    // reliable sink — `segment_state_change` from the flush plus the saga
+    // reliable sink — `entity_state_change` from the flush plus the saga
     // `compensation_intent` / `compensation_done` markers.
     static WAL_FRAMES: Mutex<Vec<(String, Vec<u8>)>> = Mutex::new(Vec::new());
 
@@ -1059,7 +1059,7 @@ mod tests {
     /// Compensable: reserves (emits `reserved:<arg>`); undo logs `undo-reserve`.
     #[derive(Default)]
     struct SagaReserve;
-    impl Operation for SagaReserve {
+    impl Procedure for SagaReserve {
         type Input = String;
         type Output = String;
         type State = ();
@@ -1074,8 +1074,8 @@ mod tests {
             &mut self,
             input: String,
             _state: StateHandle<'_, Self>,
-            ctx: &mut OperationCtx<'_>,
-        ) -> Result<(), OperationError> {
+            ctx: &mut ProcedureCtx<'_>,
+        ) -> Result<(), ProcedureError> {
             ctx.emit(format!("reserved:{input}"))?;
             Ok(())
         }
@@ -1084,8 +1084,8 @@ mod tests {
             &mut self,
             completed_output: Vec<Arc<String>>,
             _state: StateHandle<'_, Self>,
-            _ctx: &mut OperationCtx<'_>,
-        ) -> Result<(), OperationError> {
+            _ctx: &mut ProcedureCtx<'_>,
+        ) -> Result<(), ProcedureError> {
             for out in &completed_output {
                 comp_log(format!("undo-reserve:{out}"));
             }
@@ -1096,7 +1096,7 @@ mod tests {
     /// Compensable: charges (emits `charged:<input>`); undo logs `undo-charge`.
     #[derive(Default)]
     struct SagaCharge;
-    impl Operation for SagaCharge {
+    impl Procedure for SagaCharge {
         type Input = String;
         type Output = String;
         type State = ();
@@ -1111,8 +1111,8 @@ mod tests {
             &mut self,
             input: String,
             _state: StateHandle<'_, Self>,
-            ctx: &mut OperationCtx<'_>,
-        ) -> Result<(), OperationError> {
+            ctx: &mut ProcedureCtx<'_>,
+        ) -> Result<(), ProcedureError> {
             ctx.emit(format!("charged:{input}"))?;
             Ok(())
         }
@@ -1121,8 +1121,8 @@ mod tests {
             &mut self,
             completed_output: Vec<Arc<String>>,
             _state: StateHandle<'_, Self>,
-            _ctx: &mut OperationCtx<'_>,
-        ) -> Result<(), OperationError> {
+            _ctx: &mut ProcedureCtx<'_>,
+        ) -> Result<(), ProcedureError> {
             for out in &completed_output {
                 comp_log(format!("undo-charge:{out}"));
             }
@@ -1134,7 +1134,7 @@ mod tests {
     /// completed `reserve` + `charge`. Itself uncompleted ⇒ never compensated.
     #[derive(Default)]
     struct SagaShipFails;
-    impl Operation for SagaShipFails {
+    impl Procedure for SagaShipFails {
         type Input = String;
         type Output = String;
         type State = ();
@@ -1149,9 +1149,9 @@ mod tests {
             &mut self,
             _input: String,
             _state: StateHandle<'_, Self>,
-            _ctx: &mut OperationCtx<'_>,
-        ) -> Result<(), OperationError> {
-            Err(OperationError::Custom("ship failed".into()))
+            _ctx: &mut ProcedureCtx<'_>,
+        ) -> Result<(), ProcedureError> {
+            Err(ProcedureError::Custom("ship failed".into()))
         }
     }
 
@@ -1160,7 +1160,7 @@ mod tests {
     /// undo logs `undo-archive`.
     #[derive(Default)]
     struct SagaArchive;
-    impl Operation for SagaArchive {
+    impl Procedure for SagaArchive {
         type Input = String;
         type Output = String;
         type State = ();
@@ -1175,8 +1175,8 @@ mod tests {
             &mut self,
             input: String,
             _state: StateHandle<'_, Self>,
-            ctx: &mut OperationCtx<'_>,
-        ) -> Result<(), OperationError> {
+            ctx: &mut ProcedureCtx<'_>,
+        ) -> Result<(), ProcedureError> {
             ctx.emit(format!("archived:{input}"))?;
             Ok(())
         }
@@ -1185,8 +1185,8 @@ mod tests {
             &mut self,
             completed_output: Vec<Arc<String>>,
             _state: StateHandle<'_, Self>,
-            _ctx: &mut OperationCtx<'_>,
-        ) -> Result<(), OperationError> {
+            _ctx: &mut ProcedureCtx<'_>,
+        ) -> Result<(), ProcedureError> {
             for out in &completed_output {
                 comp_log(format!("undo-archive:{out}"));
             }
@@ -1202,7 +1202,7 @@ mod tests {
         fn factory_id() -> &'static str {
             "test-tree-saga"
         }
-        fn operations(c: &ChannelBuilder) {
+        fn procedures(c: &ChannelBuilder) {
             let t1 = c
                 .input::<String>("in")
                 .into::<SagaReserve>()
@@ -1214,7 +1214,7 @@ mod tests {
                 .into::<SagaShipFails>()
                 .named("t_ship")
                 .output("sink");
-            // The archive leaf releases an inter-op batch nobody consumes: it
+            // The archive leaf releases an inter-proc batch nobody consumes: it
             // stays a leaf, and its retained output is what its undo reverses
             // (a plugin-bound leaf would stage instead of collect, leaving the
             // hook nothing to name).
@@ -1227,7 +1227,7 @@ mod tests {
         fn factory_id() -> &'static str {
             "test-saga-bounded"
         }
-        fn operations(c: &ChannelBuilder) {
+        fn procedures(c: &ChannelBuilder) {
             c.input::<String>("in")
                 .into::<SagaReserve>()
                 .named("c1")
@@ -1253,7 +1253,7 @@ mod tests {
         fn rollback_mode() -> RollbackMode {
             RollbackMode::KeepProgress
         }
-        fn operations(c: &ChannelBuilder) {
+        fn procedures(c: &ChannelBuilder) {
             c.input::<String>("in")
                 .into::<SagaReserve>()
                 .named("c1")
@@ -1273,7 +1273,7 @@ mod tests {
         fn factory_id() -> &'static str {
             "test-clean-saga"
         }
-        fn operations(c: &ChannelBuilder) {
+        fn procedures(c: &ChannelBuilder) {
             c.input::<String>("in")
                 .into::<SagaReserve>()
                 .named("c1")
@@ -1281,22 +1281,22 @@ mod tests {
                 .into::<SagaCharge>()
                 .named("c2")
                 .codec()
-                .into::<EchoOp>()
+                .into::<EchoProc>()
                 .named("out")
                 .output("sink");
         }
     }
 
-    /// Static-segmented compensable op: stores its segment key in state, emits
-    /// `<key>:<item>`, and compensates ONCE per segment (logs all that segment's
-    /// outputs together) so per-segment firing is assertable.
+    /// Static-entity compensable proc: stores its entity key in state, emits
+    /// `<key>:<item>`, and compensates ONCE per entity (logs all that entity's
+    /// outputs together) so per-entity firing is assertable.
     #[derive(Serialize, Deserialize, Clone, Default)]
     struct FanKeyState {
         key: String,
     }
     #[derive(Default)]
     struct SagaFan;
-    impl Operation for SagaFan {
+    impl Procedure for SagaFan {
         type Input = String;
         type Output = String;
         type State = FanKeyState;
@@ -1306,31 +1306,28 @@ mod tests {
         fn name() -> &'static str {
             "saga_fan"
         }
-        fn operation_keys() -> Vec<&'static str> {
+        fn entity_keys() -> Vec<&'static str> {
             vec!["even", "odd"]
         }
-        const SEGMENT_FOR_OVERRIDDEN: bool = true;
-        fn segment_for(input: &String) -> Vec<&'static str> {
+        const ENTITIES_FOR_OVERRIDDEN: bool = true;
+        fn entities_for(input: &String) -> Vec<&'static str> {
             if input.len().is_multiple_of(2) {
                 vec!["even"]
             } else {
                 vec!["odd"]
             }
         }
-        fn init_state(
-            operation_key: Option<&str>,
-            _: Option<RestoreInitPayload<'_>>,
-        ) -> FanKeyState {
+        fn init_state(entity_key: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> FanKeyState {
             FanKeyState {
-                key: operation_key.unwrap_or("").to_string(),
+                key: entity_key.unwrap_or("").to_string(),
             }
         }
         fn run(
             &mut self,
             input: String,
             state: StateHandle<'_, Self>,
-            ctx: &mut OperationCtx<'_>,
-        ) -> Result<(), OperationError> {
+            ctx: &mut ProcedureCtx<'_>,
+        ) -> Result<(), ProcedureError> {
             ctx.emit(format!("{}:{input}", state.key))?;
             Ok(())
         }
@@ -1339,18 +1336,18 @@ mod tests {
             &mut self,
             completed_output: Vec<Arc<String>>,
             state: StateHandle<'_, Self>,
-            _ctx: &mut OperationCtx<'_>,
-        ) -> Result<(), OperationError> {
+            _ctx: &mut ProcedureCtx<'_>,
+        ) -> Result<(), ProcedureError> {
             let items: Vec<String> = completed_output.iter().map(|o| o.to_string()).collect();
             comp_log(format!("undo-fan:{}:[{}]", state.key, items.join(",")));
             Ok(())
         }
     }
 
-    /// Terminal failing op for the per-segment rollback chain.
+    /// Terminal failing proc for the per-entity rollback chain.
     #[derive(Default)]
     struct FailLast;
-    impl Operation for FailLast {
+    impl Procedure for FailLast {
         type Input = String;
         type Output = String;
         type State = ();
@@ -1365,23 +1362,23 @@ mod tests {
             &mut self,
             _input: String,
             _state: StateHandle<'_, Self>,
-            _ctx: &mut OperationCtx<'_>,
-        ) -> Result<(), OperationError> {
-            Err(OperationError::Custom("fan ship failed".into()))
+            _ctx: &mut ProcedureCtx<'_>,
+        ) -> Result<(), ProcedureError> {
+            Err(ProcedureError::Custom("fan ship failed".into()))
         }
     }
 
     /// Split(hookless) → Fan(compensable, even/odd) → FailLast. The hookless
-    /// `SplitOp` is skipped during rollback; only `SagaFan` compensates, once
-    /// per segment.
+    /// `SplitProc` is skipped during rollback; only `SagaFan` compensates, once
+    /// per entity.
     struct FanSaga;
     impl BoundedOperative for FanSaga {
         fn factory_id() -> &'static str {
             "test-fan-saga"
         }
-        fn operations(c: &ChannelBuilder) {
+        fn procedures(c: &ChannelBuilder) {
             c.input::<String>("in")
-                .into::<SplitOp>()
+                .into::<SplitProc>()
                 .named("mid")
                 .codec()
                 .into::<SagaFan>()
@@ -1393,11 +1390,11 @@ mod tests {
         }
     }
 
-    /// Compensable stage-0 op with a handshake so a cooperative stop lands after
+    /// Compensable stage-0 proc with a handshake so a cooperative stop lands after
     /// it completes but before stage 1 (deterministic forced-stop rollback).
     #[derive(Default)]
     struct StopReserve;
-    impl Operation for StopReserve {
+    impl Procedure for StopReserve {
         type Input = String;
         type Output = String;
         type State = ();
@@ -1412,8 +1409,8 @@ mod tests {
             &mut self,
             input: String,
             _state: StateHandle<'_, Self>,
-            ctx: &mut OperationCtx<'_>,
-        ) -> Result<(), OperationError> {
+            ctx: &mut ProcedureCtx<'_>,
+        ) -> Result<(), ProcedureError> {
             STAGE0_RAN.store(true, Ordering::SeqCst);
             while !STAGE0_RELEASE.load(Ordering::SeqCst) {
                 std::thread::sleep(Duration::from_millis(5));
@@ -1426,8 +1423,8 @@ mod tests {
             &mut self,
             completed_output: Vec<Arc<String>>,
             _state: StateHandle<'_, Self>,
-            _ctx: &mut OperationCtx<'_>,
-        ) -> Result<(), OperationError> {
+            _ctx: &mut ProcedureCtx<'_>,
+        ) -> Result<(), ProcedureError> {
             for out in &completed_output {
                 comp_log(format!("undo-stop-reserve:{out}"));
             }
@@ -1442,25 +1439,25 @@ mod tests {
         fn factory_id() -> &'static str {
             "test-stop-saga"
         }
-        fn operations(c: &ChannelBuilder) {
+        fn procedures(c: &ChannelBuilder) {
             c.input::<String>("in")
                 .into::<StopReserve>()
                 .named("mid")
                 .codec()
-                .into::<EchoOp>()
+                .into::<EchoProc>()
                 .named("out")
                 .output("sink");
         }
     }
 
-    // ---- saga crash-resume ops (§4.3) ---------------------------------------
-    // Compensable ops whose `compensate` logs UNCONDITIONALLY (not per output),
+    // ---- saga crash-resume procs (§4.3) ---------------------------------------
+    // Compensable procs whose `compensate` logs UNCONDITIONALLY (not per output),
     // so a crash-resume — which reconstructs completed stages with EMPTY outputs
-    // (an operation's collected output was never durable) — is still observable.
+    // (a procedure's collected output was never durable) — is still observable.
 
     #[derive(Default)]
     struct ResumeUndoA;
-    impl Operation for ResumeUndoA {
+    impl Procedure for ResumeUndoA {
         type Input = String;
         type Output = String;
         type State = ();
@@ -1475,8 +1472,8 @@ mod tests {
             &mut self,
             input: String,
             _state: StateHandle<'_, Self>,
-            ctx: &mut OperationCtx<'_>,
-        ) -> Result<(), OperationError> {
+            ctx: &mut ProcedureCtx<'_>,
+        ) -> Result<(), ProcedureError> {
             ctx.emit(format!("a:{input}"))?;
             Ok(())
         }
@@ -1485,8 +1482,8 @@ mod tests {
             &mut self,
             _out: Vec<Arc<String>>,
             _state: StateHandle<'_, Self>,
-            _ctx: &mut OperationCtx<'_>,
-        ) -> Result<(), OperationError> {
+            _ctx: &mut ProcedureCtx<'_>,
+        ) -> Result<(), ProcedureError> {
             comp_log("undo-A".to_string());
             Ok(())
         }
@@ -1494,7 +1491,7 @@ mod tests {
 
     #[derive(Default)]
     struct ResumeUndoB;
-    impl Operation for ResumeUndoB {
+    impl Procedure for ResumeUndoB {
         type Input = String;
         type Output = String;
         type State = ();
@@ -1509,8 +1506,8 @@ mod tests {
             &mut self,
             input: String,
             _state: StateHandle<'_, Self>,
-            ctx: &mut OperationCtx<'_>,
-        ) -> Result<(), OperationError> {
+            ctx: &mut ProcedureCtx<'_>,
+        ) -> Result<(), ProcedureError> {
             ctx.emit(format!("b:{input}"))?;
             Ok(())
         }
@@ -1519,20 +1516,20 @@ mod tests {
             &mut self,
             _out: Vec<Arc<String>>,
             _state: StateHandle<'_, Self>,
-            _ctx: &mut OperationCtx<'_>,
-        ) -> Result<(), OperationError> {
+            _ctx: &mut ProcedureCtx<'_>,
+        ) -> Result<(), ProcedureError> {
             comp_log("undo-B".to_string());
             Ok(())
         }
     }
 
-    // ---- staged-commit / transactional-outbox ops --------------------------
+    // ---- staged-commit / transactional-outbox procs --------------------------
 
-    /// Emits plugin-bound output and THEN fails: the operation never commits,
+    /// Emits plugin-bound output and THEN fails: the procedure never commits,
     /// so its staged output must never reach a plugin (nothing leaked).
     #[derive(Default)]
     struct EmitThenFail;
-    impl Operation for EmitThenFail {
+    impl Procedure for EmitThenFail {
         type Input = String;
         type Output = String;
         type State = ();
@@ -1547,20 +1544,20 @@ mod tests {
             &mut self,
             input: String,
             _state: StateHandle<'_, Self>,
-            ctx: &mut OperationCtx<'_>,
-        ) -> Result<(), OperationError> {
+            ctx: &mut ProcedureCtx<'_>,
+        ) -> Result<(), ProcedureError> {
             ctx.emit(format!("leak:{input}"))?;
-            Err(OperationError::Custom("failed after emitting".into()))
+            Err(ProcedureError::Custom("failed after emitting".into()))
         }
     }
 
-    /// One operation that emits then fails, straight to a plugin sink.
+    /// One procedure that emits then fails, straight to a plugin sink.
     struct LeakBounded;
     impl BoundedOperative for LeakBounded {
         fn factory_id() -> &'static str {
             "test-leak-bounded"
         }
-        fn operations(c: &ChannelBuilder) {
+        fn procedures(c: &ChannelBuilder) {
             c.input::<String>("in")
                 .into::<EmitThenFail>()
                 .named("out")
@@ -1568,12 +1565,12 @@ mod tests {
         }
     }
 
-    /// Compensable op on a hybrid channel: its forward output feeds the next
-    /// operation AND a plugin sink, so its `compensate` hook's `ctx.emit`
+    /// Compensable proc on a hybrid channel: its forward output feeds the next
+    /// procedure AND a plugin sink, so its `compensate` hook's `ctx.emit`
     /// produces plugin-bound undo output (staged for the `compensated` entry).
     #[derive(Default)]
     struct UndoEmit;
-    impl Operation for UndoEmit {
+    impl Procedure for UndoEmit {
         type Input = String;
         type Output = String;
         type State = ();
@@ -1588,8 +1585,8 @@ mod tests {
             &mut self,
             input: String,
             _state: StateHandle<'_, Self>,
-            ctx: &mut OperationCtx<'_>,
-        ) -> Result<(), OperationError> {
+            ctx: &mut ProcedureCtx<'_>,
+        ) -> Result<(), ProcedureError> {
             ctx.emit(format!("did:{input}"))?;
             Ok(())
         }
@@ -1598,8 +1595,8 @@ mod tests {
             &mut self,
             completed_output: Vec<Arc<String>>,
             _state: StateHandle<'_, Self>,
-            ctx: &mut OperationCtx<'_>,
-        ) -> Result<(), OperationError> {
+            ctx: &mut ProcedureCtx<'_>,
+        ) -> Result<(), ProcedureError> {
             for out in &completed_output {
                 ctx.emit(format!("undo:{out}"))?;
             }
@@ -1614,7 +1611,7 @@ mod tests {
         fn factory_id() -> &'static str {
             "test-undo-saga"
         }
-        fn operations(c: &ChannelBuilder) {
+        fn procedures(c: &ChannelBuilder) {
             c.input::<String>("in")
                 .into::<UndoEmit>()
                 .named("mid")
@@ -1632,7 +1629,7 @@ mod tests {
         fn factory_id() -> &'static str {
             "test-resume-saga"
         }
-        fn operations(c: &ChannelBuilder) {
+        fn procedures(c: &ChannelBuilder) {
             c.input::<String>("in")
                 .into::<ResumeUndoA>()
                 .named("c1")
@@ -1646,23 +1643,23 @@ mod tests {
         }
     }
 
-    // ---- per-segment retry ladder ops (`bounded-segment-retry`) -------------
+    // ---- per-entity retry ladder procs (`bounded-entity-retry`) -------------
 
-    /// Attempts the `odd` segment has made, and items the `even` sibling has
-    /// processed — a retry must re-run ONLY the failing segment.
+    /// Attempts the `odd` entity has made, and items the `even` sibling has
+    /// processed — a retry must re-run ONLY the failing entity.
     static ODD_ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
     static EVEN_RUNS: AtomicUsize = AtomicUsize::new(0);
-    /// How many of the `odd` segment's attempts fail, and how they are
+    /// How many of the `odd` entity's attempts fail, and how they are
     /// classified — set per scenario.
     static ODD_FAILURES: AtomicUsize = AtomicUsize::new(0);
     static ODD_NON_RETRYABLE: AtomicBool = AtomicBool::new(false);
 
     /// Compensable pass-through in front of the flaky stage: its undo proves
-    /// whether a segment failure escalated to the operation (compensation) or
+    /// whether an entity failure escalated to the procedure (compensation) or
     /// was absorbed by the ladder.
     #[derive(Default)]
     struct RetryReserve;
-    impl Operation for RetryReserve {
+    impl Procedure for RetryReserve {
         type Input = String;
         type Output = String;
         type State = ();
@@ -1677,8 +1674,8 @@ mod tests {
             &mut self,
             input: String,
             _state: StateHandle<'_, Self>,
-            ctx: &mut OperationCtx<'_>,
-        ) -> Result<(), OperationError> {
+            ctx: &mut ProcedureCtx<'_>,
+        ) -> Result<(), ProcedureError> {
             ctx.emit(input)?;
             Ok(())
         }
@@ -1687,20 +1684,20 @@ mod tests {
             &mut self,
             _completed_output: Vec<Arc<String>>,
             _state: StateHandle<'_, Self>,
-            _ctx: &mut OperationCtx<'_>,
-        ) -> Result<(), OperationError> {
+            _ctx: &mut ProcedureCtx<'_>,
+        ) -> Result<(), ProcedureError> {
             comp_log("undo-retry-reserve".to_string());
             Ok(())
         }
     }
 
-    /// Static-segmented flaky stage: the `odd` segment fails its first
+    /// Static-entity flaky stage: the `odd` entity fails its first
     /// `ODD_FAILURES` attempts (retryably, or `NonRetryable` when the scenario
-    /// says so) and then succeeds; the `even` segment always succeeds and
+    /// says so) and then succeeds; the `even` entity always succeeds and
     /// counts the items it saw.
     #[derive(Default)]
     struct FlakyFan;
-    impl Operation for FlakyFan {
+    impl Procedure for FlakyFan {
         type Input = String;
         type Output = String;
         type State = ();
@@ -1710,11 +1707,11 @@ mod tests {
         fn name() -> &'static str {
             "flaky_fan"
         }
-        fn operation_keys() -> Vec<&'static str> {
+        fn entity_keys() -> Vec<&'static str> {
             vec!["even", "odd"]
         }
-        const SEGMENT_FOR_OVERRIDDEN: bool = true;
-        fn segment_for(input: &String) -> Vec<&'static str> {
+        const ENTITIES_FOR_OVERRIDDEN: bool = true;
+        fn entities_for(input: &String) -> Vec<&'static str> {
             if input.len().is_multiple_of(2) {
                 vec!["even"]
             } else {
@@ -1726,8 +1723,8 @@ mod tests {
             &mut self,
             input: String,
             _state: StateHandle<'_, Self>,
-            ctx: &mut OperationCtx<'_>,
-        ) -> Result<(), OperationError> {
+            ctx: &mut ProcedureCtx<'_>,
+        ) -> Result<(), ProcedureError> {
             if input.len().is_multiple_of(2) {
                 EVEN_RUNS.fetch_add(1, Ordering::SeqCst);
                 ctx.emit(format!("even:{input}"))?;
@@ -1737,9 +1734,9 @@ mod tests {
             if attempt <= ODD_FAILURES.load(Ordering::SeqCst) {
                 let message = format!("flaky attempt {attempt}");
                 return Err(if ODD_NON_RETRYABLE.load(Ordering::SeqCst) {
-                    OperationError::non_retryable(message)
+                    ProcedureError::non_retryable(message)
                 } else {
-                    OperationError::Custom(message)
+                    ProcedureError::Custom(message)
                 });
             }
             ctx.emit(format!("odd:{input}"))?;
@@ -1749,7 +1746,7 @@ mod tests {
 
     fn retry_chain(c: &ChannelBuilder) {
         c.input::<String>("in")
-            .into::<SplitOp>()
+            .into::<SplitProc>()
             .named("mid")
             .codec()
             .into::<RetryReserve>()
@@ -1770,13 +1767,13 @@ mod tests {
         fn retry_backoff() -> Duration {
             Duration::from_millis(10)
         }
-        fn operations(c: &ChannelBuilder) {
+        fn procedures(c: &ChannelBuilder) {
             retry_chain(c);
         }
     }
 
-    /// The same chain with the ladder opted out: the first segment error fails
-    /// the operation, exactly as before this capability existed.
+    /// The same chain with the ladder opted out: the first entity error fails
+    /// the procedure, exactly as before this capability existed.
     struct RetryFailFastBounded;
     impl BoundedOperative for RetryFailFastBounded {
         fn factory_id() -> &'static str {
@@ -1785,7 +1782,7 @@ mod tests {
         fn retry_attempts() -> u32 {
             0
         }
-        fn operations(c: &ChannelBuilder) {
+        fn procedures(c: &ChannelBuilder) {
             retry_chain(c);
         }
     }
@@ -1800,12 +1797,12 @@ mod tests {
         fn retry_backoff() -> Duration {
             Duration::from_secs(30)
         }
-        fn operations(c: &ChannelBuilder) {
+        fn procedures(c: &ChannelBuilder) {
             retry_chain(c);
         }
     }
 
-    /// Arm the flaky stage: `failures` attempts of the `odd` segment fail,
+    /// Arm the flaky stage: `failures` attempts of the `odd` entity fail,
     /// classified retryable or not, with both attempt counters reset.
     fn arm_flaky(failures: usize, non_retryable: bool) {
         ODD_ATTEMPTS.store(0, Ordering::SeqCst);
@@ -1815,7 +1812,7 @@ mod tests {
         let _ = drain_comp_log();
     }
 
-    // ---- fan-in / diamond ops (`bounded-branching` fan-in accumulates) ------
+    // ---- fan-in / diamond procs (`bounded-branching` fan-in accumulates) ------
 
     /// Observation log for the diamond scenarios: forward runs append here so
     /// join dispatch order (after BOTH producers) is assertable.
@@ -1831,7 +1828,7 @@ mod tests {
         ($ty:ident, $name:literal, $tag:literal) => {
             #[derive(Default)]
             struct $ty;
-            impl Operation for $ty {
+            impl Procedure for $ty {
                 type Input = String;
                 type Output = String;
                 type State = ();
@@ -1846,8 +1843,8 @@ mod tests {
                     &mut self,
                     input: String,
                     _state: StateHandle<'_, Self>,
-                    ctx: &mut OperationCtx<'_>,
-                ) -> Result<(), OperationError> {
+                    ctx: &mut ProcedureCtx<'_>,
+                ) -> Result<(), ProcedureError> {
                     diamond_log(format!("{}:{input}", $tag));
                     ctx.emit(format!("{}:{input}", $tag))?;
                     Ok(())
@@ -1857,8 +1854,8 @@ mod tests {
                     &mut self,
                     completed_output: Vec<Arc<String>>,
                     _state: StateHandle<'_, Self>,
-                    _ctx: &mut OperationCtx<'_>,
-                ) -> Result<(), OperationError> {
+                    _ctx: &mut ProcedureCtx<'_>,
+                ) -> Result<(), ProcedureError> {
                     for out in &completed_output {
                         comp_log(format!("undo-{}:{out}", $tag));
                     }
@@ -1880,7 +1877,7 @@ mod tests {
         fn factory_id() -> &'static str {
             "test-diamond-bounded"
         }
-        fn operations(c: &ChannelBuilder) {
+        fn procedures(c: &ChannelBuilder) {
             let a = c
                 .input::<String>("in")
                 .into::<DiamondA>()
@@ -1905,7 +1902,7 @@ mod tests {
         fn factory_id() -> &'static str {
             "test-join-bounded-shape"
         }
-        fn operations(c: &ChannelBuilder) {
+        fn procedures(c: &ChannelBuilder) {
             let mid = c
                 .input::<String>("in")
                 .into::<Stage1>()
@@ -1915,7 +1912,7 @@ mod tests {
                 .named("join_b")
                 .codec()
                 .into::<DiamondJoin>();
-            mid.into::<EchoOp>()
+            mid.into::<EchoProc>()
                 .named("join_c")
                 .codec()
                 .into::<DiamondJoin>();
@@ -1930,7 +1927,7 @@ mod tests {
         fn factory_id() -> &'static str {
             "test-diamond-saga"
         }
-        fn operations(c: &ChannelBuilder) {
+        fn procedures(c: &ChannelBuilder) {
             let a = c
                 .input::<String>("in")
                 .into::<DiamondA>()
@@ -1951,7 +1948,7 @@ mod tests {
         }
     }
 
-    /// The merged input of the fan-in below (`multi-input-operations`): the two
+    /// The merged input of the fan-in below (`multi-input-procedures`): the two
     /// producers carry the same payload type, so only the mapping tells the
     /// join which branch a contribution came from.
     #[derive(Clone, Debug)]
@@ -1963,8 +1960,8 @@ mod tests {
     /// The diamond's join re-authored as a merge: same two producers, but the
     /// node consumes one sum type and learns its source from the mapping.
     #[derive(Default)]
-    struct MergeJoinOp;
-    impl Operation for MergeJoinOp {
+    struct MergeJoinProc;
+    impl Procedure for MergeJoinProc {
         type Input = MergedJoinInput;
         type Output = String;
         type State = ();
@@ -1979,8 +1976,8 @@ mod tests {
             &mut self,
             input: MergedJoinInput,
             _state: StateHandle<'_, Self>,
-            ctx: &mut OperationCtx<'_>,
-        ) -> Result<(), OperationError> {
+            ctx: &mut ProcedureCtx<'_>,
+        ) -> Result<(), ProcedureError> {
             let label = match input {
                 MergedJoinInput::B(s) => format!("mb:{s}"),
                 MergedJoinInput::C(s) => format!("mc:{s}"),
@@ -1999,7 +1996,7 @@ mod tests {
         fn factory_id() -> &'static str {
             "test-merge-bounded"
         }
-        fn operations(c: &ChannelBuilder) {
+        fn procedures(c: &ChannelBuilder) {
             let a = c
                 .input::<String>("in")
                 .into::<DiamondA>()
@@ -2010,7 +2007,7 @@ mod tests {
             c.merge::<MergedJoinInput>()
                 .from(b, MergedJoinInput::B)
                 .from(cc, MergedJoinInput::C)
-                .into::<MergeJoinOp>()
+                .into::<MergeJoinProc>()
                 .named("m_out")
                 .output("sink");
         }
@@ -2018,14 +2015,14 @@ mod tests {
 
     /// The same chain whose merge mapping panics. A mapping is the one author
     /// closure on a bounded chain that runs on the driver thread rather than
-    /// inside a segment invocation, so without containment its unwind would
+    /// inside an entity invocation, so without containment its unwind would
     /// take the driver thread with it and the instance would never report.
     struct PanickingMergeBounded;
     impl BoundedOperative for PanickingMergeBounded {
         fn factory_id() -> &'static str {
             "test-panic-merge-bounded"
         }
-        fn operations(c: &ChannelBuilder) {
+        fn procedures(c: &ChannelBuilder) {
             let a = c
                 .input::<String>("in")
                 .into::<DiamondA>()
@@ -2036,7 +2033,7 @@ mod tests {
             c.merge::<MergedJoinInput>()
                 .from(b, |_: String| panic!("merge mapping blew up"))
                 .from(cc, MergedJoinInput::C)
-                .into::<MergeJoinOp>()
+                .into::<MergeJoinProc>()
                 .named("pm_out")
                 .output("sink");
         }
@@ -2122,7 +2119,7 @@ mod tests {
             .dag
             .order
             .iter()
-            .map(|&id| topology.operation(id).unwrap().name.as_ref())
+            .map(|&id| topology.procedure(id).unwrap().name.as_ref())
             .collect();
         assert_eq!(names, vec!["bounded_stage1", "bounded_stage2"]);
     }
@@ -2140,13 +2137,13 @@ mod tests {
     }
 
     #[test]
-    fn durable_structured_without_inter_op_codec_is_rejected() {
+    fn durable_structured_without_inter_proc_codec_is_rejected() {
         struct NoCodec;
         impl BoundedOperative for NoCodec {
             fn factory_id() -> &'static str {
                 "test-no-codec-bounded"
             }
-            fn operations(c: &ChannelBuilder) {
+            fn procedures(c: &ChannelBuilder) {
                 c.input::<String>("in")
                     .into::<Stage1>()
                     .named("mid")
@@ -2155,10 +2152,10 @@ mod tests {
         }
         let err = spec::build_spec::<NoCodec>().expect_err("durable class needs the codec");
         match err {
-            spec::BuildBoundedError::MissingInterOpCodec { channel, .. } => {
+            spec::BuildBoundedError::MissingInterProcCodec { channel, .. } => {
                 assert_eq!(channel, "mid", "the error names the codec-less channel");
             }
-            other => panic!("expected MissingInterOpCodec, got {other:?}"),
+            other => panic!("expected MissingInterProcCodec, got {other:?}"),
         }
 
         // The opted-out shape of the same topology registers fine.
@@ -2168,7 +2165,7 @@ mod tests {
                 "test-no-codec-optout-bounded"
             }
             const PERSISTENCE_ENABLED: bool = false;
-            fn operations(c: &ChannelBuilder) {
+            fn procedures(c: &ChannelBuilder) {
                 c.input::<String>("in")
                     .into::<Stage1>()
                     .named("mid")
@@ -2192,10 +2189,10 @@ mod tests {
         match spec::build_spec::<ChainedLoopNoCodec>()
             .expect_err("a chained loop must be able to journal its terminal batch")
         {
-            spec::BuildBoundedError::LoopTerminalWithoutCodec { operation, .. } => {
+            spec::BuildBoundedError::LoopTerminalWithoutCodec { procedure, .. } => {
                 assert_eq!(
-                    operation, "bounded_stage2",
-                    "the error names the terminal operation"
+                    procedure, "bounded_stage2",
+                    "the error names the terminal procedure"
                 );
             }
             other => panic!("expected LoopTerminalWithoutCodec, got {other:?}"),
@@ -2208,7 +2205,7 @@ mod tests {
         assert_eq!(spec.dag.len(), 2);
     }
 
-    /// `bounded-segment-retry` policy surface: the defaults land on the shared
+    /// `bounded-entity-retry` policy surface: the defaults land on the shared
     /// `RetryPolicy`, `retry_attempts() = 0` collapses to the one-attempt
     /// fail-fast, and a ladder without a backoff is rejected at registration.
     #[test]
@@ -2231,7 +2228,7 @@ mod tests {
             fn retry_backoff() -> Duration {
                 Duration::ZERO
             }
-            fn operations(c: &ChannelBuilder) {
+            fn procedures(c: &ChannelBuilder) {
                 retry_chain(c);
             }
         }
@@ -2255,7 +2252,7 @@ mod tests {
             .dag
             .order
             .iter()
-            .map(|&id| topology.operation(id).unwrap().name.as_ref())
+            .map(|&id| topology.procedure(id).unwrap().name.as_ref())
             .collect();
         assert_eq!(
             names,
@@ -2267,7 +2264,7 @@ mod tests {
         assert_eq!(spec.dag.leaves().collect::<Vec<_>>(), vec![1, 2]);
         assert!(
             spec.dag.single_leaf().is_none(),
-            "two leaves ⇒ no single terminal operation"
+            "two leaves ⇒ no single terminal procedure"
         );
         for (node, parents) in spec.dag.parents.iter().enumerate() {
             for p in parents {
@@ -2293,7 +2290,7 @@ mod tests {
                     .dag
                     .order
                     .iter()
-                    .map(|&id| topology.operation(id).unwrap().name.as_ref())
+                    .map(|&id| topology.procedure(id).unwrap().name.as_ref())
                     .collect();
                 assert_eq!(
                     names,
@@ -2321,7 +2318,7 @@ mod tests {
             fn factory_id() -> &'static str {
                 "test-cyclic-bounded"
             }
-            fn operations(c: &ChannelBuilder) {
+            fn procedures(c: &ChannelBuilder) {
                 c.input::<String>("in")
                     .into::<Stage1>()
                     .named("mid")
@@ -2342,7 +2339,7 @@ mod tests {
             other => panic!("expected the shared cycle refusal, got {other:?}"),
         }
 
-        // `multi-input-operations`: a bounded seed is a bare payload naming no
+        // `multi-input-procedures`: a bounded seed is a bare payload naming no
         // channel, so an entry channel cannot be one merge source among
         // several — the mapping could not be selected and every entry channel
         // past the first would be unreadable. Refused by name, at definition
@@ -2353,28 +2350,28 @@ mod tests {
             fn factory_id() -> &'static str {
                 "test-entry-merge-bounded"
             }
-            fn operations(c: &ChannelBuilder) {
+            fn procedures(c: &ChannelBuilder) {
                 c.merge::<MergedJoinInput>()
                     .from(c.input::<String>("in"), MergedJoinInput::B)
                     .from(c.input::<String>("also"), MergedJoinInput::C)
-                    .into::<MergeJoinOp>();
+                    .into::<MergeJoinProc>();
             }
         }
         match spec::build_spec::<EntryMergeBounded>()
             .expect_err("a bounded merge over an entry channel is refused")
         {
             spec::BuildBoundedError::MergeFromEntryChannel {
-                channel, operation, ..
+                channel, procedure, ..
             } => {
                 assert_eq!(channel, "in");
-                assert_eq!(operation, "bounded_merge_join_op");
+                assert_eq!(procedure, "bounded_merge_join_op");
             }
             other => panic!("expected MergeFromEntryChannel, got {other:?}"),
         }
 
-        // The inter-op form of the same merge is the supported one and still
+        // The inter-proc form of the same merge is the supported one and still
         // registers, with the merged node as a two-parent inner node.
-        let merged = spec::build_spec::<MergeBounded>().expect("an inter-op merge registers");
+        let merged = spec::build_spec::<MergeBounded>().expect("an inter-proc merge registers");
         assert_eq!(
             merged.dag.parents[3],
             vec![1, 2],
@@ -2391,12 +2388,12 @@ mod tests {
             fn loop_mode() -> LoopMode {
                 LoopMode::Chained
             }
-            fn operations(c: &ChannelBuilder) {
+            fn procedures(c: &ChannelBuilder) {
                 tree_chain(c);
             }
         }
         match spec::build_spec::<BranchingChained>()
-            .expect_err("a chained loop needs one terminal operation")
+            .expect_err("a chained loop needs one terminal procedure")
         {
             spec::BuildBoundedError::BranchingChainedLoop { leaves, .. } => {
                 assert_eq!(leaves, 2);
@@ -2406,10 +2403,10 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_segment_operation_is_rejected() {
+    fn dynamic_entity_procedure_is_rejected() {
         #[derive(Default)]
-        struct DynOp;
-        impl Operation for DynOp {
+        struct DynProc;
+        impl Procedure for DynProc {
             type Input = String;
             type Output = String;
             type State = ();
@@ -2419,17 +2416,17 @@ mod tests {
             fn name() -> &'static str {
                 "bounded_dyn_op"
             }
-            fn operation_key(input: &String) -> Option<String> {
+            fn entity_key(input: &String) -> Option<String> {
                 Some(input.clone())
             }
-            const OPERATION_KEY_OVERRIDDEN: bool = true;
+            const ENTITY_KEY_OVERRIDDEN: bool = true;
             fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
             fn run(
                 &mut self,
                 _input: String,
                 _state: StateHandle<'_, Self>,
-                _ctx: &mut OperationCtx<'_>,
-            ) -> Result<(), OperationError> {
+                _ctx: &mut ProcedureCtx<'_>,
+            ) -> Result<(), ProcedureError> {
                 Ok(())
             }
         }
@@ -2438,14 +2435,14 @@ mod tests {
             fn factory_id() -> &'static str {
                 "test-dyn-bounded"
             }
-            fn operations(c: &ChannelBuilder) {
-                c.input::<String>("in").into::<DynOp>();
+            fn procedures(c: &ChannelBuilder) {
+                c.input::<String>("in").into::<DynProc>();
             }
         }
-        let err = spec::build_spec::<DynBounded>().expect_err("dynamic segments must be rejected");
+        let err = spec::build_spec::<DynBounded>().expect_err("dynamic entities must be rejected");
         assert!(
-            matches!(err, spec::BuildBoundedError::DynamicSegments { .. }),
-            "expected DynamicSegments, got {err:?}"
+            matches!(err, spec::BuildBoundedError::DynamicEntities { .. }),
+            "expected DynamicEntities, got {err:?}"
         );
     }
 
@@ -2465,13 +2462,11 @@ mod tests {
 
         // Durable bounded operatives in this test ship WAL frames through the
         // process-global sink; hold the shared sink lock for the whole test so
-        // it never races the segment-state sink tests, and install a capturing
+        // it never races the entity-state sink tests, and install a capturing
         // sink to observe the frames.
-        let _sink_guard = crate::segment::segment_state_sink::SINK_TEST_LOCK
-            .lock()
-            .unwrap();
-        let wal_sink: crate::segment::flusher::SendFrameFn = Arc::new(
-            |payload_id: &str, frame: &[u8]| -> Result<(), crate::segment::flusher::SendError> {
+        let _sink_guard = crate::entity::state_sink::SINK_TEST_LOCK.lock().unwrap();
+        let wal_sink: crate::entity::flusher::SendFrameFn = Arc::new(
+            |payload_id: &str, frame: &[u8]| -> Result<(), crate::entity::flusher::SendError> {
                 WAL_FRAMES
                     .lock()
                     .unwrap()
@@ -2479,7 +2474,7 @@ mod tests {
                 Ok(())
             },
         );
-        crate::segment::segment_state_sink::install_global_sink(wal_sink);
+        crate::entity::state_sink::install_global_sink(wal_sink);
 
         crate::register_bounded_class::<EmitBounded>().unwrap();
         crate::register_bounded_class::<FailBounded>().unwrap();
@@ -2557,7 +2552,7 @@ mod tests {
         assert_eq!(
             FAIL_RUNS.load(Ordering::SeqCst),
             1,
-            "a run-sugar body has no segments to retry: Err is terminal on the first failure"
+            "a run-sugar body has no entities to retry: Err is terminal on the first failure"
         );
 
         // --- run-sugar: panic caught and reported as "error" ---
@@ -2639,17 +2634,17 @@ mod tests {
         let (_o, done) = drain(&rx, "timed-1");
         assert_eq!(done.0, "cancelled", "max_duration elapse ⇒ cancelled");
 
-        // --- structured single-op equals run-sugar (§2.2 equivalence) ---
+        // --- structured single-proc equals run-sugar (§2.2 equivalence) ---
         assert!(node.start_bounded("test-echo-structured".into(), "echo-s".into(), "foo".into()));
         let (struct_outs, done) = drain(&rx, "echo-s");
         assert_eq!(done.0, "ok");
         assert_eq!(struct_outs, vec![b"echo:foo".to_vec()]);
         // The run-sugar equivalent (EmitBounded-style) would emit the same bytes
-        // for the same transform — assert the structured single-op form matches
-        // a hand-written one-operation echo.
+        // for the same transform — assert the structured single-proc form matches
+        // a hand-written one-procedure echo.
         assert_eq!(struct_outs, vec![format!("echo:{}", "foo").into_bytes()]);
 
-        // --- structured multi-op chain runs in order with a barrier ---
+        // --- structured multi-proc chain runs in order with a barrier ---
         assert!(node.start_bounded("test-chain-bounded".into(), "chain-1".into(), "x".into()));
         let (chain_outs, done) = drain(&rx, "chain-1");
         assert_eq!(done.0, "ok");
@@ -2659,7 +2654,7 @@ mod tests {
             "Stage1 then Stage2, in order"
         );
 
-        // --- structured parallel static segments + barrier + per-segment state ---
+        // --- structured parallel static entities + barrier + per-entity state ---
         assert!(node.start_bounded(
             "test-fan-bounded".into(),
             "fan-1".into(),
@@ -2668,8 +2663,8 @@ mod tests {
         let (mut fan_outs, done) = drain(&rx, "fan-1");
         assert_eq!(done.0, "ok");
         fan_outs.sort();
-        // odd segment: "a"(1) then "ccc"(2); even segment: "bb"(1) then "dddd"(2).
-        // Independent per-segment counters; the barrier collected all four.
+        // odd entity: "a"(1) then "ccc"(2); even entity: "bb"(1) then "dddd"(2).
+        // Independent per-entity counters; the barrier collected all four.
         let mut expected: Vec<Vec<u8>> = vec![
             b"1:a".to_vec(),
             b"2:ccc".to_vec(),
@@ -2679,7 +2674,7 @@ mod tests {
         expected.sort();
         assert_eq!(fan_outs, expected);
 
-        // --- hybrid channel: inter-op output also routed to a plugin sink ---
+        // --- hybrid channel: inter-proc output also routed to a plugin sink ---
         assert!(node.start_bounded("test-hybrid-bounded".into(), "hybrid-1".into(), "z".into()));
         let (mut hybrid_outs, done) = drain(&rx, "hybrid-1");
         assert_eq!(done.0, "ok");
@@ -2736,16 +2731,16 @@ mod tests {
             "a clean ok must not compensate"
         );
 
-        // --- §7b.1 per-segment compensation: once per segment that ran;
-        // hookless SplitOp is skipped ---
+        // --- §7b.1 per-entity compensation: once per entity that ran;
+        // hookless SplitProc is skipped ---
         let _ = drain_comp_log();
         assert!(node.start_bounded("test-fan-saga".into(), "fan-saga".into(), "a,bb,ccc".into()));
         let (_o, done) = drain(&rx, "fan-saga");
         assert_eq!(done.0, "error");
         let mut fan_comp = drain_comp_log();
         fan_comp.sort();
-        // odd segment ran "a","ccc"; even ran "bb"; the hook fires once per
-        // segment with that segment's own outputs. SplitOp (no hook) is skipped.
+        // odd entity ran "a","ccc"; even ran "bb"; the hook fires once per
+        // entity with that entity's own outputs. SplitProc (no hook) is skipped.
         assert_eq!(
             fan_comp,
             vec![
@@ -2780,8 +2775,8 @@ mod tests {
             factory_id: "test-emit-bounded".into(),
             init_values: "argz".into(),
             kind: "bounded".into(),
-            resume_segment_count: 0,
-            op_journal: None,
+            resume_entity_count: 0,
+            proc_journal: None,
         };
         let mut errors = Vec::new();
         add.handle(&mut node, "", &mut errors);
@@ -2799,8 +2794,8 @@ mod tests {
             factory_id: "test-unregistered".into(),
             init_values: "".into(),
             kind: "bounded".into(),
-            resume_segment_count: 0,
-            op_journal: None,
+            resume_entity_count: 0,
+            proc_journal: None,
         };
         let mut errors_bad = Vec::new();
         add_bad.handle(&mut node, "", &mut errors_bad);
@@ -2813,8 +2808,8 @@ mod tests {
             factory_id: "test-emit-bounded".into(),
             init_values: "".into(),
             kind: "continuous".into(),
-            resume_segment_count: 0,
-            op_journal: None,
+            resume_entity_count: 0,
+            proc_journal: None,
         };
         let mut errors_unknown = Vec::new();
         add_unknown.handle(&mut node, "", &mut errors_unknown);
@@ -2823,15 +2818,15 @@ mod tests {
         assert!(node.get_bounded("kind-bad").is_none());
 
         // --- §5b.1/§7c.1 durable bounded actually writes WAL; opt-out writes nothing ---
-        // FanBounded is durable-by-default; its FanOp applies a Change per item,
-        // which the driver flushes as a segment_state_change frame to the sink.
+        // FanBounded is durable-by-default; its FanProc applies a Change per item,
+        // which the driver flushes as an entity_state_change frame to the sink.
         WAL_FRAMES.lock().unwrap().clear();
         assert!(node.start_bounded("test-fan-bounded".into(), "fan-wal".into(), "a,bb".into()));
         let (_o, done) = drain(&rx, "fan-wal");
         assert_eq!(done.0, "ok");
         assert!(
             !WAL_FRAMES.lock().unwrap().is_empty(),
-            "a durable bounded operative ships segment_state_change frames to the WAL"
+            "a durable bounded operative ships entity_state_change frames to the WAL"
         );
 
         // The opt-out twin does identical work with PERSISTENCE_ENABLED=false:
@@ -2850,11 +2845,11 @@ mod tests {
         );
 
         // --- §5b.2 crash-resume gate: a durable structured bounded holds its
-        // first Operation until the Controller's Segment restores land, and its
-        // Segments are reachable by the restore handler via wire identity ---
+        // first Procedure until the Controller's Entity restores land, and its
+        // Entities are reachable by the restore handler via wire identity ---
         WAL_FRAMES.lock().unwrap().clear();
-        // Spawn as a "respawn" expecting one Segment restore: the driver builds
-        // and registers its Segments, then parks on the resume gate — nothing
+        // Spawn as a "respawn" expecting one Entity restore: the driver builds
+        // and registers its Entities, then parks on the resume gate — nothing
         // runs yet because no restore has landed.
         assert!(node.start_bounded_resumable(
             "test-fan-bounded".into(),
@@ -2863,32 +2858,29 @@ mod tests {
             1,
             None,
         ));
-        // The bounded Segments are now reachable by wire identity — the restore
+        // The bounded Entities are now reachable by wire identity — the restore
         // handler could not see them before this change (the unbounded lookup
-        // only scans UnboundedInstance segments).
-        let even_id = crate::segment::flusher::encode_segment_identity(
-            "resume-inst",
-            "bounded_fan_op",
-            "even",
-        );
+        // only scans UnboundedInstance entities).
+        let even_id =
+            crate::entity::flusher::encode_entity_identity("resume-inst", "bounded_fan_op", "even");
         let (resume_instance, _slot) = node
-            .find_bounded_segment(&even_id)
-            .expect("a durable bounded Segment is reachable by the restore handler");
+            .find_bounded_entity(&even_id)
+            .expect("a durable bounded Entity is reachable by the restore handler");
         // Release one restore, exactly as the RestoreInitState handler does after
-        // applying a persisted Segment: the parked driver wakes and runs to
+        // applying a persisted Entity: the parked driver wakes and runs to
         // completion (resume-not-cold-start is proven end-to-end in the Elixir
         // integration test, which does the real WAL round-trip).
         resume_instance.note_restored();
         let (_o, done) = drain(&rx, "resume-inst");
         assert_eq!(
             done.0, "ok",
-            "the driver resumes once the expected Segment restore lands"
+            "the driver resumes once the expected Entity restore lands"
         );
 
-        // --- bounded-op-journal §D3: a durable structured chain commits every
-        // op boundary — one OpCommit per stage, gated on the (fake
+        // --- bounded-proc-journal §D3: a durable structured chain commits every
+        // proc boundary — one ProcCommit per stage, gated on the (fake
         // controller's) durable ack, carrying the codec-serialized handoff ---
-        let _ = drain_op_commits();
+        let _ = drain_proc_commits();
         assert!(node.start_bounded(
             "test-chain-bounded".into(),
             "chain-commit".into(),
@@ -2897,11 +2889,11 @@ mod tests {
         let (outs, done) = drain(&rx, "chain-commit");
         assert_eq!(done.0, "ok");
         assert_eq!(outs, vec![b"x-1-2".to_vec()]);
-        let commits = drain_op_commits();
+        let commits = drain_proc_commits();
         assert_eq!(
-            commits.iter().map(|c| c.op_idx).collect::<Vec<_>>(),
+            commits.iter().map(|c| c.proc_idx).collect::<Vec<_>>(),
             vec![0, 1],
-            "one gated OpCommit per completed stage, in chain order"
+            "one gated ProcCommit per completed stage, in chain order"
         );
         assert!(commits.iter().all(|c| c.operative_id == "chain-commit"));
         // Stage 0 hands off on the codec'd `mid` channel (id 1: in=0, mid=1);
@@ -2914,30 +2906,30 @@ mod tests {
         );
         assert!(commits[1].handoff.is_empty());
         assert_eq!(
-            commits[0].segments_ran.len(),
+            commits[0].entities_ran.len(),
             1,
-            "one segment ran in stage 0"
+            "one entity ran in stage 0"
         );
 
         // bounded-transactional-outbox: the terminal stage's plugin output did
         // NOT go to the wire — it was staged and rode INSIDE that stage's
-        // commit, keyed by the producing segment and its per-op sequence.
+        // commit, keyed by the producing entity and its per-proc sequence.
         assert!(
             wire_emits_for("chain-commit").is_empty(),
-            "a durable structured operative stages: nothing reaches the wire mid-op"
+            "a durable structured operative stages: nothing reaches the wire mid-proc"
         );
         assert!(
             commits[0].outbox.is_empty(),
-            "stage 0's output is inter-op (codec handoff), not plugin-bound"
+            "stage 0's output is inter-proc (codec handoff), not plugin-bound"
         );
         assert_eq!(commits[1].outbox.len(), 1, "stage 1's plugin output staged");
         assert_eq!(commits[1].outbox[0].payload, b"x-1-2".to_vec());
         assert_eq!(commits[1].outbox[0].channel, "out");
-        assert_eq!(commits[1].outbox[0].seq_in_op, 0);
-        assert!(!commits[1].outbox[0].segment_id.is_empty());
+        assert_eq!(commits[1].outbox[0].seq_in_proc, 0);
+        assert!(!commits[1].outbox[0].entity_id.is_empty());
         assert!(commits.iter().all(|c| !c.compensating));
 
-        // The run-sugar path is untouched: no operations, no barrier to stage
+        // The run-sugar path is untouched: no procedures, no barrier to stage
         // against, so its emit goes straight to the wire (at-least-once).
         assert_eq!(
             wire_emits_for("bounded-ok"),
@@ -2955,8 +2947,8 @@ mod tests {
         let (outs, done) = drain(&rx, "optout-no-commit");
         assert_eq!(done.0, "ok");
         assert!(
-            drain_op_commits().is_empty(),
-            "an opted-out class skips the op-commit handshake entirely"
+            drain_proc_commits().is_empty(),
+            "an opted-out class skips the proc-commit handshake entirely"
         );
         assert_eq!(
             wire_emits_for("optout-no-commit"),
@@ -2965,21 +2957,21 @@ mod tests {
         );
         assert_eq!(outs, vec![b"1:a".to_vec()]);
 
-        // --- bounded-transactional-outbox: a failed operation leaks nothing ---
+        // --- bounded-transactional-outbox: a failed procedure leaks nothing ---
         assert!(node.start_bounded("test-leak-bounded".into(), "leak-1".into(), "x".into()));
         let (outs, done) = drain(&rx, "leak-1");
         assert_eq!(done.0, "error");
         assert!(
             outs.is_empty() && wire_emits_for("leak-1").is_empty(),
-            "the failing op emitted before it failed; that output must never be delivered"
+            "the failing proc emitted before it failed; that output must never be delivered"
         );
         assert!(
-            drain_op_commits().is_empty(),
-            "the op never committed, so its staged output was never journaled"
+            drain_proc_commits().is_empty(),
+            "the proc never committed, so its staged output was never journaled"
         );
 
         // --- bounded-transactional-outbox §D5: a compensate hook's undo output
-        // is staged too, and rides a `compensating` commit for the operation it
+        // is staged too, and rides a `compensating` commit for the procedure it
         // reverses (the forward output already flushed under its own key) ---
         assert!(node.start_bounded("test-undo-saga".into(), "undo-1".into(), "u".into()));
         let (outs, done) = drain(&rx, "undo-1");
@@ -2988,7 +2980,7 @@ mod tests {
             wire_emits_for("undo-1").is_empty(),
             "undo output stages like forward output — never straight to the wire"
         );
-        let commits = drain_op_commits();
+        let commits = drain_proc_commits();
         let forward: Vec<_> = commits.iter().filter(|c| !c.compensating).collect();
         let undo: Vec<_> = commits.iter().filter(|c| c.compensating).collect();
         assert_eq!(forward.len(), 1, "only UndoEmit completed forward");
@@ -2997,8 +2989,8 @@ mod tests {
             b"did:u".to_vec(),
             "the hybrid channel staged the forward copy"
         );
-        assert_eq!(undo.len(), 1, "one compensated segment ⇒ one undo record");
-        assert_eq!(undo[0].op_idx, 0, "the compensated operation's index");
+        assert_eq!(undo.len(), 1, "one compensated entity ⇒ one undo record");
+        assert_eq!(undo[0].proc_idx, 0, "the compensated procedure's index");
         assert_eq!(undo[0].outbox.len(), 1);
         assert_eq!(undo[0].outbox[0].payload, b"undo:did:u".to_vec());
         assert_eq!(undo[0].outbox[0].channel, "mid");
@@ -3010,19 +3002,19 @@ mod tests {
         // controller flushes each commit's outbox on ack), in that order.
         assert_eq!(outs, vec![b"did:u".to_vec(), b"undo:did:u".to_vec()]);
 
-        // --- bounded-op-journal §D5: resume-skip — a shipped journal skips the
+        // --- bounded-proc-journal §D5: resume-skip — a shipped journal skips the
         // committed stages and seeds the next one from the journaled handoff ---
         let (outs, done) = resume_chain_with_journal(
             &node,
             &rx,
             "chain-resume",
             instance::JournalResume {
-                committed_op_idxs: vec![0],
-                // The seed is the COMMITTING operation's own handoff — keyed by
-                // its op_idx, so a fan-out's children each take their own
+                committed_proc_idxs: vec![0],
+                // The seed is the COMMITTING procedure's own handoff — keyed by
+                // its proc_idx, so a fan-out's children each take their own
                 // parent's edge (`bounded-branching`).
-                op_handoffs: vec![instance::EdgeHandoff {
-                    op_idx: 0,
+                proc_handoffs: vec![instance::EdgeHandoff {
+                    proc_idx: 0,
                     handoff: vec![(1, postcard::to_allocvec(&"seed".to_string()).unwrap())],
                 }],
                 ..Default::default()
@@ -3036,9 +3028,9 @@ mod tests {
              seeded from the journaled handoff"
         );
         assert_eq!(
-            drain_op_commits()
+            drain_proc_commits()
                 .iter()
-                .map(|c| c.op_idx)
+                .map(|c| c.proc_idx)
                 .collect::<Vec<_>>(),
             vec![1],
             "only the resumed (uncommitted) stage re-commits"
@@ -3051,18 +3043,18 @@ mod tests {
             &rx,
             "chain-done",
             instance::JournalResume {
-                committed_op_idxs: vec![0, 1],
+                committed_proc_idxs: vec![0, 1],
                 ..Default::default()
             },
         );
         assert_eq!(done.0, "ok");
         assert!(outs.is_empty(), "a fully-committed chain re-runs nothing");
-        assert!(drain_op_commits().is_empty());
+        assert!(drain_proc_commits().is_empty());
 
         // --- §4.3 durable saga records: a fresh abnormal run emits one
-        // compensation_intent per completed compensable segment and one
-        // compensation_done per compensated segment ---
-        use crate::segment::segment_state_sink::{
+        // compensation_intent per completed compensable entity and one
+        // compensation_done per compensated entity ---
+        use crate::entity::state_sink::{
             COMPENSATION_DONE_PAYLOAD_ID as DONE, COMPENSATION_INTENT_PAYLOAD_ID as INTENT,
         };
         WAL_FRAMES.lock().unwrap().clear();
@@ -3075,13 +3067,9 @@ mod tests {
         assert_eq!(
             count_wal_frames(INTENT),
             2,
-            "one intent per completed compensable segment"
+            "one intent per completed compensable entity"
         );
-        assert_eq!(
-            count_wal_frames(DONE),
-            2,
-            "one done per compensated segment"
-        );
+        assert_eq!(count_wal_frames(DONE), 2, "one done per compensated entity");
 
         // --- §4.3 crash-resume finishes the remaining hooks, skipping the ones
         // already recorded done, and does NOT re-run the forward chain ---
@@ -3097,12 +3085,12 @@ mod tests {
             None,
         ));
         let a_id =
-            crate::segment::flusher::encode_segment_identity("resume-saga", "resume_undo_a", "");
+            crate::entity::flusher::encode_entity_identity("resume-saga", "resume_undo_a", "");
         let b_id =
-            crate::segment::flusher::encode_segment_identity("resume-saga", "resume_undo_b", "");
+            crate::entity::flusher::encode_entity_identity("resume-saga", "resume_undo_b", "");
         let (saga_inst, _slot) = node
-            .find_bounded_segment(&a_id)
-            .expect("a durable bounded saga Segment is reachable by the restore handler");
+            .find_bounded_entity(&a_id)
+            .expect("a durable bounded saga Entity is reachable by the restore handler");
         // Original run: A + B both completed (intent); B was already undone before
         // the crash (done). Resume must undo A and SKIP B — in reverse — without
         // re-running the forward chain (so no fresh intents, no `a:`/`b:` output).
@@ -3116,7 +3104,7 @@ mod tests {
         );
         assert!(
             outs.is_empty(),
-            "compensation-resume does not re-run forward ops"
+            "compensation-resume does not re-run forward procs"
         );
         assert_eq!(
             drain_comp_log(),
@@ -3137,7 +3125,7 @@ mod tests {
         // --- bounded-branching fan-in: the join runs once, after BOTH
         // producers committed, with the accumulated batch ---
         let _ = drain_diamond_log();
-        let _ = drain_op_commits();
+        let _ = drain_proc_commits();
         assert!(node.start_bounded(
             "test-diamond-bounded".into(),
             "diamond-1".into(),
@@ -3151,9 +3139,9 @@ mod tests {
             "the join's input batch accumulates BOTH producers' outputs (B's first: sibling order)"
         );
         assert_eq!(
-            drain_op_commits()
+            drain_proc_commits()
                 .iter()
-                .map(|c| c.op_idx)
+                .map(|c| c.proc_idx)
                 .collect::<Vec<_>>(),
             vec![0, 1, 2, 3],
             "one commit per node — the join commits exactly once, after both producers"
@@ -3178,7 +3166,7 @@ mod tests {
         // fresh producer — the committed branch never re-runs, and the join
         // accumulates B's JOURNALED handoff with C's fresh output ---
         let _ = drain_diamond_log();
-        let da_id = crate::segment::flusher::encode_segment_identity("diamond-r", "diamond_a", "");
+        let da_id = crate::entity::flusher::encode_entity_identity("diamond-r", "diamond_a", "");
         let diamond_spec =
             registry::get_class("test-diamond-bounded").expect("diamond class registered");
         let diamond_topo = diamond_spec.topology.as_ref().expect("structured");
@@ -3187,31 +3175,31 @@ mod tests {
         let enc = |s: &str| postcard::to_allocvec(&s.to_string()).unwrap();
         // The journal a diamond-shaped chain leaves when A (the fan) and B (one
         // branch) committed before the crash: each producer's edge handoff, plus
-        // the segments each of them ran. Shared by the branching resume below and
+        // the entities each of them ran. Shared by the branching resume below and
         // by both merge resumes — the shape is the same, only the channels and
-        // the segments each op ran differ.
+        // the entities each proc ran differ.
         let ab_committed = |fan: u32, b: u32, a_segs, b_segs| instance::JournalResume {
-            committed_op_idxs: vec![0, 1],
-            op_handoffs: vec![
+            committed_proc_idxs: vec![0, 1],
+            proc_handoffs: vec![
                 instance::EdgeHandoff {
-                    op_idx: 0,
+                    proc_idx: 0,
                     handoff: vec![(fan, enc("a:x"))],
                 },
                 instance::EdgeHandoff {
-                    op_idx: 1,
+                    proc_idx: 1,
                     handoff: vec![(b, enc("b:a:x"))],
                 },
             ],
-            committed_ops: vec![
-                instance::CommittedOp {
-                    op_idx: 0,
+            committed_procs: vec![
+                instance::CommittedProc {
+                    proc_idx: 0,
                     iter: 0,
-                    segments_ran: a_segs,
+                    entities_ran: a_segs,
                 },
-                instance::CommittedOp {
-                    op_idx: 1,
+                instance::CommittedProc {
+                    proc_idx: 1,
                     iter: 0,
-                    segments_ran: b_segs,
+                    entities_ran: b_segs,
                 },
             ],
             ..Default::default()
@@ -3224,8 +3212,8 @@ mod tests {
             Some(ab_committed(d_fan, d_b, vec![da_id.clone()], Vec::new())),
         ));
         let (diamond_inst, _slot) = node
-            .find_bounded_segment(&da_id)
-            .expect("a durable diamond Segment is reachable by the restore handler");
+            .find_bounded_entity(&da_id)
+            .expect("a durable diamond Entity is reachable by the restore handler");
         diamond_inst.note_restored();
         let (outs, done) = drain(&rx, "diamond-r");
         assert_eq!(done.0, "ok");
@@ -3246,9 +3234,9 @@ mod tests {
             "the join runs once, with B's journaled handoff banked and C's fresh output appended"
         );
         assert_eq!(
-            drain_op_commits()
+            drain_proc_commits()
                 .iter()
-                .map(|c| c.op_idx)
+                .map(|c| c.proc_idx)
                 .collect::<Vec<_>>(),
             vec![2, 3],
             "the resume commits only C and the join"
@@ -3258,7 +3246,7 @@ mod tests {
         // before either producer, the shared root last ---
         let _ = drain_comp_log();
         let _ = drain_diamond_log();
-        let _ = drain_op_commits();
+        let _ = drain_proc_commits();
         assert!(node.start_bounded("test-diamond-saga".into(), "diamond-s".into(), "x".into()));
         let (_o, done) = drain(&rx, "diamond-s");
         assert_eq!(done.0, "error");
@@ -3274,11 +3262,11 @@ mod tests {
             "reverse-topological over the DAG: join first, shared root last"
         );
 
-        // --- multi-input-operations: the same fan-in wired as a merge. Each
+        // --- multi-input-procedures: the same fan-in wired as a merge. Each
         // producer's contribution reaches the join through ITS edge's mapping,
         // so a node whose Input is neither producer's Output still dispatches ---
         let _ = drain_diamond_log();
-        let _ = drain_op_commits();
+        let _ = drain_proc_commits();
         assert!(node.start_bounded("test-merge-bounded".into(), "merge-1".into(), "x".into()));
         let (outs, done) = drain(&rx, "merge-1");
         assert_eq!(done.0, "ok");
@@ -3291,8 +3279,8 @@ mod tests {
         // --- and the journal re-seed maps too: B's handoff is decoded with the
         // channel's codec, then lifted by the same mapping the live run used ---
         let _ = drain_diamond_log();
-        let _ = drain_op_commits();
-        let ma_id = crate::segment::flusher::encode_segment_identity("merge-r", "diamond_a", "");
+        let _ = drain_proc_commits();
+        let ma_id = crate::entity::flusher::encode_entity_identity("merge-r", "diamond_a", "");
         let merge_spec = registry::get_class("test-merge-bounded").expect("merge class registered");
         let merge_topo = merge_spec.topology.as_ref().expect("structured");
         let m_fan = merge_topo.lookup_channel_id("m_fan").unwrap();
@@ -3305,8 +3293,8 @@ mod tests {
             Some(ab_committed(m_fan, m_b, vec![ma_id.clone()], Vec::new())),
         ));
         let (merge_inst, _slot) = node
-            .find_bounded_segment(&ma_id)
-            .expect("a durable merge Segment is reachable by the restore handler");
+            .find_bounded_entity(&ma_id)
+            .expect("a durable merge Entity is reachable by the restore handler");
         merge_inst.note_restored();
         let (outs, done) = drain(&rx, "merge-r");
         assert_eq!(done.0, "ok");
@@ -3317,11 +3305,11 @@ mod tests {
         );
 
         // --- a panicking mapping is CONTAINED. It runs on the driver thread,
-        // outside any segment invocation, so an unguarded unwind would kill the
+        // outside any entity invocation, so an unguarded unwind would kill the
         // thread before `emit_bounded_completed` and strand the instance ---
         let _ = drain_comp_log();
         let _ = drain_diamond_log();
-        let _ = drain_op_commits();
+        let _ = drain_proc_commits();
         assert!(node.start_bounded(
             "test-panic-merge-bounded".into(),
             "merge-panic".into(),
@@ -3342,7 +3330,7 @@ mod tests {
         // abort began: the producer whose edge blew up (B) and its parent (A),
         // reverse-topologically. C ran in the same level but the abort returns
         // before its stage record is pushed, so it is not undone — the same
-        // mid-level shape a failing op commit has always had. Asserted as an
+        // mid-level shape a failing proc commit has always had. Asserted as an
         // exact list so the Java arm is pinned to it, not merely compatible.
         let comp = drain_comp_log();
         assert_eq!(
@@ -3364,11 +3352,11 @@ mod tests {
         // is the journal's own stages ---
         let _ = drain_comp_log();
         let _ = drain_diamond_log();
-        let _ = drain_op_commits();
+        let _ = drain_proc_commits();
         let pa_id =
-            crate::segment::flusher::encode_segment_identity("merge-panic-r", "diamond_a", "");
+            crate::entity::flusher::encode_entity_identity("merge-panic-r", "diamond_a", "");
         let pb_id =
-            crate::segment::flusher::encode_segment_identity("merge-panic-r", "diamond_b", "");
+            crate::entity::flusher::encode_entity_identity("merge-panic-r", "diamond_b", "");
         let panic_spec =
             registry::get_class("test-panic-merge-bounded").expect("panic merge class registered");
         let panic_topo = panic_spec.topology.as_ref().expect("structured");
@@ -3388,8 +3376,8 @@ mod tests {
             )),
         ));
         let (panic_inst, _slot) = node
-            .find_bounded_segment(&pa_id)
-            .expect("a durable resumed Segment is reachable by the restore handler");
+            .find_bounded_entity(&pa_id)
+            .expect("a durable resumed Entity is reachable by the restore handler");
         panic_inst.note_restored();
         let (outs, done) = drain(&rx, "merge-panic-r");
         assert_eq!(
@@ -3405,9 +3393,9 @@ mod tests {
         // The journaled stages ARE the undo scope here — `drive_chain` seeds the
         // resumed iteration's completed list from the journal. The comp log is
         // NOT the signal to read: `diamond_op!` logs once per completed output
-        // and a journal-rebuilt SegmentRun carries none, so a real compensation
+        // and a journal-rebuilt EntityRun carries none, so a real compensation
         // leaves it empty. The compensation-done markers the sink already
-        // captures are, and they carry the segment they undid.
+        // captures are, and they carry the entity they undid.
         let done_frames: Vec<Vec<u8>> = WAL_FRAMES
             .lock()
             .unwrap()
@@ -3423,13 +3411,13 @@ mod tests {
         );
         assert!(
             carries(&done_frames[0], &pb_id) && carries(&done_frames[1], &pa_id),
-            "reverse-topological: B's segment is undone before A's"
+            "reverse-topological: B's entity is undone before A's"
         );
 
         // --- bounded-durable-loop: one iteration per inbox item, each ending in
         // a durable iteration commit; an idle inbox parks the instance ---
         std::env::set_var("FLEZHA_BOUNDED_PARK_IDLE_MS", "300");
-        let _ = drain_op_commits();
+        let _ = drain_proc_commits();
         assert!(node.start_bounded("test-chat-loop".into(), "chat-1".into(), "ignored".into()));
         let chat = node
             .get_bounded("chat-1")
@@ -3462,12 +3450,12 @@ mod tests {
             "each commit records the inbox offset its iteration consumed"
         );
         assert_eq!(
-            drain_op_commits()
+            drain_proc_commits()
                 .iter()
-                .map(|c| (c.iter, c.op_idx))
+                .map(|c| (c.iter, c.proc_idx))
                 .collect::<Vec<_>>(),
             vec![(0, 0), (0, 1), (1, 0), (1, 1)],
-            "every op commit is stamped with its enclosing iteration"
+            "every proc commit is stamped with its enclosing iteration"
         );
 
         let parks = drain_iter_parks();
@@ -3483,8 +3471,7 @@ mod tests {
 
         // --- resume-at-iteration: a journal recording iterations 0-1 committed
         // enters iteration 2 — the committed turns never re-run ---
-        let s1_id =
-            crate::segment::flusher::encode_segment_identity("chat-2", "bounded_stage1", "");
+        let s1_id = crate::entity::flusher::encode_entity_identity("chat-2", "bounded_stage1", "");
         assert!(node.start_bounded_resumable(
             "test-chat-loop".into(),
             "chat-2".into(),
@@ -3493,24 +3480,24 @@ mod tests {
             Some(instance::JournalResume {
                 iter: 2,
                 consumed_offset: 7,
-                committed_ops: vec![
-                    instance::CommittedOp {
-                        op_idx: 0,
+                committed_procs: vec![
+                    instance::CommittedProc {
+                        proc_idx: 0,
                         iter: 0,
-                        segments_ran: vec![s1_id.clone()],
+                        entities_ran: vec![s1_id.clone()],
                     },
-                    instance::CommittedOp {
-                        op_idx: 1,
+                    instance::CommittedProc {
+                        proc_idx: 1,
                         iter: 0,
-                        segments_ran: Vec::new(),
+                        entities_ran: Vec::new(),
                     },
                 ],
                 ..Default::default()
             }),
         ));
         let (chat2, _slot) = node
-            .find_bounded_segment(&s1_id)
-            .expect("the loop's Segment is reachable by the restore handler");
+            .find_bounded_entity(&s1_id)
+            .expect("the loop's Entity is reachable by the restore handler");
         chat2.note_restored();
         assert!(chat2.push_inbox(b"third".to_vec(), 9));
 
@@ -3550,8 +3537,8 @@ mod tests {
             ),
         ] {
             let _ = drain_comp_log();
-            let seg = crate::segment::flusher::encode_segment_identity(id, "loop_reserve", "");
-            // Journal: iteration 0 committed both of its operations.
+            let seg = crate::entity::flusher::encode_entity_identity(id, "loop_reserve", "");
+            // Journal: iteration 0 committed both of its procedures.
             assert!(node.start_bounded_resumable(
                 factory.into(),
                 id.into(),
@@ -3560,24 +3547,24 @@ mod tests {
                 Some(instance::JournalResume {
                     iter: 1,
                     consumed_offset: 2,
-                    committed_ops: vec![
-                        instance::CommittedOp {
-                            op_idx: 0,
+                    committed_procs: vec![
+                        instance::CommittedProc {
+                            proc_idx: 0,
                             iter: 0,
-                            segments_ran: vec![seg.clone()],
+                            entities_ran: vec![seg.clone()],
                         },
-                        instance::CommittedOp {
-                            op_idx: 1,
+                        instance::CommittedProc {
+                            proc_idx: 1,
                             iter: 0,
-                            segments_ran: Vec::new(),
+                            entities_ran: Vec::new(),
                         },
                     ],
                     ..Default::default()
                 }),
             ));
             let (inst, _slot) = node
-                .find_bounded_segment(&seg)
-                .expect("the loop saga's Segment is reachable by the restore handler");
+                .find_bounded_entity(&seg)
+                .expect("the loop saga's Entity is reachable by the restore handler");
             inst.note_restored();
             assert!(inst.push_inbox(b"boom".to_vec(), 5));
 
@@ -3594,19 +3581,20 @@ mod tests {
         // iterations — reverse iteration, reverse stage — BEFORE the loop resumes
         // forward at the rewound-to iteration ---
         let _ = drain_comp_log();
-        let _ = drain_op_commits();
+        let _ = drain_proc_commits();
         // Keep-progress deliberately: a rewind unwinds committed iterations by
         // definition, so the undo must be forced all-or-nothing whatever the
         // class's crash rollback mode says.
         let id = "loop-rewind";
-        let seg = crate::segment::flusher::encode_segment_identity(id, "loop_reserve", "");
+        let seg = crate::entity::flusher::encode_entity_identity(id, "loop_reserve", "");
         // Rewound to iteration 0: iteration 0 stays committed, iterations 1 and 2
         // are outstanding undo, and the loop resumes at 1.
-        let undo_op = |op_idx: u32, iter: u32, segments_ran: Vec<Vec<u8>>| instance::CommittedOp {
-            op_idx,
-            iter,
-            segments_ran,
-        };
+        let undo_op =
+            |proc_idx: u32, iter: u32, entities_ran: Vec<Vec<u8>>| instance::CommittedProc {
+                proc_idx,
+                iter,
+                entities_ran,
+            };
         assert!(node.start_bounded_resumable(
             "test-loop-saga-keep".into(),
             id.into(),
@@ -3615,7 +3603,7 @@ mod tests {
             Some(instance::JournalResume {
                 iter: 1,
                 consumed_offset: 1,
-                committed_ops: vec![undo_op(0, 0, vec![seg.clone()]), undo_op(1, 0, Vec::new())],
+                committed_procs: vec![undo_op(0, 0, vec![seg.clone()]), undo_op(1, 0, Vec::new())],
                 rewind_undo: vec![
                     undo_op(0, 1, vec![seg.clone()]),
                     undo_op(1, 1, Vec::new()),
@@ -3626,8 +3614,8 @@ mod tests {
             }),
         ));
         let (inst, _slot) = node
-            .find_bounded_segment(&seg)
-            .expect("the loop saga's Segment is reachable by the restore handler");
+            .find_bounded_entity(&seg)
+            .expect("the loop saga's Entity is reachable by the restore handler");
         inst.note_restored();
         // The resumed turn fails, so the run reaches a terminal state (the fake
         // controller must stay in `drain` to ack the undo commits).
@@ -3646,23 +3634,23 @@ mod tests {
              outputs), and only then does the resumed turn run and roll itself back \
              (in-flight ⇒ 1 retained output)"
         );
-        let undo: Vec<(u32, u32)> = drain_op_commits()
+        let undo: Vec<(u32, u32)> = drain_proc_commits()
             .iter()
             .filter(|c| c.compensating)
-            .map(|c| (c.op_idx, c.iter))
+            .map(|c| (c.proc_idx, c.iter))
             .collect();
         assert_eq!(
             undo,
             vec![(1, 2), (0, 2), (1, 1), (0, 1)],
-            "reverse iteration, reverse stage — and the hookless terminal op still \
+            "reverse iteration, reverse stage — and the hookless terminal proc still \
              journals its (empty) `compensated` record, which is what drains it out \
              of the next fold's outstanding work"
         );
 
         std::env::remove_var("FLEZHA_BOUNDED_PARK_IDLE_MS");
 
-        // --- bounded-segment-retry: a transient segment failure recovers in
-        // place — the sibling segment is NOT re-run and nothing compensates ---
+        // --- bounded-entity-retry: a transient entity failure recovers in
+        // place — the sibling entity is NOT re-run and nothing compensates ---
         arm_flaky(1, false);
         assert!(node.start_bounded(
             "test-retry-bounded".into(),
@@ -3675,26 +3663,26 @@ mod tests {
         assert_eq!(
             outs,
             vec![b"even:bb".to_vec(), b"odd:a".to_vec()],
-            "each segment's output lands exactly once — a retried attempt's \
+            "each entity's output lands exactly once — a retried attempt's \
              staged output is discarded, not double-emitted"
         );
         assert_eq!(
             ODD_ATTEMPTS.load(Ordering::SeqCst),
             2,
-            "the failing segment ran twice (fail, then retry)"
+            "the failing entity ran twice (fail, then retry)"
         );
         assert_eq!(
             EVEN_RUNS.load(Ordering::SeqCst),
             1,
-            "the sibling segment stayed buffered at the barrier: no re-run"
+            "the sibling entity stayed buffered at the barrier: no re-run"
         );
         assert!(
             drain_comp_log().is_empty(),
             "a recovered retry must not compensate"
         );
 
-        // --- retry exhaustion fails the operation exactly as before: the
-        // original error surfaces and completed operations compensate ---
+        // --- retry exhaustion fails the procedure exactly as before: the
+        // original error surfaces and completed procedures compensate ---
         arm_flaky(99, false);
         assert!(node.start_bounded(
             "test-retry-bounded".into(),
@@ -3731,7 +3719,7 @@ mod tests {
         assert_eq!(
             ODD_ATTEMPTS.load(Ordering::SeqCst),
             1,
-            "OperationError::non_retryable ⇒ no retry"
+            "ProcedureError::non_retryable ⇒ no retry"
         );
         assert_eq!(drain_comp_log(), vec!["undo-retry-reserve".to_string()]);
 
@@ -3754,7 +3742,7 @@ mod tests {
         // --- an external stop interrupts a waiting backoff (30 s base: the run
         // can only end inside `drain`'s deadline by observing the cancel in the
         // wait). The stop rides a helper thread because this thread is the fake
-        // controller — it must stay in `drain` to ack the chain's op commits ---
+        // controller — it must stay in `drain` to ack the chain's proc commits ---
         arm_flaky(99, false);
         assert!(node.start_bounded(
             "test-retry-slow-bounded".into(),
@@ -3787,7 +3775,7 @@ mod tests {
         // --- bounded-branching: A→(B,C) runs to DONE — both branches receive
         // what A released on the channel they consume, and the operative is `ok`
         // exactly when every leaf has committed ---
-        let _ = drain_op_commits();
+        let _ = drain_proc_commits();
         assert!(node.start_bounded("test-tree-bounded".into(), "tree-1".into(), "x".into()));
         let (mut tree_outs, done) = drain(&rx, "tree-1");
         assert_eq!(
@@ -3800,7 +3788,7 @@ mod tests {
             vec![b"echo:x-1".to_vec(), b"x-1-2".to_vec()],
             "each branch consumed Stage1's `mid` batch and emitted on its own sink"
         );
-        let committed: Vec<u32> = drain_op_commits().iter().map(|c| c.op_idx).collect();
+        let committed: Vec<u32> = drain_proc_commits().iter().map(|c| c.proc_idx).collect();
         assert_eq!(
             committed,
             vec![0, 1, 2],
@@ -3809,9 +3797,9 @@ mod tests {
 
         // --- bounded-branching resume: the journal records A and B committed, so
         // only C re-runs — seeded from A's journaled edge, not from B's ---
-        let _ = drain_op_commits();
+        let _ = drain_proc_commits();
         let id = "tree-resume";
-        let root_seg = crate::segment::flusher::encode_segment_identity(id, "bounded_stage1", "");
+        let root_seg = crate::entity::flusher::encode_entity_identity(id, "bounded_stage1", "");
         // Channel ids follow declaration order: `in` = 0, `mid` = 1.
         assert!(node.start_bounded_resumable(
             "test-tree-bounded".into(),
@@ -3819,29 +3807,29 @@ mod tests {
             "ignored-args".into(),
             1,
             Some(instance::JournalResume {
-                committed_op_idxs: vec![0, 1],
-                op_handoffs: vec![instance::EdgeHandoff {
-                    op_idx: 0,
+                committed_proc_idxs: vec![0, 1],
+                proc_handoffs: vec![instance::EdgeHandoff {
+                    proc_idx: 0,
                     handoff: vec![(1, postcard::to_allocvec(&"resumed-1".to_string()).unwrap())],
                 }],
-                committed_ops: vec![
-                    instance::CommittedOp {
-                        op_idx: 0,
+                committed_procs: vec![
+                    instance::CommittedProc {
+                        proc_idx: 0,
                         iter: 0,
-                        segments_ran: vec![root_seg.clone()],
+                        entities_ran: vec![root_seg.clone()],
                     },
-                    instance::CommittedOp {
-                        op_idx: 1,
+                    instance::CommittedProc {
+                        proc_idx: 1,
                         iter: 0,
-                        segments_ran: Vec::new(),
+                        entities_ran: Vec::new(),
                     },
                 ],
                 ..Default::default()
             }),
         ));
         let (inst, _slot) = node
-            .find_bounded_segment(&root_seg)
-            .expect("the tree's root Segment is reachable by the restore handler");
+            .find_bounded_entity(&root_seg)
+            .expect("the tree's root Entity is reachable by the restore handler");
         inst.note_restored();
         let (outs, done) = drain(&rx, id);
         assert_eq!(done.0, "ok");
@@ -3851,9 +3839,9 @@ mod tests {
             "only the uncommitted branch re-ran, seeded from its parent's edge"
         );
         assert_eq!(
-            drain_op_commits()
+            drain_proc_commits()
                 .iter()
-                .map(|c| c.op_idx)
+                .map(|c| c.proc_idx)
                 .collect::<Vec<_>>(),
             vec![2],
             "the committed root and its committed sibling did NOT re-run"
@@ -3873,7 +3861,7 @@ mod tests {
                 "undo-reserve:reserved:o1".to_string(),
             ],
             "descendants before ancestors: the sibling leaf and the failing branch's \
-             committed operation both unwind before the root they share"
+             committed procedure both unwind before the root they share"
         );
     }
 
@@ -3893,18 +3881,18 @@ mod tests {
             1,
             Some(journal),
         ));
-        let s1_id = crate::segment::flusher::encode_segment_identity(id, "bounded_stage1", "");
+        let s1_id = crate::entity::flusher::encode_entity_identity(id, "bounded_stage1", "");
         let (inst, _slot) = node
-            .find_bounded_segment(&s1_id)
-            .expect("chain segment reachable by the restore handler");
+            .find_bounded_entity(&s1_id)
+            .expect("chain entity reachable by the restore handler");
         inst.note_restored();
         drain(rx, id)
     }
 
-    /// Op-commits observed by the fake controller (`bounded-op-journal`
-    /// barrier): every `OpCommit` the drain helpers ack is recorded here
+    /// Proc-commits observed by the fake controller (`bounded-proc-journal`
+    /// barrier): every `ProcCommit` the drain helpers ack is recorded here
     /// so the gating/handoff assertions can inspect what would be journaled.
-    static OP_COMMITS: Mutex<Vec<crate::pb::OpCommit>> = Mutex::new(Vec::new());
+    static PROC_COMMITS: Mutex<Vec<crate::pb::ProcCommit>> = Mutex::new(Vec::new());
 
     /// Iteration commits observed by the fake controller (`bounded-durable-loop`
     /// boundary) — what the journal would record as `iter_committed`.
@@ -3916,13 +3904,13 @@ mod tests {
     static ITER_PARKS: Mutex<Vec<crate::pb::IterPark>> = Mutex::new(Vec::new());
 
     /// Every `EmitBoundedOutput` the drain helpers saw — output that went
-    /// STRAIGHT to the wire, bypassing any op boundary. A durable structured
+    /// STRAIGHT to the wire, bypassing any proc boundary. A durable structured
     /// operative must produce none of these (it stages); `run`-sugar and
     /// opted-out classes still do.
     static WIRE_EMITS: Mutex<Vec<(String, Vec<u8>)>> = Mutex::new(Vec::new());
 
-    fn drain_op_commits() -> Vec<crate::pb::OpCommit> {
-        std::mem::take(&mut *OP_COMMITS.lock().unwrap())
+    fn drain_proc_commits() -> Vec<crate::pb::ProcCommit> {
+        std::mem::take(&mut *PROC_COMMITS.lock().unwrap())
     }
 
     fn drain_iter_commits() -> Vec<crate::pb::IterCommit> {
@@ -3955,10 +3943,10 @@ mod tests {
     ) -> Vec<Vec<u8>> {
         use crate::pb::command_request::Command;
         match command {
-            Command::OpCommit(commit) => {
+            Command::ProcCommit(commit) => {
                 let flushed: Vec<Vec<u8>> =
                     commit.outbox.iter().map(|o| o.payload.clone()).collect();
-                OP_COMMITS.lock().unwrap().push(commit);
+                PROC_COMMITS.lock().unwrap().push(commit);
                 crate::shutdown::signal_result(&reference_id, Ok(String::new()));
                 flushed
             }
@@ -3979,7 +3967,7 @@ mod tests {
     fn control_request_operative(command: &crate::pb::command_request::Command) -> String {
         use crate::pb::command_request::Command;
         match command {
-            Command::OpCommit(c) => c.operative_id.clone(),
+            Command::ProcCommit(c) => c.operative_id.clone(),
             Command::IterCommit(c) => c.operative_id.clone(),
             Command::IterPark(p) => p.operative_id.clone(),
             _ => String::new(),
@@ -3990,7 +3978,7 @@ mod tests {
     /// collected outputs and the `(status, error, result)` completion tuple.
     /// "Output" is what reaches the plugins: a `run`-sugar / opted-out emit
     /// straight off the wire, plus a structured operative's staged outbox once
-    /// its op commits (the fake controller flushes it on ack).
+    /// its proc commits (the fake controller flushes it on ack).
     fn drain(rx: &Receiver<RunnerMessage>, id: &str) -> (Vec<Vec<u8>>, (String, String, Vec<u8>)) {
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut outs = Vec::new();

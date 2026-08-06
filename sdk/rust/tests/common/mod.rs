@@ -47,16 +47,16 @@ pub fn setup<R: UnboundedOperative>(
     (OperativeDispatchHandle { registry }, instance)
 }
 
-/// Declare a trivial test Operation: `State` built via `Default`, no segment
+/// Declare a trivial test Procedure: `State` built via `Default`, no entity
 /// keys / change type. The run body sees `(input, state, ctx)`. Use the
 /// `cap N` form to set a non-default mailbox capacity.
 #[macro_export]
-macro_rules! test_operation {
-    ($operation:ident, $name:literal, $input:ty => $output:ty, $state:ty,
+macro_rules! test_procedure {
+    ($procedure:ident, $name:literal, $input:ty => $output:ty, $state:ty,
      |$inp:tt, $st:tt, $ctx:tt| $body:block) => {
         #[derive(Default)]
-        struct $operation;
-        impl flezha_runner::operation::Operation for $operation {
+        struct $procedure;
+        impl flezha_runner::procedure::Procedure for $procedure {
             type Input = $input;
             type Output = $output;
             type State = $state;
@@ -73,16 +73,16 @@ macro_rules! test_operation {
             fn run(
                 &mut self,
                 $inp: $input,
-                $st: flezha_runner::operation::StateHandle<'_, Self>,
-                $ctx: &mut flezha_runner::operation::OperationCtx<'_>,
-            ) -> ::std::result::Result<(), flezha_runner::operation::OperationError> $body
+                $st: flezha_runner::procedure::StateHandle<'_, Self>,
+                $ctx: &mut flezha_runner::procedure::ProcedureCtx<'_>,
+            ) -> ::std::result::Result<(), flezha_runner::procedure::ProcedureError> $body
         }
     };
-    ($operation:ident, $name:literal, $input:ty => $output:ty, $state:ty, cap $cap:literal,
+    ($procedure:ident, $name:literal, $input:ty => $output:ty, $state:ty, cap $cap:literal,
      |$inp:tt, $st:tt, $ctx:tt| $body:block) => {
         #[derive(Default)]
-        struct $operation;
-        impl flezha_runner::operation::Operation for $operation {
+        struct $procedure;
+        impl flezha_runner::procedure::Procedure for $procedure {
             type Input = $input;
             type Output = $output;
             type State = $state;
@@ -101,9 +101,9 @@ macro_rules! test_operation {
             fn run(
                 &mut self,
                 $inp: $input,
-                $st: flezha_runner::operation::StateHandle<'_, Self>,
-                $ctx: &mut flezha_runner::operation::OperationCtx<'_>,
-            ) -> ::std::result::Result<(), flezha_runner::operation::OperationError> $body
+                $st: flezha_runner::procedure::StateHandle<'_, Self>,
+                $ctx: &mut flezha_runner::procedure::ProcedureCtx<'_>,
+            ) -> ::std::result::Result<(), flezha_runner::procedure::ProcedureError> $body
         }
     };
 }

@@ -4,21 +4,21 @@ All notable changes to the Rust SDK crate.
 
 ## Unreleased
 
-### Multi-input operations (`add-multi-input-operations`)
+### Multi-input procedures (`add-multi-input-procedures`)
 
 - **`ChannelBuilder::merge::<I>()`** — subscribe two or more source channels to
-  ONE operation whose `Input` is an author-declared sum type, each `.from(source,
+  ONE procedure whose `Input` is an author-declared sum type, each `.from(source,
   map)` supplying the mapping from that channel's payload into it:
   `c.merge::<SignalInput>().from(ticker, SignalInput::Ticker).from(config,
-  SignalInput::Config).into::<Detector>()`. Entry streams and inter-operation
+  SignalInput::Config).into::<Detector>()`. Entry streams and inter-procedure
   streams are both valid sources on an unbounded operative (`MergeSource`,
   implemented for `EntryStream` and `Stream`), freely mixed; see the bounded
   restriction below. Single-input `.into` is unchanged.
-- **Purely a subscription-time construct**: `Operation` is untouched, so
-  dispatch, state, `segment_for`, retry/DLQ and the emit APIs all see one type.
-  `segment_for` / `operation_key` are evaluated on the **mapped** value.
+- **Purely a subscription-time construct**: `Procedure` is untouched, so
+  dispatch, state, `entities_for`, retry/DLQ and the emit APIs all see one type.
+  `entities_for` / `entity_key` are evaluated on the **mapped** value.
 - **A merge mapping is contained on the bounded driver thread.** It is the only
-  author closure on a bounded chain running outside a segment invocation, so
+  author closure on a bounded chain running outside an entity invocation, so
   `extend_mapped` catches its unwind and reports it as a terminal chain error, and
   the instance still reports. An unguarded one would skip
   `emit_bounded_completed` and strand it. At the **forward** accumulate site the
@@ -29,7 +29,7 @@ All notable changes to the Rust SDK crate.
   **crash-resume re-seed** site Rust also unwinds the journaled stages (the
   resumed iteration's completed list is seeded from the journal); the Java arm
   does not, a pre-existing gap in its resumed chains recorded under "Known
-  limitation" in `docs/multi_input_operations.md`. `Merge` is `#[must_use]`: a merge left unclosed by
+  limitation" in `docs/multi_input_procedures.md`. `Merge` is `#[must_use]`: a merge left unclosed by
   `.into` declares no edges at all.
 - **Per-source FIFO is preserved; nothing is ordered across sources** — the
   guarantee two independent consumers already had. Mappings MUST be pure: they
@@ -38,33 +38,33 @@ All notable changes to the Rust SDK crate.
 - New `TopologyIssue` variants `MergeTooFewSources`, `DuplicateMergeSource` and
   `MergeSourceAlreadyWired` (a source may not re-wire an edge `.into` or another
   merge already declared — the mapping would otherwise be silently dropped); a
-  mapped type that is not the operation's `Input` is a compile error at
-  `.into::<Op>()`.
-- **Bounded merges consume inter-operation channels only.** The bounded seed is
+  mapped type that is not the procedure's `Input` is a compile error at
+  `.into::<Proc>()`.
+- **Bounded merges consume inter-procedure channels only.** The bounded seed is
   a bare payload naming no channel, so an entry channel as one merge source
   among several is refused at registration with
   `BuildBoundedError::MergeFromEntryChannel` rather than accepted and failing
   every invocation. Unbounded merges accept entry channels.
-- `ChannelDescriptor::consumers` is now `Vec<ConsumerEdge>` (operation id plus
+- `ChannelDescriptor::consumers` is now `Vec<ConsumerEdge>` (procedure id plus
   the optional mapping); `consumer_ids()` is the id-only view.
 - No wire change and no controller change. Example: `examples/merged_input.rs`.
 
-### Operation-requested spawn (`add-operation-requested-spawn`)
+### Procedure-requested spawn (`procedure-requested-spawn`)
 
-- **`OperationCtx::spawn_bounded(instance_id, factory_id, payload, if_running)`**
-  — spawn-or-deliver a bounded instance from inside any operation. A free id
+- **`ProcedureCtx::spawn_bounded(instance_id, factory_id, payload, if_running)`**
+  — spawn-or-deliver a bounded instance from inside any procedure. A free id
   starts `factory_id` with `payload` as its first input; a taken id receives it
   as one more input (`IfRunning::Deliver`) or reports
   `SpawnError::AlreadyRunning` (`IfRunning::Error`). Always in the requester's
   own namespace.
 - **Fire-and-forget with a result**: returns a `SpawnHandle` immediately. Every
-  failure resolves that handle rather than the operation's `run` — `wait()` /
+  failure resolves that handle rather than the procedure's `run` — `wait()` /
   `try_result()` read it, and a handle dropped unobserved reports a failure to
   the log via one process-wide reaper thread.
 - **Live processing only**: a replayed invocation (crash resume, late-input
   correction) issues no request and answers `SpawnOutcome::SkippedOnReplay`.
 - New public items: `IfRunning`, `SpawnOutcome`, `SpawnError`, `SpawnHandle`,
-  re-exported from `flezha_runner::operation`. Example:
+  re-exported from `flezha_runner::procedure`. Example:
   `examples/spawn_bounded_worker.rs`.
 - **Wire**: additive `SpawnBoundedRequest` (tag 34) / `SpawnBoundedResponse`
   (tag 35). Requires a controller of the same release.
@@ -72,19 +72,19 @@ All notable changes to the Rust SDK crate.
 ### Determinism contract + output identity (`deterministic-effects-and-output-identity`)
 
 - **BREAKING: `Clock::now()` removed.** The runtime evaluates the declared
-  Clock once per `run` invocation and serves it via `OperationCtx::now()`
+  Clock once per `run` invocation and serves it via `ProcedureCtx::now()`
   (`u64`: epoch ms for `WallClock`, extracted input timestamp for
   `EventTimeFrom<F>` — now fully wired via the new `TimeExtractor<Input>`
-  trait — and the durable change seq for `LogicalClock`). The `Operation`
+  trait — and the durable change seq for `LogicalClock`). The `Procedure`
   trait bound tightened to `type Clock: ClockFor<Self::Input>`, making an
   unservable extractor a compile error; `LogicalClock` with
   `Change = NoChange` fails registration with
   `BuildTopologyError::UnservableClock`.
-- **`OperationCtx::stable_id()`** — replay-stable 128-bit identifiers
-  (frozen FNV-1a-128 over segment identity ‖ change seq ‖ call ordinal);
+- **`ProcedureCtx::stable_id()`** — replay-stable 128-bit identifiers
+  (frozen FNV-1a-128 over entity identity ‖ change seq ‖ call ordinal);
   the determinism-contract replacement for `Uuid::new_v4()`.
 - **Keyed channels**: `.keyed()` on plugin-wired channels +
-  `ctx.emit_keyed(key, value)` stamp `flz.segment` / `flz.seq` / `flz.key`
+  `ctx.emit_keyed(key, value)` stamp `flz.entity` / `flz.seq` / `flz.key`
   on every plugin frame; the `flz.` metadata namespace is reserved
   (`ReservedMetadataKey`). Non-keyed channels are byte-identical to before
   (criterion dispatch regression bench: no change detected).
@@ -121,7 +121,7 @@ All notable changes to the Rust SDK crate.
 - Reconnect semantics: exponential backoff (200 ms → 30 s cap), state
   reset on unexpected drop, no reconnect on `RunnerDisconnect`.
 - Command dispatch (`AssignRunnerId`, `ConnectSocket`,
-  `AddOperative`, `RemOperative`, `SegmentState`,
+  `AddOperative`, `RemOperative`, `EntityState`,
   `MigrationSerialization`, `MigrationDeserialization`,
   `RunnerDisconnect`) produces byte-identical `CommandResponse`
   bytes.

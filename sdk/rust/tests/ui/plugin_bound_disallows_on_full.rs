@@ -5,13 +5,13 @@
 // fails at the call site.
 
 use flezha_runner::channel::ChannelBuilder;
-use flezha_runner::operation::{Operation, OperationCtx, OperationError};
+use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError};
 use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
 use flezha_runner::OverflowPolicy;
 
 #[derive(Default)]
 struct PluginProducer;
-impl Operation for PluginProducer {
+impl Procedure for PluginProducer {
     type Input = String;
     type Output = Vec<u8>;
     type State = ();
@@ -20,7 +20,7 @@ impl Operation for PluginProducer {
     type Config = ();
     fn name() -> &'static str { "plugin_producer" }
     fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(&mut self, _: String, _: StateHandle<'_, Self>, _: &mut OperationCtx<'_>) -> Result<(), OperationError> {
+    fn run(&mut self, _: String, _: StateHandle<'_, Self>, _: &mut ProcedureCtx<'_>) -> Result<(), ProcedureError> {
         Ok(())
     }
 }

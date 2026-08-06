@@ -1,11 +1,11 @@
 //! Bounded class spec: the frozen authoring result produced at registration.
 //!
 //! A bounded operative is authored either as bare [`run`](super::BoundedOperative::run)
-//! sugar (no declared operations) or as a structured **DAG** of
-//! Operations/Channels/Segments via
-//! [`operations`](super::BoundedOperative::operations). `build_spec` runs the
+//! sugar (no declared procedures) or as a structured **DAG** of
+//! Procedures/Channels/Entities via
+//! [`procedures`](super::BoundedOperative::procedures). `build_spec` runs the
 //! declaration once, validates it (single-rooted acyclic graph — fan-out and
-//! fan-in both legal, no dynamic segments, self-terminating), and freezes the
+//! fan-in both legal, no dynamic entities, self-terminating), and freezes the
 //! result for every spawn of the class.
 
 use std::sync::Arc;
@@ -13,29 +13,29 @@ use std::time::Duration;
 
 use super::{BoundedOperative, BoundedRunFn, LoopMode, RollbackMode};
 use crate::channel::builder::ChannelBuilder;
-use crate::channel::{ChannelKind, OperationId, RetryPolicy};
+use crate::channel::{ChannelKind, ProcedureId, RetryPolicy};
 use crate::operative::builder::{build_topology, graph_order};
-use crate::operative::topology::{OperativeTopology, SegmentingMode};
+use crate::operative::topology::{EntityMode, OperativeTopology};
 
-/// The static operation DAG of a structured bounded class (`bounded-branching`).
+/// The static procedure DAG of a structured bounded class (`bounded-branching`).
 ///
-/// `order` holds every operation in **Kahn topological order from the root**,
+/// `order` holds every procedure in **Kahn topological order from the root**,
 /// so every producer of a node — a fan-in has several — sits at a lower index
 /// than the node itself. A node's index is also its `stage_idx` and its wire
-/// `op_idx`. That numbering is load-bearing: completion order is topological,
+/// `proc_idx`. That numbering is load-bearing: completion order is topological,
 /// and reversing it (what `plan_compensation` already does) is
 /// reverse-topological compensation — a join is undone before any of its
 /// producers. A linear chain is the single-branch case.
 #[derive(Debug, Default)]
-pub(crate) struct OpDag {
-    pub order: Vec<OperationId>,
+pub(crate) struct ProcDag {
+    pub order: Vec<ProcedureId>,
     /// Indexes of each node's producers (empty for the root), positionally.
     pub parents: Vec<Vec<usize>>,
     /// Indexes of each node's children — the consumers of its output channel.
     pub children: Vec<Vec<usize>>,
 }
 
-impl OpDag {
+impl ProcDag {
     pub fn len(&self) -> usize {
         self.order.len()
     }
@@ -46,7 +46,7 @@ impl OpDag {
         (0..self.len()).filter(|&i| self.children[i].is_empty())
     }
 
-    /// The single leaf, when the graph has exactly one — the terminal operation
+    /// The single leaf, when the graph has exactly one — the terminal procedure
     /// whose batch a handoff-chained loop re-seeds from, and whose output
     /// channel an iteration commit journals.
     pub fn single_leaf(&self) -> Option<usize> {
@@ -64,9 +64,9 @@ pub(crate) struct BoundedSpec {
     pub run: BoundedRunFn,
     /// Structured topology, or `None` for run-sugar.
     pub topology: Option<Arc<OperativeTopology>>,
-    /// Operations as a static DAG rooted at the entry channel's consumer.
+    /// Procedures as a static DAG rooted at the entry channel's consumer.
     /// Empty for run-sugar.
-    pub dag: OpDag,
+    pub dag: ProcDag,
     /// Optional wall-clock backstop applied by the driver.
     pub max_duration: Option<Duration>,
     /// Saga rollback scope applied on abnormal termination.
@@ -75,12 +75,12 @@ pub(crate) struct BoundedSpec {
     pub loop_mode: LoopMode,
     /// Durable wake deadline armed when a `PerInput` loop parks.
     pub wake_after: Option<Duration>,
-    /// Per-segment retry ladder applied inside a structured stage
-    /// (`bounded-segment-retry`), on the same policy type the unbounded
+    /// Per-entity retry ladder applied inside a structured stage
+    /// (`bounded-entity-retry`), on the same policy type the unbounded
     /// retry-then-park loop uses.
     pub retry: RetryPolicy,
     /// Class-level persistence toggle; when true, a structured bounded's
-    /// per-Segment Changes are flushed to the WAL as they apply.
+    /// per-Entity Changes are flushed to the WAL as they apply.
     pub persistence_enabled: bool,
 }
 
@@ -110,35 +110,35 @@ pub enum BuildBoundedError {
     },
 
     #[error(
-        "bounded operative `{factory_id}` declares operations but no entry channel; a structured \
-         bounded must declare one input channel (c.input::<T>(...)) to seed its first operation"
+        "bounded operative `{factory_id}` declares procedures but no entry channel; a structured \
+         bounded must declare one input channel (c.input::<T>(...)) to seed its first procedure"
     )]
     NoEntryChannel { factory_id: &'static str },
 
     #[error(
-        "bounded operative `{factory_id}` declares operation `{operation}` on a cycle; a \
-         bounded topology is a DAG — an operation's output may never reach its own input"
+        "bounded operative `{factory_id}` declares procedure `{procedure}` on a cycle; a \
+         bounded topology is a DAG — a procedure's output may never reach its own input"
     )]
     Cycle {
         factory_id: &'static str,
-        operation: String,
+        procedure: String,
     },
 
     #[error(
-        "bounded operative `{factory_id}` declares operation `{operation}` as the producer of \
-         more than one channel; an operation emits on exactly one output channel (its `Output` \
+        "bounded operative `{factory_id}` declares procedure `{procedure}` as the producer of \
+         more than one channel; a procedure emits on exactly one output channel (its `Output` \
          type), so a second one could never be routed. Fan out by declaring several consumers on \
          the one channel"
     )]
     MultipleOutputChannels {
         factory_id: &'static str,
-        operation: String,
+        procedure: String,
     },
 
     #[error(
         "bounded operative `{factory_id}` declares entry channel `{channel}` feeding {consumers} \
-         operations; a bounded topology has a single root — the entry channel must feed exactly \
-         one operation, which then fans out"
+         procedures; a bounded topology has a single root — the entry channel must feed exactly \
+         one procedure, which then fans out"
     )]
     EntryRoot {
         factory_id: &'static str,
@@ -147,21 +147,21 @@ pub enum BuildBoundedError {
     },
 
     #[error(
-        "bounded operative `{factory_id}` merges entry channel `{channel}` into operation \
-         `{operation}`; a bounded operative is seeded from its spawn args (and, for a `PerInput` \
+        "bounded operative `{factory_id}` merges entry channel `{channel}` into procedure \
+         `{procedure}`; a bounded operative is seeded from its spawn args (and, for a `PerInput` \
          loop, its inbox items) through ONE entry channel, and neither carries the channel a \
          payload arrived on — so an entry channel cannot be one merge source among several. \
-         Merge the output streams of two or more of this operative's operations instead"
+         Merge the output streams of two or more of this operative's procedures instead"
     )]
     MergeFromEntryChannel {
         factory_id: &'static str,
         channel: String,
-        operation: String,
+        procedure: String,
     },
 
     #[error(
         "bounded operative `{factory_id}` declares a handoff-chained loop over a branching \
-         topology ({leaves} terminal operations); iteration N+1 is seeded from iteration N's \
+         topology ({leaves} terminal procedures); iteration N+1 is seeded from iteration N's \
          terminal batch, which a graph with several leaves does not define. Use \
          `LoopMode::PerInput`, or keep the chained loop converging on one terminal"
     )]
@@ -171,12 +171,12 @@ pub enum BuildBoundedError {
     },
 
     #[error(
-        "bounded operative `{factory_id}` declares a dynamic-segment operation `{operation}`; \
-         bounded operatives do not support dynamic segmentation"
+        "bounded operative `{factory_id}` declares a dynamic-entity procedure `{procedure}`; \
+         bounded operatives do not support dynamic entity mode"
     )]
-    DynamicSegments {
+    DynamicEntities {
         factory_id: &'static str,
-        operation: String,
+        procedure: String,
     },
 
     #[error(
@@ -187,17 +187,17 @@ pub enum BuildBoundedError {
     ExternalStopOnly { factory_id: &'static str },
 
     #[error(
-        "bounded operative `{factory_id}` declares operation `{operation}` that is not reachable \
-         from the entry channel; every operation must hang off the one graph rooted there"
+        "bounded operative `{factory_id}` declares procedure `{procedure}` that is not reachable \
+         from the entry channel; every procedure must hang off the one graph rooted there"
     )]
     Disconnected {
         factory_id: &'static str,
-        operation: String,
+        procedure: String,
     },
 
     #[error(
         "bounded operative `{factory_id}` declares a retry ladder ({attempts} attempts) with a \
-         zero backoff base; retries would re-run the failing segment in a hot loop. Give \
+         zero backoff base; retries would re-run the failing entity in a hot loop. Give \
          retry_backoff() a non-zero base, or set retry_attempts() to 0 for fail-fast"
     )]
     ZeroRetryBackoff {
@@ -206,37 +206,37 @@ pub enum BuildBoundedError {
     },
 
     #[error(
-        "bounded operative `{factory_id}` declares a chain loop but no operations; a loop iterates \
-         a structured chain — declare operations() (c.input::<T>(...) + operations), or drop \
+        "bounded operative `{factory_id}` declares a chain loop but no procedures; a loop iterates \
+         a structured chain — declare procedures() (c.input::<T>(...) + procedures), or drop \
          loop_mode() and let the run() body drive its own loop_until"
     )]
     LoopWithoutChain { factory_id: &'static str },
 
     #[error(
-        "bounded operative `{factory_id}` is durable but its inter-operation channel `{channel}` \
+        "bounded operative `{factory_id}` is durable but its inter-procedure channel `{channel}` \
          has no byte codec; declare `.codec()` (standard serde payloads) or `.codec_with(...)` \
-         so the op-journal can persist and re-seed the stage handoff, or opt the class out with \
+         so the proc-journal can persist and re-seed the stage handoff, or opt the class out with \
          `PERSISTENCE_ENABLED = false`"
     )]
-    MissingInterOpCodec {
+    MissingInterProcCodec {
         factory_id: &'static str,
         channel: String,
     },
 
     #[error(
         "bounded operative `{factory_id}` is a durable handoff-chained loop, but its terminal \
-         operation `{operation}` releases no codec'd output channel; iteration N+1 is seeded from \
+         procedure `{procedure}` releases no codec'd output channel; iteration N+1 is seeded from \
          iteration N's terminal batch, which the iteration commit must be able to journal. Give \
-         the terminal operation an output channel with `.codec()`, or switch to \
+         the terminal procedure an output channel with `.codec()`, or switch to \
          `LoopMode::PerInput`"
     )]
     LoopTerminalWithoutCodec {
         factory_id: &'static str,
-        operation: String,
+        procedure: String,
     },
 }
 
-/// Build and validate the spec for a bounded class. Empty `operations()`
+/// Build and validate the spec for a bounded class. Empty `procedures()`
 /// selects the run-sugar path; a non-empty declaration is validated as a
 /// static DAG.
 pub(crate) fn build_spec<T: BoundedOperative>() -> Result<BoundedSpec, BuildBoundedError> {
@@ -251,10 +251,10 @@ pub(crate) fn build_spec<T: BoundedOperative>() -> Result<BoundedSpec, BuildBoun
     let retry = retry_policy::<T>(factory_id)?;
 
     let cb = ChannelBuilder::new();
-    T::operations(&cb);
+    T::procedures(&cb);
 
-    // No declared operations ⇒ run-sugar. A loop needs a chain to iterate.
-    if !cb.has_operations() {
+    // No declared procedures ⇒ run-sugar. A loop needs a chain to iterate.
+    if !cb.has_procedures() {
         if T::loop_mode() != LoopMode::Once {
             return Err(BuildBoundedError::LoopWithoutChain { factory_id });
         }
@@ -262,7 +262,7 @@ pub(crate) fn build_spec<T: BoundedOperative>() -> Result<BoundedSpec, BuildBoun
         return Ok(BoundedSpec {
             run: T::run as BoundedRunFn,
             topology: None,
-            dag: OpDag::default(),
+            dag: ProcDag::default(),
             max_duration: T::max_duration(),
             rollback_mode: T::rollback_mode(),
             loop_mode: LoopMode::Once,
@@ -279,7 +279,7 @@ pub(crate) fn build_spec<T: BoundedOperative>() -> Result<BoundedSpec, BuildBoun
     let dag = build_dag(factory_id, &topology)?;
 
     // A handoff-chained loop re-seeds iteration N+1 from iteration N's terminal
-    // batch, so "the terminal operation" must be unambiguous — a graph with
+    // batch, so "the terminal procedure" must be unambiguous — a graph with
     // several leaves has no single terminal batch to carry forward.
     if T::loop_mode() == LoopMode::Chained && dag.single_leaf().is_none() {
         return Err(BuildBoundedError::BranchingChainedLoop {
@@ -288,17 +288,17 @@ pub(crate) fn build_spec<T: BoundedOperative>() -> Result<BoundedSpec, BuildBoun
         });
     }
 
-    // Durable structured classes journal the inter-op handoff at every op
-    // boundary (`bounded-op-journal`), which requires every inter-operation
+    // Durable structured classes journal the inter-proc handoff at every proc
+    // boundary (`bounded-proc-journal`), which requires every inter-procedure
     // channel to carry a byte codec. Unpublished library: fail registration
     // instead of shimming.
     if T::PERSISTENCE_ENABLED {
         if let Some(ch) = topology
             .channels
             .iter()
-            .find(|c| c.kind == ChannelKind::InterOperation && c.codec.is_none())
+            .find(|c| c.kind == ChannelKind::InterProcedure && c.codec.is_none())
         {
-            return Err(BuildBoundedError::MissingInterOpCodec {
+            return Err(BuildBoundedError::MissingInterProcCodec {
                 factory_id,
                 channel: ch.name.to_string(),
             });
@@ -310,7 +310,7 @@ pub(crate) fn build_spec<T: BoundedOperative>() -> Result<BoundedSpec, BuildBoun
         if T::loop_mode() == LoopMode::Chained {
             let terminal = dag
                 .single_leaf()
-                .and_then(|leaf| topology.operation(dag.order[leaf]))
+                .and_then(|leaf| topology.procedure(dag.order[leaf]))
                 .expect("a chained loop has a single leaf (checked above)");
             let codec_ok = terminal
                 .output_channel_id
@@ -319,7 +319,7 @@ pub(crate) fn build_spec<T: BoundedOperative>() -> Result<BoundedSpec, BuildBoun
             if !codec_ok {
                 return Err(BuildBoundedError::LoopTerminalWithoutCodec {
                     factory_id,
-                    operation: terminal.name.to_string(),
+                    procedure: terminal.name.to_string(),
                 });
             }
         }
@@ -338,7 +338,7 @@ pub(crate) fn build_spec<T: BoundedOperative>() -> Result<BoundedSpec, BuildBoun
     })
 }
 
-/// Resolve the class's per-segment retry ladder onto the shared
+/// Resolve the class's per-entity retry ladder onto the shared
 /// [`RetryPolicy`], rejecting a ladder that would spin without a backoff. A
 /// declared 0 collapses to the one-attempt fail-fast the driver runs.
 fn retry_policy<T: BoundedOperative>(
@@ -358,10 +358,10 @@ fn retry_policy<T: BoundedOperative>(
     })
 }
 
-/// Resolve the execution DAG of a structured bounded's operations and reject
+/// Resolve the execution DAG of a structured bounded's procedures and reject
 /// anything outside the shared graph-shape rule (`sdk-graph-authoring`): one
 /// entry-rooted connected acyclic graph — fan-out and fan-in both legal — with
-/// at most one output channel per operation, no dynamic segmentation.
+/// at most one output channel per procedure, no dynamic entity mode.
 ///
 /// Nodes come out in **Kahn topological order** from the root, so every
 /// producer's index precedes its consumers' — for a join, *all* of them. That
@@ -370,40 +370,40 @@ fn retry_policy<T: BoundedOperative>(
 fn build_dag(
     factory_id: &'static str,
     topology: &OperativeTopology,
-) -> Result<OpDag, BuildBoundedError> {
-    // Bounded has no `dynamic_segments?` capability.
-    for op in &topology.operations {
-        if op.mode == SegmentingMode::Dynamic {
-            return Err(BuildBoundedError::DynamicSegments {
+) -> Result<ProcDag, BuildBoundedError> {
+    // Bounded has no `dynamic_entities?` capability.
+    for proc in &topology.procedures {
+        if proc.mode == EntityMode::Dynamic {
+            return Err(BuildBoundedError::DynamicEntities {
                 factory_id,
-                operation: op.name.to_string(),
+                procedure: proc.name.to_string(),
             });
         }
     }
-    // An operation producing two channels is unroutable (the topology keeps
+    // A procedure producing two channels is unroutable (the topology keeps
     // one `output_channel_id`, so the second would be silently orphaned).
     // Structurally impossible on the stream-handle builder; kept as
     // defense-in-depth.
-    for (idx, op) in topology.operations.iter().enumerate() {
-        let op_id = idx as OperationId;
+    for (idx, proc) in topology.procedures.iter().enumerate() {
+        let proc_id = idx as ProcedureId;
         let outgoing = topology
             .channels
             .iter()
-            .filter(|c| c.producer == Some(op_id))
+            .filter(|c| c.producer == Some(proc_id))
             .count();
         if outgoing > 1 {
             return Err(BuildBoundedError::MultipleOutputChannels {
                 factory_id,
-                operation: op.name.to_string(),
+                procedure: proc.name.to_string(),
             });
         }
     }
 
-    // The entry channel seeds the root operation from the spawn args. The seed
+    // The entry channel seeds the root procedure from the spawn args. The seed
     // is a bare payload — it names no channel — so a merge mapping on an entry
     // edge could never be selected, and every entry channel past the first
     // would be unreadable. Refuse the shape rather than accept one that cannot
-    // run (`multi-input-operations`).
+    // run (`multi-input-procedures`).
     for channel in topology
         .channels
         .iter()
@@ -413,7 +413,7 @@ fn build_dag(
             return Err(BuildBoundedError::MergeFromEntryChannel {
                 factory_id,
                 channel: channel.name.to_string(),
-                operation: topology.operations[edge.operation as usize]
+                procedure: topology.procedures[edge.procedure as usize]
                     .name
                     .to_string(),
             });
@@ -431,15 +431,15 @@ fn build_dag(
             consumers: entry.consumers.len(),
         });
     }
-    let root = entry.consumers[0].operation;
+    let root = entry.consumers[0].procedure;
 
     // The shared graph-shape walk (`operative::builder::graph_order`) — one
     // mechanism for both SDK-level validation and the bounded execution order.
-    // Reachability is named first, so a genuinely disconnected operation is
+    // Reachability is named first, so a genuinely disconnected procedure is
     // not reported as a cycle symptom; a leftover Kahn node is on a cycle.
     // Kahn pop-in-FIFO from the root yields exactly the former BFS numbering
-    // for a tree, so journaled `op_idx` values keep their meaning.
-    let n = topology.operations.len();
+    // for a tree, so journaled `proc_idx` values keep their meaning.
+    let n = topology.procedures.len();
     let edges: Vec<_> = topology
         .channels
         .iter()
@@ -450,17 +450,17 @@ fn build_dag(
     if let Some(node) = shape.unreachable.filter(|_| shape.on_cycle.is_none()) {
         return Err(BuildBoundedError::Disconnected {
             factory_id,
-            operation: topology.operations[node as usize].name.to_string(),
+            procedure: topology.procedures[node as usize].name.to_string(),
         });
     }
     if let Some(node) = shape.on_cycle {
         return Err(BuildBoundedError::Cycle {
             factory_id,
-            operation: topology.operations[node as usize].name.to_string(),
+            procedure: topology.procedures[node as usize].name.to_string(),
         });
     }
 
-    let mut dag = OpDag {
+    let mut dag = ProcDag {
         order: shape.order,
         parents: vec![Vec::new(); n],
         children: vec![Vec::new(); n],

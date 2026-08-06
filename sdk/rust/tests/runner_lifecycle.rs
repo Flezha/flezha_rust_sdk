@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 use flezha_runner::state::{NoChange, RestoreInitPayload, WallClock};
 use flezha_runner::transport::FlezhaStream;
 use flezha_runner::{
-    ChannelBuilder, Flezha, FlezhaError, Operation, OperationCtx, OperationError, StateHandle,
+    ChannelBuilder, Flezha, FlezhaError, Procedure, ProcedureCtx, ProcedureError, StateHandle,
     UnboundedOperative,
 };
 use prost::Message;
@@ -29,8 +29,8 @@ use prost::Message;
 struct EmptyState;
 
 #[derive(Default)]
-struct PassOp;
-impl Operation for PassOp {
+struct PassProc;
+impl Procedure for PassProc {
     type Input = String;
     type Output = String;
     type State = EmptyState;
@@ -47,8 +47,8 @@ impl Operation for PassOp {
         &mut self,
         _input: String,
         _state: StateHandle<'_, Self>,
-        _ctx: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        _ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         Ok(())
     }
 }
@@ -59,7 +59,7 @@ impl UnboundedOperative for ProbeOperativeA {
         "lifecycle_probe_a"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<String>("in").into::<PassOp>();
+        c.input::<String>("in").into::<PassProc>();
     }
 }
 
@@ -69,7 +69,7 @@ impl UnboundedOperative for ProbeOperativeB {
         "lifecycle_probe_b"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<String>("in").into::<PassOp>();
+        c.input::<String>("in").into::<PassProc>();
     }
 }
 
@@ -79,7 +79,7 @@ impl UnboundedOperative for ProbeOperativeC {
         "lifecycle_probe_c"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<String>("in").into::<PassOp>();
+        c.input::<String>("in").into::<PassProc>();
     }
 }
 
@@ -92,7 +92,7 @@ impl UnboundedOperative for UnwiredOperative {
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
-            .into::<PassOp>()
+            .into::<PassProc>()
             .named("dangling")
             .keyed();
     }

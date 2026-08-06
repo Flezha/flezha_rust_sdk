@@ -1,0 +1,5 @@
+error: #[flezha::procedure] `init` requires a `&mut State` parameter; a stateless procedure has no state to initialize
+ --> tests/ui/procedure_init_without_state.rs:2:1
+  |
+2 | fn f(a: String) -> Vec<u8> {
+  | ^^

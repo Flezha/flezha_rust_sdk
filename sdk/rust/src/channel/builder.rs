@@ -1,17 +1,17 @@
 //! Producer-first fluent graph builder (`sdk-graph-authoring`).
 //!
 //! `c.input::<T>("name").into::<A>().into::<B>().output("sink")` — `.into`
-//! wires a consumer and returns that operation's **output stream handle**
+//! wires a consumer and returns that procedure's **output stream handle**
 //! ([`Stream`]), so a linear pipeline is one chained expression. Branching is
 //! handle reuse (hold the handle in a variable and wire it twice) or the
 //! equivalent [`Stream::branch`] sugar. Fan-in is two streams naming the same
 //! consumer node.
 //!
 //! Compile-time enforcement:
-//! - `.into::<S>()` requires `S: Operation<Input = T>` — a type-mismatched
+//! - `.into::<S>()` requires `S: Procedure<Input = T>` — a type-mismatched
 //!   consumer fires at the call site.
 //! - Channel payload types come from the producer's declared `Output`; there
-//!   is no user-supplied type token for inter-operation channels.
+//!   is no user-supplied type token for inter-procedure channels.
 //! - `output(...)` returns a finalized [`Channel`] with no further builder
 //!   methods, so nothing can be wired after the plugin-bound terminal.
 //! - Handles borrow the builder (`Stream<'b, T>` is `Copy`), so a handle
@@ -27,15 +27,15 @@ use std::sync::Arc;
 use serde::de::DeserializeOwned;
 
 use crate::channel::{
-    Channel, ChannelId, ChannelKind, ConsumerEdge, MergeMapFn, OperationId, OverflowPolicy,
+    Channel, ChannelId, ChannelKind, ConsumerEdge, MergeMapFn, OverflowPolicy, ProcedureId,
 };
-use crate::operation::Operation;
+use crate::procedure::Procedure;
 
-/// Type-erased dispatcher factory for one Operation. Stored on
-/// `BuilderState::operations` and consumed by `build_topology` to produce
-/// per-segment slots in each `UnboundedInstance`.
-pub(crate) struct OperationEntry {
-    /// Node identity: the operation's `name()`, or the explicit node name
+/// Type-erased dispatcher factory for one Procedure. Stored on
+/// `BuilderState::procedures` and consumed by `build_topology` to produce
+/// per-entity slots in each `UnboundedInstance`.
+pub(crate) struct ProcedureEntry {
+    /// Node identity: the procedure's `name()`, or the explicit node name
     /// given at wiring time (`into_named`). Feeds everything `name()` feeds —
     /// state directories, journal entries, the derived channel name,
     /// diagnostics.
@@ -45,12 +45,12 @@ pub(crate) struct OperationEntry {
     pub class_id: TypeId,
     /// Whether this node was created with an explicit node name.
     pub named: bool,
-    pub segment_keys: Vec<&'static str>,
-    pub segment_for_overridden: bool,
-    pub operation_key_overridden: bool,
-    /// `Operation::COMPENSATE_OVERRIDDEN` captured at registration time. The
+    pub entity_keys: Vec<&'static str>,
+    pub entities_for_overridden: bool,
+    pub entity_key_overridden: bool,
+    /// `Procedure::COMPENSATE_OVERRIDDEN` captured at registration time. The
     /// bounded driver consults the resolved descriptor flag to fire saga
-    /// compensation only for operations that declared a `compensate` hook.
+    /// compensation only for procedures that declared a `compensate` hook.
     pub compensate_overridden: bool,
     /// Channels this node consumes. Several = a fan-in, or a merge whose
     /// edges each map into this node's `Input`: either way the node receives
@@ -63,64 +63,64 @@ pub(crate) struct OperationEntry {
     /// Erased output-type marker: matches the producer-edge's payload type.
     pub output_type_id: std::any::TypeId,
 
-    /// `Operation::Clock::type_name()` captured at registration time, plus
-    /// whether the Operation's `Change` is `NoChange`. `build_topology`
+    /// `Procedure::Clock::type_name()` captured at registration time, plus
+    /// whether the Procedure's `Change` is `NoChange`. `build_topology`
     /// rejects clock configurations the runtime cannot serve (a
     /// `LogicalClock` without persistent changes never advances).
     pub clock_type_name: &'static str,
-    /// `Clock::IS_EVENT_TIME` — whether this operation's clock yields a time
+    /// `Clock::IS_EVENT_TIME` — whether this procedure's clock yields a time
     /// carried by the input rather than one read off the wall or the WAL.
     /// Late-input correction is only definable against such a clock.
     pub clock_is_event_time: bool,
     pub change_is_nochange: bool,
 
-    /// `Operation::mailbox_capacity()` captured at registration time. The
+    /// `Procedure::mailbox_capacity()` captured at registration time. The
     /// resolved value (after applying env-var precedence in `build_topology`)
-    /// is the size of every Segment mailbox built for this Operation.
+    /// is the size of every Entity mailbox built for this Procedure.
     pub mailbox_capacity: usize,
 
-    /// `Operation::MAILBOX_CAPACITY_OVERRIDDEN` captured at registration time.
+    /// `Procedure::MAILBOX_CAPACITY_OVERRIDDEN` captured at registration time.
     /// Drives the precedence rule in `resolve_mailbox_capacity`.
     pub mailbox_capacity_overridden: bool,
 
-    /// `Operation::compact_after_bytes()` captured at registration time. The
-    /// controller resolves the per-Segment WAL size compaction trigger from it,
+    /// `Procedure::compact_after_bytes()` captured at registration time. The
+    /// controller resolves the per-Entity WAL size compaction trigger from it,
     /// shipped in the `AddOperative` response metadata.
     pub compact_after_bytes: usize,
 
-    /// Build a per-segment slot. The closure captures the Operation type
-    /// statically so the segment mailbox carries `Arc<S::Input>` items
-    /// and `Operation::run` is called with the typed signature.
-    pub build_segment: SegmentBuilder,
+    /// Build a per-entity slot. The closure captures the Procedure type
+    /// statically so the entity mailbox carries `Arc<S::Input>` items
+    /// and `Procedure::run` is called with the typed signature.
+    pub build_entity: EntityBuilder,
 
-    /// Segment routing for inputs targeting this Operation. Returns the
-    /// segment keys. Single-mode operations return an empty vec; the runtime
-    /// then routes everything to segment index 0.
-    pub segment_for_erased: SegmentForFn,
+    /// Entity routing for inputs targeting this Procedure. Returns the
+    /// entity keys. Single-mode procedures return an empty vec; the runtime
+    /// then routes everything to entity index 0.
+    pub entities_for_erased: EntitiesForFn,
 
-    /// `Operation::operation_key` captured statically and type-erased. `Some`
-    /// only for dynamic-mode Operations (`OPERATION_KEY_OVERRIDDEN = true` with
-    /// empty `operation_keys()`); the dispatch path calls it per input to
-    /// derive the dynamic segment key.
-    pub operation_key_erased: Option<OperationKeyFn>,
+    /// `Procedure::entity_key` captured statically and type-erased. `Some`
+    /// only for dynamic-mode Procedures (`ENTITY_KEY_OVERRIDDEN = true` with
+    /// empty `entity_keys()`); the dispatch path calls it per input to
+    /// derive the dynamic entity key.
+    pub entity_key_erased: Option<EntityKeyFn>,
 
-    /// Dynamic-mode knobs captured at registration (`Operation::segment_idle_ttl`,
-    /// `max_segments`). Carried through to the `OperationDescriptor` for the
-    /// reaper / registry; inert for non-dynamic Operations. `idle_ttl == None`
+    /// Dynamic-mode knobs captured at registration (`Procedure::entity_idle_ttl`,
+    /// `max_entities`). Carried through to the `ProcedureDescriptor` for the
+    /// reaper / registry; inert for non-dynamic Procedures. `idle_ttl == None`
     /// means no eviction.
     pub idle_ttl: Option<std::time::Duration>,
-    pub max_segments: usize,
+    pub max_entities: usize,
 
-    /// Serialize a Segment's typed state to JSON. Captures S statically
+    /// Serialize an Entity's typed state to JSON. Captures S statically
     /// so the closure downcasts the type-erased `Box<dyn Any + Send>`
-    /// stored in `SegmentSlot::state` and produces a `serde_json::Value`
+    /// stored in `EntitySlot::state` and produces a `serde_json::Value`
     /// via the `S::State: Serialize` bound on the trait.
     pub serialize_state: SerializeStateFn,
 
-    /// Deserialize a per-Operation JSON value into a fresh State and wrap
-    /// it as the typed-erased payload `SegmentSlot::state` expects
-    /// (a `Box<SegmentState<S>>`). Captures S statically; constructs
-    /// a fresh `S` via `Default` since the user's `Operation` is stateless.
+    /// Deserialize a per-Procedure JSON value into a fresh State and wrap
+    /// it as the typed-erased payload `EntitySlot::state` expects
+    /// (a `Box<EntityState<S>>`). Captures S statically; constructs
+    /// a fresh `S` via `Default` since the user's `Procedure` is stateless.
     pub deserialize_state: DeserializeStateFn,
 }
 
@@ -129,9 +129,9 @@ pub(crate) struct OperationEntry {
 /// and `PluginSerializeFn` are this same shape spelled out.
 pub(crate) type ErasedFn<R> = Arc<dyn Fn(&dyn Any) -> R + Send + Sync + 'static>;
 
-pub(crate) type SegmentForFn = ErasedFn<Vec<&'static str>>;
+pub(crate) type EntitiesForFn = ErasedFn<Vec<&'static str>>;
 
-pub(crate) type OperationKeyFn = ErasedFn<Option<String>>;
+pub(crate) type EntityKeyFn = ErasedFn<Option<String>>;
 
 pub(crate) type SerializeStateFn =
     Arc<dyn Fn(&Box<dyn Any + Send>) -> Result<serde_json::Value, String> + Send + Sync + 'static>;
@@ -139,32 +139,32 @@ pub(crate) type SerializeStateFn =
 pub(crate) type DeserializeStateFn =
     Arc<dyn Fn(&serde_json::Value) -> Result<Box<dyn Any + Send>, String> + Send + Sync + 'static>;
 
-pub(crate) type SegmentBuilder =
-    Box<dyn Fn(BuildSegmentArgs<'_>) -> Arc<crate::segment::SegmentSlot> + Send + Sync + 'static>;
+pub(crate) type EntityBuilder =
+    Box<dyn Fn(BuildEntityArgs<'_>) -> Arc<crate::entity::EntitySlot> + Send + Sync + 'static>;
 
-pub struct BuildSegmentArgs<'a> {
+pub struct BuildEntityArgs<'a> {
     pub topology: Arc<crate::operative::topology::OperativeTopology>,
     pub instance: std::sync::Weak<crate::operative::instance::UnboundedInstance>,
     /// The operative INSTANCE id (controller-assigned operative_id). The on-disk WAL
     /// is keyed by this, not the factory id, so two operatives of the same factory
-    /// keep independent per-Segment state instead of colliding on one WAL.
+    /// keep independent per-Entity state instead of colliding on one WAL.
     pub instance_id: Arc<str>,
-    pub operation_id: OperationId,
-    pub operation_key: Option<&'a str>,
-    /// Zero-based segment index within the Operation. `0` for single-mode
-    /// operations; `0..operation_keys().len()` for static-mode operations.
-    pub segment_index: usize,
+    pub procedure_id: ProcedureId,
+    pub entity_key: Option<&'a str>,
+    /// Zero-based entity index within the Procedure. `0` for single-mode
+    /// procedures; `0..entity_keys().len()` for static-mode procedures.
+    pub entity_index: usize,
     /// Frozen-at-instance-start persistence flag, propagated from the
-    /// `UnboundedInstance`. The `SegmentSlot` carries this on its
+    /// `UnboundedInstance`. The `EntitySlot` carries this on its
     /// `persistence_enabled` field; the per-process flusher inspects it
     /// at drain time to decide whether to call `send_frame`.
     pub persistence_enabled: bool,
     pub pool: Arc<crate::runner::work_stealing_pool::WorkStealingPool>,
 }
 
-/// Plugin sink attached to an `InterOperation` channel via
+/// Plugin sink attached to an `InterProcedure` channel via
 /// `also_output_with(...)` / `also_output(...)`. The presence of this field
-/// flips the channel from pure inter-operation fan-out to hybrid (consumers +
+/// flips the channel from pure inter-procedure fan-out to hybrid (consumers +
 /// plugin wire) without changing `ChannelKind`.
 pub(crate) struct PluginSink {
     pub name: &'static str,
@@ -175,7 +175,7 @@ pub(crate) struct PluginSink {
 pub(crate) struct ChannelEntry {
     pub name: &'static str,
     pub kind: ChannelKind,
-    pub producer: Option<OperationId>,
+    pub producer: Option<ProcedureId>,
     pub consumers: Vec<ConsumerEdge>,
     pub plugin_name: Option<&'static str>,
     pub wrap_input: Option<crate::channel::EntryWrapFn>,
@@ -186,7 +186,7 @@ pub(crate) struct ChannelEntry {
     pub entry_parsed: bool,
     pub plugin_serializer: Option<crate::channel::PluginSerializeFn>,
     /// Hybrid plugin sink: populated by `also_output_with(...)` on
-    /// an `InterOperation` channel. Mutually exclusive with
+    /// an `InterProcedure` channel. Mutually exclusive with
     /// `plugin_name`/`plugin_serializer`, which are populated by
     /// `output(...)` on a pure `PluginBound` channel.
     pub plugin_sink: Option<PluginSink>,
@@ -196,7 +196,7 @@ pub(crate) struct ChannelEntry {
     pub keyed: bool,
     /// Backpressure policy applied at the push site when the consumer
     /// mailbox is full. Initialized at channel-creation time per channel
-    /// kind (Entry → DropNewest, InterOperation → Block); plugin-bound
+    /// kind (Entry → DropNewest, InterProcedure → Block); plugin-bound
     /// declarations carry a placeholder that is never consulted because
     /// `emit_plugin` writes straight to the wire. `.on_full(...)`
     /// overwrites this value.
@@ -204,8 +204,8 @@ pub(crate) struct ChannelEntry {
     /// Retry-then-park policy for this channel's consumer dispatchers.
     /// `.retry_max(...)` / `.retry_backoff_ms(...)` overwrite the defaults.
     pub retry: crate::channel::RetryPolicy,
-    /// Inter-op byte codec declared via `.codec()` / `.codec_with(...)`.
-    /// Required for durable structured bounded classes (`bounded-op-journal`).
+    /// Inter-proc byte codec declared via `.codec()` / `.codec_with(...)`.
+    /// Required for durable structured bounded classes (`bounded-proc-journal`).
     pub codec: Option<crate::channel::ChannelCodec>,
 }
 
@@ -217,7 +217,7 @@ pub enum TopologyIssue {
 
     #[error(
         "node identity `{name}` is declared by two distinct nodes; a node name must be unique \
-         per operative and distinct from every operation name()"
+         per operative and distinct from every procedure name()"
     )]
     NodeIdentityCollision { name: &'static str },
 
@@ -225,39 +225,39 @@ pub enum TopologyIssue {
     BranchTooFewArms { arms: usize },
 
     #[error(
-        "operation `{operation}` is on a cycle; an operative topology is a DAG — a node's \
+        "procedure `{procedure}` is on a cycle; an operative topology is a DAG — a node's \
          output may never reach its own input"
     )]
-    Cycle { operation: &'static str },
+    Cycle { procedure: &'static str },
 
-    #[error("operation `{operation}` is not reachable from any entry channel")]
-    UnreachableOperation { operation: &'static str },
+    #[error("procedure `{procedure}` is not reachable from any entry channel")]
+    UnreachableProcedure { procedure: &'static str },
 
     #[error(
-        "operation `{name}` declares non-empty operation_keys() but does not override segment_for \
-         (set SEGMENT_FOR_OVERRIDDEN = true)"
+        "procedure `{name}` declares non-empty entity_keys() but does not override entities_for \
+         (set ENTITIES_FOR_OVERRIDDEN = true)"
     )]
-    SegmentForMissing { name: &'static str },
+    EntitiesForMissing { name: &'static str },
 
     #[error(
-        "operation `{name}` declares both operation_keys() (static mode) and overrides operation_key() \
-         (dynamic mode); a Operation declares one OR the other, not both"
+        "procedure `{name}` declares both entity_keys() (static mode) and overrides entity_key() \
+         (dynamic mode); a Procedure declares one OR the other, not both"
     )]
     StaticAndDynamic { name: &'static str },
 
-    #[error("operation `{name}` registered with conflicting input/output types")]
+    #[error("procedure `{name}` registered with conflicting input/output types")]
     TypeMismatch { name: &'static str },
 
     #[error(
-        "operation `{operation}` declared mailbox_capacity = 0; capacity must be in 1..=1_048_576"
+        "procedure `{procedure}` declared mailbox_capacity = 0; capacity must be in 1..=1_048_576"
     )]
-    MailboxCapacityZero { operation: &'static str },
+    MailboxCapacityZero { procedure: &'static str },
 
     #[error(
-        "operation `{operation}` declared mailbox_capacity = {value}; capacity must be in 1..=1_048_576"
+        "procedure `{procedure}` declared mailbox_capacity = {value}; capacity must be in 1..=1_048_576"
     )]
     MailboxCapacityTooLarge {
-        operation: &'static str,
+        procedure: &'static str,
         value: usize,
     },
 
@@ -275,12 +275,12 @@ pub enum TopologyIssue {
     KeyedChannelWithoutPluginWire { channel: &'static str },
 
     #[error(
-        "operation `{operation}` declares clock `{clock_type}` with `type Change = NoChange`; \
+        "procedure `{procedure}` declares clock `{clock_type}` with `type Change = NoChange`; \
          the runtime cannot serve it (logical time is the durable change seq, which never \
          advances without persistent changes)"
     )]
     UnservableClock {
-        operation: &'static str,
+        procedure: &'static str,
         clock_type: &'static str,
     },
 
@@ -293,7 +293,7 @@ pub enum TopologyIssue {
 
     #[error(
         "channel `{channel}` declared retry_max = 0; at least one attempt is required \
-         (use OperationError::non_retryable to park without retries)"
+         (use ProcedureError::non_retryable to park without retries)"
     )]
     RetryMaxZero { channel: &'static str },
 
@@ -306,12 +306,12 @@ pub enum TopologyIssue {
     CorrectionWithoutTier,
 
     #[error(
-        "operative declares correction_window() but operation `{operation}` declares clock \
+        "operative declares correction_window() but procedure `{procedure}` declares clock \
          `{clock_type}`; correction orders a replayed slice by event time, which only \
          `EventTimeFrom` yields"
     )]
     CorrectionWithoutEventTime {
-        operation: &'static str,
+        procedure: &'static str,
         clock_type: &'static str,
     },
 
@@ -326,11 +326,11 @@ pub enum TopologyIssue {
     CheckpointAckWithoutTier,
 
     #[error(
-        "merge into operation `{operation}` declares {sources} source channel(s); a merge \
-         consumes two or more — wire a single source with `.into::<Op>()` instead"
+        "merge into procedure `{procedure}` declares {sources} source channel(s); a merge \
+         consumes two or more — wire a single source with `.into::<Proc>()` instead"
     )]
     MergeTooFewSources {
-        operation: &'static str,
+        procedure: &'static str,
         sources: usize,
     },
 
@@ -341,13 +341,13 @@ pub enum TopologyIssue {
     DuplicateMergeSource { channel: &'static str },
 
     #[error(
-        "channel `{channel}` already feeds operation `{operation}`; an edge carries exactly one \
+        "channel `{channel}` already feeds procedure `{procedure}`; an edge carries exactly one \
          merge mapping or none, so a merge source may not re-wire an edge declared by `.into` or \
          by another merge"
     )]
     MergeSourceAlreadyWired {
         channel: &'static str,
-        operation: &'static str,
+        procedure: &'static str,
     },
 }
 
@@ -355,8 +355,8 @@ pub enum TopologyIssue {
 /// `Copy` stream handles can share it.
 pub(crate) struct BuilderState {
     pub channels: Vec<ChannelEntry>,
-    pub operations: Vec<OperationEntry>,
-    pub operation_name_to_id: HashMap<&'static str, u32>,
+    pub procedures: Vec<ProcedureEntry>,
+    pub procedure_name_to_id: HashMap<&'static str, u32>,
     pub errors: Vec<TopologyIssue>,
     pub effectively_once: bool,
     pub correction: Option<crate::operative::topology::CorrectionPolicy>,
@@ -375,8 +375,8 @@ impl ChannelBuilder {
         Self {
             state: RefCell::new(BuilderState {
                 channels: Vec::new(),
-                operations: Vec::new(),
-                operation_name_to_id: HashMap::new(),
+                procedures: Vec::new(),
+                procedure_name_to_id: HashMap::new(),
                 errors: Vec::new(),
                 effectively_once: false,
                 correction: None,
@@ -392,17 +392,17 @@ impl ChannelBuilder {
         self.state.into_inner()
     }
 
-    /// Whether any operation was declared (`false` selects the bounded
+    /// Whether any procedure was declared (`false` selects the bounded
     /// run-sugar path).
-    pub(crate) fn has_operations(&self) -> bool {
-        !self.state.borrow().operations.is_empty()
+    pub(crate) fn has_procedures(&self) -> bool {
+        !self.state.borrow().procedures.is_empty()
     }
 
     /// Opt this operative into late-input correction over the given window.
     ///
-    /// An input whose extracted event time is behind its Segment's high-water
+    /// An input whose extracted event time is behind its Entity's high-water
     /// by no more than `window_ms` is not processed as an arrival. The engine
-    /// rewinds the Segment to a baseline preceding that event time, replays
+    /// rewinds the Entity to a baseline preceding that event time, replays
     /// the retained input slice in event-time order under a bumped epoch, and
     /// keyed changelog sinks overwrite the stale rows by natural key.
     ///
@@ -455,7 +455,7 @@ impl ChannelBuilder {
     }
 
     /// Advance the durable consumed-offset only at an explicit
-    /// [`OperationCtx::checkpoint`], instead of once per input.
+    /// [`ProcedureCtx::checkpoint`], instead of once per input.
     ///
     /// For an operative that folds many inputs into one state push — a window
     /// that only closes on its boundary — the per-input default is not merely
@@ -475,7 +475,7 @@ impl ChannelBuilder {
     /// Emits made before a checkpoint are still flushed as they happen —
     /// checkpointing moves the *acknowledgement*, not the output.
     ///
-    /// [`OperationCtx::checkpoint`]: crate::operation::OperationCtx::checkpoint
+    /// [`ProcedureCtx::checkpoint`]: crate::procedure::ProcedureCtx::checkpoint
     pub fn checkpoint_ack(&self) {
         self.state.borrow_mut().ack_granularity =
             crate::operative::topology::AckGranularity::Checkpoint;
@@ -517,52 +517,52 @@ impl ChannelBuilder {
         self.entry_channel(name, wrap, true)
     }
 
-    /// Open a **merged** subscription: one operation fed by two or more source
+    /// Open a **merged** subscription: one procedure fed by two or more source
     /// channels, each supplying a mapping from its payload into the
-    /// operation's `Input` sum type (`multi-input-operations`).
+    /// procedure's `Input` sum type (`multi-input-procedures`).
     ///
     /// ```ignore
     /// c.merge::<SignalInput>()
     ///     .from(ticker, SignalInput::Ticker)
     ///     .from(config, SignalInput::Config)
-    ///     .into::<DetectorOperation>();
+    ///     .into::<DetectorProcedure>();
     /// ```
     ///
-    /// Sources may be entry streams (sealed payloads) or another operation's
+    /// Sources may be entry streams (sealed payloads) or another procedure's
     /// output stream, freely mixed — on an **unbounded** operative. A bounded
     /// operative is seeded from its spawn args through one entry channel and
     /// nothing on that path says which channel a payload arrived on, so a
     /// bounded merge over an entry channel is refused at registration
     /// (`BuildBoundedError::MergeFromEntryChannel`); its sources are the
-    /// output streams of two or more of its operations.
+    /// output streams of two or more of its procedures.
     ///
-    /// `segment_for` / `operation_key` are evaluated on the **mapped** value,
-    /// so per-source segmentation is encoded in the sum type. Per-source FIFO
+    /// `entities_for` / `entity_key` are evaluated on the **mapped** value,
+    /// so per-source entity mode is encoded in the sum type. Per-source FIFO
     /// order is preserved; nothing is guaranteed across sources — correlate in
-    /// the operation's own state.
+    /// the procedure's own state.
     ///
     /// The mappings MUST be pure: they run on live delivery and again on WAL
     /// replay, and a replay that disagreed with the live run would restore a
     /// state the live run never had. They must also be total — a mapping
     /// returns `I`, not `Result<I, _>`, so unlike an entry parser it has no
     /// error to hand the channel's retry→DLQ ladder. Do the fallible work in
-    /// the operation, on the sum type.
+    /// the procedure, on the sum type.
     ///
     /// A panicking mapping is contained everywhere it can be: on an
-    /// inter-operation source it is caught as the producing operation's panic
+    /// inter-procedure source it is caught as the producing procedure's panic
     /// (unbounded) or turned into a terminal chain error the saga compensates
     /// (bounded). The one unguarded seam is an unbounded entry-channel source,
     /// where the mapping runs on the wire-reader path — the same exposure the
-    /// entry parser there already carries. `docs/multi_input_operations.md`
+    /// entry parser there already carries. `docs/multi_input_procedures.md`
     /// tabulates it.
     ///
     /// A source's payload must be [`Clone`]: the mapping is handed the
     /// channel's value by reference and clones it, where a plain `.into`
     /// forwards the existing `Arc`.
     ///
-    /// `Operation::Input == I` is enforced at the `.into::<Op>()` call site by
+    /// `Procedure::Input == I` is enforced at the `.into::<Proc>()` call site by
     /// the compiler. Fewer than two sources, the same channel twice, or a
-    /// source whose edge into this operation is already wired all fail at
+    /// source whose edge into this procedure is already wired all fail at
     /// registration ([`TopologyIssue::MergeTooFewSources`] /
     /// [`TopologyIssue::DuplicateMergeSource`] /
     /// [`TopologyIssue::MergeSourceAlreadyWired`]).
@@ -620,70 +620,70 @@ impl BuilderState {
     /// creates/refers to a distinct node whose identity string replaces
     /// `S::name()`. An identity claimed by a *different* declaration is a
     /// collision.
-    fn register_node<S: Operation>(&mut self, node_name: Option<&'static str>) -> u32 {
+    fn register_node<S: Procedure>(&mut self, node_name: Option<&'static str>) -> u32 {
         let identity = node_name.unwrap_or_else(S::name);
         let named = node_name.is_some();
-        if let Some(&id) = self.operation_name_to_id.get(identity) {
-            let existing = &self.operations[id as usize];
+        if let Some(&id) = self.procedure_name_to_id.get(identity) {
+            let existing = &self.procedures[id as usize];
             if existing.class_id != TypeId::of::<S>() || existing.named != named {
                 self.errors
                     .push(TopologyIssue::NodeIdentityCollision { name: identity });
             }
             return id;
         }
-        let id = self.operations.len() as u32;
+        let id = self.procedures.len() as u32;
 
-        let segment_for_erased: SegmentForFn =
-            erase::<S::Input, _, _>("segment_for", S::segment_for);
+        let entities_for_erased: EntitiesForFn =
+            erase::<S::Input, _, _>("entities_for", S::entities_for);
 
-        // Dynamic mode = overrides operation_key() with an empty operation_keys().
-        // The erased operation_key closure is captured only for that shape;
+        // Dynamic mode = overrides entity_key() with an empty entity_keys().
+        // The erased entity_key closure is captured only for that shape;
         // build_topology classifies the mode and validates the
         // declare-one-or-the-other rule.
-        let operation_key_erased: Option<OperationKeyFn> =
-            if S::OPERATION_KEY_OVERRIDDEN && S::operation_keys().is_empty() {
-                Some(erase::<S::Input, _, _>("operation_key", S::operation_key))
+        let entity_key_erased: Option<EntityKeyFn> =
+            if S::ENTITY_KEY_OVERRIDDEN && S::entity_keys().is_empty() {
+                Some(erase::<S::Input, _, _>("entity_key", S::entity_key))
             } else {
                 None
             };
 
-        let build_segment: SegmentBuilder = Box::new(
-            |args: BuildSegmentArgs<'_>| -> Arc<crate::segment::SegmentSlot> {
-                crate::segment::build_segment_slot::<S>(args)
+        let build_entity: EntityBuilder = Box::new(
+            |args: BuildEntityArgs<'_>| -> Arc<crate::entity::EntitySlot> {
+                crate::entity::build_entity_slot::<S>(args)
             },
         );
 
         let (serialize_state, deserialize_state) =
             crate::operative::dispatcher::build_state_fns::<S>();
 
-        self.operations.push(OperationEntry {
+        self.procedures.push(ProcedureEntry {
             name: identity,
             class_id: TypeId::of::<S>(),
             named,
-            segment_keys: S::operation_keys(),
-            segment_for_overridden: S::SEGMENT_FOR_OVERRIDDEN,
-            operation_key_overridden: S::OPERATION_KEY_OVERRIDDEN,
+            entity_keys: S::entity_keys(),
+            entities_for_overridden: S::ENTITIES_FOR_OVERRIDDEN,
+            entity_key_overridden: S::ENTITY_KEY_OVERRIDDEN,
             compensate_overridden: S::COMPENSATE_OVERRIDDEN,
             input_channel_ids: Vec::new(),
             output_channel_id: None,
             input_type_id: std::any::TypeId::of::<S::Input>(),
             output_type_id: std::any::TypeId::of::<S::Output>(),
-            clock_type_name: <S::Clock as crate::operation::Clock>::type_name(),
-            clock_is_event_time: <S::Clock as crate::operation::Clock>::IS_EVENT_TIME,
+            clock_type_name: <S::Clock as crate::procedure::Clock>::type_name(),
+            clock_is_event_time: <S::Clock as crate::procedure::Clock>::IS_EVENT_TIME,
             change_is_nochange: std::any::TypeId::of::<S::Change>()
-                == std::any::TypeId::of::<crate::operation::NoChange>(),
+                == std::any::TypeId::of::<crate::procedure::NoChange>(),
             mailbox_capacity: S::mailbox_capacity(),
             mailbox_capacity_overridden: S::MAILBOX_CAPACITY_OVERRIDDEN,
             compact_after_bytes: S::compact_after_bytes(),
-            build_segment,
-            segment_for_erased,
-            operation_key_erased,
-            idle_ttl: S::segment_idle_ttl(),
-            max_segments: S::max_segments(),
+            build_entity,
+            entities_for_erased,
+            entity_key_erased,
+            idle_ttl: S::entity_idle_ttl(),
+            max_entities: S::max_entities(),
             serialize_state,
             deserialize_state,
         });
-        self.operation_name_to_id.insert(identity, id);
+        self.procedure_name_to_id.insert(identity, id);
         id
     }
 
@@ -691,18 +691,18 @@ impl BuilderState {
     /// never carries a phantom channel. Named by the node's identity until a
     /// `.named(...)` override.
     fn ensure_output_channel(&mut self, node: u32) -> u32 {
-        if let Some(id) = self.operations[node as usize].output_channel_id {
+        if let Some(id) = self.procedures[node as usize].output_channel_id {
             return id;
         }
-        let name = self.operations[node as usize].name;
-        let id = self.push_channel(name, ChannelKind::InterOperation);
+        let name = self.procedures[node as usize].name;
+        let id = self.push_channel(name, ChannelKind::InterProcedure);
         self.channels[id as usize].producer = Some(node);
-        self.operations[node as usize].output_channel_id = Some(id);
+        self.procedures[node as usize].output_channel_id = Some(id);
         id
     }
 
     /// Wire `channel_id` into a consumer node (created/resolved by identity).
-    fn wire_consumer<S: Operation>(
+    fn wire_consumer<S: Procedure>(
         &mut self,
         channel_id: u32,
         node_name: Option<&'static str>,
@@ -724,29 +724,29 @@ impl BuilderState {
     /// the wrong value forever.
     fn attach_consumer(&mut self, channel_id: u32, consumer: u32, map: Option<MergeMapFn>) {
         let entry = &mut self.channels[channel_id as usize];
-        match entry.consumers.iter().find(|e| e.operation == consumer) {
+        match entry.consumers.iter().find(|e| e.procedure == consumer) {
             Some(existing) if existing.map.is_some() || map.is_some() => {
                 let channel = entry.name;
-                let operation = self.operations[consumer as usize].name;
+                let procedure = self.procedures[consumer as usize].name;
                 self.errors
-                    .push(TopologyIssue::MergeSourceAlreadyWired { channel, operation });
+                    .push(TopologyIssue::MergeSourceAlreadyWired { channel, procedure });
                 return;
             }
             Some(_) => {}
             None => entry.consumers.push(ConsumerEdge {
-                operation: consumer,
+                procedure: consumer,
                 map,
             }),
         }
-        let op = &mut self.operations[consumer as usize];
-        if !op.input_channel_ids.contains(&channel_id) {
-            op.input_channel_ids.push(channel_id);
+        let proc = &mut self.procedures[consumer as usize];
+        if !proc.input_channel_ids.contains(&channel_id) {
+            proc.input_channel_ids.push(channel_id);
         }
     }
 }
 
 /// Per-kind default for the channel's `OverflowPolicy`. Entry channels
-/// drop to keep the wire reader running; inter-operation channels block to
+/// drop to keep the wire reader running; inter-procedure channels block to
 /// preserve ordering through stateful pipelines. Plugin-bound channels
 /// have no SDK mailbox and the value is never consulted; we still set
 /// `Block` so the field is always meaningful and to keep the descriptor
@@ -754,7 +754,7 @@ impl BuilderState {
 pub(crate) fn default_policy_for_kind(kind: ChannelKind) -> OverflowPolicy {
     match kind {
         ChannelKind::Entry => OverflowPolicy::DropNewest,
-        ChannelKind::InterOperation | ChannelKind::PluginBound => OverflowPolicy::Block,
+        ChannelKind::InterProcedure | ChannelKind::PluginBound => OverflowPolicy::Block,
     }
 }
 
@@ -771,7 +771,7 @@ fn set_retry_max(st: &mut BuilderState, channel_id: u32, max_attempts: u32) {
     entry.retry.max_attempts = max_attempts;
 }
 
-/// Install the standard inter-op byte codec for `T` — postcard over the
+/// Install the standard inter-proc byte codec for `T` — postcard over the
 /// SDK's standard serde derives, the same wire format the effect records
 /// use. Shared by the `.codec()` declarations on both builder stages.
 fn set_codec<T>(st: &mut BuilderState, channel_id: u32)
@@ -782,11 +782,11 @@ where
         st,
         channel_id,
         |typed: &T| {
-            postcard::to_allocvec(typed).map_err(|e| format!("inter-op codec encode failed: {e}"))
+            postcard::to_allocvec(typed).map_err(|e| format!("inter-proc codec encode failed: {e}"))
         },
         |bytes: Vec<u8>| {
             postcard::from_bytes::<T>(&bytes)
-                .map_err(|e| format!("inter-op codec decode failed: {e}"))
+                .map_err(|e| format!("inter-proc codec decode failed: {e}"))
         },
     );
 }
@@ -802,7 +802,7 @@ where
     let encode_erased: crate::channel::CodecEncodeFn = Arc::new(move |val: &dyn Any| {
         let typed = val
             .downcast_ref::<T>()
-            .ok_or_else(|| "inter-op codec: type mismatch (build-time invariant)".to_string())?;
+            .ok_or_else(|| "inter-proc codec: type mismatch (build-time invariant)".to_string())?;
         encode(typed)
     });
     let decode_erased: crate::channel::EntryWrapFn = Arc::new(move |bytes: Vec<u8>| {
@@ -870,7 +870,7 @@ fn default_plugin_serializer<T: serde::Serialize + Send + Sync + 'static>(
 
 /// A channel handle usable as a [`merge`](ChannelBuilder::merge) source:
 /// either an [`EntryStream`] (sealed payload off the wire) or a [`Stream`]
-/// (another operation's output). Implemented for both, so the two are freely
+/// (another procedure's output). Implemented for both, so the two are freely
 /// mixed in one merge.
 pub trait MergeSource<'b> {
     /// The payload the source channel carries — the mapping's argument type.
@@ -904,7 +904,7 @@ impl<'b, T: Clone + Send + Sync + 'static> MergeSource<'b> for Stream<'b, T> {
 /// Nothing is recorded on the topology until `into`, so a merge left unclosed
 /// declares no edges at all — silently. `must_use` is what makes that a
 /// compiler warning rather than a graph that is quietly missing a consumer.
-#[must_use = "a merge declares nothing until it is closed with `.into::<Op>()`"]
+#[must_use = "a merge declares nothing until it is closed with `.into::<Proc>()`"]
 pub struct Merge<'b, I> {
     builder: &'b ChannelBuilder,
     sources: Vec<(ChannelId, MergeMapFn)>,
@@ -945,29 +945,29 @@ impl<'b, I: Send + Sync + 'static> Merge<'b, I> {
     /// Close the merge on its consumer and return **the consumer's** output
     /// stream handle, so a merged node chains like any other. Compile-time
     /// bound: `S::Input == I`.
-    pub fn into<S: Operation<Input = I>>(self) -> Stream<'b, S::Output> {
+    pub fn into<S: Procedure<Input = I>>(self) -> Stream<'b, S::Output> {
         self.wire::<S>(None)
     }
 
     /// Like [`into`](Merge::into), but the consumer is a distinct named node
     /// (the `sdk-graph-authoring` node-identity rule).
-    pub fn into_named<S: Operation<Input = I>>(
+    pub fn into_named<S: Procedure<Input = I>>(
         self,
         node_name: &'static str,
     ) -> Stream<'b, S::Output> {
         self.wire::<S>(Some(node_name))
     }
 
-    fn wire<S: Operation<Input = I>>(
+    fn wire<S: Procedure<Input = I>>(
         self,
         node_name: Option<&'static str>,
     ) -> Stream<'b, S::Output> {
         let mut st = self.builder.state.borrow_mut();
         let node = st.register_node::<S>(node_name);
         if self.declared < 2 {
-            let operation = st.operations[node as usize].name;
+            let procedure = st.procedures[node as usize].name;
             st.errors.push(TopologyIssue::MergeTooFewSources {
-                operation,
+                procedure,
                 sources: self.declared,
             });
         }
@@ -983,12 +983,12 @@ impl<'b, I: Send + Sync + 'static> Merge<'b, I> {
     }
 }
 
-/// Erase one author callback — `segment_for`, `operation_key`, a merge
+/// Erase one author callback — `entities_for`, `entity_key`, a merge
 /// mapping, a hybrid plugin serializer. The downcast is a build-time
 /// invariant (the callback is installed by the same wiring that declared the
 /// payload type), so `what` names the declaration only for the impossible
 /// case. An erasure whose downcast failure is a *reported* error rather than
-/// an impossibility — the inter-op codec — needs a `Result` and stays
+/// an impossibility — the inter-proc codec — needs a `Result` and stays
 /// hand-written.
 fn erase<T, R, F>(what: &'static str, f: F) -> ErasedFn<R>
 where
@@ -1036,7 +1036,7 @@ impl<'b, T: 'static + Send + Sync> EntryStream<'b, T> {
     /// Wire the entry consumer and return **its** output stream handle, so a
     /// linear pipeline is one chained expression. Compile-time bound:
     /// `S::Input == T`.
-    pub fn into<S: Operation<Input = T>>(self) -> Stream<'b, S::Output> {
+    pub fn into<S: Procedure<Input = T>>(self) -> Stream<'b, S::Output> {
         self.wire::<S>(None)
     }
 
@@ -1045,14 +1045,14 @@ impl<'b, T: 'static + Send + Sync> EntryStream<'b, T> {
     /// `node_name` instead of `S::name()`, for every purpose identity serves —
     /// state directories, journal entries, the derived channel name,
     /// diagnostics.
-    pub fn into_named<S: Operation<Input = T>>(
+    pub fn into_named<S: Procedure<Input = T>>(
         self,
         node_name: &'static str,
     ) -> Stream<'b, S::Output> {
         self.wire::<S>(Some(node_name))
     }
 
-    fn wire<S: Operation<Input = T>>(
+    fn wire<S: Procedure<Input = T>>(
         self,
         node_name: Option<&'static str>,
     ) -> Stream<'b, S::Output> {
@@ -1098,7 +1098,7 @@ impl<'b, T: 'static + Send + Sync> EntryStream<'b, T> {
     }
 }
 
-/// An operation's output stream handle, returned by `.into::<Op>()`: a
+/// A procedure's output stream handle, returned by `.into::<Proc>()`: a
 /// lightweight `Copy` reference into the operative's topology builder.
 ///
 /// - `stream.into::<Next>()` wires Next as a consumer and returns Next's own
@@ -1115,7 +1115,7 @@ impl<'b, T: 'static + Send + Sync> EntryStream<'b, T> {
 /// using one after the topology freezes at registration is a compile error.
 pub struct Stream<'b, T> {
     builder: &'b ChannelBuilder,
-    node: OperationId,
+    node: ProcedureId,
     _phantom: PhantomData<fn() -> T>,
 }
 
@@ -1134,27 +1134,27 @@ impl<'b, T: 'static + Send + Sync> Stream<'b, T> {
         f(&mut st, cid)
     }
 
-    /// Wire an inter-operation consumer onto this stream's channel and return
+    /// Wire an inter-procedure consumer onto this stream's channel and return
     /// **the consumer's** output stream handle. Compile-time bound:
     /// `S::Input == T`. Calling `.into` on the same handle repeatedly declares
     /// fan-out; wiring the same (unnamed) class from two streams declares
     /// fan-in.
-    pub fn into<S: Operation<Input = T>>(self) -> Stream<'b, S::Output> {
+    pub fn into<S: Procedure<Input = T>>(self) -> Stream<'b, S::Output> {
         self.wire::<S>(None)
     }
 
     /// Like [`into`](Stream::into), but the consumer is a distinct named node:
     /// its identity string is `node_name` instead of `S::name()`, letting one
-    /// Operation class appear at several graph positions with independent
+    /// Procedure class appear at several graph positions with independent
     /// state (`sdk-graph-authoring` node-identity rule).
-    pub fn into_named<S: Operation<Input = T>>(
+    pub fn into_named<S: Procedure<Input = T>>(
         self,
         node_name: &'static str,
     ) -> Stream<'b, S::Output> {
         self.wire::<S>(Some(node_name))
     }
 
-    fn wire<S: Operation<Input = T>>(
+    fn wire<S: Procedure<Input = T>>(
         self,
         node_name: Option<&'static str>,
     ) -> Stream<'b, S::Output> {
@@ -1192,7 +1192,7 @@ impl<'b, T: 'static + Send + Sync> Stream<'b, T> {
         self
     }
 
-    /// Override the per-kind default `OverflowPolicy`. Inter-operation
+    /// Override the per-kind default `OverflowPolicy`. Inter-procedure
     /// channels default to `Block`; switch to `DropNewest` / `DropOldest` on a
     /// per-channel basis when ordering can be sacrificed for liveness.
     pub fn on_full(self, policy: OverflowPolicy) -> Self {
@@ -1214,10 +1214,10 @@ impl<'b, T: 'static + Send + Sync> Stream<'b, T> {
         self
     }
 
-    /// Declare the standard inter-op byte codec (postcard over `T`'s serde
+    /// Declare the standard inter-proc byte codec (postcard over `T`'s serde
     /// derives) so this channel's handoff batch is journal-able at the
-    /// bounded op-commit barrier and re-seedable on crash-resume. Required
-    /// on every inter-op channel of a durable structured bounded class.
+    /// bounded proc-commit barrier and re-seedable on crash-resume. Required
+    /// on every inter-proc channel of a durable structured bounded class.
     pub fn codec(self) -> Self
     where
         T: serde::Serialize + serde::de::DeserializeOwned,
@@ -1239,7 +1239,7 @@ impl<'b, T: 'static + Send + Sync> Stream<'b, T> {
 
     /// Opt this channel into output identity: every plugin emit must carry
     /// a natural key via `ctx.emit_keyed(key, value)` and the runtime
-    /// stamps `flz.segment` / `flz.seq` / `flz.key` on the wire frame.
+    /// stamps `flz.entity` / `flz.seq` / `flz.key` on the wire frame.
     /// Requires a plugin wire (`output` or `also_output_with`);
     /// `build_topology` rejects a keyed channel without one.
     pub fn keyed(self) -> Self {
@@ -1247,8 +1247,8 @@ impl<'b, T: 'static + Send + Sync> Stream<'b, T> {
         self
     }
 
-    /// Attach a plugin sink alongside inter-operation fan-out. The channel's
-    /// `kind` stays `InterOperation`, further `.into::<S>()` consumer wiring
+    /// Attach a plugin sink alongside inter-procedure fan-out. The channel's
+    /// `kind` stays `InterProcedure`, further `.into::<S>()` consumer wiring
     /// chains naturally, and a typed value emitted on this channel
     /// reaches both the consumer mailboxes (typed) and the named plugin
     /// (serialized to bytes via `serializer`). The serializer is invoked

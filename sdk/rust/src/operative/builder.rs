@@ -7,9 +7,9 @@
 //! - enforce the shared graph-shape rule (`sdk-graph-authoring`): one entry
 //!   channel, every node reachable from it, no cycles — fan-out and fan-in
 //!   are both legal
-//! - reject `segment_for` default impl on operations with non-empty
-//!   `operation_keys()` per `design.md` Open Question 1 (resolved via the
-//!   `SEGMENT_FOR_OVERRIDDEN` const sentinel on the `Operation` trait)
+//! - reject `entities_for` default impl on procedures with non-empty
+//!   `entity_keys()` per `design.md` Open Question 1 (resolved via the
+//!   `ENTITIES_FOR_OVERRIDDEN` const sentinel on the `Procedure` trait)
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -17,20 +17,20 @@ use std::sync::Arc;
 use crate::channel::builder::{BuilderState, ChannelBuilder, TopologyIssue};
 use crate::channel::{ChannelDescriptor, ChannelKind, PluginSink};
 use crate::operative::topology::{
-    AckGranularity, OperationDescriptor, OperativeTopology, SegmentingMode,
+    AckGranularity, EntityMode, OperativeTopology, ProcedureDescriptor,
 };
 
-/// Built-in default per-Segment mailbox capacity used when a Operation does
+/// Built-in default per-Entity mailbox capacity used when a Procedure does
 /// not override `mailbox_capacity()` and `FLEZHA_MAILBOX_CAPACITY` is
 /// either unset or unparseable.
 pub const DEFAULT_MAILBOX_CAPACITY: usize = 1024;
 
-/// Hard upper bound on per-Segment mailbox capacity. ~1M items × ~40 B
-/// per slot ≈ 40 MB per Segment is past sanity for any expected
+/// Hard upper bound on per-Entity mailbox capacity. ~1M items × ~40 B
+/// per slot ≈ 40 MB per Entity is past sanity for any expected
 /// workload; values above this fail registration with a named error.
 pub const MAX_MAILBOX_CAPACITY: usize = 1_048_576;
 
-/// Environment variable consulted when a Operation does not set
+/// Environment variable consulted when a Procedure does not set
 /// `MAILBOX_CAPACITY_OVERRIDDEN = true`. Parsed as `usize`; empty,
 /// missing, or unparseable values fall through to
 /// [`DEFAULT_MAILBOX_CAPACITY`].
@@ -43,30 +43,30 @@ pub struct TopologyBuildError {
 }
 
 /// Result of the shared graph-shape walk (`sdk-graph-authoring`): Kahn
-/// topological order over the operation nodes plus reachability from the
+/// topological order over the procedure nodes plus reachability from the
 /// entry. One walk serves both the unbounded validation and the bounded
-/// `OpDag` construction — the shape rule is one rule, so its mechanism is one
+/// `ProcDag` construction — the shape rule is one rule, so its mechanism is one
 /// mechanism.
 pub(crate) struct GraphOrder {
     /// Node ids in Kahn topological order (FIFO — for a tree this is exactly
-    /// BFS from the root, so bounded `op_idx` numbering stays stable).
-    pub order: Vec<crate::channel::OperationId>,
+    /// BFS from the root, so bounded `proc_idx` numbering stays stable).
+    pub order: Vec<crate::channel::ProcedureId>,
     /// Node id → position in `order`; `usize::MAX` for a node on a cycle.
     pub pos: Vec<usize>,
     /// First node unreachable from the roots, if any (meaningful only when
     /// the graph is acyclic — a cycle already explains unreachability).
-    pub unreachable: Option<crate::channel::OperationId>,
+    pub unreachable: Option<crate::channel::ProcedureId>,
     /// First node Kahn left over — on (or strictly downstream of) a cycle.
-    pub on_cycle: Option<crate::channel::OperationId>,
+    pub on_cycle: Option<crate::channel::ProcedureId>,
 }
 
 /// Walk `n` nodes over `edges` (producer → consumer pairs), rooted at `roots`
 /// (the entry channel's consumers). Merge mappings are irrelevant to shape, so
-/// an edge is a pair of operation ids.
+/// an edge is a pair of procedure ids.
 pub(crate) fn graph_order(
     n: usize,
-    edges: &[(crate::channel::OperationId, crate::channel::OperationId)],
-    roots: &[crate::channel::OperationId],
+    edges: &[(crate::channel::ProcedureId, crate::channel::ProcedureId)],
+    roots: &[crate::channel::ProcedureId],
 ) -> GraphOrder {
     let mut adjacency: Vec<Vec<usize>> = vec![Vec::new(); n];
     let mut indegree = vec![0usize; n];
@@ -85,7 +85,7 @@ pub(crate) fn graph_order(
     }
     let unreachable = (0..n)
         .find(|&i| !reachable[i])
-        .map(|i| i as crate::channel::OperationId);
+        .map(|i| i as crate::channel::ProcedureId);
 
     let mut queue: std::collections::VecDeque<usize> =
         (0..n).filter(|&i| indegree[i] == 0).collect();
@@ -93,7 +93,7 @@ pub(crate) fn graph_order(
     let mut pos = vec![usize::MAX; n];
     while let Some(node) = queue.pop_front() {
         pos[node] = order.len();
-        order.push(node as crate::channel::OperationId);
+        order.push(node as crate::channel::ProcedureId);
         for &child in &adjacency[node] {
             indegree[child] -= 1;
             if indegree[child] == 0 {
@@ -103,7 +103,7 @@ pub(crate) fn graph_order(
     }
     let on_cycle = (0..n)
         .find(|&i| pos[i] == usize::MAX)
-        .map(|i| i as crate::channel::OperationId);
+        .map(|i| i as crate::channel::ProcedureId);
 
     GraphOrder {
         order,
@@ -131,8 +131,8 @@ pub fn build_topology_with_persistence(
 ) -> Result<Arc<OperativeTopology>, TopologyBuildError> {
     let BuilderState {
         channels,
-        operations,
-        operation_name_to_id,
+        procedures,
+        procedure_name_to_id,
         mut errors,
         effectively_once,
         correction,
@@ -156,28 +156,28 @@ pub fn build_topology_with_persistence(
     // to its entry by `metadata["channel"]`, falling back to the first entry
     // when unset. Fan-out and fan-in are both legal; at-most-one output
     // channel per node holds by construction of the stream-handle builder.
-    if !operations.is_empty() {
+    if !procedures.is_empty() {
         let edges: Vec<_> = channels
             .iter()
             .filter_map(|c| c.producer.map(|p| (p, c)))
-            .flat_map(|(p, c)| c.consumers.iter().map(move |e| (p, e.operation)))
+            .flat_map(|(p, c)| c.consumers.iter().map(move |e| (p, e.procedure)))
             .collect();
         let roots: Vec<_> = channels
             .iter()
             .filter(|c| c.kind == ChannelKind::Entry)
-            .flat_map(|c| c.consumers.iter().map(|e| e.operation))
+            .flat_map(|c| c.consumers.iter().map(|e| e.procedure))
             .collect();
-        let shape = graph_order(operations.len(), &edges, &roots);
+        let shape = graph_order(procedures.len(), &edges, &roots);
         if let Some(node) = shape.on_cycle {
             errors.push(TopologyIssue::Cycle {
-                operation: operations[node as usize].name,
+                procedure: procedures[node as usize].name,
             });
         } else if let Some(node) = shape.unreachable {
             // Defensive: the stream-handle builder only creates nodes by
             // wiring from the entry, so an unreachable acyclic node cannot
             // normally arise. A cycle already explains unreachability.
-            errors.push(TopologyIssue::UnreachableOperation {
-                operation: operations[node as usize].name,
+            errors.push(TopologyIssue::UnreachableProcedure {
+                procedure: procedures[node as usize].name,
             });
         }
     }
@@ -246,41 +246,38 @@ pub fn build_topology_with_persistence(
         });
     }
 
-    // Build operation descriptors and validate segment declarations.
-    let mut operation_descs: Vec<OperationDescriptor> = Vec::with_capacity(operations.len());
-    for entry in operations {
-        if !entry.segment_keys.is_empty() && !entry.segment_for_overridden {
-            errors.push(TopologyIssue::SegmentForMissing { name: entry.name });
+    // Build procedure descriptors and validate entity declarations.
+    let mut procedure_descs: Vec<ProcedureDescriptor> = Vec::with_capacity(procedures.len());
+    for entry in procedures {
+        if !entry.entity_keys.is_empty() && !entry.entities_for_overridden {
+            errors.push(TopologyIssue::EntitiesForMissing { name: entry.name });
         }
-        // A Operation declares static keys OR dynamic operation_key(), never both.
-        if entry.operation_key_overridden && !entry.segment_keys.is_empty() {
+        // A Procedure declares static keys OR dynamic entity_key(), never both.
+        if entry.entity_key_overridden && !entry.entity_keys.is_empty() {
             errors.push(TopologyIssue::StaticAndDynamic { name: entry.name });
         }
         // Build-time clock validation: LogicalClock serves the durable
-        // change seq, which never advances for a NoChange Operation — fail
+        // change seq, which never advances for a NoChange Procedure — fail
         // fast instead of serving a clock frozen at 0.
         if entry.clock_type_name == "LogicalClock" && entry.change_is_nochange {
             errors.push(TopologyIssue::UnservableClock {
-                operation: entry.name,
+                procedure: entry.name,
                 clock_type: entry.clock_type_name,
             });
         }
-        // Correction orders a replayed slice by event time. An operation whose
+        // Correction orders a replayed slice by event time. A procedure whose
         // clock is the wall or the change seq has no event time, so the sort
         // key does not exist and lateness is undefined.
         if correction.is_some() && !entry.clock_is_event_time {
             errors.push(TopologyIssue::CorrectionWithoutEventTime {
-                operation: entry.name,
+                procedure: entry.name,
                 clock_type: entry.clock_type_name,
             });
         }
-        let mode = match (
-            entry.segment_keys.is_empty(),
-            entry.operation_key_overridden,
-        ) {
-            (false, _) => SegmentingMode::Static,
-            (true, true) => SegmentingMode::Dynamic,
-            (true, false) => SegmentingMode::Single,
+        let mode = match (entry.entity_keys.is_empty(), entry.entity_key_overridden) {
+            (false, _) => EntityMode::Static,
+            (true, true) => EntityMode::Dynamic,
+            (true, false) => EntityMode::Single,
         };
         let resolved_capacity = match resolve_mailbox_capacity(
             entry.name,
@@ -296,16 +293,16 @@ pub fn build_topology_with_persistence(
                 DEFAULT_MAILBOX_CAPACITY
             }
         };
-        operation_descs.push(OperationDescriptor {
+        procedure_descs.push(ProcedureDescriptor {
             name: Arc::from(entry.name),
-            segment_keys: entry.segment_keys,
-            segment_for_overridden: entry.segment_for_overridden,
-            operation_key_overridden: entry.operation_key_overridden,
+            entity_keys: entry.entity_keys,
+            entities_for_overridden: entry.entities_for_overridden,
+            entity_key_overridden: entry.entity_key_overridden,
             compensate_overridden: entry.compensate_overridden,
             mode,
             idle_ttl: entry.idle_ttl,
-            max_segments: entry.max_segments,
-            operation_key_erased: entry.operation_key_erased,
+            max_entities: entry.max_entities,
+            entity_key_erased: entry.entity_key_erased,
             input_channel_ids: entry.input_channel_ids,
             output_channel_id: entry.output_channel_id,
             input_type_id: entry.input_type_id,
@@ -313,8 +310,8 @@ pub fn build_topology_with_persistence(
             mailbox_capacity: resolved_capacity,
             mailbox_capacity_overridden: entry.mailbox_capacity_overridden,
             compact_after_bytes: entry.compact_after_bytes,
-            build_segment: entry.build_segment,
-            segment_for_erased: entry.segment_for_erased,
+            build_entity: entry.build_entity,
+            entities_for_erased: entry.entities_for_erased,
             serialize_state: entry.serialize_state,
             deserialize_state: entry.deserialize_state,
         });
@@ -327,8 +324,8 @@ pub fn build_topology_with_persistence(
     Ok(Arc::new(OperativeTopology {
         channels: channel_descs,
         name_to_id,
-        operations: operation_descs,
-        operation_name_to_id,
+        procedures: procedure_descs,
+        procedure_name_to_id,
         factory_id,
         persistence_enabled_const,
         effectively_once,
@@ -348,26 +345,26 @@ pub fn build_topology_for<R: crate::operative::UnboundedOperative>(
     build_topology_with_persistence(R::factory_id(), cb, R::PERSISTENCE_ENABLED)
 }
 
-/// Resolve a Operation's mailbox capacity per Decision 6: an explicit
-/// override on the Operation wins over `FLEZHA_MAILBOX_CAPACITY`, which wins
+/// Resolve a Procedure's mailbox capacity per Decision 6: an explicit
+/// override on the Procedure wins over `FLEZHA_MAILBOX_CAPACITY`, which wins
 /// over the built-in default. Out-of-range values fail registration with
-/// the offending Operation's name; an unparseable env var falls through to
+/// the offending Procedure's name; an unparseable env var falls through to
 /// the default rather than failing (runners tolerate typos in env
 /// values during development).
 pub(crate) fn resolve_mailbox_capacity(
-    operation_name: &'static str,
+    procedure_name: &'static str,
     declared: usize,
     overridden: bool,
 ) -> Result<usize, TopologyIssue> {
     let env_value = std::env::var(ENV_MAILBOX_CAPACITY).ok();
-    resolve_mailbox_capacity_inner(operation_name, declared, overridden, env_value.as_deref())
+    resolve_mailbox_capacity_inner(procedure_name, declared, overridden, env_value.as_deref())
 }
 
 /// Pure-function core split out of [`resolve_mailbox_capacity`] so unit
 /// tests can exercise the precedence rules without mutating the
 /// process-global `FLEZHA_MAILBOX_CAPACITY` env var.
 pub(crate) fn resolve_mailbox_capacity_inner(
-    operation_name: &'static str,
+    procedure_name: &'static str,
     declared: usize,
     overridden: bool,
     env_value: Option<&str>,
@@ -379,18 +376,18 @@ pub(crate) fn resolve_mailbox_capacity_inner(
             .and_then(|s| s.parse::<usize>().ok())
             .unwrap_or(DEFAULT_MAILBOX_CAPACITY)
     };
-    validate_capacity(operation_name, resolved)
+    validate_capacity(procedure_name, resolved)
 }
 
-fn validate_capacity(operation_name: &'static str, value: usize) -> Result<usize, TopologyIssue> {
+fn validate_capacity(procedure_name: &'static str, value: usize) -> Result<usize, TopologyIssue> {
     if value == 0 {
         return Err(TopologyIssue::MailboxCapacityZero {
-            operation: operation_name,
+            procedure: procedure_name,
         });
     }
     if value > MAX_MAILBOX_CAPACITY {
         return Err(TopologyIssue::MailboxCapacityTooLarge {
-            operation: operation_name,
+            procedure: procedure_name,
             value,
         });
     }
@@ -401,14 +398,14 @@ fn validate_capacity(operation_name: &'static str, value: usize) -> Result<usize
 mod tests {
     use super::*;
     use crate::channel::ChannelBuilder;
-    use crate::operation::state_handle::StateHandle;
-    use crate::operation::{NoChange, Operation, OperationCtx, OperationError, WallClock};
+    use crate::entity::restore::RestoreInitPayload;
     use crate::operative::topology::BeyondWindowPolicy;
-    use crate::segment::restore::RestoreInitPayload;
+    use crate::procedure::state_handle::StateHandle;
+    use crate::procedure::{NoChange, Procedure, ProcedureCtx, ProcedureError, WallClock};
 
     #[derive(Default)]
-    struct TierOp;
-    impl Operation for TierOp {
+    struct TierProc;
+    impl Procedure for TierProc {
         type Input = String;
         type Output = String;
         type State = ();
@@ -423,8 +420,8 @@ mod tests {
             &mut self,
             _: String,
             _: StateHandle<'_, Self>,
-            _: &mut OperationCtx<'_>,
-        ) -> Result<(), OperationError> {
+            _: &mut ProcedureCtx<'_>,
+        ) -> Result<(), ProcedureError> {
             Ok(())
         }
     }
@@ -434,7 +431,7 @@ mod tests {
         let cb = ChannelBuilder::new();
         cb.effectively_once();
         cb.input::<String>("in")
-            .into::<TierOp>()
+            .into::<TierProc>()
             .named("out")
             .keyed()
             .output("kafka");
@@ -447,7 +444,7 @@ mod tests {
         let cb = ChannelBuilder::new();
         cb.effectively_once();
         cb.input::<String>("in")
-            .into::<TierOp>()
+            .into::<TierProc>()
             .named("out")
             .output("kafka");
         let err = match build_topology("tier_unkeyed_plugin", cb) {
@@ -465,7 +462,7 @@ mod tests {
         let cb = ChannelBuilder::new();
         cb.effectively_once();
         cb.input::<String>("in")
-            .into::<TierOp>()
+            .into::<TierProc>()
             .named("mid")
             .also_output_with("kafka", |s: &String| s.as_bytes().to_vec());
         let err = match build_topology("tier_unkeyed_hybrid", cb) {
@@ -481,7 +478,7 @@ mod tests {
     #[test]
     fn default_topology_is_not_effectively_once() {
         let cb = ChannelBuilder::new();
-        cb.input::<String>("in").into::<TierOp>();
+        cb.input::<String>("in").into::<TierProc>();
         let topology = build_topology("tier_default_off", cb).expect("topology");
         assert!(!topology.effectively_once);
     }
@@ -490,7 +487,7 @@ mod tests {
     fn non_tier_unkeyed_plugin_channel_still_builds() {
         let cb = ChannelBuilder::new();
         cb.input::<String>("in")
-            .into::<TierOp>()
+            .into::<TierProc>()
             .named("out")
             .output("kafka");
         let topology = build_topology("no_tier_unkeyed_ok", cb).expect("topology");
@@ -498,15 +495,15 @@ mod tests {
     }
 
     #[test]
-    fn override_on_operation_takes_precedence() {
-        // Operation declared 4096 with MAILBOX_CAPACITY_OVERRIDDEN = true;
+    fn override_on_procedure_takes_precedence() {
+        // Procedure declared 4096 with MAILBOX_CAPACITY_OVERRIDDEN = true;
         // env var present and parseable. Override wins.
         let cap = resolve_mailbox_capacity_inner("ohlc", 4096, true, Some("2048")).unwrap();
         assert_eq!(cap, 4096);
     }
 
     #[test]
-    fn env_var_applies_when_no_operation_override() {
+    fn env_var_applies_when_no_procedure_override() {
         // No override; env var is parseable. Env wins over the default.
         let cap = resolve_mailbox_capacity_inner("ohlc", 1024, false, Some("2048")).unwrap();
         assert_eq!(cap, 2048);
@@ -526,22 +523,22 @@ mod tests {
     }
 
     #[test]
-    fn capacity_zero_is_rejected_with_operation_name() {
+    fn capacity_zero_is_rejected_with_procedure_name() {
         // Override path: explicit 0 is rejected.
         let err = resolve_mailbox_capacity_inner("ohlc", 0, true, None).unwrap_err();
         match err {
-            TopologyIssue::MailboxCapacityZero { operation } => assert_eq!(operation, "ohlc"),
+            TopologyIssue::MailboxCapacityZero { procedure } => assert_eq!(procedure, "ohlc"),
             other => panic!("expected MailboxCapacityZero, got {other:?}"),
         }
     }
 
     #[test]
-    fn capacity_above_maximum_is_rejected_with_operation_name() {
+    fn capacity_above_maximum_is_rejected_with_procedure_name() {
         let err = resolve_mailbox_capacity_inner("ohlc", MAX_MAILBOX_CAPACITY + 1, true, None)
             .unwrap_err();
         match err {
-            TopologyIssue::MailboxCapacityTooLarge { operation, value } => {
-                assert_eq!(operation, "ohlc");
+            TopologyIssue::MailboxCapacityTooLarge { procedure, value } => {
+                assert_eq!(procedure, "ohlc");
                 assert_eq!(value, MAX_MAILBOX_CAPACITY + 1);
             }
             other => panic!("expected MailboxCapacityTooLarge, got {other:?}"),
@@ -555,7 +552,7 @@ mod tests {
         let err = resolve_mailbox_capacity_inner("ohlc", 0, true, Some("4096")).unwrap_err();
         assert!(matches!(
             err,
-            TopologyIssue::MailboxCapacityZero { operation: "ohlc" }
+            TopologyIssue::MailboxCapacityZero { procedure: "ohlc" }
         ));
     }
 
@@ -567,7 +564,7 @@ mod tests {
 
     #[test]
     fn maximum_capacity_is_accepted() {
-        let cap = resolve_mailbox_capacity_inner("max_operation", MAX_MAILBOX_CAPACITY, true, None)
+        let cap = resolve_mailbox_capacity_inner("max_procedure", MAX_MAILBOX_CAPACITY, true, None)
             .unwrap();
         assert_eq!(cap, MAX_MAILBOX_CAPACITY);
     }
@@ -575,20 +572,20 @@ mod tests {
     // ---------- Late-input correction: the declaration's prerequisites ----------
 
     struct TradeTime;
-    impl crate::operation::TimeExtractor<String> for TradeTime {
+    impl crate::procedure::TimeExtractor<String> for TradeTime {
         fn extract(input: &String) -> u64 {
             input.parse().unwrap_or(0)
         }
     }
 
     #[derive(Default)]
-    struct EventTimeOp;
-    impl Operation for EventTimeOp {
+    struct EventTimeProc;
+    impl Procedure for EventTimeProc {
         type Input = String;
         type Output = String;
         type State = ();
         type Change = NoChange;
-        type Clock = crate::operation::EventTimeFrom<TradeTime>;
+        type Clock = crate::procedure::EventTimeFrom<TradeTime>;
         type Config = ();
         fn name() -> &'static str {
             "correction_builder_test_op"
@@ -598,13 +595,13 @@ mod tests {
             &mut self,
             _: String,
             _: StateHandle<'_, Self>,
-            _: &mut OperationCtx<'_>,
-        ) -> Result<(), OperationError> {
+            _: &mut ProcedureCtx<'_>,
+        ) -> Result<(), ProcedureError> {
             Ok(())
         }
     }
 
-    fn correction_builder<S: Operation<Input = String, Output = String> + Default>(
+    fn correction_builder<S: Procedure<Input = String, Output = String> + Default>(
         window_ms: u64,
         tier: bool,
     ) -> ChannelBuilder {
@@ -625,7 +622,7 @@ mod tests {
     fn correction_with_tier_and_event_time_builds() {
         let topology = build_topology(
             "correction_ok",
-            correction_builder::<EventTimeOp>(600_000, true),
+            correction_builder::<EventTimeProc>(600_000, true),
         )
         .expect("topology");
 
@@ -642,7 +639,7 @@ mod tests {
         cb.effectively_once();
         cb.checkpoint_ack();
         cb.input::<String>("in")
-            .into::<TierOp>()
+            .into::<TierProc>()
             .named("out")
             .keyed()
             .output("kafka");
@@ -655,7 +652,7 @@ mod tests {
         let cb = ChannelBuilder::new();
         cb.effectively_once();
         cb.input::<String>("in")
-            .into::<TierOp>()
+            .into::<TierProc>()
             .named("out")
             .keyed()
             .output("kafka");
@@ -671,7 +668,7 @@ mod tests {
         let cb = ChannelBuilder::new();
         cb.checkpoint_ack();
         cb.input::<String>("in")
-            .into::<TierOp>()
+            .into::<TierProc>()
             .named("out")
             .output("kafka");
 
@@ -691,7 +688,7 @@ mod tests {
         // replay — the declaration is meaningless, not merely degraded.
         let err = build_topology(
             "correction_no_tier",
-            correction_builder::<EventTimeOp>(600_000, false),
+            correction_builder::<EventTimeProc>(600_000, false),
         )
         .err()
         .expect("correction without the tier must fail");
@@ -704,11 +701,11 @@ mod tests {
 
     #[test]
     fn correction_without_an_event_time_clock_is_refused() {
-        // TierOp declares WallClock: there is no event time to order a replayed
+        // TierProc declares WallClock: there is no event time to order a replayed
         // slice by, so lateness is not even definable.
         let err = build_topology(
             "correction_wall_clock",
-            correction_builder::<TierOp>(600_000, true),
+            correction_builder::<TierProc>(600_000, true),
         )
         .err()
         .expect("correction without an event-time clock must fail");
@@ -726,7 +723,7 @@ mod tests {
     fn a_zero_correction_window_is_refused() {
         let err = build_topology(
             "correction_zero",
-            correction_builder::<EventTimeOp>(0, true),
+            correction_builder::<EventTimeProc>(0, true),
         )
         .err()
         .expect("a zero window must fail");
@@ -739,7 +736,7 @@ mod tests {
 
     #[test]
     fn the_beyond_window_policy_is_declarable() {
-        let cb = correction_builder::<EventTimeOp>(600_000, true);
+        let cb = correction_builder::<EventTimeProc>(600_000, true);
         cb.beyond_window_policy(BeyondWindowPolicy::Drop);
         let topology = build_topology("correction_drop", cb).expect("topology");
 

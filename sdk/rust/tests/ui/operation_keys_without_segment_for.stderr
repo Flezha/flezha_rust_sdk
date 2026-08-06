@@ -1,5 +1,0 @@
-error: #[flezha::operation] static segmenting requires both `keys = [..]` and `segment_for = fn`
- --> tests/ui/operation_keys_without_segment_for.rs:2:1
-  |
-2 | fn f(a: String) -> Vec<u8> {
-  | ^^

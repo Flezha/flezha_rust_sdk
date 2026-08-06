@@ -1,8 +1,8 @@
 //! Proc-macros realizing the Flezha SDK authoring contract for Rust.
 //!
-//! - `#[flezha::operation]` — attribute macro on a `run` function; infers the six
-//!   `Operation` associated types from the signature and generates the impl, the
-//!   PascalCase operation type, and (for the single-operation `input → sink` case) a
+//! - `#[flezha::procedure]` — attribute macro on a `run` function; infers the six
+//!   `Procedure` associated types from the signature and generates the impl, the
+//!   PascalCase procedure type, and (for the single-procedure `input → sink` case) a
 //!   `UnboundedOperative` impl plus inventory auto-registration.
 //! - `#[derive(flezha::State)]` — generates a field-granular `Change` enum +
 //!   `apply_change` + journaling mutators on the state handle.
@@ -14,15 +14,15 @@
 
 use proc_macro::TokenStream;
 
-mod operation;
 mod operative;
+mod procedure;
 mod state;
 mod util;
 
-/// `#[flezha::operation(...)]` attribute macro. See module docs.
+/// `#[flezha::procedure(...)]` attribute macro. See module docs.
 #[proc_macro_attribute]
-pub fn operation(attr: TokenStream, item: TokenStream) -> TokenStream {
-    operation::expand(attr.into(), item.into())
+pub fn procedure(attr: TokenStream, item: TokenStream) -> TokenStream {
+    procedure::expand(attr.into(), item.into())
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
 }

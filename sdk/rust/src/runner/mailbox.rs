@@ -40,8 +40,8 @@ use std::sync::Arc;
 
 use crossbeam::queue::ArrayQueue;
 
+use crate::entity::EntityCounters;
 use crate::runner::work_stealing_pool::{Task, WorkStealingPool};
-use crate::segment::SegmentCounters;
 
 /// Returned by `push_and_maybe_submit` when the bounded queue rejects the
 /// push; the caller can recover the payload from the wrapper.
@@ -58,15 +58,15 @@ impl<Payload> std::fmt::Display for BackpressureError<Payload> {
 
 impl<Payload: std::fmt::Debug> std::error::Error for BackpressureError<Payload> {}
 
-/// Per-Segment mailbox: a bounded `ArrayQueue<Payload>` plus an
-/// `AtomicBool` inflight flag and a [`SegmentCounters`] block.
+/// Per-Entity mailbox: a bounded `ArrayQueue<Payload>` plus an
+/// `AtomicBool` inflight flag and a [`EntityCounters`] block.
 ///
 /// `Payload` is the user-defined work item shape. For Flezha, it's
-/// [`crate::segment::SegmentPayload`].
+/// [`crate::entity::EntityPayload`].
 pub struct Mailbox<Payload: Send + 'static> {
     queue: ArrayQueue<Payload>,
     inflight: AtomicBool,
-    counters: SegmentCounters,
+    counters: EntityCounters,
 }
 
 impl<Payload: Send + 'static> Mailbox<Payload> {
@@ -78,7 +78,7 @@ impl<Payload: Send + 'static> Mailbox<Payload> {
         Mailbox {
             queue: ArrayQueue::new(capacity),
             inflight: AtomicBool::new(false),
-            counters: SegmentCounters::default(),
+            counters: EntityCounters::default(),
         }
     }
 
@@ -167,11 +167,11 @@ impl<Payload: Send + 'static> Mailbox<Payload> {
         self.queue.len() >= self.queue.capacity()
     }
 
-    /// Per-Segment counter set. Producer-side enqueue paths bump these
+    /// Per-Entity counter set. Producer-side enqueue paths bump these
     /// on push success / block / drop events; readers (future metrics
     /// export) use [`Ordering::Relaxed`] loads.
     #[inline]
-    pub fn counters(&self) -> &SegmentCounters {
+    pub fn counters(&self) -> &EntityCounters {
         &self.counters
     }
 
@@ -224,9 +224,9 @@ impl<Payload: Send + 'static> Mailbox<Payload> {
     /// controller journals before forwarding — it re-forwards them, so the
     /// queue is a subset of the durable log. A journal-less class's queue is
     /// the only copy of its input; see
-    /// [`SegmentSlot::discard_queued_input_on_restore`].
+    /// [`EntitySlot::discard_queued_input_on_restore`].
     ///
-    /// [`SegmentSlot::discard_queued_input_on_restore`]: crate::segment::SegmentSlot::discard_queued_input_on_restore
+    /// [`EntitySlot::discard_queued_input_on_restore`]: crate::entity::EntitySlot::discard_queued_input_on_restore
     pub fn clear(&self) -> usize {
         let mut discarded = 0;
         while self.queue.pop().is_some() {

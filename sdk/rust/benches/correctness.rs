@@ -3,25 +3,25 @@
 //! `rust-sdk-dispatch` Requirement "Per-Message Dispatch-Overhead Budget".
 //!
 //! Two functions:
-//! - `throughput_single_segment` — single operative × single operation ×
-//!   single segment. Measures the per-message dispatch budget on a
+//! - `throughput_single_entity` — single operative × single procedure ×
+//!   single entity. Measures the per-message dispatch budget on a
 //!   pinned producer thread.
 //! - `throughput_static_fanout` — single operative × single static-mode
-//!   operation with 4 segment keys, `segment_for` returning all 4
+//!   procedure with 4 entity keys, `entities_for` returning all 4
 //!   keys per input. Characterizes the fan-out cost.
 //!
-//! The sync-op invariant ("≤ 4 sync ops per message" on the
-//! single-segment path; "4 + N × 3" for fan-out width N) is an
+//! The sync-op invariant ("≤ 4 sync procs per message" on the
+//! single-entity path; "4 + N × 3" for fan-out width N) is an
 //! analytical bound enforced by code review, per
 //! `operative-bench-harness/design.md` Decision 8 / risk note 4 and
 //! `operative-bounded-mailbox/design.md` Decision 7. The 4-op budget
 //! covers: (1) registry/topology lookup, (2) ArrayQueue try_push,
 //! (3) `pushes_total` Relaxed counter, (4) inflight CAS. The fan-out
-//! per-target cost is 3 ops (try_push + counter + inflight CAS), so
+//! per-target cost is 3 procs (try_push + counter + inflight CAS), so
 //! width N adds `N × 3` on top of the shared registry lookup.
 //!
 //! These benches report raw msg/s; CI compares against
-//! `SINGLE_SEGMENT_FLOOR_MSG_PER_SEC` in `docs/benchmarking.md` as a
+//! `SINGLE_ENTITY_FLOOR_MSG_PER_SEC` in `docs/benchmarking.md` as a
 //! diagnostic, not a hard gate.
 
 use std::collections::HashMap;
@@ -32,10 +32,10 @@ use std::time::{Duration, Instant};
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use flezha_runner::channel::ChannelBuilder;
-use flezha_runner::operation::{Operation, OperationCtx, OperationError};
 use flezha_runner::operative::builder::build_topology_for;
 use flezha_runner::operative::registry::OperativeRegistry;
 use flezha_runner::operative::UnboundedInstance;
+use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError};
 use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
 use flezha_runner::{OverflowPolicy, UnboundedOperative, __dispatch_internals as bi};
 use flz_transport::transport::FlezhaStream;
@@ -70,13 +70,13 @@ fn wait_until<F: Fn() -> bool>(predicate: F, timeout: Duration) -> bool {
     true
 }
 
-// ----- Single-segment microbench -----
+// ----- Single-entity microbench -----
 
 static SINGLE_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Default)]
-struct SingleSegmentOperation;
-impl Operation for SingleSegmentOperation {
+struct SingleEntityProcedure;
+impl Procedure for SingleEntityProcedure {
     type Input = Vec<u8>;
     type Output = Vec<u8>;
     type State = ();
@@ -84,24 +84,24 @@ impl Operation for SingleSegmentOperation {
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "single_segment_operation"
+        "single_entity_procedure"
     }
     fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
     fn run(
         &mut self,
         _: Vec<u8>,
-        _: StateHandle<'_, SingleSegmentOperation>,
-        _: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        _: StateHandle<'_, SingleEntityProcedure>,
+        _: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         SINGLE_COUNTER.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 }
 
-struct SingleSegmentOperative;
-impl UnboundedOperative for SingleSegmentOperative {
+struct SingleEntityOperative;
+impl UnboundedOperative for SingleEntityOperative {
     fn factory_id() -> &'static str {
-        "single_segment_operative"
+        "single_entity_operative"
     }
     fn channels(c: &ChannelBuilder) {
         // Opt the entry channel into Block so the bench measures the
@@ -112,19 +112,19 @@ impl UnboundedOperative for SingleSegmentOperative {
         // measurement under sustained back-pressure.
         c.input::<Vec<u8>>("input")
             .on_full(OverflowPolicy::Block)
-            .into::<SingleSegmentOperation>();
+            .into::<SingleEntityProcedure>();
     }
 }
 
-fn throughput_single_segment(c: &mut Criterion) {
+fn throughput_single_entity(c: &mut Criterion) {
     let msgs_per_iter = 100_000usize;
 
     let pool = Arc::new(bi::WorkStealingPool::with_size(pool_size_from_env_or_cpus()));
-    let topology = build_topology_for::<SingleSegmentOperative>().expect("topology");
+    let topology = build_topology_for::<SingleEntityOperative>().expect("topology");
     let registry = Arc::new(OperativeRegistry::new());
     let instance = UnboundedInstance::new(
         Arc::clone(&topology),
-        Arc::from("single-segment-bench"),
+        Arc::from("single-entity-bench"),
         Arc::clone(&pool),
     );
     registry.register_unbounded(instance);
@@ -135,11 +135,11 @@ fn throughput_single_segment(c: &mut Criterion) {
     let stream = dummy_stream();
     let payload: Vec<u8> = b"x".repeat(64);
 
-    let mut group = c.benchmark_group("throughput_single_segment");
+    let mut group = c.benchmark_group("throughput_single_entity");
     group.measurement_time(Duration::from_secs(20));
     group.sample_size(10);
     group.throughput(criterion::Throughput::Elements(msgs_per_iter as u64));
-    group.bench_function("throughput_single_segment", |b| {
+    group.bench_function("throughput_single_entity", |b| {
         b.iter_custom(|iters| {
             let mut elapsed = Duration::ZERO;
             for _ in 0..iters {
@@ -149,7 +149,7 @@ fn throughput_single_segment(c: &mut Criterion) {
                     let mut md = HashMap::new();
                     md.insert("channel".to_string(), "input".to_string());
                     handle.dispatch(
-                        "single-segment-bench",
+                        "single-entity-bench",
                         payload.clone(),
                         &md,
                         Arc::clone(&stream),
@@ -162,7 +162,7 @@ fn throughput_single_segment(c: &mut Criterion) {
                 elapsed += start.elapsed();
                 assert!(
                     drained,
-                    "single-segment microbench drain timed out: {} of {}",
+                    "single-entity microbench drain timed out: {} of {}",
                     SINGLE_COUNTER.load(Ordering::Acquire),
                     msgs_per_iter
                 );
@@ -173,15 +173,15 @@ fn throughput_single_segment(c: &mut Criterion) {
     group.finish();
 }
 
-// ----- Static-mode segment fan-out microbench (fan-out width 4) -----
+// ----- Static-mode entity fan-out microbench (fan-out width 4) -----
 
 static FANOUT_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 const FANOUT_KEYS: &[&str] = &["k0", "k1", "k2", "k3"];
 
 #[derive(Default)]
-struct FanoutOperation;
-impl Operation for FanoutOperation {
+struct FanoutProcedure;
+impl Procedure for FanoutProcedure {
     type Input = Vec<u8>;
     type Output = Vec<u8>;
     type State = ();
@@ -189,22 +189,22 @@ impl Operation for FanoutOperation {
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "fanout_operation"
+        "fanout_procedure"
     }
     fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
-    fn operation_keys() -> Vec<&'static str> {
+    fn entity_keys() -> Vec<&'static str> {
         FANOUT_KEYS.to_vec()
     }
-    const SEGMENT_FOR_OVERRIDDEN: bool = true;
-    fn segment_for(_: &Vec<u8>) -> Vec<&'static str> {
+    const ENTITIES_FOR_OVERRIDDEN: bool = true;
+    fn entities_for(_: &Vec<u8>) -> Vec<&'static str> {
         FANOUT_KEYS.to_vec()
     }
     fn run(
         &mut self,
         _: Vec<u8>,
-        _: StateHandle<'_, FanoutOperation>,
-        _: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        _: StateHandle<'_, FanoutProcedure>,
+        _: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         FANOUT_COUNTER.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
@@ -218,7 +218,7 @@ impl UnboundedOperative for StaticFanoutOperative {
     fn channels(c: &ChannelBuilder) {
         c.input::<Vec<u8>>("input")
             .on_full(OverflowPolicy::Block)
-            .into::<FanoutOperation>();
+            .into::<FanoutProcedure>();
     }
 }
 
@@ -288,8 +288,8 @@ fn throughput_static_fanout(c: &mut Criterion) {
 // (`effectively-once-output` §6.3); the tier-off number doubles as the
 // zero-delta guard for the default path.
 
-use flezha_runner::segment::flusher::{SendError, SendFrameFn};
-use flezha_runner::segment::segment_state_sink;
+use flezha_runner::entity::flusher::{SendError, SendFrameFn};
+use flezha_runner::entity::state_sink;
 use serde::{Deserialize, Serialize};
 
 static TIER_OFF_COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -299,11 +299,11 @@ static TIER_ON_COUNTER: AtomicUsize = AtomicUsize::new(0);
 struct BumpChange;
 impl flezha_runner::state::Change for BumpChange {}
 
-macro_rules! tier_bench_operation {
-    ($op:ident, $name:literal, $counter:ident) => {
+macro_rules! tier_bench_procedure {
+    ($proc:ident, $name:literal, $counter:ident) => {
         #[derive(Default)]
-        struct $op;
-        impl Operation for $op {
+        struct $proc;
+        impl Procedure for $proc {
             type Input = Vec<u8>;
             type Output = Vec<u8>;
             type State = i64;
@@ -323,8 +323,8 @@ macro_rules! tier_bench_operation {
                 &mut self,
                 input: Vec<u8>,
                 mut state: StateHandle<'_, Self>,
-                ctx: &mut OperationCtx<'_>,
-            ) -> Result<(), OperationError> {
+                ctx: &mut ProcedureCtx<'_>,
+            ) -> Result<(), ProcedureError> {
                 state.apply(BumpChange);
                 ctx.emit_keyed::<Vec<u8>>("k".to_string(), input)?;
                 $counter.fetch_add(1, Ordering::Relaxed);
@@ -334,8 +334,8 @@ macro_rules! tier_bench_operation {
     };
 }
 
-tier_bench_operation!(TierOffOperation, "tier_off_operation", TIER_OFF_COUNTER);
-tier_bench_operation!(TierOnOperation, "tier_on_operation", TIER_ON_COUNTER);
+tier_bench_procedure!(TierOffProcedure, "tier_off_procedure", TIER_OFF_COUNTER);
+tier_bench_procedure!(TierOnProcedure, "tier_on_procedure", TIER_ON_COUNTER);
 
 struct TierOffOperative;
 impl UnboundedOperative for TierOffOperative {
@@ -345,7 +345,7 @@ impl UnboundedOperative for TierOffOperative {
     fn channels(c: &ChannelBuilder) {
         c.input::<Vec<u8>>("input")
             .on_full(OverflowPolicy::Block)
-            .into::<TierOffOperation>()
+            .into::<TierOffProcedure>()
             .named("out")
             .keyed()
             .output("bench");
@@ -361,7 +361,7 @@ impl UnboundedOperative for TierOnOperative {
         c.effectively_once();
         c.input::<Vec<u8>>("input")
             .on_full(OverflowPolicy::Block)
-            .into::<TierOnOperation>()
+            .into::<TierOnProcedure>()
             .named("out")
             .keyed()
             .output("bench");
@@ -387,7 +387,7 @@ fn throughput_effectively_once_tiers(c: &mut Criterion) {
     // not the controller.
     let sink: SendFrameFn =
         Arc::new(|_pid: &str, _frame: &[u8]| -> Result<(), SendError> { Ok(()) });
-    segment_state_sink::install_global_sink(sink);
+    state_sink::install_global_sink(sink);
 
     let pool = Arc::new(bi::WorkStealingPool::with_size(pool_size_from_env_or_cpus()));
     let registry = Arc::new(OperativeRegistry::new());
@@ -454,7 +454,7 @@ fn throughput_effectively_once_tiers(c: &mut Criterion) {
 
 criterion_group!(
     benches,
-    throughput_single_segment,
+    throughput_single_entity,
     throughput_static_fanout,
     throughput_effectively_once_tiers
 );

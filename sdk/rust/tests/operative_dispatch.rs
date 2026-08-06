@@ -1,11 +1,11 @@
 //! Section 3 scenario tests covering:
-//! - Sticky per-segment ordering (umbrella scenario "Same segment is
-//!   never concurrent" + "Per-segment input order is preserved")
-//! - Parallel segments (umbrella scenario "Different segments of the
-//!   same operation run in parallel")
+//! - Sticky per-entity ordering (umbrella scenario "Same entity is
+//!   never concurrent" + "Per-entity input order is preserved")
+//! - Parallel entities (umbrella scenario "Different entities of the
+//!   same procedure run in parallel")
 //! - Per-operative namespace isolation (umbrella scenario "Same-named
 //!   channels on different operatives are independent")
-//! - `emit_with_meta` rejection on inter-operation channels
+//! - `emit_with_meta` rejection on inter-procedure channels
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -14,21 +14,21 @@ use std::time::{Duration, Instant};
 
 use bi::OperativeDispatchHandle;
 use flezha_runner::channel::ChannelBuilder;
-use flezha_runner::operation::{Operation, OperationCtx, OperationError};
 use flezha_runner::operative::builder::build_topology_for;
 use flezha_runner::operative::registry::OperativeRegistry;
 use flezha_runner::operative::UnboundedInstance;
+use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError};
 use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
 use flezha_runner::{OverflowPolicy, UnboundedOperative, __dispatch_internals as bi};
 
 mod common;
 use common::{dispatch_input, dispatch_marked, dummy_stream, setup, wait_until};
 
-// ----- Per-segment ordering (single mode) -----
+// ----- Per-entity ordering (single mode) -----
 
 static APPEND_OBSERVED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-test_operation!(AppendOperation, "append_operation", String => String, (), |input, _state, _ctx| {
+test_procedure!(AppendProcedure, "append_procedure", String => String, (), |input, _state, _ctx| {
     APPEND_OBSERVED.lock().unwrap().push(input);
     Ok(())
 });
@@ -39,12 +39,12 @@ impl UnboundedOperative for AppendOperative {
         "append_operative"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<String>("input").into::<AppendOperation>();
+        c.input::<String>("input").into::<AppendProcedure>();
     }
 }
 
 #[test]
-fn per_segment_input_order_preserved() {
+fn per_entity_input_order_preserved() {
     APPEND_OBSERVED.lock().unwrap().clear();
     let (handle, _instance) = setup::<AppendOperative>("append-instance", 8);
     let stream = dummy_stream();
@@ -76,12 +76,12 @@ fn per_segment_input_order_preserved() {
     }
 }
 
-// ----- Sticky non-concurrent dispatch on the same segment -----
+// ----- Sticky non-concurrent dispatch on the same entity -----
 
 static APPEND_CONCURRENT: AtomicUsize = AtomicUsize::new(0);
 static APPEND_MAX_CONCURRENT: AtomicUsize = AtomicUsize::new(0);
 
-test_operation!(ConcurrencyProbeOperation, "concurrency_probe_operation", String => String, (), |_input, _state, _ctx| {
+test_procedure!(ConcurrencyProbeProcedure, "concurrency_probe_procedure", String => String, (), |_input, _state, _ctx| {
     let cur = APPEND_CONCURRENT.fetch_add(1, Ordering::AcqRel) + 1;
     let mut prev = APPEND_MAX_CONCURRENT.load(Ordering::Acquire);
     while cur > prev {
@@ -109,12 +109,12 @@ impl UnboundedOperative for ConcurrencyProbeOperative {
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
-            .into::<ConcurrencyProbeOperation>();
+            .into::<ConcurrencyProbeProcedure>();
     }
 }
 
 #[test]
-fn same_segment_never_runs_concurrently() {
+fn same_entity_never_runs_concurrently() {
     APPEND_CONCURRENT.store(0, Ordering::Release);
     APPEND_MAX_CONCURRENT.store(0, Ordering::Release);
 
@@ -160,7 +160,7 @@ fn same_segment_never_runs_concurrently() {
     assert_eq!(
         APPEND_MAX_CONCURRENT.load(Ordering::Acquire),
         1,
-        "single-segment mailbox allowed concurrent dispatch"
+        "single-entity mailbox allowed concurrent dispatch"
     );
 }
 
@@ -172,7 +172,7 @@ fn pool_idle(_pool: &bi::WorkStealingPool) -> bool {
     true
 }
 
-// ----- Parallel segments of the same operation -----
+// ----- Parallel entities of the same procedure -----
 
 use std::sync::OnceLock;
 
@@ -182,8 +182,8 @@ fn parallel_observed() -> &'static Mutex<HashMap<&'static str, Vec<String>>> {
 }
 
 #[derive(Default)]
-struct ParallelStaticOperation;
-impl Operation for ParallelStaticOperation {
+struct ParallelStaticProcedure;
+impl Procedure for ParallelStaticProcedure {
     type Input = String;
     type Output = String;
     type State = String;
@@ -191,13 +191,13 @@ impl Operation for ParallelStaticOperation {
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "parallel_static_operation"
+        "parallel_static_procedure"
     }
     fn init_state(
-        operation_key: Option<&str>,
+        entity_key: Option<&str>,
         _init_payload: Option<RestoreInitPayload<'_>>,
     ) -> String {
-        match operation_key {
+        match entity_key {
             Some("a") => "a".to_string(),
             Some("b") => "b".to_string(),
             Some("c") => "c".to_string(),
@@ -205,11 +205,11 @@ impl Operation for ParallelStaticOperation {
             _ => "?".to_string(),
         }
     }
-    fn operation_keys() -> Vec<&'static str> {
+    fn entity_keys() -> Vec<&'static str> {
         vec!["a", "b", "c", "d"]
     }
-    const SEGMENT_FOR_OVERRIDDEN: bool = true;
-    fn segment_for(input: &String) -> Vec<&'static str> {
+    const ENTITIES_FOR_OVERRIDDEN: bool = true;
+    fn entities_for(input: &String) -> Vec<&'static str> {
         match input.chars().next() {
             Some('a') => vec!["a"],
             Some('b') => vec!["b"],
@@ -220,9 +220,9 @@ impl Operation for ParallelStaticOperation {
     fn run(
         &mut self,
         input: String,
-        state: StateHandle<'_, ParallelStaticOperation>,
-        _: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        state: StateHandle<'_, ParallelStaticProcedure>,
+        _: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         let key: &'static str = match state.as_str() {
             "a" => "a",
             "b" => "b",
@@ -246,12 +246,12 @@ impl UnboundedOperative for ParallelOperative {
         "parallel_operative"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<String>("input").into::<ParallelStaticOperation>();
+        c.input::<String>("input").into::<ParallelStaticProcedure>();
     }
 }
 
 #[test]
-fn static_segments_dispatch_independently() {
+fn static_entities_dispatch_independently() {
     parallel_observed().lock().unwrap().clear();
     let (handle, _instance) = setup::<ParallelOperative>("parallel-instance", 8);
     let stream = dummy_stream();
@@ -282,10 +282,10 @@ fn static_segments_dispatch_independently() {
 
     let map = parallel_observed().lock().unwrap();
     for &p in &prefixes {
-        let v = map.get(p).expect("segment observed");
+        let v = map.get(p).expect("entity observed");
         assert_eq!(v.len(), per_prefix);
         for (i, s) in v.iter().enumerate() {
-            assert_eq!(*s, format!("{}{}", p, i), "{} segment out of order", p);
+            assert_eq!(*s, format!("{}{}", p, i), "{} entity out of order", p);
         }
     }
 }
@@ -297,7 +297,7 @@ struct CountingState {
     n: usize,
 }
 
-test_operation!(CountingOperation, "counting_operation", String => String, CountingState, |_input, _state, _ctx| {
+test_procedure!(CountingProcedure, "counting_procedure", String => String, CountingState, |_input, _state, _ctx| {
     Ok(())
 });
 
@@ -307,7 +307,7 @@ impl UnboundedOperative for UnboundedA {
         "ns_operative_a"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<String>("input").into::<CountingOperation>();
+        c.input::<String>("input").into::<CountingProcedure>();
     }
 }
 
@@ -317,7 +317,7 @@ impl UnboundedOperative for UnboundedB {
         "ns_operative_b"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<String>("input").into::<CountingOperation>();
+        c.input::<String>("input").into::<CountingProcedure>();
     }
 }
 
@@ -337,11 +337,11 @@ fn per_operative_namespace_isolation() {
     ));
 }
 
-// ----- emit_with_meta rejection on inter-operation channels -----
+// ----- emit_with_meta rejection on inter-procedure channels -----
 
 static META_REJECT_OBSERVED: Mutex<Option<String>> = Mutex::new(None);
 
-test_operation!(MetaProducerOperation, "meta_producer_operation", String => String, (), |input, _state, ctx| {
+test_procedure!(MetaProducerProcedure, "meta_producer_procedure", String => String, (), |input, _state, ctx| {
     let mut meta = HashMap::new();
     meta.insert("k".to_string(), "v".to_string());
     let res = ctx.emit_with_meta::<String>(input, meta);
@@ -351,7 +351,7 @@ test_operation!(MetaProducerOperation, "meta_producer_operation", String => Stri
     Ok(())
 });
 
-test_operation!(MetaConsumerOperation, "meta_consumer_operation", String => (), (), |_input, _state, _ctx| {
+test_procedure!(MetaConsumerProcedure, "meta_consumer_procedure", String => (), (), |_input, _state, _ctx| {
     Ok(())
 });
 
@@ -362,14 +362,14 @@ impl UnboundedOperative for MetaRejectOperative {
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
-            .into::<MetaProducerOperation>()
+            .into::<MetaProducerProcedure>()
             .named("hop")
-            .into::<MetaConsumerOperation>();
+            .into::<MetaConsumerProcedure>();
     }
 }
 
 #[test]
-fn emit_with_meta_rejected_on_inter_operation() {
+fn emit_with_meta_rejected_on_inter_procedure() {
     *META_REJECT_OBSERVED.lock().unwrap() = None;
     let (handle, _instance) = setup::<MetaRejectOperative>("meta-instance", 2);
     let stream = dummy_stream();
@@ -384,8 +384,8 @@ fn emit_with_meta_rejected_on_inter_operation() {
     ));
     let msg = META_REJECT_OBSERVED.lock().unwrap().clone().unwrap();
     assert!(
-        msg.contains("inter-operation"),
-        "expected inter-operation rejection, got {msg}"
+        msg.contains("inter-procedure"),
+        "expected inter-procedure rejection, got {msg}"
     );
 }
 
@@ -393,7 +393,7 @@ fn emit_with_meta_rejected_on_inter_operation() {
 
 static BLOCK_STRESS_RECEIVED: AtomicUsize = AtomicUsize::new(0);
 
-test_operation!(BlockStressOperation, "block_stress_operation", Vec<u8> => (), (), cap 16, |_input, _state, _ctx| {
+test_procedure!(BlockStressProcedure, "block_stress_procedure", Vec<u8> => (), (), cap 16, |_input, _state, _ctx| {
     // Tiny pause so producers actually get to park rather than
     // repeatedly winning the push race uncontested.
     for _ in 0..32 {
@@ -411,15 +411,15 @@ impl UnboundedOperative for BlockStressOperative {
     fn channels(c: &ChannelBuilder) {
         c.input::<Vec<u8>>("input")
             .on_full(OverflowPolicy::Block)
-            .into::<BlockStressOperation>();
+            .into::<BlockStressProcedure>();
     }
 }
 
 /// Spec scenario "Parked producer does not block its consumer's drain"
-/// (`Block parking does not violate sticky per-segment ordering`)
+/// (`Block parking does not violate sticky per-entity ordering`)
 /// stress-tested with 100 producer threads × 1000 items each on a
 /// capacity-16 mailbox. Asserts every push eventually delivers and that
-/// the per-Segment `pushes_total` matches the total emitted; this
+/// the per-Entity `pushes_total` matches the total emitted; this
 /// covers Tasks 4.4, 5.6, 6.4, 7.7, 8.1, and 9.2 in one run.
 #[test]
 fn block_stress_100_producers_no_loss() {
@@ -458,11 +458,11 @@ fn block_stress_100_producers_no_loss() {
         total
     );
 
-    // Per-Segment counters are populated through the producer-side
+    // Per-Entity counters are populated through the producer-side
     // enqueue path. With Block policy and a capacity-16 mailbox under
     // 100×1000 contention, every successful push bumps `pushes_total`
     // and at least one park event bumps `pushes_blocked_total`.
-    let slot = &instance.segments[0][0];
+    let slot = &instance.entities[0][0];
     let counters = slot.counters();
     assert_eq!(
         counters.pushes_total.load(Ordering::Relaxed) as usize,
@@ -481,7 +481,7 @@ fn block_stress_100_producers_no_loss() {
 
 static DROP_NEWEST_RECEIVED: AtomicUsize = AtomicUsize::new(0);
 
-test_operation!(DropNewestOperation, "drop_newest_operation", Vec<u8> => (), (), cap 2, |_input, _state, _ctx| {
+test_procedure!(DropNewestProcedure, "drop_newest_procedure", Vec<u8> => (), (), cap 2, |_input, _state, _ctx| {
     DROP_NEWEST_RECEIVED.fetch_add(1, Ordering::Relaxed);
     Ok(())
 });
@@ -492,7 +492,7 @@ impl UnboundedOperative for DropNewestOperative {
         "drop_newest_operative"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<Vec<u8>>("input").into::<DropNewestOperation>();
+        c.input::<Vec<u8>>("input").into::<DropNewestProcedure>();
     }
 }
 
@@ -505,7 +505,7 @@ impl UnboundedOperative for DropNewestOperative {
 fn drop_newest_discards_when_full_and_only_bumps_newest_counter() {
     DROP_NEWEST_RECEIVED.store(0, Ordering::Release);
     let (handle, instance) = setup::<DropNewestOperative>("drop-newest-instance", 1);
-    let slot = Arc::clone(&instance.segments[0][0]);
+    let slot = Arc::clone(&instance.entities[0][0]);
 
     // Pre-acquire inflight: subsequent enqueue paths skip submit_drain
     // because their try_mark_inflight returns false. Items pile up in
@@ -557,7 +557,7 @@ fn drop_newest_discards_when_full_and_only_bumps_newest_counter() {
 
 static DROP_OLDEST_OBSERVED: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
 
-test_operation!(DropOldestOperation, "drop_oldest_operation", Vec<u8> => (), (), cap 2, |input, _state, _ctx| {
+test_procedure!(DropOldestProcedure, "drop_oldest_procedure", Vec<u8> => (), (), cap 2, |input, _state, _ctx| {
     DROP_OLDEST_OBSERVED.lock().unwrap().push(input);
     Ok(())
 });
@@ -570,7 +570,7 @@ impl UnboundedOperative for DropOldestOperative {
     fn channels(c: &ChannelBuilder) {
         c.input::<Vec<u8>>("input")
             .on_full(OverflowPolicy::DropOldest)
-            .into::<DropOldestOperation>();
+            .into::<DropOldestProcedure>();
     }
 }
 
@@ -581,7 +581,7 @@ impl UnboundedOperative for DropOldestOperative {
 fn drop_oldest_evicts_head_and_bumps_oldest_counter() {
     DROP_OLDEST_OBSERVED.lock().unwrap().clear();
     let (handle, instance) = setup::<DropOldestOperative>("drop-oldest-instance", 1);
-    let slot = Arc::clone(&instance.segments[0][0]);
+    let slot = Arc::clone(&instance.entities[0][0]);
 
     // Pre-acquire inflight so no drain runs during the deterministic
     // push sequence below; pop / dispatch happens after the assertions.
@@ -623,43 +623,43 @@ fn drop_oldest_evicts_head_and_bumps_oldest_counter() {
     assert_eq!(surviving, vec![b"new1".to_vec(), b"new2".to_vec()]);
 }
 
-/// Spec scenario "Counters present at runtime": fresh SegmentSlot
+/// Spec scenario "Counters present at runtime": fresh EntitySlot
 /// exposes a counters() accessor with all four atomics at 0.
 #[test]
-fn fresh_segment_counters_start_at_zero() {
+fn fresh_entity_counters_start_at_zero() {
     let (_handle, instance) = setup::<DropOldestOperative>("counters-fresh-instance", 1);
-    let counters = instance.segments[0][0].counters();
+    let counters = instance.entities[0][0].counters();
     assert_eq!(counters.pushes_total.load(Ordering::Relaxed), 0);
     assert_eq!(counters.pushes_blocked_total.load(Ordering::Relaxed), 0);
     assert_eq!(counters.drops_newest_total.load(Ordering::Relaxed), 0);
     assert_eq!(counters.drops_oldest_total.load(Ordering::Relaxed), 0);
 }
 
-// ----- Inter-operation default-Block coverage -----
+// ----- Inter-procedure default-Block coverage -----
 
-static INTER_OPERATION_DOWNSTREAM: AtomicUsize = AtomicUsize::new(0);
+static INTER_PROCEDURE_DOWNSTREAM: AtomicUsize = AtomicUsize::new(0);
 
-test_operation!(InterOperationProducer, "inter_operation_producer", String => String, (), |input, _state, ctx| {
+test_procedure!(InterProcedureProducer, "inter_procedure_producer", String => String, (), |input, _state, ctx| {
     ctx.emit::<String>(input)?;
     Ok(())
 });
 
-test_operation!(InterOperationConsumer, "inter_operation_consumer", String => (), (), |_input, _state, _ctx| {
-    INTER_OPERATION_DOWNSTREAM.fetch_add(1, Ordering::Relaxed);
+test_procedure!(InterProcedureConsumer, "inter_procedure_consumer", String => (), (), |_input, _state, _ctx| {
+    INTER_PROCEDURE_DOWNSTREAM.fetch_add(1, Ordering::Relaxed);
     Ok(())
 });
 
-struct InterOperationDefaultBlockOperative;
-impl UnboundedOperative for InterOperationDefaultBlockOperative {
+struct InterProcedureDefaultBlockOperative;
+impl UnboundedOperative for InterProcedureDefaultBlockOperative {
     fn factory_id() -> &'static str {
-        "inter_operation_default_block_operative"
+        "inter_procedure_default_block_operative"
     }
     fn channels(c: &ChannelBuilder) {
-        // No `.on_full(...)` — exercises the default `Block` for inter-operation.
+        // No `.on_full(...)` — exercises the default `Block` for inter-procedure.
         c.input::<String>("input")
-            .into::<InterOperationProducer>()
+            .into::<InterProcedureProducer>()
             .named("hop")
-            .into::<InterOperationConsumer>();
+            .into::<InterProcedureConsumer>();
     }
 }
 
@@ -669,7 +669,7 @@ static STICKY_BOUNDED_CONCURRENT: AtomicUsize = AtomicUsize::new(0);
 static STICKY_BOUNDED_MAX_CONCURRENT: AtomicUsize = AtomicUsize::new(0);
 static STICKY_BOUNDED_DELIVERED: AtomicUsize = AtomicUsize::new(0);
 
-test_operation!(StickyBoundedOperation, "sticky_bounded_operation", Vec<u8> => (), (), cap 16, |_input, _state, _ctx| {
+test_procedure!(StickyBoundedProcedure, "sticky_bounded_procedure", Vec<u8> => (), (), cap 16, |_input, _state, _ctx| {
     let cur = STICKY_BOUNDED_CONCURRENT.fetch_add(1, Ordering::AcqRel) + 1;
     let mut prev = STICKY_BOUNDED_MAX_CONCURRENT.load(Ordering::Acquire);
     while cur > prev {
@@ -699,11 +699,11 @@ impl UnboundedOperative for StickyBoundedOperative {
     fn channels(c: &ChannelBuilder) {
         c.input::<Vec<u8>>("input")
             .on_full(OverflowPolicy::Block)
-            .into::<StickyBoundedOperation>();
+            .into::<StickyBoundedProcedure>();
     }
 }
 
-/// Spec scenario "Same segment is never concurrent" re-validated
+/// Spec scenario "Same entity is never concurrent" re-validated
 /// under bounded mailbox capacity 16 with a 10K input burst and Block
 /// entry policy. No drop / no concurrency violation; the inflight CAS
 /// guarantees mutual exclusion regardless of how many producers are
@@ -750,10 +750,10 @@ fn sticky_ordering_holds_under_bounded_block() {
     assert_eq!(
         STICKY_BOUNDED_MAX_CONCURRENT.load(Ordering::Acquire),
         1,
-        "bounded-mailbox single-segment allowed concurrent dispatch"
+        "bounded-mailbox single-entity allowed concurrent dispatch"
     );
 
-    let counters = instance.segments[0][0].counters();
+    let counters = instance.entities[0][0].counters();
     assert_eq!(
         counters.pushes_total.load(Ordering::Relaxed) as usize,
         total
@@ -765,19 +765,19 @@ fn sticky_ordering_holds_under_bounded_block() {
 // ----- Wire-reader behavior at the entry edge (Section 9) -----
 
 /// The two wire-reader scenarios share `WIRE_A_DELIVERED` /
-/// `WIRE_B_DELIVERED` statics through their Operation impls. Serialize them
+/// `WIRE_B_DELIVERED` statics through their Procedure impls. Serialize them
 /// so cargo's per-binary parallelism doesn't cross-contaminate the
 /// counter resets.
 static WIRE_TEST_LOCK: Mutex<()> = Mutex::new(());
 static WIRE_A_DELIVERED: AtomicUsize = AtomicUsize::new(0);
 static WIRE_B_DELIVERED: AtomicUsize = AtomicUsize::new(0);
 
-test_operation!(WireSlowAOperation, "wire_slow_a_operation", Vec<u8> => (), (), cap 2, |_input, _state, _ctx| {
+test_procedure!(WireSlowAProcedure, "wire_slow_a_procedure", Vec<u8> => (), (), cap 2, |_input, _state, _ctx| {
     WIRE_A_DELIVERED.fetch_add(1, Ordering::Relaxed);
     Ok(())
 });
 
-test_operation!(WireFastBOperation, "wire_fast_b_operation", Vec<u8> => (), (), |_input, _state, _ctx| {
+test_procedure!(WireFastBProcedure, "wire_fast_b_procedure", Vec<u8> => (), (), |_input, _state, _ctx| {
     WIRE_B_DELIVERED.fetch_add(1, Ordering::Relaxed);
     Ok(())
 });
@@ -788,7 +788,7 @@ impl UnboundedOperative for WireOperativeADefault {
         "wire_operative_a_default"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<Vec<u8>>("input").into::<WireSlowAOperation>();
+        c.input::<Vec<u8>>("input").into::<WireSlowAProcedure>();
     }
 }
 
@@ -800,7 +800,7 @@ impl UnboundedOperative for WireOperativeABlock {
     fn channels(c: &ChannelBuilder) {
         c.input::<Vec<u8>>("input")
             .on_full(OverflowPolicy::Block)
-            .into::<WireSlowAOperation>();
+            .into::<WireSlowAProcedure>();
     }
 }
 
@@ -810,7 +810,7 @@ impl UnboundedOperative for WireOperativeB {
         "wire_operative_b"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<Vec<u8>>("input").into::<WireFastBOperation>();
+        c.input::<Vec<u8>>("input").into::<WireFastBProcedure>();
     }
 }
 
@@ -838,7 +838,7 @@ fn default_entry_policy_does_not_stall_sibling_operatives() {
 
     // Saturate A's mailbox; pre-acquire inflight so A's drain does not
     // make room for new frames during the test.
-    let slot_a = Arc::clone(&instance_a.segments[0][0]);
+    let slot_a = Arc::clone(&instance_a.entities[0][0]);
     assert!(slot_a.mailbox.try_mark_inflight());
 
     let handle = OperativeDispatchHandle {
@@ -916,7 +916,7 @@ fn opt_in_entry_block_drains_inline_without_stalling_siblings() {
 
     // Phantom drain: inflight held but no thread is draining, so only the
     // producer itself can free the full mailbox.
-    let slot_a = Arc::clone(&instance_a.segments[0][0]);
+    let slot_a = Arc::clone(&instance_a.entities[0][0]);
     assert!(slot_a.mailbox.try_mark_inflight());
 
     let handle = OperativeDispatchHandle {
@@ -976,16 +976,16 @@ fn opt_in_entry_block_drains_inline_without_stalling_siblings() {
     ));
 }
 
-/// Spec scenarios "Default inter-operation policy is Block" and
+/// Spec scenarios "Default inter-procedure policy is Block" and
 /// "Successful push increments pushes_total". 200 inputs flow through a
-/// producer → consumer pipeline; the inter-operation channel uses the
+/// producer → consumer pipeline; the inter-procedure channel uses the
 /// default Block policy. Even if the consumer briefly stalls, no item
-/// is lost and `pushes_total` on the consumer Segment equals 200.
+/// is lost and `pushes_total` on the consumer Entity equals 200.
 #[test]
-fn default_inter_operation_policy_is_block_and_pushes_total_increments() {
-    INTER_OPERATION_DOWNSTREAM.store(0, Ordering::Release);
+fn default_inter_procedure_policy_is_block_and_pushes_total_increments() {
+    INTER_PROCEDURE_DOWNSTREAM.store(0, Ordering::Release);
     let (handle, instance) =
-        setup::<InterOperationDefaultBlockOperative>("inter-operation-default-instance", 4);
+        setup::<InterProcedureDefaultBlockOperative>("inter-procedure-default-instance", 4);
     let stream = dummy_stream();
 
     let n = 200usize;
@@ -993,7 +993,7 @@ fn default_inter_operation_policy_is_block_and_pushes_total_increments() {
         let mut md = HashMap::new();
         md.insert("channel".to_string(), "input".to_string());
         handle.dispatch(
-            "inter-operation-default-instance",
+            "inter-procedure-default-instance",
             format!("{i}").into_bytes(),
             &md,
             Arc::clone(&stream),
@@ -1001,17 +1001,17 @@ fn default_inter_operation_policy_is_block_and_pushes_total_increments() {
     }
 
     assert!(wait_until(
-        || INTER_OPERATION_DOWNSTREAM.load(Ordering::Acquire) == n,
+        || INTER_PROCEDURE_DOWNSTREAM.load(Ordering::Acquire) == n,
         Duration::from_secs(10)
     ));
 
-    // Consumer Operation is operation id 1 (producer is 0); single-mode segment.
-    let consumer_segments = &instance.segments[1];
-    let counters = consumer_segments[0].counters();
+    // Consumer Procedure is procedure id 1 (producer is 0); single-mode entity.
+    let consumer_entities = &instance.entities[1];
+    let counters = consumer_entities[0].counters();
     assert_eq!(
         counters.pushes_total.load(Ordering::Relaxed) as usize,
         n,
-        "every inter-operation emit must bump consumer's pushes_total"
+        "every inter-procedure emit must bump consumer's pushes_total"
     );
     assert_eq!(counters.drops_newest_total.load(Ordering::Relaxed), 0);
     assert_eq!(counters.drops_oldest_total.load(Ordering::Relaxed), 0);
@@ -1019,7 +1019,7 @@ fn default_inter_operation_policy_is_block_and_pushes_total_increments() {
 
 // ----- Flush-before-emit ordering (durability fix) -----
 //
-// A persistence-enabled Operation applies a Change then emits. The change's
+// A persistence-enabled Procedure applies a Change then emits. The change's
 // WAL frame must reach the durable sink BEFORE the output frame is
 // written, so a hard kill can never lose a change whose output already
 // shipped. Both signals are recorded on this single ordered log; the WAL
@@ -1038,8 +1038,8 @@ struct AddChange(i64);
 impl flezha_runner::state::Change for AddChange {}
 
 #[derive(Default)]
-struct FlushOrderOperation;
-impl Operation for FlushOrderOperation {
+struct FlushOrderProcedure;
+impl Procedure for FlushOrderProcedure {
     type Input = String;
     type Output = String;
     type State = i64;
@@ -1047,7 +1047,7 @@ impl Operation for FlushOrderOperation {
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "flush_order_operation"
+        "flush_order_procedure"
     }
     fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> i64 {
         0
@@ -1058,9 +1058,9 @@ impl Operation for FlushOrderOperation {
     fn run(
         &mut self,
         _: String,
-        mut state: StateHandle<'_, FlushOrderOperation>,
-        ctx: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        mut state: StateHandle<'_, FlushOrderProcedure>,
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         state.apply(AddChange(1));
         let total = *state;
         ctx.emit::<String>(format!("{total}"))?;
@@ -1068,7 +1068,7 @@ impl Operation for FlushOrderOperation {
     }
 }
 
-test_operation!(FlushOrderSinkOperation, "flush_order_sink_operation", String => (), (), |_input, _state, _ctx| {
+test_procedure!(FlushOrderSinkProcedure, "flush_order_sink_procedure", String => (), (), |_input, _state, _ctx| {
     Ok(())
 });
 
@@ -1079,20 +1079,20 @@ impl UnboundedOperative for FlushOrderOperative {
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
-            .into::<FlushOrderOperation>()
+            .into::<FlushOrderProcedure>()
             .named("out")
             .also_output_with("probe", |_v: &String| {
                 FLUSH_ORDER_LOG.lock().unwrap().push("emit");
                 Vec::new()
             })
-            .into::<FlushOrderSinkOperation>();
+            .into::<FlushOrderSinkProcedure>();
     }
 }
 
 #[test]
 fn change_is_flushed_before_output_is_emitted() {
-    use flezha_runner::segment::flusher::{SendError, SendFrameFn};
-    use flezha_runner::segment::segment_state_sink;
+    use flezha_runner::entity::flusher::{SendError, SendFrameFn};
+    use flezha_runner::entity::state_sink;
 
     let _serial = WAL_TEST_LOCK.lock().unwrap();
     FLUSH_ORDER_LOG.lock().unwrap().clear();
@@ -1103,7 +1103,7 @@ fn change_is_flushed_before_output_is_emitted() {
             Ok(())
         },
     );
-    segment_state_sink::install_global_sink(sink);
+    state_sink::install_global_sink(sink);
 
     let (handle, instance) = setup::<FlushOrderOperative>("flush-order-instance", 2);
     assert!(
@@ -1138,9 +1138,9 @@ fn change_is_flushed_before_output_is_emitted() {
 
 static PANIC_AFTER: AtomicUsize = AtomicUsize::new(0);
 
-test_operation!(PanicOperation, "panic_operation", String => (), (), |input, _state, _ctx| {
+test_procedure!(PanicProcedure, "panic_procedure", String => (), (), |input, _state, _ctx| {
     if input == "boom" {
-        panic!("induced operation panic");
+        panic!("induced procedure panic");
     }
     PANIC_AFTER.fetch_add(1, Ordering::Relaxed);
     Ok(())
@@ -1152,24 +1152,24 @@ impl UnboundedOperative for PanicOperative {
         "panic_operative"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<String>("input").into::<PanicOperation>();
+        c.input::<String>("input").into::<PanicProcedure>();
     }
 }
 
 #[test]
-fn operation_panic_does_not_wedge_the_segment() {
+fn procedure_panic_does_not_wedge_the_entity() {
     PANIC_AFTER.store(0, Ordering::Release);
     // The exhausted retry budget parks the poison payload. With no global
     // sink the park drops immediately (transport-less fallback), but a
     // concurrently-running sink test may have installed a non-acking sink
-    // — then the park (correctly) holds the segment until acked. Ack it
-    // out-of-band: park ids are `<segment_label>#<process nonce>`, and
+    // — then the park (correctly) holds the entity until acked. Ack it
+    // out-of-band: park ids are `<entity_label>#<process nonce>`, and
     // this binary parks only here, so a small nonce sweep always hits.
     let _acker = std::thread::spawn(|| {
         for _ in 0..200 {
             for nonce in 0..32 {
-                flezha_runner::segment::park::complete_ack(&format!(
-                    "panic-instance/panic_operation/#{nonce}"
+                flezha_runner::entity::park::complete_ack(&format!(
+                    "panic-instance/panic_procedure/#{nonce}"
                 ));
             }
             std::thread::sleep(Duration::from_millis(25));
@@ -1198,12 +1198,12 @@ fn operation_panic_does_not_wedge_the_segment() {
             || PANIC_AFTER.load(Ordering::Acquire) == 1,
             Duration::from_secs(5)
         ),
-        "segment wedged after a operation panic: 'after' was never processed"
+        "entity wedged after a procedure panic: 'after' was never processed"
     );
 
     assert!(
-        instance.segments[0][0].state.lock().is_ok(),
-        "segment state mutex was poisoned by the operation panic"
+        instance.entities[0][0].state.lock().is_ok(),
+        "entity state mutex was poisoned by the procedure panic"
     );
 }
 
@@ -1217,14 +1217,14 @@ fn operation_panic_does_not_wedge_the_segment() {
 
 static BLOCKED_CONSUMED: AtomicUsize = AtomicUsize::new(0);
 
-test_operation!(BlockProducerOperation, "block_producer_operation", String => String, (), |_input, _state, ctx| {
+test_procedure!(BlockProducerProcedure, "block_producer_procedure", String => String, (), |_input, _state, ctx| {
     for i in 0..8 {
         ctx.emit(format!("v{}", i))?;
     }
     Ok(())
 });
 
-test_operation!(BlockedConsumerOperation, "blocked_consumer_operation", String => String, (), cap 1, |_input, _state, _ctx| {
+test_procedure!(BlockedConsumerProcedure, "blocked_consumer_procedure", String => String, (), cap 1, |_input, _state, _ctx| {
     BLOCKED_CONSUMED.fetch_add(1, Ordering::AcqRel);
     Ok(())
 });
@@ -1235,11 +1235,11 @@ impl UnboundedOperative for BlockDeadlockOperative {
         "block_deadlock_operative"
     }
     fn channels(c: &ChannelBuilder) {
-        // Inter-operation channel: OverflowPolicy defaults to Block.
+        // Inter-procedure channel: OverflowPolicy defaults to Block.
         c.input::<String>("input")
-            .into::<BlockProducerOperation>()
+            .into::<BlockProducerProcedure>()
             .named("blocked_out")
-            .into::<BlockedConsumerOperation>();
+            .into::<BlockedConsumerProcedure>();
     }
 }
 
@@ -1358,11 +1358,11 @@ fn read_frames(sock: &mut UnixStream, expected: usize, timeout: Duration) -> Vec
 struct TickChange;
 impl flezha_runner::state::Change for TickChange {}
 
-/// Keyed operation: applies one change per input, emits the input under
+/// Keyed procedure: applies one change per input, emits the input under
 /// itself as the natural key.
 #[derive(Default)]
-struct KeyedStampOperation;
-impl Operation for KeyedStampOperation {
+struct KeyedStampProcedure;
+impl Procedure for KeyedStampProcedure {
     type Input = String;
     type Output = String;
     type State = i64;
@@ -1370,7 +1370,7 @@ impl Operation for KeyedStampOperation {
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "keyed_stamp_operation"
+        "keyed_stamp_procedure"
     }
     fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> i64 {
         0
@@ -1382,8 +1382,8 @@ impl Operation for KeyedStampOperation {
         &mut self,
         input: String,
         mut state: StateHandle<'_, Self>,
-        ctx: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         state.apply(TickChange);
         ctx.emit_keyed::<String>(input.clone(), input)?;
         Ok(())
@@ -1397,7 +1397,7 @@ impl UnboundedOperative for KeyedStampOperative {
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
-            .into::<KeyedStampOperation>()
+            .into::<KeyedStampProcedure>()
             .named("out")
             .keyed()
             .output("kafka");
@@ -1405,7 +1405,7 @@ impl UnboundedOperative for KeyedStampOperative {
 }
 
 /// Spec "Identity stamps on keyed-channel output frames": every keyed
-/// plugin emit carries `flz.segment` / `flz.seq` / `flz.key` alongside the
+/// plugin emit carries `flz.entity` / `flz.seq` / `flz.key` alongside the
 /// `channel` stamp; `flz.seq` reflects the durable change seq after the
 /// flush-before-emit drain plus the emit ordinal.
 #[test]
@@ -1434,8 +1434,8 @@ fn keyed_channel_emits_carry_identity_stamps() {
     assert_eq!(f1.message, b"x".to_vec());
     assert_eq!(f1.metadata.get("channel").unwrap(), "out");
     assert_eq!(
-        f1.metadata.get("flz.segment").unwrap(),
-        "keyed-stamps-instance/keyed_stamp_operation/"
+        f1.metadata.get("flz.entity").unwrap(),
+        "keyed-stamps-instance/keyed_stamp_procedure/"
     );
     assert_eq!(f1.metadata.get("flz.seq").unwrap(), "1.0");
     assert_eq!(f1.metadata.get("flz.key").unwrap(), "x");
@@ -1450,7 +1450,7 @@ fn keyed_channel_emits_carry_identity_stamps() {
 /// to `payloader::build_from_binary` with only the `channel` stamp.
 #[test]
 fn non_keyed_frame_is_byte_identical_to_prechange_layout() {
-    // MetaProducerOperation-free operative: reuse FlushOrderOperative's shape
+    // MetaProducerProcedure-free operative: reuse FlushOrderOperative's shape
     // via a minimal pure-plugin operative.
     struct PlainPluginOperative;
     impl UnboundedOperative for PlainPluginOperative {
@@ -1459,7 +1459,7 @@ fn non_keyed_frame_is_byte_identical_to_prechange_layout() {
         }
         fn channels(c: &ChannelBuilder) {
             c.input::<String>("input")
-                .into::<PlainPluginOperation>()
+                .into::<PlainPluginProcedure>()
                 .named("out")
                 .output("kafka");
         }
@@ -1490,7 +1490,7 @@ fn non_keyed_frame_is_byte_identical_to_prechange_layout() {
     );
 }
 
-test_operation!(PlainPluginOperation, "plain_plugin_operation", String => String, (), |input, _state, ctx| {
+test_procedure!(PlainPluginProcedure, "plain_plugin_procedure", String => String, (), |input, _state, ctx| {
     ctx.emit::<String>(input)?;
     Ok(())
 });
@@ -1498,9 +1498,9 @@ test_operation!(PlainPluginOperation, "plain_plugin_operation", String => String
 /// Build one controller-format WAL record:
 /// `[seq u64 BE][len u32 BE][header 16B][change][crc32 u32 BE]`,
 /// `len = 16 + change.len()`, trailing crc over `header + change`.
-fn wal_record<S: Operation>(seq: u64, change_bytes: &[u8]) -> Vec<u8> {
+fn wal_record<S: Procedure>(seq: u64, change_bytes: &[u8]) -> Vec<u8> {
     let header =
-        flezha_runner::segment::header::HeaderTemplate::for_operation::<S>().stamp(change_bytes);
+        flezha_runner::entity::header::HeaderTemplate::for_procedure::<S>().stamp(change_bytes);
     let mut record = Vec::new();
     record.extend_from_slice(&seq.to_be_bytes());
     record.extend_from_slice(&((16 + change_bytes.len()) as u32).to_be_bytes());
@@ -1542,9 +1542,9 @@ fn keyed_stamps_replay_identically_after_crash_restore() {
     // Fresh instance, same identity: restore state from the WAL and
     // re-arm change_seq exactly like `RestoreInitState` does.
     let (handle_b, instance_b) = setup::<KeyedStampOperative>("restore-stamps-instance", 2);
-    let slot = Arc::clone(&instance_b.segments[0][0]);
+    let slot = Arc::clone(&instance_b.entities[0][0]);
     let change_bytes = postcard::to_allocvec(&TickChange).expect("encode change");
-    let change_log = wal_record::<KeyedStampOperation>(0, &change_bytes);
+    let change_log = wal_record::<KeyedStampProcedure>(0, &change_bytes);
     let terminal = {
         let mut guard = slot.state.lock().unwrap();
         slot.dispatcher
@@ -1568,7 +1568,7 @@ fn keyed_stamps_replay_identically_after_crash_restore() {
     let orig = &original[1];
     let replay = &replayed[0];
     assert_eq!(replay.message, orig.message);
-    for stamp in ["flz.segment", "flz.seq", "flz.key"] {
+    for stamp in ["flz.entity", "flz.seq", "flz.key"] {
         assert_eq!(
             replay.metadata.get(stamp),
             orig.metadata.get(stamp),
@@ -1583,8 +1583,8 @@ fn keyed_stamps_replay_identically_after_crash_restore() {
 static TIER_SINK_FRAMES: Mutex<Vec<(String, Vec<u8>)>> = Mutex::new(Vec::new());
 
 #[derive(Default)]
-struct TierStampOperation;
-impl Operation for TierStampOperation {
+struct TierStampProcedure;
+impl Procedure for TierStampProcedure {
     type Input = String;
     type Output = String;
     type State = i64;
@@ -1592,7 +1592,7 @@ impl Operation for TierStampOperation {
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "tier_stamp_operation"
+        "tier_stamp_procedure"
     }
     fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> i64 {
         0
@@ -1604,8 +1604,8 @@ impl Operation for TierStampOperation {
         &mut self,
         input: String,
         mut state: StateHandle<'_, Self>,
-        ctx: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         state.apply(TickChange);
         ctx.emit_keyed::<String>(input.clone(), input)?;
         Ok(())
@@ -1620,7 +1620,7 @@ impl UnboundedOperative for TierOperative {
     fn channels(c: &ChannelBuilder) {
         c.effectively_once();
         c.input::<String>("input")
-            .into::<TierStampOperation>()
+            .into::<TierStampProcedure>()
             .named("out")
             .keyed()
             .output("kafka");
@@ -1629,12 +1629,12 @@ impl UnboundedOperative for TierOperative {
 
 /// Spec "Emits leave the primary stream in tier mode" + "Offset
 /// round-trips": an effectively-once invocation's keyed emit travels inside
-/// a `segment_effect_record` on the reliable state sink — carrying the
+/// an `entity_effect_record` on the reliable state sink — carrying the
 /// change, the output (channel/key/payload), and the `flz.offset` the
 /// input arrived with — and no output frame appears on the primary stream.
 #[test]
 fn tier_emits_ride_the_state_sink_as_one_effect_record() {
-    use flezha_runner::segment::flusher::EffectRecordBody;
+    use flezha_runner::entity::flusher::EffectRecordBody;
 
     let _serial = WAL_TEST_LOCK.lock().unwrap();
     install_capturing_tier_sink();
@@ -1660,18 +1660,18 @@ fn tier_emits_ride_the_state_sink_as_one_effect_record() {
                     .lock()
                     .unwrap()
                     .iter()
-                    .any(|(pid, _)| pid == "segment_effect_record")
+                    .any(|(pid, _)| pid == "entity_effect_record")
             },
             Duration::from_secs(5)
         ),
-        "no segment_effect_record reached the state sink"
+        "no entity_effect_record reached the state sink"
     );
 
     // Outer frame layout is the state-change layout; header format_id = 2.
     let frames = TIER_SINK_FRAMES.lock().unwrap().clone();
     let (_, frame) = frames
         .iter()
-        .find(|(pid, _)| pid == "segment_effect_record")
+        .find(|(pid, _)| pid == "entity_effect_record")
         .unwrap()
         .clone();
     let pid_len = u16::from_be_bytes([frame[0], frame[1]]) as usize;
@@ -1710,7 +1710,7 @@ fn tier_emits_ride_the_state_sink_as_one_effect_record() {
 }
 
 /// Spec "Replay after crash" (SDK half): the restored consumed-floor makes
-/// the Segment skip re-forwarded inputs it already durably consumed, and
+/// the Entity skip re-forwarded inputs it already durably consumed, and
 /// process everything above — never double-applied, never lost.
 #[test]
 fn tier_replay_skips_inputs_at_or_below_the_consumed_floor() {
@@ -1719,8 +1719,8 @@ fn tier_replay_skips_inputs_at_or_below_the_consumed_floor() {
 
     let (handle, instance) = setup::<TierOperative>("tier-replay-instance", 2);
 
-    // Restore left this Segment durably consumed through offset 4711.
-    instance.segments[0][0]
+    // Restore left this Entity durably consumed through offset 4711.
+    instance.entities[0][0]
         .consumed_floor
         .store(4711, std::sync::atomic::Ordering::Release);
 
@@ -1736,7 +1736,7 @@ fn tier_replay_skips_inputs_at_or_below_the_consumed_floor() {
                     .lock()
                     .unwrap()
                     .iter()
-                    .filter(|(pid, _)| pid == "segment_effect_record")
+                    .filter(|(pid, _)| pid == "entity_effect_record")
                     .count()
                     == 1
             },
@@ -1751,7 +1751,7 @@ fn tier_replay_skips_inputs_at_or_below_the_consumed_floor() {
         .lock()
         .unwrap()
         .iter()
-        .filter(|(pid, _)| pid == "segment_effect_record")
+        .filter(|(pid, _)| pid == "entity_effect_record")
         .count();
     assert_eq!(effect_count, 1, "skipped offsets must not re-apply");
 }
@@ -1761,8 +1761,8 @@ fn tier_replay_skips_inputs_at_or_below_the_consumed_floor() {
 static LOGICAL_OBSERVED: Mutex<Vec<u64>> = Mutex::new(Vec::new());
 
 #[derive(Default)]
-struct LogicalNowOperation;
-impl Operation for LogicalNowOperation {
+struct LogicalNowProcedure;
+impl Procedure for LogicalNowProcedure {
     type Input = String;
     type Output = String;
     type State = i64;
@@ -1770,7 +1770,7 @@ impl Operation for LogicalNowOperation {
     type Clock = flezha_runner::state::LogicalClock;
     type Config = ();
     fn name() -> &'static str {
-        "logical_now_operation"
+        "logical_now_procedure"
     }
     fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> i64 {
         0
@@ -1782,8 +1782,8 @@ impl Operation for LogicalNowOperation {
         &mut self,
         input: String,
         mut state: StateHandle<'_, Self>,
-        ctx: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         LOGICAL_OBSERVED.lock().unwrap().push(ctx.now());
         state.apply(TickChange);
         // Emit so flush-before-emit ships the change deterministically
@@ -1793,7 +1793,7 @@ impl Operation for LogicalNowOperation {
     }
 }
 
-test_operation!(LogicalNowSinkOperation, "logical_now_sink_operation", String => (), (), |_input, _state, _ctx| {
+test_procedure!(LogicalNowSinkProcedure, "logical_now_sink_procedure", String => (), (), |_input, _state, _ctx| {
     Ok(())
 });
 
@@ -1804,9 +1804,9 @@ impl UnboundedOperative for LogicalNowOperative {
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
-            .into::<LogicalNowOperation>()
+            .into::<LogicalNowProcedure>()
             .named("hop")
-            .into::<LogicalNowSinkOperation>();
+            .into::<LogicalNowSinkProcedure>();
     }
 }
 
@@ -1830,7 +1830,7 @@ fn logical_clock_serves_change_seq_and_survives_restore_rearm() {
     ));
     assert_eq!(*LOGICAL_OBSERVED.lock().unwrap(), vec![0, 1]);
     assert_eq!(
-        instance.segments[0][0].change_seq.load(Ordering::Acquire),
+        instance.entities[0][0].change_seq.load(Ordering::Acquire),
         2
     );
 
@@ -1838,10 +1838,10 @@ fn logical_clock_serves_change_seq_and_survives_restore_rearm() {
     // re-arm; the next invocation's logical time continues at 2.
     LOGICAL_OBSERVED.lock().unwrap().clear();
     let (handle_b, instance_b) = setup::<LogicalNowOperative>("logical-now-instance", 2);
-    let slot = Arc::clone(&instance_b.segments[0][0]);
+    let slot = Arc::clone(&instance_b.entities[0][0]);
     let change_bytes = postcard::to_allocvec(&TickChange).expect("encode change");
-    let mut change_log = wal_record::<LogicalNowOperation>(0, &change_bytes);
-    change_log.extend_from_slice(&wal_record::<LogicalNowOperation>(1, &change_bytes));
+    let mut change_log = wal_record::<LogicalNowProcedure>(0, &change_bytes);
+    change_log.extend_from_slice(&wal_record::<LogicalNowProcedure>(1, &change_bytes));
     let terminal = {
         let mut guard = slot.state.lock().unwrap();
         slot.dispatcher
@@ -1875,37 +1875,37 @@ fn logical_clock_serves_change_seq_and_survives_restore_rearm() {
 // The load-bearing behaviour of `unbounded-late-input-correction`. Re-forwarding
 // a replayed slice in ARRIVAL order would put the late trade back after the
 // trades that overtook it and recompute exactly the wrong answer the correction
-// exists to repair. So the Segment holds the slice until the controller closes
+// exists to repair. So the Entity holds the slice until the controller closes
 // it, orders it by extracted event time, and only then dispatches.
 
 static REPLAY_OBSERVED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 struct TradeTime;
-impl flezha_runner::operation::TimeExtractor<String> for TradeTime {
+impl flezha_runner::procedure::TimeExtractor<String> for TradeTime {
     fn extract(input: &String) -> u64 {
         input.parse().unwrap_or(0)
     }
 }
 
 #[derive(Default)]
-struct ReplayOperation;
-impl Operation for ReplayOperation {
+struct ReplayProcedure;
+impl Procedure for ReplayProcedure {
     type Input = String;
     type Output = String;
     type State = ();
     type Change = NoChange;
-    type Clock = flezha_runner::operation::EventTimeFrom<TradeTime>;
+    type Clock = flezha_runner::procedure::EventTimeFrom<TradeTime>;
     type Config = ();
     fn name() -> &'static str {
-        "replay_operation"
+        "replay_procedure"
     }
     fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
     fn run(
         &mut self,
         input: String,
         _state: StateHandle<'_, Self>,
-        _ctx: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        _ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         REPLAY_OBSERVED.lock().unwrap().push(input);
         Ok(())
     }
@@ -1920,7 +1920,7 @@ impl UnboundedOperative for ReplayOperative {
         c.effectively_once();
         c.correction_window(600_000);
         c.input::<String>("input")
-            .into::<ReplayOperation>()
+            .into::<ReplayProcedure>()
             .named("out")
             .keyed()
             .output("kafka");
@@ -1955,8 +1955,8 @@ fn a_replayed_slice_dispatches_in_event_time_order() {
     );
 
     // The controller closes the slice. A broadcast, not a mark on the last
-    // input — an input reaches one Segment by key, so a mark would strand every
-    // other Segment's buffered slice.
+    // input — an input reaches one Entity by key, so a mark would strand every
+    // other Entity's buffered slice.
     dispatch_marked(
         &handle,
         "replay-instance",
@@ -1998,24 +1998,24 @@ fn a_replayed_slice_dispatches_in_event_time_order() {
 static HIGHWATER_OBSERVED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 #[derive(Default)]
-struct HighWaterOperation;
-impl Operation for HighWaterOperation {
+struct HighWaterProcedure;
+impl Procedure for HighWaterProcedure {
     type Input = String;
     type Output = String;
     type State = ();
     type Change = NoChange;
-    type Clock = flezha_runner::operation::EventTimeFrom<TradeTime>;
+    type Clock = flezha_runner::procedure::EventTimeFrom<TradeTime>;
     type Config = ();
     fn name() -> &'static str {
-        "high_water_operation"
+        "high_water_procedure"
     }
     fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
     fn run(
         &mut self,
         input: String,
         _state: StateHandle<'_, Self>,
-        _ctx: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        _ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         HIGHWATER_OBSERVED.lock().unwrap().push(input);
         Ok(())
     }
@@ -2030,7 +2030,7 @@ impl UnboundedOperative for HighWaterOperative {
         c.effectively_once();
         c.correction_window(600_000);
         c.input::<String>("input")
-            .into::<HighWaterOperation>()
+            .into::<HighWaterProcedure>()
             .named("out")
             .keyed()
             .output("kafka");
@@ -2080,7 +2080,7 @@ fn a_replay_does_not_lower_the_event_time_high_water() {
         Duration::from_secs(5)
     ));
 
-    let slot = Arc::clone(&instance.segments[0][0]);
+    let slot = Arc::clone(&instance.entities[0][0]);
     assert_eq!(slot.event_time_high_water.load(Ordering::Acquire), 900);
 
     // A replayed slice whose newest event time (800) is BEHIND the high-water.
@@ -2107,15 +2107,15 @@ fn a_replay_does_not_lower_the_event_time_high_water() {
 // effectively-once-checkpoint-granularity
 // ---------------------------------------------------------------------------
 
-/// Decode every `segment_effect_record` the tier sink captured, in order.
-fn captured_effect_bodies() -> Vec<flezha_runner::segment::flusher::EffectRecordBody> {
-    use flezha_runner::segment::flusher::EffectRecordBody;
+/// Decode every `entity_effect_record` the tier sink captured, in order.
+fn captured_effect_bodies() -> Vec<flezha_runner::entity::flusher::EffectRecordBody> {
+    use flezha_runner::entity::flusher::EffectRecordBody;
 
     TIER_SINK_FRAMES
         .lock()
         .unwrap()
         .iter()
-        .filter(|(pid, _)| pid == "segment_effect_record")
+        .filter(|(pid, _)| pid == "entity_effect_record")
         .map(|(_, frame)| {
             let pid_len = u16::from_be_bytes([frame[0], frame[1]]) as usize;
             let body_len_off = 2 + pid_len + 8 + 16;
@@ -2131,8 +2131,8 @@ fn captured_effect_bodies() -> Vec<flezha_runner::segment::flusher::EffectRecord
 }
 
 fn install_capturing_tier_sink() {
-    use flezha_runner::segment::flusher::{SendError, SendFrameFn};
-    use flezha_runner::segment::segment_state_sink;
+    use flezha_runner::entity::flusher::{SendError, SendFrameFn};
+    use flezha_runner::entity::state_sink;
 
     TIER_SINK_FRAMES.lock().unwrap().clear();
     let sink: SendFrameFn = Arc::new(|payload_id: &str, frame: &[u8]| -> Result<(), SendError> {
@@ -2142,13 +2142,13 @@ fn install_capturing_tier_sink() {
             .push((payload_id.to_string(), frame.to_vec()));
         Ok(())
     });
-    segment_state_sink::install_global_sink(sink);
+    state_sink::install_global_sink(sink);
 }
 
 /// Folds every input into state; `commit` closes the interval, `poison` parks.
 #[derive(Default)]
-struct CheckpointOperation;
-impl Operation for CheckpointOperation {
+struct CheckpointProcedure;
+impl Procedure for CheckpointProcedure {
     type Input = String;
     type Output = String;
     type State = i64;
@@ -2156,7 +2156,7 @@ impl Operation for CheckpointOperation {
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "checkpoint_operation"
+        "checkpoint_procedure"
     }
     fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> i64 {
         0
@@ -2168,10 +2168,10 @@ impl Operation for CheckpointOperation {
         &mut self,
         input: String,
         mut state: StateHandle<'_, Self>,
-        ctx: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         match input.as_str() {
-            "poison" => Err(OperationError::non_retryable("poison")),
+            "poison" => Err(ProcedureError::non_retryable("poison")),
             "commit" => {
                 state.apply(TickChange);
                 ctx.checkpoint();
@@ -2199,7 +2199,7 @@ impl UnboundedOperative for CheckpointOperative {
         c.effectively_once();
         c.checkpoint_ack();
         c.input::<String>("input")
-            .into::<CheckpointOperation>()
+            .into::<CheckpointProcedure>()
             .named("out")
             .keyed()
             .output("kafka");
@@ -2311,9 +2311,9 @@ fn a_park_closes_the_checkpoint_interval() {
 /// controller re-forwards the inputs that produced them.
 #[test]
 fn a_restore_discards_the_open_interval() {
-    use flezha_runner::segment::flusher::{FlushableBuffer, TypedBuffer};
+    use flezha_runner::entity::flusher::{FlushableBuffer, TypedBuffer};
 
-    let mut buf: TypedBuffer<CheckpointOperation> = TypedBuffer::default();
+    let mut buf: TypedBuffer<CheckpointProcedure> = TypedBuffer::default();
     buf.staged.push(TickChange);
     buf.staged.push(TickChange);
 
@@ -2338,7 +2338,7 @@ fn a_restore_discards_the_open_interval() {
 /// stateful class's queue is the only copy its input has.
 #[test]
 fn a_restore_discards_queued_input_only_where_the_controller_re_forwards_it() {
-    use flezha_runner::segment::{make_segment_payload, restore_discarded_inputs};
+    use flezha_runner::entity::{make_entity_payload, restore_discarded_inputs};
 
     let (_tier_handle, tier) = setup::<TierOperative>("restore-mailbox-tier", 1);
     let (_plain_handle, plain) = setup::<KeyedStampOperative>("restore-mailbox-plain", 1);
@@ -2347,17 +2347,17 @@ fn a_restore_discards_queued_input_only_where_the_controller_re_forwards_it() {
     for instance in [&tier, &plain] {
         let value: Arc<dyn std::any::Any + Send + Sync> = Arc::new("queued".to_string());
         assert!(
-            instance.segments[0][0]
+            instance.entities[0][0]
                 .mailbox
-                .try_push(make_segment_payload(&value, &stream, None, false))
+                .try_push(make_entity_payload(&value, &stream, None, false))
                 .is_ok(),
             "mailbox has room"
         );
     }
 
     let before = restore_discarded_inputs();
-    let tier_discarded = tier.segments[0][0].discard_queued_input_on_restore();
-    let plain_discarded = plain.segments[0][0].discard_queued_input_on_restore();
+    let tier_discarded = tier.entities[0][0].discard_queued_input_on_restore();
+    let plain_discarded = plain.entities[0][0].discard_queued_input_on_restore();
 
     assert_eq!(
         tier_discarded, 1,
@@ -2365,7 +2365,7 @@ fn a_restore_discards_queued_input_only_where_the_controller_re_forwards_it() {
          keeping it would double-apply it"
     );
     assert!(
-        tier.segments[0][0].mailbox.is_empty(),
+        tier.entities[0][0].mailbox.is_empty(),
         "the tier mailbox must be drained"
     );
     assert_eq!(
@@ -2373,7 +2373,7 @@ fn a_restore_discards_queued_input_only_where_the_controller_re_forwards_it() {
         "a journal-less class's queued input exists nowhere else — dropping it is data loss"
     );
     assert!(
-        !plain.segments[0][0].mailbox.is_empty(),
+        !plain.entities[0][0].mailbox.is_empty(),
         "the journal-less mailbox must survive the restore"
     );
     assert_eq!(

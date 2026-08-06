@@ -1,7 +1,7 @@
-//! Section 2 unit tests: topology construction + UnboundedInstance segment
+//! Section 2 unit tests: topology construction + UnboundedInstance entity
 //! creation. Covers the umbrella scenarios:
-//! - "Single segment for a Operation with no segmenting declared"
-//! - "Static segments created at operative startup"
+//! - "Single entity for a Procedure with no entity declared"
+//! - "Static entities created at operative startup"
 //! - "Dynamic-mode declaration is accepted and classified Dynamic"
 //! - "Entry channel of arbitrary type fails at startup" (compile-time
 //!   covered by tests/ui/entry_channel_disallowed_type.rs)
@@ -9,14 +9,14 @@
 use std::sync::Arc;
 
 use flezha_runner::channel::ChannelBuilder;
-use flezha_runner::operation::{Operation, OperationCtx, OperationError};
 use flezha_runner::operative::builder::build_topology_for;
+use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError};
 use flezha_runner::state::{Change, NoChange, RestoreInitPayload, StateHandle, WallClock};
 use flezha_runner::UnboundedOperative;
 
 mod common;
 
-test_operation!(EchoOperation, "echo_operation", String => String, (), |_input, _state, _ctx| {
+test_procedure!(EchoProcedure, "echo_procedure", String => String, (), |_input, _state, _ctx| {
     Ok(())
 });
 
@@ -26,17 +26,17 @@ impl UnboundedOperative for SingleOperative {
         "single_operative"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<String>("inp").into::<EchoOperation>();
+        c.input::<String>("inp").into::<EchoProcedure>();
     }
 }
 
 #[test]
-fn single_mode_segment_creation() {
+fn single_mode_entity_creation() {
     let topology = build_topology_for::<SingleOperative>().expect("build topology");
-    assert_eq!(topology.operations.len(), 1);
+    assert_eq!(topology.procedures.len(), 1);
     assert_eq!(topology.channels.len(), 1);
-    assert!(topology.operations[0].segment_keys.is_empty());
-    assert_eq!(topology.operations[0].input_channel_ids, vec![0]);
+    assert!(topology.procedures[0].entity_keys.is_empty());
+    assert_eq!(topology.procedures[0].input_channel_ids, vec![0]);
     assert_eq!(
         topology.channels[0].consumer_ids().collect::<Vec<_>>(),
         vec![0]
@@ -48,8 +48,8 @@ struct AppendChange(String);
 impl Change for AppendChange {}
 
 #[derive(Default)]
-struct StaticOperation;
-impl Operation for StaticOperation {
+struct StaticProcedure;
+impl Procedure for StaticProcedure {
     type Input = String;
     type Output = String;
     type State = Vec<String>;
@@ -57,19 +57,19 @@ impl Operation for StaticOperation {
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "static_operation"
+        "static_procedure"
     }
-    fn init_state(operation_key: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> Vec<String> {
-        vec![operation_key.unwrap_or("none").to_string()]
+    fn init_state(entity_key: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> Vec<String> {
+        vec![entity_key.unwrap_or("none").to_string()]
     }
     fn apply_change(state: &mut Vec<String>, change: &AppendChange) {
         state.push(change.0.clone());
     }
-    fn operation_keys() -> Vec<&'static str> {
+    fn entity_keys() -> Vec<&'static str> {
         vec!["a", "b", "c"]
     }
-    const SEGMENT_FOR_OVERRIDDEN: bool = true;
-    fn segment_for(input: &String) -> Vec<&'static str> {
+    const ENTITIES_FOR_OVERRIDDEN: bool = true;
+    fn entities_for(input: &String) -> Vec<&'static str> {
         if input.starts_with('a') {
             vec!["a"]
         } else if input.starts_with('b') {
@@ -82,8 +82,8 @@ impl Operation for StaticOperation {
         &mut self,
         input: String,
         mut state: StateHandle<'_, Self>,
-        _: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        _: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         state.apply(AppendChange(input));
         Ok(())
     }
@@ -95,24 +95,24 @@ impl UnboundedOperative for StaticOperative {
         "static_operative"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<String>("inp").into::<StaticOperation>();
+        c.input::<String>("inp").into::<StaticProcedure>();
     }
 }
 
 #[test]
-fn static_mode_segment_creation() {
+fn static_mode_entity_creation() {
     let topology = build_topology_for::<StaticOperative>().expect("build topology");
-    assert_eq!(topology.operations.len(), 1);
-    assert_eq!(topology.operations[0].segment_keys, vec!["a", "b", "c"]);
-    assert!(topology.operations[0].segment_for_overridden);
+    assert_eq!(topology.procedures.len(), 1);
+    assert_eq!(topology.procedures[0].entity_keys, vec!["a", "b", "c"]);
+    assert!(topology.procedures[0].entities_for_overridden);
 }
 
-/// Dynamic-mode Operation: overrides `operation_key` with an empty `operation_keys`.
-/// `operative-dynamic-segmenting` accepts this and classifies it as
-/// `SegmentingMode::Dynamic`.
+/// Dynamic-mode Procedure: overrides `entity_key` with an empty `entity_keys`.
+/// dynamic entity mode accepts this and classifies it as
+/// `EntityMode::Dynamic`.
 #[derive(Default)]
-struct DynamicOnlyOperation;
-impl Operation for DynamicOnlyOperation {
+struct DynamicOnlyProcedure;
+impl Procedure for DynamicOnlyProcedure {
     type Input = String;
     type Output = String;
     type State = ();
@@ -120,19 +120,19 @@ impl Operation for DynamicOnlyOperation {
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "dynamic_only_operation"
+        "dynamic_only_procedure"
     }
     fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    const OPERATION_KEY_OVERRIDDEN: bool = true;
-    fn operation_key(_input: &String) -> Option<String> {
+    const ENTITY_KEY_OVERRIDDEN: bool = true;
+    fn entity_key(_input: &String) -> Option<String> {
         Some("k".to_string())
     }
     fn run(
         &mut self,
         _: String,
         _: StateHandle<'_, Self>,
-        _: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        _: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         Ok(())
     }
 }
@@ -143,25 +143,25 @@ impl UnboundedOperative for DynamicOnlyOperative {
         "dynamic_only_operative"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<String>("inp").into::<DynamicOnlyOperation>();
+        c.input::<String>("inp").into::<DynamicOnlyProcedure>();
     }
 }
 
 #[test]
 fn dynamic_mode_is_accepted_and_classified() {
-    use flezha_runner::operative::topology::SegmentingMode;
+    use flezha_runner::operative::topology::EntityMode;
     let topology = build_topology_for::<DynamicOnlyOperative>().expect("dynamic mode accepted");
-    assert_eq!(topology.operations.len(), 1);
-    assert_eq!(topology.operations[0].mode, SegmentingMode::Dynamic);
-    assert!(topology.operations[0].segment_keys.is_empty());
-    assert!(topology.operations[0].operation_key_erased.is_some());
+    assert_eq!(topology.procedures.len(), 1);
+    assert_eq!(topology.procedures[0].mode, EntityMode::Dynamic);
+    assert!(topology.procedures[0].entity_keys.is_empty());
+    assert!(topology.procedures[0].entity_key_erased.is_some());
 }
 
-/// Static-mode operation whose `segment_for` override is missing the
-/// matching `SEGMENT_FOR_OVERRIDDEN = true` const.
+/// Static-mode procedure whose `entities_for` override is missing the
+/// matching `ENTITIES_FOR_OVERRIDDEN = true` const.
 #[derive(Default)]
-struct UnannotatedStaticOperation;
-impl Operation for UnannotatedStaticOperation {
+struct UnannotatedStaticProcedure;
+impl Procedure for UnannotatedStaticProcedure {
     type Input = String;
     type Output = String;
     type State = ();
@@ -169,21 +169,21 @@ impl Operation for UnannotatedStaticOperation {
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "unannotated_static_operation"
+        "unannotated_static_procedure"
     }
     fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn operation_keys() -> Vec<&'static str> {
+    fn entity_keys() -> Vec<&'static str> {
         vec!["a"]
     }
-    fn segment_for(_: &String) -> Vec<&'static str> {
+    fn entities_for(_: &String) -> Vec<&'static str> {
         vec!["a"]
     }
     fn run(
         &mut self,
         _: String,
         _: StateHandle<'_, Self>,
-        _: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        _: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         Ok(())
     }
 }
@@ -195,7 +195,7 @@ impl UnboundedOperative for UnannotatedOperative {
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("inp")
-            .into::<UnannotatedStaticOperation>();
+            .into::<UnannotatedStaticProcedure>();
     }
 }
 
@@ -203,17 +203,17 @@ impl UnboundedOperative for UnannotatedOperative {
 fn unannotated_static_mode_rejection() {
     let err = build_topology_for::<UnannotatedOperative>()
         .err()
-        .expect("expected segment_for-missing rejection");
+        .expect("expected entities_for-missing rejection");
     let msg = format!("{:?}", err.errors);
     assert!(
-        msg.contains("SegmentForMissing"),
-        "expected SegmentForMissing error, got {msg}"
+        msg.contains("EntitiesForMissing"),
+        "expected EntitiesForMissing error, got {msg}"
     );
 }
 
-// Operation whose `mailbox_capacity()` returns 0; `build_topology` must
-// reject the operative with the offending Operation's name.
-test_operation!(ZeroCapacityOperation, "zero_capacity_operation", String => String, (), cap 0, |_input, _state, _ctx| {
+// Procedure whose `mailbox_capacity()` returns 0; `build_topology` must
+// reject the operative with the offending Procedure's name.
+test_procedure!(ZeroCapacityProcedure, "zero_capacity_procedure", String => String, (), cap 0, |_input, _state, _ctx| {
     Ok(())
 });
 
@@ -223,7 +223,7 @@ impl UnboundedOperative for ZeroCapacityOperative {
         "zero_capacity_operative"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<String>("inp").into::<ZeroCapacityOperation>();
+        c.input::<String>("inp").into::<ZeroCapacityProcedure>();
     }
 }
 
@@ -238,14 +238,14 @@ fn capacity_zero_is_rejected_at_operative_startup() {
         "expected MailboxCapacityZero error, got {msg}"
     );
     assert!(
-        msg.contains("zero_capacity_operation"),
-        "expected offending Operation name in error, got {msg}"
+        msg.contains("zero_capacity_procedure"),
+        "expected offending Procedure name in error, got {msg}"
     );
 }
 
-// Operation with explicit override of 4096 — the resolved capacity must
+// Procedure with explicit override of 4096 — the resolved capacity must
 // equal that value when threaded through `build_topology`.
-test_operation!(ExplicitCapOperation, "explicit_cap_operation", String => String, (), cap 4096, |_input, _state, _ctx| {
+test_procedure!(ExplicitCapProcedure, "explicit_cap_procedure", String => String, (), cap 4096, |_input, _state, _ctx| {
     Ok(())
 });
 
@@ -255,48 +255,48 @@ impl UnboundedOperative for ExplicitCapOperative {
         "explicit_cap_operative"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<String>("inp").into::<ExplicitCapOperation>();
+        c.input::<String>("inp").into::<ExplicitCapProcedure>();
     }
 }
 
 #[test]
 fn explicit_capacity_threads_to_topology_descriptor() {
     let topology = build_topology_for::<ExplicitCapOperative>().expect("topology");
-    assert_eq!(topology.operations.len(), 1);
-    assert_eq!(topology.operations[0].mailbox_capacity, 4096);
-    assert!(topology.operations[0].mailbox_capacity_overridden);
+    assert_eq!(topology.procedures.len(), 1);
+    assert_eq!(topology.procedures[0].mailbox_capacity, 4096);
+    assert!(topology.procedures[0].mailbox_capacity_overridden);
 }
 
-/// Default Operation inherits the 1024 default.
+/// Default Procedure inherits the 1024 default.
 #[test]
 fn default_capacity_is_1024_in_topology() {
     let topology = build_topology_for::<SingleOperative>().expect("topology");
-    assert_eq!(topology.operations[0].mailbox_capacity, 1024);
-    assert!(!topology.operations[0].mailbox_capacity_overridden);
+    assert_eq!(topology.procedures[0].mailbox_capacity, 1024);
+    assert!(!topology.procedures[0].mailbox_capacity_overridden);
 }
 
 #[test]
-fn operative_instance_creates_segments() {
+fn operative_instance_creates_entities() {
     use flezha_runner::__dispatch_internals as bi;
     let topology = build_topology_for::<StaticOperative>().expect("topology");
     let pool = Arc::new(bi::WorkStealingPool::with_size(2));
     let instance =
         flezha_runner::operative::UnboundedInstance::new(topology, Arc::from("instance-id"), pool);
-    assert_eq!(instance.segments.len(), 1);
-    assert_eq!(instance.segments[0].len(), 3);
-    assert_eq!(instance.segment_key_to_idx[0].get("a"), Some(&0));
-    assert_eq!(instance.segment_key_to_idx[0].get("b"), Some(&1));
-    assert_eq!(instance.segment_key_to_idx[0].get("c"), Some(&2));
+    assert_eq!(instance.entities.len(), 1);
+    assert_eq!(instance.entities[0].len(), 3);
+    assert_eq!(instance.entity_key_to_idx[0].get("a"), Some(&0));
+    assert_eq!(instance.entity_key_to_idx[0].get("b"), Some(&1));
+    assert_eq!(instance.entity_key_to_idx[0].get("c"), Some(&2));
 }
 
 // ----- Keyed channel declaration + build-time clock validation -----
 
-test_operation!(KeyedProducerOperation, "keyed_producer_operation", String => String, (), |input, _state, ctx| {
+test_procedure!(KeyedProducerProcedure, "keyed_producer_procedure", String => String, (), |input, _state, ctx| {
     ctx.emit_keyed::<String>(input.clone(), input)?;
     Ok(())
 });
 
-test_operation!(KeyedConsumerOperation, "keyed_consumer_operation", String => (), (), |_input, _state, _ctx| {
+test_procedure!(KeyedConsumerProcedure, "keyed_consumer_procedure", String => (), (), |_input, _state, _ctx| {
     Ok(())
 });
 
@@ -308,7 +308,7 @@ impl UnboundedOperative for KeyedPluginOperative {
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("inp")
-            .into::<KeyedProducerOperation>()
+            .into::<KeyedProducerProcedure>()
             .named("out")
             .keyed()
             .output("kafka");
@@ -331,11 +331,11 @@ impl UnboundedOperative for KeyedHybridOperative {
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("inp")
-            .into::<KeyedProducerOperation>()
+            .into::<KeyedProducerProcedure>()
             .named("out")
             .also_output_with("kafka", |v: &String| v.clone().into_bytes())
             .keyed()
-            .into::<KeyedConsumerOperation>();
+            .into::<KeyedConsumerProcedure>();
     }
 }
 
@@ -349,24 +349,24 @@ fn keyed_hybrid_channel_is_accepted_and_marked() {
 
 /// `.keyed()` on a channel with no plugin wire fails the build with a
 /// typed error naming the channel.
-struct KeyedInterOperationOperative;
-impl UnboundedOperative for KeyedInterOperationOperative {
+struct KeyedInterProcedureOperative;
+impl UnboundedOperative for KeyedInterProcedureOperative {
     fn factory_id() -> &'static str {
-        "keyed_inter_operation_operative"
+        "keyed_inter_procedure_operative"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("inp")
-            .into::<KeyedProducerOperation>()
+            .into::<KeyedProducerProcedure>()
             .named("hop")
             .keyed()
-            .into::<KeyedConsumerOperation>();
+            .into::<KeyedConsumerProcedure>();
     }
 }
 
 #[test]
 fn keyed_channel_without_plugin_wire_is_rejected() {
-    let err = match build_topology_for::<KeyedInterOperationOperative>() {
-        Ok(_) => panic!("keyed inter-operation channel must fail the build"),
+    let err = match build_topology_for::<KeyedInterProcedureOperative>() {
+        Ok(_) => panic!("keyed inter-procedure channel must fail the build"),
         Err(e) => e,
     };
     assert!(err.errors.iter().any(|e| matches!(
@@ -380,8 +380,8 @@ fn keyed_channel_without_plugin_wire_is_rejected() {
 /// LogicalClock with `Change = NoChange` cannot be served (the durable
 /// change seq never advances) and fails the build naming the clock.
 #[derive(Default)]
-struct FrozenLogicalOperation;
-impl Operation for FrozenLogicalOperation {
+struct FrozenLogicalProcedure;
+impl Procedure for FrozenLogicalProcedure {
     type Input = String;
     type Output = String;
     type State = ();
@@ -389,15 +389,15 @@ impl Operation for FrozenLogicalOperation {
     type Clock = flezha_runner::state::LogicalClock;
     type Config = ();
     fn name() -> &'static str {
-        "frozen_logical_operation"
+        "frozen_logical_procedure"
     }
     fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
     fn run(
         &mut self,
         _: String,
         _state: StateHandle<'_, Self>,
-        _: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        _: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         Ok(())
     }
 }
@@ -408,7 +408,7 @@ impl UnboundedOperative for FrozenLogicalOperative {
         "frozen_logical_operative"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<String>("inp").into::<FrozenLogicalOperation>();
+        c.input::<String>("inp").into::<FrozenLogicalProcedure>();
     }
 }
 
@@ -421,7 +421,7 @@ fn logical_clock_without_persistent_changes_is_rejected_at_build() {
     assert!(err.errors.iter().any(|e| matches!(
         e,
         flezha_runner::channel::builder::TopologyIssue::UnservableClock {
-            operation: "frozen_logical_operation",
+            procedure: "frozen_logical_procedure",
             clock_type: "LogicalClock",
         }
     )));
@@ -429,29 +429,27 @@ fn logical_clock_without_persistent_changes_is_rejected_at_build() {
 
 // ---- sdk-graph-authoring pins -------------------------------------------
 
-test_operation!(GraphStage1, "graph_stage1", String => String, (), |_input, _state, _ctx| {
+test_procedure!(GraphStage1, "graph_stage1", String => String, (), |_input, _state, _ctx| {
     Ok(())
 });
-test_operation!(GraphStage2, "graph_stage2", String => String, (), |_input, _state, _ctx| {
+test_procedure!(GraphStage2, "graph_stage2", String => String, (), |_input, _state, _ctx| {
     Ok(())
 });
-test_operation!(GraphMerge, "graph_merge", String => String, (), |_input, _state, _ctx| {
+test_procedure!(GraphMerge, "graph_merge", String => String, (), |_input, _state, _ctx| {
     Ok(())
 });
 
+/// One channel flattened to `(name, kind, producer, consumers)`.
+type ChannelShape = (
+    String,
+    flezha_runner::channel::ChannelKind,
+    Option<u32>,
+    Vec<u32>,
+);
+
 /// Flatten a frozen topology to a comparable shape: channels as
-/// `(name, kind, producer, consumers)` plus the operation identity list.
-fn topo_shape(
-    t: &flezha_runner::operative::OperativeTopology,
-) -> (
-    Vec<(
-        String,
-        flezha_runner::channel::ChannelKind,
-        Option<u32>,
-        Vec<u32>,
-    )>,
-    Vec<String>,
-) {
+/// `(name, kind, producer, consumers)` plus the procedure identity list.
+fn topo_shape(t: &flezha_runner::operative::OperativeTopology) -> (Vec<ChannelShape>, Vec<String>) {
     (
         t.channels
             .iter()
@@ -464,7 +462,7 @@ fn topo_shape(
                 )
             })
             .collect(),
-        t.operations.iter().map(|o| o.name.to_string()).collect(),
+        t.procedures.iter().map(|o| o.name.to_string()).collect(),
     )
 }
 
@@ -478,7 +476,7 @@ fn branch_builds_the_identical_topology() {
             "graph_by_handles"
         }
         fn channels(c: &ChannelBuilder) {
-            let validated = c.input::<String>("in").into::<EchoOperation>();
+            let validated = c.input::<String>("in").into::<EchoProcedure>();
             validated.into::<GraphStage1>();
             validated.into::<GraphStage2>();
         }
@@ -489,7 +487,7 @@ fn branch_builds_the_identical_topology() {
             "graph_by_branch"
         }
         fn channels(c: &ChannelBuilder) {
-            c.input::<String>("in").into::<EchoOperation>().branch([
+            c.input::<String>("in").into::<EchoProcedure>().branch([
                 &|b| {
                     b.into::<GraphStage1>();
                 },
@@ -513,7 +511,7 @@ fn branch_with_fewer_than_two_arms_is_refused() {
         }
         fn channels(c: &ChannelBuilder) {
             c.input::<String>("in")
-                .into::<EchoOperation>()
+                .into::<EchoProcedure>()
                 .branch([&|b| {
                     b.into::<GraphStage1>();
                 }]);
@@ -540,7 +538,7 @@ fn named_nodes_reuse_one_class_at_two_positions() {
             "graph_two_filters"
         }
         fn channels(c: &ChannelBuilder) {
-            let validated = c.input::<String>("in").into::<EchoOperation>();
+            let validated = c.input::<String>("in").into::<EchoProcedure>();
             validated
                 .into_named::<GraphStage1>("fraud_filter")
                 .into::<GraphMerge>();
@@ -550,11 +548,11 @@ fn named_nodes_reuse_one_class_at_two_positions() {
         }
     }
     let t = build_topology_for::<TwoFilters>().expect("named nodes build");
-    let names: Vec<&str> = t.operations.iter().map(|o| o.name.as_ref()).collect();
+    let names: Vec<&str> = t.procedures.iter().map(|o| o.name.as_ref()).collect();
     assert_eq!(
         names,
         vec![
-            "echo_operation",
+            "echo_procedure",
             "fraud_filter",
             "graph_merge",
             "spam_filter"
@@ -564,8 +562,8 @@ fn named_nodes_reuse_one_class_at_two_positions() {
     assert!(t.lookup_channel_id("fraud_filter").is_some());
     assert!(t.lookup_channel_id("spam_filter").is_some());
     // The merge node accumulates both named nodes' channels: fan-in.
-    let merge_id = *t.operation_name_to_id.get("graph_merge").unwrap();
-    assert_eq!(t.operations[merge_id as usize].input_channel_ids.len(), 2);
+    let merge_id = *t.procedure_name_to_id.get("graph_merge").unwrap();
+    assert_eq!(t.procedures[merge_id as usize].input_channel_ids.len(), 2);
 }
 
 /// Two unnamed mentions of one class resolve to the same node — which is
@@ -578,16 +576,16 @@ fn unnamed_mentions_unify_into_a_fan_in() {
             "graph_fan_in"
         }
         fn channels(c: &ChannelBuilder) {
-            let validated = c.input::<String>("in").into::<EchoOperation>();
+            let validated = c.input::<String>("in").into::<EchoProcedure>();
             validated.into::<GraphStage1>().into::<GraphMerge>();
             validated.into::<GraphStage2>().into::<GraphMerge>();
         }
     }
     let t = build_topology_for::<FanInGraph>().expect("fan-in builds");
-    assert_eq!(t.operations.len(), 4, "one Merge node, not two");
-    let merge_id = *t.operation_name_to_id.get("graph_merge").unwrap();
+    assert_eq!(t.procedures.len(), 4, "one Merge node, not two");
+    let merge_id = *t.procedure_name_to_id.get("graph_merge").unwrap();
     assert_eq!(
-        t.operations[merge_id as usize].input_channel_ids.len(),
+        t.procedures[merge_id as usize].input_channel_ids.len(),
         2,
         "the join consumes both producers' channels"
     );
@@ -601,8 +599,8 @@ fn node_identity_collision_is_refused() {
             "graph_identity_collision"
         }
         fn channels(c: &ChannelBuilder) {
-            let validated = c.input::<String>("in").into::<EchoOperation>();
-            // A node name equal to another operation's `name()`.
+            let validated = c.input::<String>("in").into::<EchoProcedure>();
+            // A node name equal to another procedure's `name()`.
             validated.into_named::<GraphStage2>("graph_stage1");
             validated.into::<GraphStage1>();
         }
@@ -631,7 +629,7 @@ fn channel_names_derive_from_the_producer_identity() {
         }
         fn channels(c: &ChannelBuilder) {
             c.input::<String>("in")
-                .into::<EchoOperation>()
+                .into::<EchoProcedure>()
                 .into::<GraphStage1>()
                 .named("orders.validated")
                 .into::<GraphStage2>();
@@ -639,7 +637,7 @@ fn channel_names_derive_from_the_producer_identity() {
     }
     let t = build_topology_for::<Derived>().expect("derived names build");
     assert!(
-        t.lookup_channel_id("echo_operation").is_some(),
+        t.lookup_channel_id("echo_procedure").is_some(),
         "no override ⇒ the producer's identity"
     );
     assert!(
@@ -654,8 +652,8 @@ fn channel_names_derive_from_the_producer_identity() {
         }
         fn channels(c: &ChannelBuilder) {
             // The entry claims the name the derived channel would take.
-            c.input::<String>("echo_operation")
-                .into::<EchoOperation>()
+            c.input::<String>("echo_procedure")
+                .into::<EchoProcedure>()
                 .into::<GraphStage1>();
         }
     }
@@ -665,7 +663,7 @@ fn channel_names_derive_from_the_producer_identity() {
     };
     assert!(err.errors.iter().any(|e| matches!(
         e,
-        flezha_runner::channel::builder::TopologyIssue::DuplicateChannel("echo_operation")
+        flezha_runner::channel::builder::TopologyIssue::DuplicateChannel("echo_procedure")
     )));
 }
 
@@ -729,7 +727,7 @@ struct OrderEvent {
     sku: String,
 }
 
-test_operation!(OrderConsumer, "order_consumer", OrderEvent => String, (), |_input, _state, _ctx| {
+test_procedure!(OrderConsumer, "order_consumer", OrderEvent => String, (), |_input, _state, _ctx| {
     Ok(())
 });
 
@@ -810,7 +808,7 @@ fn bytes_and_string_entries_stay_passthrough() {
     assert_eq!(ok.downcast_ref::<String>().unwrap(), "plain");
     assert!(wrap(vec![0xff, 0xfe]).is_err(), "invalid UTF-8 still errs");
 
-    test_operation!(BytesConsumer, "bytes_consumer", Vec<u8> => String, (), |_input, _state, _ctx| {
+    test_procedure!(BytesConsumer, "bytes_consumer", Vec<u8> => String, (), |_input, _state, _ctx| {
         Ok(())
     });
     struct BytesEntry;

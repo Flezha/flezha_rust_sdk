@@ -11,40 +11,40 @@
 # pointer for code reviewers.
 
 pub mod state {
-    pub use crate::segment::restore::RestoreError;
-    pub use crate::segment::restore::RestoreInitPayload;
-    pub use crate::operation::change::Change;
-    pub use crate::operation::change::CoalesceKey;
-    pub use crate::operation::change::NoChange;
-    pub use crate::operation::clock::Clock;
-    pub use crate::operation::clock::ClockFor;
-    pub use crate::operation::clock::EventTimeFrom;
-    pub use crate::operation::clock::LogicalClock;
-    pub use crate::operation::clock::TimeExtractor;
-    pub use crate::operation::clock::WallClock;
-    pub use crate::operation::state_handle::StateHandle;
+    pub use crate::entity::restore::RestoreError;
+    pub use crate::entity::restore::RestoreInitPayload;
+    pub use crate::procedure::change::Change;
+    pub use crate::procedure::change::CoalesceKey;
+    pub use crate::procedure::change::NoChange;
+    pub use crate::procedure::clock::Clock;
+    pub use crate::procedure::clock::ClockFor;
+    pub use crate::procedure::clock::EventTimeFrom;
+    pub use crate::procedure::clock::LogicalClock;
+    pub use crate::procedure::clock::TimeExtractor;
+    pub use crate::procedure::clock::WallClock;
+    pub use crate::procedure::state_handle::StateHandle;
 }
 
-pub use segment::RestoreError;
-pub use segment::RestoreInitPayload;
-pub use operation::Change;
-pub use operation::Clock;
-pub use operation::ClockFor;
-pub use operation::CoalesceKey;
-pub use operation::EventTimeFrom;
-pub use operation::LogicalClock;
-pub use operation::NoChange;
-pub use operation::Operation;
-pub use operation::OperationCtx;
-pub use operation::OperationError;
-pub use operation::IfRunning;
-pub use operation::SpawnError;
-pub use operation::SpawnHandle;
-pub use operation::SpawnOutcome;
-pub use operation::StableId;
-pub use operation::StateHandle;
-pub use operation::TimeExtractor;
-pub use operation::WallClock;
+pub use entity::RestoreError;
+pub use entity::RestoreInitPayload;
+pub use procedure::Change;
+pub use procedure::Clock;
+pub use procedure::ClockFor;
+pub use procedure::CoalesceKey;
+pub use procedure::EventTimeFrom;
+pub use procedure::LogicalClock;
+pub use procedure::NoChange;
+pub use procedure::Procedure;
+pub use procedure::ProcedureCtx;
+pub use procedure::ProcedureError;
+pub use procedure::IfRunning;
+pub use procedure::SpawnError;
+pub use procedure::SpawnHandle;
+pub use procedure::SpawnOutcome;
+pub use procedure::StableId;
+pub use procedure::StateHandle;
+pub use procedure::TimeExtractor;
+pub use procedure::WallClock;
 
 # Clock surface (runtime-evaluated; no static `Clock::now()`):
 #
@@ -52,29 +52,29 @@ pub use operation::WallClock;
 #   pub trait ClockFor<Input>: Clock { /* runtime seam */ } # sealed via Clock
 #   pub trait TimeExtractor<Input> { fn extract(input: &Input) -> u64; }
 #
-# Trait surface on `Operation`:
+# Trait surface on `Procedure`:
 #
 #   type Change: Change;
 #   type Clock: ClockFor<Self::Input>;
 #   type Config: DeserializeOwned + Send + Sync + 'static;
 #   const SCHEMA_VERSION: u32 = 1;
-#   fn init_state(segment_key: Option<&str>, init_payload: Option<RestoreInitPayload<'_>>) -> Self::State;
+#   fn init_state(entity_key: Option<&str>, init_payload: Option<RestoreInitPayload<'_>>) -> Self::State;
 #   fn apply_change(state: &mut Self::State, change: &Self::Change);
 #   fn compact_after_bytes() -> usize;
 #   fn from_config(cfg: Self::Config) -> Self;
-#   fn run(&mut self, input, state: StateHandle<'_, Self>, ctx: &mut OperationCtx<'_>) -> Result<(), OperationError>;
+#   fn run(&mut self, input, state: StateHandle<'_, Self>, ctx: &mut ProcedureCtx<'_>) -> Result<(), ProcedureError>;
 #
-# `OperationCtx` surface (per-invocation, determinism contract):
+# `ProcedureCtx` surface (per-invocation, determinism contract):
 #
 #   pub fn now(&self) -> u64;
 #   pub fn stable_id(&self) -> StableId;
-#   pub fn emit<C>(&mut self, value: C) -> Result<(), OperationError>;
-#   pub fn emit_with_meta<C>(&mut self, value: C, meta: HashMap<String, String>) -> Result<(), OperationError>;
-#   pub fn emit_keyed<C>(&mut self, key: impl Into<String>, value: C) -> Result<(), OperationError>;
-#   pub fn emit_keyed_with_meta<C>(&mut self, key: impl Into<String>, value: C, meta: HashMap<String, String>) -> Result<(), OperationError>;
+#   pub fn emit<C>(&mut self, value: C) -> Result<(), ProcedureError>;
+#   pub fn emit_with_meta<C>(&mut self, value: C, meta: HashMap<String, String>) -> Result<(), ProcedureError>;
+#   pub fn emit_keyed<C>(&mut self, key: impl Into<String>, value: C) -> Result<(), ProcedureError>;
+#   pub fn emit_keyed_with_meta<C>(&mut self, key: impl Into<String>, value: C, meta: HashMap<String, String>) -> Result<(), ProcedureError>;
 #   pub fn spawn_bounded(&self, instance_id: impl Into<String>, factory_id: impl Into<String>, payload: impl Into<Vec<u8>>, if_running: IfRunning) -> SpawnHandle;
 #
-# Operation-requested spawn (`add-operation-requested-spawn`):
+# Procedure-requested spawn (`procedure-requested-spawn`):
 #
 #   pub enum IfRunning { Deliver, Error }                     # Deliver is Default
 #   pub enum SpawnOutcome { Spawned, Delivered, SkippedOnReplay }
@@ -91,11 +91,11 @@ pub use operation::WallClock;
 # Test harness (gated behind `cfg(any(test, feature = "testing"))`):
 #
 #   pub mod testing {
-#       pub use harness::OperationTestHarness;
+#       pub use harness::ProcedureTestHarness;
 #       pub use harness::ReplayMismatch;
 #   }
 #
-#   OperationTestHarness additions:
+#   ProcedureTestHarness additions:
 #     pub fn with_keyed_channel(self) -> Self;
 #     pub fn with_wall_clock(self, ms: u64) -> Self;
 #     pub fn with_wall_clock_script(self, script: Vec<u64>) -> Self;
@@ -112,13 +112,13 @@ pub use operation::WallClock;
 #     # effectively_once / checkpoint_ack / correction_window / beyond_window_policy (&self)
 #
 #   pub struct EntryStream<'b, T>;   # Copy; borrows the builder
-#     pub fn into<S: Operation<Input = T>>(self) -> Stream<'b, S::Output>;
-#     pub fn into_named<S: Operation<Input = T>>(self, node_name: &'static str) -> Stream<'b, S::Output>;
+#     pub fn into<S: Procedure<Input = T>>(self) -> Stream<'b, S::Output>;
+#     pub fn into_named<S: Procedure<Input = T>>(self, node_name: &'static str) -> Stream<'b, S::Output>;
 #     pub fn on_full / retry_max / retry_backoff_ms -> Self;
 #
 #   pub struct Stream<'b, T>;        # Copy; the producer-first output-stream handle
-#     pub fn into<S: Operation<Input = T>>(self) -> Stream<'b, S::Output>;
-#     pub fn into_named<S: Operation<Input = T>>(self, node_name: &'static str) -> Stream<'b, S::Output>;
+#     pub fn into<S: Procedure<Input = T>>(self) -> Stream<'b, S::Output>;
+#     pub fn into_named<S: Procedure<Input = T>>(self, node_name: &'static str) -> Stream<'b, S::Output>;
 #     pub fn branch<const N: usize>(self, arms: [&dyn Fn(Stream<'b, T>); N]) -> Self;  # >= 2 arms
 #     pub fn named / keyed / on_full / retry_max / retry_backoff_ms / codec / codec_with -> Self;
 #     pub fn also_output_with<F>(self, plugin_name: &'static str, serializer: F) -> Self
@@ -126,7 +126,7 @@ pub use operation::WallClock;
 #     pub fn also_output(self, plugin_name: &'static str) -> Self where T: Serialize;
 #     pub fn output(self, plugin_name: &'static str) -> Channel<T> where T: Serialize;  # terminal
 #
-#   Multi-input operations (`add-multi-input-operations`):
+#   Multi-input procedures (`add-multi-input-procedures`):
 #
 #   pub trait MergeSource<'b> {                 # impl'd for EntryStream and Stream
 #       type Payload: Clone + Send + Sync + 'static;
@@ -138,13 +138,13 @@ pub use operation::WallClock;
 #                                               # at the crate root beside Stream
 #     pub fn from<S, F>(self, source: S, map: F) -> Self
 #       where S: MergeSource<'b>, F: Fn(S::Payload) -> I + Send + Sync + 'static;
-#     pub fn into<S: Operation<Input = I>>(self) -> Stream<'b, S::Output>;
-#     pub fn into_named<S: Operation<Input = I>>(self, node_name: &'static str) -> Stream<'b, S::Output>;
+#     pub fn into<S: Procedure<Input = I>>(self) -> Stream<'b, S::Output>;
+#     pub fn into_named<S: Procedure<Input = I>>(self, node_name: &'static str) -> Stream<'b, S::Output>;
 #
 #   Removed: ChannelDecl, ChannelDeclWithProducer, EntryChannel, EntryChannelType,
 #   channel::<T>("name"), .from::<S>(), to_plugin, also_to_plugin_with.
 #   Trait signatures: UnboundedOperative::channels(c: &ChannelBuilder),
-#   BoundedOperative::operations(c: &ChannelBuilder)  (was &mut).
+#   BoundedOperative::procedures(c: &ChannelBuilder)  (was &mut).
 #
 # `TopologyIssue` variants (renamed from BuildTopologyError by
 # `sdk-runner-entrypoint-redesign`):
@@ -153,26 +153,26 @@ pub use operation::WallClock;
 #       /* existing variants unchanged; UnwiredChannel + MultiProducer removed */
 #       DuplicatePluginSink { channel: &'static str },
 #       KeyedChannelWithoutPluginWire { channel: &'static str },
-#       UnservableClock { operation: &'static str, clock_type: &'static str },
+#       UnservableClock { procedure: &'static str, clock_type: &'static str },
 #       NodeIdentityCollision { name: &'static str },
 #       BranchTooFewArms { arms: usize },
-#       Cycle { operation: &'static str },
-#       UnreachableOperation { operation: &'static str },
-#       MergeTooFewSources { operation: &'static str, sources: usize },
+#       Cycle { procedure: &'static str },
+#       UnreachableProcedure { procedure: &'static str },
+#       MergeTooFewSources { procedure: &'static str, sources: usize },
 #       DuplicateMergeSource { channel: &'static str },
-#       MergeSourceAlreadyWired { channel: &'static str, operation: &'static str },
+#       MergeSourceAlreadyWired { channel: &'static str, procedure: &'static str },
 #   }
 #
 # `BuildBoundedError` variants (`bounded::spec`):
 #
 #   pub enum BuildBoundedError {
 #       /* existing variants unchanged */
-#       MergeFromEntryChannel { factory_id: &'static str, channel: String, operation: String },
+#       MergeFromEntryChannel { factory_id: &'static str, channel: String, procedure: String },
 #   }
 #
-# `OperationError` variants:
+# `ProcedureError` variants:
 #
-#   pub enum OperationError {
+#   pub enum ProcedureError {
 #       /* existing variants unchanged */
 #       PluginSerializerPanic { channel: String, message: String },
 #       KeyRequiredOnKeyedChannel { channel: String },
@@ -188,10 +188,10 @@ pub use operation::WallClock;
 #       pub keyed: bool,
 #       pub consumers: Vec<ConsumerEdge>,
 #   }
-#     pub fn consumer_ids(&self) -> impl Iterator<Item = OperationId> + '_;
+#     pub fn consumer_ids(&self) -> impl Iterator<Item = ProcedureId> + '_;
 #
 #   pub struct ConsumerEdge {
-#       pub operation: OperationId,
+#       pub procedure: ProcedureId,
 #       pub map: Option<MergeMapFn>,
 #   }
 #

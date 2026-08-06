@@ -26,7 +26,7 @@ impl CommandAction for AddOperative {
         // every UnboundedOperative instance ProcessHub still has tagged to this
         // runner's profile after a restart. If the instance is already
         // in the local registry, skip without re-registering — keeps
-        // the existing per-Segment state intact and prevents
+        // the existing per-Entity state intact and prevents
         // duplicate-init crashes.
         if runner.has_operative(&instance_id) {
             return (
@@ -41,8 +41,8 @@ impl CommandAction for AddOperative {
                     factory_id.clone(),
                     instance_id.clone(),
                     self.init_values.clone(),
-                    self.resume_segment_count,
-                    self.op_journal.as_ref().map(Into::into),
+                    self.resume_entity_count,
+                    self.proc_journal.as_ref().map(Into::into),
                 ) {
                     errors.push(format!(
                         "BoundedOperative class with factory_id {} is not registered",
@@ -53,7 +53,7 @@ impl CommandAction for AddOperative {
             "unbounded" => match runner.start_operative(factory_id.clone(), instance_id.clone()) {
                 Some(instance) => {
                     if !self.init_values.is_empty() {
-                        if let Err(e) = crate::command::segment_state::apply_init_values(
+                        if let Err(e) = crate::command::entity_state::apply_init_values(
                             &instance,
                             &self.init_values,
                         ) {
@@ -129,7 +129,7 @@ fn metadata_response(kind: &str, factory_id: &str) -> Vec<u8> {
             );
         }
 
-        // Checkpoint ack-granularity. A Segment that only acknowledges at a
+        // Checkpoint ack-granularity. An Entity that only acknowledges at a
         // checkpoint holds its input-log watermark still for the whole interval
         // — the controller's silence-based liveness detectors have to read that
         // as the steady state it is, not as a stall.
@@ -137,43 +137,43 @@ fn metadata_response(kind: &str, factory_id: &str) -> Vec<u8> {
             metadata.insert("ack_granularity".to_string(), "checkpoint".to_string());
         }
 
-        // The per-Segment WAL size compaction trigger. The controller resolves
+        // The per-Entity WAL size compaction trigger. The controller resolves
         // it per operative_class, so ship the most conservative (smallest)
-        // declared threshold across this operative's operations — only when it
+        // declared threshold across this operative's procedures — only when it
         // differs from the shared default, keeping an unchanged class's reply
         // byte-identical.
         if let Some(min_bytes) = topology
-            .operations
+            .procedures
             .iter()
-            .map(|op| op.compact_after_bytes)
+            .map(|proc| proc.compact_after_bytes)
             .min()
         {
-            if min_bytes != crate::operation::DEFAULT_COMPACT_AFTER_BYTES {
+            if min_bytes != crate::procedure::DEFAULT_COMPACT_AFTER_BYTES {
                 metadata.insert("compact_after_bytes".to_string(), min_bytes.to_string());
             }
         }
     }
 
-    // The tree positions whose operation declares `compensate`. A rewind can
-    // only unwind an operation whose plugin output is semantically undoable, and
+    // The tree positions whose procedure declares `compensate`. A rewind can
+    // only unwind a procedure whose plugin output is semantically undoable, and
     // the controller refuses one that is not — so it needs this before it wakes
     // the instance (bounded-loop-rewind D5).
-    if let Some(ops) = declared_ops(kind, factory_id, |spec, node| {
+    if let Some(procs) = declared_procs(kind, factory_id, |spec, node| {
         spec.topology
             .as_ref()
-            .and_then(|t| t.operation(spec.dag.order[node]))
-            .is_some_and(|op| op.compensate_overridden)
+            .and_then(|t| t.procedure(spec.dag.order[node]))
+            .is_some_and(|proc| proc.compensate_overridden)
     }) {
-        metadata.insert("compensable_ops".to_string(), ops);
+        metadata.insert("compensable_procs".to_string(), procs);
     }
 
     // The tree's leaf positions. The operative is DONE when all of them have
     // committed, and the controller derives that from the journal alone —
     // which needs the leaf set (bounded-branching D4).
-    if let Some(ops) = declared_ops(kind, factory_id, |spec, node| {
+    if let Some(procs) = declared_procs(kind, factory_id, |spec, node| {
         spec.dag.children[node].is_empty()
     }) {
-        metadata.insert("leaf_ops".to_string(), ops);
+        metadata.insert("leaf_procs".to_string(), procs);
     }
 
     if metadata.is_empty() {
@@ -182,11 +182,11 @@ fn metadata_response(kind: &str, factory_id: &str) -> Vec<u8> {
     AddOperativeResponse { metadata }.encode_to_vec()
 }
 
-/// Comma-separated tree positions of the operations `select` picks out, or
+/// Comma-separated tree positions of the procedures `select` picks out, or
 /// `None` for anything without a structured tree (run-sugar, unbounded) — the
-/// one seam every bounded operation-set declaration rides. An empty string is
+/// one seam every bounded procedure-set declaration rides. An empty string is
 /// meaningful — "a tree, none of it selected" — and is not the same as absent.
-fn declared_ops(
+fn declared_procs(
     kind: &str,
     factory_id: &str,
     select: impl Fn(&BoundedSpec, usize) -> bool,

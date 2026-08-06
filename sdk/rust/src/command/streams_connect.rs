@@ -10,11 +10,11 @@ use flz_transport::transport::{protocol, FlezhaStream};
 use flz_transport::utility::path_helper;
 
 use super::CommandAction;
+use crate::entity::flusher::{SendError, SendFrameFn};
+use crate::entity::state_sink;
 use crate::pb::ConnectSocket;
 use crate::runner::fast::OperativeDispatchHandle;
 use crate::runner::RunnerNode;
-use crate::segment::flusher::{SendError, SendFrameFn};
-use crate::segment::segment_state_sink;
 
 impl CommandAction for ConnectSocket {
     fn handle(
@@ -51,7 +51,7 @@ fn handle_uds(cmd: &ConnectSocket, runner: &mut RunnerNode) -> (String, Vec<u8>)
         stream_pairs.push((FlezhaStream::Unix(primary), secondary_for_write));
     }
 
-    install_segment_state_sink_from_pairs(&stream_pairs);
+    install_entity_state_sink_from_pairs(&stream_pairs);
     spawn_listener_uds(runner, stream_pairs);
     ("connect_sockets".to_string(), Vec::new())
 }
@@ -85,25 +85,25 @@ fn handle_quic(cmd: &ConnectSocket, runner: &mut RunnerNode) -> (String, Vec<u8>
         stream_pairs.push((FlezhaStream::Quic(primary), secondary_for_write));
     }
 
-    install_segment_state_sink_from_pairs(&stream_pairs);
+    install_entity_state_sink_from_pairs(&stream_pairs);
     spawn_listener_quic(runner, stream_pairs);
     ("connect_sockets".to_string(), Vec::new())
 }
 
-/// Install the global `segment_state_sink` wrapping the FIRST
+/// Install the global `state_sink` wrapping the FIRST
 /// secondary stream from the freshly-connected pairs. The flusher uses
-/// this sink to ship `segment_state_change` and
-/// `segment_state_snapshot` frames; one secondary is enough because
-/// the WAL is single-writer per segment and the controller serializes the
-/// per-Segment writes server-side.
-fn install_segment_state_sink_from_pairs(pairs: &[(FlezhaStream, Arc<FlezhaStream>)]) {
+/// this sink to ship `entity_state_change` and
+/// `entity_state_snapshot` frames; one secondary is enough because
+/// the WAL is single-writer per entity and the controller serializes the
+/// per-Entity writes server-side.
+fn install_entity_state_sink_from_pairs(pairs: &[(FlezhaStream, Arc<FlezhaStream>)]) {
     // Credit never carries across sessions: drop the old window (waking any
     // parked sender into the legacy path) until the controller re-offers
     // `CreditWindowInit` for the fresh attach.
-    crate::segment::credit::global().disarm();
+    crate::entity::credit::global().disarm();
     if let Some((_, secondary)) = pairs.first() {
         // Mirror the secondary stream for the reaper's one-shot delete send.
-        segment_state_sink::set_secondary_stream(Some(Arc::clone(secondary)));
+        state_sink::set_secondary_stream(Some(Arc::clone(secondary)));
         let sink_stream = Arc::clone(secondary);
         // The Mutex serializes writes from the single flusher thread —
         // belt-and-braces given that the flusher has only one writer.
@@ -117,7 +117,7 @@ fn install_segment_state_sink_from_pairs(pairs: &[(FlezhaStream, Arc<FlezhaStrea
                     .map_err(|e| SendError::TransportDown(e.to_string()))
             },
         );
-        segment_state_sink::install_global_sink(send_fn);
+        state_sink::install_global_sink(send_fn);
     }
 }
 

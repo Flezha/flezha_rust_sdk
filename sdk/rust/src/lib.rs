@@ -2,7 +2,7 @@
 //!
 //! # Dispatch model
 //!
-//! Stream readers push directly into per-Segment lock-free mailboxes
+//! Stream readers push directly into per-Entity lock-free mailboxes
 //! (`crossbeam::queue::SegQueue` + `AtomicBool inflight`). A Chase-Lev
 //! work-stealing pool drains the mailboxes. A `DashMap`-backed
 //! [`operative::registry::OperativeRegistry`] holds live UnboundedOperative
@@ -13,7 +13,7 @@
 //!
 //! ```no_run
 //! use flezha_runner::{
-//!     Flezha, ChannelBuilder, UnboundedOperative, Operation, OperationCtx, OperationError,
+//!     Flezha, ChannelBuilder, UnboundedOperative, Procedure, ProcedureCtx, ProcedureError,
 //! };
 //! use flezha_runner::state::{
 //!     Change, NoChange, RestoreInitPayload, StateHandle, WallClock,
@@ -28,15 +28,15 @@
 //! impl Change for AppendChange {}
 //!
 //! #[derive(Default)]
-//! struct AppendOperation;
-//! impl Operation for AppendOperation {
+//! struct AppendProcedure;
+//! impl Procedure for AppendProcedure {
 //!     type Input = String;
 //!     type Output = String;
 //!     type State = AppendState;
 //!     type Change = AppendChange;
 //!     type Clock = WallClock;
 //!     type Config = ();
-//!     fn name() -> &'static str { "append_operation" }
+//!     fn name() -> &'static str { "append_procedure" }
 //!     fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> AppendState {
 //!         AppendState { seen: vec![] }
 //!     }
@@ -47,8 +47,8 @@
 //!         &mut self,
 //!         input: String,
 //!         mut state: StateHandle<'_, Self>,
-//!         _: &mut OperationCtx<'_>,
-//!     ) -> Result<(), OperationError> {
+//!         _: &mut ProcedureCtx<'_>,
+//!     ) -> Result<(), ProcedureError> {
 //!         state.apply(AppendChange(input));
 //!         Ok(())
 //!     }
@@ -58,7 +58,7 @@
 //! impl UnboundedOperative for AppendOperative {
 //!     fn factory_id() -> &'static str { "appender" }
 //!     fn channels(c: &ChannelBuilder) {
-//!         c.input::<String>("input").into::<AppendOperation>();
+//!         c.input::<String>("input").into::<AppendProcedure>();
 //!     }
 //! }
 //!
@@ -76,8 +76,8 @@
 //!
 //! When 10,000 messages targeting one `appender` UnboundedOperative instance arrive
 //! on the entry channel, the final `state.seen` vector contains those
-//! 10,000 inputs in arrival order — the per-Segment inflight CAS
-//! guarantees no two `Operation::run` calls overlap on the same segment.
+//! 10,000 inputs in arrival order — the per-Entity inflight CAS
+//! guarantees no two `Procedure::run` calls overlap on the same entity.
 //!
 //! # Reconnect & idempotency
 //!
@@ -87,7 +87,7 @@
 //! to this runner's profile. The handler is idempotent on duplicate
 //! `operative_id`: if the local registry already contains the instance
 //! it logs and returns without re-registering, so the existing
-//! per-Segment state is preserved across the reconnect.
+//! per-Entity state is preserved across the reconnect.
 //!
 //! # Tuning
 //!
@@ -99,27 +99,27 @@
 pub mod bounded;
 pub mod channel;
 pub mod command;
-pub mod operation;
+pub mod entity;
 pub mod operative;
+pub mod procedure;
 mod runner;
-pub mod segment;
 mod shutdown;
 mod util;
 
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 
-/// One-stop import path for the `operative-state-persistence-rust` trait
+/// One-stop import path for the `operative-state-persistence` trait
 /// surface. Bring everything into scope with
-/// `use flezha_runner::state::*;` to write Operations that declare
+/// `use flezha_runner::state::*;` to write Procedures that declare
 /// `Change` types and route mutations through `state.apply(...)`.
 pub mod state {
-    pub use crate::operation::change::{Change, CoalesceKey, NoChange};
-    pub use crate::operation::clock::{
+    pub use crate::entity::restore::{RestoreError, RestoreInitPayload};
+    pub use crate::procedure::change::{Change, CoalesceKey, NoChange};
+    pub use crate::procedure::clock::{
         Clock, ClockFor, EventTimeFrom, LogicalClock, TimeExtractor, WallClock,
     };
-    pub use crate::operation::state_handle::StateHandle;
-    pub use crate::segment::restore::{RestoreError, RestoreInitPayload};
+    pub use crate::procedure::state_handle::StateHandle;
 }
 
 use std::collections::HashMap;
@@ -132,23 +132,23 @@ pub use channel::{
     Channel, ChannelBuilder, EntryStream, Merge, MergeSource, OverflowPolicy, RetryPolicy, Stream,
 };
 use crossbeam::channel::{Receiver, Sender};
-/// Authoring sugar. `#[flezha::operation]`, `#[derive(flezha::State)]`, and
+pub use entity::{RestoreError, RestoreInitPayload};
+/// Authoring sugar. `#[flezha::procedure]`, `#[derive(flezha::State)]`, and
 /// `flezha::operative!` expand to the trait surface above; see
 /// `docs/sdk_authoring_contract.md`.
-pub use flezha_macros::{operation, operative, State};
+pub use flezha_macros::{operative, procedure, State};
 pub use flz_transport::{service, transport};
 /// Re-exported so macro-generated code can `submit!` into the auto-operative
 /// collection without the user adding an `inventory` dependency.
 pub use inventory;
-pub use operation::{
-    Change, Clock, ClockFor, CoalesceKey, DerivedState, EventTimeFrom, LogicalClock, NoChange,
-    Operation, OperationCtx, OperationError, StableId, StateHandle, TimeExtractor, WallClock,
-};
 pub use operative::builder::TopologyBuildError;
 pub use operative::UnboundedOperative;
-pub use segment::{RestoreError, RestoreInitPayload};
+pub use procedure::{
+    Change, Clock, ClockFor, CoalesceKey, DerivedState, EventTimeFrom, LogicalClock, NoChange,
+    Procedure, ProcedureCtx, ProcedureError, StableId, StateHandle, TimeExtractor, WallClock,
+};
 
-/// An operative using the single-operation auto-wire path (`#[flezha::operation(sink = …)]`) or
+/// An operative using the single-procedure auto-wire path (`#[flezha::procedure(sink = …)]`) or
 /// `flezha::operative!` registers without an explicit `.define_unbounded::<R>()` call.
 /// Generated code `submit!`s one of these; every [`FlezhaRunner::start`]
 /// harvests the collection into the runner's declared set.
@@ -170,7 +170,7 @@ impl AutoOperative {
 
 inventory::collect!(AutoOperative);
 
-/// Harvest every auto-registered operative (single-operation auto-wire +
+/// Harvest every auto-registered operative (single-procedure auto-wire +
 /// `flezha::operative!`) into the class registries WITHOUT a runner —
 /// idempotent (the registries overwrite on insert). A started runner does
 /// not need this: [`FlezhaRunner::start`] runs the same harvest and merges
@@ -211,7 +211,7 @@ pub(crate) fn register_bounded_class<T: BoundedOperative>() -> Result<(), BuildB
     Ok(())
 }
 
-/// Macro plumbing for `#[flezha::operation(...)]` / `flezha::operative!`
+/// Macro plumbing for `#[flezha::procedure(...)]` / `flezha::operative!`
 /// auto-registration. Not part of the public API — declare classes with
 /// [`FlezhaRunner::define_unbounded`]. Panics on an invalid topology: the
 /// topology is machine-generated, so a failure here is an SDK bug, not an
@@ -423,7 +423,7 @@ impl FlezhaRunner {
     /// before and after `start()` — a post-start define ships the runner's
     /// full factory set to the controller (`UpdateFactories`). An invalid
     /// topology (duplicate channel names, unwired channels, missing
-    /// `segment_for` overrides, type mismatches, ...) is reported here, at
+    /// `entities_for` overrides, type mismatches, ...) is reported here, at
     /// the declaring call site — not a panic.
     pub fn define_unbounded<R: UnboundedOperative>(&self) -> Result<&Self, FlezhaError> {
         // Build/validate BEFORE touching the declared set: an invalid
@@ -654,7 +654,7 @@ impl FlezhaRunner {
     }
 
     fn connect(&self) -> Result<Started, FlezhaError> {
-        // Harvest single-operation auto-wire + `operative!` operatives into the
+        // Harvest single-procedure auto-wire + `operative!` operatives into the
         // global registries and merge their ids into THIS runner's declared
         // set — on every start, so a restarted generation re-declares them.
         {

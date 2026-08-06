@@ -1,19 +1,19 @@
 //! Round-trip tests for `serialize_operative_state` + `apply_init_values`
-//! per `segment_state.rs` Section 4 / Decision 10.
+//! per `entity_state.rs` Section 4 / Decision 10.
 
 use std::sync::Arc;
 
 use flezha_runner::channel::ChannelBuilder;
-use flezha_runner::command::segment_state::{apply_init_values, serialize_operative_state};
-use flezha_runner::operation::{Operation, OperationCtx, OperationError};
+use flezha_runner::command::entity_state::{apply_init_values, serialize_operative_state};
 use flezha_runner::operative::builder::build_topology_for;
 use flezha_runner::operative::UnboundedInstance;
+use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError};
 use flezha_runner::state::{Change, NoChange, RestoreInitPayload, StateHandle, WallClock};
 use flezha_runner::{UnboundedOperative, __dispatch_internals as bi};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-// ----- Single-mode Operation -----
+// ----- Single-mode Procedure -----
 
 #[derive(Default, Serialize, Deserialize, PartialEq, Eq, Debug)]
 struct CounterState {
@@ -27,8 +27,8 @@ struct CounterChange {
 impl Change for CounterChange {}
 
 #[derive(Default)]
-struct CounterOperation;
-impl Operation for CounterOperation {
+struct CounterProcedure;
+impl Procedure for CounterProcedure {
     type Input = String;
     type Output = ();
     type State = CounterState;
@@ -48,8 +48,8 @@ impl Operation for CounterOperation {
         &mut self,
         _: String,
         _: StateHandle<'_, Self>,
-        _: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        _: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         Ok(())
     }
 }
@@ -60,12 +60,12 @@ impl UnboundedOperative for CounterOperative {
         "counter_operative"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<String>("input").into::<CounterOperation>();
+        c.input::<String>("input").into::<CounterProcedure>();
     }
 }
 
 #[test]
-fn single_mode_operation_serializes_under_operation_name_key() {
+fn single_mode_procedure_serializes_under_procedure_name_key() {
     let topology = build_topology_for::<CounterOperative>().expect("topology");
     let pool = Arc::new(bi::WorkStealingPool::with_size(1));
     let instance = UnboundedInstance::new(topology, Arc::from("inst-1"), pool);
@@ -77,7 +77,7 @@ fn single_mode_operation_serializes_under_operation_name_key() {
 }
 
 #[test]
-fn apply_init_values_seeds_single_mode_operation() {
+fn apply_init_values_seeds_single_mode_procedure() {
     let topology = build_topology_for::<CounterOperative>().expect("topology");
     let pool = Arc::new(bi::WorkStealingPool::with_size(1));
     let instance = UnboundedInstance::new(topology, Arc::from("inst-2"), pool);
@@ -89,7 +89,7 @@ fn apply_init_values_seeds_single_mode_operation() {
     assert_eq!(v, json!({"counter": {"value": 42}}));
 }
 
-// ----- Static-mode Operation -----
+// ----- Static-mode Procedure -----
 
 #[derive(Default, Serialize, Deserialize, PartialEq, Eq, Debug)]
 struct OhlcState {
@@ -97,8 +97,8 @@ struct OhlcState {
 }
 
 #[derive(Default)]
-struct OhlcOperation;
-impl Operation for OhlcOperation {
+struct OhlcProcedure;
+impl Procedure for OhlcProcedure {
     type Input = String;
     type Output = ();
     type State = OhlcState;
@@ -111,19 +111,19 @@ impl Operation for OhlcOperation {
     fn init_state(_: Option<&str>, _p: Option<RestoreInitPayload<'_>>) -> OhlcState {
         OhlcState::default()
     }
-    fn operation_keys() -> Vec<&'static str> {
+    fn entity_keys() -> Vec<&'static str> {
         vec!["1m", "1h"]
     }
-    const SEGMENT_FOR_OVERRIDDEN: bool = true;
-    fn segment_for(_: &String) -> Vec<&'static str> {
+    const ENTITIES_FOR_OVERRIDDEN: bool = true;
+    fn entities_for(_: &String) -> Vec<&'static str> {
         vec!["1m"]
     }
     fn run(
         &mut self,
         _: String,
         _: StateHandle<'_, Self>,
-        _: &mut OperationCtx<'_>,
-    ) -> Result<(), OperationError> {
+        _: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
         Ok(())
     }
 }
@@ -134,12 +134,12 @@ impl UnboundedOperative for OhlcOperative {
         "ohlc_operative"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<String>("input").into::<OhlcOperation>();
+        c.input::<String>("input").into::<OhlcProcedure>();
     }
 }
 
 #[test]
-fn static_mode_operation_serializes_under_keyed_object() {
+fn static_mode_procedure_serializes_under_keyed_object() {
     let topology = build_topology_for::<OhlcOperative>().expect("topology");
     let pool = Arc::new(bi::WorkStealingPool::with_size(1));
     let instance = UnboundedInstance::new(topology, Arc::from("inst-3"), pool);
@@ -150,7 +150,7 @@ fn static_mode_operation_serializes_under_keyed_object() {
 }
 
 #[test]
-fn apply_init_values_seeds_static_mode_operation_per_key() {
+fn apply_init_values_seeds_static_mode_procedure_per_key() {
     let topology = build_topology_for::<OhlcOperative>().expect("topology");
     let pool = Arc::new(bi::WorkStealingPool::with_size(1));
     let instance = UnboundedInstance::new(topology, Arc::from("inst-4"), pool);
@@ -179,14 +179,14 @@ fn apply_init_values_empty_string_is_noop() {
 }
 
 #[test]
-fn apply_init_values_unknown_operation_is_ignored() {
+fn apply_init_values_unknown_procedure_is_ignored() {
     let topology = build_topology_for::<CounterOperative>().expect("topology");
     let pool = Arc::new(bi::WorkStealingPool::with_size(1));
     let instance = UnboundedInstance::new(topology, Arc::from("inst-6"), pool);
 
     apply_init_values(
         &instance,
-        "{\"counter\":{\"value\":7},\"bogus_operation\":{\"x\":1}}",
+        "{\"counter\":{\"value\":7},\"bogus_procedure\":{\"x\":1}}",
     )
     .unwrap();
     let bytes = serialize_operative_state(&instance);

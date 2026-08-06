@@ -16,13 +16,13 @@ fn ui_compile_fail() {
     t.compile_fail("tests/ui/stream_handle_cannot_escape.rs");
 
     // Authoring-sugar macros (`simplify-sdk-authoring`).
-    t.compile_fail("tests/ui/operation_zero_inputs.rs");
-    t.compile_fail("tests/ui/operation_many_inputs.rs");
-    t.compile_fail("tests/ui/operation_shared_ref_state.rs");
-    t.compile_fail("tests/ui/operation_sink_unit_return.rs");
-    t.compile_fail("tests/ui/operation_static_and_dynamic.rs");
-    t.compile_fail("tests/ui/operation_keys_without_segment_for.rs");
-    t.compile_fail("tests/ui/operation_init_without_state.rs");
+    t.compile_fail("tests/ui/procedure_zero_inputs.rs");
+    t.compile_fail("tests/ui/procedure_many_inputs.rs");
+    t.compile_fail("tests/ui/procedure_shared_ref_state.rs");
+    t.compile_fail("tests/ui/procedure_sink_unit_return.rs");
+    t.compile_fail("tests/ui/procedure_static_and_dynamic.rs");
+    t.compile_fail("tests/ui/entity_keys_without_entities_for.rs");
+    t.compile_fail("tests/ui/procedure_init_without_state.rs");
     t.compile_fail("tests/ui/state_on_enum.rs");
     t.compile_fail("tests/ui/state_on_tuple_struct.rs");
     t.compile_fail("tests/ui/operative_fan_out.rs");
@@ -31,5 +31,5 @@ fn ui_compile_fail() {
     t.compile_fail("tests/ui/state_map_without_journal.rs");
     t.compile_fail("tests/ui/state_journal_type_mismatch.rs");
     t.compile_fail("tests/ui/state_journal_unknown_mode.rs");
-    t.pass("tests/ui/operation_option_output.rs");
+    t.pass("tests/ui/procedure_option_output.rs");
 }
