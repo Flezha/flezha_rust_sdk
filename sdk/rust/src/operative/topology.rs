@@ -5,22 +5,21 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::channel::builder::{
-    DeserializeStateFn, EntitiesForFn, EntityBuilder, EntityKeyFn, SerializeStateFn,
-};
+use crate::channel::builder::{DeserializeStateFn, EntitiesForFn, EntityBuilder, SerializeStateFn};
 use crate::channel::{ChannelDescriptor, ChannelId, ProcedureId};
 
-/// How a Procedure maps inputs to Entities. Resolved once at registration
-/// from `(entity_keys().is_empty(), ENTITY_KEY_OVERRIDDEN)`:
-/// `(true, false)` → `Single`, `(false, _)` → `Static`,
-/// `(true, true)` → `Dynamic`.
+/// How a Procedure maps inputs to Entities. Resolved once at registration from
+/// the Procedure's own `entity_keys()` and from the WIRING — whether any
+/// consumer edge into it carries a `.key_by(...)`: non-empty keyset →
+/// `Static`, keyed edge → `Dynamic`, neither → `Single`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntityMode {
-    /// One Entity per Procedure; `entity_key()` / `entity_keys()` unused.
+    /// One Entity per Procedure; no keying of any kind.
     Single,
     /// Fixed keyset declared by `entity_keys()`; routed by `entities_for`.
     Static,
-    /// Unbounded keyset; Entities created lazily by `entity_key()`.
+    /// Unbounded keyset; Entities created lazily on first sight of the key the
+    /// consumer edge's `.key_by(...)` returns.
     Dynamic,
 }
 
@@ -30,7 +29,6 @@ pub struct ProcedureDescriptor {
     pub name: Arc<str>,
     pub entity_keys: Vec<&'static str>,
     pub entities_for_overridden: bool,
-    pub entity_key_overridden: bool,
     /// `Procedure::COMPENSATE_OVERRIDDEN`, captured at registration. The bounded
     /// saga driver fires compensation only for procedures with this set; a
     /// unbounded operative never reads it.
@@ -45,9 +43,6 @@ pub struct ProcedureDescriptor {
     pub idle_ttl: Option<Duration>,
     /// Dynamic-mode soft cap on live Entities (`Procedure::max_entities`).
     pub max_entities: usize,
-    /// Type-erased `Procedure::entity_key`. `Some` only for dynamic-mode
-    /// Procedures; the dispatch path calls it to derive the entity key.
-    pub entity_key_erased: Option<EntityKeyFn>,
     /// Channels this procedure consumes. Several = fan-in (the node receives
     /// the accumulated contributions of all its producers); empty only for an
     /// procedure never wired as a consumer.

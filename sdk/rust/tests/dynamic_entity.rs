@@ -1,9 +1,10 @@
 //! dynamic entity mode runtime tests: lazy create, soft cap,
-//! no-key drop (§2); idle-TTL eviction and the CAS-vs-reaper race (§3);
-//! concurrent-producer + cold-recreate (§4).
+//! filtered-out inputs (§2); idle-TTL eviction and the CAS-vs-reaper race
+//! (§3); concurrent-producer + cold-recreate (§4).
 //!
-//! The dynamic key is the substring before the first `:`; the literal
-//! `"drop"` yields `None` (exercises the no-key-drop path).
+//! The dynamic key is declared on the WIRING: the substring before the first
+//! `:`. There is no keyless-drop path — the literal `"drop"` is removed by a
+//! `filter` declared before the keying, which is how an input is discarded.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
@@ -20,8 +21,8 @@ use flezha_runner::UnboundedOperative;
 mod common;
 use common::{dispatch_input, dummy_stream, setup, wait_until};
 
-fn key_of(input: &str) -> Option<String> {
-    (input != "drop").then(|| input.split(':').next().unwrap_or(input).to_string())
+fn key_of(input: &str) -> String {
+    input.split(':').next().unwrap_or(input).to_string()
 }
 
 /// A `String`-in, `()`-state dynamic-mode Procedure keyed by [`key_of`]. The
@@ -40,14 +41,17 @@ macro_rules! dyn_procedure_base {
             type Clock = WallClock;
             type Config = ();
             fn name() -> &'static str { $name }
-            const ENTITY_KEY_OVERRIDDEN: bool = true;
-            fn entity_key(input: &String) -> Option<String> { key_of(input) }
             $($item)*
         }
         struct $operative;
         impl UnboundedOperative for $operative {
             fn factory_id() -> &'static str { $factory }
-            fn channels(c: &ChannelBuilder) { c.input::<String>("inp").into::<$procedure>(); }
+            fn channels(c: &ChannelBuilder) {
+                c.input::<String>("inp")
+                    .filter(|s: &String| s != "drop")
+                    .key_by(|s: &String| key_of(s))
+                    .into::<$procedure>();
+            }
         }
     };
 }
@@ -166,7 +170,7 @@ fn soft_cap_drops_overflow_key() {
 }
 
 #[test]
-fn none_key_inputs_are_dropped() {
+fn filtered_inputs_reach_no_entity() {
     let (handle, instance) = setup::<DynOperative>("dyn-nokey", 4);
     let stream = dummy_stream();
     // 10 inputs; 4 "drop" sentinels → 6 slot creations.
@@ -187,13 +191,7 @@ fn none_key_inputs_are_dropped() {
         || reg.entities.len() == 6,
         Duration::from_secs(10)
     ));
-    assert_eq!(created(&reg), 6);
-    assert_eq!(
-        reg.counters
-            .inputs_dropped_no_key_total
-            .load(Ordering::Relaxed),
-        4
-    );
+    assert_eq!(created(&reg), 6, "the four filtered inputs create nothing");
 }
 
 #[test]

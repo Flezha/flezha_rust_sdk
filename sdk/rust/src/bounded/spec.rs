@@ -399,17 +399,22 @@ fn build_dag(
         }
     }
 
-    // The entry channel seeds the root procedure from the spawn args. The seed
-    // is a bare payload — it names no channel — so a merge mapping on an entry
-    // edge could never be selected, and every entry channel past the first
-    // would be unreadable. Refuse the shape rather than accept one that cannot
-    // run (`multi-input-procedures`).
+    // The entry channel seeds the root procedure from the spawn args, and the
+    // seed is a bare payload that bypasses the routing seam entirely — so no
+    // edge closure declared there could ever be selected, whether it is a merge
+    // mapping (every entry channel past the first would be unreadable) or a
+    // plain transform (it would silently never run). Refuse the shape rather
+    // than accept one that cannot run.
     for channel in topology
         .channels
         .iter()
         .filter(|c| c.kind == ChannelKind::Entry)
     {
-        if let Some(edge) = channel.consumers.iter().find(|e| e.map.is_some()) {
+        if let Some(edge) = channel
+            .consumers
+            .iter()
+            .find(|e| e.transform.is_some() || e.key.is_some())
+        {
             return Err(BuildBoundedError::MergeFromEntryChannel {
                 factory_id,
                 channel: channel.name.to_string(),

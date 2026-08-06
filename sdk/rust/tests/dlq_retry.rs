@@ -5,60 +5,19 @@
 //!   and the entity continues — never a silent drop
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use flezha_runner::channel::ChannelBuilder;
-use flezha_runner::entity::flusher::{SendError, SendFrameFn};
-use flezha_runner::entity::park::{self, ParkBody};
-use flezha_runner::entity::state_sink::{install_global_sink, PARK_PAYLOAD_PAYLOAD_ID};
+use flezha_runner::entity::park;
 use flezha_runner::procedure::ProcedureError;
 use flezha_runner::UnboundedOperative;
 
 mod common;
-use common::{dispatch_input, dummy_stream, setup, wait_until};
+use common::{dispatch_input, dummy_stream, install_auto_acking_sink, setup, wait_until};
 
 /// Serializes the tests that install the process-global sink.
 static SINK_LOCK: Mutex<()> = Mutex::new(());
-
-/// Install a recording sink whose park frames are auto-acked from a watcher
-/// thread (the controller's fsync-then-ack, minus the controller). Returns
-/// the collected `ParkBody`s.
-fn install_auto_acking_sink() -> Arc<Mutex<Vec<ParkBody>>> {
-    let parked: Arc<Mutex<Vec<ParkBody>>> = Arc::new(Mutex::new(Vec::new()));
-    let parked_c = Arc::clone(&parked);
-    let sink: SendFrameFn = Arc::new(move |payload_id: &str, frame: &[u8]| {
-        if payload_id == PARK_PAYLOAD_PAYLOAD_ID {
-            let body = decode_park_body(frame).map_err(SendError::Other)?;
-            let park_id = body.park_id.clone();
-            let mut seen = parked_c.lock().unwrap();
-            if !seen.iter().any(|b| b.park_id == park_id) {
-                seen.push(body);
-            }
-            drop(seen);
-            // Ack from another thread: the dispatch thread is blocked
-            // inside `park_blocking` while this sink call returns.
-            std::thread::spawn(move || park::complete_ack(&park_id));
-        }
-        Ok(())
-    });
-    install_global_sink(sink);
-    parked
-}
-
-/// Parse the outer entity frame and postcard-decode the `ParkBody`.
-/// Layout: `[pid_len:u16][pid][seq:u64][header:16][body_len:u32][body][crc:u32]`.
-fn decode_park_body(frame: &[u8]) -> Result<ParkBody, String> {
-    let pid_len = u16::from_be_bytes([frame[0], frame[1]]) as usize;
-    let body_len_off = 2 + pid_len + 8 + 16;
-    let body_len = u32::from_be_bytes(
-        frame[body_len_off..body_len_off + 4]
-            .try_into()
-            .map_err(|_| "short frame".to_string())?,
-    ) as usize;
-    let body = &frame[body_len_off + 4..body_len_off + 4 + body_len];
-    postcard::from_bytes(body).map_err(|e| format!("park body decode: {e}"))
-}
 
 // ----- Transient failure recovers within the retry budget -----
 

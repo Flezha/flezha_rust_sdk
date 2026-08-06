@@ -14,13 +14,14 @@ fn ui_compile_fail() {
     t.compile_fail("tests/ui/plugin_bound_disallows_on_full.rs");
     t.compile_fail("tests/ui/also_output_after_output.rs");
     t.compile_fail("tests/ui/stream_handle_cannot_escape.rs");
+    t.compile_fail("tests/ui/entry_stream_has_no_plugin_sink.rs");
 
     // Authoring-sugar macros (`simplify-sdk-authoring`).
     t.compile_fail("tests/ui/procedure_zero_inputs.rs");
     t.compile_fail("tests/ui/procedure_many_inputs.rs");
     t.compile_fail("tests/ui/procedure_shared_ref_state.rs");
     t.compile_fail("tests/ui/procedure_sink_unit_return.rs");
-    t.compile_fail("tests/ui/procedure_static_and_dynamic.rs");
+    t.compile_fail("tests/ui/procedure_entity_key_removed.rs");
     t.compile_fail("tests/ui/entity_keys_without_entities_for.rs");
     t.compile_fail("tests/ui/procedure_init_without_state.rs");
     t.compile_fail("tests/ui/state_on_enum.rs");

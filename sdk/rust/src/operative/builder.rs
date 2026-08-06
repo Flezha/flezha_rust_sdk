@@ -133,11 +133,23 @@ pub fn build_topology_with_persistence(
         channels,
         procedures,
         procedure_name_to_id,
+        pending,
         mut errors,
         effectively_once,
         correction,
         ack_granularity,
     } = builder.into_state();
+
+    // A transform chain is stored on the consumer edge it terminates in, so
+    // one that no `.into(...)` ever closed would silently do nothing. Only a
+    // chain's tip can dangle — every earlier link was superseded by the next.
+    for chain in &pending {
+        if !chain.superseded && !chain.consumed {
+            errors.push(TopologyIssue::DanglingTransformChain {
+                channel: channels[chain.channel as usize].name,
+            });
+        }
+    }
 
     // One per-operative channel namespace: derived names (producer node
     // identity), `.named(...)` overrides, and entry names all collide here.
@@ -204,6 +216,38 @@ pub fn build_topology_with_persistence(
         errors.push(TopologyIssue::CheckpointAckWithoutTier);
     }
 
+    // Entity mode is read off the WIRING now: a procedure reached by an edge
+    // carrying a key function is dynamic. Collected before the descriptors are
+    // built because that loop consumes the consumer edges.
+    let keyed_consumers: std::collections::HashSet<crate::channel::ProcedureId> = channels
+        .iter()
+        .flat_map(|entry| entry.consumers.iter())
+        .filter(|edge| edge.key.is_some())
+        .map(|edge| edge.procedure)
+        .collect();
+    for entry in &channels {
+        for edge in &entry.consumers {
+            let procedure = &procedures[edge.procedure as usize];
+            // Static keying routes by `entities_for` and may name several
+            // Entities; edge keying names exactly one. Declaring both is a
+            // contradiction, not a precedence question.
+            if edge.key.is_some() && !procedure.entity_keys.is_empty() {
+                errors.push(TopologyIssue::KeyByOnUnkeyableTarget {
+                    channel: entry.name,
+                    procedure: procedure.name,
+                });
+            }
+            // The key function is total, so a dynamic-mode procedure has no
+            // keyless-drop path — every edge into one must carry a key.
+            if edge.key.is_none() && keyed_consumers.contains(&edge.procedure) {
+                errors.push(TopologyIssue::UnkeyedEdgeIntoDynamicProcedure {
+                    channel: entry.name,
+                    procedure: procedure.name,
+                });
+            }
+        }
+    }
+
     // Build channel descriptors and validate.
     let mut channel_descs: Vec<ChannelDescriptor> = Vec::with_capacity(channels.len());
     for entry in channels {
@@ -248,13 +292,9 @@ pub fn build_topology_with_persistence(
 
     // Build procedure descriptors and validate entity declarations.
     let mut procedure_descs: Vec<ProcedureDescriptor> = Vec::with_capacity(procedures.len());
-    for entry in procedures {
+    for (id, entry) in procedures.into_iter().enumerate() {
         if !entry.entity_keys.is_empty() && !entry.entities_for_overridden {
             errors.push(TopologyIssue::EntitiesForMissing { name: entry.name });
-        }
-        // A Procedure declares static keys OR dynamic entity_key(), never both.
-        if entry.entity_key_overridden && !entry.entity_keys.is_empty() {
-            errors.push(TopologyIssue::StaticAndDynamic { name: entry.name });
         }
         // Build-time clock validation: LogicalClock serves the durable
         // change seq, which never advances for a NoChange Procedure — fail
@@ -274,7 +314,10 @@ pub fn build_topology_with_persistence(
                 clock_type: entry.clock_type_name,
             });
         }
-        let mode = match (entry.entity_keys.is_empty(), entry.entity_key_overridden) {
+        let mode = match (
+            entry.entity_keys.is_empty(),
+            keyed_consumers.contains(&(id as crate::channel::ProcedureId)),
+        ) {
             (false, _) => EntityMode::Static,
             (true, true) => EntityMode::Dynamic,
             (true, false) => EntityMode::Single,
@@ -297,12 +340,10 @@ pub fn build_topology_with_persistence(
             name: Arc::from(entry.name),
             entity_keys: entry.entity_keys,
             entities_for_overridden: entry.entities_for_overridden,
-            entity_key_overridden: entry.entity_key_overridden,
             compensate_overridden: entry.compensate_overridden,
             mode,
             idle_ttl: entry.idle_ttl,
             max_entities: entry.max_entities,
-            entity_key_erased: entry.entity_key_erased,
             input_channel_ids: entry.input_channel_ids,
             output_channel_id: entry.output_channel_id,
             input_type_id: entry.input_type_id,

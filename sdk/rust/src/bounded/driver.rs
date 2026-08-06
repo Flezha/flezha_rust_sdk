@@ -35,7 +35,7 @@ use super::instance::{BoundedInstance, CommittedProc, InboxItem, JournalResume};
 use super::spec::{BoundedSpec, ProcDag};
 use super::{BoundedCollectSink, BoundedCtx, BoundedError, BoundedRunFn, LoopMode, RollbackMode};
 use crate::channel::builder::BuildEntityArgs;
-use crate::channel::{ChannelId, ChannelKind, MergeMapFn, ProcedureId, RetryPolicy};
+use crate::channel::{ChannelId, ChannelKind, ConsumerEdge, ProcedureId, RetryPolicy};
 use crate::entity::flusher::EntityFlusher;
 use crate::entity::state_sink::{COMPENSATION_DONE_PAYLOAD_ID, COMPENSATION_INTENT_PAYLOAD_ID};
 use crate::entity::EntitySlot;
@@ -126,10 +126,11 @@ impl ChainCtx<'_> {
             .expect("dag procedure present in topology")
     }
 
-    /// The merge mapping declared on the edge from `producer`'s output channel
-    /// into `child` (`multi-input-procedures`), or `None` for the single-input
-    /// case where the producer's `Output` already IS the consumer's `Input`.
-    fn edge_map(&self, producer: usize, child: usize) -> Option<&MergeMapFn> {
+    /// The consumer edge from `producer`'s output channel into `child`, whose
+    /// transform is every `map`/`filter`/`flat_map` and merge mapping declared
+    /// on it, or `None` for the bare single-input case where the producer's
+    /// `Output` already IS the consumer's `Input`.
+    fn edge(&self, producer: usize, child: usize) -> Option<&ConsumerEdge> {
         let channel_id = self.proc(producer).output_channel_id?;
         let target = self.dag.order[child];
         self.topology
@@ -137,42 +138,39 @@ impl ChainCtx<'_> {
             .consumers
             .iter()
             .find(|e| e.procedure == target)
-            .and_then(|e| e.map.as_ref())
     }
 }
 
-/// Extend `dest` with a producer's released batch, lifted through the edge's
-/// merge mapping when it declares one. Shared by the forward accumulate and the
-/// journal re-seed so a resumed merge sees exactly what the live one did; an
-/// unmapped edge — every single-input chain — moves its values straight in.
+/// Extend `dest` with a producer's released batch, put through the edge's
+/// transform when it declares one. Shared by the forward accumulate and the
+/// journal re-seed so a resumed chain sees exactly what the live one did; a
+/// bare edge — every single-input chain — moves its values straight in.
 ///
-/// The mapping is author code, and unlike every other author closure on a
+/// The transform is author code, and unlike every other author closure on a
 /// bounded chain it runs on the driver thread rather than inside an entity
-/// invocation — so it is contained here the way `run_collecting` contains an
-/// procedure body: an unwind becomes an error the chain aborts and compensates
-/// on, instead of killing the driver thread and leaving the instance with no
-/// `BoundedCompleted`. Retrying is not offered: a mapping is required to be
-/// pure, so a re-run would panic identically.
+/// invocation — so `ConsumerEdge`'s containment matters here the way
+/// `run_collecting`'s matters for a procedure body: an unwind becomes an error
+/// the chain aborts and compensates on, instead of killing the driver thread
+/// and leaving the instance with no `BoundedCompleted`. Retrying is not
+/// offered: an edge closure is required to be pure, so a re-run would panic
+/// identically. An edge key never reaches here — a keyed edge makes its
+/// consumer dynamic, and `build_dag` refuses a dynamic bounded procedure.
 fn extend_mapped(
     dest: &mut Vec<Value>,
-    map: Option<&MergeMapFn>,
+    edge: Option<&ConsumerEdge>,
     batch: impl Iterator<Item = Value>,
 ) -> Result<(), String> {
-    let Some(f) = map else {
+    let Some(edge) = edge.filter(|e| e.transform.is_some()) else {
         dest.extend(batch);
         return Ok(());
     };
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        for value in batch {
-            dest.push(f(value.as_ref()));
+    for value in batch {
+        match edge.transform_value(&value)? {
+            None => dest.push(value),
+            Some(yielded) => dest.extend(yielded),
         }
-    }))
-    .map_err(|panic| {
-        format!(
-            "merge mapping panicked: {}",
-            crate::procedure::error::format_panic(panic)
-        )
-    })
+    }
+    Ok(())
 }
 
 /// Spawn the bounded driver for one already-registered instance on a dedicated
@@ -639,7 +637,7 @@ fn run_iteration(
                     // each producer's contribution through that edge's mapping.
                     if let Err(e) = extend_mapped(
                         pending.entry(child).or_default(),
-                        ctx.edge_map(node, child),
+                        ctx.edge(node, child),
                         out.batch.iter().map(Arc::clone),
                     ) {
                         return Err(abnormal_status(cancel, e));
@@ -703,7 +701,7 @@ fn resumed_start(
                 .map(|edge| edge.handoff.as_slice())
                 .unwrap_or_default();
             let seeded = seed_from_journal(ctx, handoff, ctx.proc(*parent).output_channel_id)?;
-            extend_mapped(&mut batch, ctx.edge_map(*parent, node), seeded.into_iter())?;
+            extend_mapped(&mut batch, ctx.edge(*parent, node), seeded.into_iter())?;
         }
         let outstanding = parents.len() - committed_parents.len();
         if outstanding == 0 {

@@ -64,6 +64,13 @@ pub use procedure::WallClock;
 #   fn from_config(cfg: Self::Config) -> Self;
 #   fn run(&mut self, input, state: StateHandle<'_, Self>, ctx: &mut ProcedureCtx<'_>) -> Result<(), ProcedureError>;
 #
+#   REMOVED by `stream-dsl-keyby-and-transforms`:
+#     fn entity_key(input: &Self::Input) -> Option<String>;
+#     const ENTITY_KEY_OVERRIDDEN: bool;
+#   Dynamic keying is declared on the wiring (`.key_by(f)`) instead. The static
+#   pair (`entity_keys` / `entities_for` / `ENTITIES_FOR_OVERRIDDEN`) and the
+#   dynamic knobs (`entity_idle_ttl`, `max_entities`) stay on the Procedure.
+#
 # `ProcedureCtx` surface (per-invocation, determinism contract):
 #
 #   pub fn now(&self) -> u64;
@@ -111,16 +118,34 @@ pub use procedure::WallClock;
 #     pub fn merge<I: Send + Sync + 'static>(&self) -> Merge<'_, I>;
 #     # effectively_once / checkpoint_ack / correction_window / beyond_window_policy (&self)
 #
-#   pub struct EntryStream<'b, T>;   # Copy; borrows the builder
-#     pub fn into<S: Procedure<Input = T>>(self) -> Stream<'b, S::Output>;
-#     pub fn into_named<S: Procedure<Input = T>>(self, node_name: &'static str) -> Stream<'b, S::Output>;
-#     pub fn on_full / retry_max / retry_backoff_ms -> Self;
+#   CHANGED by `stream-dsl-keyby-and-transforms`: the two handles are ONE
+#   struct parameterized by a target marker, so their shared surface —
+#   `.into`, the transforms, the consumer-side config — is written once.
+#   `EntryStream<'b, T>` is now a type alias, not its own struct.
 #
-#   pub struct Stream<'b, T>;        # Copy; the producer-first output-stream handle
+#   pub trait StreamTarget: Copy + 'static { const IS_ENTRY: bool; }
+#   pub struct EntryTarget;          # `target` IS the entry channel id
+#   pub struct NodeTarget;           # `target` is the producing procedure
+#
+#   pub type EntryStream<'b, T> = Stream<'b, T, EntryTarget>;
+#
+#   pub struct Stream<'b, T, K = NodeTarget>;   # Copy; borrows the builder
+#     # --- shared surface (both handles) ---
 #     pub fn into<S: Procedure<Input = T>>(self) -> Stream<'b, S::Output>;
 #     pub fn into_named<S: Procedure<Input = T>>(self, node_name: &'static str) -> Stream<'b, S::Output>;
+#     pub fn map<U, F>(self, f: F) -> Stream<'b, U, K>
+#       where T: Clone, U: Send + Sync + 'static, F: Fn(T) -> U + Send + Sync + 'static;
+#     pub fn flat_map<U, I, F>(self, f: F) -> Stream<'b, U, K>
+#       where T: Clone, U: Send + Sync + 'static, I: IntoIterator<Item = U>,
+#             F: Fn(T) -> I + Send + Sync + 'static;
+#     pub fn filter<F>(self, predicate: F) -> Self
+#       where F: Fn(&T) -> bool + Send + Sync + 'static;
+#     pub fn key_by<F>(self, key: F) -> Self
+#       where F: Fn(&T) -> String + Send + Sync + 'static;
+#     pub fn on_full / retry_max / retry_backoff_ms -> Self;
+#     # --- producer-side only (K = NodeTarget) ---
 #     pub fn branch<const N: usize>(self, arms: [&dyn Fn(Stream<'b, T>); N]) -> Self;  # >= 2 arms
-#     pub fn named / keyed / on_full / retry_max / retry_backoff_ms / codec / codec_with -> Self;
+#     pub fn named / keyed / codec / codec_with -> Self;
 #     pub fn also_output_with<F>(self, plugin_name: &'static str, serializer: F) -> Self
 #       where F: Fn(&T) -> Vec<u8> + Send + Sync + 'static;
 #     pub fn also_output(self, plugin_name: &'static str) -> Self where T: Serialize;
@@ -128,9 +153,12 @@ pub use procedure::WallClock;
 #
 #   Multi-input procedures (`add-multi-input-procedures`):
 #
-#   pub trait MergeSource<'b> {                 # impl'd for EntryStream and Stream
+#   pub trait MergeSource<'b> {                 # ONE impl over Stream<'b, T, K>
 #       type Payload: Clone + Send + Sync + 'static;
-#       fn merge_channel_id(self) -> ChannelId;
+#       # CHANGED: was `fn merge_channel_id(self) -> ChannelId`. A source now
+#       # also carries the transform chain declared on its handle, which runs
+#       # BEFORE that source's mapping.
+#       fn merge_site(self) -> (ChannelId, Option<u32>);
 #   }
 #
 #   pub struct Merge<'b, I>;                    # built by ChannelBuilder::merge
@@ -138,6 +166,8 @@ pub use procedure::WallClock;
 #                                               # at the crate root beside Stream
 #     pub fn from<S, F>(self, source: S, map: F) -> Self
 #       where S: MergeSource<'b>, F: Fn(S::Payload) -> I + Send + Sync + 'static;
+#     pub fn key_by<F>(self, key: F) -> Self          # once, on the merge
+#       where F: Fn(&I) -> String + Send + Sync + 'static;
 #     pub fn into<S: Procedure<Input = I>>(self) -> Stream<'b, S::Output>;
 #     pub fn into_named<S: Procedure<Input = I>>(self, node_name: &'static str) -> Stream<'b, S::Output>;
 #
@@ -160,7 +190,17 @@ pub use procedure::WallClock;
 #       UnreachableProcedure { procedure: &'static str },
 #       MergeTooFewSources { procedure: &'static str, sources: usize },
 #       DuplicateMergeSource { channel: &'static str },
-#       MergeSourceAlreadyWired { channel: &'static str, procedure: &'static str },
+#       EdgeAlreadyWired { channel: &'static str, procedure: &'static str },
+#         # renamed from MergeSourceAlreadyWired: it guards ANY re-declaration
+#         # where either side carries a transform or a key, not just a merge
+#       /* added by `stream-dsl-keyby-and-transforms`; StaticAndDynamic REMOVED
+#          (the contradiction it named is now KeyByOnUnkeyableTarget) */
+#       KeyByOnUnkeyableTarget { channel: &'static str, procedure: &'static str },
+#       DuplicateKeyBy { channel: &'static str },
+#       TransformAfterTerminal { channel: &'static str },
+#       TransformAfterKeyBy { channel: &'static str },
+#       DanglingTransformChain { channel: &'static str },
+#       UnkeyedEdgeIntoDynamicProcedure { channel: &'static str, procedure: &'static str },
 #   }
 #
 # `BuildBoundedError` variants (`bounded::spec`):
@@ -190,13 +230,23 @@ pub use procedure::WallClock;
 #   }
 #     pub fn consumer_ids(&self) -> impl Iterator<Item = ProcedureId> + '_;
 #
+#   CHANGED by `stream-dsl-keyby-and-transforms`: `.map` renamed to
+#   `.transform` and joined by `.key`; `MergeMapFn` renamed to
+#   `EdgeTransformFn` and re-signatured (it is no longer merge-specific).
+#
 #   pub struct ConsumerEdge {
 #       pub procedure: ProcedureId,
-#       pub map: Option<MergeMapFn>,
+#       pub transform: Option<EdgeTransformFn>,
+#       pub key: Option<EdgeKeyFn>,
 #   }
 #
-#   pub type MergeMapFn =
-#       Arc<dyn Fn(&dyn Any) -> Arc<dyn Any + Send + Sync> + Send + Sync + 'static>;
+#   pub enum EdgeYield { Drop, One(Arc<dyn Any + Send + Sync>), Many(Vec<..>) }
+#
+#   pub type EdgeTransformFn =
+#       Arc<dyn Fn(&Arc<dyn Any + Send + Sync>) -> EdgeYield + Send + Sync + 'static>;
+#
+#   pub type EdgeKeyFn =
+#       Arc<dyn Fn(&dyn Any) -> String + Send + Sync + 'static>;
 #
 #   pub struct PluginSink {
 #       pub name: Arc<str>,

@@ -1283,8 +1283,8 @@ pub(crate) fn enqueue(slot: &Arc<EntitySlot>, payload: EntityPayload, policy: Ov
 /// (`EntityEmitSink`) and the inbound wire-dispatch path
 /// (`OperativeDispatchHandle`). Single-mode procedures route to entity 0;
 /// static-mode procedures route by `entities_for_erased` key lookup;
-/// dynamic-mode procedures derive a key via `entity_key` and lazily create the
-/// Entity through the per-Procedure `DynamicEntityRegistry`.
+/// dynamic-mode procedures derive a key via the consumer edge's `key_by` and
+/// lazily create the Entity through the per-Procedure `DynamicEntityRegistry`.
 /// A poison entry payload climbing its channel's retry→DLQ ladder off the
 /// wire-reader thread (`sdk-graph-authoring` typed entries): the failing parse
 /// is re-attempted per the channel's retry budget — the parser contract says
@@ -1302,12 +1302,9 @@ pub(crate) struct EntryParseLadder {
 }
 
 pub(crate) fn spawn_entry_parse_ladder(ladder: EntryParseLadder) {
-    let spawned = std::thread::Builder::new()
-        .name("flezha-entry-parse-park".to_string())
-        .spawn(move || run_entry_parse_ladder(ladder));
-    if let Err(e) = spawned {
-        eprintln!("[flezha] failed to spawn entry-parse park thread: {e}");
-    }
+    spawn_park_thread("flezha-entry-parse-park", move || {
+        run_entry_parse_ladder(ladder)
+    });
 }
 
 fn run_entry_parse_ladder(ladder: EntryParseLadder) {
@@ -1320,153 +1317,327 @@ fn run_entry_parse_ladder(ladder: EntryParseLadder) {
         .wrap_input
         .as_ref()
         .expect("parsed entry channel carries a wrap_input");
-    let label = format!("entry channel `{}`", channel.name);
-
-    let mut attempt: u32 = 1; // the wire-path parse was attempt 1
-    let mut error = ladder.first_error;
-    while attempt < channel.retry.max_attempts {
-        let delay =
-            crate::entity::retry::note_failed_attempt(&label, attempt, channel.retry, &error);
-        crate::util::sleep_interruptible(delay, None);
-        attempt += 1;
-        match wrap(ladder.bytes.clone()) {
+    run_retry_park_ladder(
+        &format!("entry channel `{}`", channel.name),
+        channel,
+        &ladder.instance.instance_id,
+        "_entry",
+        ladder.consumed_offset,
+        Some(ladder.bytes.clone()),
+        ladder.first_error.clone(),
+        || {
             // A parser violating the determinism contract may succeed on a
             // re-attempt; deliver rather than drop.
-            Ok(typed) => {
-                route_to_consumers(
-                    &ladder.instance,
-                    channel,
-                    &typed,
-                    &ladder.stream,
-                    ladder.consumed_offset,
-                    ladder.replay,
-                );
-                return;
-            }
+            let typed = wrap(ladder.bytes.clone())?;
+            route_to_consumers(
+                &ladder.instance,
+                channel,
+                &typed,
+                &ladder.stream,
+                ladder.consumed_offset,
+                ladder.replay,
+            );
+            Ok(())
+        },
+    );
+}
+
+/// Re-attempt one failed step off the routing thread per the channel's retry
+/// budget, then park what still fails to the dead-letter queue under the
+/// channel's identity. The one ladder both poison entry payloads and unwinding
+/// edge closures climb — `attempt` re-runs the step AND delivers on success,
+/// so the two differ only in what that step is.
+#[allow(clippy::too_many_arguments)]
+fn run_retry_park_ladder(
+    label: &str,
+    channel: &crate::channel::ChannelDescriptor,
+    instance_id: &str,
+    entity_suffix: &str,
+    consumed_offset: Option<u64>,
+    payload: Option<Vec<u8>>,
+    first_error: String,
+    mut attempt_step: impl FnMut() -> Result<(), String>,
+) {
+    let mut attempt: u32 = 1; // the routing-thread run was attempt 1
+    let mut error = first_error;
+    while attempt < channel.retry.max_attempts {
+        let delay =
+            crate::entity::retry::note_failed_attempt(label, attempt, channel.retry, &error);
+        crate::util::sleep_interruptible(delay, None);
+        attempt += 1;
+        match attempt_step() {
+            Ok(()) => return,
             Err(e) => error = e,
         }
     }
 
     crate::entity::park::PARKED_TOTAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     eprintln!(
-        "[flezha] {} parking unparseable payload to DLQ after {} attempt(s): {}",
+        "[flezha] {} parking payload to DLQ after {} attempt(s): {}",
         label, attempt, error
     );
-    let identity = crate::entity::flusher::encode_entity_identity(
-        &ladder.instance.instance_id,
-        &channel.name,
-        "_entry",
-    );
+    let identity =
+        crate::entity::flusher::encode_entity_identity(instance_id, &channel.name, entity_suffix);
     let body = crate::entity::park::ParkBody {
         park_id: crate::entity::park::mint_park_id(&format!(
-            "{}/{}/_entry",
-            ladder.instance.instance_id, channel.name
+            "{}/{}/{}",
+            instance_id, channel.name, entity_suffix
         )),
-        origin_offset: ladder.consumed_offset,
+        origin_offset: consumed_offset,
         entry: crate::entity::flusher::DlqEntryBody {
             channel: channel.name.to_string(),
             error,
             attempts: attempt,
-            payload: Some(ladder.bytes),
+            payload,
         },
     };
     crate::entity::park::park_blocking(&identity, &body);
 }
 
 /// Route one channel value to every subscribed consumer, each through its own
-/// edge's merge mapping. The one seam a `ConsumerEdge` mapping is applied on:
-/// the wire-reader path (live delivery and the controller's re-forwarded replay
-/// slice) and an inter-procedure emit both come through here, so the two can
-/// never drift.
+/// edge's transform and key. The one seam a `ConsumerEdge`'s closures are
+/// applied on: the wire-reader path (live delivery and the controller's
+/// re-forwarded replay slice) and an inter-procedure emit both come through
+/// here, so the two can never drift.
+///
+/// A closure that unwinds does not take the routing thread with it — the value
+/// climbs this channel's retry→DLQ ladder, the same one a failing entry parse
+/// rides, and the remaining consumers are still served.
 pub(crate) fn route_to_consumers(
-    instance: &UnboundedInstance,
+    instance: &Arc<UnboundedInstance>,
     channel: &crate::channel::ChannelDescriptor,
     value: &Arc<dyn Any + Send + Sync>,
     stream: &Arc<FlezhaStream>,
     consumed_offset: Option<u64>,
     replay: bool,
 ) {
+    for edge in &channel.consumers {
+        if let Err(e) = deliver_edge(
+            instance,
+            channel,
+            edge,
+            value,
+            stream,
+            consumed_offset,
+            replay,
+        ) {
+            spawn_edge_ladder(
+                instance,
+                channel,
+                edge,
+                value,
+                stream,
+                consumed_offset,
+                replay,
+                e,
+            );
+        }
+    }
+}
+
+/// Put one value through one edge's transform and deliver everything it
+/// yields. The ONE place a `ConsumerEdge`'s closures become mailbox pushes:
+/// live routing and the retry ladder's re-attempt both call it, so a
+/// re-attempt cannot deliver differently from the attempt it retries.
+///
+/// A transform-free edge — every pre-existing topology — takes the `None` arm
+/// and pays nothing.
+#[allow(clippy::too_many_arguments)]
+fn deliver_edge(
+    instance: &Arc<UnboundedInstance>,
+    channel: &crate::channel::ChannelDescriptor,
+    edge: &crate::channel::ConsumerEdge,
+    value: &Arc<dyn Any + Send + Sync>,
+    stream: &Arc<FlezhaStream>,
+    consumed_offset: Option<u64>,
+    replay: bool,
+) -> Result<(), String> {
+    match edge.transform_value(value)? {
+        None => deliver_to_consumer(
+            instance,
+            channel,
+            edge,
+            value,
+            stream,
+            consumed_offset,
+            replay,
+        ),
+        Some(yielded) => yielded.into_iter().try_for_each(|v| {
+            deliver_to_consumer(instance, channel, edge, &v, stream, consumed_offset, replay)
+        }),
+    }
+}
+
+/// Deliver one post-transform value to one consumer's Entity. `Err` carries an
+/// unwinding key closure up to the ladder; every other outcome — an absent
+/// registry, an unmapped static key — is the pre-existing silent skip.
+#[allow(clippy::too_many_arguments)]
+fn deliver_to_consumer(
+    instance: &UnboundedInstance,
+    channel: &crate::channel::ChannelDescriptor,
+    edge: &crate::channel::ConsumerEdge,
+    value: &Arc<dyn Any + Send + Sync>,
+    stream: &Arc<FlezhaStream>,
+    consumed_offset: Option<u64>,
+    replay: bool,
+) -> Result<(), String> {
     use crate::operative::topology::EntityMode;
     let policy = channel.overflow_policy;
-    for edge in &channel.consumers {
-        let consumer_procedure_id = edge.procedure;
-        let consumer = match instance.topology.procedure(consumer_procedure_id) {
-            Some(s) => s,
-            None => continue,
-        };
-        // A merged subscription lifts this channel's payload into the
-        // consumer's `Input` sum type before anything downstream sees it, so
-        // `entities_for` / `entity_key` and the mailbox all carry the mapped
-        // value — on live delivery and on replay alike.
-        let mapped = edge.map_value(value);
-        let value = mapped.as_ref().unwrap_or(value);
-        match consumer.mode {
-            EntityMode::Dynamic => {
-                let registry = match instance
-                    .dynamic_registries
-                    .get(consumer_procedure_id as usize)
-                    .and_then(|r| r.as_ref())
-                {
-                    Some(r) => r,
-                    None => continue,
-                };
-                let key = match consumer
-                    .entity_key_erased
-                    .as_ref()
-                    .and_then(|f| f(value.as_ref()))
-                {
-                    Some(k) => k,
-                    None => {
-                        registry
-                            .counters
-                            .inputs_dropped_no_key_total
-                            .fetch_add(1, Ordering::Relaxed);
-                        continue;
-                    }
-                };
-                if let Ok(slot) = registry.get_or_create(&key) {
-                    enqueue(
-                        &slot,
-                        make_entity_payload(value, stream, consumed_offset, replay),
-                        policy,
-                    );
-                }
+    let consumer_procedure_id = edge.procedure;
+    let consumer = match instance.topology.procedure(consumer_procedure_id) {
+        Some(s) => s,
+        None => return Ok(()),
+    };
+    match consumer.mode {
+        EntityMode::Dynamic => {
+            let registry = match instance
+                .dynamic_registries
+                .get(consumer_procedure_id as usize)
+                .and_then(|r| r.as_ref())
+            {
+                Some(r) => r,
+                None => return Ok(()),
+            };
+            // The key is total — `build_topology` refuses an unkeyed edge
+            // into a dynamic consumer — so an absent one cannot happen.
+            let Some(key) = edge.key_of(value.as_ref())? else {
+                return Ok(());
+            };
+            if let Ok(slot) = registry.get_or_create(&key) {
+                enqueue(
+                    &slot,
+                    make_entity_payload(value, stream, consumed_offset, replay),
+                    policy,
+                );
             }
-            EntityMode::Single => {
-                if let Some(slot) = instance
-                    .entities
-                    .get(consumer_procedure_id as usize)
-                    .and_then(|p| p.first())
-                {
-                    enqueue(
-                        slot,
-                        make_entity_payload(value, stream, consumed_offset, replay),
-                        policy,
-                    );
-                }
+        }
+        EntityMode::Single => {
+            if let Some(slot) = instance
+                .entities
+                .get(consumer_procedure_id as usize)
+                .and_then(|p| p.first())
+            {
+                enqueue(
+                    slot,
+                    make_entity_payload(value, stream, consumed_offset, replay),
+                    policy,
+                );
             }
-            EntityMode::Static => {
-                let entities = match instance.entities.get(consumer_procedure_id as usize) {
-                    Some(p) => p,
-                    None => continue,
-                };
-                let key_to_idx = instance
-                    .entity_key_to_idx
-                    .get(consumer_procedure_id as usize);
-                for key in (consumer.entities_for_erased)(value.as_ref()) {
-                    if let Some(&idx) = key_to_idx.and_then(|m| m.get(key)) {
-                        if let Some(slot) = entities.get(idx) {
-                            enqueue(
-                                slot,
-                                make_entity_payload(value, stream, consumed_offset, replay),
-                                policy,
-                            );
-                        }
+        }
+        EntityMode::Static => {
+            let entities = match instance.entities.get(consumer_procedure_id as usize) {
+                Some(p) => p,
+                None => return Ok(()),
+            };
+            let key_to_idx = instance
+                .entity_key_to_idx
+                .get(consumer_procedure_id as usize);
+            for key in (consumer.entities_for_erased)(value.as_ref()) {
+                if let Some(&idx) = key_to_idx.and_then(|m| m.get(key)) {
+                    if let Some(slot) = entities.get(idx) {
+                        enqueue(
+                            slot,
+                            make_entity_payload(value, stream, consumed_offset, replay),
+                            policy,
+                        );
                     }
                 }
             }
         }
     }
+    Ok(())
+}
+
+/// Climb this channel's retry→DLQ ladder for one edge whose transform or key
+/// unwound. The closures are pure by contract, so a re-attempt is expected to
+/// fail identically — the ladder is there so the failure is parked and
+/// observable rather than silently taking a thread down, exactly as it is for
+/// a poison entry payload.
+#[allow(clippy::too_many_arguments)]
+fn spawn_edge_ladder(
+    instance: &Arc<UnboundedInstance>,
+    channel: &crate::channel::ChannelDescriptor,
+    edge: &crate::channel::ConsumerEdge,
+    value: &Arc<dyn Any + Send + Sync>,
+    stream: &Arc<FlezhaStream>,
+    consumed_offset: Option<u64>,
+    replay: bool,
+    error: String,
+) {
+    let Some(channel_id) = instance.topology.lookup_channel_id(&channel.name) else {
+        eprintln!("[flezha] edge transform failed on an unregistered channel: {error}");
+        return;
+    };
+    let ladder = EdgeLadder {
+        instance: Arc::clone(instance),
+        channel_id,
+        edge: edge.clone(),
+        value: Arc::clone(value),
+        first_error: error,
+        stream: Arc::clone(stream),
+        consumed_offset,
+        replay,
+    };
+    spawn_park_thread("flezha-edge-transform-park", move || {
+        run_edge_ladder(ladder)
+    });
+}
+
+/// Run a retry→DLQ ladder off the routing thread. Both ladders spawn here:
+/// the wait between attempts must not stall the wire reader, and a failure to
+/// spawn is reported rather than silently dropping the payload's last chance.
+fn spawn_park_thread(name: &str, run: impl FnOnce() + Send + 'static) {
+    let spawned = std::thread::Builder::new()
+        .name(name.to_string())
+        .spawn(run);
+    if let Err(e) = spawned {
+        eprintln!("[flezha] failed to spawn {name} thread: {e}");
+    }
+}
+
+struct EdgeLadder {
+    instance: Arc<UnboundedInstance>,
+    channel_id: u32,
+    edge: crate::channel::ConsumerEdge,
+    value: Arc<dyn Any + Send + Sync>,
+    first_error: String,
+    stream: Arc<FlezhaStream>,
+    consumed_offset: Option<u64>,
+    replay: bool,
+}
+
+fn run_edge_ladder(ladder: EdgeLadder) {
+    let channel = ladder
+        .instance
+        .topology
+        .channel(ladder.channel_id)
+        .expect("channel present in topology");
+    let procedure = ladder
+        .instance
+        .topology
+        .procedure(ladder.edge.procedure)
+        .map(|p| p.name.to_string())
+        .unwrap_or_default();
+    run_retry_park_ladder(
+        &format!("channel `{}` edge into `{}`", channel.name, procedure),
+        channel,
+        &ladder.instance.instance_id,
+        "_edge",
+        ladder.consumed_offset,
+        None,
+        ladder.first_error,
+        || {
+            deliver_edge(
+                &ladder.instance,
+                channel,
+                &ladder.edge,
+                &ladder.value,
+                &ladder.stream,
+                ladder.consumed_offset,
+                ladder.replay,
+            )
+        },
+    );
 }
 
 /// Build the emit wire metadata: drop any caller-supplied reserved

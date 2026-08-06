@@ -530,12 +530,12 @@ fn a_merge_source_may_not_re_wire_an_edge_that_is_already_declared() {
     assert!(
         err.errors.iter().any(|e| matches!(
             e,
-            TopologyIssue::MergeSourceAlreadyWired {
+            TopologyIssue::EdgeAlreadyWired {
                 channel: "data",
                 procedure: "merge_tuned_procedure"
             }
         )),
-        "expected MergeSourceAlreadyWired naming `data`, got {:?}",
+        "expected EdgeAlreadyWired naming `data`, got {:?}",
         err.errors
     );
 }
@@ -565,12 +565,12 @@ fn a_merge_may_not_re_wire_an_edge_a_plain_into_already_declared() {
     assert!(
         err.errors.iter().any(|e| matches!(
             e,
-            TopologyIssue::MergeSourceAlreadyWired {
+            TopologyIssue::EdgeAlreadyWired {
                 channel: "data",
                 procedure: "merge_tuned_procedure"
             }
         )),
-        "expected MergeSourceAlreadyWired naming `data`, got {:?}",
+        "expected EdgeAlreadyWired naming `data`, got {:?}",
         err.errors
     );
 }

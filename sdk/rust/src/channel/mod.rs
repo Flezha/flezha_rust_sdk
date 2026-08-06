@@ -11,40 +11,130 @@ use std::sync::Arc;
 
 pub mod builder;
 
-pub use builder::{ChannelBuilder, EntryStream, Merge, MergeSource, Stream};
+pub use builder::{
+    ChannelBuilder, EntryStream, EntryTarget, Merge, MergeSource, NodeTarget, Stream, StreamTarget,
+};
 
 pub type ChannelId = u32;
 pub type ProcedureId = u32;
 
-/// A merge subscription's mapping from a source channel's payload into the
-/// consuming procedure's `Input` sum type (`multi-input-procedures`). Erased
-/// from the `Fn(T) -> I` the author wrote; the caller guarantees the value is
-/// a `T` because the edge was declared against that channel's payload type.
+/// What one consumer edge's transform yields for one input value: nothing (a
+/// `filter` rejection), the common single reshaped value, or a fan-out
+/// (`flat_map`). `Drop` and `One` allocate nothing beyond the value itself;
+/// only the fan-out pays a `Vec`.
+pub enum EdgeYield {
+    Drop,
+    One(Arc<dyn Any + Send + Sync>),
+    Many(Vec<Arc<dyn Any + Send + Sync>>),
+}
+
+impl IntoIterator for EdgeYield {
+    type Item = Arc<dyn Any + Send + Sync>;
+    type IntoIter = EdgeYieldIter;
+
+    fn into_iter(self) -> EdgeYieldIter {
+        EdgeYieldIter(match self {
+            EdgeYield::Drop => YieldState::Done,
+            EdgeYield::One(v) => YieldState::One(v),
+            EdgeYield::Many(vs) => YieldState::Many(vs.into_iter()),
+        })
+    }
+}
+
+/// The values one [`EdgeYield`] delivers. Allocation-free for `Drop` and
+/// `One` — only the fan-out already owns a `Vec`.
+pub struct EdgeYieldIter(YieldState);
+
+enum YieldState {
+    Done,
+    One(Arc<dyn Any + Send + Sync>),
+    Many(std::vec::IntoIter<Arc<dyn Any + Send + Sync>>),
+}
+
+impl Iterator for EdgeYieldIter {
+    type Item = Arc<dyn Any + Send + Sync>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match std::mem::replace(&mut self.0, YieldState::Done) {
+            YieldState::Done => None,
+            YieldState::One(v) => Some(v),
+            YieldState::Many(mut rest) => {
+                let next = rest.next();
+                self.0 = YieldState::Many(rest);
+                next
+            }
+        }
+    }
+}
+
+/// One consumer edge's value transform: every `map` / `filter` / `flat_map`
+/// and every merge mapping declared before the closing `.into::<Proc>()`,
+/// composed into a single closure. Erased from the typed closures the author
+/// wrote; the caller guarantees the value's type because the chain was
+/// declared against that channel's payload type.
 ///
-/// The mapping MUST be pure — it runs on live delivery and again on WAL
+/// The transform MUST be pure — it runs on live delivery and again on WAL
 /// replay, and the two must agree — the same contract entry parsers and
 /// output serializers carry.
-pub type MergeMapFn = Arc<dyn Fn(&dyn Any) -> Arc<dyn Any + Send + Sync> + Send + Sync + 'static>;
+/// Takes the value behind its `Arc` rather than a bare `&dyn Any` so a
+/// surviving `filter` yields `One(Arc::clone(..))` — a refcount bump, not a
+/// payload clone.
+pub type EdgeTransformFn =
+    Arc<dyn Fn(&Arc<dyn Any + Send + Sync>) -> EdgeYield + Send + Sync + 'static>;
 
-/// One consumer subscription on a channel. A plain `.into::<Proc>()` carries no
-/// mapping (the channel's payload IS the consumer's `Input`); a
-/// `merge::<I>().from(stream, map)` subscription carries the mapping that
-/// lifts this channel's payload into the merged `Input`.
+/// One consumer edge's Entity key function, declared with `.key_by(f)` and
+/// evaluated on the **post-transform** value. Total by signature: it names an
+/// Entity, it never declines — discarding an input is `filter`'s job. Carries
+/// the same purity contract as [`EdgeTransformFn`].
+pub type EdgeKeyFn = Arc<dyn Fn(&dyn Any) -> String + Send + Sync + 'static>;
+
+/// One consumer subscription on a channel. A plain `.into::<Proc>()` carries
+/// neither closure (the channel's payload IS the consumer's `Input`, and the
+/// consumer's Entity mode is its own); a chain of transforms, a `.key_by(f)`,
+/// or a `merge::<I>().from(stream, map)` subscription stores them here.
 #[derive(Clone)]
 pub struct ConsumerEdge {
     pub procedure: ProcedureId,
-    pub map: Option<MergeMapFn>,
+    pub transform: Option<EdgeTransformFn>,
+    pub key: Option<EdgeKeyFn>,
 }
 
 impl ConsumerEdge {
-    /// Apply this edge's mapping, or `None` when the payload is already the
-    /// consumer's input type (the single-input case pays nothing).
-    pub(crate) fn map_value(
+    /// Apply this edge's transform, or `Ok(None)` when the payload already IS
+    /// the consumer's input type (the transform-free case pays nothing).
+    ///
+    /// Contained: the closure is author code evaluated on the routing thread
+    /// (and, on a bounded chain, on the driver thread), so an unwind becomes an
+    /// error the caller's ladder handles rather than a dead thread.
+    pub(crate) fn transform_value(
         &self,
         value: &Arc<dyn Any + Send + Sync>,
-    ) -> Option<Arc<dyn Any + Send + Sync>> {
-        self.map.as_ref().map(|f| f(value.as_ref()))
+    ) -> Result<Option<EdgeYield>, String> {
+        let Some(f) = self.transform.as_ref() else {
+            return Ok(None);
+        };
+        contain("transform", || f(value)).map(Some)
     }
+
+    /// Evaluate this edge's key function on the post-transform value, or
+    /// `Ok(None)` when the edge declares none. Contained like the transform.
+    pub(crate) fn key_of(&self, value: &dyn Any) -> Result<Option<String>, String> {
+        let Some(f) = self.key.as_ref() else {
+            return Ok(None);
+        };
+        contain("key_by", || f(value)).map(Some)
+    }
+}
+
+/// Run one edge closure, turning an unwind into the error its caller's
+/// retry→DLQ ladder (unbounded) or abort-and-compensate path (bounded) reads.
+fn contain<R>(what: &str, f: impl FnOnce() -> R) -> Result<R, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).map_err(|panic| {
+        format!(
+            "edge {what} panicked: {}",
+            crate::procedure::error::format_panic(panic)
+        )
+    })
 }
 
 /// Phantom-typed channel handle. The `id` is the index into
@@ -137,7 +227,7 @@ pub struct ChannelDescriptor {
     pub name: Arc<str>,
     pub kind: ChannelKind,
     pub producer: Option<ProcedureId>,
-    /// Consumer subscriptions, each carrying its optional merge mapping.
+    /// Consumer subscriptions, each carrying its optional transform and key.
     pub consumers: Vec<ConsumerEdge>,
     pub plugin_name: Option<Arc<str>>,
     /// For entry channels: convert wire bytes into the typed payload
@@ -178,7 +268,7 @@ pub struct ChannelDescriptor {
 }
 
 impl ChannelDescriptor {
-    /// The consuming procedures, mappings stripped — what the graph-shape
+    /// The consuming procedures, edge closures stripped — what the graph-shape
     /// walks and the bounded DAG builder need.
     pub fn consumer_ids(&self) -> impl Iterator<Item = ProcedureId> + '_ {
         self.consumers.iter().map(|e| e.procedure)

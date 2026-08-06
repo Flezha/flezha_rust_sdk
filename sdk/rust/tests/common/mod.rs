@@ -6,10 +6,13 @@
 
 use std::collections::HashMap;
 use std::os::unix::net::UnixStream;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use flezha_runner::__dispatch_internals::{OperativeDispatchHandle, WorkStealingPool};
+use flezha_runner::entity::flusher::{SendError, SendFrameFn};
+use flezha_runner::entity::park::{self, ParkBody};
+use flezha_runner::entity::state_sink::{install_global_sink, PARK_PAYLOAD_PAYLOAD_ID};
 use flezha_runner::operative::builder::build_topology_for;
 use flezha_runner::operative::registry::OperativeRegistry;
 use flezha_runner::operative::{UnboundedInstance, UnboundedOperative};
@@ -135,4 +138,42 @@ pub fn dispatch_marked(
         md.insert(k.to_string(), v.to_string());
     }
     handle.dispatch(operative_id, payload, &md, Arc::clone(stream));
+}
+
+/// Install a recording global sink whose park frames are auto-acked from a
+/// watcher thread — the controller's fsync-then-ack, minus the controller.
+/// Returns the `ParkBody`s it collected. Shared by every suite that drives a
+/// payload to the dead-letter queue.
+pub fn install_auto_acking_sink() -> Arc<Mutex<Vec<ParkBody>>> {
+    let parked: Arc<Mutex<Vec<ParkBody>>> = Arc::new(Mutex::new(Vec::new()));
+    let parked_c = Arc::clone(&parked);
+    let sink: SendFrameFn = Arc::new(move |payload_id: &str, frame: &[u8]| {
+        if payload_id == PARK_PAYLOAD_PAYLOAD_ID {
+            let body = decode_park_body(frame).map_err(SendError::Other)?;
+            let park_id = body.park_id.clone();
+            let mut seen = parked_c.lock().unwrap();
+            if !seen.iter().any(|b| b.park_id == park_id) {
+                seen.push(body);
+            }
+            drop(seen);
+            // Ack from another thread: the caller is blocked inside
+            // `park_blocking` while this sink call returns.
+            std::thread::spawn(move || park::complete_ack(&park_id));
+        }
+        Ok(())
+    });
+    install_global_sink(sink);
+    parked
+}
+
+/// Parse the outer entity frame and postcard-decode the `ParkBody`.
+/// Layout: `[pid_len:u16][pid][seq:u64][header:16][body_len:u32][body][crc:u32]`.
+pub fn decode_park_body(frame: &[u8]) -> Result<ParkBody, String> {
+    let pid_len = u16::from_be_bytes([frame[0], frame[1]]) as usize;
+    let mut off = 2 + pid_len + 8 + 16;
+    let body_len =
+        u32::from_be_bytes([frame[off], frame[off + 1], frame[off + 2], frame[off + 3]]) as usize;
+    off += 4;
+    let body = &frame[off..off + body_len];
+    postcard::from_bytes(body).map_err(|e| format!("park body decode: {e}"))
 }

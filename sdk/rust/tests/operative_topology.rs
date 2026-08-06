@@ -107,9 +107,8 @@ fn static_mode_entity_creation() {
     assert!(topology.procedures[0].entities_for_overridden);
 }
 
-/// Dynamic-mode Procedure: overrides `entity_key` with an empty `entity_keys`.
-/// dynamic entity mode accepts this and classifies it as
-/// `EntityMode::Dynamic`.
+/// Dynamic-mode Procedure: declares no keying of its own — the `.key_by` on
+/// the wiring is what classifies it as `EntityMode::Dynamic`.
 #[derive(Default)]
 struct DynamicOnlyProcedure;
 impl Procedure for DynamicOnlyProcedure {
@@ -123,10 +122,6 @@ impl Procedure for DynamicOnlyProcedure {
         "dynamic_only_procedure"
     }
     fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    const ENTITY_KEY_OVERRIDDEN: bool = true;
-    fn entity_key(_input: &String) -> Option<String> {
-        Some("k".to_string())
-    }
     fn run(
         &mut self,
         _: String,
@@ -143,7 +138,9 @@ impl UnboundedOperative for DynamicOnlyOperative {
         "dynamic_only_operative"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<String>("inp").into::<DynamicOnlyProcedure>();
+        c.input::<String>("inp")
+            .key_by(|s: &String| s.clone())
+            .into::<DynamicOnlyProcedure>();
     }
 }
 
@@ -154,7 +151,7 @@ fn dynamic_mode_is_accepted_and_classified() {
     assert_eq!(topology.procedures.len(), 1);
     assert_eq!(topology.procedures[0].mode, EntityMode::Dynamic);
     assert!(topology.procedures[0].entity_keys.is_empty());
-    assert!(topology.procedures[0].entity_key_erased.is_some());
+    assert!(topology.channels[0].consumers[0].key.is_some());
 }
 
 /// Static-mode procedure whose `entities_for` override is missing the

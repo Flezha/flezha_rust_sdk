@@ -1,0 +1,5 @@
+error: #[flezha::procedure]: `entity_key` no longer exists; declare the Entity key on the wiring instead — `.key_by(f)` on the stream that feeds this procedure
+ --> tests/ui/procedure_entity_key_removed.rs:3:52
+  |
+3 | #[flezha_runner::procedure(id = "p", sink = "out", entity_key = sk)]
+  |                                                    ^^^^^^^^^^

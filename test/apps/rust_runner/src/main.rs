@@ -984,10 +984,6 @@ impl Procedure for DynamicEntityProcedure {
         let DynChange::Push(s) = change;
         state.seen.push(s.clone());
     }
-    const ENTITY_KEY_OVERRIDDEN: bool = true;
-    fn entity_key(input: &String) -> Option<String> {
-        (input != "drop").then(|| input.split(':').next().unwrap_or(input).to_string())
-    }
     fn entity_idle_ttl() -> Option<Duration> {
         env::var("DYN_TEST_TTL_MS")
             .ok()
@@ -1013,6 +1009,8 @@ impl UnboundedOperative for DynamicEntityOperative {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .on_full(OverflowPolicy::Block)
+            .filter(|input: &String| input != "drop")
+            .key_by(|input: &String| input.split(':').next().unwrap_or(input).to_string())
             .into::<DynamicEntityProcedure>()
             .named("kafka")
             .output("test_kafka");

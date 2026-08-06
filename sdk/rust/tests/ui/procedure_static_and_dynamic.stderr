@@ -1,5 +1,0 @@
-error: #[flezha::procedure] static keys (`keys`/`entities_for`) and dynamic `entity_key` are mutually exclusive (composite mode is not supported)
- --> tests/ui/procedure_static_and_dynamic.rs:2:1
-  |
-2 | fn f(a: String) -> Vec<u8> {
-  | ^^

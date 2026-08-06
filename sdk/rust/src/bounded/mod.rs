@@ -2039,6 +2039,25 @@ mod tests {
         }
     }
 
+    /// A plain edge `map` on an inter-procedure edge — the same driver-thread
+    /// seam a merge mapping runs on, reached without a merge.
+    struct PanickingTransformBounded;
+    impl BoundedOperative for PanickingTransformBounded {
+        fn factory_id() -> &'static str {
+            "test-panic-transform-bounded"
+        }
+        fn procedures(c: &ChannelBuilder) {
+            c.input::<String>("in")
+                .into::<DiamondA>()
+                .named("pt_fan")
+                .codec()
+                .map(|_: String| -> String { panic!("edge map blew up") })
+                .into::<DiamondB>()
+                .named("pt_out")
+                .output("sink");
+        }
+    }
+
     // ---- non-driver unit tests ----------------------------------------------
 
     #[test]
@@ -2416,10 +2435,6 @@ mod tests {
             fn name() -> &'static str {
                 "bounded_dyn_op"
             }
-            fn entity_key(input: &String) -> Option<String> {
-                Some(input.clone())
-            }
-            const ENTITY_KEY_OVERRIDDEN: bool = true;
             fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
             fn run(
                 &mut self,
@@ -2436,7 +2451,12 @@ mod tests {
                 "test-dyn-bounded"
             }
             fn procedures(c: &ChannelBuilder) {
-                c.input::<String>("in").into::<DynProc>();
+                // The key rides an inter-procedure edge: a keyed ENTRY edge is
+                // refused earlier, by the bounded seed's own rule.
+                c.input::<String>("in")
+                    .into::<EchoProc>()
+                    .key_by(|s: &String| s.clone())
+                    .into::<DynProc>();
             }
         }
         let err = spec::build_spec::<DynBounded>().expect_err("dynamic entities must be rejected");
@@ -2507,6 +2527,7 @@ mod tests {
         crate::register_bounded_class::<DiamondSaga>().unwrap();
         crate::register_bounded_class::<MergeBounded>().unwrap();
         crate::register_bounded_class::<PanickingMergeBounded>().unwrap();
+        crate::register_bounded_class::<PanickingTransformBounded>().unwrap();
 
         let mut node = RunnerNode::new("test-ns".to_string());
 
@@ -3321,7 +3342,7 @@ mod tests {
             "the operative still REPORTS — the panic did not take the driver with it"
         );
         assert!(
-            done.1.contains("merge mapping panicked") && done.1.contains("merge mapping blew up"),
+            done.1.contains("edge transform panicked") && done.1.contains("merge mapping blew up"),
             "the terminal error names the mapping and carries the panic message: {:?}",
             done.1
         );
@@ -3343,6 +3364,37 @@ mod tests {
             panic_log.contains(&"c:a:x".to_string()),
             "the sibling DID run in the same level (and is deliberately not in the \
              undo list above): {panic_log:?}"
+        );
+
+        // --- the same containment reached WITHOUT a merge: a plain `.map` on
+        // an inter-procedure edge is the same composed closure on the same
+        // driver-thread seam ---
+        let _ = drain_comp_log();
+        let _ = drain_diamond_log();
+        let _ = drain_proc_commits();
+        assert!(node.start_bounded(
+            "test-panic-transform-bounded".into(),
+            "map-panic".into(),
+            "x".into()
+        ));
+        let (outs, done) = drain(&rx, "map-panic");
+        assert_eq!(
+            done.0, "error",
+            "a panicking edge map still REPORTS — the driver thread survived"
+        );
+        assert!(
+            done.1.contains("edge transform panicked") && done.1.contains("edge map blew up"),
+            "the terminal error carries the panic message: {:?}",
+            done.1
+        );
+        assert!(
+            outs.is_empty(),
+            "the consumer never ran, so nothing shipped"
+        );
+        assert_eq!(
+            drain_comp_log(),
+            vec!["undo-a:a:x".to_string()],
+            "the producer whose edge blew up is inside the undo scope"
         );
 
         // --- the SECOND mapping site: a crash-resume re-seed. `resumed_start`
@@ -3385,7 +3437,7 @@ mod tests {
             "a mapping that panics while re-seeding still REPORTS"
         );
         assert!(
-            done.1.contains("merge mapping panicked") && done.1.contains("merge mapping blew up"),
+            done.1.contains("edge transform panicked") && done.1.contains("merge mapping blew up"),
             "the terminal error names the mapping: {:?}",
             done.1
         );

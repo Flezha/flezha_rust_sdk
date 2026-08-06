@@ -19,7 +19,6 @@ struct ProcedureArgs {
     init: Option<syn::Path>,
     keys: Option<Vec<Expr>>,
     entities_for: Option<syn::Path>,
-    entity_key: Option<syn::Path>,
     idle_ttl_ms: Option<Expr>,
     max_entities: Option<Expr>,
     capacity: Option<Expr>,
@@ -82,15 +81,9 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
     // --- Output inference from the return type. ---
     let output = infer_output(&sig.output)?;
 
-    // --- Mode validation (static / dynamic mutually exclusive). ---
+    // --- Mode validation. Dynamic keying is declared on the wiring, so the
+    // only mode this sugar can express is static. ---
     let static_mode = args.keys.is_some() || args.entities_for.is_some();
-    if static_mode && args.entity_key.is_some() {
-        return Err(syn::Error::new(
-            sig.span(),
-            "#[flezha::procedure] static keys (`keys`/`entities_for`) and dynamic `entity_key` are \
-             mutually exclusive (composite mode is not supported)",
-        ));
-    }
     if args.keys.is_some() != args.entities_for.is_some() {
         return Err(syn::Error::new(
             sig.span(),
@@ -239,7 +232,9 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                 #part(input)
             }
         }
-    } else if let Some(sk) = &args.entity_key {
+    } else {
+        // Dynamic-mode knobs stay on the procedure — only the KEY moved to the
+        // wiring — so they are emitted whenever declared.
         let ttl = args.idle_ttl_ms.as_ref().map(|ms| {
             quote! {
                 fn entity_idle_ttl() -> ::core::option::Option<::core::time::Duration> {
@@ -253,16 +248,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                 const MAX_ENTITIES_OVERRIDDEN: bool = true;
             }
         });
-        quote! {
-            const ENTITY_KEY_OVERRIDDEN: bool = true;
-            fn entity_key(input: &Self::Input) -> ::core::option::Option<::std::string::String> {
-                #sk(input)
-            }
-            #ttl
-            #maxp
-        }
-    } else {
-        quote! {}
+        quote! { #ttl #maxp }
     };
 
     let capacity_items = args.capacity.as_ref().map(|c| {
@@ -447,7 +433,13 @@ fn parse_args(attr: TokenStream) -> syn::Result<ProcedureArgs> {
             "init" => args.init = Some(expect_path(&value)?),
             "keys" => args.keys = Some(expect_array(&value)?),
             "entities_for" => args.entities_for = Some(expect_path(&value)?),
-            "entity_key" => args.entity_key = Some(expect_path(&value)?),
+            "entity_key" => {
+                return Err(syn::Error::new_spanned(
+                    &meta.path,
+                    "#[flezha::procedure]: `entity_key` no longer exists; declare the Entity key \
+                     on the wiring instead — `.key_by(f)` on the stream that feeds this procedure",
+                ))
+            }
             "idle_ttl" => args.idle_ttl_ms = Some(value),
             "max_entities" => args.max_entities = Some(value),
             "capacity" => args.capacity = Some(value),

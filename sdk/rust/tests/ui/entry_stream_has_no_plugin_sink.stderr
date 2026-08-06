@@ -1,0 +1,8 @@
+error[E0599]: no method named `output` found for struct `Stream<'_, String, EntryTarget>` in the current scope
+  --> tests/ui/entry_stream_has_no_plugin_sink.rs:10:33
+   |
+10 |         c.input::<String>("in").output("plugin");
+   |                                 ^^^^^^ method not found in `Stream<'_, String, EntryTarget>`
+   |
+   = note: the method was found for
+           - `Stream<'b, T>`

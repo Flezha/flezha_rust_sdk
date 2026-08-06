@@ -15,7 +15,7 @@ note: required because it appears within the type `ChannelBuilder`
 note: required because it appears within the type `Stream<'static, String>`
   --> src/channel/builder.rs
    |
-   | pub struct Stream<'b, T> {
+   | pub struct Stream<'b, T, K = NodeTarget> {
    |            ^^^^^^
 note: required because it appears within the type `Option<Stream<'static, String>>`
   --> $RUST/core/src/option.rs

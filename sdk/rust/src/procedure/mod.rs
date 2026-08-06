@@ -226,18 +226,6 @@ pub trait Procedure: Send + Sync + 'static + Default {
     /// startup and rejects mismatched declarations.
     const ENTITIES_FOR_OVERRIDDEN: bool = false;
 
-    /// Dynamic-mode entity routing. Called per input; the returned key
-    /// selects (lazily creating) the Entity, `None` drops the input. A
-    /// dynamic-mode Procedure overrides this AND sets `ENTITY_KEY_OVERRIDDEN =
-    /// true` with empty `entity_keys()`; declaring both modes is a
-    /// registration error.
-    fn entity_key(_input: &Self::Input) -> Option<String> {
-        None
-    }
-
-    /// Override-detection sentinel for [`Self::entity_key`] (dynamic mode).
-    const ENTITY_KEY_OVERRIDDEN: bool = false;
-
     /// Dynamic-mode idle eviction window. `None` (default) = no eviction:
     /// Entities live as long as the UnboundedOperative, like static ones. `Some(ttl)`
     /// opts a per-Procedure reaper in; eviction is destructive (in-memory slot +
@@ -249,8 +237,8 @@ pub trait Procedure: Send + Sync + 'static + Default {
 
     /// Dynamic-mode soft cap on live Entities per Procedure. At the cap,
     /// new-key inputs are dropped (`inputs_dropped_capped_total`); existing
-    /// keys are unaffected. Bounds memory against a runaway `entity_key`, not
-    /// admission — no error path back to the controller.
+    /// keys are unaffected. Bounds memory against a runaway `.key_by(...)`,
+    /// not admission — no error path back to the controller.
     fn max_entities() -> usize {
         100_000
     }

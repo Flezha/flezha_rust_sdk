@@ -1,7 +1,10 @@
 error[E0599]: no method named `also_output_with` found for struct `Channel<T>` in the current scope
   --> tests/ui/also_output_after_output.rs:30:10
    |
-27 | /     c.input::<String>("in")
+27 |       c.input::<String>("in")
+   |       - --------------------- method `also_output_with` is available on `Stream<'_, String, EntryTarget>`
+   |  _____|
+   | |
 28 | |         .into::<PluginProducer>()
    | |          ------------------------ method `also_output_with` is available on `Stream<'_, Vec<u8>>`
 29 | |         .output("k")

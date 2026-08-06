@@ -63,11 +63,6 @@ impl Procedure for SteadyDynProcedure {
         "steady_dyn_procedure"
     }
     fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    const ENTITY_KEY_OVERRIDDEN: bool = true;
-    // First 8 bytes (hex-ish) are the key; cheap and deterministic.
-    fn entity_key(input: &Vec<u8>) -> Option<String> {
-        Some(String::from_utf8_lossy(&input[..input.len().min(8)]).into_owned())
-    }
     fn run(
         &mut self,
         _: Vec<u8>,
@@ -85,8 +80,12 @@ impl UnboundedOperative for SteadyDynOperative {
         "steady_dyn_operative"
     }
     fn channels(c: &ChannelBuilder) {
+        // First 8 bytes (hex-ish) are the key; cheap and deterministic.
         c.input::<Vec<u8>>("input")
             .on_full(OverflowPolicy::Block)
+            .key_by(|input: &Vec<u8>| {
+                String::from_utf8_lossy(&input[..input.len().min(8)]).into_owned()
+            })
             .into::<SteadyDynProcedure>();
     }
 }

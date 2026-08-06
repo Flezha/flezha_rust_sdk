@@ -4,6 +4,44 @@ All notable changes to the Rust SDK crate.
 
 ## Unreleased
 
+### Stream transforms and edge keying (`stream-dsl-keyby-and-transforms`)
+
+- **BREAKING — `Procedure::entity_key` and `const ENTITY_KEY_OVERRIDDEN` are
+  removed.** Dynamic Entity keying is declared on the wiring instead:
+  `.key_by(|v: &T| ..)` on the stream that feeds the procedure. There is no
+  shim, so every dynamic-mode Procedure is a compile error until its key moves
+  to the edge — which is how the compiler enumerates the migration sites. The
+  static pair (`entity_keys` / `entities_for`) and the dynamic knobs
+  (`entity_idle_ttl`, `max_entities`) are unchanged. A former `None` return
+  becomes a `.filter(..)` declared before the keying; the
+  `inputs_dropped_no_key_total` counter is retired with the path it measured.
+- **`map` / `filter` / `flat_map` / `key_by` on both stream handles.** They add
+  no Procedure, Entity, mailbox or dispatch hop: every transform declared
+  before the closing `.into` composes into ONE closure stored on that consumer
+  edge and evaluated at the routing seam — the same seam a merge mapping has
+  always used, which is why replay determinism cost no new code. Fusion is
+  structural: `.into` IS the boundary, so there is no optimizer and no
+  `disable_chaining`.
+- **`EntryStream<'b, T>` is now a type alias for `Stream<'b, T, EntryTarget>`.**
+  One struct carries both handles so their shared surface is defined once;
+  producer-side methods (`named`, `codec`, `keyed`, `also_output`, `output`,
+  `branch`) remain available only on `Stream<'b, T, NodeTarget>`.
+- **`ConsumerEdge.map: Option<MergeMapFn>` → `.transform: Option<EdgeTransformFn>`
+  plus `.key: Option<EdgeKeyFn>`.** `MergeMapFn` is renamed `EdgeTransformFn`
+  and re-signatured `Fn(&Arc<dyn Any + Send + Sync>) -> EdgeYield` — it is no
+  longer merge-specific, and taking the `Arc` is what lets a surviving `filter`
+  forward by pointer. `MergeSource::merge_channel_id` → `merge_site`.
+- **Edge closures are contained.** A panicking transform or key does not take
+  the routing thread down: the value climbs the channel's existing retry→DLQ
+  ladder. On a bounded chain it becomes a terminal chain error the saga
+  compensates, so the instance still reports.
+- New `TopologyIssue` variants `KeyByOnUnkeyableTarget`, `DuplicateKeyBy`,
+  `TransformAfterTerminal`, `TransformAfterKeyBy`, `DanglingTransformChain`,
+  `UnkeyedEdgeIntoDynamicProcedure`; `StaticAndDynamic` is removed (the
+  contradiction it named is now `KeyByOnUnkeyableTarget`) and
+  `MergeSourceAlreadyWired` is renamed `EdgeAlreadyWired` — it now guards any
+  re-declaration where either side carries a transform or a key.
+
 ### Multi-input procedures (`add-multi-input-procedures`)
 
 - **`ChannelBuilder::merge::<I>()`** — subscribe two or more source channels to
@@ -36,7 +74,7 @@ All notable changes to the Rust SDK crate.
   run on live delivery and again on WAL replay, the same contract entry parsers
   carry.
 - New `TopologyIssue` variants `MergeTooFewSources`, `DuplicateMergeSource` and
-  `MergeSourceAlreadyWired` (a source may not re-wire an edge `.into` or another
+  `EdgeAlreadyWired` (a source may not re-wire an edge `.into` or another
   merge already declared — the mapping would otherwise be silently dropped); a
   mapped type that is not the procedure's `Input` is a compile error at
   `.into::<Proc>()`.

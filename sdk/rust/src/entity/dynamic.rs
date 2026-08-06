@@ -1,7 +1,7 @@
 //! Dynamic-mode entity registry (dynamic entity mode).
 //!
 //! A dynamic-mode Procedure owns zero Entities at startup; the dispatch path
-//! derives a key via `Procedure::entity_key` and [`DynamicEntityRegistry::get_or_create`]
+//! derives a key via the consumer edge's `key_by` and [`DynamicEntityRegistry::get_or_create`]
 //! lazily allocates an `EntitySlot` on first sight. With a TTL set, a
 //! per-Procedure reaper thread evicts idle Entities (destructively — see
 //! [`DynamicEntityRegistry::reap_sweep`]); a later input cold-starts a
@@ -41,7 +41,6 @@ pub fn now_millis() -> i64 {
 pub struct DynamicEntityCounters {
     pub entities_created_total: AtomicU64,
     pub entities_evicted_total: AtomicU64,
-    pub inputs_dropped_no_key_total: AtomicU64,
     pub inputs_dropped_capped_total: AtomicU64,
 }
 

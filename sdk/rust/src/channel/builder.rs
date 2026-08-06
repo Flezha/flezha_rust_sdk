@@ -27,7 +27,8 @@ use std::sync::Arc;
 use serde::de::DeserializeOwned;
 
 use crate::channel::{
-    Channel, ChannelId, ChannelKind, ConsumerEdge, MergeMapFn, OverflowPolicy, ProcedureId,
+    Channel, ChannelId, ChannelKind, ConsumerEdge, EdgeKeyFn, EdgeTransformFn, EdgeYield,
+    OverflowPolicy, ProcedureId,
 };
 use crate::procedure::Procedure;
 
@@ -47,7 +48,6 @@ pub(crate) struct ProcedureEntry {
     pub named: bool,
     pub entity_keys: Vec<&'static str>,
     pub entities_for_overridden: bool,
-    pub entity_key_overridden: bool,
     /// `Procedure::COMPENSATE_OVERRIDDEN` captured at registration time. The
     /// bounded driver consults the resolved descriptor flag to fire saga
     /// compensation only for procedures that declared a `compensate` hook.
@@ -98,12 +98,6 @@ pub(crate) struct ProcedureEntry {
     /// then routes everything to entity index 0.
     pub entities_for_erased: EntitiesForFn,
 
-    /// `Procedure::entity_key` captured statically and type-erased. `Some`
-    /// only for dynamic-mode Procedures (`ENTITY_KEY_OVERRIDDEN = true` with
-    /// empty `entity_keys()`); the dispatch path calls it per input to
-    /// derive the dynamic entity key.
-    pub entity_key_erased: Option<EntityKeyFn>,
-
     /// Dynamic-mode knobs captured at registration (`Procedure::entity_idle_ttl`,
     /// `max_entities`). Carried through to the `ProcedureDescriptor` for the
     /// reaper / registry; inert for non-dynamic Procedures. `idle_ttl == None`
@@ -125,13 +119,12 @@ pub(crate) struct ProcedureEntry {
 }
 
 /// One author callback erased behind `&dyn Any` — how every typed declaration
-/// is stored, whatever it returns. Built by [`erase`]; the public `MergeMapFn`
-/// and `PluginSerializeFn` are this same shape spelled out.
+/// is stored, whatever it returns. Built by [`erase`]; the public
+/// `EdgeTransformFn`, `EdgeKeyFn` and `PluginSerializeFn` are this same shape
+/// spelled out.
 pub(crate) type ErasedFn<R> = Arc<dyn Fn(&dyn Any) -> R + Send + Sync + 'static>;
 
 pub(crate) type EntitiesForFn = ErasedFn<Vec<&'static str>>;
-
-pub(crate) type EntityKeyFn = ErasedFn<Option<String>>;
 
 pub(crate) type SerializeStateFn =
     Arc<dyn Fn(&Box<dyn Any + Send>) -> Result<serde_json::Value, String> + Send + Sync + 'static>;
@@ -240,10 +233,46 @@ pub enum TopologyIssue {
     EntitiesForMissing { name: &'static str },
 
     #[error(
-        "procedure `{name}` declares both entity_keys() (static mode) and overrides entity_key() \
-         (dynamic mode); a Procedure declares one OR the other, not both"
+        "channel `{channel}` declares .key_by(...) into procedure `{procedure}`, which declares a \
+         non-empty entity_keys() (static mode); static keying routes by entities_for and may name \
+         several Entities, edge keying names exactly one — declare one OR the other, not both"
     )]
-    StaticAndDynamic { name: &'static str },
+    KeyByOnUnkeyableTarget {
+        channel: &'static str,
+        procedure: &'static str,
+    },
+
+    #[error("channel `{channel}` declares .key_by(...) twice before one `.into(...)`")]
+    DuplicateKeyBy { channel: &'static str },
+
+    #[error(
+        "channel `{channel}` declares a transform or .key_by(...) after a plugin sink; the sink \
+         serializes the channel's own value, so nothing downstream of it can be reshaped"
+    )]
+    TransformAfterTerminal { channel: &'static str },
+
+    #[error(
+        "channel `{channel}` declares a transform after .key_by(...); the key is evaluated on the \
+         final post-transform value, so it must be the last link before `.into(...)`"
+    )]
+    TransformAfterKeyBy { channel: &'static str },
+
+    #[error(
+        "channel `{channel}` declares a transform or .key_by(...) that is never closed by \
+         `.into(...)`; a transform chain is stored on the consumer edge it terminates in, so a \
+         dangling one would silently do nothing"
+    )]
+    DanglingTransformChain { channel: &'static str },
+
+    #[error(
+        "channel `{channel}` feeds procedure `{procedure}` without a .key_by(...), but another \
+         edge keys it into dynamic mode; every edge into a dynamic-mode procedure must name the \
+         Entity its inputs reach"
+    )]
+    UnkeyedEdgeIntoDynamicProcedure {
+        channel: &'static str,
+        procedure: &'static str,
+    },
 
     #[error("procedure `{name}` registered with conflicting input/output types")]
     TypeMismatch { name: &'static str },
@@ -342,13 +371,33 @@ pub enum TopologyIssue {
 
     #[error(
         "channel `{channel}` already feeds procedure `{procedure}`; an edge carries exactly one \
-         merge mapping or none, so a merge source may not re-wire an edge declared by `.into` or \
-         by another merge"
+         transform and one key or neither, so a re-declaration where either side carries one is \
+         refused rather than silently keeping the first"
     )]
-    MergeSourceAlreadyWired {
+    EdgeAlreadyWired {
         channel: &'static str,
         procedure: &'static str,
     },
+}
+
+/// A transform/key chain declared on a stream handle but not yet closed by
+/// `.into(...)`. Every `.map` / `.filter` / `.flat_map` / `.key_by` pushes a
+/// NEW entry composing the previous one, which is what keeps the handles
+/// `Copy` (they carry an index, not an `Arc`) and what makes reusing a handle
+/// mid-chain branch cleanly instead of aliasing.
+pub(crate) struct PendingEdge {
+    /// The channel the chain is declared on — the diagnostic's subject.
+    pub channel: ChannelId,
+    /// Every transform declared so far, composed into ONE closure. Composition
+    /// is the whole of "fusion": the runtime applies one closure per edge and
+    /// never learns that a chain existed.
+    pub transform: Option<EdgeTransformFn>,
+    pub key: Option<EdgeKeyFn>,
+    /// Set when a later link built on this one, so only a chain's tip can be
+    /// reported dangling.
+    pub superseded: bool,
+    /// Set when `.into(...)` (or a merge) closed the chain onto an edge.
+    pub consumed: bool,
 }
 
 /// Mutable topology under construction, behind the builder's `RefCell` so the
@@ -357,6 +406,9 @@ pub(crate) struct BuilderState {
     pub channels: Vec<ChannelEntry>,
     pub procedures: Vec<ProcedureEntry>,
     pub procedure_name_to_id: HashMap<&'static str, u32>,
+    /// Transform/key chains under construction, indexed by the id the stream
+    /// handles carry. A chain neither superseded nor consumed is dangling.
+    pub pending: Vec<PendingEdge>,
     pub errors: Vec<TopologyIssue>,
     pub effectively_once: bool,
     pub correction: Option<crate::operative::topology::CorrectionPolicy>,
@@ -377,6 +429,7 @@ impl ChannelBuilder {
                 channels: Vec::new(),
                 procedures: Vec::new(),
                 procedure_name_to_id: HashMap::new(),
+                pending: Vec::new(),
                 errors: Vec::new(),
                 effectively_once: false,
                 correction: None,
@@ -536,8 +589,10 @@ impl ChannelBuilder {
     /// (`BuildBoundedError::MergeFromEntryChannel`); its sources are the
     /// output streams of two or more of its procedures.
     ///
-    /// `entities_for` / `entity_key` are evaluated on the **mapped** value,
-    /// so per-source entity mode is encoded in the sum type. Per-source FIFO
+    /// `entities_for` and the merge's own `key_by` are evaluated on the
+    /// **mapped** value, so per-source entity mode is encoded in the sum type.
+    /// A source handle may carry its own transforms, which run before that
+    /// source's mapping; keying is declared once, on the merge. Per-source FIFO
     /// order is preserved; nothing is guaranteed across sources — correlate in
     /// the procedure's own state.
     ///
@@ -565,12 +620,14 @@ impl ChannelBuilder {
     /// source whose edge into this procedure is already wired all fail at
     /// registration ([`TopologyIssue::MergeTooFewSources`] /
     /// [`TopologyIssue::DuplicateMergeSource`] /
-    /// [`TopologyIssue::MergeSourceAlreadyWired`]).
+    /// [`TopologyIssue::EdgeAlreadyWired`]).
     pub fn merge<I: Send + Sync + 'static>(&self) -> Merge<'_, I> {
         Merge {
             builder: self,
             sources: Vec::new(),
             declared: 0,
+            key: None,
+            duplicate_key: false,
             _phantom: PhantomData,
         }
     }
@@ -588,7 +645,8 @@ impl ChannelBuilder {
         entry.entry_parsed = entry_parsed;
         EntryStream {
             builder: self,
-            channel_id: id,
+            target: id,
+            pending: None,
             _phantom: PhantomData,
         }
     }
@@ -636,17 +694,6 @@ impl BuilderState {
         let entities_for_erased: EntitiesForFn =
             erase::<S::Input, _, _>("entities_for", S::entities_for);
 
-        // Dynamic mode = overrides entity_key() with an empty entity_keys().
-        // The erased entity_key closure is captured only for that shape;
-        // build_topology classifies the mode and validates the
-        // declare-one-or-the-other rule.
-        let entity_key_erased: Option<EntityKeyFn> =
-            if S::ENTITY_KEY_OVERRIDDEN && S::entity_keys().is_empty() {
-                Some(erase::<S::Input, _, _>("entity_key", S::entity_key))
-            } else {
-                None
-            };
-
         let build_entity: EntityBuilder = Box::new(
             |args: BuildEntityArgs<'_>| -> Arc<crate::entity::EntitySlot> {
                 crate::entity::build_entity_slot::<S>(args)
@@ -662,7 +709,6 @@ impl BuilderState {
             named,
             entity_keys: S::entity_keys(),
             entities_for_overridden: S::ENTITIES_FOR_OVERRIDDEN,
-            entity_key_overridden: S::ENTITY_KEY_OVERRIDDEN,
             compensate_overridden: S::COMPENSATE_OVERRIDDEN,
             input_channel_ids: Vec::new(),
             output_channel_id: None,
@@ -677,7 +723,6 @@ impl BuilderState {
             compact_after_bytes: S::compact_after_bytes(),
             build_entity,
             entities_for_erased,
-            entity_key_erased,
             idle_ttl: S::entity_idle_ttl(),
             max_entities: S::max_entities(),
             serialize_state,
@@ -701,46 +746,154 @@ impl BuilderState {
         id
     }
 
-    /// Wire `channel_id` into a consumer node (created/resolved by identity).
+    /// Wire `channel_id` into a consumer node (created/resolved by identity),
+    /// closing `pending`'s transform chain onto the resulting edge.
     fn wire_consumer<S: Procedure>(
         &mut self,
         channel_id: u32,
+        pending: Option<u32>,
         node_name: Option<&'static str>,
     ) -> u32 {
         let consumer = self.register_node::<S>(node_name);
-        self.attach_consumer(channel_id, consumer, None);
+        self.attach_consumer(channel_id, consumer, pending);
         consumer
     }
 
-    /// Record one consumer subscription on a channel. `map` is the merge
-    /// mapping for a `merge::<I>().from(..)` source and `None` for the
-    /// single-input `into` form, where the channel's payload already IS the
-    /// consumer's `Input`.
+    /// Record one consumer subscription on a channel, closing `pending`'s
+    /// transform/key chain onto it — a `merge::<I>().from(..)` mapping is one
+    /// link of that chain. `None` is the bare `.into`, where the channel's
+    /// payload already IS the consumer's `Input` and the consumer's Entity
+    /// mode is its own. Closing the chain here is what makes it impossible to
+    /// wire an edge and forget its closures.
     ///
-    /// Re-declaring an existing mapping-free edge is the fan-in / repeated
-    /// `.into` case and stays a no-op. Re-declaring one where either side
-    /// carries a mapping is refused rather than silently dropped — the edge
-    /// would otherwise keep whichever mapping was declared first and deliver
-    /// the wrong value forever.
-    fn attach_consumer(&mut self, channel_id: u32, consumer: u32, map: Option<MergeMapFn>) {
+    /// Re-declaring an existing bare edge is the fan-in / repeated `.into`
+    /// case and stays a no-op. Re-declaring one where either side carries a
+    /// transform or a key is refused rather than silently dropped — the edge
+    /// would otherwise keep whichever closure was declared first and deliver
+    /// the wrong value, to the wrong Entity, forever.
+    fn attach_consumer(&mut self, channel_id: u32, consumer: u32, pending: Option<u32>) {
+        let (transform, key) = self.close_pending(pending);
         let entry = &mut self.channels[channel_id as usize];
+        let declares = transform.is_some() || key.is_some();
         match entry.consumers.iter().find(|e| e.procedure == consumer) {
-            Some(existing) if existing.map.is_some() || map.is_some() => {
+            Some(existing)
+                if existing.transform.is_some() || existing.key.is_some() || declares =>
+            {
                 let channel = entry.name;
                 let procedure = self.procedures[consumer as usize].name;
                 self.errors
-                    .push(TopologyIssue::MergeSourceAlreadyWired { channel, procedure });
+                    .push(TopologyIssue::EdgeAlreadyWired { channel, procedure });
                 return;
             }
             Some(_) => {}
             None => entry.consumers.push(ConsumerEdge {
                 procedure: consumer,
-                map,
+                transform,
+                key,
             }),
         }
         let proc = &mut self.procedures[consumer as usize];
         if !proc.input_channel_ids.contains(&channel_id) {
             proc.input_channel_ids.push(channel_id);
+        }
+    }
+
+    /// Extend the chain at `base` (or open one on `channel`) with one more
+    /// link, returning the new chain's id. Composing here — rather than storing
+    /// a list the runtime walks — is what makes fusion structural: whatever the
+    /// author chained, the edge ends up with exactly one closure.
+    fn extend_pending(
+        &mut self,
+        channel: ChannelId,
+        base: Option<u32>,
+        link: Option<EdgeTransformFn>,
+        key: Option<EdgeKeyFn>,
+    ) -> u32 {
+        if self.channels[channel as usize].plugin_sink.is_some()
+            || self.channels[channel as usize].kind == ChannelKind::PluginBound
+        {
+            let channel_name = self.channels[channel as usize].name;
+            self.errors.push(TopologyIssue::TransformAfterTerminal {
+                channel: channel_name,
+            });
+        }
+        let (prior_transform, prior_key) = match base {
+            Some(id) => {
+                self.pending[id as usize].superseded = true;
+                let prior = &self.pending[id as usize];
+                (prior.transform.clone(), prior.key.clone())
+            }
+            None => (None, None),
+        };
+        // The key is evaluated on the final post-transform value, so a
+        // transform declared after it would hand it a value of a type it was
+        // never written against.
+        if prior_key.is_some() && link.is_some() {
+            let channel_name = self.channels[channel as usize].name;
+            self.errors.push(TopologyIssue::TransformAfterKeyBy {
+                channel: channel_name,
+            });
+        }
+        if prior_key.is_some() && key.is_some() {
+            let channel_name = self.channels[channel as usize].name;
+            self.errors.push(TopologyIssue::DuplicateKeyBy {
+                channel: channel_name,
+            });
+        }
+        let id = self.pending.len() as u32;
+        self.pending.push(PendingEdge {
+            channel,
+            transform: compose(prior_transform, link),
+            key: key.or(prior_key),
+            superseded: false,
+            consumed: false,
+        });
+        id
+    }
+
+    /// Take a chain's closures and mark it closed. `None` (a bare handle) is
+    /// the transform-free case every pre-existing topology is.
+    fn close_pending(
+        &mut self,
+        pending: Option<u32>,
+    ) -> (Option<EdgeTransformFn>, Option<EdgeKeyFn>) {
+        let Some(id) = pending else {
+            return (None, None);
+        };
+        let chain = &mut self.pending[id as usize];
+        chain.consumed = true;
+        (chain.transform.clone(), chain.key.clone())
+    }
+}
+
+/// Compose two edge transforms into one. `Drop` short-circuits, a fan-out
+/// feeds each of its values through the next link and concatenates — so a
+/// `flat_map` followed by a `filter` yields exactly the surviving values.
+fn compose(
+    first: Option<EdgeTransformFn>,
+    second: Option<EdgeTransformFn>,
+) -> Option<EdgeTransformFn> {
+    match (first, second) {
+        (None, next) => next,
+        (prev, None) => prev,
+        (Some(prev), Some(next)) => {
+            Some(Arc::new(
+                move |value: &Arc<dyn Any + Send + Sync>| match prev(value) {
+                    EdgeYield::Drop => EdgeYield::Drop,
+                    EdgeYield::One(v) => next(&v),
+                    EdgeYield::Many(vs) => {
+                        let mut out = Vec::with_capacity(vs.len());
+                        for v in vs {
+                            match next(&v) {
+                                EdgeYield::Drop => {}
+                                EdgeYield::One(y) => out.push(y),
+                                EdgeYield::Many(ys) => out.extend(ys),
+                            }
+                        }
+                        EdgeYield::Many(out)
+                    }
+                },
+            ))
         }
     }
 }
@@ -870,30 +1023,25 @@ fn default_plugin_serializer<T: serde::Serialize + Send + Sync + 'static>(
 
 /// A channel handle usable as a [`merge`](ChannelBuilder::merge) source:
 /// either an [`EntryStream`] (sealed payload off the wire) or a [`Stream`]
-/// (another procedure's output). Implemented for both, so the two are freely
+/// (another procedure's output). One impl covers both, so the two are freely
 /// mixed in one merge.
 pub trait MergeSource<'b> {
-    /// The payload the source channel carries — the mapping's argument type.
+    /// The payload the source channel carries — the mapping's argument type,
+    /// after any transform declared on the source handle.
     type Payload: Clone + Send + Sync + 'static;
 
-    /// The channel this source subscribes on, materializing a producer's
-    /// output channel if it did not exist yet.
-    fn merge_channel_id(self) -> ChannelId;
+    /// The channel this source subscribes on and the transform chain declared
+    /// on the handle, materializing a producer's output channel if it did not
+    /// exist yet. The mapping composes *after* that chain, which is why a
+    /// transform on a source sees the source's own payload type.
+    fn merge_site(self) -> (ChannelId, Option<u32>);
 }
 
-impl<'b, T: Clone + Send + Sync + 'static> MergeSource<'b> for EntryStream<'b, T> {
+impl<'b, T: Clone + Send + Sync + 'static, K: StreamTarget> MergeSource<'b> for Stream<'b, T, K> {
     type Payload = T;
 
-    fn merge_channel_id(self) -> ChannelId {
-        self.channel_id
-    }
-}
-
-impl<'b, T: Clone + Send + Sync + 'static> MergeSource<'b> for Stream<'b, T> {
-    type Payload = T;
-
-    fn merge_channel_id(self) -> ChannelId {
-        self.with_channel(|_, cid| cid)
+    fn merge_site(self) -> (ChannelId, Option<u32>) {
+        (self.with_channel(|_, cid| cid), self.pending)
     }
 }
 
@@ -907,11 +1055,17 @@ impl<'b, T: Clone + Send + Sync + 'static> MergeSource<'b> for Stream<'b, T> {
 #[must_use = "a merge declares nothing until it is closed with `.into::<Proc>()`"]
 pub struct Merge<'b, I> {
     builder: &'b ChannelBuilder,
-    sources: Vec<(ChannelId, MergeMapFn)>,
+    /// Per source: its channel and the pending chain that ends in this merge's
+    /// mapping.
+    sources: Vec<(ChannelId, u32)>,
     /// Every `.from` the author wrote, including ones already refused. The
     /// arity check reads this so a duplicated source is reported once, as a
     /// duplicate — not also as a merge that declared too few.
     declared: usize,
+    /// The one key function a merge declares, applied to the merged value on
+    /// every source's edge.
+    key: Option<EdgeKeyFn>,
+    duplicate_key: bool,
     _phantom: PhantomData<fn() -> I>,
 }
 
@@ -924,21 +1078,37 @@ impl<'b, I: Send + Sync + 'static> Merge<'b, I> {
         S: MergeSource<'b>,
         F: Fn(S::Payload) -> I + Send + Sync + 'static,
     {
-        let channel_id = source.merge_channel_id();
+        let (channel_id, source_pending) = source.merge_site();
         self.declared += 1;
+        let mut st = self.builder.state.borrow_mut();
         if self
             .sources
             .iter()
             .any(|(existing, _)| *existing == channel_id)
         {
-            let mut st = self.builder.state.borrow_mut();
             let channel = st.channels[channel_id as usize].name;
             st.errors
                 .push(TopologyIssue::DuplicateMergeSource { channel });
             return self;
         }
-        self.sources
-            .push((channel_id, erase_merge_map::<S::Payload, I, F>(map)));
+        let link = erase_merge_map::<S::Payload, I, F>(map);
+        let chain = st.extend_pending(channel_id, source_pending, Some(link), None);
+        drop(st);
+        self.sources.push((channel_id, chain));
+        self
+    }
+
+    /// Declare the Entity key for the merged procedure — once, on the merge,
+    /// because by the time keying runs every source has been mapped into the
+    /// one `Input` type. Yields the key for a value of the merged sum type.
+    pub fn key_by<F>(mut self, key: F) -> Self
+    where
+        F: Fn(&I) -> String + Send + Sync + 'static,
+    {
+        if self.key.is_some() {
+            self.duplicate_key = true;
+        }
+        self.key = Some(erase::<I, _, _>("key_by", key));
         self
     }
 
@@ -971,20 +1141,35 @@ impl<'b, I: Send + Sync + 'static> Merge<'b, I> {
                 sources: self.declared,
             });
         }
-        for (channel_id, map) in self.sources {
-            st.attach_consumer(channel_id, node, Some(map));
+        if self.duplicate_key {
+            if let Some(&(channel_id, _)) = self.sources.first() {
+                let channel = st.channels[channel_id as usize].name;
+                st.errors.push(TopologyIssue::DuplicateKeyBy { channel });
+            }
+        }
+        for (channel_id, chain) in self.sources {
+            // The key rides each source's chain, so it is evaluated on the
+            // mapped value — and a key declared on a *source* handle instead
+            // trips the transform-after-key refusal, which is exactly the
+            // "declared once, on the merge" rule.
+            let chain = match self.key.clone() {
+                Some(key) => st.extend_pending(channel_id, Some(chain), None, Some(key)),
+                None => chain,
+            };
+            st.attach_consumer(channel_id, node, Some(chain));
         }
         drop(st);
         Stream {
             builder: self.builder,
-            node,
+            target: node,
+            pending: None,
             _phantom: PhantomData,
         }
     }
 }
 
-/// Erase one author callback — `entities_for`, `entity_key`, a merge
-/// mapping, a hybrid plugin serializer. The downcast is a build-time
+/// Erase one author callback — `entities_for`, a `key_by`, a hybrid plugin
+/// serializer. The downcast is a build-time
 /// invariant (the callback is installed by the same wiring that declared the
 /// payload type), so `what` names the declaration only for the impossible
 /// case. An erasure whose downcast failure is a *reported* error rather than
@@ -1002,107 +1187,76 @@ where
     })
 }
 
+/// Erase one edge transform. The closure is handed both the downcast value and
+/// the `Arc` behind it, so a surviving `filter` re-yields the original pointer
+/// instead of cloning the payload.
+fn erase_transform<T, F>(what: &'static str, f: F) -> EdgeTransformFn
+where
+    T: 'static,
+    F: Fn(&T, &Arc<dyn Any + Send + Sync>) -> EdgeYield + Send + Sync + 'static,
+{
+    Arc::new(move |value: &Arc<dyn Any + Send + Sync>| {
+        let typed = value
+            .downcast_ref::<T>()
+            .unwrap_or_else(|| panic!("{what}: type mismatch (build-time invariant)"));
+        f(typed, value)
+    })
+}
+
 /// Type-erase one merge mapping, which the author writes over an owned payload
 /// (`Fn(T) -> I`) while the routing seam holds only a reference — hence the
 /// clone a plain `.into` never pays.
-fn erase_merge_map<T, I, F>(map: F) -> MergeMapFn
+fn erase_merge_map<T, I, F>(map: F) -> EdgeTransformFn
 where
     T: Clone + Send + Sync + 'static,
     I: Send + Sync + 'static,
     F: Fn(T) -> I + Send + Sync + 'static,
 {
-    erase::<T, _, _>("merge mapping", move |value: &T| {
-        Arc::new(map(value.clone())) as Arc<dyn Any + Send + Sync>
+    erase_transform::<T, _>("merge mapping", move |value: &T, _| {
+        EdgeYield::One(Arc::new(map(value.clone())) as Arc<dyn Any + Send + Sync>)
     })
 }
 
-/// The entry channel's handle: wires the graph's root consumer via
-/// [`into`](EntryStream::into) and carries the entry-side channel config.
-pub struct EntryStream<'b, T> {
-    builder: &'b ChannelBuilder,
-    channel_id: u32,
-    _phantom: PhantomData<fn() -> T>,
+/// What a stream handle points at. The two markers are what keep the
+/// entry-side and output-side handles distinct types while their shared
+/// surface — transforms, keying, per-channel config, `.into` — is written
+/// exactly once, against `K: StreamTarget`.
+pub trait StreamTarget: Copy + 'static {
+    /// Whether the handle's `target` already IS a channel id, or is the
+    /// producing procedure whose output channel is created on demand.
+    const IS_ENTRY: bool;
 }
 
-impl<'b, T> Clone for EntryStream<'b, T> {
-    fn clone(&self) -> Self {
-        *self
-    }
+/// [`EntryStream`]'s marker: `target` already IS the entry channel id.
+#[derive(Clone, Copy)]
+pub struct EntryTarget;
+
+/// [`Stream`]'s marker: `target` is the producing procedure, whose output
+/// channel is created lazily so a leaf node never carries a phantom channel.
+#[derive(Clone, Copy)]
+pub struct NodeTarget;
+
+impl StreamTarget for EntryTarget {
+    const IS_ENTRY: bool = true;
 }
 
-impl<'b, T> Copy for EntryStream<'b, T> {}
-
-impl<'b, T: 'static + Send + Sync> EntryStream<'b, T> {
-    /// Wire the entry consumer and return **its** output stream handle, so a
-    /// linear pipeline is one chained expression. Compile-time bound:
-    /// `S::Input == T`.
-    pub fn into<S: Procedure<Input = T>>(self) -> Stream<'b, S::Output> {
-        self.wire::<S>(None)
-    }
-
-    /// Like [`into`](EntryStream::into), but the consumer is a distinct named
-    /// node (`sdk-graph-authoring` node-identity rule): its identity string is
-    /// `node_name` instead of `S::name()`, for every purpose identity serves —
-    /// state directories, journal entries, the derived channel name,
-    /// diagnostics.
-    pub fn into_named<S: Procedure<Input = T>>(
-        self,
-        node_name: &'static str,
-    ) -> Stream<'b, S::Output> {
-        self.wire::<S>(Some(node_name))
-    }
-
-    fn wire<S: Procedure<Input = T>>(
-        self,
-        node_name: Option<&'static str>,
-    ) -> Stream<'b, S::Output> {
-        let node = self
-            .builder
-            .state
-            .borrow_mut()
-            .wire_consumer::<S>(self.channel_id, node_name);
-        Stream {
-            builder: self.builder,
-            node,
-            _phantom: PhantomData,
-        }
-    }
-
-    /// Override the per-kind default `OverflowPolicy`. Entry channels
-    /// default to `DropNewest`; declare `Block` here only if you accept
-    /// stalling the shared wire reader on this UnboundedOperative's saturation (see
-    /// `docs/operative_architecture.md` for the co-tenancy hazard).
-    pub fn on_full(self, policy: OverflowPolicy) -> Self {
-        self.builder.state.borrow_mut().channels[self.channel_id as usize].overflow_policy = policy;
-        self
-    }
-
-    /// Override the consumer-side retry budget (total attempts, default 3)
-    /// applied before a failing payload is parked to the dead-letter queue.
-    pub fn retry_max(self, max_attempts: u32) -> Self {
-        set_retry_max(
-            &mut self.builder.state.borrow_mut(),
-            self.channel_id,
-            max_attempts,
-        );
-        self
-    }
-
-    /// Override the exponential-backoff base (milliseconds, default 50)
-    /// slept between failed attempts.
-    pub fn retry_backoff_ms(self, base_ms: u64) -> Self {
-        self.builder.state.borrow_mut().channels[self.channel_id as usize]
-            .retry
-            .backoff_base_ms = base_ms;
-        self
-    }
+impl StreamTarget for NodeTarget {
+    const IS_ENTRY: bool = false;
 }
+
+/// The entry channel's handle: wires the graph's root consumer via `.into` and
+/// carries the entry-side channel config. Same surface as [`Stream`] for
+/// everything that is not producer-side (no `codec`, no plugin sink, no
+/// `named` — the entry channel's name is given at `input(...)`).
+pub type EntryStream<'b, T> = Stream<'b, T, EntryTarget>;
 
 /// A procedure's output stream handle, returned by `.into::<Proc>()`: a
 /// lightweight `Copy` reference into the operative's topology builder.
 ///
 /// - `stream.into::<Next>()` wires Next as a consumer and returns Next's own
 ///   stream, so chains read in flow order.
+/// - `map` / `filter` / `flat_map` / `key_by` reshape and key the values on the
+///   way to the next `.into`, adding no node to the topology.
 /// - Using one handle twice — two `.into` calls on the same variable — is
 ///   fan-out: every consumer receives every value released on the channel.
 ///   [`branch`](Stream::branch) is equivalent sugar.
@@ -1113,32 +1267,57 @@ impl<'b, T: 'static + Send + Sync> EntryStream<'b, T> {
 ///
 /// The handle borrows the builder, so it cannot outlive the declaration —
 /// using one after the topology freezes at registration is a compile error.
-pub struct Stream<'b, T> {
+pub struct Stream<'b, T, K = NodeTarget> {
     builder: &'b ChannelBuilder,
-    node: ProcedureId,
-    _phantom: PhantomData<fn() -> T>,
+    /// The entry channel id (`EntryTarget`) or the producing procedure id
+    /// (`NodeTarget`) — `K` decides which.
+    target: u32,
+    /// The transform/key chain declared on this handle, `None` for a bare one.
+    pending: Option<u32>,
+    _phantom: PhantomData<fn() -> (T, K)>,
 }
 
-impl<'b, T> Clone for Stream<'b, T> {
+impl<'b, T, K> Clone for Stream<'b, T, K> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<'b, T> Copy for Stream<'b, T> {}
+impl<'b, T, K> Copy for Stream<'b, T, K> {}
 
-impl<'b, T: 'static + Send + Sync> Stream<'b, T> {
+impl<'b, T: 'static + Send + Sync, K: StreamTarget> Stream<'b, T, K> {
     fn with_channel<R>(self, f: impl FnOnce(&mut BuilderState, u32) -> R) -> R {
         let mut st = self.builder.state.borrow_mut();
-        let cid = st.ensure_output_channel(self.node);
+        let cid = if K::IS_ENTRY {
+            self.target
+        } else {
+            st.ensure_output_channel(self.target)
+        };
         f(&mut st, cid)
     }
 
-    /// Wire an inter-procedure consumer onto this stream's channel and return
-    /// **the consumer's** output stream handle. Compile-time bound:
-    /// `S::Input == T`. Calling `.into` on the same handle repeatedly declares
-    /// fan-out; wiring the same (unnamed) class from two streams declares
-    /// fan-in.
+    /// This handle with a new payload type and a new pending chain — the one
+    /// place a transform's result handle is built.
+    fn relink<U>(
+        self,
+        transform: Option<EdgeTransformFn>,
+        key: Option<EdgeKeyFn>,
+    ) -> Stream<'b, U, K> {
+        let pending = self.pending;
+        let id = self.with_channel(|st, cid| st.extend_pending(cid, pending, transform, key));
+        Stream {
+            builder: self.builder,
+            target: self.target,
+            pending: Some(id),
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Wire a consumer onto this stream's channel and return **the consumer's**
+    /// output stream handle, so a linear pipeline is one chained expression.
+    /// Compile-time bound: `S::Input == T`. Calling `.into` on the same handle
+    /// repeatedly declares fan-out; wiring the same (unnamed) class from two
+    /// streams declares fan-in.
     pub fn into<S: Procedure<Input = T>>(self) -> Stream<'b, S::Output> {
         self.wire::<S>(None)
     }
@@ -1158,14 +1337,128 @@ impl<'b, T: 'static + Send + Sync> Stream<'b, T> {
         self,
         node_name: Option<&'static str>,
     ) -> Stream<'b, S::Output> {
-        let node = self.with_channel(|st, cid| st.wire_consumer::<S>(cid, node_name));
+        let pending = self.pending;
+        let node = self.with_channel(|st, cid| st.wire_consumer::<S>(cid, pending, node_name));
         Stream {
             builder: self.builder,
-            node,
+            target: node,
+            pending: None,
             _phantom: PhantomData,
         }
     }
 
+    /// Reshape every value on the way to the next consumer. Costs no
+    /// Procedure, no Entity, no mailbox and no dispatch hop: the closure is
+    /// stored on the consumer edge this chain terminates in and evaluated at
+    /// the routing seam, so it runs identically on live delivery and on the
+    /// controller's re-forwarded replay slice.
+    ///
+    /// It MUST therefore be pure and cheap. Pure because a replay that
+    /// disagreed with the live run would rebuild a state the live run never
+    /// had; cheap because it runs on the routing thread — real work belongs in
+    /// a Procedure behind [`key_by`](Stream::key_by), which buys per-Entity
+    /// parallelism.
+    pub fn map<U, F>(self, f: F) -> Stream<'b, U, K>
+    where
+        T: Clone,
+        U: Send + Sync + 'static,
+        F: Fn(T) -> U + Send + Sync + 'static,
+    {
+        let link = erase_transform::<T, _>("map", move |typed: &T, _| {
+            EdgeYield::One(Arc::new(f(typed.clone())) as Arc<dyn Any + Send + Sync>)
+        });
+        self.relink(Some(link), None)
+    }
+
+    /// Drop the values the predicate rejects. A surviving value is forwarded
+    /// by pointer — a filtered stream costs one predicate call per input and
+    /// nothing else. Same purity and cost contract as [`map`](Stream::map).
+    pub fn filter<F>(self, predicate: F) -> Self
+    where
+        F: Fn(&T) -> bool + Send + Sync + 'static,
+    {
+        let link = erase_transform::<T, _>("filter", move |typed: &T, value| {
+            if predicate(typed) {
+                EdgeYield::One(Arc::clone(value))
+            } else {
+                EdgeYield::Drop
+            }
+        });
+        self.relink(Some(link), None)
+    }
+
+    /// Expand one value into zero or more. Each yielded value is keyed and
+    /// delivered independently, so `flat_map` + [`key_by`](Stream::key_by) is
+    /// how one input fans out across several Entities. Same purity and cost
+    /// contract as [`map`](Stream::map).
+    ///
+    /// The yielded values are pushed one at a time under the channel's
+    /// `on_full` policy, so a `DropNewest` channel may accept some of a
+    /// fan-out and drop the rest — the same shape multi-consumer fan-out
+    /// already has.
+    pub fn flat_map<U, I, F>(self, f: F) -> Stream<'b, U, K>
+    where
+        T: Clone,
+        U: Send + Sync + 'static,
+        I: IntoIterator<Item = U>,
+        F: Fn(T) -> I + Send + Sync + 'static,
+    {
+        let link = erase_transform::<T, _>("flat_map", move |typed: &T, _| {
+            EdgeYield::Many(
+                f(typed.clone())
+                    .into_iter()
+                    .map(|v| Arc::new(v) as Arc<dyn Any + Send + Sync>)
+                    .collect(),
+            )
+        });
+        self.relink(Some(link), None)
+    }
+
+    /// Name the Entity each value is routed to, making the consumer a
+    /// dynamic-mode Procedure whose Entities are created on first sight of a
+    /// key. This is the only way to declare dynamic keying — the consumer
+    /// Procedure carries no keying member at all, so a reader of `channels()`
+    /// can see where work fans out.
+    ///
+    /// Total by signature: it names an Entity, it never declines. Discard
+    /// inputs with [`filter`](Stream::filter) before it. It is evaluated on the
+    /// **post-transform** value, so it must be the last link before `.into`.
+    /// Wiring it onto a Procedure declaring `entity_keys()` (static mode) is a
+    /// registration error.
+    pub fn key_by<F>(self, key: F) -> Self
+    where
+        F: Fn(&T) -> String + Send + Sync + 'static,
+    {
+        self.relink(None, Some(erase::<T, _, _>("key_by", key)))
+    }
+
+    /// Override the per-kind default `OverflowPolicy`. Entry channels default
+    /// to `DropNewest` — declare `Block` there only if you accept stalling the
+    /// shared wire reader on this operative's saturation (see
+    /// `docs/operative_architecture.md` for the co-tenancy hazard).
+    /// Inter-procedure channels default to `Block`; switch to `DropNewest` /
+    /// `DropOldest` when ordering can be sacrificed for liveness.
+    pub fn on_full(self, policy: OverflowPolicy) -> Self {
+        self.with_channel(|st, cid| st.channels[cid as usize].overflow_policy = policy);
+        self
+    }
+
+    /// Override the consumer-side retry budget (total attempts, default 3)
+    /// applied before a failing payload is parked to the dead-letter queue.
+    pub fn retry_max(self, max_attempts: u32) -> Self {
+        self.with_channel(|st, cid| set_retry_max(st, cid, max_attempts));
+        self
+    }
+
+    /// Override the exponential-backoff base (milliseconds, default 50)
+    /// slept between failed attempts.
+    pub fn retry_backoff_ms(self, base_ms: u64) -> Self {
+        self.with_channel(|st, cid| st.channels[cid as usize].retry.backoff_base_ms = base_ms);
+        self
+    }
+}
+
+impl<'b, T: 'static + Send + Sync> Stream<'b, T, NodeTarget> {
     /// Branching sugar: each arm receives a copy of this handle, so
     /// `s.branch([&|b| { b.into::<A>(); }, &|b| { b.into::<B>(); }])` builds
     /// exactly the topology of two `s.into` statements — nothing more. At
@@ -1189,28 +1482,6 @@ impl<'b, T: 'static + Send + Sync> Stream<'b, T> {
     /// everywhere the channel name appears: wire metadata, journals, errors.
     pub fn named(self, name: &'static str) -> Self {
         self.with_channel(|st, cid| st.channels[cid as usize].name = name);
-        self
-    }
-
-    /// Override the per-kind default `OverflowPolicy`. Inter-procedure
-    /// channels default to `Block`; switch to `DropNewest` / `DropOldest` on a
-    /// per-channel basis when ordering can be sacrificed for liveness.
-    pub fn on_full(self, policy: OverflowPolicy) -> Self {
-        self.with_channel(|st, cid| st.channels[cid as usize].overflow_policy = policy);
-        self
-    }
-
-    /// Override the consumer-side retry budget (total attempts, default 3)
-    /// applied before a failing payload is parked to the dead-letter queue.
-    pub fn retry_max(self, max_attempts: u32) -> Self {
-        self.with_channel(|st, cid| set_retry_max(st, cid, max_attempts));
-        self
-    }
-
-    /// Override the exponential-backoff base (milliseconds, default 50)
-    /// slept between failed attempts.
-    pub fn retry_backoff_ms(self, base_ms: u64) -> Self {
-        self.with_channel(|st, cid| st.channels[cid as usize].retry.backoff_base_ms = base_ms);
         self
     }
 
