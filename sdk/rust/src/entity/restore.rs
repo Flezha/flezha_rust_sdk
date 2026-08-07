@@ -10,8 +10,9 @@
 
 use crate::entity::header::{
     decode_header, validate_header_for_change, validate_header_for_effect_record,
-    FORMAT_ID_EFFECT_RECORD,
+    validate_header_for_timer_ops, FORMAT_ID_EFFECT_RECORD, FORMAT_ID_TIMER_OPS,
 };
+use crate::entity::timer::{PendingTimers, TimerOp};
 use crate::util::{read_u32_be, read_u64_be};
 
 /// Snapshot + change-log bytes handed to `Procedure::init_state` on a warm
@@ -63,13 +64,18 @@ pub enum RestoreError {
 ///   2. Iterate change-log records via the internal `iter_change_log_records`
 ///      helper; for each record, validate the header, deserialize the change
 ///      body, and call `S::apply_change(&mut state, &change)`.
+///   3. Fold every `TimerOp` the log carries — standalone `format_id = 3`
+///      records and the `timers` an effect record encloses — into the returned
+///      pending-timer set. Timers are folded state, so they are rebuilt by this
+///      same walk rather than by a store of their own.
 pub fn init_entity_with_payload<S: crate::procedure::Procedure>(
     entity_key: Option<&str>,
     payload: Option<&RestoreInitPayload<'_>>,
-) -> Result<S::State, RestoreError>
+) -> Result<(S::State, PendingTimers), RestoreError>
 where
     S::State: serde::de::DeserializeOwned,
 {
+    let mut timers = PendingTimers::default();
     let mut state = S::init_state(
         entity_key,
         payload.map(|p| RestoreInitPayload {
@@ -97,28 +103,42 @@ where
                     seq: record.seq,
                 });
             }
-            if header.format_id == FORMAT_ID_EFFECT_RECORD {
-                // Effectively-once effect record: fold its change portion
-                // exactly as plain change records fold, in order. Outputs
-                // and consumed-offset are controller-side concerns here.
-                validate_header_for_effect_record::<S>(&header)?;
-                let body: crate::entity::flusher::EffectRecordBody =
-                    postcard::from_bytes(record.change_bytes)
+            match header.format_id {
+                FORMAT_ID_EFFECT_RECORD => {
+                    // Effectively-once effect record: fold its change portion
+                    // exactly as plain change records fold, in order. Outputs
+                    // and consumed-offset are controller-side concerns here.
+                    validate_header_for_effect_record::<S>(&header)?;
+                    let body: crate::entity::flusher::EffectRecordBody =
+                        postcard::from_bytes(record.change_bytes)
+                            .map_err(|e| RestoreError::ChangeDecode(e.to_string()))?;
+                    for change_bytes in &body.changes {
+                        let change: S::Change = postcard::from_bytes(change_bytes)
+                            .map_err(|e| RestoreError::ChangeDecode(e.to_string()))?;
+                        S::apply_change(&mut state, &change);
+                    }
+                    for op in &body.timers {
+                        timers.apply(op);
+                    }
+                }
+                FORMAT_ID_TIMER_OPS => {
+                    validate_header_for_timer_ops::<S>(&header)?;
+                    let ops: Vec<TimerOp> = postcard::from_bytes(record.change_bytes)
                         .map_err(|e| RestoreError::ChangeDecode(e.to_string()))?;
-                for change_bytes in &body.changes {
-                    let change: S::Change = postcard::from_bytes(change_bytes)
+                    for op in &ops {
+                        timers.apply(op);
+                    }
+                }
+                _ => {
+                    validate_header_for_change::<S>(&header)?;
+                    let change: S::Change = postcard::from_bytes(record.change_bytes)
                         .map_err(|e| RestoreError::ChangeDecode(e.to_string()))?;
                     S::apply_change(&mut state, &change);
                 }
-            } else {
-                validate_header_for_change::<S>(&header)?;
-                let change: S::Change = postcard::from_bytes(record.change_bytes)
-                    .map_err(|e| RestoreError::ChangeDecode(e.to_string()))?;
-                S::apply_change(&mut state, &change);
             }
         }
     }
-    Ok(state)
+    Ok((state, timers))
 }
 
 /// One framed WAL record as produced by the controller's
@@ -271,6 +291,7 @@ mod tests {
             }],
             consumed_offset: Some(4711),
             dlq: None,
+            timers: Vec::new(),
         };
         let effect = wal_record(
             1,
@@ -285,7 +306,7 @@ mod tests {
             snapshot_bytes: &[],
             change_log_bytes: &change_log,
         };
-        let state = init_entity_with_payload::<FoldProc>(None, Some(&payload)).unwrap();
+        let (state, _timers) = init_entity_with_payload::<FoldProc>(None, Some(&payload)).unwrap();
         assert_eq!(state, 115, "5 (plain) + 10 + 100 (effect) folded in order");
     }
 

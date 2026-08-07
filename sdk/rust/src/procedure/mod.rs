@@ -34,6 +34,22 @@ pub const DEFAULT_PROCEDURE_APPLY_CHANGE_PANIC_MESSAGE: &str =
      Implement `fn apply_change(state: &mut Self::State, change: &Self::Change)` to fold \
      the Change into the State deterministically.";
 
+/// Default panic message stamped on `Procedure::on_timer` for Procedures that
+/// register a timer without handling it. Registration is a runtime call, so
+/// the omission cannot be caught at build time — the failure mode is the one
+/// [`DEFAULT_PROCEDURE_APPLY_CHANGE_PANIC_MESSAGE`] already teaches.
+#[doc(hidden)]
+pub const DEFAULT_PROCEDURE_ON_TIMER_PANIC_MESSAGE: &str =
+    "Procedure registered a timer but did not override `on_timer`. Implement \
+     `fn on_timer(&mut self, fired_at: u64, kind: TimerKind, state: StateHandle<'_, Self>, \
+     ctx: &mut ProcedureCtx<'_>)` to handle the firing.";
+
+/// Default per-Entity bound on pending timers, used by
+/// [`Procedure::max_timers_per_entity`]. A per-Entity timer set is
+/// author-controlled memory multiplied by an unbounded Entity count; the cap
+/// is what keeps a runaway registration a refusal rather than an OOM.
+pub const DEFAULT_MAX_TIMERS_PER_ENTITY: usize = 10_000;
+
 /// Default per-Entity WAL size compaction threshold (8 MiB), in lockstep with
 /// the controller's `:default_compact_after_bytes`. The single source both the
 /// `Procedure::compact_after_bytes` default and the `AddOperative` metadata
@@ -285,6 +301,49 @@ pub trait Procedure: Send + Sync + 'static + Default {
         state: StateHandle<'_, Self>,
         ctx: &mut ProcedureCtx<'_>,
     ) -> Result<(), ProcedureError>;
+
+    /// Handle a timer this Procedure registered via
+    /// [`ProcedureCtx::timer_at_event_time`] / [`ProcedureCtx::timer_after`].
+    /// Receives the same [`StateHandle`] and [`ProcedureCtx`] as [`Self::run`],
+    /// so it may apply Changes, emit, and register further timers.
+    ///
+    /// `fired_at` is the timestamp the timer was **scheduled at**, never the
+    /// wall clock at which it actually fired: a processing-time timer set for
+    /// T that fires at T+δ still reports T. Passing T+δ would make a replay
+    /// observe a different value and break the determinism contract in exactly
+    /// the way `SystemTime::now()` inside `run` does. For the same reason
+    /// [`ProcedureCtx::now`] equals `fired_at` inside this call, so a chained
+    /// `ctx.timer_after(..)` schedules off the timer that woke it.
+    ///
+    /// A failure here climbs the input channel's retry ladder and parks to the
+    /// dead-letter queue exactly as a failing `run` does. The fired timer's
+    /// removal is durable either way, so a poison timer parks once instead of
+    /// firing forever.
+    ///
+    /// The default panics naming the Procedure: registering a timer without
+    /// handling it is an authoring error, and registration is a runtime call,
+    /// so no build-time check can catch it.
+    fn on_timer(
+        &mut self,
+        _fired_at: u64,
+        _kind: crate::entity::timer::TimerKind,
+        _state: StateHandle<'_, Self>,
+        _ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
+        panic!(
+            "{} (procedure `{}`)",
+            DEFAULT_PROCEDURE_ON_TIMER_PANIC_MESSAGE,
+            Self::name()
+        );
+    }
+
+    /// Per-Entity bound on pending timers. Registering past it returns
+    /// [`ProcedureError::TimerCapExceeded`] naming this Procedure and the
+    /// bound, rather than allocating. Mirrors the soft cap
+    /// [`Self::max_entities`] puts on dynamic Entities.
+    fn max_timers_per_entity() -> usize {
+        DEFAULT_MAX_TIMERS_PER_ENTITY
+    }
 
     /// Optional saga **compensation** hook (bounded operatives only). An
     /// procedure whose `run` commits a reversible side effect declares this to

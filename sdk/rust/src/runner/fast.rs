@@ -153,7 +153,7 @@ impl RunnerNode {
         match self.operative_registry.remove(instance_id) {
             Some(unit) => {
                 match &*unit {
-                    Operative::Unbounded(instance) => instance.shutdown_reapers(),
+                    Operative::Unbounded(instance) => instance.shutdown_background_threads(),
                     // Hard removal of a bounded: trip its cancellation token so
                     // the driver thread unwinds and exits promptly.
                     Operative::Bounded(instance) => instance.request_cancel(),
@@ -455,6 +455,17 @@ fn send_data_heartbeat(io_streams: &RwLock<HashMap<u32, FlezhaStream>>) {
     metadata.insert(
         "restore_discarded_inputs".to_string(),
         crate::entity::restore_discarded_inputs().to_string(),
+    );
+    // Wheel occupancy: a runaway registration shows here long before it is
+    // fatal, and a `timers_fired` that stops moving while `timers_armed`
+    // climbs is the wheel wedged rather than the Operative idle.
+    metadata.insert(
+        "timers_armed".to_string(),
+        crate::entity::timer::timers_armed().to_string(),
+    );
+    metadata.insert(
+        "timers_fired".to_string(),
+        crate::entity::timer::timers_fired_total().to_string(),
     );
     let frame = payloader::build_from_binary(liveness::DATA_HEARTBEAT_PAYLOAD_ID, &[], metadata);
     let streams = io_streams.read().unwrap();

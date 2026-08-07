@@ -42,12 +42,15 @@ impl CommandAction for CompactEntity {
                     Err(poisoned) => poisoned.into_inner(),
                 };
                 let mut buffer_guard = slot.flush_buffer.lock_recover();
+                let timer_guard = slot.timers.lock_recover();
 
-                match slot
-                    .dispatcher
-                    .snapshot_frame(&mut state_guard, &mut buffer_guard)
-                {
+                match slot.dispatcher.snapshot_frame(
+                    &mut state_guard,
+                    &mut buffer_guard,
+                    &timer_guard,
+                ) {
                     Ok((frame, seq, size)) => {
+                        drop(timer_guard);
                         drop(buffer_guard);
                         drop(state_guard);
                         // Ship the snapshot AFTER the drained change frames (both

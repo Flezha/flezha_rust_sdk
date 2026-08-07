@@ -28,7 +28,10 @@ use crate::channel::{ChannelId, ChannelKind, OverflowPolicy, ProcedureId, RetryP
 use crate::entity::correction::Lateness;
 use crate::entity::flusher::{encode_entity_identity, EntityFlusher, FlushableBuffer, TypedBuffer};
 use crate::entity::header::HeaderTemplate;
-use crate::entity::{make_entity_payload, EntityPayload, EntitySlot, ProcedureDispatcher};
+use crate::entity::timer::{PendingTimers, TimerKind, TimerOp, TimerPolicy};
+use crate::entity::{
+    make_entity_payload, EntityItem, EntityPayload, EntitySlot, ProcedureDispatcher,
+};
 use crate::operative::instance::UnboundedInstance;
 use crate::operative::topology::{BeyondWindowPolicy, OperativeTopology};
 use crate::procedure::change::NoChange;
@@ -100,6 +103,8 @@ pub struct ProcedureDispatcherImpl<S: Procedure> {
     /// so the emit sink can drain this entity's just-applied changes to
     /// the durable WAL path before its output frame is written.
     flush: FlushWiring,
+    /// What this Procedure declares about its timers, resolved once.
+    timers: TimerPolicy,
     _phantom: std::marker::PhantomData<fn() -> S>,
 }
 
@@ -151,6 +156,7 @@ impl<S: Procedure> ProcedureDispatcherImpl<S> {
             retry,
             entity_label,
             flush,
+            timers: TimerPolicy::for_procedure::<S>(),
             _phantom: std::marker::PhantomData,
         }
     }
@@ -195,14 +201,23 @@ impl<S: Procedure> ProcedureDispatcherImpl<S> {
     ///
     /// A class with no `correction_window()` — the default — pays one
     /// `Option` check and nothing else.
+    ///
+    /// The high-water is kept for EVERY event-time-clocked class, not only a
+    /// correcting one: it is also what event-time timers fire against. A class
+    /// whose clock is not an event time has no event time to track, and folding
+    /// a wall-clock or logical value in would be a lie.
     fn admit_and_track(&self, event_time: u64, replayed: bool) -> bool {
-        let Some(policy) = self.flush.correction else {
+        if !<S::Clock as crate::procedure::Clock>::IS_EVENT_TIME {
             return true;
-        };
+        }
         let advance = || {
             self.flush
                 .event_time_high_water
                 .fetch_max(event_time as i64, Ordering::AcqRel);
+        };
+        let Some(policy) = self.flush.correction else {
+            advance();
+            return true;
         };
         if replayed {
             advance();
@@ -255,6 +270,7 @@ impl<S: Procedure> ProcedureDispatcherImpl<S> {
                     consumed_offset: None,
                     dlq: None,
                     event_time,
+                    timers: Vec::new(),
                 }],
                 ..Default::default()
             }
@@ -272,55 +288,32 @@ impl<S: Procedure> ProcedureDispatcherImpl<S> {
             self.flush.persistence_enabled,
         );
     }
-}
 
-impl<S: Procedure> ProcedureDispatcher for ProcedureDispatcherImpl<S> {
-    fn dispatch(
+    /// Run ONE invocation — `run` on an input, or `on_timer` on a firing —
+    /// through the emit sink, the retry→DLQ ladder, the timer session and the
+    /// durable record it produces. The two differ only in the call into the
+    /// author's code; everything a failure has to be contained by is shared,
+    /// which is what makes a poison timer park exactly like a poison input.
+    ///
+    /// `now` is the invocation's `ctx.now()`: the declared Clock's value for an
+    /// input, the scheduled timestamp for a firing.
+    #[allow(clippy::too_many_arguments)]
+    fn invoke(
         &self,
-        payload: EntityPayload,
-        state: &mut Box<dyn Any + Send>,
-        flush_buffer: &mut Box<dyn FlushableBuffer>,
+        what: Invocation<S>,
+        now: u64,
+        typed_state: &mut EntityState<S>,
+        typed_buffer: &mut TypedBuffer<S>,
+        live_timers: &mut PendingTimers,
+        committed_ops: &mut Vec<TimerOp>,
+        stream: &Arc<FlezhaStream>,
         instance: &Weak<UnboundedInstance>,
     ) {
-        let EntityPayload {
-            value,
-            stream,
-            consumed_offset,
-            replay,
-        } = payload;
-
-        // Downcast value to Arc<S::Input>. Consumers with different
-        // Input types in the same UnboundedOperative downcast independently because
-        // the channel wiring guarantees they only ever receive their
-        // own type.
-        let input_arc = match Arc::downcast::<S::Input>(value) {
-            Ok(arc) => arc,
-            Err(_) => {
-                eprintln!(
-                    "[flezha] dispatcher: payload type mismatch for procedure {}",
-                    S::name()
-                );
-                return;
-            }
-        };
-
-        // Zero-copy when the Arc is uniquely held; falls back to a
-        // value clone when fan-out kept it shared. The `Clone` bound on
-        // `Procedure::Input` makes this explicit at the type level.
-        let input: S::Input = Arc::unwrap_or_clone(input_arc);
-
-        let typed_state = state
-            .downcast_mut::<EntityState<S>>()
-            .expect("dispatcher: state type mismatch for procedure");
-
-        let typed_buffer = flush_buffer
-            .as_any_mut()
-            .downcast_mut::<TypedBuffer<S>>()
-            .expect("dispatcher: flush buffer type mismatch for procedure");
-
+        let consumed_offset = what.consumed_offset();
+        let replay = what.replay();
         // Share the change buffer between `StateHandle::apply` and the
         // flush-before-emit hook. Both run on this single dispatch thread
-        // inside one `Procedure::run`, so the `RefCell` borrows never overlap.
+        // inside one invocation, so the `RefCell` borrows never overlap.
         let buffer_cell = RefCell::new(std::mem::take(&mut typed_buffer.inner));
 
         // Flush-before-emit: drain this entity's pending changes to the
@@ -350,13 +343,7 @@ impl<S: Procedure> ProcedureDispatcher for ProcedureDispatcherImpl<S> {
             None
         };
 
-        let (now, invocation_seq) = self.invocation_inputs(Some(&input));
-
-        // Late-input correction: decide whether this input runs at all, and
-        // keep the Entity's event-time high-water.
-        if !self.admit_and_track(now, replay) {
-            return;
-        }
+        let invocation_seq = self.flush.change_seq.load(Ordering::Relaxed);
 
         // Tier mode: plugin emits are captured here (in emit order) instead
         // of leaving on the primary stream, then combined with the run's
@@ -372,7 +359,7 @@ impl<S: Procedure> ProcedureDispatcher for ProcedureDispatcherImpl<S> {
             change_seq: &self.flush.change_seq,
             emit_ordinal: 0,
             instance: instance.upgrade(),
-            stream: Arc::clone(&stream),
+            stream: Arc::clone(stream),
             flush_before_emit,
             consumed_offset,
             effect_outputs: effect_outputs.as_ref(),
@@ -386,39 +373,59 @@ impl<S: Procedure> ProcedureDispatcher for ProcedureDispatcherImpl<S> {
         // survives for the re-run; the final attempt moves it (after saving
         // the park bytes, needed only if it fails too).
         let policy = self.retry;
-        let mut input_slot = Some(input);
+        // Captured before the value moves into the retry slot: the final
+        // attempt consumes it, and a park still has to record which timer
+        // fired.
+        let firing = what.firing();
+        let mut what_slot = Some(what);
         let mut parked_payload_bytes: Option<Vec<u8>> = None;
         let mut attempt: u32 = 0;
-        // Only the attempt that succeeded may close the interval; a failed
-        // attempt's `ctx` — and its checkpoint intent — is discarded with it.
+        // Only the attempt that succeeded may close the interval or leave
+        // timers registered; a failed attempt's `ctx` and its timer session
+        // are discarded with it.
         let mut checkpointed = false;
+        let mut timer_ops: Vec<TimerOp> = Vec::new();
         let park_error: Option<String> = loop {
             attempt += 1;
             let is_final = attempt >= policy.max_attempts;
-            let attempt_input = if is_final {
-                let input = input_slot.take().expect("retry loop: input consumed twice");
-                parked_payload_bytes = crate::entity::park::extract_payload_bytes(&input);
-                input
+            let attempt_what = if is_final {
+                let what = what_slot.take().expect("retry loop: input consumed twice");
+                parked_payload_bytes = what
+                    .input()
+                    .and_then(crate::entity::park::extract_payload_bytes);
+                what
             } else {
-                input_slot
+                what_slot
                     .as_ref()
                     .expect("retry loop: input consumed twice")
-                    .clone()
+                    .clone_for_attempt()
             };
+
+            // The removal is op 0 for a firing, so it rides the same durable
+            // record as whatever `on_timer` goes on to apply and emit.
+            let session = self.timers.session(live_timers, now, firing);
 
             let mut ctx =
                 ProcedureCtx::new(&mut sink, now, invocation_seq, &self.flush.entity_identity)
-                    .during_replay(replay);
+                    .during_replay(replay)
+                    .with_timers(&session);
             let handle = StateHandle::<S>::new(&mut typed_state.state, &buffer_cell);
 
             // Contain a procedure panic so it can't poison the held `state` lock.
-            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                typed_state.procedure.run(attempt_input, handle, &mut ctx)
-            }));
+            let outcome =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match attempt_what {
+                    Invocation::Input { input, .. } => {
+                        typed_state.procedure.run(input, handle, &mut ctx)
+                    }
+                    Invocation::Timer { fired_at, kind } => typed_state
+                        .procedure
+                        .on_timer(fired_at, kind, handle, &mut ctx),
+                }));
 
             let (error, retryable) = match outcome {
                 Ok(Ok(())) => {
                     checkpointed = ctx.checkpointed();
+                    timer_ops = session.into_inner().commit(live_timers);
                     break None;
                 }
                 Ok(Err(err)) => {
@@ -437,6 +444,16 @@ impl<S: Procedure> ProcedureDispatcher for ProcedureDispatcherImpl<S> {
                 cell.borrow_mut().clear();
             }
             if !retryable || is_final {
+                // A firing that exhausted its budget still records the
+                // removal: a poison timer must park once, not fire forever —
+                // the same reason a park closes a checkpoint interval.
+                if firing.is_some() {
+                    timer_ops = self
+                        .timers
+                        .session(live_timers, now, firing)
+                        .into_inner()
+                        .commit(live_timers);
+                }
                 break Some(error);
             }
             let delay = crate::entity::retry::note_failed_attempt(
@@ -465,14 +482,17 @@ impl<S: Procedure> ProcedureDispatcher for ProcedureDispatcherImpl<S> {
                     .to_string(),
                 error,
                 attempts: attempt,
-                payload: input_slot
+                payload: what_slot
                     .as_ref()
+                    .and_then(Invocation::input)
                     .and_then(crate::entity::park::extract_payload_bytes)
                     .or(parked_payload_bytes),
             })
         } else {
             None
         };
+
+        committed_ops.extend(timer_ops.iter().copied());
 
         if let Some(outputs_cell) = effect_outputs {
             // Tier mode: this invocation's changes + outputs + consumed
@@ -483,8 +503,9 @@ impl<S: Procedure> ProcedureDispatcher for ProcedureDispatcherImpl<S> {
             // park and the consumed-offset advance stay atomic.
             let changes = buffer_cell.into_inner();
             let outputs = outputs_cell.into_inner();
-            let (changes, consumed_offset, ship) = if self.flush.checkpoint_ack {
+            let (changes, timer_ops, consumed_offset, ship) = if self.flush.checkpoint_ack {
                 typed_buffer.staged.extend(changes);
+                typed_buffer.staged_timers.extend(timer_ops);
                 // The interval closes on an explicit checkpoint — or on a
                 // park, whose poison input is about to be acknowledged into
                 // the DLQ and must never be replayed back onto the procedure.
@@ -492,17 +513,19 @@ impl<S: Procedure> ProcedureDispatcher for ProcedureDispatcherImpl<S> {
                     // Even a checkpoint that accumulated nothing ships: the
                     // record exists to carry the offset.
                     let staged = std::mem::take(&mut typed_buffer.staged);
-                    (staged, consumed_offset, true)
+                    let staged_timers = std::mem::take(&mut typed_buffer.staged_timers);
+                    (staged, staged_timers, consumed_offset, true)
                 } else {
                     // Mid-interval: emits still flush as they happen, but they
                     // acknowledge nothing — the state they were computed from
                     // is not durable yet, so a record carrying their offset
                     // would let a restore resume past inputs it never saw.
-                    (Vec::new(), None, !outputs.is_empty())
+                    (Vec::new(), Vec::new(), None, !outputs.is_empty())
                 }
             } else {
-                let ship = !(changes.is_empty() && outputs.is_empty()) || dlq.is_some();
-                (changes, consumed_offset, ship)
+                let ship = !(changes.is_empty() && outputs.is_empty() && timer_ops.is_empty())
+                    || dlq.is_some();
+                (changes, timer_ops, consumed_offset, ship)
             };
             if ship {
                 typed_buffer
@@ -513,6 +536,7 @@ impl<S: Procedure> ProcedureDispatcher for ProcedureDispatcherImpl<S> {
                         consumed_offset,
                         dlq,
                         event_time: now,
+                        timers: timer_ops,
                     });
             }
         } else {
@@ -521,6 +545,24 @@ impl<S: Procedure> ProcedureDispatcher for ProcedureDispatcherImpl<S> {
             // flusher drains. `change_seq` and the move-out drain guarantee
             // each change is shipped exactly once.
             typed_buffer.inner = buffer_cell.into_inner();
+            // Outside the tier there is no effect record to ride: the pending
+            // set's mutations drain as their own `format_id = 3` record.
+            typed_buffer.timer_ops.extend(timer_ops);
+            // A `NoChange` Procedure has no flusher entry — there was nothing
+            // to drain until timers gave it something. Drain here rather than
+            // register every Entity with the flusher, which would spawn its
+            // thread for programs that will never produce a record.
+            if !typed_buffer.timer_ops.is_empty()
+                && !flusher_registered::<S>(self.flush.effectively_once)
+            {
+                crate::entity::flusher::flush_one(
+                    typed_buffer,
+                    &self.flush.entity_identity,
+                    &self.flush.change_seq,
+                    &self.flush.header,
+                    self.flush.persistence_enabled,
+                );
+            }
             if let Some(entry) = dlq {
                 // Tier-off park: ship the park frame and hold this entity
                 // (the drain thread) until the controller acks the DLQ
@@ -533,6 +575,196 @@ impl<S: Procedure> ProcedureDispatcher for ProcedureDispatcherImpl<S> {
                 crate::entity::park::park_blocking(&self.flush.entity_identity, &body);
             }
         }
+    }
+}
+
+/// What one invocation runs. The retry ladder, the emit sink, the effect
+/// record and the DLQ park are the same machinery either way — only the call
+/// into the author's code differs, which is why they share one code path.
+enum Invocation<S: Procedure> {
+    Input {
+        input: S::Input,
+        /// Durable input-log offset this invocation acknowledges. A firing
+        /// carries none — it consumes no input — which is why it lives on the
+        /// variant rather than beside it.
+        consumed_offset: Option<u64>,
+        replay: bool,
+    },
+    Timer {
+        fired_at: u64,
+        kind: TimerKind,
+    },
+}
+
+impl<S: Procedure> Invocation<S> {
+    /// A non-final attempt runs against a copy so the original survives for the
+    /// re-run; the final attempt moves the value.
+    fn clone_for_attempt(&self) -> Self {
+        match self {
+            Invocation::Input {
+                input,
+                consumed_offset,
+                replay,
+            } => Invocation::Input {
+                input: input.clone(),
+                consumed_offset: *consumed_offset,
+                replay: *replay,
+            },
+            Invocation::Timer { fired_at, kind } => Invocation::Timer {
+                fired_at: *fired_at,
+                kind: *kind,
+            },
+        }
+    }
+
+    fn input(&self) -> Option<&S::Input> {
+        match self {
+            Invocation::Input { input, .. } => Some(input),
+            Invocation::Timer { .. } => None,
+        }
+    }
+
+    fn consumed_offset(&self) -> Option<u64> {
+        match self {
+            Invocation::Input {
+                consumed_offset, ..
+            } => *consumed_offset,
+            Invocation::Timer { .. } => None,
+        }
+    }
+
+    fn replay(&self) -> bool {
+        matches!(self, Invocation::Input { replay: true, .. })
+    }
+
+    /// The firing this invocation is, if it is one — what seeds the timer
+    /// session and what a park still has to record.
+    fn firing(&self) -> Option<(TimerKind, u64)> {
+        match self {
+            Invocation::Timer { fired_at, kind } => Some((*kind, *fired_at)),
+            Invocation::Input { .. } => None,
+        }
+    }
+}
+
+impl<S: Procedure> ProcedureDispatcher for ProcedureDispatcherImpl<S> {
+    fn dispatch(
+        &self,
+        item: EntityItem,
+        state: &mut Box<dyn Any + Send>,
+        flush_buffer: &mut Box<dyn FlushableBuffer>,
+        timers: &mut PendingTimers,
+        instance: &Weak<UnboundedInstance>,
+    ) -> Vec<TimerOp> {
+        let typed_state = state
+            .downcast_mut::<EntityState<S>>()
+            .expect("dispatcher: state type mismatch for procedure");
+        let typed_buffer = flush_buffer
+            .as_any_mut()
+            .downcast_mut::<TypedBuffer<S>>()
+            .expect("dispatcher: flush buffer type mismatch for procedure");
+
+        let mut committed: Vec<TimerOp> = Vec::new();
+        let payload = match item {
+            EntityItem::Timer(fire) => {
+                // The wheel holds no lock on the pending set, so an entry can
+                // outlive the timer: a cancellation, a re-fire after a restore
+                // re-armed it, an Entity restored without it. The set is the
+                // authority — a stale entry fires nothing.
+                if timers.contains(TimerKind::ProcessingTime, fire.scheduled_at) {
+                    self.invoke(
+                        Invocation::Timer {
+                            fired_at: fire.scheduled_at,
+                            kind: TimerKind::ProcessingTime,
+                        },
+                        fire.scheduled_at,
+                        typed_state,
+                        typed_buffer,
+                        timers,
+                        &mut committed,
+                        &fire.stream,
+                        instance,
+                    );
+                }
+                return committed;
+            }
+            EntityItem::Input(payload) => payload,
+        };
+
+        let EntityPayload {
+            value,
+            stream,
+            consumed_offset,
+            replay,
+        } = payload;
+
+        // Downcast value to Arc<S::Input>. Consumers with different
+        // Input types in the same UnboundedOperative downcast independently because
+        // the channel wiring guarantees they only ever receive their
+        // own type.
+        let input_arc = match Arc::downcast::<S::Input>(value) {
+            Ok(arc) => arc,
+            Err(_) => {
+                eprintln!(
+                    "[flezha] dispatcher: payload type mismatch for procedure {}",
+                    S::name()
+                );
+                return committed;
+            }
+        };
+
+        // Zero-copy when the Arc is uniquely held; falls back to a
+        // value clone when fan-out kept it shared. The `Clone` bound on
+        // `Procedure::Input` makes this explicit at the type level.
+        let input: S::Input = Arc::unwrap_or_clone(input_arc);
+
+        let (now, _) = self.invocation_inputs(Some(&input));
+
+        // Late-input correction: decide whether this input runs at all, and
+        // keep the Entity's event-time high-water.
+        if !self.admit_and_track(now, replay) {
+            return committed;
+        }
+
+        // Event-time timers fire on the high-water this input just advanced,
+        // ascending, and BEFORE the input itself — otherwise a window would
+        // close after the record that belongs to the next one.
+        if <S::Clock as crate::procedure::Clock>::IS_EVENT_TIME {
+            let high_water = self.flush.event_time_high_water.load(Ordering::Acquire);
+            if high_water >= 0 {
+                for fired_at in timers.due(TimerKind::EventTime, high_water as u64) {
+                    self.invoke(
+                        Invocation::Timer {
+                            fired_at,
+                            kind: TimerKind::EventTime,
+                        },
+                        fired_at,
+                        typed_state,
+                        typed_buffer,
+                        timers,
+                        &mut committed,
+                        &stream,
+                        instance,
+                    );
+                }
+            }
+        }
+
+        self.invoke(
+            Invocation::Input {
+                input,
+                consumed_offset,
+                replay,
+            },
+            now,
+            typed_state,
+            typed_buffer,
+            timers,
+            &mut committed,
+            &stream,
+            instance,
+        );
+        committed
     }
 
     fn procedure_id(&self) -> ProcedureId {
@@ -709,6 +941,7 @@ impl<S: Procedure> ProcedureDispatcher for ProcedureDispatcherImpl<S> {
     fn restore_state(
         &self,
         state: &mut Box<dyn Any + Send>,
+        timers: &mut PendingTimers,
         snapshot_bytes: &[u8],
         change_log_bytes: &[u8],
         entity_key: Option<&str>,
@@ -725,12 +958,17 @@ impl<S: Procedure> ProcedureDispatcher for ProcedureDispatcherImpl<S> {
         // Rebuild the typed state from snapshot + change-log replay. This runs
         // the same path as cold-start `init_state` + `apply_change`, so a
         // counter that summed to N comes back at N rather than 0.
-        let new_state = init_entity_with_payload::<S>(entity_key, Some(&payload))?;
+        let (new_state, restored_timers) =
+            init_entity_with_payload::<S>(entity_key, Some(&payload))?;
 
         let typed = state
             .downcast_mut::<EntityState<S>>()
             .expect("restore_state: state type mismatch for procedure");
         typed.state = new_state;
+        // Pending timers are folded out of the same log, so a resumed Entity
+        // owes exactly the timers it owed before the crash — no marker, no
+        // side-file, no re-registration by the author.
+        *timers = restored_timers;
 
         // Terminal seq = highest WAL seq applied, so the caller can re-arm the
         // entity's change_seq and post-restore appends continue contiguously
@@ -746,6 +984,7 @@ impl<S: Procedure> ProcedureDispatcher for ProcedureDispatcherImpl<S> {
         &self,
         state: &mut Box<dyn Any + Send>,
         flush_buffer: &mut Box<dyn FlushableBuffer>,
+        timers: &PendingTimers,
     ) -> Result<(Vec<u8>, u64, usize), String> {
         // Drain any buffered-but-unshipped changes FIRST, so the snapshot's
         // state and its seq are captured together (design D3). After the drain
@@ -762,6 +1001,32 @@ impl<S: Procedure> ProcedureDispatcher for ProcedureDispatcherImpl<S> {
             self.flush.persistence_enabled,
         );
 
+        let seq = self
+            .flush
+            .change_seq
+            .load(Ordering::Acquire)
+            .saturating_sub(1);
+
+        // The snapshot body is `S::State` alone, so the timer ops the coming
+        // truncation would delete are re-stated as a full set AFTER the seq is
+        // read — landing at `snapshot_seq + 1`, which `truncate_up_to` keeps.
+        // A crash between the two leaves an untruncated log that still holds
+        // the originals, so neither order can lose a timer.
+        if !timers.is_empty() {
+            flush_buffer
+                .as_any_mut()
+                .downcast_mut::<TypedBuffer<S>>()
+                .expect("snapshot_frame: flush buffer type mismatch for procedure")
+                .timer_ops = timers.as_register_ops();
+            crate::entity::flusher::flush_one(
+                &mut **flush_buffer,
+                &self.flush.entity_identity,
+                &self.flush.change_seq,
+                &self.flush.header,
+                self.flush.persistence_enabled,
+            );
+        }
+
         let typed = state
             .downcast_ref::<EntityState<S>>()
             .ok_or_else(|| "snapshot_frame: state type mismatch for procedure".to_string())?;
@@ -770,11 +1035,6 @@ impl<S: Procedure> ProcedureDispatcher for ProcedureDispatcherImpl<S> {
         let body = postcard::to_allocvec(&typed.state)
             .map_err(|e| format!("snapshot_frame: postcard state encode failed: {e}"))?;
 
-        let seq = self
-            .flush
-            .change_seq
-            .load(Ordering::Acquire)
-            .saturating_sub(1);
         let header = self.flush.header.stamp(&body);
         let frame = crate::entity::flusher::build_entity_frame(
             &self.flush.entity_identity,
@@ -1184,17 +1444,17 @@ const BLOCK_PARK_TIMEOUT: std::time::Duration = std::time::Duration::from_millis
 /// severely behind, and silence here is how the 2026-06-10 freeze hid.
 const BLOCK_WARN_AFTER: std::time::Duration = std::time::Duration::from_secs(5);
 
-pub(crate) fn enqueue(slot: &Arc<EntitySlot>, payload: EntityPayload, policy: OverflowPolicy) {
+pub(crate) fn enqueue(slot: &Arc<EntitySlot>, item: EntityItem, policy: OverflowPolicy) {
     // Open the slice here, on the frame-handling thread, rather than in the
     // drain: the controller's end-of-slice broadcast arrives on this same thread
     // after every slice frame, so opening here guarantees the close can never
     // overtake a member it was meant to include. Opening in the drain would race
     // — a slow drain could see the close first and then buffer members nobody
     // would ever flush.
-    if payload.replay {
+    if matches!(&item, EntityItem::Input(p) if p.replay) {
         slot.replay_open.store(true, Ordering::Release);
     }
-    let mut next = payload;
+    let mut next = item;
     let mut blocked_since: Option<std::time::Instant> = None;
     let mut block_warned = false;
     loop {
@@ -1506,7 +1766,7 @@ fn deliver_to_consumer(
             if let Ok(slot) = registry.get_or_create(&key) {
                 enqueue(
                     &slot,
-                    make_entity_payload(value, stream, consumed_offset, replay),
+                    EntityItem::Input(make_entity_payload(value, stream, consumed_offset, replay)),
                     policy,
                 );
             }
@@ -1519,7 +1779,7 @@ fn deliver_to_consumer(
             {
                 enqueue(
                     slot,
-                    make_entity_payload(value, stream, consumed_offset, replay),
+                    EntityItem::Input(make_entity_payload(value, stream, consumed_offset, replay)),
                     policy,
                 );
             }
@@ -1537,7 +1797,12 @@ fn deliver_to_consumer(
                     if let Some(slot) = entities.get(idx) {
                         enqueue(
                             slot,
-                            make_entity_payload(value, stream, consumed_offset, replay),
+                            EntityItem::Input(make_entity_payload(
+                                value,
+                                stream,
+                                consumed_offset,
+                                replay,
+                            )),
                             policy,
                         );
                     }
@@ -1744,11 +2009,22 @@ pub fn drain_entity(slot: &Arc<EntitySlot>) {
         return;
     }
     loop {
-        while let Some(payload) = slot.mailbox.pop() {
+        while let Some(item) = slot.mailbox.pop() {
             // Free one waiter (if any) before running the dispatcher;
             // the popped slot is now available for the unparked producer
             // to re-attempt its push.
             slot.block_parker.unpark_one();
+            let payload = match item {
+                // A timer firing carries no input-log offset and is never a
+                // replay member, so it skips both gates below and runs under
+                // the same drain exclusion an input does.
+                timer @ EntityItem::Timer(_) => {
+                    maybe_dispatch_replay_slice(slot);
+                    dispatch_one(slot, timer);
+                    continue;
+                }
+                EntityItem::Input(payload) => payload,
+            };
             // Effectively-once crash-replay: the controller re-forwards the
             // journaled input tail; offsets this Entity already durably
             // consumed (restored effect records) are skipped, never re-run.
@@ -1772,7 +2048,7 @@ pub fn drain_entity(slot: &Arc<EntitySlot>) {
             // live input jumps the queue and lands ahead of the very inputs the
             // correction was re-ordering.
             maybe_dispatch_replay_slice(slot);
-            dispatch_one(slot, payload);
+            dispatch_one(slot, EntityItem::Input(payload));
         }
 
         // The mailbox is dry. If a slice is buffered and the controller has
@@ -1838,12 +2114,30 @@ fn maybe_dispatch_replay_slice(slot: &Arc<EntitySlot>) {
 
 /// Run one payload through the Procedure, holding the state and flush-buffer
 /// locks for the invocation.
-fn dispatch_one(slot: &Arc<EntitySlot>, payload: EntityPayload) {
-    let mut state_guard = slot.state.lock_recover();
-    let mut buffer_guard = slot.flush_buffer.lock_recover();
-    let instance_weak = Weak::clone(&slot.instance);
-    slot.dispatcher
-        .dispatch(payload, &mut state_guard, &mut buffer_guard, &instance_weak);
+fn dispatch_one(slot: &Arc<EntitySlot>, item: EntityItem) {
+    // The connection this invocation rides — inherited by any processing-time
+    // timer it arms, so a firing's plugin emits leave the same way an input's
+    // would.
+    let stream = match &item {
+        EntityItem::Input(payload) => Arc::clone(&payload.stream),
+        EntityItem::Timer(fire) => Arc::clone(&fire.stream),
+    };
+    let ops = {
+        let mut state_guard = slot.state.lock_recover();
+        let mut buffer_guard = slot.flush_buffer.lock_recover();
+        let mut timer_guard = slot.timers.lock_recover();
+        let instance_weak = Weak::clone(&slot.instance);
+        slot.dispatcher.dispatch(
+            item,
+            &mut state_guard,
+            &mut buffer_guard,
+            &mut timer_guard,
+            &instance_weak,
+        )
+    };
+    // Outside the locks: arming can fire an already-due timer straight back
+    // onto this slot's mailbox, and the drain that would run it needs them.
+    crate::entity::timer::apply_ops(slot, &ops, &stream);
     crate::entity::DISPATCHES_COMPLETED.fetch_add(1, Ordering::Relaxed);
 }
 
@@ -1876,8 +2170,17 @@ fn dispatch_replay_slice(slot: &Arc<EntitySlot>) {
     // below the truth, and read a genuinely late input as on-time. The slice's
     // payloads raise it by `fetch_max` as they dispatch.
     for payload in slice {
-        dispatch_one(slot, payload);
+        dispatch_one(slot, EntityItem::Input(payload));
     }
+}
+
+/// Whether a Procedure's Entities join the background flusher's drain pass.
+/// One predicate, applied where an Entity is built AND where an invocation has
+/// to decide whether its records will ever be drained for it: a Procedure with
+/// nothing to persist has no entry, so anything timers give it to persist must
+/// be drained on the spot.
+fn flusher_registered<S: Procedure>(effectively_once: bool) -> bool {
+    TypeId::of::<S::Change>() != TypeId::of::<NoChange>() || effectively_once
 }
 
 /// Build one `EntitySlot` for a Procedure. Captures S statically; the
@@ -1962,19 +2265,17 @@ pub fn build_entity_slot<S: Procedure>(args: BuildEntityArgs<'_>) -> Arc<EntityS
     // is conditional. Effectively-once operatives always register: their
     // effect records (outputs + consumed-offset, possibly with no change)
     // drain through the same buffer.
-    let flusher_entry_id =
-        if TypeId::of::<S::Change>() != TypeId::of::<NoChange>() || topology.effectively_once {
-            let flusher = EntityFlusher::instance();
-            Some(flusher.register(
-                Arc::clone(&entity_identity),
-                Arc::clone(&flush_buffer),
-                args.persistence_enabled,
-                Arc::clone(&change_seq),
-                HeaderTemplate::for_procedure::<S>(),
-            ))
-        } else {
-            None
-        };
+    let flusher_entry_id = if flusher_registered::<S>(topology.effectively_once) {
+        Some(EntityFlusher::instance().register(
+            Arc::clone(&entity_identity),
+            Arc::clone(&flush_buffer),
+            args.persistence_enabled,
+            Arc::clone(&change_seq),
+            HeaderTemplate::for_procedure::<S>(),
+        ))
+    } else {
+        None
+    };
 
     Arc::new(EntitySlot {
         state: std::sync::Mutex::new(Box::new(typed_state)),
@@ -1998,6 +2299,7 @@ pub fn build_entity_slot<S: Procedure>(args: BuildEntityArgs<'_>) -> Arc<EntityS
         entity_identity,
         last_activity_at: std::sync::atomic::AtomicI64::new(crate::entity::dynamic::now_millis()),
         flusher_entry_id,
+        timers: Mutex::new(PendingTimers::default()),
     })
 }
 
@@ -2115,6 +2417,33 @@ mod tests {
         assert_eq!(captured[0].payload, b"v".to_vec());
     }
 
+    /// A bounded stage and a `compensate` hook both get a context with no
+    /// timer session — the two places the design excludes. The refusal is
+    /// structural (there is nothing to register into), and typed rather than
+    /// a silent drop.
+    #[test]
+    fn a_context_without_a_timer_session_refuses_rather_than_dropping() {
+        let topology =
+            crate::operative::builder::build_topology_for::<KeyedOperative>().expect("topology");
+        let mut collect = NullCollect::default();
+        let mut adapter = BoundedCollectAdapter {
+            sink: &mut collect,
+            output_channel_id: topology.lookup_channel_id("out"),
+            output_channel_kind: ChannelKind::PluginBound,
+            output_channel_name: Some("out"),
+            topology: &topology,
+            effect_outputs: None,
+        };
+        let ctx = ProcedureCtx::new(&mut adapter, 0, 0, b"bounded/keyed/");
+        let err = ctx
+            .timer_after(std::time::Duration::from_secs(1))
+            .expect_err("a session-less context must refuse");
+        assert!(err.to_string().contains("not available"), "{err}");
+        assert!(ctx.timer_at_event_time(1).is_err());
+        assert!(ctx.cancel_processing_time_timer(1).is_err());
+        assert!(ctx.cancel_event_time_timer(1).is_err());
+    }
+
     #[derive(serde::Serialize, serde::Deserialize)]
     struct AddChange(i64);
     impl crate::procedure::change::Change for AddChange {}
@@ -2184,7 +2513,7 @@ mod tests {
         let mut buffer: Box<dyn FlushableBuffer> = Box::new(TypedBuffer::<CounterProc>::default());
 
         let (frame, seq, size) = dispatcher
-            .snapshot_frame(&mut state, &mut buffer)
+            .snapshot_frame(&mut state, &mut buffer, &PendingTimers::default())
             .expect("snapshot_frame must succeed for a live-typed state");
         assert_eq!(
             seq, 2,
@@ -2204,7 +2533,7 @@ mod tests {
             snapshot_bytes: body,
             change_log_bytes: &[],
         };
-        let restored = init_entity_with_payload::<CounterProc>(None, Some(&payload))
+        let (restored, _timers) = init_entity_with_payload::<CounterProc>(None, Some(&payload))
             .expect("the snapshot body must decode through the restore path");
         assert_eq!(
             restored, 115,

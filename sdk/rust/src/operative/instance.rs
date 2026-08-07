@@ -2,11 +2,12 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::thread::JoinHandle;
 
 use crate::channel::builder::BuildEntityArgs;
 use crate::entity::dynamic::{spawn_reaper, DynamicEntityRegistry};
+use crate::entity::timer::{spawn_wheel, TimerWheel};
 use crate::entity::EntitySlot;
 use crate::operative::persistence::resolve_persistence_enabled;
 use crate::operative::topology::{EntityMode, OperativeTopology};
@@ -26,10 +27,15 @@ pub struct UnboundedInstance {
     /// Indexed by `ProcedureId`. `Some` only for dynamic-mode procedures; holds
     /// the lazily-populated entity map + reaper-facing counters.
     pub dynamic_registries: Vec<Option<Arc<DynamicEntityRegistry>>>,
-    /// Stop flag + join handles for this instance's reaper threads (one per
-    /// dynamic Procedure with a TTL). Driven by [`Self::shutdown_reapers`] / `Drop`.
-    reaper_stop: Arc<AtomicBool>,
-    reaper_handles: Mutex<Vec<JoinHandle<()>>>,
+    /// Stop flag + join handles for this instance's background threads: one
+    /// reaper per dynamic Procedure with a TTL, plus the timer wheel once
+    /// something arms a processing-time timer. Driven by
+    /// [`Self::shutdown_background_threads`] / `Drop`.
+    background_stop: Arc<AtomicBool>,
+    background_handles: Mutex<Vec<JoinHandle<()>>>,
+    /// Processing-time timer wheel, created on the first registration. An
+    /// Operative that never uses one never pays for a thread.
+    timer_wheel: OnceLock<Arc<TimerWheel>>,
     /// Frozen-at-instance-start persistence flag. Resolved from the
     /// UnboundedOperative class const + runner override; propagated to every
     /// `EntitySlot`. Subsequent runner config changes do not
@@ -125,16 +131,16 @@ impl UnboundedInstance {
             // One reaper per dynamic Procedure that opts into a TTL. Default
             // `idle_ttl == None` spawns none — dynamic Entities then live
             // as long as the UnboundedOperative, like static ones.
-            let reaper_stop = Arc::new(AtomicBool::new(false));
-            let mut reaper_handles: Vec<JoinHandle<()>> = Vec::new();
+            let background_stop = Arc::new(AtomicBool::new(false));
+            let mut background_handles: Vec<JoinHandle<()>> = Vec::new();
             for (procedure_id, registry) in dynamic_registries.iter().enumerate() {
                 if let (Some(registry), Some(idle_ttl)) =
                     (registry, topology.procedures[procedure_id].idle_ttl)
                 {
-                    reaper_handles.push(spawn_reaper(
+                    background_handles.push(spawn_reaper(
                         idle_ttl,
                         Arc::clone(registry),
-                        Arc::clone(&reaper_stop),
+                        Arc::clone(&background_stop),
                     ));
                 }
             }
@@ -145,8 +151,9 @@ impl UnboundedInstance {
                 entities,
                 entity_key_to_idx,
                 dynamic_registries,
-                reaper_stop,
-                reaper_handles: Mutex::new(reaper_handles),
+                background_stop,
+                background_handles: Mutex::new(background_handles),
+                timer_wheel: OnceLock::new(),
                 persistence_enabled,
             }
         })
@@ -158,16 +165,51 @@ impl UnboundedInstance {
         self.persistence_enabled
     }
 
-    /// Stop and join this instance's reaper threads. Called by
-    /// `RunnerNode::stop_operative`; idempotent and a no-op for non-dynamic
-    /// instances (no reapers).
-    pub fn shutdown_reapers(&self) {
-        self.reaper_stop
-            .store(true, std::sync::atomic::Ordering::Release);
-        let handles =
-            std::mem::take(&mut *self.reaper_handles.lock().expect("reaper handles poisoned"));
+    /// This instance's processing-time timer wheel, spawning its thread on the
+    /// first call. One wheel per Operative: it keys entries by
+    /// `(procedure, entity_key, scheduled_at)`, so one thread serves every
+    /// Entity the instance owns.
+    pub fn timer_wheel(&self) -> Arc<TimerWheel> {
+        Arc::clone(self.timer_wheel.get_or_init(|| {
+            let wheel = TimerWheel::new();
+            self.background_handles
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push(spawn_wheel(Arc::clone(&wheel)));
+            wheel
+        }))
+    }
+
+    /// The wheel if one exists. For callers that only ever REMOVE entries —
+    /// creating a wheel (and its thread) to drop timers that cannot exist
+    /// would be backwards.
+    pub fn timer_wheel_if_started(&self) -> Option<&Arc<TimerWheel>> {
+        self.timer_wheel.get()
+    }
+
+    /// Stop and join this instance's background threads (reapers + the timer
+    /// wheel). Called by `RunnerNode::stop_operative`; idempotent and a no-op
+    /// for an instance that started none.
+    pub fn shutdown_background_threads(&self) {
+        self.signal_background_stop();
+        let handles = std::mem::take(
+            &mut *self
+                .background_handles
+                .lock()
+                .unwrap_or_else(|p| p.into_inner()),
+        );
         for handle in handles {
             let _ = handle.join();
+        }
+    }
+
+    /// Ask every background thread to wind down. The wheel parks on a condvar
+    /// rather than a sleep, so it needs the signal as well as the flag.
+    fn signal_background_stop(&self) {
+        self.background_stop
+            .store(true, std::sync::atomic::Ordering::Release);
+        if let Some(wheel) = self.timer_wheel.get() {
+            wheel.stop();
         }
     }
 }
@@ -175,10 +217,9 @@ impl UnboundedInstance {
 impl Drop for UnboundedInstance {
     fn drop(&mut self) {
         // Safety net for an instance dropped without `stop_operative`: signal the
-        // reapers (don't join — Drop must not block on a sweep interval) so
-        // each thread and its `Arc<DynamicEntityRegistry>` wind down.
-        self.reaper_stop
-            .store(true, std::sync::atomic::Ordering::Release);
+        // background threads (don't join — Drop must not block on a sweep
+        // interval) so each thread and the state it holds wind down.
+        self.signal_background_stop();
     }
 }
 

@@ -115,6 +115,7 @@ pub mod testing;
 /// `Change` types and route mutations through `state.apply(...)`.
 pub mod state {
     pub use crate::entity::restore::{RestoreError, RestoreInitPayload};
+    pub use crate::entity::timer::TimerKind;
     pub use crate::procedure::change::{Change, CoalesceKey, NoChange};
     pub use crate::procedure::clock::{
         Clock, ClockFor, EventTimeFrom, LogicalClock, TimeExtractor, WallClock,
@@ -132,6 +133,7 @@ pub use channel::{
     Channel, ChannelBuilder, EntryStream, Merge, MergeSource, OverflowPolicy, RetryPolicy, Stream,
 };
 use crossbeam::channel::{Receiver, Sender};
+pub use entity::timer::TimerKind;
 pub use entity::{RestoreError, RestoreInitPayload};
 /// Authoring sugar. `#[flezha::procedure]`, `#[derive(flezha::State)]`, and
 /// `flezha::operative!` expand to the trait surface above; see

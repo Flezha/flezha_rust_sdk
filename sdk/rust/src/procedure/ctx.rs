@@ -1,8 +1,10 @@
 use std::any::Any;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
+use crate::entity::timer::{TimerKind, TimerSession};
 use crate::procedure::error::ProcedureError;
 use crate::procedure::spawn::{self, IfRunning, SpawnHandle, SpawnOutcome};
 
@@ -28,6 +30,10 @@ pub struct ProcedureCtx<'a> {
     stable_id_ordinal: Cell<u32>,
     checkpoint: bool,
     replay: bool,
+    /// Timer surface for this invocation. `None` where timers do not apply —
+    /// a bounded operative's stage (it has its own wake model) and a
+    /// `compensate` hook — so the refusal is structural, not a runtime check.
+    timers: Option<&'a RefCell<TimerSession>>,
 }
 
 /// Replay-stable 128-bit identifier returned by [`ProcedureCtx::stable_id`].
@@ -128,7 +134,15 @@ impl<'a> ProcedureCtx<'a> {
             stable_id_ordinal: Cell::new(0),
             checkpoint: false,
             replay: false,
+            timers: None,
         }
+    }
+
+    /// Attach this invocation's timer session. Set by the unbounded dispatcher
+    /// for `run` and `on_timer`; every other construction site leaves it off.
+    pub(crate) fn with_timers(mut self, timers: &'a RefCell<TimerSession>) -> Self {
+        self.timers = Some(timers);
+        self
     }
 
     /// Mark the invocation as a replay of already-processed input. Set by the
@@ -200,6 +214,10 @@ impl<'a> ProcedureCtx<'a> {
     /// crash-resume or a late-input correction re-running this invocation —
     /// issues no request and answers [`SpawnOutcome::SkippedOnReplay`], so a
     /// replay never doubles the workers a run created.
+    ///
+    /// The timer calls on this same context behave the OPPOSITE way and
+    /// deliberately so: a timer is internal state, so a replay registers it,
+    /// where skipping would rebuild a pending set the live run never had.
     pub fn spawn_bounded(
         &self,
         instance_id: impl Into<String>,
@@ -216,6 +234,61 @@ impl<'a> ProcedureCtx<'a> {
             );
         }
         spawn::request(instance_id, factory_id, payload.into(), if_running)
+    }
+
+    /// Register an **event-time** timer at an absolute timestamp, returning
+    /// that timestamp. It fires when this Entity's event-time high-water
+    /// reaches it — so an Entity that stops receiving input never fires one,
+    /// however much wall-clock time passes. That is inherent to event time;
+    /// [`Self::timer_after`] is the answer to "nothing has arrived".
+    ///
+    /// Refused with [`ProcedureError::EventTimeTimerWithoutEventTimeClock`]
+    /// unless the Procedure declares `type Clock = EventTimeFrom<_>`: without
+    /// one there is no high-water to fire against.
+    ///
+    /// Registering the same timestamp twice is idempotent — pending timers are
+    /// a set. Handle the firing in [`Procedure::on_timer`].
+    ///
+    /// [`Procedure::on_timer`]: crate::procedure::Procedure::on_timer
+    pub fn timer_at_event_time(&self, scheduled_at: u64) -> Result<u64, ProcedureError> {
+        self.timers()?
+            .borrow_mut()
+            .register_at_event_time(scheduled_at)
+    }
+
+    /// Register a **processing-time** timer `delay` after [`Self::now`],
+    /// returning the absolute timestamp it is scheduled at.
+    ///
+    /// The anchor is `ctx.now()` — the declared Clock — not an ambient read,
+    /// which is what makes a replayed invocation register the same absolute
+    /// timestamp the live one did. Under an `EventTimeFrom` clock the anchor is
+    /// therefore the input's event time; a stream that is caught up schedules
+    /// the same instant a wall clock would, and one replaying history schedules
+    /// a past instant, which fires at once.
+    pub fn timer_after(&self, delay: Duration) -> Result<u64, ProcedureError> {
+        self.timers()?.borrow_mut().register_after(delay)
+    }
+
+    /// Cancel a pending event-time timer by the timestamp
+    /// [`Self::timer_at_event_time`] returned. `false` if none was pending.
+    pub fn cancel_event_time_timer(&self, scheduled_at: u64) -> Result<bool, ProcedureError> {
+        Ok(self
+            .timers()?
+            .borrow_mut()
+            .cancel(TimerKind::EventTime, scheduled_at))
+    }
+
+    /// Cancel a pending processing-time timer by the timestamp
+    /// [`Self::timer_after`] returned. `false` if none was pending.
+    pub fn cancel_processing_time_timer(&self, scheduled_at: u64) -> Result<bool, ProcedureError> {
+        Ok(self
+            .timers()?
+            .borrow_mut()
+            .cancel(TimerKind::ProcessingTime, scheduled_at))
+    }
+
+    fn timers(&self) -> Result<&'a RefCell<TimerSession>, ProcedureError> {
+        self.timers.ok_or(ProcedureError::TimersUnavailable)
     }
 
     /// Emit a typed value on the producer-edge channel for this Procedure.

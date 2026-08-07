@@ -32,6 +32,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .define_unbounded::<HybridChannelOperative>()?
         .define_unbounded::<ResumeProbeOperative>()?
         .define_unbounded::<DynamicEntityOperative>()?
+        .define_unbounded::<SessionTimeoutOperative>()?
         .define_unbounded::<MixedOperative>()?
         .define_unbounded::<TierStoreOperative>()?
         .define_unbounded::<CheckpointStoreOperative>()?
@@ -1012,6 +1013,91 @@ impl UnboundedOperative for DynamicEntityOperative {
             .filter(|input: &String| input != "drop")
             .key_by(|input: &String| input.split(':').next().unwrap_or(input).to_string())
             .into::<DynamicEntityProcedure>()
+            .named("kafka")
+            .output("test_kafka");
+    }
+}
+
+// -- SessionTimeoutOperative --------------------------------------------------
+//
+// The worked session-timeout shape (`entity-timers`): each input pushes the
+// idle deadline out, and the firing closes the session. Single-entity so the
+// e2e's crash-resume half exercises a durable Entity on both runtimes. The
+// timeout is read from `TIMER_TEST_TIMEOUT_MS` (the e2e sets it short).
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+struct SessionState {
+    touched: Vec<String>,
+    closed_at: Vec<u64>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+enum SessionChange {
+    Touched(String),
+    Closed(u64),
+}
+impl Change for SessionChange {}
+
+fn session_timeout_ms() -> u64 {
+    env::var("TIMER_TEST_TIMEOUT_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1_000)
+}
+
+#[derive(Default)]
+struct SessionTimeoutProcedure;
+impl Procedure for SessionTimeoutProcedure {
+    type Input = String;
+    type Output = Vec<u8>;
+    type State = SessionState;
+    type Change = SessionChange;
+    type Clock = WallClock;
+    type Config = ();
+    fn name() -> &'static str {
+        "session_timeout_procedure"
+    }
+    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> SessionState {
+        SessionState::default()
+    }
+    fn apply_change(state: &mut SessionState, change: &SessionChange) {
+        match change {
+            SessionChange::Touched(s) => state.touched.push(s.clone()),
+            SessionChange::Closed(at) => state.closed_at.push(*at),
+        }
+    }
+    fn run(
+        &mut self,
+        input: String,
+        mut state: StateHandle<'_, Self>,
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
+        state.apply(SessionChange::Touched(input));
+        // A processing-time timer, because the answer to "nothing has arrived"
+        // cannot be an event-time one: nothing would advance the clock.
+        ctx.timer_after(Duration::from_millis(session_timeout_ms()))?;
+        Ok(())
+    }
+    fn on_timer(
+        &mut self,
+        fired_at: u64,
+        _kind: flezha_runner::state::TimerKind,
+        mut state: StateHandle<'_, Self>,
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
+        state.apply(SessionChange::Closed(fired_at));
+        ctx.emit::<Vec<u8>>(format!("closed@{fired_at}").into_bytes())
+    }
+}
+
+struct SessionTimeoutOperative;
+impl UnboundedOperative for SessionTimeoutOperative {
+    fn factory_id() -> &'static str {
+        "session_timeout"
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("input")
+            .into::<SessionTimeoutProcedure>()
             .named("kafka")
             .output("test_kafka");
     }

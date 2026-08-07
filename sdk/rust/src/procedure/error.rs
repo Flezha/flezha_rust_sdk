@@ -32,6 +32,24 @@ pub enum ProcedureError {
     )]
     ReservedMetadataKey { key: String },
 
+    #[error(
+        "procedure `{procedure}` declares clock `{clock}`, which does not derive time from the \
+         input; an event-time timer needs `type Clock = EventTimeFrom<_>`"
+    )]
+    EventTimeTimerWithoutEventTimeClock { procedure: String, clock: String },
+
+    #[error(
+        "procedure `{procedure}` already holds its maximum of {max} pending timers for this \
+         Entity; cancel one or raise `max_timers_per_entity()`"
+    )]
+    TimerCapExceeded { procedure: String, max: usize },
+
+    #[error(
+        "timers are not available in this context; only an unbounded operative's `run` / \
+         `on_timer` may register them"
+    )]
+    TimersUnavailable,
+
     #[error("procedure error: {0}")]
     Custom(String),
 

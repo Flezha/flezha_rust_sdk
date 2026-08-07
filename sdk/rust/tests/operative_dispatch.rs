@@ -612,7 +612,7 @@ fn drop_oldest_evicts_head_and_bumps_oldest_counter() {
     // Surface the surviving pair without going through the WS pool: pop
     // the mailbox manually and verify recency wins.
     let mut surviving = Vec::new();
-    while let Some(payload) = slot.mailbox.pop() {
+    while let Some(flezha_runner::entity::EntityItem::Input(payload)) = slot.mailbox.pop() {
         let any_ref: &dyn std::any::Any = &*payload.value;
         let bytes = any_ref
             .downcast_ref::<Vec<u8>>()
@@ -1548,7 +1548,13 @@ fn keyed_stamps_replay_identically_after_crash_restore() {
     let terminal = {
         let mut guard = slot.state.lock().unwrap();
         slot.dispatcher
-            .restore_state(&mut guard, &[], &change_log, None)
+            .restore_state(
+                &mut guard,
+                &mut flezha_runner::entity::timer::PendingTimers::default(),
+                &[],
+                &change_log,
+                None,
+            )
             .expect("restore_state")
     };
     assert_eq!(terminal, 0);
@@ -1845,7 +1851,13 @@ fn logical_clock_serves_change_seq_and_survives_restore_rearm() {
     let terminal = {
         let mut guard = slot.state.lock().unwrap();
         slot.dispatcher
-            .restore_state(&mut guard, &[], &change_log, None)
+            .restore_state(
+                &mut guard,
+                &mut flezha_runner::entity::timer::PendingTimers::default(),
+                &[],
+                &change_log,
+                None,
+            )
             .expect("restore_state")
     };
     assert_eq!(terminal, 1);
@@ -2349,7 +2361,9 @@ fn a_restore_discards_queued_input_only_where_the_controller_re_forwards_it() {
         assert!(
             instance.entities[0][0]
                 .mailbox
-                .try_push(make_entity_payload(&value, &stream, None, false))
+                .try_push(flezha_runner::entity::EntityItem::Input(
+                    make_entity_payload(&value, &stream, None, false),
+                ))
                 .is_ok(),
             "mailbox has room"
         );

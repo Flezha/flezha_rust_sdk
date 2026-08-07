@@ -27,6 +27,7 @@ pub mod park;
 pub mod restore;
 pub mod retry;
 pub mod state_sink;
+pub mod timer;
 
 use std::any::Any;
 use std::collections::VecDeque;
@@ -84,7 +85,16 @@ pub fn make_entity_payload(
     }
 }
 
-pub type EntityMailbox = Arc<Mailbox<EntityPayload>>;
+/// One item in an Entity's mailbox. A timer firing is queued here rather than
+/// invoked where it expires, so the single-active-drainer gate that already
+/// serializes inputs serializes `on_timer` against `run` too — no second lock,
+/// no second concurrency model.
+pub enum EntityItem {
+    Input(EntityPayload),
+    Timer(timer::TimerFire),
+}
+
+pub type EntityMailbox = Arc<Mailbox<EntityItem>>;
 
 /// Producer-side observability for one Entity. All counters are
 /// monotonic, written by producers under [`std::sync::atomic::Ordering::Relaxed`],
@@ -317,6 +327,11 @@ pub struct EntitySlot {
     /// dynamic-mode reaper passes it to `EntityFlusher::deregister` on
     /// eviction so an evicted Entity's buffer is no longer drained.
     pub flusher_entry_id: Option<crate::entity::flusher::FlusherEntryId>,
+    /// Pending timers, folded from the `TimerOp` records in this Entity's own
+    /// change log. Held beside the state and taken under the same lock order
+    /// (state → flush buffer → timers) so a firing observes exactly the set the
+    /// invocation that registered it left behind.
+    pub timers: Mutex<timer::PendingTimers>,
 }
 
 impl EntitySlot {
@@ -369,13 +384,18 @@ impl EntitySlot {
 }
 
 pub trait ProcedureDispatcher: Send + Sync + 'static {
+    /// Run one mailbox item — an input through `Procedure::run`, or a timer
+    /// through `Procedure::on_timer`. Returns the timer ops the invocation
+    /// committed, so the caller (which holds the slot) can arm or disarm them
+    /// on the Operative's wheel; the pending set itself is already updated.
     fn dispatch(
         &self,
-        payload: EntityPayload,
+        item: EntityItem,
         state: &mut Box<dyn Any + Send>,
         flush_buffer: &mut Box<dyn flusher::FlushableBuffer>,
+        timers: &mut timer::PendingTimers,
         instance: &Weak<crate::operative::instance::UnboundedInstance>,
-    );
+    ) -> Vec<timer::TimerOp>;
 
     fn procedure_id(&self) -> ProcedureId;
 
@@ -428,9 +448,13 @@ pub trait ProcedureDispatcher: Send + Sync + 'static {
     /// control-channel `RestoreInitState` handler — which has no `S` — can
     /// re-seed a live entity after a runner restart. Mirrors the
     /// downcast pattern used by `dispatch`.
+    /// `timers` is rebuilt in place from the same change log: the pending set
+    /// is folded state, so it comes back through the fold rather than through
+    /// a side-file of its own.
     fn restore_state(
         &self,
         state: &mut Box<dyn Any + Send>,
+        timers: &mut timer::PendingTimers,
         snapshot_bytes: &[u8],
         change_log_bytes: &[u8],
         entity_key: Option<&str>,
@@ -447,10 +471,16 @@ pub trait ProcedureDispatcher: Send + Sync + 'static {
     /// — which has no `S` — can produce a snapshot without the JSON migration
     /// serializer. Mirrors `restore_state`; the body is postcard, the codec
     /// `restore.rs` decodes.
+    /// The snapshot covers `S::State` only. `timers` is re-stated as a fresh
+    /// full-set record at a seq ABOVE `snapshot_seq`, so the truncation the
+    /// snapshot authorizes cannot take the pending timers with it — and a
+    /// crash between the two leaves the untruncated log, which still holds
+    /// them.
     fn snapshot_frame(
         &self,
         state: &mut Box<dyn Any + Send>,
         flush_buffer: &mut Box<dyn flusher::FlushableBuffer>,
+        timers: &timer::PendingTimers,
     ) -> Result<(Vec<u8>, u64, usize), String>;
 }
 

@@ -22,6 +22,7 @@ use crate::entity::restore::iter_change_log_records;
 use crate::entity::EntitySlot;
 use crate::pb::{RestoreInitState, RestoreInitStateResponse};
 use crate::runner::RunnerNode;
+use crate::util::LockRecover;
 
 impl CommandAction for RestoreInitState {
     fn handle(
@@ -86,13 +87,16 @@ fn restore_into_slot(
         Ok(g) => g,
         Err(poisoned) => poisoned.into_inner(),
     };
+    let mut timers = slot.timers.lock_recover();
     match slot.dispatcher.restore_state(
         &mut guard,
+        &mut timers,
         &cmd.snapshot_bytes,
         &cmd.change_log_bytes,
         slot.entity_key.as_deref(),
     ) {
         Ok(t) => {
+            drop(timers);
             drop(guard);
             slot.change_seq.store(t + 1, Ordering::Release);
 
@@ -129,6 +133,11 @@ fn restore_into_slot(
                 cursors.event_time_high_water.map_or(-1, |t| t as i64),
                 Ordering::Release,
             );
+            // Pending timers came back with the state; the processing-time ones
+            // need an entry on the wheel again. Anything already past its
+            // deadline fires on the next pass, ascending. Event-time timers
+            // need nothing — the restored high-water is their trigger.
+            crate::entity::timer::rearm_restored(slot);
             t
         }
         Err(e) => {

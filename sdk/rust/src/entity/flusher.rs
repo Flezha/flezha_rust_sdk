@@ -131,6 +131,12 @@ pub struct DlqEntryBody {
 /// `EventTimeFrom` clock it is the extracted event time, which is what makes
 /// the controller's event-time → seq → input-offset lookup a read rather than
 /// a guess — the correction baseline rests on it.
+///
+/// `timers` carries the invocation's mutations of the Entity's pending-timer
+/// set. A firing's removal rides here beside the Changes and outputs it
+/// produced, which is what makes the firing exactly-once under the tier: a
+/// crash between "fired" and "durable" replays the whole thing, because
+/// neither the effects nor the removal landed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EffectRecordBody {
     pub changes: Vec<Vec<u8>>,
@@ -138,6 +144,7 @@ pub struct EffectRecordBody {
     pub consumed_offset: Option<u64>,
     pub dlq: Option<DlqEntryBody>,
     pub event_time: u64,
+    pub timers: Vec<crate::entity::timer::TimerOp>,
 }
 
 /// One invocation's buffered effect entry (effectively-once tier). Typed on
@@ -148,6 +155,7 @@ pub struct EffectEntry<S: crate::procedure::Procedure> {
     pub consumed_offset: Option<u64>,
     pub dlq: Option<DlqEntryBody>,
     pub event_time: u64,
+    pub timers: Vec<crate::entity::timer::TimerOp>,
 }
 
 /// One drained wire frame plus the data-stream payload id it ships under
@@ -200,10 +208,20 @@ pub trait FlushableBuffer: Send + Any {
 /// together with the offset that acknowledges them. Draining them on their own
 /// would put the state ahead of its offset, which is the tear the mode exists
 /// to prevent.
+/// `timer_ops` is the tier-off home for pending-timer mutations: outside the
+/// tier there is no effect record to ride, so they drain as their own
+/// `format_id = 3` record. Under the tier they ride `EffectEntry::timers`
+/// instead and this stays empty.
 pub struct TypedBuffer<S: crate::procedure::Procedure> {
     pub inner: Vec<S::Change>,
     pub staged: Vec<S::Change>,
     pub effects: Vec<EffectEntry<S>>,
+    pub timer_ops: Vec<crate::entity::timer::TimerOp>,
+    /// `staged`'s counterpart for timer ops: an open checkpoint interval's
+    /// registrations are as unacknowledged as the changes beside them, and
+    /// shipping one alone would leave a timer pending for a state the restore
+    /// never rebuilds.
+    pub staged_timers: Vec<crate::entity::timer::TimerOp>,
 }
 
 impl<S: crate::procedure::Procedure> Default for TypedBuffer<S> {
@@ -212,6 +230,8 @@ impl<S: crate::procedure::Procedure> Default for TypedBuffer<S> {
             inner: Vec::new(),
             staged: Vec::new(),
             effects: Vec::new(),
+            timer_ops: Vec::new(),
+            staged_timers: Vec::new(),
         }
     }
 }
@@ -239,6 +259,21 @@ impl<S: crate::procedure::Procedure> FlushableBuffer for TypedBuffer<S> {
                 }
             }));
         }
+        // Timer ops fold into the pending set, never into `S::State`, so their
+        // order relative to the change records above is immaterial — only
+        // their order among themselves is, and that is the Vec's.
+        if !self.timer_ops.is_empty() {
+            let seq = change_seq.fetch_add(1, Ordering::Relaxed);
+            frames.push(FlushFrame {
+                payload_id: crate::entity::state_sink::ENTITY_STATE_CHANGE_PAYLOAD_ID,
+                bytes: build_entity_timer_ops_frame(
+                    entity_identity,
+                    seq,
+                    header,
+                    &std::mem::take(&mut self.timer_ops),
+                ),
+            });
+        }
         // Effect records are never coalesced or merged: a coalesced-away
         // record would drop its outputs and consumed-offset.
         if !self.effects.is_empty() {
@@ -260,11 +295,12 @@ impl<S: crate::procedure::Procedure> FlushableBuffer for TypedBuffer<S> {
     }
 
     fn is_empty(&self) -> bool {
-        self.inner.is_empty() && self.effects.is_empty()
+        self.inner.is_empty() && self.effects.is_empty() && self.timer_ops.is_empty()
     }
 
     fn discard_staged(&mut self) {
         self.staged.clear();
+        self.staged_timers.clear();
     }
 
     fn as_any_mut(&mut self) -> &mut dyn Any {
@@ -338,6 +374,7 @@ pub fn build_entity_effect_record_frame<S: crate::procedure::Procedure>(
         consumed_offset: entry.consumed_offset,
         dlq: entry.dlq,
         event_time: entry.event_time,
+        timers: entry.timers,
     };
     let body_bytes = postcard::to_allocvec(&body)
         .expect("postcard serialization of EffectRecordBody cannot fail");
@@ -347,6 +384,26 @@ pub fn build_entity_effect_record_frame<S: crate::procedure::Procedure>(
     };
     let header_bytes = effect_header.stamp(&body_bytes);
     build_entity_frame(entity_identity, seq, &header_bytes, &body_bytes)
+}
+
+/// Build one `format_id = 3` timer-ops record: the body is the postcard
+/// `Vec<TimerOp>` the restore fold applies to the Entity's pending set. Ships
+/// under the ordinary `entity_state_change` payload-id — the controller stores
+/// it, truncates it and hands it back with every other record, and never
+/// decodes it.
+pub fn build_entity_timer_ops_frame(
+    entity_identity: &[u8],
+    seq: u64,
+    header: &HeaderTemplate,
+    ops: &[crate::entity::timer::TimerOp],
+) -> Vec<u8> {
+    let body = postcard::to_allocvec(ops).expect("postcard serialization of TimerOp cannot fail");
+    let timer_header = HeaderTemplate {
+        format_id: crate::entity::header::FORMAT_ID_TIMER_OPS,
+        ..*header
+    };
+    let header_bytes = timer_header.stamp(&body);
+    build_entity_frame(entity_identity, seq, &header_bytes, &body)
 }
 
 /// Build one wire frame from already-serialized body bytes. Used by the
@@ -678,6 +735,10 @@ mod tests {
             }],
             consumed_offset: Some(4711),
             dlq: None,
+            timers: vec![crate::entity::timer::TimerOp::register(
+                crate::entity::timer::TimerKind::ProcessingTime,
+                31_000,
+            )],
         };
         let template = HeaderTemplate::new(0x010203, 1);
         let identity = encode_entity_identity("Proc", "stage", "k");
@@ -749,6 +810,10 @@ mod tests {
             consumed_offset: Some(4711),
             dlq: None,
             event_time: 1_700_000_000_123,
+            timers: vec![crate::entity::timer::TimerOp::register(
+                crate::entity::timer::TimerKind::ProcessingTime,
+                31_000,
+            )],
         };
         let bytes = postcard::to_allocvec(&body).unwrap();
         assert_eq!(
@@ -762,6 +827,8 @@ mod tests {
                 0x01, 0xE7, 0x24, // Some(4711)
                 0x00, // dlq: None
                 0xFB, 0xD0, 0x95, 0xFF, 0xBC, 0x31, // event_time: 1700000000123
+                0x01, 0x01, 0x98, 0xF2, 0x01,
+                0x01, // timers: 1 × register ProcessingTime @ 31000
             ]
         );
     }
@@ -785,6 +852,7 @@ mod tests {
             }],
             consumed_offset: Some(ts),
             dlq: None,
+            timers: Vec::new(),
         };
         let mut buffer = TypedBuffer::<EffProc> {
             effects: vec![mk(1), mk(2)],

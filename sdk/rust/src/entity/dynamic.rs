@@ -164,6 +164,17 @@ impl DynamicEntityRegistry {
             if let Some(id) = slot.flusher_entry_id {
                 EntityFlusher::instance().deregister(id);
             }
+            // Eviction is destructive and a recreate cold-starts, so the
+            // Entity's timers go with its state. Dropping them here releases
+            // the wheel memory now instead of at each deadline.
+            if let Some(wheel) = slot
+                .instance
+                .upgrade()
+                .as_ref()
+                .and_then(|i| i.timer_wheel_if_started())
+            {
+                wheel.discard_entity(self.procedure_id, &key);
+            }
             if slot.persistence_enabled {
                 send_delete_entity_state(&slot.entity_identity);
             }

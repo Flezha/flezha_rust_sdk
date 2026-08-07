@@ -23,6 +23,12 @@ pub const FORMAT_ID_POSTCARD: u8 = 1;
 /// lets mixed WALs (plain change records + effect records) stay readable.
 pub const FORMAT_ID_EFFECT_RECORD: u8 = 2;
 
+/// Timer-ops format id: the body is a postcard `Vec<TimerOp>` mutating the
+/// Entity's pending-timer set. Rides the ordinary `entity_state_change`
+/// payload-id, so the controller stores and truncates it exactly as it does a
+/// change record and needs to know nothing about timers.
+pub const FORMAT_ID_TIMER_OPS: u8 = 3;
+
 /// Parsed view of the 16-byte header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DecodedHeader {
@@ -119,6 +125,17 @@ pub fn validate_header_for_effect_record<S: crate::procedure::Procedure>(
     header: &DecodedHeader,
 ) -> Result<(), RestoreError> {
     if header.format_id != FORMAT_ID_EFFECT_RECORD {
+        return Err(RestoreError::HeaderInvalid);
+    }
+    validate_lang_and_schema::<S>(header)
+}
+
+/// Validate a header attached to a timer-ops record: same language + schema
+/// checks, `format_id = 3`.
+pub fn validate_header_for_timer_ops<S: crate::procedure::Procedure>(
+    header: &DecodedHeader,
+) -> Result<(), RestoreError> {
+    if header.format_id != FORMAT_ID_TIMER_OPS {
         return Err(RestoreError::HeaderInvalid);
     }
     validate_lang_and_schema::<S>(header)

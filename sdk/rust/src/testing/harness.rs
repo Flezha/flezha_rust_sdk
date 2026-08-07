@@ -21,6 +21,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::entity::restore::{init_entity_with_payload, RestoreError, RestoreInitPayload};
+use crate::entity::timer::{PendingTimers, TimerKind, TimerOp, TimerPolicy, TimerSession};
 use crate::operative::dispatcher::apply_identity_stamps;
 use crate::procedure::clock::{wall_now_ms, ClockFor};
 use crate::procedure::ctx::EmitSink;
@@ -86,6 +87,17 @@ pub struct ProcedureTestHarness<S: Procedure> {
     /// order (last value repeats). `None` = real `SystemTime`.
     wall_script: Option<Vec<u64>>,
     wall_pos: Cell<usize>,
+    /// Pending timers, folded exactly as the runtime folds them. Compared by
+    /// [`ProcedureTestHarness::replay_equals`] alongside the state: a timer is
+    /// folded state, so a replay that rebuilds a different set is the same
+    /// class of divergence as one that rebuilds a different balance.
+    timers: PendingTimers,
+    /// The set the harness started from, so a replay pass restarts where this
+    /// one did.
+    initial_timers: PendingTimers,
+    /// Ops the harness's invocations committed, in order — the durable record
+    /// a restore would fold.
+    recorded_timer_ops: Vec<TimerOp>,
 }
 
 impl<S: Procedure> ProcedureTestHarness<S>
@@ -120,6 +132,9 @@ impl<S: Procedure> ProcedureTestHarness<S> {
             keyed: false,
             wall_script: None,
             wall_pos: Cell::new(0),
+            timers: PendingTimers::default(),
+            initial_timers: PendingTimers::default(),
+            recorded_timer_ops: Vec::new(),
         }
     }
 
@@ -142,9 +157,12 @@ impl<S: Procedure> ProcedureTestHarness<S> {
     where
         S::State: serde::de::DeserializeOwned + serde::Serialize,
     {
-        let state = init_entity_with_payload::<S>(entity_key, Some(&payload))?;
+        let (state, timers) = init_entity_with_payload::<S>(entity_key, Some(&payload))?;
         let initial_state_bytes = serialize_snapshot(&state);
-        Ok(Self::from_state(state, initial_state_bytes))
+        let mut harness = Self::from_state(state, initial_state_bytes);
+        harness.initial_timers = timers.clone();
+        harness.timers = timers;
+        Ok(harness)
     }
 
     /// Treat the output channel as `.keyed()`: `emit_keyed` is accepted
@@ -203,6 +221,7 @@ impl<S: Procedure> ProcedureTestHarness<S> {
                 || self.next_wall_ms(),
                 || invocation_seq,
             );
+            let session = self.open_timer_session(now, None);
             let mut sink = RecordingEmitSink {
                 emits: &mut self.recorded_emits,
                 channel_name: "<harness>",
@@ -211,7 +230,8 @@ impl<S: Procedure> ProcedureTestHarness<S> {
                 ordinal: 0,
             };
             let mut ctx =
-                ProcedureCtx::new(&mut sink, now, invocation_seq, HARNESS_ENTITY_IDENTITY);
+                ProcedureCtx::new(&mut sink, now, invocation_seq, HARNESS_ENTITY_IDENTITY)
+                    .with_timers(&session);
             let handle = StateHandle::<S>::new(&mut self.state, &recorded);
             // Errors are surfaced as panics in the harness; tests that
             // want to exercise the error path should drive `S::run`
@@ -219,9 +239,79 @@ impl<S: Procedure> ProcedureTestHarness<S> {
             if let Err(e) = self.procedure.run(input, handle, &mut ctx) {
                 panic!("ProcedureTestHarness: Procedure::run returned Err: {e}");
             }
+            self.recorded_timer_ops
+                .extend(session.into_inner().commit(&mut self.timers));
         }
         self.recorded_changes = recorded.into_inner();
         self
+    }
+
+    /// Fire one pending timer through `S::on_timer`, exactly as the runtime
+    /// does: the removal is recorded first, `ctx.now()` is the scheduled
+    /// timestamp, and whatever the hook applies or registers is committed with
+    /// it. Panics if no such timer is pending — a firing the runtime would
+    /// never produce is not a test the harness should let you write.
+    pub fn fire_timer(&mut self, kind: TimerKind, scheduled_at: u64) -> &mut Self {
+        assert!(
+            self.timers.contains(kind, scheduled_at),
+            "ProcedureTestHarness::fire_timer: no {} timer pending at {scheduled_at}",
+            kind.as_str(),
+        );
+        let recorded = RefCell::new(std::mem::take(&mut self.recorded_changes));
+        let invocation_seq = recorded.borrow().len() as u64;
+        let session = self.open_timer_session(scheduled_at, Some((kind, scheduled_at)));
+        let mut sink = RecordingEmitSink {
+            emits: &mut self.recorded_emits,
+            channel_name: "<harness>",
+            keyed: self.keyed,
+            seq: invocation_seq,
+            ordinal: 0,
+        };
+        let mut ctx = ProcedureCtx::new(
+            &mut sink,
+            scheduled_at,
+            invocation_seq,
+            HARNESS_ENTITY_IDENTITY,
+        )
+        .with_timers(&session);
+        let handle = StateHandle::<S>::new(&mut self.state, &recorded);
+        if let Err(e) = self
+            .procedure
+            .on_timer(scheduled_at, kind, handle, &mut ctx)
+        {
+            panic!("ProcedureTestHarness: Procedure::on_timer returned Err: {e}");
+        }
+        self.recorded_timer_ops
+            .extend(session.into_inner().commit(&mut self.timers));
+        self.recorded_changes = recorded.into_inner();
+        self
+    }
+
+    /// Fire every pending event-time timer at or below `high_water`, ascending
+    /// — the runtime's rule when an input advances the high-water.
+    pub fn advance_event_time(&mut self, high_water: u64) -> &mut Self {
+        for at in self.timers.due(TimerKind::EventTime, high_water) {
+            self.fire_timer(TimerKind::EventTime, at);
+        }
+        self
+    }
+
+    /// The Entity's pending timers of one kind, ascending.
+    pub fn pending_timers(&self, kind: TimerKind) -> Vec<u64> {
+        self.timers.all(kind)
+    }
+
+    /// The durable timer ops the harness's invocations produced, in order.
+    pub fn recorded_timer_ops(&self) -> &[TimerOp] {
+        &self.recorded_timer_ops
+    }
+
+    fn open_timer_session(
+        &self,
+        now: u64,
+        firing: Option<(TimerKind, u64)>,
+    ) -> RefCell<TimerSession> {
+        TimerPolicy::for_procedure::<S>().session(&self.timers, now, firing)
     }
 
     /// Borrow the recorded Change log.
@@ -312,8 +402,22 @@ impl<S: Procedure> ProcedureTestHarness<S> {
     {
         let initial: S::State = deserialize_snapshot::<S>(&self.initial_state_bytes);
         let replayed = <ProcedureTestHarness<S>>::replay(initial, &self.recorded_changes);
-        let expected = canonical_json(&self.state);
-        let actual = canonical_json(&replayed);
+        // The pending-timer set is folded state too, and its fold is the same
+        // op replay a restore runs — so it belongs in the same gate.
+        let mut replayed_timers = self.initial_timers.clone();
+        for op in &self.recorded_timer_ops {
+            replayed_timers.apply(op);
+        }
+        let expected = format!(
+            "{}|{}",
+            canonical_json(&self.state),
+            canonical_json(&self.timers)
+        );
+        let actual = format!(
+            "{}|{}",
+            canonical_json(&replayed),
+            canonical_json(&replayed_timers)
+        );
         if expected == actual {
             Ok(())
         } else {
@@ -374,6 +478,8 @@ impl<S: Procedure> ProcedureTestHarness<S> {
         );
         pass.keyed = self.keyed;
         pass.wall_script = self.wall_script.clone();
+        pass.initial_timers = self.initial_timers.clone();
+        pass.timers = self.initial_timers.clone();
         pass.apply_inputs(inputs.iter().cloned());
 
         let mut out = Vec::with_capacity(pass.recorded_emits.len());

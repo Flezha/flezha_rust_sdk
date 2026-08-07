@@ -148,6 +148,17 @@ pub fn set_secondary_stream(stream: Option<Arc<FlezhaStream>>) {
         .expect("secondary stream lock poisoned") = stream;
 }
 
+/// The live secondary stream, if one is installed. The timer wheel re-arms a
+/// restored Entity's timers against it — a restore has no originating input to
+/// inherit a connection from.
+pub fn secondary_stream() -> Option<Arc<FlezhaStream>> {
+    SECONDARY_STREAM
+        .lock()
+        .expect("secondary stream lock poisoned")
+        .as_ref()
+        .map(Arc::clone)
+}
+
 /// Best-effort one-shot write of a pre-built frame to the current secondary
 /// stream. `false` if no stream is installed or the write fails (no retry).
 pub fn send_oneshot(frame: &[u8]) -> bool {

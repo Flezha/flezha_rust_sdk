@@ -23,6 +23,7 @@ pub mod state {
     pub use crate::procedure::clock::TimeExtractor;
     pub use crate::procedure::clock::WallClock;
     pub use crate::procedure::state_handle::StateHandle;
+    pub use crate::entity::timer::TimerKind;                 # ADDED by `entity-timers`
 }
 
 pub use entity::RestoreError;
@@ -45,6 +46,7 @@ pub use procedure::StableId;
 pub use procedure::StateHandle;
 pub use procedure::TimeExtractor;
 pub use procedure::WallClock;
+pub use entity::timer::TimerKind;                            # ADDED by `entity-timers`
 
 # Clock surface (runtime-evaluated; no static `Clock::now()`):
 #
@@ -64,6 +66,12 @@ pub use procedure::WallClock;
 #   fn from_config(cfg: Self::Config) -> Self;
 #   fn run(&mut self, input, state: StateHandle<'_, Self>, ctx: &mut ProcedureCtx<'_>) -> Result<(), ProcedureError>;
 #
+#   ADDED by `entity-timers`:
+#     fn on_timer(&mut self, fired_at: u64, kind: TimerKind, state: StateHandle<'_, Self>, ctx: &mut ProcedureCtx<'_>) -> Result<(), ProcedureError>;
+#       Default PANICS naming the Procedure (registration is a runtime call, so
+#       an unhandled timer cannot be refused at build time).
+#     fn max_timers_per_entity() -> usize;                    # default 10_000
+#
 #   REMOVED by `stream-dsl-keyby-and-transforms`:
 #     fn entity_key(input: &Self::Input) -> Option<String>;
 #     const ENTITY_KEY_OVERRIDDEN: bool;
@@ -80,6 +88,19 @@ pub use procedure::WallClock;
 #   pub fn emit_keyed<C>(&mut self, key: impl Into<String>, value: C) -> Result<(), ProcedureError>;
 #   pub fn emit_keyed_with_meta<C>(&mut self, key: impl Into<String>, value: C, meta: HashMap<String, String>) -> Result<(), ProcedureError>;
 #   pub fn spawn_bounded(&self, instance_id: impl Into<String>, factory_id: impl Into<String>, payload: impl Into<Vec<u8>>, if_running: IfRunning) -> SpawnHandle;
+#
+# Per-Entity timers (`entity-timers`) — each returns the ABSOLUTE scheduled
+# timestamp, which is the handle a cancellation takes:
+#
+#   pub fn timer_at_event_time(&self, scheduled_at: u64) -> Result<u64, ProcedureError>;
+#   pub fn timer_after(&self, delay: Duration) -> Result<u64, ProcedureError>;
+#   pub fn cancel_event_time_timer(&self, scheduled_at: u64) -> Result<bool, ProcedureError>;
+#   pub fn cancel_processing_time_timer(&self, scheduled_at: u64) -> Result<bool, ProcedureError>;
+#
+#   pub enum TimerKind { EventTime, ProcessingTime }
+#
+#   New `ProcedureError` variants: EventTimeTimerWithoutEventTimeClock,
+#   TimerCapExceeded, TimersUnavailable.
 #
 # Procedure-requested spawn (`procedure-requested-spawn`):
 #
@@ -108,6 +129,12 @@ pub use procedure::WallClock;
 #     pub fn with_wall_clock_script(self, script: Vec<u64>) -> Self;
 #     pub fn replay_emits_equal(&self, inputs: &[S::Input]) -> Result<(), EmitStreamMismatch>;
 #     pub fn emitted_meta(&self) -> Vec<Option<&HashMap<String, String>>>;
+#     pub fn fire_timer(&mut self, kind: TimerKind, scheduled_at: u64) -> &mut Self;
+#     pub fn advance_event_time(&mut self, high_water: u64) -> &mut Self;
+#     pub fn pending_timers(&self, kind: TimerKind) -> Vec<u64>;
+#     pub fn recorded_timer_ops(&self) -> &[TimerOp];
+#     `replay_equals` now compares the pending-timer set too — a timer is folded
+#     state, so a replay that rebuilds a different set is the same divergence.
 
 # Graph-builder surface (`sdk-graph-authoring`, in `channel/builder.rs`):
 #
