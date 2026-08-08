@@ -15,30 +15,24 @@
 use std::any::{Any, TypeId};
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::io::Write;
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
-use flz_transport::service::payloader;
 use flz_transport::transport::FlezhaStream;
 
 use crate::bounded::{BoundedCollectSink, BoundedError};
 use crate::channel::builder::BuildEntityArgs;
-use crate::channel::{ChannelId, ChannelKind, OverflowPolicy, ProcedureId, RetryPolicy};
-use crate::entity::correction::Lateness;
-use crate::entity::flusher::{encode_entity_identity, EntityFlusher, FlushableBuffer, TypedBuffer};
+use crate::channel::{ChannelId, ChannelKind, ProcedureId, RetryPolicy};
+use crate::entity::flusher::{EntityFlusher, FlushableBuffer, TypedBuffer};
 use crate::entity::header::HeaderTemplate;
 use crate::entity::timer::{PendingTimers, TimerKind, TimerOp, TimerPolicy};
-use crate::entity::{
-    make_entity_payload, EntityItem, EntityPayload, EntitySlot, ProcedureDispatcher,
-};
+use crate::entity::{EntityItem, EntityPayload, EntitySlot, ProcedureDispatcher};
 use crate::operative::instance::UnboundedInstance;
-use crate::operative::topology::{BeyondWindowPolicy, OperativeTopology};
+use crate::operative::topology::OperativeTopology;
 use crate::procedure::change::NoChange;
 use crate::procedure::ctx::EmitSink;
 use crate::procedure::state_handle::StateHandle;
 use crate::procedure::{Procedure, ProcedureCtx, ProcedureError};
-use crate::runner::mailbox::Mailbox;
 use crate::util::LockRecover;
 
 /// Per-entity holder for a typed Procedure instance + its State. Boxed and
@@ -126,11 +120,10 @@ struct FlushWiring {
     /// until it does.
     checkpoint_ack: bool,
     /// Late-input correction policy, `None` unless the class declared a
-    /// `correction_window()`. Shares the owning slot's high-water atomic —
-    /// the dispatcher is the only place the event-time extractor can run, so
-    /// it is also the only place that can maintain it.
+    /// `correction_window()`. Admission and the high-water live in the
+    /// engine's assembly (`runner::poll_core`), which reads this through
+    /// `ProcedureDispatcher::correction_policy`.
     correction: Option<crate::operative::topology::CorrectionPolicy>,
-    event_time_high_water: Arc<AtomicI64>,
 }
 
 impl<S: Procedure> ProcedureDispatcherImpl<S> {
@@ -156,7 +149,7 @@ impl<S: Procedure> ProcedureDispatcherImpl<S> {
             retry,
             entity_label,
             flush,
-            timers: TimerPolicy::for_procedure::<S>(),
+            timers: crate::entity::timer::timer_policy_for::<S>(),
             _phantom: std::marker::PhantomData,
         }
     }
@@ -183,67 +176,6 @@ impl<S: Procedure> ProcedureDispatcherImpl<S> {
             || seq,
         );
         (now, seq)
-    }
-
-    /// Decide whether an input should be dispatched at all, and keep the
-    /// Entity's event-time high-water. Returns `false` when the caller must
-    /// drop the input instead of running it.
-    ///
-    /// An input behind the high-water but inside the correction window is
-    /// dropped *here* and asked for back: it is already durable in the input
-    /// log, so the correction re-delivers it inside the replayed slice, in its
-    /// rightful place. Running it now would fold it into the state at the
-    /// wrong position — the very mistake the correction undoes.
-    ///
-    /// A `replayed` input is exempt from classification: the engine has just
-    /// put it back into event-time order, so it is in order by construction.
-    /// It still advances the high-water — the replay is what rebuilds it.
-    ///
-    /// A class with no `correction_window()` — the default — pays one
-    /// `Option` check and nothing else.
-    ///
-    /// The high-water is kept for EVERY event-time-clocked class, not only a
-    /// correcting one: it is also what event-time timers fire against. A class
-    /// whose clock is not an event time has no event time to track, and folding
-    /// a wall-clock or logical value in would be a lie.
-    fn admit_and_track(&self, event_time: u64, replayed: bool) -> bool {
-        if !<S::Clock as crate::procedure::Clock>::IS_EVENT_TIME {
-            return true;
-        }
-        let advance = || {
-            self.flush
-                .event_time_high_water
-                .fetch_max(event_time as i64, Ordering::AcqRel);
-        };
-        let Some(policy) = self.flush.correction else {
-            advance();
-            return true;
-        };
-        if replayed {
-            advance();
-            return true;
-        }
-        let high_water = self.flush.event_time_high_water.load(Ordering::Acquire);
-
-        match crate::entity::correction::classify(event_time, high_water, policy.window_ms) {
-            Lateness::OnTime => {
-                advance();
-                true
-            }
-            // Requested: drop it here, the slice brings it back. Not requested
-            // (transport-less run, nobody to ask): fall back to the
-            // no-correction behaviour and process it as an arrival.
-            Lateness::Correctable => {
-                !crate::entity::correction::request(&self.flush.entity_identity, event_time)
-            }
-            // The high-water deliberately does NOT advance for a beyond-window
-            // arrival: a very old event must not drag the window backward and
-            // make the inputs after it look late.
-            Lateness::BeyondWindow => match policy.beyond_window {
-                BeyondWindowPolicy::ProcessAsArrival => true,
-                BeyondWindowPolicy::Drop => false,
-            },
-        }
     }
 
     /// Ship the Changes (and, under the effectively-once tier, the captured
@@ -289,32 +221,47 @@ impl<S: Procedure> ProcedureDispatcherImpl<S> {
         );
     }
 
-    /// Run ONE invocation — `run` on an input, or `on_timer` on a firing —
-    /// through the emit sink, the retry→DLQ ladder, the timer session and the
-    /// durable record it produces. The two differ only in the call into the
-    /// author's code; everything a failure has to be contained by is shared,
-    /// which is what makes a poison timer park exactly like a poison input.
+    /// Run ONE ATTEMPT of one invocation — `run` on an input, or `on_timer`
+    /// on a firing — through the emit sink, the timer session and the durable
+    /// record it produces. The two differ only in the call into the author's
+    /// code; everything a failure has to be contained by is shared, which is
+    /// what makes a poison timer park exactly like a poison input.
+    ///
+    /// The retry ladder's counting, backoff and re-hand live in the engine
+    /// (`runner::poll_core`): a retryable non-final failure returns
+    /// `Some(error)` and leaves nothing shipped; a non-retryable or final
+    /// failure parks here (the park rides this entity's buffer) and returns
+    /// `None`, consuming the item.
     ///
     /// `now` is the invocation's `ctx.now()`: the declared Clock's value for an
     /// input, the scheduled timestamp for a firing.
     #[allow(clippy::too_many_arguments)]
-    fn invoke(
+    fn invoke_once(
         &self,
         what: Invocation<S>,
         now: u64,
+        attempt: u32,
+        is_final: bool,
+        parked_payload_bytes: Option<Vec<u8>>,
+        retained_input: Option<&Arc<S::Input>>,
         typed_state: &mut EntityState<S>,
         typed_buffer: &mut TypedBuffer<S>,
         live_timers: &mut PendingTimers,
         committed_ops: &mut Vec<TimerOp>,
         stream: &Arc<FlezhaStream>,
         instance: &Weak<UnboundedInstance>,
-    ) {
+    ) -> Option<String> {
         let consumed_offset = what.consumed_offset();
         let replay = what.replay();
         // Share the change buffer between `StateHandle::apply` and the
         // flush-before-emit hook. Both run on this single dispatch thread
         // inside one invocation, so the `RefCell` borrows never overlap.
-        let buffer_cell = RefCell::new(std::mem::take(&mut typed_buffer.inner));
+        // A previous failed attempt's changes carry over: its state
+        // mutations stayed applied (at-least-once), so durable state must
+        // not diverge from memory.
+        let mut carried = std::mem::take(&mut typed_buffer.inner);
+        carried.append(&mut typed_buffer.pending_attempt);
+        let buffer_cell = RefCell::new(carried);
 
         // Flush-before-emit: drain this entity's pending changes to the
         // durable WAL path before the sink writes the matching output
@@ -365,85 +312,70 @@ impl<S: Procedure> ProcedureDispatcherImpl<S> {
             effect_outputs: effect_outputs.as_ref(),
         };
 
-        // Retry-then-park loop (`dead-letter-queue`): a failing
-        // invocation — returned error or contained panic — is re-run up to
-        // the input channel's `retry_max` with exponential backoff + jitter;
-        // a `ProcedureError::NonRetryable` skips the remaining budget. A
-        // non-final attempt passes a clone of the input so the original
-        // survives for the re-run; the final attempt moves it (after saving
-        // the park bytes, needed only if it fails too).
-        let policy = self.retry;
-        // Captured before the value moves into the retry slot: the final
-        // attempt consumes it, and a park still has to record which timer
-        // fired.
+        // One attempt (`dead-letter-queue` ladder, engine-driven): a failing
+        // invocation — returned error or contained panic — is re-handed by
+        // the engine up to the input channel's `retry_max`; a
+        // `ProcedureError::NonRetryable` skips the remaining budget and
+        // parks here, as does a failing final attempt.
+        // Captured before the value moves into the run: a park still has to
+        // record which timer fired.
         let firing = what.firing();
-        let mut what_slot = Some(what);
-        let mut parked_payload_bytes: Option<Vec<u8>> = None;
-        let mut attempt: u32 = 0;
-        // Only the attempt that succeeded may close the interval or leave
+        // Only an attempt that succeeded may close the interval or leave
         // timers registered; a failed attempt's `ctx` and its timer session
         // are discarded with it.
         let mut checkpointed = false;
         let mut timer_ops: Vec<TimerOp> = Vec::new();
-        let park_error: Option<String> = loop {
-            attempt += 1;
-            let is_final = attempt >= policy.max_attempts;
-            let attempt_what = if is_final {
-                let what = what_slot.take().expect("retry loop: input consumed twice");
-                parked_payload_bytes = what
-                    .input()
-                    .and_then(crate::entity::park::extract_payload_bytes);
-                what
-            } else {
-                what_slot
-                    .as_ref()
-                    .expect("retry loop: input consumed twice")
-                    .clone_for_attempt()
-            };
 
-            // The removal is op 0 for a firing, so it rides the same durable
-            // record as whatever `on_timer` goes on to apply and emit.
-            let session = self.timers.session(live_timers, now, firing);
+        // The removal is op 0 for a firing, so it rides the same durable
+        // record as whatever `on_timer` goes on to apply and emit.
+        let session = self.timers.session(live_timers, now, firing);
 
-            let mut ctx =
-                ProcedureCtx::new(&mut sink, now, invocation_seq, &self.flush.entity_identity)
-                    .during_replay(replay)
-                    .with_timers(&session);
-            let handle = StateHandle::<S>::new(&mut typed_state.state, &buffer_cell);
+        let mut ctx =
+            ProcedureCtx::new(&mut sink, now, invocation_seq, &self.flush.entity_identity)
+                .during_replay(replay)
+                .with_timers(&session);
+        let handle = StateHandle::<S>::new(&mut typed_state.state, &buffer_cell);
 
-            // Contain a procedure panic so it can't poison the held `state` lock.
-            let outcome =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match attempt_what {
-                    Invocation::Input { input, .. } => {
-                        typed_state.procedure.run(input, handle, &mut ctx)
-                    }
-                    Invocation::Timer { fired_at, kind } => typed_state
-                        .procedure
-                        .on_timer(fired_at, kind, handle, &mut ctx),
-                }));
+        // Contain a procedure panic so it can't poison the held `state` lock.
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match what {
+            Invocation::Input { input, .. } => typed_state.procedure.run(input, handle, &mut ctx),
+            Invocation::Timer { fired_at, kind } => typed_state
+                .procedure
+                .on_timer(fired_at, kind, handle, &mut ctx),
+        }));
 
-            let (error, retryable) = match outcome {
-                Ok(Ok(())) => {
-                    checkpointed = ctx.checkpointed();
-                    timer_ops = session.into_inner().commit(live_timers);
-                    break None;
-                }
-                Ok(Err(err)) => {
-                    let retryable = !err.is_non_retryable();
-                    (err.to_string(), retryable)
-                }
-                // A panic is retryable by default — the author never got to
-                // classify it (design D5).
-                Err(panic) => (crate::procedure::error::format_panic(panic), true),
-            };
-            // A failed attempt's captured tier outputs must not ship (the
-            // invocation did not complete); changes it already applied to
-            // the in-memory state stay buffered so durable state cannot
-            // diverge from memory.
-            if let Some(cell) = effect_outputs.as_ref() {
-                cell.borrow_mut().clear();
+        let park_error: Option<String> = match outcome {
+            Ok(Ok(())) => {
+                checkpointed = ctx.checkpointed();
+                timer_ops = session.into_inner().commit(live_timers);
+                None
             }
-            if !retryable || is_final {
+            failed => {
+                let (error, retryable) = match failed {
+                    Ok(Err(err)) => {
+                        let retryable = !err.is_non_retryable();
+                        (err.to_string(), retryable)
+                    }
+                    // A panic is retryable by default — the author never got
+                    // to classify it (design D5).
+                    Err(panic) => (crate::procedure::error::format_panic(panic), true),
+                    Ok(Ok(())) => unreachable!("handled above"),
+                };
+                // A failed attempt's captured tier outputs must not ship
+                // (the invocation did not complete); changes it already
+                // applied to the in-memory state stay buffered so durable
+                // state cannot diverge from memory.
+                if let Some(cell) = effect_outputs.as_ref() {
+                    cell.borrow_mut().clear();
+                }
+                if retryable && !is_final {
+                    drop(sink);
+                    // Keep the attempt's changes out of the flusher's reach
+                    // until the item resolves — the next attempt re-takes
+                    // them.
+                    typed_buffer.pending_attempt = buffer_cell.into_inner();
+                    return Some(error);
+                }
                 // A firing that exhausted its budget still records the
                 // removal: a poison timer must park once, not fire forever —
                 // the same reason a park closes a checkpoint interval.
@@ -454,15 +386,8 @@ impl<S: Procedure> ProcedureDispatcherImpl<S> {
                         .into_inner()
                         .commit(live_timers);
                 }
-                break Some(error);
+                Some(error)
             }
-            let delay = crate::entity::retry::note_failed_attempt(
-                &format!("procedure {}", S::name()),
-                attempt,
-                policy,
-                &error,
-            );
-            crate::util::sleep_interruptible(delay, None);
         };
 
         drop(sink);
@@ -482,11 +407,10 @@ impl<S: Procedure> ProcedureDispatcherImpl<S> {
                     .to_string(),
                 error,
                 attempts: attempt,
-                payload: what_slot
-                    .as_ref()
-                    .and_then(Invocation::input)
-                    .and_then(crate::entity::park::extract_payload_bytes)
-                    .or(parked_payload_bytes),
+                payload: parked_payload_bytes.or_else(|| {
+                    retained_input
+                        .and_then(|arc| crate::entity::park::extract_payload_bytes(&**arc))
+                }),
             })
         } else {
             None
@@ -567,14 +491,15 @@ impl<S: Procedure> ProcedureDispatcherImpl<S> {
                 // Tier-off park: ship the park frame and hold this entity
                 // (the drain thread) until the controller acks the DLQ
                 // append as durable — park-then-advance, never a drop.
-                let body = crate::entity::park::ParkBody {
-                    park_id: crate::entity::park::mint_park_id(&self.entity_label),
-                    origin_offset: consumed_offset,
+                crate::entity::park::park_tier_off(
+                    &self.flush.entity_identity,
+                    &self.entity_label,
+                    consumed_offset,
                     entry,
-                };
-                crate::entity::park::park_blocking(&self.flush.entity_identity, &body);
+                );
             }
         }
+        None
     }
 }
 
@@ -597,33 +522,6 @@ enum Invocation<S: Procedure> {
 }
 
 impl<S: Procedure> Invocation<S> {
-    /// A non-final attempt runs against a copy so the original survives for the
-    /// re-run; the final attempt moves the value.
-    fn clone_for_attempt(&self) -> Self {
-        match self {
-            Invocation::Input {
-                input,
-                consumed_offset,
-                replay,
-            } => Invocation::Input {
-                input: input.clone(),
-                consumed_offset: *consumed_offset,
-                replay: *replay,
-            },
-            Invocation::Timer { fired_at, kind } => Invocation::Timer {
-                fired_at: *fired_at,
-                kind: *kind,
-            },
-        }
-    }
-
-    fn input(&self) -> Option<&S::Input> {
-        match self {
-            Invocation::Input { input, .. } => Some(input),
-            Invocation::Timer { .. } => None,
-        }
-    }
-
     fn consumed_offset(&self) -> Option<u64> {
         match self {
             Invocation::Input {
@@ -648,14 +546,16 @@ impl<S: Procedure> Invocation<S> {
 }
 
 impl<S: Procedure> ProcedureDispatcher for ProcedureDispatcherImpl<S> {
-    fn dispatch(
+    fn dispatch_item(
         &self,
-        item: EntityItem,
+        work: crate::runner::poll_core::WorkItem,
         state: &mut Box<dyn Any + Send>,
         flush_buffer: &mut Box<dyn FlushableBuffer>,
         timers: &mut PendingTimers,
         instance: &Weak<UnboundedInstance>,
-    ) -> Vec<TimerOp> {
+    ) -> crate::entity::ItemDisposition {
+        use crate::entity::ItemDisposition;
+
         let typed_state = state
             .downcast_mut::<EntityState<S>>()
             .expect("dispatcher: state type mismatch for procedure");
@@ -664,81 +564,91 @@ impl<S: Procedure> ProcedureDispatcher for ProcedureDispatcherImpl<S> {
             .downcast_mut::<TypedBuffer<S>>()
             .expect("dispatcher: flush buffer type mismatch for procedure");
 
+        let crate::runner::poll_core::WorkItem {
+            item,
+            now,
+            attempt,
+            is_final,
+        } = work;
+
         let mut committed: Vec<TimerOp> = Vec::new();
-        let payload = match item {
+        match item {
             EntityItem::Timer(fire) => {
-                // The wheel holds no lock on the pending set, so an entry can
-                // outlive the timer: a cancellation, a re-fire after a restore
-                // re-armed it, an Entity restored without it. The set is the
-                // authority — a stale entry fires nothing.
-                if timers.contains(TimerKind::ProcessingTime, fire.scheduled_at) {
-                    self.invoke(
-                        Invocation::Timer {
-                            fired_at: fire.scheduled_at,
-                            kind: TimerKind::ProcessingTime,
-                        },
-                        fire.scheduled_at,
-                        typed_state,
-                        typed_buffer,
-                        timers,
-                        &mut committed,
-                        &fire.stream,
-                        instance,
-                    );
+                // Assembly validated the firing, but the set is the
+                // authority: re-check under the held locks — a restore
+                // between handout and dispatch can rebuild it.
+                if !timers.contains(fire.kind, fire.scheduled_at) {
+                    return ItemDisposition::Done { ops: committed };
                 }
-                return committed;
-            }
-            EntityItem::Input(payload) => payload,
-        };
-
-        let EntityPayload {
-            value,
-            stream,
-            consumed_offset,
-            replay,
-        } = payload;
-
-        // Downcast value to Arc<S::Input>. Consumers with different
-        // Input types in the same UnboundedOperative downcast independently because
-        // the channel wiring guarantees they only ever receive their
-        // own type.
-        let input_arc = match Arc::downcast::<S::Input>(value) {
-            Ok(arc) => arc,
-            Err(_) => {
-                eprintln!(
-                    "[flezha] dispatcher: payload type mismatch for procedure {}",
-                    S::name()
+                let retry_error = self.invoke_once(
+                    Invocation::Timer {
+                        fired_at: fire.scheduled_at,
+                        kind: fire.kind,
+                    },
+                    fire.scheduled_at,
+                    attempt,
+                    is_final,
+                    None,
+                    None,
+                    typed_state,
+                    typed_buffer,
+                    timers,
+                    &mut committed,
+                    &fire.stream,
+                    instance,
                 );
-                return committed;
+                match retry_error {
+                    None => ItemDisposition::Done { ops: committed },
+                    Some(error) => ItemDisposition::RetryLater {
+                        item: EntityItem::Timer(fire),
+                        error,
+                    },
+                }
             }
-        };
+            EntityItem::Input(payload) => {
+                let EntityPayload {
+                    value,
+                    stream,
+                    consumed_offset,
+                    replay,
+                } = payload;
 
-        // Zero-copy when the Arc is uniquely held; falls back to a
-        // value clone when fan-out kept it shared. The `Clone` bound on
-        // `Procedure::Input` makes this explicit at the type level.
-        let input: S::Input = Arc::unwrap_or_clone(input_arc);
+                // Downcast value to Arc<S::Input>. Consumers with different
+                // Input types in the same UnboundedOperative downcast
+                // independently because the channel wiring guarantees they
+                // only ever receive their own type.
+                let input_arc = match Arc::downcast::<S::Input>(value) {
+                    Ok(arc) => arc,
+                    Err(_) => {
+                        eprintln!(
+                            "[flezha] dispatcher: payload type mismatch for procedure {}",
+                            S::name()
+                        );
+                        return ItemDisposition::Done { ops: committed };
+                    }
+                };
 
-        let (now, _) = self.invocation_inputs(Some(&input));
+                // Engine-stamped event time, or the declared clock at entry.
+                let now = now.unwrap_or_else(|| self.invocation_inputs(Some(&input_arc)).0);
 
-        // Late-input correction: decide whether this input runs at all, and
-        // keep the Entity's event-time high-water.
-        if !self.admit_and_track(now, replay) {
-            return committed;
-        }
-
-        // Event-time timers fire on the high-water this input just advanced,
-        // ascending, and BEFORE the input itself — otherwise a window would
-        // close after the record that belongs to the next one.
-        if <S::Clock as crate::procedure::Clock>::IS_EVENT_TIME {
-            let high_water = self.flush.event_time_high_water.load(Ordering::Acquire);
-            if high_water >= 0 {
-                for fired_at in timers.due(TimerKind::EventTime, high_water as u64) {
-                    self.invoke(
-                        Invocation::Timer {
-                            fired_at,
-                            kind: TimerKind::EventTime,
+                if is_final {
+                    // The value moves into `run`; capture the park bytes it
+                    // would need first.
+                    let park_bytes = crate::entity::park::extract_payload_bytes(&*input_arc);
+                    // Zero-copy when the Arc is uniquely held; falls back to
+                    // a value clone when fan-out kept it shared.
+                    let input: S::Input = Arc::unwrap_or_clone(input_arc);
+                    let retry_error = self.invoke_once(
+                        Invocation::Input {
+                            input,
+                            consumed_offset,
+                            replay,
                         },
-                        fired_at,
+                        now,
+                        attempt,
+                        true,
+                        park_bytes,
+                        None,
                         typed_state,
                         typed_buffer,
                         timers,
@@ -746,29 +656,68 @@ impl<S: Procedure> ProcedureDispatcher for ProcedureDispatcherImpl<S> {
                         &stream,
                         instance,
                     );
+                    debug_assert!(
+                        retry_error.is_none(),
+                        "a final attempt parks instead of retrying"
+                    );
+                    ItemDisposition::Done { ops: committed }
+                } else {
+                    // A non-final attempt runs against a copy so the
+                    // original survives for the engine's re-hand.
+                    let input: S::Input = (*input_arc).clone();
+                    let retry_error = self.invoke_once(
+                        Invocation::Input {
+                            input,
+                            consumed_offset,
+                            replay,
+                        },
+                        now,
+                        attempt,
+                        false,
+                        None,
+                        Some(&input_arc),
+                        typed_state,
+                        typed_buffer,
+                        timers,
+                        &mut committed,
+                        &stream,
+                        instance,
+                    );
+                    match retry_error {
+                        None => ItemDisposition::Done { ops: committed },
+                        Some(error) => ItemDisposition::RetryLater {
+                            item: EntityItem::Input(EntityPayload {
+                                value: input_arc as Arc<dyn Any + Send + Sync>,
+                                stream,
+                                consumed_offset,
+                                replay,
+                            }),
+                            error,
+                        },
+                    }
                 }
             }
         }
-
-        self.invoke(
-            Invocation::Input {
-                input,
-                consumed_offset,
-                replay,
-            },
-            now,
-            typed_state,
-            typed_buffer,
-            timers,
-            &mut committed,
-            &stream,
-            instance,
-        );
-        committed
     }
 
     fn procedure_id(&self) -> ProcedureId {
         self.procedure_id
+    }
+
+    fn procedure_name(&self) -> &'static str {
+        S::name()
+    }
+
+    fn retry_policy(&self) -> RetryPolicy {
+        self.retry
+    }
+
+    fn is_event_time(&self) -> bool {
+        <S::Clock as crate::procedure::Clock>::IS_EVENT_TIME
+    }
+
+    fn correction_policy(&self) -> Option<crate::operative::topology::CorrectionPolicy> {
+        self.flush.correction
     }
 
     fn entity_label(&self) -> &str {
@@ -945,7 +894,7 @@ impl<S: Procedure> ProcedureDispatcher for ProcedureDispatcherImpl<S> {
         snapshot_bytes: &[u8],
         change_log_bytes: &[u8],
         entity_key: Option<&str>,
-    ) -> Result<u64, crate::entity::restore::RestoreError> {
+    ) -> Result<u64, flz_core::header::RestoreError> {
         use crate::entity::restore::{
             init_entity_with_payload, iter_change_log_records, RestoreInitPayload,
         };
@@ -1207,7 +1156,7 @@ impl<'a> EmitSink for EntityEmitSink<'a> {
         // An inter-procedure emit is never a replay member: the downstream
         // Procedure receives the corrected outputs already in order, and a
         // slice it could never see the end of would hold its drain forever.
-        route_to_consumers(
+        flz_core::routing::route_to_consumers(
             &instance,
             descriptor,
             &value,
@@ -1435,476 +1384,6 @@ impl<'a> EmitSink for BoundedCollectAdapter<'a> {
 /// outcome and submits a drain task on success / DropOldest. On Block,
 /// parks the calling thread on the slot's `BlockParker` and retries
 /// until the push succeeds (Decision 3).
-/// Bounded park per Block-policy retry; progress is re-checked (and the
-/// inline drain re-attempted) on every wakeup.
-const BLOCK_PARK_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(50);
-
-/// One throttled warning per blocked episode once it exceeds this — a full
-/// mailbox holding a producer this long means a consumer procedure is wedged or
-/// severely behind, and silence here is how the 2026-06-10 freeze hid.
-const BLOCK_WARN_AFTER: std::time::Duration = std::time::Duration::from_secs(5);
-
-pub(crate) fn enqueue(slot: &Arc<EntitySlot>, item: EntityItem, policy: OverflowPolicy) {
-    // Open the slice here, on the frame-handling thread, rather than in the
-    // drain: the controller's end-of-slice broadcast arrives on this same thread
-    // after every slice frame, so opening here guarantees the close can never
-    // overtake a member it was meant to include. Opening in the drain would race
-    // — a slow drain could see the close first and then buffer members nobody
-    // would ever flush.
-    if matches!(&item, EntityItem::Input(p) if p.replay) {
-        slot.replay_open.store(true, Ordering::Release);
-    }
-    let mut next = item;
-    let mut blocked_since: Option<std::time::Instant> = None;
-    let mut block_warned = false;
-    loop {
-        match slot.mailbox.try_push(next) {
-            Ok(()) => {
-                slot.mailbox
-                    .counters()
-                    .pushes_total
-                    .fetch_add(1, Ordering::Relaxed);
-                // Activity stamp for the dynamic-mode reaper (one atomic
-                // store; inert for single/static Entities that are never
-                // reaped).
-                slot.last_activity_at
-                    .store(crate::entity::dynamic::now_millis(), Ordering::Relaxed);
-                if slot.mailbox.try_mark_inflight() {
-                    let cloned = Arc::clone(slot);
-                    slot.pool.submit(Box::new(move || drain_entity(&cloned)));
-                }
-                return;
-            }
-            Err(returned) => match policy {
-                OverflowPolicy::Block => {
-                    slot.mailbox
-                        .counters()
-                        .pushes_blocked_total
-                        .fetch_add(1, Ordering::Relaxed);
-                    next = returned;
-                    if blocked_since.is_none() {
-                        blocked_since = Some(std::time::Instant::now());
-                        crate::entity::BLOCKED_PARK_EPISODES.fetch_add(1, Ordering::Relaxed);
-                    }
-                    // Drain the full slot inline rather than parking on it:
-                    // the slot's drain may exist only as a queued pool task,
-                    // and a parked pool worker can be the lone thread able to
-                    // run it (a one-worker pool self-deadlocks; prod
-                    // 2026-06-10). The drain_active gate in drain_entity
-                    // keeps this race-safe and order-preserving.
-                    drain_entity(slot);
-                    if slot.mailbox.is_full() {
-                        // A live drainer on another thread owns progress;
-                        // bounded park so even a lost wake degrades to a
-                        // retry loop instead of a permanent freeze.
-                        slot.block_parker
-                            .wait_one_timeout(&slot.mailbox, BLOCK_PARK_TIMEOUT);
-                    }
-                    if !block_warned
-                        && blocked_since.is_some_and(|t| t.elapsed() >= BLOCK_WARN_AFTER)
-                    {
-                        block_warned = true;
-                        tracing::warn!(
-                            target: "flezha::mailbox",
-                            procedure_id = slot.procedure_id,
-                            entity_key = ?slot.entity_key,
-                            "Block-policy producer stalled >{:?} on a full entity mailbox; consumer procedure wedged or far behind",
-                            BLOCK_WARN_AFTER
-                        );
-                    }
-                }
-                OverflowPolicy::DropNewest => {
-                    slot.mailbox
-                        .counters()
-                        .drops_newest_total
-                        .fetch_add(1, Ordering::Relaxed);
-                    drop(returned);
-                    return;
-                }
-                OverflowPolicy::DropOldest => {
-                    let _dropped = slot.mailbox.force_push(returned);
-                    slot.mailbox
-                        .counters()
-                        .drops_oldest_total
-                        .fetch_add(1, Ordering::Relaxed);
-                    if slot.mailbox.try_mark_inflight() {
-                        let cloned = Arc::clone(slot);
-                        slot.pool.submit(Box::new(move || drain_entity(&cloned)));
-                    }
-                    return;
-                }
-            },
-        }
-    }
-}
-
-/// Fan a typed value out to every consumer Procedure's entity mailbox per
-/// the channel's `OverflowPolicy`. Shared by the inter-procedure emit path
-/// (`EntityEmitSink`) and the inbound wire-dispatch path
-/// (`OperativeDispatchHandle`). Single-mode procedures route to entity 0;
-/// static-mode procedures route by `entities_for_erased` key lookup;
-/// dynamic-mode procedures derive a key via the consumer edge's `key_by` and
-/// lazily create the Entity through the per-Procedure `DynamicEntityRegistry`.
-/// A poison entry payload climbing its channel's retry→DLQ ladder off the
-/// wire-reader thread (`sdk-graph-authoring` typed entries): the failing parse
-/// is re-attempted per the channel's retry budget — the parser contract says
-/// deterministic, so this is expected to fail identically — and then parked to
-/// the dead-letter queue under the entry channel's identity, exactly like a
-/// retry-exhausted invocation.
-pub(crate) struct EntryParseLadder {
-    pub instance: Arc<UnboundedInstance>,
-    pub channel_id: u32,
-    pub bytes: Vec<u8>,
-    pub first_error: String,
-    pub stream: Arc<flz_transport::transport::FlezhaStream>,
-    pub consumed_offset: Option<u64>,
-    pub replay: bool,
-}
-
-pub(crate) fn spawn_entry_parse_ladder(ladder: EntryParseLadder) {
-    spawn_park_thread("flezha-entry-parse-park", move || {
-        run_entry_parse_ladder(ladder)
-    });
-}
-
-fn run_entry_parse_ladder(ladder: EntryParseLadder) {
-    let channel = ladder
-        .instance
-        .topology
-        .channel(ladder.channel_id)
-        .expect("entry channel present in topology");
-    let wrap = channel
-        .wrap_input
-        .as_ref()
-        .expect("parsed entry channel carries a wrap_input");
-    run_retry_park_ladder(
-        &format!("entry channel `{}`", channel.name),
-        channel,
-        &ladder.instance.instance_id,
-        "_entry",
-        ladder.consumed_offset,
-        Some(ladder.bytes.clone()),
-        ladder.first_error.clone(),
-        || {
-            // A parser violating the determinism contract may succeed on a
-            // re-attempt; deliver rather than drop.
-            let typed = wrap(ladder.bytes.clone())?;
-            route_to_consumers(
-                &ladder.instance,
-                channel,
-                &typed,
-                &ladder.stream,
-                ladder.consumed_offset,
-                ladder.replay,
-            );
-            Ok(())
-        },
-    );
-}
-
-/// Re-attempt one failed step off the routing thread per the channel's retry
-/// budget, then park what still fails to the dead-letter queue under the
-/// channel's identity. The one ladder both poison entry payloads and unwinding
-/// edge closures climb — `attempt` re-runs the step AND delivers on success,
-/// so the two differ only in what that step is.
-#[allow(clippy::too_many_arguments)]
-fn run_retry_park_ladder(
-    label: &str,
-    channel: &crate::channel::ChannelDescriptor,
-    instance_id: &str,
-    entity_suffix: &str,
-    consumed_offset: Option<u64>,
-    payload: Option<Vec<u8>>,
-    first_error: String,
-    mut attempt_step: impl FnMut() -> Result<(), String>,
-) {
-    let mut attempt: u32 = 1; // the routing-thread run was attempt 1
-    let mut error = first_error;
-    while attempt < channel.retry.max_attempts {
-        let delay =
-            crate::entity::retry::note_failed_attempt(label, attempt, channel.retry, &error);
-        crate::util::sleep_interruptible(delay, None);
-        attempt += 1;
-        match attempt_step() {
-            Ok(()) => return,
-            Err(e) => error = e,
-        }
-    }
-
-    crate::entity::park::PARKED_TOTAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    eprintln!(
-        "[flezha] {} parking payload to DLQ after {} attempt(s): {}",
-        label, attempt, error
-    );
-    let identity =
-        crate::entity::flusher::encode_entity_identity(instance_id, &channel.name, entity_suffix);
-    let body = crate::entity::park::ParkBody {
-        park_id: crate::entity::park::mint_park_id(&format!(
-            "{}/{}/{}",
-            instance_id, channel.name, entity_suffix
-        )),
-        origin_offset: consumed_offset,
-        entry: crate::entity::flusher::DlqEntryBody {
-            channel: channel.name.to_string(),
-            error,
-            attempts: attempt,
-            payload,
-        },
-    };
-    crate::entity::park::park_blocking(&identity, &body);
-}
-
-/// Route one channel value to every subscribed consumer, each through its own
-/// edge's transform and key. The one seam a `ConsumerEdge`'s closures are
-/// applied on: the wire-reader path (live delivery and the controller's
-/// re-forwarded replay slice) and an inter-procedure emit both come through
-/// here, so the two can never drift.
-///
-/// A closure that unwinds does not take the routing thread with it — the value
-/// climbs this channel's retry→DLQ ladder, the same one a failing entry parse
-/// rides, and the remaining consumers are still served.
-pub(crate) fn route_to_consumers(
-    instance: &Arc<UnboundedInstance>,
-    channel: &crate::channel::ChannelDescriptor,
-    value: &Arc<dyn Any + Send + Sync>,
-    stream: &Arc<FlezhaStream>,
-    consumed_offset: Option<u64>,
-    replay: bool,
-) {
-    for edge in &channel.consumers {
-        if let Err(e) = deliver_edge(
-            instance,
-            channel,
-            edge,
-            value,
-            stream,
-            consumed_offset,
-            replay,
-        ) {
-            spawn_edge_ladder(
-                instance,
-                channel,
-                edge,
-                value,
-                stream,
-                consumed_offset,
-                replay,
-                e,
-            );
-        }
-    }
-}
-
-/// Put one value through one edge's transform and deliver everything it
-/// yields. The ONE place a `ConsumerEdge`'s closures become mailbox pushes:
-/// live routing and the retry ladder's re-attempt both call it, so a
-/// re-attempt cannot deliver differently from the attempt it retries.
-///
-/// A transform-free edge — every pre-existing topology — takes the `None` arm
-/// and pays nothing.
-#[allow(clippy::too_many_arguments)]
-fn deliver_edge(
-    instance: &Arc<UnboundedInstance>,
-    channel: &crate::channel::ChannelDescriptor,
-    edge: &crate::channel::ConsumerEdge,
-    value: &Arc<dyn Any + Send + Sync>,
-    stream: &Arc<FlezhaStream>,
-    consumed_offset: Option<u64>,
-    replay: bool,
-) -> Result<(), String> {
-    match edge.transform_value(value)? {
-        None => deliver_to_consumer(
-            instance,
-            channel,
-            edge,
-            value,
-            stream,
-            consumed_offset,
-            replay,
-        ),
-        Some(yielded) => yielded.into_iter().try_for_each(|v| {
-            deliver_to_consumer(instance, channel, edge, &v, stream, consumed_offset, replay)
-        }),
-    }
-}
-
-/// Deliver one post-transform value to one consumer's Entity. `Err` carries an
-/// unwinding key closure up to the ladder; every other outcome — an absent
-/// registry, an unmapped static key — is the pre-existing silent skip.
-#[allow(clippy::too_many_arguments)]
-fn deliver_to_consumer(
-    instance: &UnboundedInstance,
-    channel: &crate::channel::ChannelDescriptor,
-    edge: &crate::channel::ConsumerEdge,
-    value: &Arc<dyn Any + Send + Sync>,
-    stream: &Arc<FlezhaStream>,
-    consumed_offset: Option<u64>,
-    replay: bool,
-) -> Result<(), String> {
-    use crate::operative::topology::EntityMode;
-    let policy = channel.overflow_policy;
-    let consumer_procedure_id = edge.procedure;
-    let consumer = match instance.topology.procedure(consumer_procedure_id) {
-        Some(s) => s,
-        None => return Ok(()),
-    };
-    match consumer.mode {
-        EntityMode::Dynamic => {
-            let registry = match instance
-                .dynamic_registries
-                .get(consumer_procedure_id as usize)
-                .and_then(|r| r.as_ref())
-            {
-                Some(r) => r,
-                None => return Ok(()),
-            };
-            // The key is total — `build_topology` refuses an unkeyed edge
-            // into a dynamic consumer — so an absent one cannot happen.
-            let Some(key) = edge.key_of(value.as_ref())? else {
-                return Ok(());
-            };
-            if let Ok(slot) = registry.get_or_create(&key) {
-                enqueue(
-                    &slot,
-                    EntityItem::Input(make_entity_payload(value, stream, consumed_offset, replay)),
-                    policy,
-                );
-            }
-        }
-        EntityMode::Single => {
-            if let Some(slot) = instance
-                .entities
-                .get(consumer_procedure_id as usize)
-                .and_then(|p| p.first())
-            {
-                enqueue(
-                    slot,
-                    EntityItem::Input(make_entity_payload(value, stream, consumed_offset, replay)),
-                    policy,
-                );
-            }
-        }
-        EntityMode::Static => {
-            let entities = match instance.entities.get(consumer_procedure_id as usize) {
-                Some(p) => p,
-                None => return Ok(()),
-            };
-            let key_to_idx = instance
-                .entity_key_to_idx
-                .get(consumer_procedure_id as usize);
-            for key in (consumer.entities_for_erased)(value.as_ref()) {
-                if let Some(&idx) = key_to_idx.and_then(|m| m.get(key)) {
-                    if let Some(slot) = entities.get(idx) {
-                        enqueue(
-                            slot,
-                            EntityItem::Input(make_entity_payload(
-                                value,
-                                stream,
-                                consumed_offset,
-                                replay,
-                            )),
-                            policy,
-                        );
-                    }
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Climb this channel's retry→DLQ ladder for one edge whose transform or key
-/// unwound. The closures are pure by contract, so a re-attempt is expected to
-/// fail identically — the ladder is there so the failure is parked and
-/// observable rather than silently taking a thread down, exactly as it is for
-/// a poison entry payload.
-#[allow(clippy::too_many_arguments)]
-fn spawn_edge_ladder(
-    instance: &Arc<UnboundedInstance>,
-    channel: &crate::channel::ChannelDescriptor,
-    edge: &crate::channel::ConsumerEdge,
-    value: &Arc<dyn Any + Send + Sync>,
-    stream: &Arc<FlezhaStream>,
-    consumed_offset: Option<u64>,
-    replay: bool,
-    error: String,
-) {
-    let Some(channel_id) = instance.topology.lookup_channel_id(&channel.name) else {
-        eprintln!("[flezha] edge transform failed on an unregistered channel: {error}");
-        return;
-    };
-    let ladder = EdgeLadder {
-        instance: Arc::clone(instance),
-        channel_id,
-        edge: edge.clone(),
-        value: Arc::clone(value),
-        first_error: error,
-        stream: Arc::clone(stream),
-        consumed_offset,
-        replay,
-    };
-    spawn_park_thread("flezha-edge-transform-park", move || {
-        run_edge_ladder(ladder)
-    });
-}
-
-/// Run a retry→DLQ ladder off the routing thread. Both ladders spawn here:
-/// the wait between attempts must not stall the wire reader, and a failure to
-/// spawn is reported rather than silently dropping the payload's last chance.
-fn spawn_park_thread(name: &str, run: impl FnOnce() + Send + 'static) {
-    let spawned = std::thread::Builder::new()
-        .name(name.to_string())
-        .spawn(run);
-    if let Err(e) = spawned {
-        eprintln!("[flezha] failed to spawn {name} thread: {e}");
-    }
-}
-
-struct EdgeLadder {
-    instance: Arc<UnboundedInstance>,
-    channel_id: u32,
-    edge: crate::channel::ConsumerEdge,
-    value: Arc<dyn Any + Send + Sync>,
-    first_error: String,
-    stream: Arc<FlezhaStream>,
-    consumed_offset: Option<u64>,
-    replay: bool,
-}
-
-fn run_edge_ladder(ladder: EdgeLadder) {
-    let channel = ladder
-        .instance
-        .topology
-        .channel(ladder.channel_id)
-        .expect("channel present in topology");
-    let procedure = ladder
-        .instance
-        .topology
-        .procedure(ladder.edge.procedure)
-        .map(|p| p.name.to_string())
-        .unwrap_or_default();
-    run_retry_park_ladder(
-        &format!("channel `{}` edge into `{}`", channel.name, procedure),
-        channel,
-        &ladder.instance.instance_id,
-        "_edge",
-        ladder.consumed_offset,
-        None,
-        ladder.first_error,
-        || {
-            deliver_edge(
-                &ladder.instance,
-                channel,
-                &ladder.edge,
-                &ladder.value,
-                &ladder.stream,
-                ladder.consumed_offset,
-                ladder.replay,
-            )
-        },
-    );
-}
-
 /// Build the emit wire metadata: drop any caller-supplied reserved
 /// `channel` key, then stamp the descriptor's channel name.
 fn channel_metadata(
@@ -1983,195 +1462,102 @@ fn flush_before_emit_enabled() -> bool {
         Err(_) => true,
     }
 }
+use flz_core::routing::send_plugin_frame;
 
-fn send_plugin_frame(
-    stream: &Arc<FlezhaStream>,
-    instance_id: &str,
-    bytes: &[u8],
-    metadata: &HashMap<String, String>,
-) {
-    let frame = payloader::build_from_binary(instance_id, bytes, metadata.clone());
-    if let Err(e) = (&**stream).write_all(&frame) {
-        eprintln!(
-            "[flezha] plugin emit: failed to write {} bytes for {}: {}",
-            bytes.len(),
-            instance_id,
-            e
-        );
-    }
+/// Spawn the typed layer's poll workers (once per process): the host half of
+/// the poll/complete seam. Sized like the worker pool; the engine never runs
+/// host code, so these threads are where every unbounded dispatch happens.
+pub(crate) fn ensure_poll_workers() {
+    static STARTED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    STARTED.get_or_init(|| {
+        // A Block-policy producer facing a full consumer drains it on its own
+        // thread through this hook (one-worker self-deadlock fix).
+        flz_core::routing::install_inline_serve(serve_slot);
+        for i in 0..crate::runner::work_stealing_pool::configured_worker_count() {
+            std::thread::Builder::new()
+                .name(format!("flz-poll-{i}"))
+                .spawn(poll_worker_loop)
+                .expect("spawn poll worker");
+        }
+    });
 }
 
-pub fn drain_entity(slot: &Arc<EntitySlot>) {
-    // Single-ACTIVE-drainer gate. The queued pool task and a Block-policy
-    // producer draining inline may both arrive here; the loser leaves and the
-    // winner owns the pop loop, so per-slot dispatch order is preserved.
-    if slot.drain_active.swap(true, Ordering::AcqRel) {
-        return;
-    }
+fn poll_worker_loop() {
+    let core = crate::runner::poll_core::global();
     loop {
-        while let Some(item) = slot.mailbox.pop() {
-            // Free one waiter (if any) before running the dispatcher;
-            // the popped slot is now available for the unparked producer
-            // to re-attempt its push.
-            slot.block_parker.unpark_one();
-            let payload = match item {
-                // A timer firing carries no input-log offset and is never a
-                // replay member, so it skips both gates below and runs under
-                // the same drain exclusion an input does.
-                timer @ EntityItem::Timer(_) => {
-                    maybe_dispatch_replay_slice(slot);
-                    dispatch_one(slot, timer);
-                    continue;
-                }
-                EntityItem::Input(payload) => payload,
-            };
-            // Effectively-once crash-replay: the controller re-forwards the
-            // journaled input tail; offsets this Entity already durably
-            // consumed (restored effect records) are skipped, never re-run.
-            if let Some(offset) = payload.consumed_offset {
-                if (offset as i64) <= slot.consumed_floor.load(Ordering::Acquire) {
-                    crate::entity::DISPATCHES_COMPLETED.fetch_add(1, Ordering::Relaxed);
-                    continue;
-                }
+        match core.poll(std::time::Duration::from_millis(200)) {
+            crate::runner::poll_core::Polled::Activation(act) => run_activation(act),
+            crate::runner::poll_core::Polled::Timeout => {}
+            crate::runner::poll_core::Polled::ShuttingDown => return,
+        }
+    }
+}
+
+/// Serve one slot inline: assemble its round on the calling thread and run
+/// it. How a Block-policy producer drains a full consumer without waiting on
+/// a poll worker (a parked worker could be the only one able to serve it).
+pub(crate) fn serve_slot(slot: &Arc<EntitySlot>) {
+    if let Some(act) = crate::runner::poll_core::global().try_assemble(slot) {
+        run_activation(act);
+    }
+}
+
+/// Run one activation: one attempt per item through the typed dispatch, then
+/// either complete the batch or hand the failed head (and unprocessed tail)
+/// back to the engine's ladder. The engine owns handout exclusivity,
+/// admission, and the drain-tail protocol (`runner::poll_core`).
+fn run_activation(act: crate::runner::poll_core::EngineActivation) {
+    use crate::entity::ItemDisposition;
+    use crate::runner::poll_core::WorkItem;
+
+    let core = crate::runner::poll_core::global();
+    let crate::runner::poll_core::EngineActivation { token, slot, items } = act;
+    let mut queue: std::collections::VecDeque<WorkItem> = items.into();
+    while let Some(work) = queue.pop_front() {
+        // The connection this item rides — inherited by any processing-time
+        // timer it arms, so a firing's plugin emits leave the same way an
+        // input's would.
+        let stream = match &work.item {
+            EntityItem::Input(payload) => Arc::clone(&payload.stream),
+            EntityItem::Timer(fire) => Arc::clone(&fire.stream),
+        };
+        let (now, attempt, is_final) = (work.now, work.attempt, work.is_final);
+        let disposition = {
+            let mut state_guard = slot.state.lock_recover();
+            let mut buffer_guard = slot.flush_buffer.lock_recover();
+            let mut timer_guard = slot.timers.lock_recover();
+            let instance_weak = Weak::clone(&slot.instance);
+            slot.dispatcher.dispatch_item(
+                work,
+                &mut state_guard,
+                &mut buffer_guard,
+                &mut timer_guard,
+                &instance_weak,
+            )
+        };
+        match disposition {
+            ItemDisposition::Done { ops } => {
+                // Outside the locks: arming can fire an already-due timer
+                // straight back onto this slot's mailbox, and the drain that
+                // would run it needs them.
+                crate::entity::timer::apply_ops(&slot, &ops, &stream);
+                crate::entity::DISPATCHES_COMPLETED.fetch_add(1, Ordering::Relaxed);
             }
-            // A replayed slice is held whole, ordered by event time, and only
-            // then dispatched. Re-running it in arrival order would put the
-            // late input back after the inputs that overtook it and recompute
-            // the same wrong answer.
-            if payload.replay {
-                slot.replay_buffer.lock_recover().push(payload);
-                slot.replay_depth.fetch_add(1, Ordering::Relaxed);
-                continue;
+            ItemDisposition::RetryLater { item, error } => {
+                let mut rest = Vec::with_capacity(queue.len() + 1);
+                rest.push(WorkItem {
+                    item,
+                    now,
+                    attempt,
+                    is_final,
+                });
+                rest.extend(queue);
+                core.retry_after_failure(token, rest, error);
+                return;
             }
-            // A live input popped while a closed slice is still buffered: the
-            // slice is older than it, so the slice runs first. Without this the
-            // live input jumps the queue and lands ahead of the very inputs the
-            // correction was re-ordering.
-            maybe_dispatch_replay_slice(slot);
-            dispatch_one(slot, EntityItem::Input(payload));
-        }
-
-        // The mailbox is dry. If a slice is buffered and the controller has
-        // closed it, this is the moment to order and run it — in the drain, not
-        // the frame handler, so it happens under the single-drainer gate with no
-        // dispatch racing it.
-        maybe_dispatch_replay_slice(slot);
-        // Drop the active gate BEFORE releasing inflight so a producer that
-        // observes inflight=false can immediately become the next drainer.
-        slot.drain_active.store(false, Ordering::Release);
-        slot.mailbox.release_inflight();
-        if slot.mailbox.is_empty() {
-            return;
-        }
-        if !slot.mailbox.try_mark_inflight() {
-            return;
-        }
-        if slot.drain_active.swap(true, Ordering::AcqRel) {
-            // Another thread became the active drainer for the round we just
-            // marked; it releases the inflight token when it finishes.
-            return;
         }
     }
-}
-
-/// Close every Entity's replayed slice and wake their drains to run it.
-///
-/// A broadcast rather than a marker riding the slice's last input, because it
-/// has to be: an input routes to exactly one Entity by key, so a marker on the
-/// last one would reach one Entity and leave every other Entity that buffered
-/// slice members holding them forever.
-///
-/// Arrives on the frame-handling thread after every frame of the slice, so a
-/// Entity cannot still be receiving members when its slice is closed.
-pub(crate) fn end_replay_slice(instance: &UnboundedInstance) {
-    let statics = instance.entities.iter().flatten().cloned();
-    let dynamics = instance.dynamic_registries.iter().flatten().flat_map(|r| {
-        r.entities
-            .iter()
-            .map(|e| Arc::clone(e.value()))
-            .collect::<Vec<_>>()
-    });
-
-    for slot in statics.chain(dynamics) {
-        slot.replay_open.store(false, Ordering::Release);
-        // The drain may already have run dry and exited with the slice still
-        // buffered — it had no way to know more was coming. Wake it so it can
-        // see the closed slice and flush it.
-        if slot.mailbox.try_mark_inflight() {
-            let cloned = Arc::clone(&slot);
-            slot.pool.submit(Box::new(move || drain_entity(&cloned)));
-        }
-    }
-}
-
-/// Dispatch the buffered slice if there is one and the controller has closed it.
-/// Two relaxed loads in the overwhelmingly common case of no replay in flight.
-fn maybe_dispatch_replay_slice(slot: &Arc<EntitySlot>) {
-    if slot.replay_depth.load(Ordering::Relaxed) != 0 && !slot.replay_open.load(Ordering::Acquire) {
-        dispatch_replay_slice(slot);
-    }
-}
-
-/// Run one payload through the Procedure, holding the state and flush-buffer
-/// locks for the invocation.
-fn dispatch_one(slot: &Arc<EntitySlot>, item: EntityItem) {
-    // The connection this invocation rides — inherited by any processing-time
-    // timer it arms, so a firing's plugin emits leave the same way an input's
-    // would.
-    let stream = match &item {
-        EntityItem::Input(payload) => Arc::clone(&payload.stream),
-        EntityItem::Timer(fire) => Arc::clone(&fire.stream),
-    };
-    let ops = {
-        let mut state_guard = slot.state.lock_recover();
-        let mut buffer_guard = slot.flush_buffer.lock_recover();
-        let mut timer_guard = slot.timers.lock_recover();
-        let instance_weak = Weak::clone(&slot.instance);
-        slot.dispatcher.dispatch(
-            item,
-            &mut state_guard,
-            &mut buffer_guard,
-            &mut timer_guard,
-            &instance_weak,
-        )
-    };
-    // Outside the locks: arming can fire an already-due timer straight back
-    // onto this slot's mailbox, and the drain that would run it needs them.
-    crate::entity::timer::apply_ops(slot, &ops, &stream);
-    crate::entity::DISPATCHES_COMPLETED.fetch_add(1, Ordering::Relaxed);
-}
-
-/// The end-of-slice marker arrived: order the buffered slice by event time and
-/// dispatch it.
-///
-/// The sort is **stable** and tie-broken by ascending input-log offset, so two
-/// inputs bearing the same event time replay in log order. That is what makes a
-/// correction reproducible: slice membership is an offset range and slice order
-/// is a function of the inputs alone, so a re-run after a crash folds the same
-/// inputs in the same order into the same state — and re-emits byte-identical
-/// output identities.
-fn dispatch_replay_slice(slot: &Arc<EntitySlot>) {
-    let mut slice = std::mem::take(&mut *slot.replay_buffer.lock_recover());
-    slot.replay_depth.store(0, Ordering::Relaxed);
-
-    slice.sort_by_key(|p| {
-        (
-            slot.dispatcher.event_time_of(p).unwrap_or(0),
-            p.consumed_offset.unwrap_or(0),
-        )
-    });
-
-    // The high-water is NOT reset here. Every replay is preceded by a restore,
-    // which already re-established it from the change log it restored — the
-    // rewound baseline's for a correction, the recovered state's for a crash
-    // resume. Zeroing it would be redundant in the first case and *lossy* in the
-    // second: a resumed Entity whose unconsumed tail happens to carry a lower
-    // max event time than its restored state would come back with a high-water
-    // below the truth, and read a genuinely late input as on-time. The slice's
-    // payloads raise it by `fetch_max` as they dispatch.
-    for payload in slice {
-        dispatch_one(slot, EntityItem::Input(payload));
-    }
+    core.complete(token);
 }
 
 /// Whether a Procedure's Entities join the background flusher's drain pass.
@@ -2188,6 +1574,9 @@ fn flusher_registered<S: Procedure>(effectively_once: bool) -> bool {
 /// during `UnboundedOperative::channels` and `build_topology` invokes it once per
 /// entity at operative-instance startup.
 pub fn build_entity_slot<S: Procedure>(args: BuildEntityArgs<'_>) -> Arc<EntitySlot> {
+    // The slot's rounds are served by the typed layer's poll workers; make
+    // sure they exist before the first input can be scheduled.
+    ensure_poll_workers();
     let procedure = S::default();
     // v1 cold-start path: `init_payload` is `None`. The controller change
     // wires the warm-restart path through `init_entity_with_payload`
@@ -2205,15 +1594,11 @@ pub fn build_entity_slot<S: Procedure>(args: BuildEntityArgs<'_>) -> Arc<EntityS
     )
         as Box<dyn FlushableBuffer>));
 
-    let change_seq = Arc::new(AtomicU64::new(0));
-    let event_time_high_water = Arc::new(AtomicI64::new(-1));
-    // Key the on-disk WAL identity by the operative INSTANCE id, not the factory
-    // id: two operatives of the same factory must not share one Entity WAL.
-    let entity_identity = Arc::new(encode_entity_identity(
+    let parts = flz_core::entity::slot_parts(
         args.instance_id.as_ref(),
         procedure_desc.name.as_ref(),
-        args.entity_key.unwrap_or(""),
-    ));
+        args.entity_key,
+    );
 
     let output_channel = procedure_desc
         .output_channel_id
@@ -2226,13 +1611,6 @@ pub fn build_entity_slot<S: Procedure>(args: BuildEntityArgs<'_>) -> Arc<EntityS
         .input_channel_ids
         .first()
         .and_then(|&id| topology.channel(id));
-    // `flz.entity` stamp: same triple the WAL identity encodes, readable.
-    let entity_label: Arc<str> = Arc::from(format!(
-        "{}/{}/{}",
-        args.instance_id,
-        procedure_desc.name,
-        args.entity_key.unwrap_or("")
-    ));
     let dispatcher = Arc::new(ProcedureDispatcherImpl::<S>::new(
         args.procedure_id,
         procedure_desc.output_channel_id,
@@ -2243,17 +1621,16 @@ pub fn build_entity_slot<S: Procedure>(args: BuildEntityArgs<'_>) -> Arc<EntityS
         output_channel.map(|c| c.keyed).unwrap_or(false),
         input_channel.map(|c| Arc::clone(&c.name)),
         input_channel.map(|c| c.retry).unwrap_or_default(),
-        entity_label,
+        Arc::clone(&parts.entity_label),
         FlushWiring {
-            entity_identity: Arc::clone(&entity_identity),
-            change_seq: Arc::clone(&change_seq),
-            header: HeaderTemplate::for_procedure::<S>(),
+            entity_identity: Arc::clone(&parts.entity_identity),
+            change_seq: Arc::clone(&parts.change_seq),
+            header: crate::entity::header::header_template_for::<S>(),
             persistence_enabled: args.persistence_enabled,
             effectively_once: topology.effectively_once,
             checkpoint_ack: topology.ack_granularity
                 == crate::operative::topology::AckGranularity::Checkpoint,
             correction: topology.correction,
-            event_time_high_water: Arc::clone(&event_time_high_water),
         },
     )) as Arc<dyn ProcedureDispatcher>;
 
@@ -2267,40 +1644,26 @@ pub fn build_entity_slot<S: Procedure>(args: BuildEntityArgs<'_>) -> Arc<EntityS
     // drain through the same buffer.
     let flusher_entry_id = if flusher_registered::<S>(topology.effectively_once) {
         Some(EntityFlusher::instance().register(
-            Arc::clone(&entity_identity),
+            Arc::clone(&parts.entity_identity),
             Arc::clone(&flush_buffer),
             args.persistence_enabled,
-            Arc::clone(&change_seq),
-            HeaderTemplate::for_procedure::<S>(),
+            Arc::clone(&parts.change_seq),
+            crate::entity::header::header_template_for::<S>(),
         ))
     } else {
         None
     };
 
-    Arc::new(EntitySlot {
-        state: std::sync::Mutex::new(Box::new(typed_state)),
-        mailbox: Arc::new(Mailbox::with_capacity(procedure_desc.mailbox_capacity)),
-        dispatcher,
-        procedure_id: args.procedure_id,
-        entity_key: args.entity_key.map(Arc::from),
-        pool: args.pool,
-        instance: args.instance,
-        topology,
-        block_parker: crate::entity::BlockParker::new(),
-        drain_active: std::sync::atomic::AtomicBool::new(false),
+    let mailbox_capacity = procedure_desc.mailbox_capacity;
+    flz_core::entity::assemble_slot(
+        args,
+        parts,
+        Box::new(typed_state),
         flush_buffer,
-        persistence_enabled: args.persistence_enabled,
-        change_seq,
-        consumed_floor: std::sync::atomic::AtomicI64::new(-1),
-        event_time_high_water: Arc::clone(&event_time_high_water),
-        replay_buffer: Mutex::new(Vec::new()),
-        replay_open: std::sync::atomic::AtomicBool::new(false),
-        replay_depth: AtomicU64::new(0),
-        entity_identity,
-        last_activity_at: std::sync::atomic::AtomicI64::new(crate::entity::dynamic::now_millis()),
+        dispatcher,
         flusher_entry_id,
-        timers: Mutex::new(PendingTimers::default()),
-    })
+        mailbox_capacity,
+    )
 }
 
 #[cfg(test)]
@@ -2495,14 +1858,13 @@ mod tests {
             RetryPolicy::default(),
             Arc::from("inst/proc/"),
             FlushWiring {
-                entity_identity: Arc::new(encode_entity_identity("inst", "proc", "")),
+                entity_identity: Arc::new(flz_core::flusher::encode_entity_identity("inst", "proc", "")),
                 change_seq: Arc::new(AtomicU64::new(3)),
-                header: HeaderTemplate::for_procedure::<CounterProc>(),
+                header: crate::entity::header::header_template_for::<CounterProc>(),
                 persistence_enabled: false,
                 effectively_once: false,
                 checkpoint_ack: false,
                 correction: None,
-                event_time_high_water: Arc::new(AtomicI64::new(-1)),
             },
         );
 

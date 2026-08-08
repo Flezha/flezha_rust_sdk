@@ -16,8 +16,6 @@
 //!   restore). Version-like: advances as applied changes are flushed,
 //!   survives crash-restore, and is `0` until the first change ships.
 
-use std::time::SystemTime;
-
 mod sealed {
     pub trait Sealed {}
 }
@@ -129,13 +127,4 @@ where
         input.map(F::extract).unwrap_or(0)
     }
 }
-
-/// Wall time as milliseconds since the Unix epoch. The dispatcher's wall
-/// source; the test harness injects fixed/scripted values by supplying
-/// its own `wall_ms` closure to [`ClockFor::evaluate`] instead.
-pub(crate) fn wall_now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
+pub(crate) use flz_core::util::wall_now_ms;

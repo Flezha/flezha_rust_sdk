@@ -27,6 +27,7 @@ bench-internals = []
 testing = []
 
 [dependencies]
+flz_core = { path = "../../flz_core" }
 flz_transport = { path = "../../flz_transport" }
 flezha-macros = { path = "../../flezha-macros" }
 # Compile-time operative collection for the single-procedure auto-wire path.

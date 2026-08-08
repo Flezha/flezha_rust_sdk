@@ -4,6 +4,24 @@ All notable changes to the Rust SDK crate.
 
 ## Unreleased
 
+### The kernel moved into `flz_core` (`extract-sdk-poll-core`)
+
+- **Public API unchanged** (`public-api.txt`: internal-re-export note). The
+  type-erased kernel — entity slots, mailbox/drain gates, flusher, credit,
+  DLQ park/ladder, timers, routing, commands, bounded driver, transport
+  loop — now lives in the `flz_core` crate; this crate's typed layer
+  consumes it as the first poll host. Dispatch runs on dedicated poll
+  workers (`poll() → run one attempt per item → complete`); admission,
+  late-input classification, event-time due-timer generation, stale-timer
+  validation and the retry→park ladder are engine-side. Event-time-clocked
+  classes are handed one admitted input per activation (chained due-timer
+  determinism); wall/logical classes batch freely.
+- **Renamed (internal surfaces)**: `HeaderTemplate::for_procedure::<S>()` →
+  `entity::header::header_template_for::<S>()`; `TimerPolicy::
+  for_procedure::<S>()` → `entity::timer::timer_policy_for::<S>()`
+  (inherent impls cannot span crates). `ProcedureDispatcher::dispatch` →
+  `dispatch_item` (single attempt, disposition-driven).
+
 ### Live Entity read (`entity-state-live-query`)
 
 - **The `EntityState` command gained a selector**, so the state an operator asks

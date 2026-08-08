@@ -122,38 +122,9 @@ pub(crate) struct ProcedureEntry {
 /// is stored, whatever it returns. Built by [`erase`]; the public
 /// `EdgeTransformFn`, `EdgeKeyFn` and `PluginSerializeFn` are this same shape
 /// spelled out.
-pub(crate) type ErasedFn<R> = Arc<dyn Fn(&dyn Any) -> R + Send + Sync + 'static>;
-
-pub(crate) type EntitiesForFn = ErasedFn<Vec<&'static str>>;
-
-pub(crate) type SerializeStateFn =
-    Arc<dyn Fn(&Box<dyn Any + Send>) -> Result<serde_json::Value, String> + Send + Sync + 'static>;
-
-pub(crate) type DeserializeStateFn =
-    Arc<dyn Fn(&serde_json::Value) -> Result<Box<dyn Any + Send>, String> + Send + Sync + 'static>;
-
-pub(crate) type EntityBuilder =
-    Box<dyn Fn(BuildEntityArgs<'_>) -> Arc<crate::entity::EntitySlot> + Send + Sync + 'static>;
-
-pub struct BuildEntityArgs<'a> {
-    pub topology: Arc<crate::operative::topology::OperativeTopology>,
-    pub instance: std::sync::Weak<crate::operative::instance::UnboundedInstance>,
-    /// The operative INSTANCE id (controller-assigned operative_id). The on-disk WAL
-    /// is keyed by this, not the factory id, so two operatives of the same factory
-    /// keep independent per-Entity state instead of colliding on one WAL.
-    pub instance_id: Arc<str>,
-    pub procedure_id: ProcedureId,
-    pub entity_key: Option<&'a str>,
-    /// Zero-based entity index within the Procedure. `0` for single-mode
-    /// procedures; `0..entity_keys().len()` for static-mode procedures.
-    pub entity_index: usize,
-    /// Frozen-at-instance-start persistence flag, propagated from the
-    /// `UnboundedInstance`. The `EntitySlot` carries this on its
-    /// `persistence_enabled` field; the per-process flusher inspects it
-    /// at drain time to decide whether to call `send_frame`.
-    pub persistence_enabled: bool,
-    pub pool: Arc<crate::runner::work_stealing_pool::WorkStealingPool>,
-}
+pub use flz_core::channel::{
+    BuildEntityArgs, DeserializeStateFn, EntitiesForFn, EntityBuilder, ErasedFn, SerializeStateFn,
+};
 
 /// Plugin sink attached to an `InterProcedure` channel via
 /// `also_output_with(...)` / `also_output(...)`. The presence of this field
@@ -696,7 +667,7 @@ impl BuilderState {
 
         let build_entity: EntityBuilder = Box::new(
             |args: BuildEntityArgs<'_>| -> Arc<crate::entity::EntitySlot> {
-                crate::entity::build_entity_slot::<S>(args)
+                crate::operative::dispatcher::build_entity_slot::<S>(args)
             },
         );
 

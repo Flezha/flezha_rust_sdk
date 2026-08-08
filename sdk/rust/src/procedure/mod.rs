@@ -49,12 +49,7 @@ pub const DEFAULT_PROCEDURE_ON_TIMER_PANIC_MESSAGE: &str =
 /// author-controlled memory multiplied by an unbounded Entity count; the cap
 /// is what keeps a runaway registration a refusal rather than an OOM.
 pub const DEFAULT_MAX_TIMERS_PER_ENTITY: usize = 10_000;
-
-/// Default per-Entity WAL size compaction threshold (8 MiB), in lockstep with
-/// the controller's `:default_compact_after_bytes`. The single source both the
-/// `Procedure::compact_after_bytes` default and the `AddOperative` metadata
-/// "omit when equal to the default" check read.
-pub const DEFAULT_COMPACT_AFTER_BYTES: usize = 8 * 1024 * 1024;
+pub use flz_core::persistence::DEFAULT_COMPACT_AFTER_BYTES;
 
 /// One Procedure in an UnboundedOperative topology. Stateless dispatcher; per-entity
 /// State is held by the runtime and threaded through `run` via a

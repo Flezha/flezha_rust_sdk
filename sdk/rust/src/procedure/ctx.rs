@@ -251,9 +251,10 @@ impl<'a> ProcedureCtx<'a> {
     ///
     /// [`Procedure::on_timer`]: crate::procedure::Procedure::on_timer
     pub fn timer_at_event_time(&self, scheduled_at: u64) -> Result<u64, ProcedureError> {
-        self.timers()?
+        Ok(self
+            .timers()?
             .borrow_mut()
-            .register_at_event_time(scheduled_at)
+            .register_at_event_time(scheduled_at)?)
     }
 
     /// Register a **processing-time** timer `delay` after [`Self::now`],
@@ -266,7 +267,7 @@ impl<'a> ProcedureCtx<'a> {
     /// the same instant a wall clock would, and one replaying history schedules
     /// a past instant, which fires at once.
     pub fn timer_after(&self, delay: Duration) -> Result<u64, ProcedureError> {
-        self.timers()?.borrow_mut().register_after(delay)
+        Ok(self.timers()?.borrow_mut().register_after(delay)?)
     }
 
     /// Cancel a pending event-time timer by the timestamp

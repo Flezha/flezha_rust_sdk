@@ -9,6 +9,15 @@
 # CI may diff this file against a fresh `cargo public-api` invocation
 # in a follow-up change; until then this file is informational and a
 # pointer for code reviewers.
+#
+# `extract-sdk-poll-core`: the SDK's kernel (entity slots, mailbox/drain
+# gates, flusher, credit, DLQ park, timers, bounded driver, commands,
+# transport loop) moved into the `flz_core` workspace crate; every path
+# listed below is unchanged and now resolves through internal re-exports
+# from `flz_core`. This is the documented internal-re-export exception —
+# the user-visible surface is byte-identical. The poll/complete engine
+# (`flz_core::poll_core`) and the C ABI (`flz_core_ffi`) are NOT part of
+# this crate's public surface.
 
 pub mod state {
     pub use crate::entity::restore::RestoreError;

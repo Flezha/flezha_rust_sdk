@@ -1090,7 +1090,7 @@ fn timer_ops_record<S: Procedure>(seq: u64, ops: &[TimerOp]) -> Vec<u8> {
         &body,
         HeaderTemplate {
             format_id: FORMAT_ID_TIMER_OPS,
-            ..HeaderTemplate::for_procedure::<S>()
+            ..flezha_runner::entity::header::header_template_for::<S>()
         },
     )
 }
@@ -1112,7 +1112,7 @@ fn effect_record<S: Procedure>(seq: u64, changes: Vec<Vec<u8>>, timers: Vec<Time
         &body,
         HeaderTemplate {
             format_id: FORMAT_ID_EFFECT_RECORD,
-            ..HeaderTemplate::for_procedure::<S>()
+            ..flezha_runner::entity::header::header_template_for::<S>()
         },
     )
 }

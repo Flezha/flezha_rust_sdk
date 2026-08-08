@@ -20,12 +20,13 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::entity::restore::{init_entity_with_payload, RestoreError, RestoreInitPayload};
-use crate::entity::timer::{PendingTimers, TimerKind, TimerOp, TimerPolicy, TimerSession};
+use crate::entity::restore::{init_entity_with_payload, RestoreInitPayload};
+use crate::entity::timer::{PendingTimers, TimerKind, TimerOp, TimerSession};
 use crate::operative::dispatcher::apply_identity_stamps;
 use crate::procedure::clock::{wall_now_ms, ClockFor};
 use crate::procedure::ctx::EmitSink;
 use crate::procedure::{Procedure, ProcedureCtx, ProcedureError, StateHandle};
+use flz_core::header::RestoreError;
 
 /// Entity identity the harness stands in for the runtime's per-slot
 /// identity: feeds `ctx.stable_id()` derivation and the `flz.entity`
@@ -311,7 +312,7 @@ impl<S: Procedure> ProcedureTestHarness<S> {
         now: u64,
         firing: Option<(TimerKind, u64)>,
     ) -> RefCell<TimerSession> {
-        TimerPolicy::for_procedure::<S>().session(&self.timers, now, firing)
+        crate::entity::timer::timer_policy_for::<S>().session(&self.timers, now, firing)
     }
 
     /// Borrow the recorded Change log.

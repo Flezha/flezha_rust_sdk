@@ -3,10 +3,10 @@
 
 pub mod builder;
 pub mod dispatcher;
-pub mod instance;
-pub mod persistence;
-pub mod registry;
-pub mod topology;
+pub use flz_core::operative::instance;
+pub use flz_core::operative::registry;
+pub use flz_core::operative::topology;
+pub use flz_core::persistence;
 
 pub use instance::UnboundedInstance;
 pub use topology::OperativeTopology;
@@ -46,3 +46,6 @@ pub trait UnboundedOperative: Send + Sync + 'static {
     /// cycle.
     const PERSISTENCE_ENABLED: bool = true;
 }
+
+#[cfg(test)]
+mod instance_tests;

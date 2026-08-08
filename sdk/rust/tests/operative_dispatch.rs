@@ -1499,8 +1499,7 @@ test_procedure!(PlainPluginProcedure, "plain_plugin_procedure", String => String
 /// `[seq u64 BE][len u32 BE][header 16B][change][crc32 u32 BE]`,
 /// `len = 16 + change.len()`, trailing crc over `header + change`.
 fn wal_record<S: Procedure>(seq: u64, change_bytes: &[u8]) -> Vec<u8> {
-    let header =
-        flezha_runner::entity::header::HeaderTemplate::for_procedure::<S>().stamp(change_bytes);
+    let header = flezha_runner::entity::header::header_template_for::<S>().stamp(change_bytes);
     let mut record = Vec::new();
     record.extend_from_slice(&seq.to_be_bytes());
     record.extend_from_slice(&((16 + change_bytes.len()) as u32).to_be_bytes());

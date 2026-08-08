@@ -228,6 +228,10 @@ After any public-API-affecting change:
 
 ## Architecture
 
-See `docs/operative_architecture.md` for the dispatch pipeline,
+This crate is the typed layer over the shared runner kernel: the `flz_core`
+workspace crate owns dispatch, durability, retries, timers and transport,
+and this crate's poll workers drive it (`docs/sdk_poll_core.md`). See
+`docs/operative_architecture.md` for the dispatch pipeline,
 `docs/operative_state_persistence.md` for the state-persistence trait
-surface, and `docs/sdk_protocol_spec.md` for the wire format.
+surface,
+and `docs/sdk_protocol_spec.md` for the wire format.

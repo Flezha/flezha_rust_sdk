@@ -1,5 +1,3 @@
-use std::any::Any;
-
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -71,17 +69,18 @@ impl ProcedureError {
         matches!(self, Self::NonRetryable(_))
     }
 }
+pub use flz_core::util::format_panic;
 
-/// Render a `catch_unwind` panic payload as a human-readable string.
-/// Mirrors the formatting used elsewhere in the runtime so error
-/// messages stay consistent across Procedure panics, dispatcher panics, and
-/// hybrid serializer panics.
-pub fn format_panic(payload: Box<dyn Any + Send>) -> String {
-    if let Some(s) = payload.downcast_ref::<&'static str>() {
-        (*s).to_string()
-    } else if let Some(s) = payload.downcast_ref::<String>() {
-        s.clone()
-    } else {
-        "<non-string panic payload>".to_string()
+impl From<flz_core::timer::TimerRefusal> for ProcedureError {
+    fn from(refusal: flz_core::timer::TimerRefusal) -> Self {
+        use flz_core::timer::TimerRefusal;
+        match refusal {
+            TimerRefusal::EventTimeWithoutEventTimeClock { procedure, clock } => {
+                ProcedureError::EventTimeTimerWithoutEventTimeClock { procedure, clock }
+            }
+            TimerRefusal::CapExceeded { procedure, max } => {
+                ProcedureError::TimerCapExceeded { procedure, max }
+            }
+        }
     }
 }

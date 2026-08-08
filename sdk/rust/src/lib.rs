@@ -2,9 +2,10 @@
 //!
 //! # Dispatch model
 //!
-//! Stream readers push directly into per-Entity lock-free mailboxes
-//! (`crossbeam::queue::SegQueue` + `AtomicBool inflight`). A Chase-Lev
-//! work-stealing pool drains the mailboxes. A `DashMap`-backed
+//! Stream readers push directly into per-Entity bounded mailboxes
+//! (`crossbeam::queue::ArrayQueue` + `AtomicBool inflight`). The typed
+//! layer's poll workers drain them through `flz_core`'s activation engine
+//! (`poll() → dispatch → complete`). A `DashMap`-backed
 //! [`operative::registry::OperativeRegistry`] holds live UnboundedOperative
 //! instances; the central coordinator runs but only handles
 //! control-plane traffic.
@@ -98,13 +99,14 @@
 
 pub mod bounded;
 pub mod channel;
-pub mod command;
+pub use flz_core::command;
 pub mod entity;
 pub mod operative;
 pub mod procedure;
 mod runner;
-mod shutdown;
 mod util;
+
+pub(crate) use flz_core::shutdown;
 
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
@@ -114,13 +116,14 @@ pub mod testing;
 /// `use flezha_runner::state::*;` to write Procedures that declare
 /// `Change` types and route mutations through `state.apply(...)`.
 pub mod state {
-    pub use crate::entity::restore::{RestoreError, RestoreInitPayload};
     pub use crate::entity::timer::TimerKind;
     pub use crate::procedure::change::{Change, CoalesceKey, NoChange};
     pub use crate::procedure::clock::{
         Clock, ClockFor, EventTimeFrom, LogicalClock, TimeExtractor, WallClock,
     };
     pub use crate::procedure::state_handle::StateHandle;
+    pub use flz_core::header::RestoreError;
+    pub use flz_core::restore::RestoreInitPayload;
 }
 
 use std::collections::HashMap;
@@ -187,12 +190,7 @@ use crate::operative::instance::UnboundedInstance;
 use crate::runner::{ClientResponseMessage, RunnerMessage};
 use crate::shutdown::ShutdownBridge;
 
-pub mod pb {
-    #[cfg(not(rust_analyzer))]
-    include!("generated/runner_commands.rs");
-    #[cfg(rust_analyzer)]
-    include!("generated/runner_commands.rs");
-}
+pub use flz_core::pb;
 
 /// Register an UnboundedOperative class topology in the global class registry.
 /// The internal body behind [`FlezhaRunner::define_unbounded`]; kept separate
@@ -750,7 +748,7 @@ mod entry_point_tests {
 #[cfg(feature = "bench-internals")]
 #[doc(hidden)]
 pub mod __dispatch_internals {
-    pub use crate::runner::fast::OperativeDispatchHandle;
-    pub use crate::runner::mailbox::Mailbox;
+    pub use flz_core::mailbox::Mailbox;
     pub use crate::runner::work_stealing_pool::WorkStealingPool;
+    pub use flz_core::fast::OperativeDispatchHandle;
 }
