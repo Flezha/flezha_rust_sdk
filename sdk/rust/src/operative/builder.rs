@@ -337,6 +337,7 @@ pub fn build_topology_with_persistence(
             }
         };
         procedure_descs.push(ProcedureDescriptor {
+            host_facts: None,
             name: Arc::from(entry.name),
             entity_keys: entry.entity_keys,
             entities_for_overridden: entry.entities_for_overridden,

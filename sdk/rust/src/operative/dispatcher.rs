@@ -1511,7 +1511,12 @@ fn run_activation(act: crate::runner::poll_core::EngineActivation) {
     use crate::runner::poll_core::WorkItem;
 
     let core = crate::runner::poll_core::global();
-    let crate::runner::poll_core::EngineActivation { token, slot, items } = act;
+    let Some((token, slot, items)) = act.into_work() else {
+        // Command/prepare payloads are host-only (C-ABI classes); a typed
+        // worker never receives one because typed and host classes do not
+        // share a process.
+        return;
+    };
     let mut queue: std::collections::VecDeque<WorkItem> = items.into();
     while let Some(work) = queue.pop_front() {
         // The connection this item rides — inherited by any processing-time

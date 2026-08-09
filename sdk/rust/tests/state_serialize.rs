@@ -7,7 +7,7 @@ use flezha_runner::channel::ChannelBuilder;
 use flezha_runner::command::entity_state::{
     apply_init_values, serialize_operative_state, serialize_selected_state, StateSelector,
     ENTITY_EVICTED, ENTITY_KEY_WITHOUT_PROCEDURE, ENTITY_NOT_FOUND, PROCEDURE_NOT_FOUND,
-};
+    StatePurpose,};
 use flezha_runner::operative::builder::build_topology_for;
 use flezha_runner::operative::UnboundedInstance;
 use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError};
@@ -296,6 +296,7 @@ fn read(
             procedure,
             entity_key: key,
         },
+        StatePurpose::LiveRead,
     )
     .expect("selected read");
     (serde_json::from_slice(&bytes).unwrap(), seq)
@@ -364,6 +365,7 @@ fn an_entity_key_without_a_procedure_is_refused() {
             procedure: None,
             entity_key: Some("1m"),
         },
+        StatePurpose::LiveRead,
     )
     .expect_err("an Entity key is unique only within its Procedure");
 
@@ -382,6 +384,7 @@ fn an_unknown_procedure_is_refused() {
             procedure: Some("nope"),
             entity_key: None,
         },
+        StatePurpose::LiveRead,
     )
     .expect_err("no such Procedure");
 
@@ -402,6 +405,7 @@ fn an_unknown_key_is_refused_distinctly_from_an_evicted_one() {
             procedure: Some("candle"),
             entity_key: Some("NEVER"),
         },
+        StatePurpose::LiveRead,
     )
     .expect_err("no Entity by that key");
     assert!(never.starts_with(ENTITY_NOT_FOUND), "got: {never}");
@@ -423,6 +427,7 @@ fn an_unknown_key_is_refused_distinctly_from_an_evicted_one() {
             procedure: Some("candle"),
             entity_key: Some("BTCUSD@1m"),
         },
+        StatePurpose::LiveRead,
     )
     .expect_err("an evicted Entity is refused, not resurrected");
     assert!(

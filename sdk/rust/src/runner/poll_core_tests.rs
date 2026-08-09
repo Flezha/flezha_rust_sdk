@@ -110,14 +110,14 @@ mod tests {
             workers.push(std::thread::spawn(move || loop {
                 match core.poll(Duration::from_millis(50)) {
                     Polled::Activation(act) => {
-                        let key = Arc::as_ptr(&act.slot) as usize;
+                        let key = Arc::as_ptr(act.slot()) as usize;
                         let flag = &held.iter().find(|(k, _)| *k == key).unwrap().1;
                         assert!(
                             !flag.swap(true, Ordering::AcqRel),
                             "entity handed out while already outstanding"
                         );
                         let log = &seen.iter().find(|(k, _)| *k == key).unwrap().1;
-                        for work in &act.items {
+                        for work in act.items() {
                             let EntityItem::Input(p) = &work.item else {
                                 panic!("unexpected timer item")
                             };
@@ -190,7 +190,7 @@ mod tests {
         core.complete(first.token);
         match core.poll(Duration::from_millis(500)) {
             Polled::Activation(second) => {
-                assert_eq!(second.items.len(), 1);
+                assert_eq!(second.items().len(), 1);
                 core.complete(second.token);
             }
             _ => panic!("queued input not handed out after completion"),
@@ -216,22 +216,22 @@ mod tests {
             Polled::Activation(a) => a,
             _ => panic!("expected an activation"),
         };
-        assert_eq!(act.items.len(), 3);
-        assert_eq!(act.items[0].attempt, 1);
-        assert!(!act.items[0].is_final);
+        assert_eq!(act.items().len(), 3);
+        assert_eq!(act.items()[0].attempt, 1);
+        assert!(!act.items()[0].is_final);
 
         // Item 0 processed fine; item 1 failed retryably: hand back 1 + 2.
-        let token = act.token;
-        let passback: Vec<_> = act.items.into_iter().skip(1).collect();
+        let (token, _slot, items) = act.into_work().expect("work activation");
+        let passback: Vec<_> = items.into_iter().skip(1).collect();
         core.retry_after_failure(token, passback, "boom".into());
 
         let act = match core.poll(Duration::from_millis(500)) {
             Polled::Activation(a) => a,
             _ => panic!("re-hand did not arrive"),
         };
-        assert_eq!(act.items.len(), 2);
+        assert_eq!(act.items().len(), 2);
         let ordinals: Vec<usize> = act
-            .items
+            .items()
             .iter()
             .map(|w| {
                 let EntityItem::Input(p) = &w.item else {
@@ -241,21 +241,90 @@ mod tests {
             })
             .collect();
         assert_eq!(ordinals, vec![1, 2], "head-of-line order violated");
-        assert_eq!(act.items[0].attempt, 2);
-        assert_eq!(act.items[1].attempt, 1, "tail attempts must not bump");
+        assert_eq!(act.items()[0].attempt, 2);
+        assert_eq!(act.items()[1].attempt, 1, "tail attempts must not bump");
         // Default policy is 3 attempts: one more failure reaches the budget.
-        let token = act.token;
-        let passback: Vec<_> = act.items.into_iter().collect();
+        let (token, _slot, items) = act.into_work().expect("work activation");
+        let passback: Vec<_> = items.into_iter().collect();
         core.retry_after_failure(token, passback, "boom again".into());
         let act = match core.poll(Duration::from_millis(2_000)) {
             Polled::Activation(a) => a,
             _ => panic!("second re-hand did not arrive"),
         };
-        assert_eq!(act.items[0].attempt, 3);
+        assert_eq!(act.items()[0].attempt, 3);
         assert!(
-            act.items[0].is_final,
+            act.items()[0].is_final,
             "budget-reaching attempt must be final"
         );
         core.complete(act.token);
+    }
+
+    /// A parked head must not take the unprocessed tail with it: the host
+    /// stops at the failed item and the core re-hands the rest — same order,
+    /// no attempt bump, no backoff (the tail never failed). This is exactly
+    /// how a healthy payload queued behind a poison one stays deliverable.
+    #[test]
+    fn rehand_unprocessed_returns_the_tail_untouched() {
+        let core = PollCore::new();
+        let (_i, slot) = build_slot("poll-rehand");
+        let (sock, _peer) = std::os::unix::net::UnixStream::pair().expect("pair");
+        let stream = Arc::new(FlezhaStream::Unix(sock));
+
+        for i in 0..3 {
+            assert!(slot.mailbox.try_push(payload(i, &stream)).is_ok());
+        }
+        assert!(slot.mailbox.try_mark_inflight());
+        core.schedule(&slot);
+        let act = match core.poll(Duration::from_millis(100)) {
+            Polled::Activation(a) => a,
+            _ => panic!("expected an activation"),
+        };
+        assert_eq!(act.items().len(), 3);
+
+        // Item 0 parked at its final attempt; 1 and 2 never ran.
+        let started = Instant::now();
+        let (token, _slot, items) = act.into_work().expect("work activation");
+        let tail: Vec<_> = items.into_iter().skip(1).collect();
+        core.rehand_unprocessed(token, tail);
+
+        let act = match core.poll(Duration::from_millis(500)) {
+            Polled::Activation(a) => a,
+            _ => panic!("unprocessed tail was dropped"),
+        };
+        assert!(
+            started.elapsed() < Duration::from_millis(400),
+            "a re-hand is not a retry: no backoff may delay it"
+        );
+        let ordinals: Vec<usize> = act
+            .items()
+            .iter()
+            .map(|w| {
+                let EntityItem::Input(p) = &w.item else {
+                    panic!("unexpected timer")
+                };
+                *p.value.downcast_ref::<usize>().unwrap()
+            })
+            .collect();
+        assert_eq!(ordinals, vec![1, 2], "tail order violated");
+        assert_eq!(act.items()[0].attempt, 1, "a re-hand bumps no attempt");
+        assert_eq!(act.items()[1].attempt, 1);
+        core.complete(act.token);
+
+        // An empty tail is a plain completion: the entity is released.
+        assert!(slot.mailbox.try_push(payload(9, &stream)).is_ok());
+        assert!(slot.mailbox.try_mark_inflight());
+        core.schedule(&slot);
+        let act = match core.poll(Duration::from_millis(100)) {
+            Polled::Activation(a) => a,
+            _ => panic!("expected an activation"),
+        };
+        core.rehand_unprocessed(act.token, Vec::new());
+        assert!(slot.mailbox.try_push(payload(10, &stream)).is_ok());
+        assert!(slot.mailbox.try_mark_inflight());
+        core.schedule(&slot);
+        match core.poll(Duration::from_millis(500)) {
+            Polled::Activation(a) => core.complete(a.token),
+            _ => panic!("entity not released after an empty re-hand"),
+        }
     }
 }

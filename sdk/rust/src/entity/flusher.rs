@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub use flz_core::flusher::*;
-use flz_core::header::{HeaderTemplate, FORMAT_ID_EFFECT_RECORD};
+use flz_core::header::HeaderTemplate;
 
 use crate::procedure::change::{Change, CoalesceKey};
 
@@ -194,18 +194,14 @@ pub fn build_entity_effect_record_frame<S: crate::procedure::Procedure>(
         event_time: entry.event_time,
         timers: entry.timers,
     };
-    let body_bytes = postcard::to_allocvec(&body)
-        .expect("postcard serialization of EffectRecordBody cannot fail");
-    let effect_header = HeaderTemplate {
-        format_id: FORMAT_ID_EFFECT_RECORD,
-        ..*header
-    };
-    let header_bytes = effect_header.stamp(&body_bytes);
-    build_entity_frame(entity_identity, seq, &header_bytes, &body_bytes)
+    // The bytes-level framing (format_id 2 stamp + entity frame) is the
+    // core's; this builder only serializes the typed changes first.
+    flz_core::flusher::build_effect_record_frame(entity_identity, seq, header, &body)
 }
 
 #[cfg(test)]
 mod tests {
+    use flz_core::header::FORMAT_ID_EFFECT_RECORD;
     use serde::{Deserialize, Serialize};
 
     use super::*;

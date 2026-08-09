@@ -351,11 +351,25 @@ pub use operative::builder::TopologyBuildError;
 #           pub entity_key: Option<&'a str>,
 #       }
 #
+#       pub enum StatePurpose { LiveRead, Migration }
+#
 #       pub fn serialize_operative_state(&Arc<UnboundedInstance>) -> Vec<u8>;
 #       pub fn serialize_selected_state(
-#           &Arc<UnboundedInstance>, StateSelector<'_>,
+#           &Arc<UnboundedInstance>, StateSelector<'_>, StatePurpose,
 #       ) -> Result<(Vec<u8>, Option<u64>), String>;   # (json, seq of a single Entity)
 #   }
+#
+#   CHANGED (rehost-java-sdk-on-poll-core): `serialize_selected_state` takes a
+#   `StatePurpose` — a host-run (C-ABI) Entity is asked with the matching
+#   activation kind (LiveStateRead vs MigrationSerialize); typed Entities
+#   serve both from the same fn pointer as before.
+#
+#   CHANGED (rehost-java-sdk-on-poll-core): `runner::poll_core::EngineActivation`
+#   is `{ token, payload: EnginePayload }` — `EnginePayload::Work { slot, items }`
+#   | `Command { target, change_seq, factory, kind, reply }` | `Prepare(..)`;
+#   work accessors `slot()` / `items()` / `into_work()`. `ProcedureDescriptor`
+#   gained `host_facts: Option<Arc<HostProcedureFacts>>` (`None` for typed
+#   classes). Both are re-exported kernel internals, not authoring surface.
 #
 #   CHANGED: `CommandAction` gained a defaulted `reply` returning
 #   `(payload_id, raw_data, HashMap<String, String>)` — the frame metadata a

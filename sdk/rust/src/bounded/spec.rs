@@ -36,6 +36,7 @@ pub fn build_spec<T: BoundedOperative>() -> Result<BoundedSpec, BuildBoundedErro
         }
 
         return Ok(BoundedSpec {
+            host: false,
             run: T::run as BoundedRunFn,
             topology: None,
             dag: ProcDag::default(),
@@ -102,6 +103,7 @@ pub fn build_spec<T: BoundedOperative>() -> Result<BoundedSpec, BuildBoundedErro
     }
 
     Ok(BoundedSpec {
+        host: false,
         run: T::run as BoundedRunFn,
         topology: Some(topology),
         dag,
