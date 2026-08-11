@@ -123,5 +123,9 @@ required-features = ["bench-internals"]
 name = "entity_timers"
 required-features = ["bench-internals", "testing"]
 
+[[test]]
+name = "bounded_scaling"
+required-features = ["bench-internals"]
+
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(rust_analyzer)", "cfg(loom)"] }
