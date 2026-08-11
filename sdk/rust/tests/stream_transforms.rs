@@ -114,7 +114,7 @@ fn a_transform_chain_is_one_closure_on_one_edge() {
 
     OBSERVED.lock().unwrap().clear();
     TRAVERSALS.store(0, Ordering::Relaxed);
-    let (handle, instance) = setup::<ChainOperative>("chain-1", 4);
+    let (handle, instance) = setup::<ChainOperative>("chain-1");
     let stream = dummy_stream();
     for raw in ["AAPL:3", "#comment", "MSFT:7"] {
         dispatch_input(&handle, "chain-1", "in", raw.as_bytes().to_vec(), &stream);
@@ -178,7 +178,7 @@ impl UnboundedOperative for FanOutOperative {
 #[test]
 fn a_fan_out_keys_every_yielded_value_independently() {
     FANNED.lock().unwrap().clear();
-    let (handle, instance) = setup::<FanOutOperative>("fan-1", 4);
+    let (handle, instance) = setup::<FanOutOperative>("fan-1");
     let stream = dummy_stream();
     dispatch_input(&handle, "fan-1", "in", b"AAPL:3".to_vec(), &stream);
 
@@ -201,7 +201,7 @@ fn a_replayed_slice_transforms_exactly_as_the_live_run_did() {
     let _serial = guard(&CHAIN_LOCK);
     OBSERVED.lock().unwrap().clear();
     TRAVERSALS.store(0, Ordering::Relaxed);
-    let (handle, instance) = setup::<ChainOperative>("chain-replay", 4);
+    let (handle, instance) = setup::<ChainOperative>("chain-replay");
     let stream = dummy_stream();
 
     let feed = ["AAPL:1", "#skip", "MSFT:2"];
@@ -304,7 +304,7 @@ fn a_panicking_transform_parks_and_routing_continues() {
     AFTER_PARK.lock().unwrap().clear();
     let parked = install_auto_acking_sink();
 
-    let (handle, _instance) = setup::<PanickingTransformOperative>("panic-1", 4);
+    let (handle, _instance) = setup::<PanickingTransformOperative>("panic-1");
     let stream = dummy_stream();
     for raw in ["ok-1", "poison", "ok-2"] {
         dispatch_input(&handle, "panic-1", "in", raw.as_bytes().to_vec(), &stream);

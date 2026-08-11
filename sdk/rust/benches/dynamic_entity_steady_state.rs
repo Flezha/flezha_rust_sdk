@@ -16,19 +16,8 @@ use flezha_runner::operative::registry::OperativeRegistry;
 use flezha_runner::operative::UnboundedInstance;
 use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError};
 use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_runner::{OverflowPolicy, UnboundedOperative, __dispatch_internals as bi};
+use flezha_runner::{__dispatch_internals as bi, OverflowPolicy, UnboundedOperative};
 use flz_transport::transport::FlezhaStream;
-
-fn pool_size_from_env_or_cpus() -> usize {
-    std::env::var("FLEZHA_WORKER_POOL_SIZE")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or_else(|| {
-            std::thread::available_parallelism()
-                .map(|n| n.get())
-                .unwrap_or(2)
-        })
-}
 
 fn dummy_stream() -> Arc<FlezhaStream> {
     let (a, _b) = UnixStream::pair().expect("UnixStream::pair");
@@ -97,13 +86,11 @@ fn steady_state_bench(c: &mut Criterion) {
         .and_then(|s| s.parse().ok())
         .unwrap_or(200_000usize);
 
-    let pool = Arc::new(bi::WorkStealingPool::with_size(pool_size_from_env_or_cpus()));
     let topology = build_topology_for::<SteadyDynOperative>().expect("topology");
     let registry = Arc::new(OperativeRegistry::new());
     registry.register_unbounded(UnboundedInstance::new(
         Arc::clone(&topology),
         Arc::from("steady-dyn-0"),
-        Arc::clone(&pool),
     ));
     let handle = bi::OperativeDispatchHandle {
         registry: Arc::clone(&registry),

@@ -51,7 +51,7 @@ fn transient_failure_recovers_within_retry_budget() {
     let _g = SINK_LOCK.lock().unwrap();
     let retries_before = park::RETRIES_TOTAL.load(Ordering::SeqCst);
     let parked_before = park::PARKED_TOTAL.load(Ordering::SeqCst);
-    let (handle, _instance) = setup::<TransientOperative>("transient-instance", 2);
+    let (handle, _instance) = setup::<TransientOperative>("transient-instance");
     let stream = dummy_stream();
 
     dispatch_input(
@@ -113,7 +113,7 @@ impl UnboundedOperative for NonRetryableOperative {
 fn non_retryable_error_parks_immediately() {
     let _g = SINK_LOCK.lock().unwrap();
     let parked = install_auto_acking_sink();
-    let (handle, _instance) = setup::<NonRetryableOperative>("nonretry-instance", 2);
+    let (handle, _instance) = setup::<NonRetryableOperative>("nonretry-instance");
     let stream = dummy_stream();
 
     dispatch_input(
@@ -181,7 +181,7 @@ impl UnboundedOperative for PanickyOperative {
 fn panic_parity_exhausts_budget_then_parks_and_continues() {
     let _g = SINK_LOCK.lock().unwrap();
     let parked = install_auto_acking_sink();
-    let (handle, _instance) = setup::<PanickyOperative>("panicky-instance", 2);
+    let (handle, _instance) = setup::<PanickyOperative>("panicky-instance");
     let stream = dummy_stream();
 
     dispatch_input(
@@ -259,7 +259,7 @@ impl UnboundedOperative for TypedEntryOperative {
 fn entry_parse_failure_exhausts_budget_then_parks() {
     let _g = SINK_LOCK.lock().unwrap();
     let parked = install_auto_acking_sink();
-    let (handle, _instance) = setup::<TypedEntryOperative>("typed-entry-instance", 2);
+    let (handle, _instance) = setup::<TypedEntryOperative>("typed-entry-instance");
     let stream = dummy_stream();
 
     dispatch_input(

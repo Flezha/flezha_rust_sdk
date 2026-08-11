@@ -4,13 +4,13 @@
 //! `operative-bench-harness/design.md` Decisions 1-12):
 //! - `regression_100x1x1x10k` — apples-to-apples regression check
 //!   (100 operatives × 1 procedure × 1 entity × 10K msg).
-//! - `entity_stress_8x4x8x20k/<pool>` — entity-stress
+//! - `entity_stress_8x4x8x20k/<workers>` — entity-stress
 //!   check (8 operatives × 4 procedures × 8 entities × 20K msg/operative,
-//!   fan-out factor 8 on the entry procedure). Sweeps pool sizes from
-//!   `FLEZHA_BENCH_POOL_SIZES` (default: a single host-detected size).
+//!   fan-out factor 8 on the entry procedure), labelled with the SDK's base
+//!   worker count (`FLEZHA_WORKER_POOL_SIZE`, default: host parallelism).
 //!
 //! Both rely on the `bench-internals` feature for access to the
-//! `OperativeDispatchHandle` and the work-stealing pool.
+//! `OperativeDispatchHandle`.
 
 use std::collections::HashMap;
 use std::os::unix::net::UnixStream;
@@ -25,12 +25,16 @@ use flezha_runner::operative::registry::OperativeRegistry;
 use flezha_runner::operative::UnboundedInstance;
 use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError};
 use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_runner::{OverflowPolicy, UnboundedOperative, __dispatch_internals as bi};
+use flezha_runner::{__dispatch_internals as bi, OverflowPolicy, UnboundedOperative};
 use flz_transport::transport::FlezhaStream;
 
 // ----- Shared bench helpers (Decision 10: duplicated locally per bench file) -----
 
-fn pool_size_from_env_or_cpus() -> usize {
+/// The SDK's base worker count for this run — what the entity-stress
+/// benchmark id is labelled with. The pool is process-global and sized at
+/// first use, so a run measures one size; sweep by re-running under different
+/// `FLEZHA_WORKER_POOL_SIZE` values.
+fn worker_count_from_env_or_cpus() -> usize {
     std::env::var("FLEZHA_WORKER_POOL_SIZE")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -107,7 +111,6 @@ fn regression_bench(c: &mut Criterion) {
     let msgs_per_operative = 10_000usize;
     let total = n_operatives * msgs_per_operative;
 
-    let pool = Arc::new(bi::WorkStealingPool::with_size(pool_size_from_env_or_cpus()));
     let topology = build_topology_for::<RegressionOperative>().expect("topology");
     let registry = Arc::new(OperativeRegistry::new());
 
@@ -115,11 +118,7 @@ fn regression_bench(c: &mut Criterion) {
         .map(|i| format!("regression-{}", i))
         .collect();
     for id in &instance_ids {
-        let inst = UnboundedInstance::new(
-            Arc::clone(&topology),
-            Arc::from(id.as_str()),
-            Arc::clone(&pool),
-        );
+        let inst = UnboundedInstance::new(Arc::clone(&topology), Arc::from(id.as_str()));
         registry.register_unbounded(inst);
     }
 
@@ -349,18 +348,6 @@ fn entity_stress_bench(c: &mut Criterion) {
     // invocations = inputs × fan_out × procedures.
     let expected_runs = inputs_total * fan_out * procedures;
 
-    let pool_sizes: Vec<usize> = match std::env::var("FLEZHA_BENCH_POOL_SIZES") {
-        Ok(s) => {
-            let parsed: Vec<usize> = s.split(',').filter_map(|p| p.trim().parse().ok()).collect();
-            if parsed.is_empty() {
-                vec![pool_size_from_env_or_cpus()]
-            } else {
-                parsed
-            }
-        }
-        Err(_) => vec![pool_size_from_env_or_cpus()],
-    };
-
     let topology = build_topology_for::<EntityStressBenchOperative>().expect("topology");
     let payload: Vec<u8> = b"x".repeat(64);
     let stream = dummy_stream();
@@ -370,56 +357,48 @@ fn entity_stress_bench(c: &mut Criterion) {
     group.sample_size(10);
     group.throughput(criterion::Throughput::Elements(expected_runs as u64));
 
-    for pool_size in pool_sizes {
-        let pool = Arc::new(bi::WorkStealingPool::with_size(pool_size));
+    {
+        let workers = worker_count_from_env_or_cpus();
         let registry = Arc::new(OperativeRegistry::new());
         let instance_ids: Vec<String> = (0..n_operatives)
             .map(|i| format!("entity-stress-{}", i))
             .collect();
         for id in &instance_ids {
-            let inst = UnboundedInstance::new(
-                Arc::clone(&topology),
-                Arc::from(id.as_str()),
-                Arc::clone(&pool),
-            );
+            let inst = UnboundedInstance::new(Arc::clone(&topology), Arc::from(id.as_str()));
             registry.register_unbounded(inst);
         }
         let handle = bi::OperativeDispatchHandle {
             registry: Arc::clone(&registry),
         };
 
-        group.bench_with_input(
-            BenchmarkId::from_parameter(pool_size),
-            &pool_size,
-            |b, _| {
-                b.iter_custom(|iters| {
-                    let mut elapsed = Duration::ZERO;
-                    for _ in 0..iters {
-                        PART_COUNTER.store(0, Ordering::Release);
-                        let start = Instant::now();
-                        for id in &instance_ids {
-                            for _ in 0..msgs_per_operative {
-                                let mut md = HashMap::new();
-                                md.insert("channel".to_string(), "input".to_string());
-                                handle.dispatch(id, payload.clone(), &md, Arc::clone(&stream));
-                            }
+        group.bench_with_input(BenchmarkId::from_parameter(workers), &workers, |b, _| {
+            b.iter_custom(|iters| {
+                let mut elapsed = Duration::ZERO;
+                for _ in 0..iters {
+                    PART_COUNTER.store(0, Ordering::Release);
+                    let start = Instant::now();
+                    for id in &instance_ids {
+                        for _ in 0..msgs_per_operative {
+                            let mut md = HashMap::new();
+                            md.insert("channel".to_string(), "input".to_string());
+                            handle.dispatch(id, payload.clone(), &md, Arc::clone(&stream));
                         }
-                        let drained = wait_until(
-                            || PART_COUNTER.load(Ordering::Acquire) == expected_runs,
-                            Duration::from_secs(120),
-                        );
-                        elapsed += start.elapsed();
-                        assert!(
-                            drained,
-                            "entity stress drain timed out: {} of {}",
-                            PART_COUNTER.load(Ordering::Acquire),
-                            expected_runs
-                        );
                     }
-                    elapsed
-                });
-            },
-        );
+                    let drained = wait_until(
+                        || PART_COUNTER.load(Ordering::Acquire) == expected_runs,
+                        Duration::from_secs(120),
+                    );
+                    elapsed += start.elapsed();
+                    assert!(
+                        drained,
+                        "entity stress drain timed out: {} of {}",
+                        PART_COUNTER.load(Ordering::Acquire),
+                        expected_runs
+                    );
+                }
+                elapsed
+            });
+        });
     }
     group.finish();
 }

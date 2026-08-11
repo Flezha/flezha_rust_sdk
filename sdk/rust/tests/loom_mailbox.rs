@@ -1,10 +1,11 @@
 //! Loom model check for the mailbox CAS dance.
 //!
-//! The real `Mailbox` in `runner/mailbox.rs` uses `SegQueue` (from
-//! crossbeam) and submits drain closures into a work-stealing pool. Neither
-//! is loom-friendly. This file mirrors ONLY the CAS+drain logic against
-//! loom's primitives so loom can exhaustively enumerate thread interleavings
-//! and prove no missed wake / no overlapping drain.
+//! The real `Mailbox` in `flz_core/src/mailbox.rs` uses `ArrayQueue` (from
+//! crossbeam) and hands its rounds to the poll core, neither of which
+//! is loom-friendly. This file mirrors ONLY the live inflight-token protocol
+//! — the CAS+drain dance the engine drives — against loom's primitives, so
+//! loom can exhaustively enumerate thread interleavings and prove no missed
+//! wake / no overlapping drain.
 //!
 //! Run with:
 //!
@@ -38,9 +39,9 @@ impl MiniMailbox {
     }
 }
 
-/// Mirror of `Mailbox::push_and_maybe_submit`. Instead of submitting to a
-/// pool, we directly call `run_drain` in-thread (loom will explore the
-/// interleaving). Returns whether this caller "owns" the drain.
+/// The producer half of the protocol: push, then CAS for the round. Where the
+/// engine would schedule the slot, this drains in-thread instead (loom will
+/// explore the interleaving). Returns whether this caller "owns" the drain.
 fn push_and_maybe_submit(mbox: &Arc<MiniMailbox>, item: usize) -> bool {
     mbox.queue.lock().unwrap().push(item);
 

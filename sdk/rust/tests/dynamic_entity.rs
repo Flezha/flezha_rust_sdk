@@ -140,7 +140,7 @@ fn evicted(reg: &DynamicEntityRegistry) -> u64 {
 
 #[test]
 fn lazy_create_two_keys() {
-    let (handle, instance) = setup::<DynOperative>("dyn-2", 4);
+    let (handle, instance) = setup::<DynOperative>("dyn-2");
     let stream = dummy_stream();
     dispatch_input(&handle, "dyn-2", "inp", b"a:1".to_vec(), &stream);
     dispatch_input(&handle, "dyn-2", "inp", b"b:2".to_vec(), &stream);
@@ -152,7 +152,7 @@ fn lazy_create_two_keys() {
 
 #[test]
 fn soft_cap_drops_overflow_key() {
-    let (handle, instance) = setup::<CappedOperative>("capped-1", 4);
+    let (handle, instance) = setup::<CappedOperative>("capped-1");
     let stream = dummy_stream();
     for inp in [b"a:1", b"b:2", b"c:3"] {
         dispatch_input(&handle, "capped-1", "inp", inp.to_vec(), &stream);
@@ -171,7 +171,7 @@ fn soft_cap_drops_overflow_key() {
 
 #[test]
 fn filtered_inputs_reach_no_entity() {
-    let (handle, instance) = setup::<DynOperative>("dyn-nokey", 4);
+    let (handle, instance) = setup::<DynOperative>("dyn-nokey");
     let stream = dummy_stream();
     // 10 inputs; 4 "drop" sentinels → 6 slot creations.
     for inp in [
@@ -200,7 +200,7 @@ fn idle_entity_is_reaped() {
     // after it goes idle. Generous deadline absorbs full-suite scheduling
     // starvation (the reaper retries every sweep).
     std::env::set_var("FLEZHA_REAP_INTERVAL_MS", "25");
-    let (handle, instance) = setup::<TtlOperative>("ttl-1", 4);
+    let (handle, instance) = setup::<TtlOperative>("ttl-1");
     let stream = dummy_stream();
     dispatch_input(&handle, "ttl-1", "inp", b"K:1".to_vec(), &stream);
 
@@ -217,7 +217,7 @@ fn idle_entity_is_reaped() {
 fn reaper_skips_entity_with_active_run() {
     SLEEP_RUN_STARTED.store(false, Ordering::Release);
     SLEEP_RUN_DONE.store(false, Ordering::Release);
-    let (handle, instance) = setup::<SleepOperative>("sleep-1", 4);
+    let (handle, instance) = setup::<SleepOperative>("sleep-1");
     let stream = dummy_stream();
     dispatch_input(&handle, "sleep-1", "inp", b"K:1".to_vec(), &stream);
     let reg = registry(&instance);
@@ -253,7 +253,7 @@ fn reaper_skips_entity_with_active_run() {
 #[test]
 fn recreate_after_evict_cold_starts_fresh() {
     INIT_KEYS.lock().unwrap().clear();
-    let (handle, instance) = setup::<InitTrackOperative>("recreate-1", 4);
+    let (handle, instance) = setup::<InitTrackOperative>("recreate-1");
     let stream = dummy_stream();
     let reg = registry(&instance);
 
@@ -289,7 +289,7 @@ fn recreate_after_evict_cold_starts_fresh() {
 
 #[test]
 fn concurrent_producers_share_one_slot() {
-    let (handle, instance) = setup::<DynOperative>("dyn-concurrent", 8);
+    let (handle, instance) = setup::<DynOperative>("dyn-concurrent");
     let reg = registry(&instance);
 
     const N: usize = 16;

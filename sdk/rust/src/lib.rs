@@ -122,14 +122,15 @@ pub mod testing;
 /// `use flezha_runner::state::*;` to write Procedures that declare
 /// `Change` types and route mutations through `state.apply(...)`.
 pub mod state {
+    pub use flz_core::header::RestoreError;
+    pub use flz_core::restore::RestoreInitPayload;
+
     pub use crate::entity::timer::TimerKind;
     pub use crate::procedure::change::{Change, CoalesceKey, NoChange};
     pub use crate::procedure::clock::{
         Clock, ClockFor, EventTimeFrom, LogicalClock, TimeExtractor, WallClock,
     };
     pub use crate::procedure::state_handle::StateHandle;
-    pub use flz_core::header::RestoreError;
-    pub use flz_core::restore::RestoreInitPayload;
 }
 
 use std::collections::HashMap;
@@ -192,11 +193,11 @@ pub fn register_inventory_operatives() {
     }
 }
 
+pub use flz_core::pb;
+
 use crate::operative::instance::UnboundedInstance;
 use crate::runner::{ClientResponseMessage, RunnerMessage};
 use crate::shutdown::ShutdownBridge;
-
-pub use flz_core::pb;
 
 /// Register an UnboundedOperative class topology in the global class registry.
 /// The internal body behind [`FlezhaRunner::define_unbounded`]; kept separate
@@ -754,7 +755,6 @@ mod entry_point_tests {
 #[cfg(feature = "bench-internals")]
 #[doc(hidden)]
 pub mod __dispatch_internals {
-    pub use flz_core::mailbox::Mailbox;
-    pub use crate::runner::work_stealing_pool::WorkStealingPool;
     pub use flz_core::fast::OperativeDispatchHandle;
+    pub use flz_core::mailbox::Mailbox;
 }

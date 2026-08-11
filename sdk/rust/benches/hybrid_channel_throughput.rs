@@ -11,7 +11,7 @@
 //! - `hybrid_3c`            — hybrid, 3 consumers + plugin sink
 //!
 //! Each iteration drives one emit per operative through the live
-//! dispatcher (`OperativeDispatchHandle::dispatch` on a shared work-stealing
+//! dispatcher (`OperativeDispatchHandle::dispatch` on the shared poll-worker
 //! pool). The consumer Procedures count receipts atomically so `iter_custom`
 //! waits for full drain before stopping the timer.
 
@@ -28,21 +28,10 @@ use flezha_runner::operative::registry::OperativeRegistry;
 use flezha_runner::operative::UnboundedInstance;
 use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError};
 use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_runner::{OverflowPolicy, UnboundedOperative, __dispatch_internals as bi};
+use flezha_runner::{__dispatch_internals as bi, OverflowPolicy, UnboundedOperative};
 use flz_transport::transport::FlezhaStream;
 
 // ----- shared bench helpers -----
-
-fn pool_size_from_env_or_cpus() -> usize {
-    std::env::var("FLEZHA_WORKER_POOL_SIZE")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or_else(|| {
-            std::thread::available_parallelism()
-                .map(|n| n.get())
-                .unwrap_or(2)
-        })
-}
 
 fn dummy_stream() -> Arc<FlezhaStream> {
     let (a, _b) = UnixStream::pair().expect("UnixStream::pair");
@@ -395,10 +384,9 @@ fn run_bench<R: UnboundedOperative>(
     counter: &'static AtomicUsize,
     expected_per_msg: usize,
 ) {
-    let pool = Arc::new(bi::WorkStealingPool::with_size(pool_size_from_env_or_cpus()));
     let topology = build_topology_for::<R>().expect("topology");
     let registry = Arc::new(OperativeRegistry::new());
-    let inst = UnboundedInstance::new(topology, Arc::from(instance_id), Arc::clone(&pool));
+    let inst = UnboundedInstance::new(topology, Arc::from(instance_id));
     registry.register_unbounded(inst);
     let handle = bi::OperativeDispatchHandle {
         registry: Arc::clone(&registry),

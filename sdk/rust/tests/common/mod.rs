@@ -9,7 +9,7 @@ use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use flezha_runner::__dispatch_internals::{OperativeDispatchHandle, WorkStealingPool};
+use flezha_runner::__dispatch_internals::OperativeDispatchHandle;
 use flezha_runner::entity::flusher::{SendError, SendFrameFn};
 use flezha_runner::entity::park::{self, ParkBody};
 use flezha_runner::entity::state_sink::{install_global_sink, PARK_PAYLOAD_PAYLOAD_ID};
@@ -38,14 +38,10 @@ pub fn wait_until<F: Fn() -> bool>(predicate: F, timeout: Duration) -> bool {
 
 /// Build + register a single UnboundedOperative instance, returning a dispatch handle
 /// and the live instance (for counter / state assertions).
-pub fn setup<R: UnboundedOperative>(
-    id: &str,
-    pool_size: usize,
-) -> (OperativeDispatchHandle, Arc<UnboundedInstance>) {
+pub fn setup<R: UnboundedOperative>(id: &str) -> (OperativeDispatchHandle, Arc<UnboundedInstance>) {
     let topology = build_topology_for::<R>().expect("topology");
-    let pool = Arc::new(WorkStealingPool::with_size(pool_size));
     let registry = Arc::new(OperativeRegistry::new());
-    let instance = UnboundedInstance::new(topology, Arc::from(id), pool);
+    let instance = UnboundedInstance::new(topology, Arc::from(id));
     registry.register_unbounded(Arc::clone(&instance));
     (OperativeDispatchHandle { registry }, instance)
 }

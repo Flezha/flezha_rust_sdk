@@ -383,7 +383,7 @@ fn crossing_the_high_water_fires_in_order_before_the_input() {
     let _guard = timer_test_guard();
     take_order();
 
-    let (handle, instance) = setup::<WindowOperative>("timers-window-order", 2);
+    let (handle, instance) = setup::<WindowOperative>("timers-window-order");
     let stream = dummy_stream();
     dispatch_input(&handle, "timers-window-order", "in", tick(50), &stream);
     assert!(wait_until(
@@ -420,7 +420,7 @@ fn a_quiet_entity_never_fires_its_event_time_timer() {
     let _guard = timer_test_guard();
     take_order();
 
-    let (handle, instance) = setup::<WindowOperative>("timers-window-quiet", 2);
+    let (handle, instance) = setup::<WindowOperative>("timers-window-quiet");
     let stream = dummy_stream();
     dispatch_input(&handle, "timers-window-quiet", "in", tick(50), &stream);
     assert!(wait_until(
@@ -449,7 +449,7 @@ fn a_processing_time_timer_fires_from_the_wake_list_with_its_scheduled_time() {
     let _guard = timer_test_guard();
     take_firings();
 
-    let (handle, _instance) = setup::<SessionOperative>("timers-session-fire", 2);
+    let (handle, _instance) = setup::<SessionOperative>("timers-session-fire");
     let stream = dummy_stream();
     let before = wall_now_ms();
     dispatch_input(
@@ -540,7 +540,7 @@ fn a_compaction_re_states_the_pending_timers_above_the_snapshot_seq() {
     take_order();
     let frames = recording_sink();
 
-    let (handle, instance) = setup::<WindowOperative>("timers-compaction", 2);
+    let (handle, instance) = setup::<WindowOperative>("timers-compaction");
     let stream = dummy_stream();
     dispatch_input(&handle, "timers-compaction", "in", tick(50), &stream);
     let slot = Arc::clone(&instance.entities[0][0]);
@@ -594,7 +594,7 @@ fn a_registration_outside_the_tier_ships_a_timer_ops_record() {
     take_order();
     let frames = recording_sink();
 
-    let (handle, instance) = setup::<WindowOperative>("timers-record", 2);
+    let (handle, instance) = setup::<WindowOperative>("timers-record");
     let stream = dummy_stream();
     dispatch_input(&handle, "timers-record", "in", tick(50), &stream);
     assert!(wait_until(
@@ -641,7 +641,7 @@ fn a_tier_firing_writes_one_record_with_no_consumed_offset() {
     take_firings();
     let frames = recording_sink();
 
-    let (handle, _instance) = setup::<TierSessionOperative>("timers-tier", 2);
+    let (handle, _instance) = setup::<TierSessionOperative>("timers-tier");
     let stream = dummy_stream();
     dispatch_marked(
         &handle,
@@ -841,7 +841,7 @@ fn a_restore_re_arms_the_wake_list_and_fires_what_is_already_due() {
         flezha_runner::transport::FlezhaStream::Unix(sock),
     )));
 
-    let (_handle, instance) = setup::<SessionOperative>("timers-restore", 2);
+    let (_handle, instance) = setup::<SessionOperative>("timers-restore");
     let registry = Arc::clone(instance.dynamic_registries[0].as_ref().expect("dynamic"));
     let slot = registry.get_or_create("carol").expect("entity");
 
@@ -875,7 +875,7 @@ fn an_idle_evicted_entity_loses_its_timers() {
     take_firings();
     let armed_before = flezha_runner::entity::timer::timers_armed();
 
-    let (handle, instance) = setup::<EvictOperative>("timers-evict", 2);
+    let (handle, instance) = setup::<EvictOperative>("timers-evict");
     let stream = dummy_stream();
     dispatch_input(&handle, "timers-evict", "in", b"gone".to_vec(), &stream);
 
@@ -982,7 +982,7 @@ fn on_timer_never_runs_concurrently_with_run() {
     INSIDE.store(0, Ordering::SeqCst);
     FIRED.store(0, Ordering::SeqCst);
 
-    let (handle, _instance) = setup::<ExclusionOperative>("timers-exclusion", 4);
+    let (handle, _instance) = setup::<ExclusionOperative>("timers-exclusion");
     let stream = dummy_stream();
     for i in 0..8u64 {
         dispatch_input(

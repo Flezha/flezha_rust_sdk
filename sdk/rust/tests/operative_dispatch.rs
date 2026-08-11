@@ -19,7 +19,7 @@ use flezha_runner::operative::registry::OperativeRegistry;
 use flezha_runner::operative::UnboundedInstance;
 use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError};
 use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_runner::{OverflowPolicy, UnboundedOperative, __dispatch_internals as bi};
+use flezha_runner::{__dispatch_internals as bi, OverflowPolicy, UnboundedOperative};
 
 mod common;
 use common::{dispatch_input, dispatch_marked, dummy_stream, setup, wait_until};
@@ -46,7 +46,7 @@ impl UnboundedOperative for AppendOperative {
 #[test]
 fn per_entity_input_order_preserved() {
     APPEND_OBSERVED.lock().unwrap().clear();
-    let (handle, _instance) = setup::<AppendOperative>("append-instance", 8);
+    let (handle, _instance) = setup::<AppendOperative>("append-instance");
     let stream = dummy_stream();
 
     let n = 1000usize;
@@ -119,9 +119,8 @@ fn same_entity_never_runs_concurrently() {
     APPEND_MAX_CONCURRENT.store(0, Ordering::Release);
 
     let topology = build_topology_for::<ConcurrencyProbeOperative>().expect("topology");
-    let pool = Arc::new(bi::WorkStealingPool::with_size(8));
     let registry = Arc::new(OperativeRegistry::new());
-    let instance = UnboundedInstance::new(topology, Arc::from("conc-instance"), Arc::clone(&pool));
+    let instance = UnboundedInstance::new(topology, Arc::from("conc-instance"));
     registry.register_unbounded(instance);
     let handle = OperativeDispatchHandle {
         registry: Arc::clone(&registry),
@@ -153,7 +152,7 @@ fn same_entity_never_runs_concurrently() {
 
     // Wait for drain.
     assert!(wait_until(
-        || APPEND_CONCURRENT.load(Ordering::Acquire) == 0 && pool_idle(&pool),
+        || APPEND_CONCURRENT.load(Ordering::Acquire) == 0 && workers_idle(),
         Duration::from_secs(10)
     ));
 
@@ -164,10 +163,9 @@ fn same_entity_never_runs_concurrently() {
     );
 }
 
-fn pool_idle(_pool: &bi::WorkStealingPool) -> bool {
-    // Heuristic: short sleep then assume idle. The drain loops
-    // self-exit when the queue empties; the pool itself doesn't
-    // expose an "idle" predicate.
+fn workers_idle() -> bool {
+    // Heuristic: short sleep then assume idle. A round self-completes when
+    // the mailbox empties; the poll core exposes no "idle" predicate.
     std::thread::sleep(Duration::from_millis(50));
     true
 }
@@ -253,7 +251,7 @@ impl UnboundedOperative for ParallelOperative {
 #[test]
 fn static_entities_dispatch_independently() {
     parallel_observed().lock().unwrap().clear();
-    let (handle, _instance) = setup::<ParallelOperative>("parallel-instance", 8);
+    let (handle, _instance) = setup::<ParallelOperative>("parallel-instance");
     let stream = dummy_stream();
 
     let prefixes = ["a", "b", "c", "d"];
@@ -371,7 +369,7 @@ impl UnboundedOperative for MetaRejectOperative {
 #[test]
 fn emit_with_meta_rejected_on_inter_procedure() {
     *META_REJECT_OBSERVED.lock().unwrap() = None;
-    let (handle, _instance) = setup::<MetaRejectOperative>("meta-instance", 2);
+    let (handle, _instance) = setup::<MetaRejectOperative>("meta-instance");
     let stream = dummy_stream();
 
     let mut md = HashMap::new();
@@ -424,7 +422,7 @@ impl UnboundedOperative for BlockStressOperative {
 #[test]
 fn block_stress_100_producers_no_loss() {
     BLOCK_STRESS_RECEIVED.store(0, Ordering::Release);
-    let (handle, instance) = setup::<BlockStressOperative>("block-stress-instance", 4);
+    let (handle, instance) = setup::<BlockStressOperative>("block-stress-instance");
     let stream = dummy_stream();
 
     let producers = 100usize;
@@ -504,7 +502,7 @@ impl UnboundedOperative for DropNewestOperative {
 #[test]
 fn drop_newest_discards_when_full_and_only_bumps_newest_counter() {
     DROP_NEWEST_RECEIVED.store(0, Ordering::Release);
-    let (handle, instance) = setup::<DropNewestOperative>("drop-newest-instance", 1);
+    let (handle, instance) = setup::<DropNewestOperative>("drop-newest-instance");
     let slot = Arc::clone(&instance.entities[0][0]);
 
     // Pre-acquire inflight: subsequent enqueue paths skip submit_drain
@@ -580,7 +578,7 @@ impl UnboundedOperative for DropOldestOperative {
 #[test]
 fn drop_oldest_evicts_head_and_bumps_oldest_counter() {
     DROP_OLDEST_OBSERVED.lock().unwrap().clear();
-    let (handle, instance) = setup::<DropOldestOperative>("drop-oldest-instance", 1);
+    let (handle, instance) = setup::<DropOldestOperative>("drop-oldest-instance");
     let slot = Arc::clone(&instance.entities[0][0]);
 
     // Pre-acquire inflight so no drain runs during the deterministic
@@ -627,7 +625,7 @@ fn drop_oldest_evicts_head_and_bumps_oldest_counter() {
 /// exposes a counters() accessor with all four atomics at 0.
 #[test]
 fn fresh_entity_counters_start_at_zero() {
-    let (_handle, instance) = setup::<DropOldestOperative>("counters-fresh-instance", 1);
+    let (_handle, instance) = setup::<DropOldestOperative>("counters-fresh-instance");
     let counters = instance.entities[0][0].counters();
     assert_eq!(counters.pushes_total.load(Ordering::Relaxed), 0);
     assert_eq!(counters.pushes_blocked_total.load(Ordering::Relaxed), 0);
@@ -714,7 +712,7 @@ fn sticky_ordering_holds_under_bounded_block() {
     STICKY_BOUNDED_MAX_CONCURRENT.store(0, Ordering::Release);
     STICKY_BOUNDED_DELIVERED.store(0, Ordering::Release);
 
-    let (handle, instance) = setup::<StickyBoundedOperative>("sticky-bounded-instance", 8);
+    let (handle, instance) = setup::<StickyBoundedOperative>("sticky-bounded-instance");
     let stream = dummy_stream();
 
     let producers = 4usize;
@@ -824,15 +822,12 @@ fn default_entry_policy_does_not_stall_sibling_operatives() {
     WIRE_A_DELIVERED.store(0, Ordering::Release);
     WIRE_B_DELIVERED.store(0, Ordering::Release);
 
-    let pool = Arc::new(bi::WorkStealingPool::with_size(2));
     let registry = Arc::new(OperativeRegistry::new());
 
     let topology_a = build_topology_for::<WireOperativeADefault>().expect("topology a");
     let topology_b = build_topology_for::<WireOperativeB>().expect("topology b");
-    let instance_a =
-        UnboundedInstance::new(topology_a, Arc::from("wire-a-default"), Arc::clone(&pool));
-    let instance_b =
-        UnboundedInstance::new(topology_b, Arc::from("wire-b-default"), Arc::clone(&pool));
+    let instance_a = UnboundedInstance::new(topology_a, Arc::from("wire-a-default"));
+    let instance_b = UnboundedInstance::new(topology_b, Arc::from("wire-b-default"));
     registry.register_unbounded(Arc::clone(&instance_a));
     registry.register_unbounded(Arc::clone(&instance_b));
 
@@ -902,15 +897,12 @@ fn opt_in_entry_block_drains_inline_without_stalling_siblings() {
     WIRE_A_DELIVERED.store(0, Ordering::Release);
     WIRE_B_DELIVERED.store(0, Ordering::Release);
 
-    let pool = Arc::new(bi::WorkStealingPool::with_size(2));
     let registry = Arc::new(OperativeRegistry::new());
 
     let topology_a = build_topology_for::<WireOperativeABlock>().expect("topology a");
     let topology_b = build_topology_for::<WireOperativeB>().expect("topology b");
-    let instance_a =
-        UnboundedInstance::new(topology_a, Arc::from("wire-a-block"), Arc::clone(&pool));
-    let instance_b =
-        UnboundedInstance::new(topology_b, Arc::from("wire-b-block"), Arc::clone(&pool));
+    let instance_a = UnboundedInstance::new(topology_a, Arc::from("wire-a-block"));
+    let instance_b = UnboundedInstance::new(topology_b, Arc::from("wire-b-block"));
     registry.register_unbounded(Arc::clone(&instance_a));
     registry.register_unbounded(Arc::clone(&instance_b));
 
@@ -985,7 +977,7 @@ fn opt_in_entry_block_drains_inline_without_stalling_siblings() {
 fn default_inter_procedure_policy_is_block_and_pushes_total_increments() {
     INTER_PROCEDURE_DOWNSTREAM.store(0, Ordering::Release);
     let (handle, instance) =
-        setup::<InterProcedureDefaultBlockOperative>("inter-procedure-default-instance", 4);
+        setup::<InterProcedureDefaultBlockOperative>("inter-procedure-default-instance");
     let stream = dummy_stream();
 
     let n = 200usize;
@@ -1105,7 +1097,7 @@ fn change_is_flushed_before_output_is_emitted() {
     );
     state_sink::install_global_sink(sink);
 
-    let (handle, instance) = setup::<FlushOrderOperative>("flush-order-instance", 2);
+    let (handle, instance) = setup::<FlushOrderOperative>("flush-order-instance");
     assert!(
         instance.persistence_enabled(),
         "operative must be persistent"
@@ -1175,7 +1167,7 @@ fn procedure_panic_does_not_wedge_the_entity() {
             std::thread::sleep(Duration::from_millis(25));
         }
     });
-    let (handle, instance) = setup::<PanicOperative>("panic-instance", 4);
+    let (handle, instance) = setup::<PanicOperative>("panic-instance");
     let stream = dummy_stream();
 
     dispatch_input(
@@ -1246,7 +1238,7 @@ impl UnboundedOperative for BlockDeadlockOperative {
 #[test]
 fn block_policy_emit_on_single_worker_pool_does_not_deadlock() {
     BLOCKED_CONSUMED.store(0, Ordering::Release);
-    let (handle, _instance) = setup::<BlockDeadlockOperative>("block-deadlock-instance", 1);
+    let (handle, _instance) = setup::<BlockDeadlockOperative>("block-deadlock-instance");
     let stream = dummy_stream();
 
     dispatch_input(
@@ -1411,7 +1403,7 @@ impl UnboundedOperative for KeyedStampOperative {
 #[test]
 fn keyed_channel_emits_carry_identity_stamps() {
     let _serial = WAL_TEST_LOCK.lock().unwrap();
-    let (handle, _instance) = setup::<KeyedStampOperative>("keyed-stamps-instance", 2);
+    let (handle, _instance) = setup::<KeyedStampOperative>("keyed-stamps-instance");
     let (stream, mut observer) = stream_pair();
 
     dispatch_input(
@@ -1465,7 +1457,7 @@ fn non_keyed_frame_is_byte_identical_to_prechange_layout() {
         }
     }
 
-    let (handle, _instance) = setup::<PlainPluginOperative>("plain-plugin-instance", 2);
+    let (handle, _instance) = setup::<PlainPluginOperative>("plain-plugin-instance");
     let (stream, mut observer) = stream_pair();
 
     dispatch_input(
@@ -1519,7 +1511,7 @@ fn wal_record<S: Procedure>(seq: u64, change_bytes: &[u8]) -> Vec<u8> {
 fn keyed_stamps_replay_identically_after_crash_restore() {
     let _serial = WAL_TEST_LOCK.lock().unwrap();
     // Original run: two inputs, two changes, two stamped frames.
-    let (handle_a, _instance_a) = setup::<KeyedStampOperative>("restore-stamps-instance", 2);
+    let (handle_a, _instance_a) = setup::<KeyedStampOperative>("restore-stamps-instance");
     let (stream_a, mut observer_a) = stream_pair();
     dispatch_input(
         &handle_a,
@@ -1540,7 +1532,7 @@ fn keyed_stamps_replay_identically_after_crash_restore() {
     // Crash after "x"'s change (seq 0) became durable; "y" is replayed.
     // Fresh instance, same identity: restore state from the WAL and
     // re-arm change_seq exactly like `RestoreInitState` does.
-    let (handle_b, instance_b) = setup::<KeyedStampOperative>("restore-stamps-instance", 2);
+    let (handle_b, instance_b) = setup::<KeyedStampOperative>("restore-stamps-instance");
     let slot = Arc::clone(&instance_b.entities[0][0]);
     let change_bytes = postcard::to_allocvec(&TickChange).expect("encode change");
     let change_log = wal_record::<KeyedStampProcedure>(0, &change_bytes);
@@ -1644,7 +1636,7 @@ fn tier_emits_ride_the_state_sink_as_one_effect_record() {
     let _serial = WAL_TEST_LOCK.lock().unwrap();
     install_capturing_tier_sink();
 
-    let (handle, _instance) = setup::<TierOperative>("tier-instance", 2);
+    let (handle, _instance) = setup::<TierOperative>("tier-instance");
     let (stream, mut observer) = stream_pair();
 
     let mut md = HashMap::new();
@@ -1722,7 +1714,7 @@ fn tier_replay_skips_inputs_at_or_below_the_consumed_floor() {
     let _serial = WAL_TEST_LOCK.lock().unwrap();
     install_capturing_tier_sink();
 
-    let (handle, instance) = setup::<TierOperative>("tier-replay-instance", 2);
+    let (handle, instance) = setup::<TierOperative>("tier-replay-instance");
 
     // Restore left this Entity durably consumed through offset 4711.
     instance.entities[0][0]
@@ -1823,7 +1815,7 @@ impl UnboundedOperative for LogicalNowOperative {
 fn logical_clock_serves_change_seq_and_survives_restore_rearm() {
     let _serial = WAL_TEST_LOCK.lock().unwrap();
     LOGICAL_OBSERVED.lock().unwrap().clear();
-    let (handle, instance) = setup::<LogicalNowOperative>("logical-now-instance", 2);
+    let (handle, instance) = setup::<LogicalNowOperative>("logical-now-instance");
     let stream = dummy_stream();
 
     for payload in [b"a".to_vec(), b"b".to_vec()] {
@@ -1842,7 +1834,7 @@ fn logical_clock_serves_change_seq_and_survives_restore_rearm() {
     // Crash-restore: fresh instance, restore both changes (seqs 0, 1) and
     // re-arm; the next invocation's logical time continues at 2.
     LOGICAL_OBSERVED.lock().unwrap().clear();
-    let (handle_b, instance_b) = setup::<LogicalNowOperative>("logical-now-instance", 2);
+    let (handle_b, instance_b) = setup::<LogicalNowOperative>("logical-now-instance");
     let slot = Arc::clone(&instance_b.entities[0][0]);
     let change_bytes = postcard::to_allocvec(&TickChange).expect("encode change");
     let mut change_log = wal_record::<LogicalNowProcedure>(0, &change_bytes);
@@ -1941,7 +1933,7 @@ impl UnboundedOperative for ReplayOperative {
 #[test]
 fn a_replayed_slice_dispatches_in_event_time_order() {
     REPLAY_OBSERVED.lock().unwrap().clear();
-    let (handle, _instance) = setup::<ReplayOperative>("replay-instance", 4);
+    let (handle, _instance) = setup::<ReplayOperative>("replay-instance");
     let stream = dummy_stream();
 
     // The controller re-forwards in offset (arrival) order — the late "200"
@@ -2081,7 +2073,7 @@ fn a_replay_does_not_lower_the_event_time_high_water() {
     // processed as an arrival, so the observable dispatch would not distinguish the
     // two. The invariant is about the water mark.
     HIGHWATER_OBSERVED.lock().unwrap().clear();
-    let (handle, instance) = setup::<HighWaterOperative>("high-water-instance", 4);
+    let (handle, instance) = setup::<HighWaterOperative>("high-water-instance");
     let stream = dummy_stream();
 
     // Live traffic establishes a high-water of 900.
@@ -2234,7 +2226,7 @@ fn checkpoint_ack_holds_the_offset_until_the_interval_closes() {
     let _serial = WAL_TEST_LOCK.lock().unwrap();
     install_capturing_tier_sink();
 
-    let (handle, _instance) = setup::<CheckpointOperative>("cp-instance", 2);
+    let (handle, _instance) = setup::<CheckpointOperative>("cp-instance");
 
     dispatch_at(&handle, "cp-instance", 1, "acc"); // fold only
     dispatch_at(&handle, "cp-instance", 2, "emit"); // fold + emit
@@ -2289,7 +2281,7 @@ fn a_park_closes_the_checkpoint_interval() {
     let _serial = WAL_TEST_LOCK.lock().unwrap();
     install_capturing_tier_sink();
 
-    let (handle, _instance) = setup::<CheckpointOperative>("cp-park-instance", 2);
+    let (handle, _instance) = setup::<CheckpointOperative>("cp-park-instance");
 
     dispatch_at(&handle, "cp-park-instance", 7, "acc");
     dispatch_at(&handle, "cp-park-instance", 8, "poison");
@@ -2351,8 +2343,8 @@ fn a_restore_discards_the_open_interval() {
 fn a_restore_discards_queued_input_only_where_the_controller_re_forwards_it() {
     use flezha_runner::entity::{make_entity_payload, restore_discarded_inputs};
 
-    let (_tier_handle, tier) = setup::<TierOperative>("restore-mailbox-tier", 1);
-    let (_plain_handle, plain) = setup::<KeyedStampOperative>("restore-mailbox-plain", 1);
+    let (_tier_handle, tier) = setup::<TierOperative>("restore-mailbox-tier");
+    let (_plain_handle, plain) = setup::<KeyedStampOperative>("restore-mailbox-plain");
     let (stream, _observer) = stream_pair();
 
     for instance in [&tier, &plain] {

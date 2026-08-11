@@ -2,7 +2,10 @@
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use flz_core::operative::instance::*;
+    use flz_core::restore::RestoreInitPayload;
 
     use crate::channel::ChannelBuilder;
     use crate::operative::builder::build_topology_with_persistence;
@@ -13,9 +16,6 @@ mod tests {
     use crate::procedure::error::ProcedureError;
     use crate::procedure::state_handle::StateHandle;
     use crate::procedure::Procedure;
-    use flz_core::restore::RestoreInitPayload;
-    use flz_core::work_stealing_pool::WorkStealingPool;
-    use std::sync::Arc;
 
     #[derive(Default)]
     struct DummyProcedure;
@@ -60,8 +60,7 @@ mod tests {
             DummyOperative::PERSISTENCE_ENABLED,
         )
         .expect("topology");
-        let pool = Arc::new(WorkStealingPool::with_size(1));
-        let instance = UnboundedInstance::new(topology, Arc::from("instance"), pool);
+        let instance = UnboundedInstance::new(topology, Arc::from("instance"));
         assert!(instance.persistence_enabled());
     }
 
@@ -75,11 +74,9 @@ mod tests {
             DummyOperative::PERSISTENCE_ENABLED,
         )
         .expect("topology");
-        let pool = Arc::new(WorkStealingPool::with_size(1));
         let instance = UnboundedInstance::with_persistence_override(
             topology,
             Arc::from("instance"),
-            pool,
             Some(false),
         );
         assert!(!instance.persistence_enabled());

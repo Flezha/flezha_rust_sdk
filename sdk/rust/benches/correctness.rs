@@ -37,22 +37,11 @@ use flezha_runner::operative::registry::OperativeRegistry;
 use flezha_runner::operative::UnboundedInstance;
 use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError};
 use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_runner::{OverflowPolicy, UnboundedOperative, __dispatch_internals as bi};
+use flezha_runner::{__dispatch_internals as bi, OverflowPolicy, UnboundedOperative};
 use flz_transport::transport::FlezhaStream;
 
 // Helpers — duplicated from `dispatch.rs` per `operative-bench-harness/design.md`
 // Decision 10 (two copies of 5 lines beats a shared `common.rs` for trivial gain).
-
-fn pool_size_from_env_or_cpus() -> usize {
-    std::env::var("FLEZHA_WORKER_POOL_SIZE")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or_else(|| {
-            std::thread::available_parallelism()
-                .map(|n| n.get())
-                .unwrap_or(2)
-        })
-}
 
 fn dummy_stream() -> Arc<FlezhaStream> {
     let (a, _b) = UnixStream::pair().expect("UnixStream::pair");
@@ -119,14 +108,9 @@ impl UnboundedOperative for SingleEntityOperative {
 fn throughput_single_entity(c: &mut Criterion) {
     let msgs_per_iter = 100_000usize;
 
-    let pool = Arc::new(bi::WorkStealingPool::with_size(pool_size_from_env_or_cpus()));
     let topology = build_topology_for::<SingleEntityOperative>().expect("topology");
     let registry = Arc::new(OperativeRegistry::new());
-    let instance = UnboundedInstance::new(
-        Arc::clone(&topology),
-        Arc::from("single-entity-bench"),
-        Arc::clone(&pool),
-    );
+    let instance = UnboundedInstance::new(Arc::clone(&topology), Arc::from("single-entity-bench"));
     registry.register_unbounded(instance);
 
     let handle = bi::OperativeDispatchHandle {
@@ -227,14 +211,9 @@ fn throughput_static_fanout(c: &mut Criterion) {
     let fan_out = FANOUT_KEYS.len();
     let expected_runs = inputs_per_iter * fan_out;
 
-    let pool = Arc::new(bi::WorkStealingPool::with_size(pool_size_from_env_or_cpus()));
     let topology = build_topology_for::<StaticFanoutOperative>().expect("topology");
     let registry = Arc::new(OperativeRegistry::new());
-    let instance = UnboundedInstance::new(
-        Arc::clone(&topology),
-        Arc::from("static-fanout-bench"),
-        Arc::clone(&pool),
-    );
+    let instance = UnboundedInstance::new(Arc::clone(&topology), Arc::from("static-fanout-bench"));
     registry.register_unbounded(instance);
 
     let handle = bi::OperativeDispatchHandle {
@@ -389,7 +368,6 @@ fn throughput_effectively_once_tiers(c: &mut Criterion) {
         Arc::new(|_pid: &str, _frame: &[u8]| -> Result<(), SendError> { Ok(()) });
     state_sink::install_global_sink(sink);
 
-    let pool = Arc::new(bi::WorkStealingPool::with_size(pool_size_from_env_or_cpus()));
     let registry = Arc::new(OperativeRegistry::new());
 
     for (factory, id) in [
@@ -402,7 +380,7 @@ fn throughput_effectively_once_tiers(c: &mut Criterion) {
             "tier-on-bench",
         ),
     ] {
-        let instance = UnboundedInstance::new(factory, Arc::from(id), Arc::clone(&pool));
+        let instance = UnboundedInstance::new(factory, Arc::from(id));
         registry.register_unbounded(instance);
     }
 

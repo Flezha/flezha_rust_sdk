@@ -17,7 +17,7 @@ use std::time::Duration;
 use bi::OperativeDispatchHandle;
 use flezha_runner::channel::ChannelBuilder;
 use flezha_runner::operative::builder::build_topology_for;
-use flezha_runner::{UnboundedOperative, __dispatch_internals as bi};
+use flezha_runner::{__dispatch_internals as bi, UnboundedOperative};
 use flz_transport::service::payloader;
 use flz_transport::transport::FlezhaStream;
 
@@ -97,7 +97,7 @@ impl UnboundedOperative for SingleHybridOperative {
 #[test]
 fn hybrid_single_consumer_receives_typed_and_plugin_bytes() {
     single_consumer_observed().lock().unwrap().clear();
-    let (handle, _instance) = setup::<SingleHybridOperative>("hyb-single", 4);
+    let (handle, _instance) = setup::<SingleHybridOperative>("hyb-single");
     let (stream, received) = duplex_stream_with_reader();
 
     dispatch_input(&handle, "hyb-single", &stream, "42");
@@ -181,7 +181,7 @@ fn hybrid_three_consumers_single_serializer_call() {
     three_consumer_observed_c().lock().unwrap().clear();
     SERIALIZER_CALLS.store(0, Ordering::SeqCst);
 
-    let (handle, _instance) = setup::<ThreeHybridOperative>("hyb-three", 4);
+    let (handle, _instance) = setup::<ThreeHybridOperative>("hyb-three");
     let (stream, received) = duplex_stream_with_reader();
 
     dispatch_input(&handle, "hyb-three", &stream, "7");
@@ -255,7 +255,7 @@ fn hybrid_serializer_panic_is_caught() {
     panic_consumer_observed().lock().unwrap().clear();
     panic_emit_results().lock().unwrap().clear();
 
-    let (handle, _instance) = setup::<PanicHybridOperative>("hyb-panic", 4);
+    let (handle, _instance) = setup::<PanicHybridOperative>("hyb-panic");
     let (stream, received) = duplex_stream_with_reader();
 
     // First emit panics in the serializer.
@@ -372,7 +372,7 @@ impl UnboundedOperative for MetaHybridOperative {
 #[test]
 fn emit_with_meta_on_hybrid_channel_forwards_meta_to_plugin_only() {
     meta_consumer_observed().lock().unwrap().clear();
-    let (handle, _instance) = setup::<MetaHybridOperative>("hyb-meta", 4);
+    let (handle, _instance) = setup::<MetaHybridOperative>("hyb-meta");
     let (stream, received) = duplex_stream_with_reader();
 
     dispatch_input(&handle, "hyb-meta", &stream, "9");
@@ -448,7 +448,7 @@ fn emit_with_meta_on_pure_inter_procedure_channel_is_rejected() {
     pure_consumer_observed().lock().unwrap().clear();
     pure_emit_results().lock().unwrap().clear();
 
-    let (handle, _instance) = setup::<PureOperative>("hyb-pure", 4);
+    let (handle, _instance) = setup::<PureOperative>("hyb-pure");
     let (stream, received) = duplex_stream_with_reader();
 
     dispatch_input(&handle, "hyb-pure", &stream, "1");

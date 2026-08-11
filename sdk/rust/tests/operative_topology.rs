@@ -274,11 +274,9 @@ fn default_capacity_is_1024_in_topology() {
 
 #[test]
 fn operative_instance_creates_entities() {
-    use flezha_runner::__dispatch_internals as bi;
     let topology = build_topology_for::<StaticOperative>().expect("topology");
-    let pool = Arc::new(bi::WorkStealingPool::with_size(2));
     let instance =
-        flezha_runner::operative::UnboundedInstance::new(topology, Arc::from("instance-id"), pool);
+        flezha_runner::operative::UnboundedInstance::new(topology, Arc::from("instance-id"));
     assert_eq!(instance.entities.len(), 1);
     assert_eq!(instance.entities[0].len(), 3);
     assert_eq!(instance.entity_key_to_idx[0].get("a"), Some(&0));

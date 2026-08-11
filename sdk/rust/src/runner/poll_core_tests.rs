@@ -15,7 +15,6 @@ pub(crate) mod fixtures {
     use crate::operative::instance::UnboundedInstance;
     use crate::operative::UnboundedOperative;
     use crate::runner::poll_core::PollCore;
-    use crate::runner::work_stealing_pool::WorkStealingPool;
 
     /// One instance of `O` and its first Entity.
     pub(crate) fn build_slot_of<O: UnboundedOperative>(
@@ -25,8 +24,7 @@ pub(crate) mod fixtures {
         O::channels(&cb);
         let topology = build_topology_with_persistence(O::factory_id(), cb, O::PERSISTENCE_ENABLED)
             .expect("topology");
-        let pool = Arc::new(WorkStealingPool::with_size(1));
-        let instance = UnboundedInstance::new(topology, Arc::from(instance_id), pool);
+        let instance = UnboundedInstance::new(topology, Arc::from(instance_id));
         let slot = Arc::clone(&instance.entities[0][0]);
         (instance, slot)
     }
@@ -65,6 +63,8 @@ mod tests {
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
+    use flz_core::poll_core::{EngineActivation, PollCore, Polled, Starvation};
+    use flz_core::restore::RestoreInitPayload;
     use flz_transport::transport::FlezhaStream;
 
     use super::fixtures::{build_slot_of, payload, unix_stream};
@@ -79,8 +79,6 @@ mod tests {
     use crate::procedure::error::ProcedureError;
     use crate::procedure::state_handle::StateHandle;
     use crate::procedure::Procedure;
-    use flz_core::poll_core::{EngineActivation, PollCore, Polled, Starvation};
-    use flz_core::restore::RestoreInitPayload;
 
     #[derive(Default)]
     struct PollProc;
@@ -715,6 +713,39 @@ mod tests {
         assert!(
             started.elapsed() < Duration::from_secs(5),
             "the waiter timed out instead"
+        );
+    }
+
+    /// A direct activation queued with nobody to take it is starvation too,
+    /// and unlike entity work the cap does not gate it: a bounded driver is
+    /// blocked on its step, so "every worker is inside user code" must buy a
+    /// thread rather than wedge the stage.
+    #[test]
+    fn starvation_wakes_at_a_queued_direct_activation() {
+        let core = Arc::new(PollCore::with_max_inflight(1));
+        let (_i, slot) = build_slot("poll-starve-direct");
+        let stream = unix_stream();
+        // At the cap: only the direct activation can make this starvation.
+        let _held = occupy(&core, std::slice::from_ref(&slot), &stream);
+
+        let supervisor = {
+            let core = Arc::clone(&core);
+            std::thread::spawn(move || core.wait_starvation(Duration::from_secs(5)))
+        };
+        std::thread::sleep(Duration::from_millis(50));
+
+        let (reply, _rx) = crossbeam::channel::bounded(1);
+        core.submit_direct(flz_core::poll_core::EnginePayload::Command {
+            target: flz_core::host::entity_ref_of(&slot),
+            change_seq: 0,
+            factory: "poll_core_exclusivity_op".into(),
+            kind: flz_core::schema::ActivationKind::SnapshotRequest,
+            reply,
+        });
+
+        assert!(
+            matches!(supervisor.join().unwrap(), Starvation::Observed),
+            "a queued direct activation did not read as starvation"
         );
     }
 

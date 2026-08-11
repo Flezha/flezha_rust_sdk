@@ -6,9 +6,9 @@
 pub use flz_core::bounded::*;
 pub mod spec;
 
-pub use flz_core::bounded::{compensation, driver, instance, registry};
-
 use std::time::Duration;
+
+pub use flz_core::bounded::{compensation, driver, instance, registry};
 
 use crate::channel::ChannelBuilder;
 
@@ -140,6 +140,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use crossbeam::channel::Receiver;
+    use flz_core::fast::RunnerNode;
     use serde::{Deserialize, Serialize};
 
     use super::*;
@@ -151,7 +152,6 @@ mod tests {
     use crate::procedure::clock::WallClock;
     use crate::procedure::{Procedure, ProcedureCtx, ProcedureError, StateHandle};
     use crate::runner::{install_reconnect_trigger, RunnerMessage};
-    use flz_core::fast::RunnerNode;
 
     static EMIT_RUNS: AtomicUsize = AtomicUsize::new(0);
     static FAIL_RUNS: AtomicUsize = AtomicUsize::new(0);
@@ -1549,6 +1549,99 @@ mod tests {
         }
     }
 
+    // ---- who runs a stage step, and what a backoff holds -------------------
+
+    /// Every attempt the probe stage ran, as `(entity key, thread name)`.
+    static STEP_ATTEMPTS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+
+    /// One entity per SDK worker, twice over. More entities backing off at
+    /// once than the pool has threads is what makes a backoff that HELD a
+    /// worker observable: it would starve the pool, and the core answers
+    /// starvation with threads above the base set.
+    fn probe_keys() -> &'static [&'static str] {
+        static KEYS: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
+        KEYS.get_or_init(|| {
+            (0..crate::operative::poll_pool::base_worker_count() * 2)
+                .map(|i| &*Box::leak(format!("probe{i}").into_boxed_str()))
+                .collect()
+        })
+    }
+
+    #[derive(Serialize, Deserialize, Clone, Default)]
+    struct ProbeState {
+        key: String,
+    }
+
+    /// Every entity fails its first attempt and succeeds on the retry, so the
+    /// whole stage sits on a backoff at the same moment, and each attempt
+    /// records the thread that ran it.
+    #[derive(Default)]
+    struct StepProbe;
+    impl Procedure for StepProbe {
+        type Input = String;
+        type Output = String;
+        type State = ProbeState;
+        type Change = NoChange;
+        type Clock = WallClock;
+        type Config = ();
+        fn name() -> &'static str {
+            "step_probe"
+        }
+        fn entity_keys() -> Vec<&'static str> {
+            probe_keys().to_vec()
+        }
+        const ENTITIES_FOR_OVERRIDDEN: bool = true;
+        fn entities_for(_input: &String) -> Vec<&'static str> {
+            probe_keys().to_vec()
+        }
+        fn init_state(entity_key: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> ProbeState {
+            ProbeState {
+                key: entity_key.unwrap_or("").to_string(),
+            }
+        }
+        fn run(
+            &mut self,
+            input: String,
+            state: StateHandle<'_, Self>,
+            ctx: &mut ProcedureCtx<'_>,
+        ) -> Result<(), ProcedureError> {
+            let thread = std::thread::current()
+                .name()
+                .unwrap_or("<unnamed>")
+                .to_string();
+            let mut attempts = STEP_ATTEMPTS.lock().unwrap();
+            let prior = attempts.iter().filter(|(key, _)| *key == state.key).count();
+            attempts.push((state.key.clone(), thread));
+            drop(attempts);
+            if prior == 0 {
+                return Err(ProcedureError::Custom(format!(
+                    "probe {} attempt 1",
+                    state.key
+                )));
+            }
+            ctx.emit(format!("{}:{input}", state.key))?;
+            Ok(())
+        }
+    }
+
+    /// One flaky stage whose entities outnumber the SDK's workers, on a
+    /// backoff long enough that a worker holding one would be observed.
+    struct StepProbeBounded;
+    impl BoundedOperative for StepProbeBounded {
+        fn factory_id() -> &'static str {
+            "test-step-probe-bounded"
+        }
+        fn retry_backoff() -> Duration {
+            Duration::from_millis(200)
+        }
+        fn procedures(c: &ChannelBuilder) {
+            c.input::<String>("in")
+                .into::<StepProbe>()
+                .named("probe_out")
+                .output("sink");
+        }
+    }
+
     /// Arm the flaky stage: `failures` attempts of the `odd` entity fail,
     /// classified retryable or not, with both attempt counters reset.
     fn arm_flaky(failures: usize, non_retryable: bool) {
@@ -2270,6 +2363,7 @@ mod tests {
         crate::register_bounded_class::<RetryBounded>().unwrap();
         crate::register_bounded_class::<RetryFailFastBounded>().unwrap();
         crate::register_bounded_class::<RetrySlowBackoffBounded>().unwrap();
+        crate::register_bounded_class::<StepProbeBounded>().unwrap();
         crate::register_bounded_class::<DiamondBounded>().unwrap();
         crate::register_bounded_class::<DiamondSaga>().unwrap();
         crate::register_bounded_class::<MergeBounded>().unwrap();
@@ -3570,6 +3664,42 @@ mod tests {
             vec!["undo-retry-reserve".to_string()],
             "a cancelled ladder takes the normal abnormal-exit path"
         );
+
+        // --- a stage step is an activation the SDK's workers run, and the
+        // backoff between two attempts holds none of them: every entity of this
+        // stage backs off at once, and there are twice as many entities as
+        // workers, so a backoff that occupied its worker would leave the pool
+        // starved and the core would answer with threads above the base set ---
+        STEP_ATTEMPTS.lock().unwrap().clear();
+        assert!(node.start_bounded(
+            "test-step-probe-bounded".into(),
+            "bounded-steps".into(),
+            "go".into()
+        ));
+        let (outs, done) = drain(&rx, "bounded-steps");
+        assert_eq!((done.0.as_str(), done.1.as_str()), ("ok", ""));
+        assert_eq!(
+            outs.len(),
+            probe_keys().len(),
+            "every entity emitted once, after its own retry"
+        );
+        let attempts = STEP_ATTEMPTS.lock().unwrap().clone();
+        assert_eq!(
+            attempts.len(),
+            probe_keys().len() * 2,
+            "one failed attempt and one success per entity"
+        );
+        let base = crate::operative::poll_pool::base_worker_count();
+        for (key, thread) in &attempts {
+            let worker = thread.strip_prefix("flz-poll-").unwrap_or_else(|| {
+                panic!("entity {key} ran its step on {thread}, not on an SDK poll worker")
+            });
+            assert!(
+                worker.parse::<usize>().expect("poll worker id") < base,
+                "the pool grew past its {base} base workers to serve {key}: a backoff was \
+                 holding a worker instead of being timed at the driver's barrier"
+            );
+        }
 
         // --- bounded-branching: A→(B,C) runs to DONE — both branches receive
         // what A released on the channel they consume, and the operative is `ok`

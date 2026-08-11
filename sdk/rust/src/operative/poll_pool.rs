@@ -18,6 +18,8 @@ use flz_core::entity::EntitySlot;
 
 use crate::runner::poll_core::{global, PollCore, Polled, Starvation};
 
+/// How many workers never retire. Defaults to the host's parallelism.
+const ENV_WORKER_POOL_SIZE: &str = "FLEZHA_WORKER_POOL_SIZE";
 /// The ceiling the starvation supervisor may grow the pool to.
 const ENV_WORKER_POOL_MAX: &str = "FLEZHA_WORKER_POOL_MAX";
 /// One poll turn. Also the granularity of a grown worker's idle streak and of
@@ -42,9 +44,18 @@ struct PollPool {
     idle_exit: Duration,
 }
 
+/// How many workers this process keeps at rest. Also what a test reads to size
+/// a workload against the pool.
+pub(crate) fn base_worker_count() -> usize {
+    flz_core::util::env_parse_positive(
+        ENV_WORKER_POOL_SIZE,
+        std::thread::available_parallelism().map_or(2, |n| n.get()),
+    )
+}
+
 impl PollPool {
     fn from_env(core: &'static PollCore) -> Arc<Self> {
-        let base = crate::runner::work_stealing_pool::configured_worker_count();
+        let base = base_worker_count();
         Arc::new(Self {
             core,
             base,
@@ -160,6 +171,8 @@ pub(crate) fn serve_slot(slot: &Arc<EntitySlot>) {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, AtomicUsize};
+
     use super::*;
     use crate::channel::ChannelBuilder;
     use crate::entity::restore::RestoreInitPayload;
@@ -167,7 +180,6 @@ mod tests {
     use crate::procedure::state_handle::StateHandle;
     use crate::procedure::{Procedure, ProcedureCtx, ProcedureError};
     use crate::runner::poll_core_tests::fixtures::{build_slot_of, push_input};
-    use std::sync::atomic::{AtomicBool, AtomicUsize};
 
     /// Blocks on a process-wide gate for input `0`, returns immediately for
     /// anything else: the two halves of "one entity stuck in user code must

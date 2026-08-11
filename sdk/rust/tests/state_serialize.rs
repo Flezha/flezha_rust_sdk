@@ -5,14 +5,15 @@ use std::sync::Arc;
 
 use flezha_runner::channel::ChannelBuilder;
 use flezha_runner::command::entity_state::{
-    apply_init_values, serialize_operative_state, serialize_selected_state, StateSelector,
-    ENTITY_EVICTED, ENTITY_KEY_WITHOUT_PROCEDURE, ENTITY_NOT_FOUND, PROCEDURE_NOT_FOUND,
-    StatePurpose,};
+    apply_init_values, serialize_operative_state, serialize_selected_state, StatePurpose,
+    StateSelector, ENTITY_EVICTED, ENTITY_KEY_WITHOUT_PROCEDURE, ENTITY_NOT_FOUND,
+    PROCEDURE_NOT_FOUND,
+};
 use flezha_runner::operative::builder::build_topology_for;
 use flezha_runner::operative::UnboundedInstance;
 use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError};
 use flezha_runner::state::{Change, NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_runner::{UnboundedOperative, __dispatch_internals as bi};
+use flezha_runner::UnboundedOperative;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -76,8 +77,7 @@ impl UnboundedOperative for CounterOperative {
 #[test]
 fn single_mode_procedure_serializes_under_procedure_name_key() {
     let topology = build_topology_for::<CounterOperative>().expect("topology");
-    let pool = Arc::new(bi::WorkStealingPool::with_size(1));
-    let instance = UnboundedInstance::new(topology, Arc::from("inst-1"), pool);
+    let instance = UnboundedInstance::new(topology, Arc::from("inst-1"));
 
     // Cold start: state is the default.
     let bytes = serialize_operative_state(&instance);
@@ -88,8 +88,7 @@ fn single_mode_procedure_serializes_under_procedure_name_key() {
 #[test]
 fn apply_init_values_seeds_single_mode_procedure() {
     let topology = build_topology_for::<CounterOperative>().expect("topology");
-    let pool = Arc::new(bi::WorkStealingPool::with_size(1));
-    let instance = UnboundedInstance::new(topology, Arc::from("inst-2"), pool);
+    let instance = UnboundedInstance::new(topology, Arc::from("inst-2"));
 
     apply_init_values(&instance, "{\"counter\":{\"value\":42}}").unwrap();
 
@@ -150,8 +149,7 @@ impl UnboundedOperative for OhlcOperative {
 #[test]
 fn static_mode_procedure_serializes_under_keyed_object() {
     let topology = build_topology_for::<OhlcOperative>().expect("topology");
-    let pool = Arc::new(bi::WorkStealingPool::with_size(1));
-    let instance = UnboundedInstance::new(topology, Arc::from("inst-3"), pool);
+    let instance = UnboundedInstance::new(topology, Arc::from("inst-3"));
 
     let bytes = serialize_operative_state(&instance);
     let v: Value = serde_json::from_slice(&bytes).unwrap();
@@ -161,8 +159,7 @@ fn static_mode_procedure_serializes_under_keyed_object() {
 #[test]
 fn apply_init_values_seeds_static_mode_procedure_per_key() {
     let topology = build_topology_for::<OhlcOperative>().expect("topology");
-    let pool = Arc::new(bi::WorkStealingPool::with_size(1));
-    let instance = UnboundedInstance::new(topology, Arc::from("inst-4"), pool);
+    let instance = UnboundedInstance::new(topology, Arc::from("inst-4"));
 
     apply_init_values(
         &instance,
@@ -178,8 +175,7 @@ fn apply_init_values_seeds_static_mode_procedure_per_key() {
 #[test]
 fn apply_init_values_empty_string_is_noop() {
     let topology = build_topology_for::<CounterOperative>().expect("topology");
-    let pool = Arc::new(bi::WorkStealingPool::with_size(1));
-    let instance = UnboundedInstance::new(topology, Arc::from("inst-5"), pool);
+    let instance = UnboundedInstance::new(topology, Arc::from("inst-5"));
 
     apply_init_values(&instance, "").unwrap();
     let bytes = serialize_operative_state(&instance);
@@ -190,8 +186,7 @@ fn apply_init_values_empty_string_is_noop() {
 #[test]
 fn apply_init_values_unknown_procedure_is_ignored() {
     let topology = build_topology_for::<CounterOperative>().expect("topology");
-    let pool = Arc::new(bi::WorkStealingPool::with_size(1));
-    let instance = UnboundedInstance::new(topology, Arc::from("inst-6"), pool);
+    let instance = UnboundedInstance::new(topology, Arc::from("inst-6"));
 
     apply_init_values(
         &instance,
@@ -206,8 +201,7 @@ fn apply_init_values_unknown_procedure_is_ignored() {
 #[test]
 fn round_trip_static_mode_through_serialize_then_apply() {
     let topology = build_topology_for::<OhlcOperative>().expect("topology");
-    let pool = Arc::new(bi::WorkStealingPool::with_size(1));
-    let src = UnboundedInstance::new(Arc::clone(&topology), Arc::from("src"), Arc::clone(&pool));
+    let src = UnboundedInstance::new(Arc::clone(&topology), Arc::from("src"));
     apply_init_values(
         &src,
         "{\"ohlc\":{\"1m\":{\"high\":42},\"1h\":{\"high\":7}}}",
@@ -217,7 +211,7 @@ fn round_trip_static_mode_through_serialize_then_apply() {
     let bytes = serialize_operative_state(&src);
     let json_str = std::str::from_utf8(&bytes).unwrap();
 
-    let dst = UnboundedInstance::new(topology, Arc::from("dst"), pool);
+    let dst = UnboundedInstance::new(topology, Arc::from("dst"));
     apply_init_values(&dst, json_str).unwrap();
 
     let dst_bytes = serialize_operative_state(&dst);
@@ -304,7 +298,7 @@ fn read(
 
 #[test]
 fn a_selector_narrows_to_one_entity_of_many_and_carries_its_seq() {
-    let (_handle, instance) = setup::<PairOperative>("sel-1", 1);
+    let (_handle, instance) = setup::<PairOperative>("sel-1");
 
     let (all, all_seq) = read(&instance, None, None);
     assert_eq!(
@@ -328,7 +322,7 @@ fn a_selector_narrows_to_one_entity_of_many_and_carries_its_seq() {
 
 #[test]
 fn a_single_mode_procedure_selector_names_exactly_one_entity() {
-    let (_handle, instance) = setup::<PairOperative>("sel-2", 1);
+    let (_handle, instance) = setup::<PairOperative>("sel-2");
     let (value, seq) = read(&instance, Some("counter"), None);
 
     assert_eq!(value, json!({"counter": {"value": 0}}));
@@ -337,7 +331,7 @@ fn a_single_mode_procedure_selector_names_exactly_one_entity() {
 
 #[test]
 fn dynamic_mode_entities_serialize_under_their_live_keys() {
-    let (_handle, instance) = setup::<CandleOperative>("dyn-read-1", 1);
+    let (_handle, instance) = setup::<CandleOperative>("dyn-read-1");
     let registry = instance.dynamic_registries[0]
         .as_ref()
         .expect("candle is dynamic");
@@ -358,7 +352,7 @@ fn dynamic_mode_entities_serialize_under_their_live_keys() {
 
 #[test]
 fn an_entity_key_without_a_procedure_is_refused() {
-    let (_handle, instance) = setup::<PairOperative>("sel-3", 1);
+    let (_handle, instance) = setup::<PairOperative>("sel-3");
     let err = serialize_selected_state(
         &instance,
         StateSelector {
@@ -377,7 +371,7 @@ fn an_entity_key_without_a_procedure_is_refused() {
 
 #[test]
 fn an_unknown_procedure_is_refused() {
-    let (_handle, instance) = setup::<PairOperative>("sel-4", 1);
+    let (_handle, instance) = setup::<PairOperative>("sel-4");
     let err = serialize_selected_state(
         &instance,
         StateSelector {
@@ -393,7 +387,7 @@ fn an_unknown_procedure_is_refused() {
 
 #[test]
 fn an_unknown_key_is_refused_distinctly_from_an_evicted_one() {
-    let (_handle, instance) = setup::<CandleOperative>("dyn-read-2", 1);
+    let (_handle, instance) = setup::<CandleOperative>("dyn-read-2");
     let registry = instance.dynamic_registries[0]
         .as_ref()
         .expect("candle is dynamic");
@@ -449,7 +443,7 @@ fn an_unknown_key_is_refused_distinctly_from_an_evicted_one() {
 /// `change_seq` is armed at 7 to stand for "records 0..6 are durable".
 #[test]
 fn a_read_reflects_an_applied_but_unflushed_change_and_reports_a_seq_above_the_persisted_one() {
-    let (handle, instance) = setup::<CounterOperative>("unflushed-1", 1);
+    let (handle, instance) = setup::<CounterOperative>("unflushed-1");
 
     let slot = Arc::clone(&instance.entities[0][0]);
     let entry_id = slot
@@ -491,7 +485,7 @@ fn a_read_reflects_an_applied_but_unflushed_change_and_reports_a_seq_above_the_p
 /// no seq. Those three are exactly what compaction does before it truncates.
 #[test]
 fn a_read_leaves_the_entity_undrained_and_its_seq_unchanged() {
-    let (handle, instance) = setup::<CounterOperative>("noside-1", 1);
+    let (handle, instance) = setup::<CounterOperative>("noside-1");
 
     let slot = Arc::clone(&instance.entities[0][0]);
     let entry_id = slot
@@ -558,7 +552,7 @@ fn a_selector_less_entity_state_command_encodes_exactly_as_before() {
 /// a controller decoding either runtime's reply sees one shape.
 #[test]
 fn the_json_shape_matches_the_java_sdk_byte_for_byte() {
-    let (_handle, instance) = setup::<PairOperative>("cross-1", 1);
+    let (_handle, instance) = setup::<PairOperative>("cross-1");
     apply_init_values(
         &instance,
         "{\"counter\":{\"value\":1},\"ohlc\":{\"1m\":{\"high\":2},\"1h\":{\"high\":3}}}",

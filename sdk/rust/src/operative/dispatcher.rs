@@ -1473,13 +1473,22 @@ pub(super) fn run_activation(
     act: crate::runner::poll_core::EngineActivation,
 ) {
     use crate::entity::ItemDisposition;
-    use crate::runner::poll_core::WorkItem;
+    use crate::runner::poll_core::{EngineActivation, EnginePayload, WorkItem};
 
-    let Some((token, slot, items)) = act.into_work() else {
+    let EngineActivation { token, payload } = act;
+    let (slot, items) = match payload {
+        EnginePayload::Work { slot, items } => (slot, items),
+        // One entity partition of a bounded stage. It carries its own reply,
+        // so it releases this worker the moment it answers — a retry backoff
+        // is timed by the driver at its barrier, never slept here.
+        EnginePayload::BoundedStep(step) => {
+            flz_core::bounded::step::run_bounded_step(step);
+            return;
+        }
         // Command/prepare payloads are host-only (C-ABI classes); a typed
         // worker never receives one because typed and host classes do not
         // share a process.
-        return;
+        _ => return,
     };
     let mut queue: std::collections::VecDeque<WorkItem> = items.into();
     while let Some(work) = queue.pop_front() {

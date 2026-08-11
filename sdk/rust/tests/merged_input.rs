@@ -95,7 +95,7 @@ impl UnboundedOperative for TypedMergeOperative {
 fn two_typed_channels_feed_one_procedure() {
     SIGNALS.lock().unwrap().clear();
     SIGNAL_SINK.lock().unwrap().clear();
-    let (handle, _instance) = setup::<TypedMergeOperative>("typed-merge-instance", 4);
+    let (handle, _instance) = setup::<TypedMergeOperative>("typed-merge-instance");
     let stream = dummy_stream();
 
     dispatch_input(
@@ -180,7 +180,7 @@ impl UnboundedOperative for EntryMergeOperative {
 #[test]
 fn entry_channels_are_merge_sources() {
     let _serial = tuned_test_guard();
-    let (handle, _instance) = setup::<EntryMergeOperative>("entry-merge-instance", 4);
+    let (handle, _instance) = setup::<EntryMergeOperative>("entry-merge-instance");
     let stream = dummy_stream();
 
     dispatch_input(
@@ -211,7 +211,7 @@ fn entry_channels_are_merge_sources() {
 #[test]
 fn per_source_order_holds_under_interleaving() {
     let _serial = tuned_test_guard();
-    let (handle, _instance) = setup::<EntryMergeOperative>("entry-fifo-instance", 4);
+    let (handle, _instance) = setup::<EntryMergeOperative>("entry-fifo-instance");
     let stream = dummy_stream();
 
     let n = 200usize;
@@ -279,7 +279,7 @@ fn per_source_order_holds_under_interleaving() {
 #[test]
 fn a_replayed_merge_maps_exactly_as_the_live_run_did() {
     let _serial = tuned_test_guard();
-    let (handle, _instance) = setup::<EntryMergeOperative>("entry-replay-instance", 4);
+    let (handle, _instance) = setup::<EntryMergeOperative>("entry-replay-instance");
     let stream = dummy_stream();
 
     let feed = [("data", "d0"), ("config", "c0"), ("data", "d1")];
@@ -390,7 +390,7 @@ impl UnboundedOperative for EntityMergeOperative {
 #[test]
 fn entities_for_is_evaluated_on_the_mapped_value() {
     PER_ENTITY.lock().unwrap().clear();
-    let (handle, _instance) = setup::<EntityMergeOperative>("entity-merge-instance", 4);
+    let (handle, _instance) = setup::<EntityMergeOperative>("entity-merge-instance");
     let stream = dummy_stream();
 
     dispatch_input(

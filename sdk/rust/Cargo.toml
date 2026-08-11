@@ -17,7 +17,7 @@ doctest = false
 
 [features]
 default = []
-# Exposes internal dispatch types (mailbox, work-stealing pool, registry
+# Exposes internal dispatch types (mailbox, dispatch handle, registry
 # constructors) for the crate's own benches/tests. NOT a stable public API.
 # Only enabled by the `[[bench]]` targets via `required-features`.
 bench-internals = []
