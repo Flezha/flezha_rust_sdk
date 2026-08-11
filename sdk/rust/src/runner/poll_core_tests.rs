@@ -1,18 +1,76 @@
 //! Relocated engine tests: handout exclusivity, ordering, the ladder.
 
+/// Slot scaffolding shared by the engine's own tests and the poll pool's
+/// (`operative::poll_pool`) — one definition of how a test builds an Entity
+/// and hands it an input.
+pub(crate) mod fixtures {
+    use std::any::Any;
+    use std::sync::Arc;
+
+    use flz_transport::transport::FlezhaStream;
+
+    use crate::channel::ChannelBuilder;
+    use crate::entity::{EntityItem, EntityPayload, EntitySlot};
+    use crate::operative::builder::build_topology_with_persistence;
+    use crate::operative::instance::UnboundedInstance;
+    use crate::operative::UnboundedOperative;
+    use crate::runner::poll_core::PollCore;
+    use crate::runner::work_stealing_pool::WorkStealingPool;
+
+    /// One instance of `O` and its first Entity.
+    pub(crate) fn build_slot_of<O: UnboundedOperative>(
+        instance_id: &str,
+    ) -> (Arc<UnboundedInstance>, Arc<EntitySlot>) {
+        let cb = ChannelBuilder::new();
+        O::channels(&cb);
+        let topology = build_topology_with_persistence(O::factory_id(), cb, O::PERSISTENCE_ENABLED)
+            .expect("topology");
+        let pool = Arc::new(WorkStealingPool::with_size(1));
+        let instance = UnboundedInstance::new(topology, Arc::from(instance_id), pool);
+        let slot = Arc::clone(&instance.entities[0][0]);
+        (instance, slot)
+    }
+
+    /// A stream token for an input or firing. The peer is dropped straight
+    /// away — the engine only carries the handle, it never writes to it.
+    pub(crate) fn unix_stream() -> Arc<FlezhaStream> {
+        let (sock, _peer) = std::os::unix::net::UnixStream::pair().expect("pair");
+        Arc::new(FlezhaStream::Unix(sock))
+    }
+
+    pub(crate) fn payload(ordinal: usize, stream: &Arc<FlezhaStream>) -> EntityItem {
+        EntityItem::Input(EntityPayload {
+            value: Arc::new(ordinal) as Arc<dyn Any + Send + Sync>,
+            stream: Arc::clone(stream),
+            consumed_offset: None,
+            replay: false,
+        })
+    }
+
+    /// Queue one input and claim its round — the producer protocol.
+    pub(crate) fn push_input(core: &PollCore, slot: &Arc<EntitySlot>, value: usize) {
+        assert!(slot
+            .mailbox
+            .try_push(payload(value, &unix_stream()))
+            .is_ok());
+        if slot.mailbox.try_mark_inflight() {
+            core.schedule(slot);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::any::Any;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
     use flz_transport::transport::FlezhaStream;
 
+    use super::fixtures::{build_slot_of, payload, unix_stream};
     use crate::channel::ChannelBuilder;
     use crate::entity::timer::{TimerKind, TimerOp};
-    use crate::entity::{EntityItem, EntityPayload, EntitySlot};
-    use crate::operative::builder::build_topology_with_persistence;
+    use crate::entity::{EntityItem, EntitySlot};
     use crate::operative::instance::UnboundedInstance;
     use crate::operative::UnboundedOperative;
     use crate::procedure::change::NoChange;
@@ -21,9 +79,8 @@ mod tests {
     use crate::procedure::error::ProcedureError;
     use crate::procedure::state_handle::StateHandle;
     use crate::procedure::Procedure;
-    use flz_core::poll_core::{EngineActivation, PollCore, Polled};
+    use flz_core::poll_core::{EngineActivation, PollCore, Polled, Starvation};
     use flz_core::restore::RestoreInitPayload;
-    use flz_core::work_stealing_pool::WorkStealingPool;
 
     #[derive(Default)]
     struct PollProc;
@@ -76,26 +133,6 @@ mod tests {
         build_slot_of::<PollOp>(instance_id)
     }
 
-    fn build_slot_of<O: UnboundedOperative>(
-        instance_id: &str,
-    ) -> (Arc<UnboundedInstance>, Arc<EntitySlot>) {
-        let cb = ChannelBuilder::new();
-        O::channels(&cb);
-        let topology = build_topology_with_persistence(O::factory_id(), cb, O::PERSISTENCE_ENABLED)
-            .expect("topology");
-        let pool = Arc::new(WorkStealingPool::with_size(1));
-        let instance = UnboundedInstance::new(topology, Arc::from(instance_id), pool);
-        let slot = Arc::clone(&instance.entities[0][0]);
-        (instance, slot)
-    }
-
-    /// A stream token for a firing. The peer is dropped straight away — the
-    /// engine only carries the handle, it never writes to it.
-    fn unix_stream() -> Arc<FlezhaStream> {
-        let (sock, _peer) = std::os::unix::net::UnixStream::pair().expect("pair");
-        Arc::new(FlezhaStream::Unix(sock))
-    }
-
     /// Arm one already-due processing-time timer and keep its firing on this
     /// core: `routing::enqueue` only schedules a round when it wins the
     /// inflight CAS, and the caller has already taken it.
@@ -117,15 +154,6 @@ mod tests {
             .now
             .expect("a firing carries its scheduled at");
         (act.token, now)
-    }
-
-    fn payload(ordinal: usize, stream: &Arc<FlezhaStream>) -> EntityItem {
-        EntityItem::Input(EntityPayload {
-            value: Arc::new(ordinal) as Arc<dyn Any + Send + Sync>,
-            stream: Arc::clone(stream),
-            consumed_offset: None,
-            replay: false,
-        })
     }
 
     /// The producer protocol followed by one handout: queue `count` inputs
@@ -578,6 +606,228 @@ mod tests {
             "a healthy entity was starved by the deferred ones"
         );
         core.complete(act.token);
+    }
+
+    // ------------------------------------- the jobs-underway cap and its signal
+
+    /// Hand out one activation per slot, each occupying a job, and return the
+    /// tokens still outstanding.
+    fn occupy(core: &PollCore, slots: &[Arc<EntitySlot>], stream: &Arc<FlezhaStream>) -> Vec<u64> {
+        slots
+            .iter()
+            .map(|slot| queue_and_hand_out(core, slot, stream, 1).token)
+            .collect()
+    }
+
+    /// The cap is the core's own limit on jobs underway, independent of how
+    /// many threads a host runs: at it, queued entity work stays queued —
+    /// pollers wait as if `ready` were empty — and one completion is enough
+    /// to release exactly one more.
+    #[test]
+    fn handout_stops_at_the_cap_and_resumes_on_completion() {
+        let core = PollCore::with_max_inflight(2);
+        let slots: Vec<Arc<EntitySlot>> = (0..3)
+            .map(|i| build_slot(&format!("poll-cap-{i}")).1)
+            .collect();
+        let stream = unix_stream();
+
+        let held = occupy(&core, &slots[..2], &stream);
+
+        // The third entity's round is queued and runnable; the cap holds it.
+        assert!(slots[2].mailbox.try_push(payload(0, &stream)).is_ok());
+        assert!(slots[2].mailbox.try_mark_inflight());
+        core.schedule(&slots[2]);
+        assert!(
+            matches!(core.poll(Duration::from_millis(100)), Polled::Timeout),
+            "work was handed out past the cap"
+        );
+
+        core.complete(held[0]);
+        let act = match core.poll(Duration::from_millis(500)) {
+            Polled::Activation(a) => a,
+            _ => panic!("a completion did not release the queued work"),
+        };
+        assert!(Arc::ptr_eq(act.slot(), &slots[2]));
+        core.complete(act.token);
+        core.complete(held[1]);
+    }
+
+    /// Command activations are barrier-bounded by the drivers that enqueue
+    /// them and answer a caller blocked on a rendezvous — holding one behind
+    /// capped entity work would deadlock that caller, so the cap never gates
+    /// them.
+    #[test]
+    fn a_command_activation_is_served_at_the_cap() {
+        let core = PollCore::with_max_inflight(1);
+        let (_i, slot) = build_slot("poll-cap-command");
+        let stream = unix_stream();
+        let held = occupy(&core, std::slice::from_ref(&slot), &stream);
+
+        let (_ic, other) = build_slot("poll-cap-command-other");
+        assert!(other.mailbox.try_push(payload(0, &stream)).is_ok());
+        assert!(other.mailbox.try_mark_inflight());
+        core.schedule(&other);
+
+        let (reply, _rx) = crossbeam::channel::bounded(1);
+        core.submit_direct(flz_core::poll_core::EnginePayload::Command {
+            target: flz_core::host::entity_ref_of(&other),
+            change_seq: 0,
+            factory: "poll_core_exclusivity_op".into(),
+            kind: flz_core::schema::ActivationKind::SnapshotRequest,
+            reply,
+        });
+
+        match core.poll(Duration::from_millis(500)) {
+            Polled::Activation(act) => assert!(
+                act.items().is_empty(),
+                "the command activation must be served ahead of the capped work"
+            ),
+            _ => panic!("the cap gated a command activation"),
+        }
+        core.complete(held[0]);
+    }
+
+    /// Starvation is queued work with nobody left to take it: the host is
+    /// told, and decides for itself what to do about it (the Rust arm grows
+    /// its pool). Nothing is queued here until the waiter is parked, so the
+    /// wake is the signal and not a pre-existing condition.
+    #[test]
+    fn starvation_wakes_when_work_is_queued_with_no_poller() {
+        let core = Arc::new(PollCore::new());
+        let (_i, slot) = build_slot("poll-starve-queued");
+        let stream = unix_stream();
+
+        let supervisor = {
+            let core = Arc::clone(&core);
+            std::thread::spawn(move || core.wait_starvation(Duration::from_secs(5)))
+        };
+        std::thread::sleep(Duration::from_millis(50));
+
+        let started = Instant::now();
+        assert!(slot.mailbox.try_push(payload(0, &stream)).is_ok());
+        assert!(slot.mailbox.try_mark_inflight());
+        core.schedule(&slot);
+
+        assert!(
+            matches!(supervisor.join().unwrap(), Starvation::Observed),
+            "queued work did not read as starvation"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the waiter timed out instead"
+        );
+    }
+
+    /// A deferred wake coming due with no poller to promote it is starvation
+    /// too — otherwise "every worker blocked in user code" would hold a timer
+    /// firing until one of them finished.
+    #[test]
+    fn starvation_wakes_at_a_due_deferred_wake() {
+        let core = Arc::new(PollCore::new());
+        let (_i, slot) = build_slot("poll-starve-wake");
+        slot.timers
+            .lock()
+            .unwrap()
+            .apply(&TimerOp::register(TimerKind::ProcessingTime, 0));
+        assert!(slot.mailbox.try_mark_inflight());
+        // Due 150 ms out: the waiter must shorten its own wait to it.
+        core.arm_timer(&slot, flz_core::util::wall_now_ms() + 150, unix_stream());
+
+        let started = Instant::now();
+        assert!(
+            matches!(
+                core.wait_starvation(Duration::from_secs(5)),
+                Starvation::Observed
+            ),
+            "a due wake with no poller did not read as starvation"
+        );
+        assert!(
+            started.elapsed() >= Duration::from_millis(100),
+            "the waiter woke before the entry was due"
+        );
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    /// A poller inside `poll` is about to take the work, so nothing is
+    /// starved — that is what keeps a healthy runner from growing threads it
+    /// does not need.
+    #[test]
+    fn no_starvation_while_a_poller_is_waiting() {
+        let core = Arc::new(PollCore::new());
+        let (_i, slot) = build_slot("poll-starve-served");
+        let stream = unix_stream();
+
+        let poller = {
+            let core = Arc::clone(&core);
+            std::thread::spawn(move || core.poll(Duration::from_secs(2)))
+        };
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(slot.mailbox.try_push(payload(0, &stream)).is_ok());
+        assert!(slot.mailbox.try_mark_inflight());
+        core.schedule(&slot);
+
+        assert!(
+            matches!(
+                core.wait_starvation(Duration::from_millis(300)),
+                Starvation::Timeout
+            ),
+            "work a waiting poller can serve must not read as starvation"
+        );
+        match poller.join().unwrap() {
+            Polled::Activation(act) => core.complete(act.token),
+            _ => panic!("the waiting poller did not take the queued work"),
+        }
+    }
+
+    /// A saturated runner is BUSY, not starved: the queue is never empty and
+    /// the workers are outside `poll` most of the time, yet they keep coming
+    /// back for more. Reporting that as starvation would answer a runner that
+    /// is working at capacity with ever more threads — measured as a
+    /// throughput collapse, which is why the signal requires a dwell with no
+    /// `poll` entry at all rather than a snapshot of "nobody is polling".
+    #[test]
+    fn a_saturated_runner_does_not_read_as_starved() {
+        let core = Arc::new(PollCore::new());
+        let slots: Vec<Arc<EntitySlot>> = (0..4)
+            .map(|i| build_slot(&format!("poll-saturated-{i}")).1)
+            .collect();
+        let stop = Arc::new(AtomicBool::new(false));
+
+        // Keeps every entity's queue non-empty for the whole run.
+        let feeder = {
+            let (core, slots, stop) = (Arc::clone(&core), slots.clone(), Arc::clone(&stop));
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Acquire) {
+                    for slot in &slots {
+                        crate::runner::poll_core_tests::fixtures::push_input(&core, slot, 1);
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            })
+        };
+        // One worker spending most of its time in "user code" — so
+        // `pollers_inside` reads zero at almost any instant — but re-entering
+        // `poll` every few milliseconds.
+        let worker = {
+            let (core, stop) = (Arc::clone(&core), Arc::clone(&stop));
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Acquire) {
+                    if let Polled::Activation(act) = core.poll(Duration::from_millis(20)) {
+                        std::thread::sleep(Duration::from_millis(5));
+                        core.complete(act.token);
+                    }
+                }
+            })
+        };
+
+        let verdict = core.wait_starvation(Duration::from_millis(600));
+        stop.store(true, Ordering::Release);
+        feeder.join().unwrap();
+        worker.join().unwrap();
+        assert!(
+            matches!(verdict, Starvation::Timeout),
+            "a runner working through a full queue must not read as starved"
+        );
     }
 
     /// Shutdown is not delayed by a backoff: there is no sleep left to run

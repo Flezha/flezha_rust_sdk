@@ -1464,53 +1464,17 @@ fn flush_before_emit_enabled() -> bool {
 }
 use flz_core::routing::send_plugin_frame;
 
-/// Spawn the typed layer's poll workers (once per process): the host half of
-/// the poll/complete seam. Sized like the worker pool; the engine never runs
-/// host code, so these threads are where every unbounded dispatch happens.
-pub(crate) fn ensure_poll_workers() {
-    static STARTED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
-    STARTED.get_or_init(|| {
-        // A Block-policy producer facing a full consumer drains it on its own
-        // thread through this hook (one-worker self-deadlock fix).
-        flz_core::routing::install_inline_serve(serve_slot);
-        for i in 0..crate::runner::work_stealing_pool::configured_worker_count() {
-            std::thread::Builder::new()
-                .name(format!("flz-poll-{i}"))
-                .spawn(poll_worker_loop)
-                .expect("spawn poll worker");
-        }
-    });
-}
-
-fn poll_worker_loop() {
-    let core = crate::runner::poll_core::global();
-    loop {
-        match core.poll(std::time::Duration::from_millis(200)) {
-            crate::runner::poll_core::Polled::Activation(act) => run_activation(act),
-            crate::runner::poll_core::Polled::Timeout => {}
-            crate::runner::poll_core::Polled::ShuttingDown => return,
-        }
-    }
-}
-
-/// Serve one slot inline: assemble its round on the calling thread and run
-/// it. How a Block-policy producer drains a full consumer without waiting on
-/// a poll worker (a parked worker could be the only one able to serve it).
-pub(crate) fn serve_slot(slot: &Arc<EntitySlot>) {
-    if let Some(act) = crate::runner::poll_core::global().try_assemble(slot) {
-        run_activation(act);
-    }
-}
-
 /// Run one activation: one attempt per item through the typed dispatch, then
 /// either complete the batch or hand the failed head (and unprocessed tail)
 /// back to the engine's ladder. The engine owns handout exclusivity,
 /// admission, and the drain-tail protocol (`runner::poll_core`).
-fn run_activation(act: crate::runner::poll_core::EngineActivation) {
+pub(super) fn run_activation(
+    core: &crate::runner::poll_core::PollCore,
+    act: crate::runner::poll_core::EngineActivation,
+) {
     use crate::entity::ItemDisposition;
     use crate::runner::poll_core::WorkItem;
 
-    let core = crate::runner::poll_core::global();
     let Some((token, slot, items)) = act.into_work() else {
         // Command/prepare payloads are host-only (C-ABI classes); a typed
         // worker never receives one because typed and host classes do not
@@ -1581,7 +1545,7 @@ fn flusher_registered<S: Procedure>(effectively_once: bool) -> bool {
 pub fn build_entity_slot<S: Procedure>(args: BuildEntityArgs<'_>) -> Arc<EntitySlot> {
     // The slot's rounds are served by the typed layer's poll workers; make
     // sure they exist before the first input can be scheduled.
-    ensure_poll_workers();
+    crate::operative::poll_pool::ensure_poll_workers();
     let procedure = S::default();
     // v1 cold-start path: `init_payload` is `None`. The controller change
     // wires the warm-restart path through `init_entity_with_payload`
@@ -1863,7 +1827,9 @@ mod tests {
             RetryPolicy::default(),
             Arc::from("inst/proc/"),
             FlushWiring {
-                entity_identity: Arc::new(flz_core::flusher::encode_entity_identity("inst", "proc", "")),
+                entity_identity: Arc::new(flz_core::flusher::encode_entity_identity(
+                    "inst", "proc", "",
+                )),
                 change_seq: Arc::new(AtomicU64::new(3)),
                 header: crate::entity::header::header_template_for::<CounterProc>(),
                 persistence_enabled: false,

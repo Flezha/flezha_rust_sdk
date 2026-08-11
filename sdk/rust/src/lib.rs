@@ -92,8 +92,14 @@
 //!
 //! # Tuning
 //!
-//! - `FLEZHA_WORKER_POOL_SIZE` — number of work-stealing threads
+//! - `FLEZHA_WORKER_POOL_SIZE` — the base poll-worker count
 //!   (default: `std::thread::available_parallelism()`).
+//! - `FLEZHA_WORKER_POOL_MAX` — the ceiling the pool may grow to when the
+//!   core reports starvation, i.e. work queued with every worker blocked in
+//!   user code (default: 10× the base count).
+//! - `FLEZHA_MAX_INFLIGHT_ACTIVATIONS` — the core's cap on work activations
+//!   underway at once (default: 1024). Read by `flz_core`, so it applies to
+//!   every host over the same core.
 //! - `FLEZHA_TRANSPORT` — `"uds"` (default) or `"quic"`.
 //! - `FLEZHA_QUIC_ADDRESS` — QUIC endpoint address.
 
