@@ -93,7 +93,7 @@ fn note_firing(key: &str, kind: TimerKind, fired_at: u64) {
 
 /// The worked session-timeout shape: each input pushes the idle deadline out,
 /// and the firing closes the session. Wall clock, so `timer_after` anchors on
-/// real time and the wheel is what fires it.
+/// real time and a due promotion is what fires it.
 #[derive(Default)]
 struct SessionProc {
     key: String,
@@ -440,12 +440,12 @@ fn a_quiet_entity_never_fires_its_event_time_timer() {
 
 // -------------------------------------------- processing-time firing
 
-/// The wheel path end to end: an input arms a deadline, nothing else arrives,
-/// and `on_timer` runs with the SCHEDULED timestamp — not the wall clock at
-/// which the wheel got round to it. Also spec "Timers are per Entity": only
-/// the key that registered fires.
+/// The processing-time path end to end: an input arms a deadline, nothing
+/// else arrives, and `on_timer` runs with the SCHEDULED timestamp — not the
+/// wall clock at which a poller got round to promoting it. Also spec "Timers
+/// are per Entity": only the key that registered fires.
 #[test]
-fn a_processing_time_timer_fires_from_the_wheel_with_its_scheduled_time() {
+fn a_processing_time_timer_fires_from_the_wake_list_with_its_scheduled_time() {
     let _guard = timer_test_guard();
     take_firings();
 
@@ -462,7 +462,7 @@ fn a_processing_time_timer_fires_from_the_wheel_with_its_scheduled_time() {
 
     assert!(
         wait_until(|| !firings_snapshot().is_empty(), Duration::from_secs(5)),
-        "the wheel must fire the deadline"
+        "the deadline must fire"
     );
     // Give a stray second firing a chance to appear before asserting there is
     // none — a per-Entity timer must not fan out.
@@ -654,7 +654,7 @@ fn a_tier_firing_writes_one_record_with_no_consumed_offset() {
 
     assert!(
         wait_until(|| !firings_snapshot().is_empty(), Duration::from_secs(5)),
-        "the wheel must fire"
+        "the deadline must fire"
     );
     assert!(
         wait_until(
@@ -830,10 +830,10 @@ impl Procedure for ChainProc {
 }
 
 /// Spec: "A due timer fires on restore" — the pending set comes back through
-/// the fold, the wheel is re-armed from it, and anything already past its
+/// the fold, the wake list is re-armed from it, and anything already past its
 /// deadline fires at once, ascending.
 #[test]
-fn a_restore_re_arms_the_wheel_and_fires_what_is_already_due() {
+fn a_restore_re_arms_the_wake_list_and_fires_what_is_already_due() {
     let _guard = timer_test_guard();
     take_firings();
     let (sock, _peer) = std::os::unix::net::UnixStream::pair().expect("pair");
@@ -867,11 +867,13 @@ fn a_restore_re_arms_the_wheel_and_fires_what_is_already_due() {
 
 /// Spec: "Eviction discards the Entity's timers" — dynamic eviction is
 /// destructive by existing decision, so the timers go with the state and the
-/// wheel entry goes with them. A later input cold-starts with nothing pending.
+/// wake-list entry goes with them. A later input cold-starts with nothing
+/// pending.
 #[test]
 fn an_idle_evicted_entity_loses_its_timers() {
     let _guard = timer_test_guard();
     take_firings();
+    let armed_before = flezha_runner::entity::timer::timers_armed();
 
     let (handle, instance) = setup::<EvictOperative>("timers-evict", 2);
     let stream = dummy_stream();
@@ -890,8 +892,10 @@ fn an_idle_evicted_entity_loses_its_timers() {
         ),
         "the Entity must arm its timer before the reaper runs"
     );
-    let wheel = instance.timer_wheel();
-    assert_eq!(wheel.occupancy(), 1);
+    assert_eq!(
+        flezha_runner::entity::timer::timers_armed(),
+        armed_before + 1
+    );
 
     // Sweep directly rather than waiting on the reaper's cadence: the seam
     // under test is what the sweep does, not when it decides to run.
@@ -903,8 +907,8 @@ fn an_idle_evicted_entity_loses_its_timers() {
         "the Entity is evicted"
     );
     assert_eq!(
-        wheel.occupancy(),
-        0,
+        flezha_runner::entity::timer::timers_armed(),
+        armed_before,
         "and its armed timer is released with it, not left to fire into nothing"
     );
     assert!(

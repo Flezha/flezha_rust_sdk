@@ -1422,7 +1422,8 @@ impl<'b, T: 'static + Send + Sync, K: StreamTarget> Stream<'b, T, K> {
     }
 
     /// Override the exponential-backoff base (milliseconds, default 50)
-    /// slept between failed attempts.
+    /// waited out between failed attempts. The wait holds no thread — the
+    /// entity becomes eligible again at its due time.
     pub fn retry_backoff_ms(self, base_ms: u64) -> Self {
         self.with_channel(|st, cid| st.channels[cid as usize].retry.backoff_base_ms = base_ms);
         self
