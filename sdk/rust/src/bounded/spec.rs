@@ -3,14 +3,12 @@
 //! The spec/DAG data structures live in `flz_core::bounded::spec`.
 
 pub use flz_core::bounded::spec::*;
-
 use flz_core::bounded::{BoundedRunFn, LoopMode};
-use flz_core::operative::topology::OperativeTopology;
+use flz_core::operative::topology::{EntityMode, OperativeTopology};
 
 use crate::bounded::BoundedOperative;
 use crate::channel::{ChannelBuilder, ChannelKind, ProcedureId, RetryPolicy};
 use crate::operative::builder::{build_topology, graph_order};
-use flz_core::operative::topology::EntityMode;
 
 /// Build and validate the spec for a bounded class. Empty `procedures()`
 /// selects the run-sugar path; a non-empty declaration is validated as a

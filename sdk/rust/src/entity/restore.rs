@@ -2,15 +2,14 @@
 //! from a shipped snapshot + change log. Everything erased — payload shape,
 //! record iteration, header validation — lives in `flz_core::restore`.
 
-pub use flz_core::restore::*;
-
 use flz_core::header::{decode_header, FORMAT_ID_EFFECT_RECORD, FORMAT_ID_TIMER_OPS};
+pub use flz_core::restore::*;
+use flz_core::schema::TimerOp;
+use flz_core::timer::PendingTimers;
 
 use crate::entity::header::{
     validate_header_for_change, validate_header_for_effect_record, validate_header_for_timer_ops,
 };
-use flz_core::schema::TimerOp;
-use flz_core::timer::PendingTimers;
 
 /// Runtime-side restoration helper. Not intended for direct user
 /// invocation — the user's `Procedure::init_state` is invoked first; this

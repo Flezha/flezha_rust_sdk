@@ -20,13 +20,14 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use flz_core::header::RestoreError;
+
 use crate::entity::restore::{init_entity_with_payload, RestoreInitPayload};
 use crate::entity::timer::{PendingTimers, TimerKind, TimerOp, TimerSession};
 use crate::operative::dispatcher::apply_identity_stamps;
 use crate::procedure::clock::{wall_now_ms, ClockFor};
 use crate::procedure::ctx::EmitSink;
 use crate::procedure::{Procedure, ProcedureCtx, ProcedureError, StateHandle};
-use flz_core::header::RestoreError;
 
 /// Entity identity the harness stands in for the runtime's per-slot
 /// identity: feeds `ctx.stable_id()` derivation and the `flz.entity`

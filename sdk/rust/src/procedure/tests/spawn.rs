@@ -1,15 +1,14 @@
 //! Procedure-requested spawn (`procedure-requested-spawn`): the request's
 //! result mapping, its isolation from `run`, and the replay contract.
 
-use std::sync::mpsc;
+use std::any::Any;
+use std::collections::HashMap;
+use std::sync::{mpsc, Arc};
 
 use crate::procedure::ctx::{EmitSink, ProcedureCtx};
 use crate::procedure::error::ProcedureError;
 use crate::procedure::spawn::{self, IfRunning, SpawnError, SpawnHandle, SpawnOutcome};
 use crate::shutdown::AckResult;
-use std::any::Any;
-use std::collections::HashMap;
-use std::sync::Arc;
 
 const IDENTITY: &[u8] = b"spawn/test/";
 

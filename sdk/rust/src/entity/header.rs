@@ -1,12 +1,11 @@
 //! Typed wrappers over the core's 16-byte record header: every generic here
 //! only reads `S::SCHEMA_VERSION`.
 
+use flz_core::header::RestoreError;
 pub use flz_core::header::{
     decode_header, parse_pkg_version, DecodedHeader, HeaderTemplate, FORMAT_ID_EFFECT_RECORD,
     FORMAT_ID_POSTCARD, FORMAT_ID_TIMER_OPS, SDK_LANG_RUST,
 };
-
-use flz_core::header::RestoreError;
 
 /// Build a template bound to a specific Procedure's `SCHEMA_VERSION`.
 pub fn header_template_for<S: crate::procedure::Procedure>() -> HeaderTemplate {

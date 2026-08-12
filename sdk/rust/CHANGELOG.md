@@ -4,6 +4,34 @@ All notable changes to the Rust SDK crate.
 
 ## Unreleased
 
+### A dead secondary stream can no longer stall a runner permanently and silently
+
+Two defects in `flz_core` let a runner whose secondary (state-write) stream had
+died sit unrecovered indefinitely while its control channel stayed healthy: the
+controller flags `output_stall`, the process looks alive from every angle, and
+nothing is ever produced again. Both are fixed at the transport seam; no public
+API, wire or persistence change.
+
+- **The reconnect request re-arms.** `state_sink`'s broken-pipe flood set a
+  `reconnect_requested` latch that only `install_global_sink` cleared. If the
+  requested `Reconnect` never landed, **no further reconnect was ever
+  requested** and every subsequent state change was silently absorbed by the
+  1024-frame ring for the life of the process. The latch is now
+  `reconnect_requested_at` and re-arms after
+  `FLEZHA_RECONNECT_REQUEST_RETRY_MS` (default 30 000). Re-armed requests
+  re-enter the existing warn, so a permanently dead secondary reports its ring
+  depth every retry window instead of logging one line and going quiet.
+- **An undelivered data heartbeat is reported.** `send_data_heartbeat` iterated
+  the stream map with `let _ = write_all(..)`, so an empty map or an all-failed
+  write was a silent no-op. It now returns whether it reached any stream, and
+  `heartbeat_tick` feeds a miss into the same flood ladder via
+  `state_sink::note_transport_failure()`. This is the only recovery signal an
+  Operative that writes no state changes has — the flood ladder alone never
+  fires for it.
+
+New env knob: `FLEZHA_RECONNECT_REQUEST_RETRY_MS`. New `#[doc(hidden)]` test
+support on `state_sink`: `reset_for_test`, `reconnect_requested_for_test`.
+
 ### The kernel moved into `flz_core` (`extract-sdk-poll-core`)
 
 - **Public API unchanged** (`public-api.txt`: internal-re-export note). The

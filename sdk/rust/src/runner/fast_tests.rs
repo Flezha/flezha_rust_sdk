@@ -7,11 +7,11 @@ mod remove_factory_tests {
     //! and stays registered; once the last instance stops, the removal
     //! unregisters the class.
     use flz_core::fast::*;
+    use flz_core::restore::RestoreInitPayload;
 
     use crate::procedure::state_handle::StateHandle;
     use crate::procedure::{NoChange, Procedure, ProcedureCtx, ProcedureError, WallClock};
     use crate::{ChannelBuilder, UnboundedOperative};
-    use flz_core::restore::RestoreInitPayload;
 
     #[derive(Default)]
     struct SeamProc;
@@ -94,9 +94,10 @@ mod reconnect_tests {
     //! is no separate reconnect frame — so the controller resolves it as a
     //! binding swap; that controller-side path is covered by the Elixir suite
     //! and the cross-language matrix.
+    use std::sync::Arc;
+
     use flz_core::fast::*;
     use flz_core::runner::RunnerStatus;
-    use std::sync::Arc;
 
     #[test]
     fn runner_id_and_registry_are_preserved_across_status_flap() {
