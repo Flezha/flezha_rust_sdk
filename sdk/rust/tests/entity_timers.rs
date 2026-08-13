@@ -19,7 +19,7 @@ use flezha_runner::entity::flusher::{EffectRecordBody, SendError, SendFrameFn};
 use flezha_runner::entity::header::{HeaderTemplate, FORMAT_ID_EFFECT_RECORD, FORMAT_ID_TIMER_OPS};
 use flezha_runner::entity::state_sink;
 use flezha_runner::entity::timer::{PendingTimers, TimerKind, TimerOp};
-use flezha_runner::operative::UnboundedOperative;
+use flezha_runner::operative::StreamOperative;
 use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError, StateHandle};
 use flezha_runner::state::{NoChange, RestoreInitPayload};
 use flezha_runner::testing::ProcedureTestHarness;
@@ -143,7 +143,7 @@ impl Procedure for SessionProc {
 }
 
 struct SessionOperative;
-impl UnboundedOperative for SessionOperative {
+impl StreamOperative for SessionOperative {
     fn factory_id() -> &'static str {
         "timers_session_operative"
     }
@@ -235,7 +235,7 @@ impl Procedure for WindowProc {
 }
 
 struct WindowOperative;
-impl UnboundedOperative for WindowOperative {
+impl StreamOperative for WindowOperative {
     fn factory_id() -> &'static str {
         "timers_window_operative"
     }
@@ -739,7 +739,7 @@ impl Procedure for TierSessionProc {
 }
 
 struct TierSessionOperative;
-impl UnboundedOperative for TierSessionOperative {
+impl StreamOperative for TierSessionOperative {
     fn factory_id() -> &'static str {
         "timers_tier_session_operative"
     }
@@ -757,7 +757,7 @@ impl UnboundedOperative for TierSessionOperative {
 
 /// Spec: "Replay registers the same timers" — the pending set is folded state,
 /// so `replay_equals` (which covers it) is the gate. A registration is NOT
-/// skipped on replay, unlike `spawn_bounded`.
+/// skipped on replay, unlike `spawn_workflow`.
 #[test]
 fn replay_rebuilds_the_identical_pending_set() {
     let mut harness = ProcedureTestHarness::<SurfaceProc>::new().with_wall_clock(1_000);
@@ -959,7 +959,7 @@ impl Procedure for EvictProc {
 }
 
 struct EvictOperative;
-impl UnboundedOperative for EvictOperative {
+impl StreamOperative for EvictOperative {
     fn factory_id() -> &'static str {
         "timers_evict_operative"
     }
@@ -1063,7 +1063,7 @@ impl Procedure for ExclusionProc {
 }
 
 struct ExclusionOperative;
-impl UnboundedOperative for ExclusionOperative {
+impl StreamOperative for ExclusionOperative {
     fn factory_id() -> &'static str {
         "timers_exclusion_operative"
     }

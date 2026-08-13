@@ -34,10 +34,10 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use flezha_runner::channel::ChannelBuilder;
 use flezha_runner::operative::builder::build_topology_for;
 use flezha_runner::operative::registry::OperativeRegistry;
-use flezha_runner::operative::UnboundedInstance;
+use flezha_runner::operative::StreamInstance;
 use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError};
 use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_runner::{__dispatch_internals as bi, OverflowPolicy, UnboundedOperative};
+use flezha_runner::{__dispatch_internals as bi, OverflowPolicy, StreamOperative};
 use flz_transport::transport::FlezhaStream;
 
 // Helpers — duplicated from `dispatch.rs` per `operative-bench-harness/design.md`
@@ -88,7 +88,7 @@ impl Procedure for SingleEntityProcedure {
 }
 
 struct SingleEntityOperative;
-impl UnboundedOperative for SingleEntityOperative {
+impl StreamOperative for SingleEntityOperative {
     fn factory_id() -> &'static str {
         "single_entity_operative"
     }
@@ -110,8 +110,8 @@ fn throughput_single_entity(c: &mut Criterion) {
 
     let topology = build_topology_for::<SingleEntityOperative>().expect("topology");
     let registry = Arc::new(OperativeRegistry::new());
-    let instance = UnboundedInstance::new(Arc::clone(&topology), Arc::from("single-entity-bench"));
-    registry.register_unbounded(instance);
+    let instance = StreamInstance::new(Arc::clone(&topology), Arc::from("single-entity-bench"));
+    registry.register_stream(instance);
 
     let handle = bi::OperativeDispatchHandle {
         registry: Arc::clone(&registry),
@@ -195,7 +195,7 @@ impl Procedure for FanoutProcedure {
 }
 
 struct StaticFanoutOperative;
-impl UnboundedOperative for StaticFanoutOperative {
+impl StreamOperative for StaticFanoutOperative {
     fn factory_id() -> &'static str {
         "static_fanout_operative"
     }
@@ -213,8 +213,8 @@ fn throughput_static_fanout(c: &mut Criterion) {
 
     let topology = build_topology_for::<StaticFanoutOperative>().expect("topology");
     let registry = Arc::new(OperativeRegistry::new());
-    let instance = UnboundedInstance::new(Arc::clone(&topology), Arc::from("static-fanout-bench"));
-    registry.register_unbounded(instance);
+    let instance = StreamInstance::new(Arc::clone(&topology), Arc::from("static-fanout-bench"));
+    registry.register_stream(instance);
 
     let handle = bi::OperativeDispatchHandle {
         registry: Arc::clone(&registry),
@@ -317,7 +317,7 @@ tier_bench_procedure!(TierOffProcedure, "tier_off_procedure", TIER_OFF_COUNTER);
 tier_bench_procedure!(TierOnProcedure, "tier_on_procedure", TIER_ON_COUNTER);
 
 struct TierOffOperative;
-impl UnboundedOperative for TierOffOperative {
+impl StreamOperative for TierOffOperative {
     fn factory_id() -> &'static str {
         "tier_off_bench_operative"
     }
@@ -332,7 +332,7 @@ impl UnboundedOperative for TierOffOperative {
 }
 
 struct TierOnOperative;
-impl UnboundedOperative for TierOnOperative {
+impl StreamOperative for TierOnOperative {
     fn factory_id() -> &'static str {
         "tier_on_bench_operative"
     }
@@ -380,8 +380,8 @@ fn throughput_effectively_once_tiers(c: &mut Criterion) {
             "tier-on-bench",
         ),
     ] {
-        let instance = UnboundedInstance::new(factory, Arc::from(id));
-        registry.register_unbounded(instance);
+        let instance = StreamInstance::new(factory, Arc::from(id));
+        registry.register_stream(instance);
     }
 
     let handle = bi::OperativeDispatchHandle {

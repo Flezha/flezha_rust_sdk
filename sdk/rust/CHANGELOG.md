@@ -4,6 +4,29 @@ All notable changes to the Rust SDK crate.
 
 ## Unreleased
 
+### BREAKING — the operative kinds are `stream` and `workflow`
+
+<!-- kind-naming-record:begin -->
+`UnboundedOperative` → `StreamOperative` and `BoundedOperative` →
+`WorkflowOperative`, with the whole family: `BoundedError` → `WorkflowError`,
+`BoundedCtx` → `WorkflowCtx`, `BuildBoundedError` → `BuildWorkflowError`,
+`UnboundedInstance` → `StreamInstance`, `BoundedInstance` → `WorkflowInstance`,
+`FlezhaError::InvalidBounded` → `InvalidWorkflow`, module `bounded` → module
+`workflow`. Entry points: `define_unbounded`/`define_bounded` →
+`define_stream`/`define_workflow`, `remove_unbounded`/`remove_bounded` →
+`remove_stream`/`remove_workflow`, `ctx.spawn_bounded` → `ctx.spawn_workflow`.
+Env vars `FLEZHA_BOUNDED_{DRIVER_STACK_KIB,PARK_IDLE_MS,RETRY_FAILS}` →
+`FLEZHA_WORKFLOW_*`.
+
+No shim, no dual acceptance: the old names are gone. Nothing about execution,
+durability or the wire tag numbers changes. The old words were Flink's terms
+for a property of the *data*, while the distinction here is whether one run
+terminates — and `bounded` was false for a durable `PerInput` operative, whose
+input is unbounded and whose *iteration* is the only bounded thing. The channel
+handle `Stream<'b, T, K>` is unrelated and unchanged; a stream operative is
+precisely the kind that consumes streams.
+<!-- kind-naming-record:end -->
+
 ### A dead secondary stream can no longer stall a runner permanently and silently
 
 Two defects in `flz_core` let a runner whose secondary (state-write) stream had
@@ -36,7 +59,7 @@ support on `state_sink`: `reset_for_test`, `reconnect_requested_for_test`.
 
 - **Public API unchanged** (`public-api.txt`: internal-re-export note). The
   type-erased kernel — entity slots, mailbox/drain gates, flusher, credit,
-  DLQ park/ladder, timers, routing, commands, bounded driver, transport
+  DLQ park/ladder, timers, routing, commands, workflow driver, transport
   loop — now lives in the `flz_core` crate; this crate's typed layer
   consumes it as the first poll host. Dispatch runs on dedicated poll
   workers (`poll() → run one attempt per item → complete`); admission,
@@ -110,7 +133,7 @@ support on `state_sink`: `reset_for_test`, `reconnect_requested_for_test`.
   forward by pointer. `MergeSource::merge_channel_id` → `merge_site`.
 - **Edge closures are contained.** A panicking transform or key does not take
   the routing thread down: the value climbs the channel's existing retry→DLQ
-  ladder. On a bounded chain it becomes a terminal chain error the saga
+  ladder. On a workflow chain it becomes a terminal chain error the saga
   compensates, so the instance still reports.
 - New `TopologyIssue` variants `KeyByOnUnkeyableTarget`, `DuplicateKeyBy`,
   `TransformAfterTerminal`, `TransformAfterKeyBy`, `DanglingTransformChain`,
@@ -126,17 +149,17 @@ support on `state_sink`: `reset_for_test`, `reconnect_requested_for_test`.
   map)` supplying the mapping from that channel's payload into it:
   `c.merge::<SignalInput>().from(ticker, SignalInput::Ticker).from(config,
   SignalInput::Config).into::<Detector>()`. Entry streams and inter-procedure
-  streams are both valid sources on an unbounded operative (`MergeSource`,
-  implemented for `EntryStream` and `Stream`), freely mixed; see the bounded
+  streams are both valid sources on a stream operative (`MergeSource`,
+  implemented for `EntryStream` and `Stream`), freely mixed; see the workflow
   restriction below. Single-input `.into` is unchanged.
 - **Purely a subscription-time construct**: `Procedure` is untouched, so
   dispatch, state, `entities_for`, retry/DLQ and the emit APIs all see one type.
   `entities_for` / `entity_key` are evaluated on the **mapped** value.
-- **A merge mapping is contained on the bounded driver thread.** It is the only
-  author closure on a bounded chain running outside an entity invocation, so
+- **A merge mapping is contained on the workflow driver thread.** It is the only
+  author closure on a workflow chain running outside an entity invocation, so
   `extend_mapped` catches its unwind and reports it as a terminal chain error, and
   the instance still reports. An unguarded one would skip
-  `emit_bounded_completed` and strand it. At the **forward** accumulate site the
+  `emit_workflow_completed` and strand it. At the **forward** accumulate site the
   saga unwinds the stages recorded as completed — the producer whose edge blew
   up among them, since the mapping runs after that stage's record and commit —
   and Java unwinds the same set in the same order; a sibling still in flight in
@@ -155,19 +178,19 @@ support on `state_sink`: `reset_for_test`, `reconnect_requested_for_test`.
   merge already declared — the mapping would otherwise be silently dropped); a
   mapped type that is not the procedure's `Input` is a compile error at
   `.into::<Proc>()`.
-- **Bounded merges consume inter-procedure channels only.** The bounded seed is
+- **Workflow merges consume inter-procedure channels only.** The workflow seed is
   a bare payload naming no channel, so an entry channel as one merge source
   among several is refused at registration with
-  `BuildBoundedError::MergeFromEntryChannel` rather than accepted and failing
-  every invocation. Unbounded merges accept entry channels.
+  `BuildWorkflowError::MergeFromEntryChannel` rather than accepted and failing
+  every invocation. Stream merges accept entry channels.
 - `ChannelDescriptor::consumers` is now `Vec<ConsumerEdge>` (procedure id plus
   the optional mapping); `consumer_ids()` is the id-only view.
 - No wire change and no controller change. Example: `examples/merged_input.rs`.
 
 ### Procedure-requested spawn (`procedure-requested-spawn`)
 
-- **`ProcedureCtx::spawn_bounded(instance_id, factory_id, payload, if_running)`**
-  — spawn-or-deliver a bounded instance from inside any procedure. A free id
+- **`ProcedureCtx::spawn_workflow(instance_id, factory_id, payload, if_running)`**
+  — spawn-or-deliver a workflow instance from inside any procedure. A free id
   starts `factory_id` with `payload` as its first input; a taken id receives it
   as one more input (`IfRunning::Deliver`) or reports
   `SpawnError::AlreadyRunning` (`IfRunning::Error`). Always in the requester's
@@ -180,8 +203,8 @@ support on `state_sink`: `reset_for_test`, `reconnect_requested_for_test`.
   correction) issues no request and answers `SpawnOutcome::SkippedOnReplay`.
 - New public items: `IfRunning`, `SpawnOutcome`, `SpawnError`, `SpawnHandle`,
   re-exported from `flezha_runner::procedure`. Example:
-  `examples/spawn_bounded_worker.rs`.
-- **Wire**: additive `SpawnBoundedRequest` (tag 34) / `SpawnBoundedResponse`
+  `examples/spawn_workflow_worker.rs`.
+- **Wire**: additive `SpawnWorkflowRequest` (tag 34) / `SpawnWorkflowResponse`
   (tag 35). Requires a controller of the same release.
 
 ### Determinism contract + output identity (`deterministic-effects-and-output-identity`)

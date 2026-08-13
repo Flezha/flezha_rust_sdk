@@ -22,10 +22,10 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use flezha_runner::channel::ChannelBuilder;
 use flezha_runner::operative::builder::build_topology_for;
 use flezha_runner::operative::registry::OperativeRegistry;
-use flezha_runner::operative::UnboundedInstance;
+use flezha_runner::operative::StreamInstance;
 use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError};
 use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_runner::{__dispatch_internals as bi, OverflowPolicy, UnboundedOperative};
+use flezha_runner::{__dispatch_internals as bi, OverflowPolicy, StreamOperative};
 use flz_transport::transport::FlezhaStream;
 
 // ----- Shared bench helpers (Decision 10: duplicated locally per bench file) -----
@@ -90,7 +90,7 @@ impl Procedure for RegressionProcedure {
 }
 
 struct RegressionOperative;
-impl UnboundedOperative for RegressionOperative {
+impl StreamOperative for RegressionOperative {
     fn factory_id() -> &'static str {
         "regression_bench_operative"
     }
@@ -118,8 +118,8 @@ fn regression_bench(c: &mut Criterion) {
         .map(|i| format!("regression-{}", i))
         .collect();
     for id in &instance_ids {
-        let inst = UnboundedInstance::new(Arc::clone(&topology), Arc::from(id.as_str()));
-        registry.register_unbounded(inst);
+        let inst = StreamInstance::new(Arc::clone(&topology), Arc::from(id.as_str()));
+        registry.register_stream(inst);
     }
 
     let handle = bi::OperativeDispatchHandle {
@@ -170,14 +170,14 @@ static PART_COUNTER: AtomicUsize = AtomicUsize::new(0);
 const STRESS_KEYS: &[&str] = &["p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7"];
 
 // Entry-procedure routing: fan out every input to all 8 entities per
-// `operative-bench-harness/design.md` Decision 7 / bounded §1.1.
+// `operative-bench-harness/design.md` Decision 7 / workflow §1.1.
 fn entry_entities_for(_: &Vec<u8>) -> Vec<&'static str> {
     STRESS_KEYS.to_vec()
 }
 
 // Downstream-procedure routing: pin each emit to a single entity so the
 // fan-out factor stays bounded at 8 (entry) and each pipeline stage runs
-// once per upstream emit. Per bounded §1.1 ("entities_for returning all 8
+// once per upstream emit. Per workflow §1.1 ("entities_for returning all 8
 // keys for the entry procedure") only the entry procedure fans out N-wide; B/C/D
 // have 8 entities each (Decision 7) but route to one.
 fn pipeline_entities_for(_: &Vec<u8>) -> Vec<&'static str> {
@@ -309,7 +309,7 @@ impl Procedure for StressBenchProcedureD {
 }
 
 struct EntityStressBenchOperative;
-impl UnboundedOperative for EntityStressBenchOperative {
+impl StreamOperative for EntityStressBenchOperative {
     fn factory_id() -> &'static str {
         "entity_stress_bench_operative"
     }
@@ -364,8 +364,8 @@ fn entity_stress_bench(c: &mut Criterion) {
             .map(|i| format!("entity-stress-{}", i))
             .collect();
         for id in &instance_ids {
-            let inst = UnboundedInstance::new(Arc::clone(&topology), Arc::from(id.as_str()));
-            registry.register_unbounded(inst);
+            let inst = StreamInstance::new(Arc::clone(&topology), Arc::from(id.as_str()));
+            registry.register_stream(inst);
         }
         let handle = bi::OperativeDispatchHandle {
             registry: Arc::clone(&registry),

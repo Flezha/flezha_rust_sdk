@@ -20,7 +20,7 @@ use flezha_runner::channel::ChannelBuilder;
 use flezha_runner::operative::builder::build_topology_for;
 use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError};
 use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_runner::UnboundedOperative;
+use flezha_runner::StreamOperative;
 
 mod common;
 use common::{
@@ -79,7 +79,7 @@ test_procedure!(Recorder, "transform_recorder", String => (), (), |input, _state
 
 /// `filter` → `map` → `map` → `key_by`, all on the one entry→Recorder edge.
 struct ChainOperative;
-impl UnboundedOperative for ChainOperative {
+impl StreamOperative for ChainOperative {
     fn factory_id() -> &'static str {
         "transform_chain_operative"
     }
@@ -157,7 +157,7 @@ test_procedure!(FanRecorder, "transform_fan_recorder", Slot => (), (), |input, _
 });
 
 struct FanOutOperative;
-impl UnboundedOperative for FanOutOperative {
+impl StreamOperative for FanOutOperative {
     fn factory_id() -> &'static str {
         "transform_fanout_operative"
     }
@@ -279,7 +279,7 @@ test_procedure!(PoisonRecorder, "transform_poison_recorder", String => (), (), |
 });
 
 struct PanickingTransformOperative;
-impl UnboundedOperative for PanickingTransformOperative {
+impl StreamOperative for PanickingTransformOperative {
     fn factory_id() -> &'static str {
         "transform_panic_operative"
     }
@@ -345,7 +345,7 @@ test_procedure!(PlainTarget, "transform_plain_target", String => Vec<u8>, (), |i
 macro_rules! refusal {
     ($operative:ident, $factory:literal, |$c:ident| $body:block) => {
         struct $operative;
-        impl UnboundedOperative for $operative {
+        impl StreamOperative for $operative {
             fn factory_id() -> &'static str {
                 $factory
             }
@@ -416,7 +416,7 @@ refusal!(
 
 /// The live Entity keys of the operative's one dynamic Procedure, sorted —
 /// the runtime's own record of what the edge key produced.
-fn entity_keys(instance: &Arc<flezha_runner::operative::UnboundedInstance>) -> Vec<String> {
+fn entity_keys(instance: &Arc<flezha_runner::operative::StreamInstance>) -> Vec<String> {
     let registry = instance.dynamic_registries[0]
         .as_ref()
         .expect("the keyed edge made the consumer dynamic");
@@ -425,7 +425,7 @@ fn entity_keys(instance: &Arc<flezha_runner::operative::UnboundedInstance>) -> V
     keys
 }
 
-fn issues<R: UnboundedOperative>() -> Vec<TopologyIssue> {
+fn issues<R: StreamOperative>() -> Vec<TopologyIssue> {
     build_topology_for::<R>()
         .err()
         .map(|e| e.errors)

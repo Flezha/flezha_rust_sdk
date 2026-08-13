@@ -10,47 +10,47 @@ use flezha_runner::state::{
     Change, CoalesceKey, NoChange, RestoreInitPayload, StateHandle, WallClock,
 };
 use flezha_runner::{
-    BoundedCtx, BoundedError, BoundedOperative, ChannelBuilder, Flezha, LoopMode, OverflowPolicy,
-    UnboundedOperative,
+    ChannelBuilder, Flezha, LoopMode, OverflowPolicy, StreamOperative, WorkflowCtx, WorkflowError,
+    WorkflowOperative,
 };
 use serde::{Deserialize, Serialize};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     spawn_stdin_eof_exit();
     Flezha::create_runner(namespace())?
-        .define_unbounded::<DoNothingOperative>()?
-        .define_unbounded::<StoreInputOperative>()?
-        .define_unbounded::<CompareFilterOperative>()?
-        .define_unbounded::<StaticEntityOperative>()?
-        .define_unbounded::<EntityStressOperative>()?
-        .define_unbounded::<BoundedMailboxBlockOperative>()?
-        .define_unbounded::<BoundedMailboxDropNewestOperative>()?
-        .define_unbounded::<BoundedMailboxDropOldestOperative>()?
-        .define_unbounded::<StatefulCounterOperative>()?
-        .define_unbounded::<CoalescingCounterOperative>()?
-        .define_unbounded::<PersistenceOffOperative>()?
-        .define_unbounded::<HybridChannelOperative>()?
-        .define_unbounded::<ResumeProbeOperative>()?
-        .define_unbounded::<DynamicEntityOperative>()?
-        .define_unbounded::<SessionTimeoutOperative>()?
-        .define_unbounded::<MixedOperative>()?
-        .define_unbounded::<TierStoreOperative>()?
-        .define_unbounded::<CheckpointStoreOperative>()?
-        .define_unbounded::<PoisonProbeOperative>()?
-        .define_unbounded::<CandleOperative>()?
-        .define_bounded::<EchoBounded>()?
-        .define_bounded::<CommitBlockBounded>()?
-        .define_bounded::<OptOutCommitBlockBounded>()?
-        .define_bounded::<TierCommitBlockBounded>()?
-        .define_bounded::<SagaBlockBounded>()?
-        .define_bounded::<OutboxBlockBounded>()?
-        .define_bounded::<UndoOutboxBounded>()?
-        .define_bounded::<ChatLoopBounded>()?
-        .define_bounded::<StatelessLoopBounded>()?
-        .define_bounded::<ChatRewindBounded>()?
-        .define_bounded::<RetryBounded>()?
-        .define_bounded::<BranchBounded>()?
-        .define_bounded::<DiamondBounded>()?
+        .define_stream::<DoNothingOperative>()?
+        .define_stream::<StoreInputOperative>()?
+        .define_stream::<CompareFilterOperative>()?
+        .define_stream::<StaticEntityOperative>()?
+        .define_stream::<EntityStressOperative>()?
+        .define_stream::<BoundedMailboxBlockOperative>()?
+        .define_stream::<BoundedMailboxDropNewestOperative>()?
+        .define_stream::<BoundedMailboxDropOldestOperative>()?
+        .define_stream::<StatefulCounterOperative>()?
+        .define_stream::<CoalescingCounterOperative>()?
+        .define_stream::<PersistenceOffOperative>()?
+        .define_stream::<HybridChannelOperative>()?
+        .define_stream::<ResumeProbeOperative>()?
+        .define_stream::<DynamicEntityOperative>()?
+        .define_stream::<SessionTimeoutOperative>()?
+        .define_stream::<MixedOperative>()?
+        .define_stream::<TierStoreOperative>()?
+        .define_stream::<CheckpointStoreOperative>()?
+        .define_stream::<PoisonProbeOperative>()?
+        .define_stream::<CandleOperative>()?
+        .define_workflow::<EchoWorkflow>()?
+        .define_workflow::<CommitBlockWorkflow>()?
+        .define_workflow::<OptOutCommitBlockWorkflow>()?
+        .define_workflow::<TierCommitBlockWorkflow>()?
+        .define_workflow::<SagaBlockWorkflow>()?
+        .define_workflow::<OutboxBlockWorkflow>()?
+        .define_workflow::<UndoOutboxWorkflow>()?
+        .define_workflow::<ChatLoopWorkflow>()?
+        .define_workflow::<StatelessLoopWorkflow>()?
+        .define_workflow::<ChatRewindWorkflow>()?
+        .define_workflow::<RetryWorkflow>()?
+        .define_workflow::<BranchWorkflow>()?
+        .define_workflow::<DiamondWorkflow>()?
         .run()?;
     Ok(())
 }
@@ -78,35 +78,35 @@ fn spawn_stdin_eof_exit() {
     });
 }
 
-// -- EchoBounded -----------------------------------------------------------------
+// -- EchoWorkflow -----------------------------------------------------------------
 //
-// Run-once bounded operative exercised by the `bounded-kind` e2e: emits its args back as
+// Run-once workflow operative exercised by the `workflow-kind` e2e: emits its args back as
 // output once, then returns Ok so the SDK ships `TaskCompleted` and the
 // controller deregisters it.
-struct EchoBounded;
+struct EchoWorkflow;
 
-impl BoundedOperative for EchoBounded {
+impl WorkflowOperative for EchoWorkflow {
     fn factory_id() -> &'static str {
-        "echo_bounded"
+        "echo_workflow"
     }
 
-    fn run(ctx: &mut BoundedCtx, args: &str) -> Result<(), BoundedError> {
+    fn run(ctx: &mut WorkflowCtx, args: &str) -> Result<(), WorkflowError> {
         ctx.emit(format!("echo:{args}").into_bytes())?;
         Ok(())
     }
 }
 
-// -- Durable structured bounded operatives (crash-resume e2e, §7c.3) ------------
+// -- Durable structured workflow operatives (crash-resume e2e, §7c.3) ------------
 //
-// `commit_block_bounded` and `saga_block_bounded` are durable-by-default,
-// multi-procedure bounded operatives that BLOCK mid-chain on the
-// `FLEZHA_BOUNDED_E2E_RELEASE` env var so a SIGKILL of the runner lands with
+// `commit_block_workflow` and `saga_block_workflow` are durable-by-default,
+// multi-procedure workflow operatives that BLOCK mid-chain on the
+// `FLEZHA_WORKFLOW_E2E_RELEASE` env var so a SIGKILL of the runner lands with
 // earlier procedures' Entity state already committed to the WAL. The resumed
 // runner is launched WITH the env set, so the respawned instance restores the
 // committed state (crash-resume) and runs to completion. A shared gate keeps the
 // crash window deterministic — no busy-spin, no wall-clock races.
 
-const E2E_RELEASE_ENV: &str = "FLEZHA_BOUNDED_E2E_RELEASE";
+const E2E_RELEASE_ENV: &str = "FLEZHA_WORKFLOW_E2E_RELEASE";
 
 fn e2e_released() -> bool {
     env::var(E2E_RELEASE_ENV).is_ok()
@@ -213,7 +213,7 @@ macro_rules! stateless_step {
     };
 }
 
-// `commit_block_bounded`: proc A commits durable state, proc B blocks until the
+// `commit_block_workflow`: proc A commits durable state, proc B blocks until the
 // resumed runner sets the release env — so a SIGKILL lands with proc A's state
 // already on the WAL and proc B never finished. Completion is observed
 // controller-side via the finished-job record.
@@ -223,10 +223,10 @@ stateless_step!(BlockB, "block_b", {
     Ok(())
 });
 
-struct CommitBlockBounded;
-impl BoundedOperative for CommitBlockBounded {
+struct CommitBlockWorkflow;
+impl WorkflowOperative for CommitBlockWorkflow {
     fn factory_id() -> &'static str {
-        "commit_block_bounded"
+        "commit_block_workflow"
     }
     fn procedures(c: &ChannelBuilder) {
         c.input::<String>("in")
@@ -237,13 +237,13 @@ impl BoundedOperative for CommitBlockBounded {
     }
 }
 
-// `optout_commit_block_bounded`: the opt-out twin of `commit_block_bounded`
+// `optout_commit_block_workflow`: the opt-out twin of `commit_block_workflow`
 // with a live mid-chain signal — proc A's output also reaches a plugin sink, so
 // the crash-resume e2e can observe the mid-run point without durable state
 // (there is none). A crash + resume re-runs the whole chain from the top, so
 // the sink sees proc A's marker once per run and no journal/WAL file exists.
-struct OptOutCommitBlockBounded;
-impl BoundedOperative for OptOutCommitBlockBounded {
+struct OptOutCommitBlockWorkflow;
+impl WorkflowOperative for OptOutCommitBlockWorkflow {
     fn factory_id() -> &'static str {
         "optout_commit_block"
     }
@@ -259,7 +259,7 @@ impl BoundedOperative for OptOutCommitBlockBounded {
     }
 }
 
-// `tier_commit_block_bounded`: the effectively-once bounded fixture. Proc A
+// `tier_commit_block_workflow`: the effectively-once workflow fixture. Proc A
 // commits durable state AND emits `committed:<input>` under a stable key on a
 // keyed hybrid channel (captured into the atomic effect record); proc B blocks
 // until the resumed runner sets the release env. A SIGKILL lands with A's
@@ -294,10 +294,10 @@ impl Procedure for TierCommitA {
     }
 }
 
-struct TierCommitBlockBounded;
-impl BoundedOperative for TierCommitBlockBounded {
+struct TierCommitBlockWorkflow;
+impl WorkflowOperative for TierCommitBlockWorkflow {
     fn factory_id() -> &'static str {
-        "tier_commit_block_bounded"
+        "tier_commit_block_workflow"
     }
     fn procedures(c: &ChannelBuilder) {
         c.effectively_once();
@@ -311,7 +311,7 @@ impl BoundedOperative for TierCommitBlockBounded {
     }
 }
 
-// `saga_block_bounded`: SA + SB commit durable state and compensate; SC fails,
+// `saga_block_workflow`: SA + SB commit durable state and compensate; SC fails,
 // triggering reverse-order rollback (SB then SA). SA's compensate BLOCKS so a
 // SIGKILL lands mid-rollback with SB's done-marker already durable — the respawn
 // finishes SA and SKIPS the already-done SB.
@@ -326,10 +326,10 @@ stateless_step!(
     Err(ProcedureError::Custom("saga_c always fails".into()))
 );
 
-struct SagaBlockBounded;
-impl BoundedOperative for SagaBlockBounded {
+struct SagaBlockWorkflow;
+impl WorkflowOperative for SagaBlockWorkflow {
     fn factory_id() -> &'static str {
-        "saga_block_bounded"
+        "saga_block_workflow"
     }
     fn procedures(c: &ChannelBuilder) {
         c.input::<String>("in")
@@ -343,16 +343,16 @@ impl BoundedOperative for SagaBlockBounded {
     }
 }
 
-// `outbox_block_bounded`: the transactional-outbox fixture
-// (`bounded-staged-commit-and-outbox`). Proc A commits durable state AND emits
+// `outbox_block_workflow`: the transactional-outbox fixture
+// (`workflow-staged-commit-and-outbox`). Proc A commits durable state AND emits
 // plugin-bound output on a hybrid channel — STAGED, so it reaches the sink only
 // after the controller has journaled and fsynced A's `proc_committed` entry (with
 // the output inside it) and flushed the outbox. Proc B blocks, so a SIGKILL lands
 // with A committed + flushed and B unfinished.
-struct OutboxBlockBounded;
-impl BoundedOperative for OutboxBlockBounded {
+struct OutboxBlockWorkflow;
+impl WorkflowOperative for OutboxBlockWorkflow {
     fn factory_id() -> &'static str {
-        "outbox_block_bounded"
+        "outbox_block_workflow"
     }
     fn procedures(c: &ChannelBuilder) {
         c.input::<String>("in")
@@ -366,7 +366,7 @@ impl BoundedOperative for OutboxBlockBounded {
     }
 }
 
-// `undo_outbox_bounded`: the compensation half of the transactional outbox. Proc
+// `undo_outbox_workflow`: the compensation half of the transactional outbox. Proc
 // UA commits, emits its forward output on a hybrid plugin channel, and declares
 // a `compensate` hook that EMITS an undo record — plugin-bound, so it is staged
 // and rides a `compensated` journal entry rather than the wire. Proc C fails
@@ -386,10 +386,10 @@ stateless_step!(
     Err(ProcedureError::Custom("undo_outbox_c always fails".into()))
 );
 
-struct UndoOutboxBounded;
-impl BoundedOperative for UndoOutboxBounded {
+struct UndoOutboxWorkflow;
+impl WorkflowOperative for UndoOutboxWorkflow {
     fn factory_id() -> &'static str {
-        "undo_outbox_bounded"
+        "undo_outbox_workflow"
     }
     fn procedures(c: &ChannelBuilder) {
         c.input::<String>("in")
@@ -401,7 +401,7 @@ impl BoundedOperative for UndoOutboxBounded {
     }
 }
 
-// `branch_bounded`: the procedure TREE (`bounded-branching`).
+// `branch_workflow`: the procedure TREE (`workflow-branching`).
 //
 //     BranchA ─┬─▶ BranchB ─▶ BranchD
 //              └─▶ BranchC
@@ -494,10 +494,10 @@ impl Procedure for BranchD {
     }
 }
 
-struct BranchBounded;
-impl BoundedOperative for BranchBounded {
+struct BranchWorkflow;
+impl WorkflowOperative for BranchWorkflow {
     fn factory_id() -> &'static str {
-        "branch_bounded"
+        "branch_workflow"
     }
     // Fail fast: the compensation scenario is about the rollback order, not the
     // ladder that precedes it.
@@ -524,7 +524,7 @@ impl BoundedOperative for BranchBounded {
     }
 }
 
-// `diamond_bounded`: the fan-in DAG (`bounded-branching` D4).
+// `diamond_workflow`: the fan-in DAG (`workflow-branching` D4).
 //
 //     DiamA ─┬─▶ DiamB1 ─▶ DiamB2(blocks) ─┬─▶ DiamJoin
 //            └─▶ DiamC ────────────────────┘
@@ -624,10 +624,10 @@ impl Procedure for DiamJoin {
     }
 }
 
-struct DiamondBounded;
-impl BoundedOperative for DiamondBounded {
+struct DiamondWorkflow;
+impl WorkflowOperative for DiamondWorkflow {
     fn factory_id() -> &'static str {
-        "diamond_bounded"
+        "diamond_workflow"
     }
     fn procedures(c: &ChannelBuilder) {
         // Held handle wired twice = fan-out; two streams naming DiamJoin
@@ -656,15 +656,15 @@ impl BoundedOperative for DiamondBounded {
     }
 }
 
-// `retry_bounded`: the per-entity retry ladder (`bounded-entity-retry`). Proc RA
+// `retry_workflow`: the per-entity retry ladder (`workflow-entity-retry`). Proc RA
 // commits durable state, forwards on a hybrid channel, and compensates by
 // emitting an undo record; proc `retry_flaky` fails its first
-// `FLEZHA_BOUNDED_RETRY_FAILS` attempts (0 by default — the env is what each
+// `FLEZHA_WORKFLOW_RETRY_FAILS` attempts (0 by default — the env is what each
 // scenario arms) and then emits `attempt:<n>:<input>`. One armed failure is
 // absorbed by the ladder (the run completes `ok`, the sink sees attempt 2);
 // arming more failures than the ladder has attempts exhausts it — RA rolls back
 // and the run reports `error`.
-const RETRY_FAILS_ENV: &str = "FLEZHA_BOUNDED_RETRY_FAILS";
+const RETRY_FAILS_ENV: &str = "FLEZHA_WORKFLOW_RETRY_FAILS";
 
 // Attempts the flaky procedure has made in this process (a retry re-runs it in
 // place, so an in-memory counter is the whole ladder's view).
@@ -707,10 +707,10 @@ impl Procedure for RetryFlaky {
     }
 }
 
-struct RetryBounded;
-impl BoundedOperative for RetryBounded {
+struct RetryWorkflow;
+impl WorkflowOperative for RetryWorkflow {
     fn factory_id() -> &'static str {
-        "retry_bounded"
+        "retry_workflow"
     }
     fn procedures(c: &ChannelBuilder) {
         c.input::<String>("in")
@@ -724,8 +724,8 @@ impl BoundedOperative for RetryBounded {
     }
 }
 
-// `chat_loop_bounded`: the durable-loop + suspension shape
-// (`bounded-durable-loop-and-suspension`). One iteration per inbox item: proc
+// `chat_loop_workflow`: the durable-loop + suspension shape
+// (`workflow-durable-loop-and-suspension`). One iteration per inbox item: proc
 // TURN commits the turn to Entity state (so a resumed iteration is visible in
 // the WAL) and emits it; proc REPLY emits the answer to the sink. Between turns
 // the loop finds an empty inbox at a committed boundary and PARKS — the
@@ -795,9 +795,9 @@ impl Procedure for ChatReply {
     }
 }
 
-// -- StatelessLoopBounded -------------------------------------------------------
+// -- StatelessLoopWorkflow -------------------------------------------------------
 //
-// The same durable PER_INPUT loop as `ChatLoopBounded`, minus its stateful
+// The same durable PER_INPUT loop as `ChatLoopWorkflow`, minus its stateful
 // first procedure: `ChatReply` alone holds NO per-Entity state, so nothing
 // writes an Entity WAL, the controller has nothing to restore, and it ships no
 // `RestoreInitState` on a rehydrating bind. The instance's proc-journal therefore
@@ -806,10 +806,10 @@ impl Procedure for ChatReply {
 // collides with iteration 0's `outbox_flushed` marker, and has its staged
 // output journaled but never delivered.
 
-struct StatelessLoopBounded;
-impl BoundedOperative for StatelessLoopBounded {
+struct StatelessLoopWorkflow;
+impl WorkflowOperative for StatelessLoopWorkflow {
     fn factory_id() -> &'static str {
-        "stateless_loop_bounded"
+        "stateless_loop_workflow"
     }
     fn loop_mode() -> LoopMode {
         LoopMode::PerInput
@@ -828,9 +828,9 @@ impl BoundedOperative for StatelessLoopBounded {
     }
 }
 
-// -- ChatRewindBounded ----------------------------------------------------------
+// -- ChatRewindWorkflow ----------------------------------------------------------
 //
-// `bounded-loop-rewind`: the same chat loop, but its replying procedure can be
+// `workflow-loop-rewind`: the same chat loop, but its replying procedure can be
 // undone. The undo handle lives in Entity State — a rewind's compensation is
 // rebuilt from the journal and is handed NO retained outputs (the at-least-once
 // author contract) — so the hook reads the last thing it said, retracts it, and
@@ -896,10 +896,10 @@ impl Procedure for ChatReplyUndoable {
     }
 }
 
-struct ChatRewindBounded;
-impl BoundedOperative for ChatRewindBounded {
+struct ChatRewindWorkflow;
+impl WorkflowOperative for ChatRewindWorkflow {
     fn factory_id() -> &'static str {
-        "chat_rewind_bounded"
+        "chat_rewind_workflow"
     }
     fn loop_mode() -> LoopMode {
         LoopMode::PerInput
@@ -921,10 +921,10 @@ impl BoundedOperative for ChatRewindBounded {
     }
 }
 
-struct ChatLoopBounded;
-impl BoundedOperative for ChatLoopBounded {
+struct ChatLoopWorkflow;
+impl WorkflowOperative for ChatLoopWorkflow {
     fn factory_id() -> &'static str {
-        "chat_loop_bounded"
+        "chat_loop_workflow"
     }
     fn loop_mode() -> LoopMode {
         LoopMode::PerInput
@@ -1003,7 +1003,7 @@ impl Procedure for DynamicEntityProcedure {
 }
 
 struct DynamicEntityOperative;
-impl UnboundedOperative for DynamicEntityOperative {
+impl StreamOperative for DynamicEntityOperative {
     fn factory_id() -> &'static str {
         "dynamic_entity"
     }
@@ -1091,7 +1091,7 @@ impl Procedure for SessionTimeoutProcedure {
 }
 
 struct SessionTimeoutOperative;
-impl UnboundedOperative for SessionTimeoutOperative {
+impl StreamOperative for SessionTimeoutOperative {
     fn factory_id() -> &'static str {
         "session_timeout"
     }
@@ -1132,7 +1132,7 @@ impl Procedure for DoNothingProcedure {
 }
 
 struct DoNothingOperative;
-impl UnboundedOperative for DoNothingOperative {
+impl StreamOperative for DoNothingOperative {
     fn factory_id() -> &'static str {
         "do_nothing"
     }
@@ -1193,7 +1193,7 @@ impl Procedure for StoreInputProcedure {
 }
 
 struct StoreInputOperative;
-impl UnboundedOperative for StoreInputOperative {
+impl StreamOperative for StoreInputOperative {
     fn factory_id() -> &'static str {
         "store_input"
     }
@@ -1266,7 +1266,7 @@ impl Procedure for TierStoreProcedure {
 }
 
 struct TierStoreOperative;
-impl UnboundedOperative for TierStoreOperative {
+impl StreamOperative for TierStoreOperative {
     fn factory_id() -> &'static str {
         "tier_store"
     }
@@ -1331,7 +1331,7 @@ impl Procedure for CheckpointStoreProcedure {
 }
 
 struct CheckpointStoreOperative;
-impl UnboundedOperative for CheckpointStoreOperative {
+impl StreamOperative for CheckpointStoreOperative {
     fn factory_id() -> &'static str {
         "checkpoint_store"
     }
@@ -1346,7 +1346,7 @@ impl UnboundedOperative for CheckpointStoreOperative {
     }
 }
 
-// -- CandleOperative (unbounded-late-input-correction e2e) -------------------
+// -- CandleOperative (stream-late-input-correction e2e) -------------------
 //
 // A trade stream keyed by an EVENT time carried in the input itself
 // ("<event_time>:<price>"), with a declared correction window. State records the
@@ -1421,7 +1421,7 @@ impl Procedure for CandleProcedure {
 }
 
 struct CandleOperative;
-impl UnboundedOperative for CandleOperative {
+impl StreamOperative for CandleOperative {
     fn factory_id() -> &'static str {
         "candle"
     }
@@ -1474,7 +1474,7 @@ impl Procedure for PoisonProbeProcedure {
 }
 
 struct PoisonProbeOperative;
-impl UnboundedOperative for PoisonProbeOperative {
+impl StreamOperative for PoisonProbeOperative {
     fn factory_id() -> &'static str {
         "poison_probe"
     }
@@ -1548,7 +1548,7 @@ impl Procedure for ResumeProbeProcedure {
 }
 
 struct ResumeProbeOperative;
-impl UnboundedOperative for ResumeProbeOperative {
+impl StreamOperative for ResumeProbeOperative {
     fn factory_id() -> &'static str {
         "resume_probe"
     }
@@ -1609,7 +1609,7 @@ impl Procedure for CompareFilterProcedure {
 }
 
 struct CompareFilterOperative;
-impl UnboundedOperative for CompareFilterOperative {
+impl StreamOperative for CompareFilterOperative {
     fn factory_id() -> &'static str {
         "compare_filter"
     }
@@ -1704,7 +1704,7 @@ impl Procedure for StaticDownstreamProcedure {
 }
 
 struct StaticEntityOperative;
-impl UnboundedOperative for StaticEntityOperative {
+impl StreamOperative for StaticEntityOperative {
     fn factory_id() -> &'static str {
         "static_entity"
     }
@@ -1843,7 +1843,7 @@ impl Procedure for StressProcedureD {
 }
 
 struct EntityStressOperative;
-impl UnboundedOperative for EntityStressOperative {
+impl StreamOperative for EntityStressOperative {
     fn factory_id() -> &'static str {
         "entity_stress"
     }
@@ -1864,17 +1864,17 @@ impl UnboundedOperative for EntityStressOperative {
 // -- BoundedMailboxOperative ------------------------------------------------------
 
 #[derive(Serialize, Deserialize, Clone, Default)]
-struct BoundedProcedureState {
+struct WorkflowProcedureState {
     pub processed: u64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-enum BoundedChange {
+enum WorkflowChange {
     Inc,
 }
-impl Change for BoundedChange {}
+impl Change for WorkflowChange {}
 
-fn apply_inc(state: &mut BoundedProcedureState, _: &BoundedChange) {
+fn apply_inc(state: &mut WorkflowProcedureState, _: &WorkflowChange) {
     state.processed += 1;
 }
 
@@ -1883,8 +1883,8 @@ struct BlockTestProcedure;
 impl Procedure for BlockTestProcedure {
     type Input = String;
     type Output = Vec<u8>;
-    type State = BoundedProcedureState;
-    type Change = BoundedChange;
+    type State = WorkflowProcedureState;
+    type Change = WorkflowChange;
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
@@ -1893,10 +1893,10 @@ impl Procedure for BlockTestProcedure {
     fn init_state(
         _: Option<&str>,
         _init_payload: Option<RestoreInitPayload<'_>>,
-    ) -> BoundedProcedureState {
-        BoundedProcedureState::default()
+    ) -> WorkflowProcedureState {
+        WorkflowProcedureState::default()
     }
-    fn apply_change(state: &mut BoundedProcedureState, change: &BoundedChange) {
+    fn apply_change(state: &mut WorkflowProcedureState, change: &WorkflowChange) {
         apply_inc(state, change);
     }
     fn mailbox_capacity() -> usize {
@@ -1909,7 +1909,7 @@ impl Procedure for BlockTestProcedure {
         mut state: StateHandle<'_, Self>,
         ctx: &mut ProcedureCtx<'_>,
     ) -> Result<(), ProcedureError> {
-        state.apply(BoundedChange::Inc);
+        state.apply(WorkflowChange::Inc);
         ctx.emit::<Vec<u8>>(input.into_bytes())
     }
 }
@@ -1919,8 +1919,8 @@ struct DropNewestTestProcedure;
 impl Procedure for DropNewestTestProcedure {
     type Input = String;
     type Output = Vec<u8>;
-    type State = BoundedProcedureState;
-    type Change = BoundedChange;
+    type State = WorkflowProcedureState;
+    type Change = WorkflowChange;
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
@@ -1929,10 +1929,10 @@ impl Procedure for DropNewestTestProcedure {
     fn init_state(
         _: Option<&str>,
         _init_payload: Option<RestoreInitPayload<'_>>,
-    ) -> BoundedProcedureState {
-        BoundedProcedureState::default()
+    ) -> WorkflowProcedureState {
+        WorkflowProcedureState::default()
     }
-    fn apply_change(state: &mut BoundedProcedureState, change: &BoundedChange) {
+    fn apply_change(state: &mut WorkflowProcedureState, change: &WorkflowChange) {
         apply_inc(state, change);
     }
     fn mailbox_capacity() -> usize {
@@ -1945,7 +1945,7 @@ impl Procedure for DropNewestTestProcedure {
         mut state: StateHandle<'_, Self>,
         ctx: &mut ProcedureCtx<'_>,
     ) -> Result<(), ProcedureError> {
-        state.apply(BoundedChange::Inc);
+        state.apply(WorkflowChange::Inc);
         ctx.emit::<Vec<u8>>(input.into_bytes())
     }
 }
@@ -1955,8 +1955,8 @@ struct DropOldestTestProcedure;
 impl Procedure for DropOldestTestProcedure {
     type Input = String;
     type Output = Vec<u8>;
-    type State = BoundedProcedureState;
-    type Change = BoundedChange;
+    type State = WorkflowProcedureState;
+    type Change = WorkflowChange;
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
@@ -1965,10 +1965,10 @@ impl Procedure for DropOldestTestProcedure {
     fn init_state(
         _: Option<&str>,
         _init_payload: Option<RestoreInitPayload<'_>>,
-    ) -> BoundedProcedureState {
-        BoundedProcedureState::default()
+    ) -> WorkflowProcedureState {
+        WorkflowProcedureState::default()
     }
-    fn apply_change(state: &mut BoundedProcedureState, change: &BoundedChange) {
+    fn apply_change(state: &mut WorkflowProcedureState, change: &WorkflowChange) {
         apply_inc(state, change);
     }
     fn mailbox_capacity() -> usize {
@@ -1981,7 +1981,7 @@ impl Procedure for DropOldestTestProcedure {
         mut state: StateHandle<'_, Self>,
         ctx: &mut ProcedureCtx<'_>,
     ) -> Result<(), ProcedureError> {
-        state.apply(BoundedChange::Inc);
+        state.apply(WorkflowChange::Inc);
         ctx.emit::<Vec<u8>>(input.into_bytes())
     }
 }
@@ -1990,7 +1990,7 @@ impl Procedure for DropOldestTestProcedure {
 // (`sdk-graph-authoring`) allows exactly one entry channel per operative, so
 // the former three-entry BoundedMailboxOperative is now three classes.
 struct BoundedMailboxBlockOperative;
-impl UnboundedOperative for BoundedMailboxBlockOperative {
+impl StreamOperative for BoundedMailboxBlockOperative {
     fn factory_id() -> &'static str {
         "bounded_mailbox_block"
     }
@@ -2004,7 +2004,7 @@ impl UnboundedOperative for BoundedMailboxBlockOperative {
 }
 
 struct BoundedMailboxDropNewestOperative;
-impl UnboundedOperative for BoundedMailboxDropNewestOperative {
+impl StreamOperative for BoundedMailboxDropNewestOperative {
     fn factory_id() -> &'static str {
         "bounded_mailbox_drop_newest"
     }
@@ -2017,7 +2017,7 @@ impl UnboundedOperative for BoundedMailboxDropNewestOperative {
 }
 
 struct BoundedMailboxDropOldestOperative;
-impl UnboundedOperative for BoundedMailboxDropOldestOperative {
+impl StreamOperative for BoundedMailboxDropOldestOperative {
     fn factory_id() -> &'static str {
         "bounded_mailbox_drop_oldest"
     }
@@ -2077,7 +2077,7 @@ impl Procedure for CounterProcedure {
 }
 
 struct StatefulCounterOperative;
-impl UnboundedOperative for StatefulCounterOperative {
+impl StreamOperative for StatefulCounterOperative {
     fn factory_id() -> &'static str {
         "stateful_counter"
     }
@@ -2214,7 +2214,7 @@ impl Procedure for TickEntryProcedure {
 }
 
 struct CoalescingCounterOperative;
-impl UnboundedOperative for CoalescingCounterOperative {
+impl StreamOperative for CoalescingCounterOperative {
     fn factory_id() -> &'static str {
         "coalescing_counter"
     }
@@ -2233,7 +2233,7 @@ impl UnboundedOperative for CoalescingCounterOperative {
 // path discards frames without invoking the wire stub.
 
 struct PersistenceOffOperative;
-impl UnboundedOperative for PersistenceOffOperative {
+impl StreamOperative for PersistenceOffOperative {
     fn factory_id() -> &'static str {
         "persistence_off_counter"
     }
@@ -2363,7 +2363,7 @@ impl Procedure for HybridConsumerProcedure {
 }
 
 struct HybridChannelOperative;
-impl UnboundedOperative for HybridChannelOperative {
+impl StreamOperative for HybridChannelOperative {
     fn factory_id() -> &'static str {
         "hybrid_channel"
     }
@@ -2389,7 +2389,7 @@ impl UnboundedOperative for HybridChannelOperative {
 // ---------------------------------------------------------------------------
 
 // Single-procedure stateless sugar — twin of `DoNothingProcedure` / `DoNothingOperative`.
-// Auto-wires input -> procedure -> plugin and auto-registers (no `register_unbounded`).
+// Auto-wires input -> procedure -> plugin and auto-registers (no `register_stream`).
 #[flezha_runner::procedure(id = "sugar_do_nothing", sink = "sugar_do_nothing_echo")]
 fn sugar_do_nothing(input: String) -> Vec<u8> {
     input.into_bytes()
@@ -2474,7 +2474,7 @@ impl Procedure for MixedHandDownstream {
 }
 
 struct MixedOperative;
-impl UnboundedOperative for MixedOperative {
+impl StreamOperative for MixedOperative {
     fn factory_id() -> &'static str {
         "mixed_operative"
     }
@@ -2751,7 +2751,7 @@ mod macro_twin_tests {
 
     #[test]
     fn sugar_operatives_register() {
-        // Auto-wire + `operative!` operatives are harvested without `.define_unbounded()`.
+        // Auto-wire + `operative!` operatives are harvested without `.define_stream()`.
         flezha_runner::register_inventory_operatives();
         let ids = flezha_runner::operative::registry::class_factory_ids();
         for id in [
@@ -2767,7 +2767,7 @@ mod macro_twin_tests {
         // The mixed operative is declared explicitly, as before.
         Flezha::create_runner("sugar_test")
             .unwrap()
-            .define_unbounded::<MixedOperative>()
+            .define_stream::<MixedOperative>()
             .unwrap();
         assert!(flezha_runner::operative::registry::get_class("mixed_operative").is_some());
     }

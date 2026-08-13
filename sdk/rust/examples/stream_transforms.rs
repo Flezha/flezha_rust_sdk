@@ -37,7 +37,7 @@
 //!
 //! Run it with:
 //!     Flezha::create_runner("default")?
-//!         .define_unbounded::<Candles>()?
+//!         .define_stream::<Candles>()?
 //!         .run()?;
 //!
 //! then feed it:
@@ -45,7 +45,7 @@
 
 use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError};
 use flezha_runner::state::{Change, RestoreInitPayload, StateHandle, WallClock};
-use flezha_runner::{ChannelBuilder, UnboundedOperative};
+use flezha_runner::{ChannelBuilder, StreamOperative};
 use serde::{Deserialize, Serialize};
 
 /// The timeframes every trade is folded into.
@@ -144,7 +144,7 @@ impl Procedure for Candle {
 
 struct Candles;
 
-impl UnboundedOperative for Candles {
+impl StreamOperative for Candles {
     fn factory_id() -> &'static str {
         "candles"
     }
@@ -162,7 +162,7 @@ impl UnboundedOperative for Candles {
 
 fn main() {
     // Declaration-only example: `build_topology_for::<Candles>()` is what the
-    // runner does at `define_unbounded`, and it is what proves the wiring above
+    // runner does at `define_stream`, and it is what proves the wiring above
     // is legal without needing a live controller.
     flezha_runner::operative::builder::build_topology_for::<Candles>()
         .expect("the candle topology builds");

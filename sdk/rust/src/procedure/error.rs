@@ -43,7 +43,7 @@ pub enum ProcedureError {
     TimerCapExceeded { procedure: String, max: usize },
 
     #[error(
-        "timers are not available in this context; only an unbounded operative's `run` / \
+        "timers are not available in this context; only a stream operative's `run` / \
          `on_timer` may register them"
     )]
     TimersUnavailable,

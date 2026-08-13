@@ -1,29 +1,29 @@
-//! Bounded-operative authoring surface. The driver, saga machinery,
-//! registry and spec kernel live in `flz_core::bounded` and are re-exported
-//! here; this module keeps the author-facing `BoundedOperative` trait (and
+//! Workflow-operative authoring surface. The driver, saga machinery,
+//! registry and spec kernel live in `flz_core::workflow` and are re-exported
+//! here; this module keeps the author-facing `WorkflowOperative` trait (and
 //! the driver scenario suite).
 
-pub use flz_core::bounded::*;
+pub use flz_core::workflow::*;
 pub mod spec;
 
 use std::time::Duration;
 
-pub use flz_core::bounded::{compensation, driver, instance, registry};
+pub use flz_core::workflow::{compensation, driver, instance, registry};
 
 use crate::channel::ChannelBuilder;
 
-/// One bounded operative class. The bare [`run`](Self::run) form is the
+/// One workflow operative class. The bare [`run`](Self::run) form is the
 /// trivial single-Procedure, single-Entity case; override
 /// [`procedures`](Self::procedures) to grow into an explicit DAG of
 /// Procedures/Channels/Entities without rewriting unrelated code. Capabilities
-/// attach to the kind, not here — choosing the bounded kind is sufficient.
-pub trait BoundedOperative: Send + Sync + 'static {
+/// attach to the kind, not here — choosing the workflow kind is sufficient.
+pub trait WorkflowOperative: Send + Sync + 'static {
     /// Stable, controller-facing factory identifier.
     fn factory_id() -> &'static str;
 
     /// Run-sugar body: the single-Procedure, single-Entity case. Invoked once
     /// per started instance with `args` from `init_values`. Emit output via
-    /// `ctx`, optionally call [`BoundedCtx::complete`] with a result, and
+    /// `ctx`, optionally call [`WorkflowCtx::complete`] with a result, and
     /// return `Ok(())`; returning `Err` is a terminal failure — the retry
     /// ladder ([`retry_attempts`](Self::retry_attempts)) scopes to a structured
     /// procedure's entities, and a `run` body has none.
@@ -31,16 +31,16 @@ pub trait BoundedOperative: Send + Sync + 'static {
     /// The default errors — a class must implement either `run` or
     /// `procedures`. A structured operative (non-empty `procedures`) never has
     /// `run` invoked.
-    fn run(_ctx: &mut BoundedCtx, _args: &str) -> Result<(), BoundedError> {
-        Err(BoundedError::from(
-            "BoundedOperative: neither run() nor procedures() was implemented",
+    fn run(_ctx: &mut WorkflowCtx, _args: &str) -> Result<(), WorkflowError> {
+        Err(WorkflowError::from(
+            "WorkflowOperative: neither run() nor procedures() was implemented",
         ))
     }
 
     /// Structured form: declare a static **DAG** of Procedures/Channels/
-    /// Entities on the same graph builder an unbounded operative uses. The
+    /// Entities on the same graph builder a stream operative uses. The
     /// default is empty, selecting the [`run`](Self::run)-sugar path. The
-    /// bounded driver runs the declaration in topological order: a procedure
+    /// workflow driver runs the declaration in topological order: a procedure
     /// becomes runnable only after **every** producer feeding it has committed
     /// — fan-out branches interleave independently, and a fan-in node is
     /// dispatched once, with the accumulated batch of all its producers.
@@ -64,7 +64,7 @@ pub trait BoundedOperative: Send + Sync + 'static {
         true
     }
 
-    /// Loop shape of a structured chain (`bounded-durable-loop`). The default
+    /// Loop shape of a structured chain (`workflow-durable-loop`). The default
     /// [`LoopMode::Once`] is the single pass. A looping class commits every
     /// iteration durably — journal + boundary snapshot + outbox flush — so a
     /// crash resumes at the iteration after the last committed one, and
@@ -77,7 +77,7 @@ pub trait BoundedOperative: Send + Sync + 'static {
 
     /// Durable wake deadline for a [`LoopMode::PerInput`] loop: how long after
     /// parking the instance is rehydrated even with no input
-    /// (`bounded-durable-suspension`). `None` (the default) parks until the next
+    /// (`workflow-durable-suspension`). `None` (the default) parks until the next
     /// input arrives. The timer is journaled with the park record, so it
     /// survives a controller redeploy; it wakes the loop with an **empty** entry
     /// payload, which a class declaring one must accept as its tick.
@@ -86,7 +86,7 @@ pub trait BoundedOperative: Send + Sync + 'static {
     }
 
     /// Total attempts a **structured** procedure's entity gets before its
-    /// error fails the procedure (`bounded-entity-retry`): the first run plus
+    /// error fails the procedure (`workflow-entity-retry`): the first run plus
     /// the retries. Default 3; `0` or `1` restores fail-fast. Only the failed
     /// entity re-runs — siblings that completed stay buffered at the barrier —
     /// and the retry always happens **before** the procedure commits, so a
@@ -122,8 +122,8 @@ pub trait BoundedOperative: Send + Sync + 'static {
     }
 
     /// Class-level persistence toggle (durable by default, mirroring
-    /// [`UnboundedOperative::PERSISTENCE_ENABLED`](crate::operative::UnboundedOperative::PERSISTENCE_ENABLED)).
-    /// When `true`, a structured bounded operative's per-Entity Changes are
+    /// [`StreamOperative::PERSISTENCE_ENABLED`](crate::operative::StreamOperative::PERSISTENCE_ENABLED)).
+    /// When `true`, a structured workflow operative's per-Entity Changes are
     /// written to the WAL as they apply, so a crash resumes from persisted
     /// state. When `false`, the per-Entity flush drains and discards Changes
     /// with no serialization or wire I/O — the operative is in-memory only
@@ -147,7 +147,7 @@ mod tests {
     use crate::command::CommandAction;
     use crate::entity::restore::RestoreInitPayload;
     use crate::operative::registry::{Operative, OperativeRegistry};
-    use crate::pb::{AddOperative, BoundedStop};
+    use crate::pb::{AddOperative, WorkflowStop};
     use crate::procedure::change::{Change, NoChange};
     use crate::procedure::clock::WallClock;
     use crate::procedure::{Procedure, ProcedureCtx, ProcedureError, StateHandle};
@@ -159,12 +159,12 @@ mod tests {
     // ---- run-sugar operatives ------------------------------------------------
 
     /// Run-sugar that echoes its args as plugin output (counts runs).
-    struct EmitBounded;
-    impl BoundedOperative for EmitBounded {
+    struct EmitWorkflow;
+    impl WorkflowOperative for EmitWorkflow {
         fn factory_id() -> &'static str {
-            "test-emit-bounded"
+            "test-emit-workflow"
         }
-        fn run(ctx: &mut BoundedCtx, args: &str) -> Result<(), BoundedError> {
+        fn run(ctx: &mut WorkflowCtx, args: &str) -> Result<(), WorkflowError> {
             EMIT_RUNS.fetch_add(1, Ordering::SeqCst);
             ctx.emit(args.as_bytes().to_vec())?;
             Ok(())
@@ -173,34 +173,34 @@ mod tests {
 
     /// Run-sugar that always fails (counting its runs: a `run` body has no
     /// entities to scope a retry to, so it must run exactly once).
-    struct FailBounded;
-    impl BoundedOperative for FailBounded {
+    struct FailWorkflow;
+    impl WorkflowOperative for FailWorkflow {
         fn factory_id() -> &'static str {
-            "test-fail-bounded"
+            "test-fail-workflow"
         }
-        fn run(_ctx: &mut BoundedCtx, _args: &str) -> Result<(), BoundedError> {
+        fn run(_ctx: &mut WorkflowCtx, _args: &str) -> Result<(), WorkflowError> {
             FAIL_RUNS.fetch_add(1, Ordering::SeqCst);
-            Err(BoundedError::from("boom"))
+            Err(WorkflowError::from("boom"))
         }
     }
 
-    struct PanicBounded;
-    impl BoundedOperative for PanicBounded {
+    struct PanicWorkflow;
+    impl WorkflowOperative for PanicWorkflow {
         fn factory_id() -> &'static str {
-            "test-panic-bounded"
+            "test-panic-workflow"
         }
-        fn run(_ctx: &mut BoundedCtx, _args: &str) -> Result<(), BoundedError> {
+        fn run(_ctx: &mut WorkflowCtx, _args: &str) -> Result<(), WorkflowError> {
             panic!("kaboom")
         }
     }
 
     /// Run-sugar that returns a terminal result via `ctx.complete`.
-    struct CompleteBounded;
-    impl BoundedOperative for CompleteBounded {
+    struct CompleteWorkflow;
+    impl WorkflowOperative for CompleteWorkflow {
         fn factory_id() -> &'static str {
-            "test-complete-bounded"
+            "test-complete-workflow"
         }
-        fn run(ctx: &mut BoundedCtx, args: &str) -> Result<(), BoundedError> {
+        fn run(ctx: &mut WorkflowCtx, args: &str) -> Result<(), WorkflowError> {
             ctx.complete(format!("result:{args}").into_bytes());
             Ok(())
         }
@@ -208,12 +208,12 @@ mod tests {
 
     /// Interactive run-sugar: loops on the inbox, echoes `got:<msg>`, exits the
     /// loop on a `quit` message (terminal predicate) or on cancellation.
-    struct LoopBounded;
-    impl BoundedOperative for LoopBounded {
+    struct LoopWorkflow;
+    impl WorkflowOperative for LoopWorkflow {
         fn factory_id() -> &'static str {
-            "test-loop-bounded"
+            "test-loop-workflow"
         }
-        fn run(ctx: &mut BoundedCtx, _args: &str) -> Result<(), BoundedError> {
+        fn run(ctx: &mut WorkflowCtx, _args: &str) -> Result<(), WorkflowError> {
             let done = Cell::new(false);
             ctx.loop_until(
                 || done.get(),
@@ -237,15 +237,15 @@ mod tests {
 
     /// Interactive run-sugar bounded by `max_duration`: loops on the inbox
     /// forever; the only exit is the duration backstop (or external stop).
-    struct TimedBounded;
-    impl BoundedOperative for TimedBounded {
+    struct TimedWorkflow;
+    impl WorkflowOperative for TimedWorkflow {
         fn factory_id() -> &'static str {
-            "test-timed-bounded"
+            "test-timed-workflow"
         }
         fn max_duration() -> Option<Duration> {
             Some(Duration::from_millis(200))
         }
-        fn run(ctx: &mut BoundedCtx, _args: &str) -> Result<(), BoundedError> {
+        fn run(ctx: &mut WorkflowCtx, _args: &str) -> Result<(), WorkflowError> {
             ctx.loop_until(
                 || false,
                 |ctx| {
@@ -258,15 +258,15 @@ mod tests {
 
     /// External-stop-only: declares it does not self-terminate and has no
     /// duration backstop — rejected at registration.
-    struct ExternalStopOnlyBounded;
-    impl BoundedOperative for ExternalStopOnlyBounded {
+    struct ExternalStopOnlyWorkflow;
+    impl WorkflowOperative for ExternalStopOnlyWorkflow {
         fn factory_id() -> &'static str {
             "test-external-stop-only"
         }
         fn self_terminating() -> bool {
             false
         }
-        fn run(_ctx: &mut BoundedCtx, _args: &str) -> Result<(), BoundedError> {
+        fn run(_ctx: &mut WorkflowCtx, _args: &str) -> Result<(), WorkflowError> {
             Ok(())
         }
     }
@@ -283,7 +283,7 @@ mod tests {
         type Clock = WallClock;
         type Config = ();
         fn name() -> &'static str {
-            "bounded_echo_op"
+            "workflow_echo_op"
         }
         fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
         fn run(
@@ -297,9 +297,9 @@ mod tests {
         }
     }
 
-    /// Single-Procedure structured form, equivalent to `EmitBounded`-style sugar.
+    /// Single-Procedure structured form, equivalent to `EmitWorkflow`-style sugar.
     struct EchoStructured;
-    impl BoundedOperative for EchoStructured {
+    impl WorkflowOperative for EchoStructured {
         fn factory_id() -> &'static str {
             "test-echo-structured"
         }
@@ -321,7 +321,7 @@ mod tests {
         type Clock = WallClock;
         type Config = ();
         fn name() -> &'static str {
-            "bounded_stage1"
+            "workflow_stage1"
         }
         fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
         fn run(
@@ -345,7 +345,7 @@ mod tests {
         type Clock = WallClock;
         type Config = ();
         fn name() -> &'static str {
-            "bounded_stage2"
+            "workflow_stage2"
         }
         fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
         fn run(
@@ -359,7 +359,7 @@ mod tests {
         }
     }
 
-    /// `bounded-branching`: Stage1 fans out to Stage2 and EchoProc on one channel,
+    /// `workflow-branching`: Stage1 fans out to Stage2 and EchoProc on one channel,
     /// each branch ending at its own plugin sink. The edge is (channel,
     /// consumer), so both branches read exactly what Stage1 released on `mid`.
     fn tree_chain(c: &ChannelBuilder) {
@@ -372,10 +372,10 @@ mod tests {
         mid.into::<EchoProc>().named("out_c").output("sink");
     }
 
-    struct TreeBounded;
-    impl BoundedOperative for TreeBounded {
+    struct TreeWorkflow;
+    impl WorkflowOperative for TreeWorkflow {
         fn factory_id() -> &'static str {
-            "test-tree-bounded"
+            "test-tree-workflow"
         }
         fn procedures(c: &ChannelBuilder) {
             tree_chain(c);
@@ -383,10 +383,10 @@ mod tests {
     }
 
     /// Two-stage linear chain: Stage1 → Stage2 → plugin.
-    struct ChainBounded;
-    impl BoundedOperative for ChainBounded {
+    struct ChainWorkflow;
+    impl WorkflowOperative for ChainWorkflow {
         fn factory_id() -> &'static str {
-            "test-chain-bounded"
+            "test-chain-workflow"
         }
         fn procedures(c: &ChannelBuilder) {
             c.input::<String>("in")
@@ -401,9 +401,9 @@ mod tests {
 
     /// The same chain, driven as a chat-style inbox loop: one iteration per
     /// post-start input, parking when the inbox goes quiet
-    /// (`bounded-durable-loop` + `bounded-durable-suspension`).
+    /// (`workflow-durable-loop` + `workflow-durable-suspension`).
     struct ChatLoop;
-    impl BoundedOperative for ChatLoop {
+    impl WorkflowOperative for ChatLoop {
         fn factory_id() -> &'static str {
             "test-chat-loop"
         }
@@ -498,7 +498,7 @@ mod tests {
     /// Inbox-driven saga loop, all-or-nothing: a failing turn unwinds every
     /// committed turn too.
     struct LoopSagaAllOrNothing;
-    impl BoundedOperative for LoopSagaAllOrNothing {
+    impl WorkflowOperative for LoopSagaAllOrNothing {
         fn factory_id() -> &'static str {
             "test-loop-saga-aon"
         }
@@ -518,7 +518,7 @@ mod tests {
 
     /// The same loop, keep-progress: a failing turn unwinds only itself.
     struct LoopSagaKeepProgress;
-    impl BoundedOperative for LoopSagaKeepProgress {
+    impl WorkflowOperative for LoopSagaKeepProgress {
         fn factory_id() -> &'static str {
             "test-loop-saga-keep"
         }
@@ -551,14 +551,14 @@ mod tests {
 
     /// A loop declared on a `run`-sugar class: no chain to iterate.
     struct LoopWithoutChain;
-    impl BoundedOperative for LoopWithoutChain {
+    impl WorkflowOperative for LoopWithoutChain {
         fn factory_id() -> &'static str {
             "test-loop-no-chain"
         }
         fn loop_mode() -> LoopMode {
             LoopMode::PerInput
         }
-        fn run(_ctx: &mut BoundedCtx, _args: &str) -> Result<(), BoundedError> {
+        fn run(_ctx: &mut WorkflowCtx, _args: &str) -> Result<(), WorkflowError> {
             Ok(())
         }
     }
@@ -566,7 +566,7 @@ mod tests {
     /// A durable handoff-chained loop whose terminal procedure emits to a plugin
     /// (no codec), so iteration N+1 could not be re-seeded after a crash.
     struct ChainedLoopNoCodec;
-    impl BoundedOperative for ChainedLoopNoCodec {
+    impl WorkflowOperative for ChainedLoopNoCodec {
         fn factory_id() -> &'static str {
             "test-chained-loop-no-codec"
         }
@@ -595,7 +595,7 @@ mod tests {
         type Clock = WallClock;
         type Config = ();
         fn name() -> &'static str {
-            "bounded_split_op"
+            "workflow_split_op"
         }
         fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
         fn run(
@@ -631,7 +631,7 @@ mod tests {
         type Clock = WallClock;
         type Config = ();
         fn name() -> &'static str {
-            "bounded_fan_op"
+            "workflow_fan_op"
         }
         fn entity_keys() -> Vec<&'static str> {
             vec!["even", "odd"]
@@ -664,10 +664,10 @@ mod tests {
     }
 
     /// Split → fan-out across static entities → plugin.
-    struct FanBounded;
-    impl BoundedOperative for FanBounded {
+    struct FanWorkflow;
+    impl WorkflowOperative for FanWorkflow {
         fn factory_id() -> &'static str {
-            "test-fan-bounded"
+            "test-fan-workflow"
         }
         fn procedures(c: &ChannelBuilder) {
             c.input::<String>("in")
@@ -680,12 +680,12 @@ mod tests {
         }
     }
 
-    /// Opt-out twin of `FanBounded`: identical topology, persistence disabled —
+    /// Opt-out twin of `FanWorkflow`: identical topology, persistence disabled —
     /// its Changes drain-and-discard instead of reaching the WAL.
-    struct FanOptOutBounded;
-    impl BoundedOperative for FanOptOutBounded {
+    struct FanOptOutWorkflow;
+    impl WorkflowOperative for FanOptOutWorkflow {
         fn factory_id() -> &'static str {
-            "test-fan-optout-bounded"
+            "test-fan-optout-workflow"
         }
         fn procedures(c: &ChannelBuilder) {
             c.input::<String>("in")
@@ -708,7 +708,7 @@ mod tests {
         type Clock = WallClock;
         type Config = ();
         fn name() -> &'static str {
-            "bounded_hybrid_stage1"
+            "workflow_hybrid_stage1"
         }
         fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
         fn run(
@@ -732,7 +732,7 @@ mod tests {
         type Clock = WallClock;
         type Config = ();
         fn name() -> &'static str {
-            "bounded_hybrid_stage2"
+            "workflow_hybrid_stage2"
         }
         fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
         fn run(
@@ -748,10 +748,10 @@ mod tests {
 
     /// Hybrid inter-procedure channel (`also_output_with`): Stage1's output
     /// both feeds Stage2 AND is serialized to a plugin sink.
-    struct HybridBounded;
-    impl BoundedOperative for HybridBounded {
+    struct HybridWorkflow;
+    impl WorkflowOperative for HybridWorkflow {
         fn factory_id() -> &'static str {
-            "test-hybrid-bounded"
+            "test-hybrid-workflow"
         }
         fn procedures(c: &ChannelBuilder) {
             c.input::<String>("in")
@@ -774,7 +774,7 @@ mod tests {
     /// wired).
     static COMPENSATION_LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-    // Captures the `(payload_id, frame)` pairs a durable bounded ships to the
+    // Captures the `(payload_id, frame)` pairs a durable workflow ships to the
     // reliable sink — `entity_state_change` from the flush plus the saga
     // `compensation_intent` / `compensation_done` markers.
     static WAL_FRAMES: Mutex<Vec<(String, Vec<u8>)>> = Mutex::new(Vec::new());
@@ -941,11 +941,11 @@ mod tests {
         }
     }
 
-    /// `bounded-branching` saga: reserve fans out to (charge → ship-fails) and
+    /// `workflow-branching` saga: reserve fans out to (charge → ship-fails) and
     /// archive. The failure sits under one branch, so the abort must unwind BOTH
     /// branches and only then their shared parent.
     struct TreeSaga;
-    impl BoundedOperative for TreeSaga {
+    impl WorkflowOperative for TreeSaga {
         fn factory_id() -> &'static str {
             "test-tree-saga"
         }
@@ -969,10 +969,10 @@ mod tests {
         }
     }
 
-    struct SagaBounded;
-    impl BoundedOperative for SagaBounded {
+    struct SagaWorkflow;
+    impl WorkflowOperative for SagaWorkflow {
         fn factory_id() -> &'static str {
-            "test-saga-bounded"
+            "test-saga-workflow"
         }
         fn procedures(c: &ChannelBuilder) {
             c.input::<String>("in")
@@ -993,7 +993,7 @@ mod tests {
     /// covered by the planner unit tests). Proves `rollback_mode()` is plumbed
     /// through the registration → driver path.
     struct KeepProgressSaga;
-    impl BoundedOperative for KeepProgressSaga {
+    impl WorkflowOperative for KeepProgressSaga {
         fn factory_id() -> &'static str {
             "test-keep-progress-saga"
         }
@@ -1016,7 +1016,7 @@ mod tests {
 
     /// Reserve → Charge → Echo(succeeds): a clean `ok` MUST NOT compensate.
     struct CleanSaga;
-    impl BoundedOperative for CleanSaga {
+    impl WorkflowOperative for CleanSaga {
         fn factory_id() -> &'static str {
             "test-clean-saga"
         }
@@ -1119,7 +1119,7 @@ mod tests {
     /// `SplitProc` is skipped during rollback; only `SagaFan` compensates, once
     /// per entity.
     struct FanSaga;
-    impl BoundedOperative for FanSaga {
+    impl WorkflowOperative for FanSaga {
         fn factory_id() -> &'static str {
             "test-fan-saga"
         }
@@ -1182,7 +1182,7 @@ mod tests {
     /// StopReserve → Echo. A cooperative stop after StopReserve completes
     /// compensates only StopReserve; Echo never runs.
     struct StopSaga;
-    impl BoundedOperative for StopSaga {
+    impl WorkflowOperative for StopSaga {
         fn factory_id() -> &'static str {
             "test-stop-saga"
         }
@@ -1284,7 +1284,7 @@ mod tests {
         type Clock = WallClock;
         type Config = ();
         fn name() -> &'static str {
-            "bounded_emit_then_fail"
+            "workflow_emit_then_fail"
         }
         fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
         fn run(
@@ -1299,10 +1299,10 @@ mod tests {
     }
 
     /// One procedure that emits then fails, straight to a plugin sink.
-    struct LeakBounded;
-    impl BoundedOperative for LeakBounded {
+    struct LeakWorkflow;
+    impl WorkflowOperative for LeakWorkflow {
         fn factory_id() -> &'static str {
-            "test-leak-bounded"
+            "test-leak-workflow"
         }
         fn procedures(c: &ChannelBuilder) {
             c.input::<String>("in")
@@ -1325,7 +1325,7 @@ mod tests {
         type Clock = WallClock;
         type Config = ();
         fn name() -> &'static str {
-            "bounded_undo_emit"
+            "workflow_undo_emit"
         }
         fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
         fn run(
@@ -1354,7 +1354,7 @@ mod tests {
     /// UndoEmit(hybrid, compensable) → FailLast. The failure rolls UndoEmit
     /// back; its undo output is staged and journaled in a `compensated` entry.
     struct UndoSaga;
-    impl BoundedOperative for UndoSaga {
+    impl WorkflowOperative for UndoSaga {
         fn factory_id() -> &'static str {
             "test-undo-saga"
         }
@@ -1372,7 +1372,7 @@ mod tests {
 
     /// A → B → ship(fails). Durable-by-default; both A and B are compensable.
     struct ResumeSaga;
-    impl BoundedOperative for ResumeSaga {
+    impl WorkflowOperative for ResumeSaga {
         fn factory_id() -> &'static str {
             "test-resume-saga"
         }
@@ -1390,7 +1390,7 @@ mod tests {
         }
     }
 
-    // ---- per-entity retry ladder procs (`bounded-entity-retry`) -------------
+    // ---- per-entity retry ladder procs (`workflow-entity-retry`) -------------
 
     /// Attempts the `odd` entity has made, and items the `even` sibling has
     /// processed — a retry must re-run ONLY the failing entity.
@@ -1506,10 +1506,10 @@ mod tests {
 
     /// Split → Reserve(compensable) → FlakyFan(even/odd). Default 3-attempt
     /// ladder, backoff shrunk so the scenarios do not sleep out a real one.
-    struct RetryBounded;
-    impl BoundedOperative for RetryBounded {
+    struct RetryWorkflow;
+    impl WorkflowOperative for RetryWorkflow {
         fn factory_id() -> &'static str {
-            "test-retry-bounded"
+            "test-retry-workflow"
         }
         fn retry_backoff() -> Duration {
             Duration::from_millis(10)
@@ -1521,10 +1521,10 @@ mod tests {
 
     /// The same chain with the ladder opted out: the first entity error fails
     /// the procedure, exactly as before this capability existed.
-    struct RetryFailFastBounded;
-    impl BoundedOperative for RetryFailFastBounded {
+    struct RetryFailFastWorkflow;
+    impl WorkflowOperative for RetryFailFastWorkflow {
         fn factory_id() -> &'static str {
-            "test-retry-failfast-bounded"
+            "test-retry-failfast-workflow"
         }
         fn retry_attempts() -> u32 {
             0
@@ -1536,10 +1536,10 @@ mod tests {
 
     /// The same chain with a backoff long enough that a stop must interrupt the
     /// wait rather than outlast it.
-    struct RetrySlowBackoffBounded;
-    impl BoundedOperative for RetrySlowBackoffBounded {
+    struct RetrySlowBackoffWorkflow;
+    impl WorkflowOperative for RetrySlowBackoffWorkflow {
         fn factory_id() -> &'static str {
-            "test-retry-slow-bounded"
+            "test-retry-slow-workflow"
         }
         fn retry_backoff() -> Duration {
             Duration::from_secs(30)
@@ -1626,10 +1626,10 @@ mod tests {
 
     /// One flaky stage whose entities outnumber the SDK's workers, on a
     /// backoff long enough that a worker holding one would be observed.
-    struct StepProbeBounded;
-    impl BoundedOperative for StepProbeBounded {
+    struct StepProbeWorkflow;
+    impl WorkflowOperative for StepProbeWorkflow {
         fn factory_id() -> &'static str {
-            "test-step-probe-bounded"
+            "test-step-probe-workflow"
         }
         fn retry_backoff() -> Duration {
             Duration::from_millis(200)
@@ -1652,7 +1652,7 @@ mod tests {
         let _ = drain_comp_log();
     }
 
-    // ---- fan-in / diamond procs (`bounded-branching` fan-in accumulates) ------
+    // ---- fan-in / diamond procs (`workflow-branching` fan-in accumulates) ------
 
     /// Observation log for the diamond scenarios: forward runs append here so
     /// join dispatch order (after BOTH producers) is assertable.
@@ -1708,14 +1708,14 @@ mod tests {
     diamond_op!(DiamondA, "diamond_a", "a");
     diamond_op!(DiamondB, "diamond_b", "b");
     diamond_op!(DiamondC, "diamond_c", "c");
-    diamond_op!(DiamondJoin, "bounded_join_op", "j");
+    diamond_op!(DiamondJoin, "workflow_join_op", "j");
 
     /// The diamond A→(B,C)→D: both branch outputs accumulate into the one
     /// join node (two unnamed mentions unify), which closes plugin-bound.
-    struct DiamondBounded;
-    impl BoundedOperative for DiamondBounded {
+    struct DiamondWorkflow;
+    impl WorkflowOperative for DiamondWorkflow {
         fn factory_id() -> &'static str {
-            "test-diamond-bounded"
+            "test-diamond-workflow"
         }
         fn procedures(c: &ChannelBuilder) {
             let a = c
@@ -1737,10 +1737,10 @@ mod tests {
     }
 
     /// Kahn-shape twin used by the registration test (no driver run).
-    struct JoinBounded;
-    impl BoundedOperative for JoinBounded {
+    struct JoinWorkflow;
+    impl WorkflowOperative for JoinWorkflow {
         fn factory_id() -> &'static str {
-            "test-join-bounded-shape"
+            "test-join-workflow-shape"
         }
         fn procedures(c: &ChannelBuilder) {
             let mid = c
@@ -1763,7 +1763,7 @@ mod tests {
     /// abort must undo the join BEFORE either producer, and the shared root
     /// last (reverse-topological compensation over a DAG).
     struct DiamondSaga;
-    impl BoundedOperative for DiamondSaga {
+    impl WorkflowOperative for DiamondSaga {
         fn factory_id() -> &'static str {
             "test-diamond-saga"
         }
@@ -1809,7 +1809,7 @@ mod tests {
         type Clock = WallClock;
         type Config = ();
         fn name() -> &'static str {
-            "bounded_merge_join_op"
+            "workflow_merge_join_op"
         }
         fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
         fn run(
@@ -1831,10 +1831,10 @@ mod tests {
     /// A→(B,C)→merge(D): the fan-in wired as a merge, so the driver must apply
     /// each edge's mapping both where it accumulates a producer's released
     /// batch and where a resume re-seeds from the journaled handoff.
-    struct MergeBounded;
-    impl BoundedOperative for MergeBounded {
+    struct MergeWorkflow;
+    impl WorkflowOperative for MergeWorkflow {
         fn factory_id() -> &'static str {
-            "test-merge-bounded"
+            "test-merge-workflow"
         }
         fn procedures(c: &ChannelBuilder) {
             let a = c
@@ -1854,13 +1854,13 @@ mod tests {
     }
 
     /// The same chain whose merge mapping panics. A mapping is the one author
-    /// closure on a bounded chain that runs on the driver thread rather than
+    /// closure on a workflow chain that runs on the driver thread rather than
     /// inside an entity invocation, so without containment its unwind would
     /// take the driver thread with it and the instance would never report.
-    struct PanickingMergeBounded;
-    impl BoundedOperative for PanickingMergeBounded {
+    struct PanickingMergeWorkflow;
+    impl WorkflowOperative for PanickingMergeWorkflow {
         fn factory_id() -> &'static str {
-            "test-panic-merge-bounded"
+            "test-panic-merge-workflow"
         }
         fn procedures(c: &ChannelBuilder) {
             let a = c
@@ -1881,10 +1881,10 @@ mod tests {
 
     /// A plain edge `map` on an inter-procedure edge — the same driver-thread
     /// seam a merge mapping runs on, reached without a merge.
-    struct PanickingTransformBounded;
-    impl BoundedOperative for PanickingTransformBounded {
+    struct PanickingTransformWorkflow;
+    impl WorkflowOperative for PanickingTransformWorkflow {
         fn factory_id() -> &'static str {
-            "test-panic-transform-bounded"
+            "test-panic-transform-workflow"
         }
         fn procedures(c: &ChannelBuilder) {
             c.input::<String>("in")
@@ -1901,67 +1901,67 @@ mod tests {
     // ---- non-driver unit tests ----------------------------------------------
 
     #[test]
-    fn bounded_error_conversions() {
+    fn workflow_error_conversions() {
         // String conversions stay retryable-by-default: the ladder is opt-out.
-        let from_str: BoundedError = "x".into();
+        let from_str: WorkflowError = "x".into();
         assert_eq!(from_str.to_string(), "x");
         assert!(!from_str.non_retryable);
-        let from_string: BoundedError = String::from("y").into();
+        let from_string: WorkflowError = String::from("y").into();
         assert_eq!(from_string.message, "y");
         assert!(!from_string.non_retryable);
 
-        let permanent = BoundedError::non_retryable("z");
+        let permanent = WorkflowError::non_retryable("z");
         assert_eq!(permanent.to_string(), "z");
         assert!(permanent.non_retryable);
     }
 
     #[test]
-    fn register_bounded_makes_factory_resolvable() {
-        struct RegBounded;
-        impl BoundedOperative for RegBounded {
+    fn register_workflow_makes_factory_resolvable() {
+        struct RegWorkflow;
+        impl WorkflowOperative for RegWorkflow {
             fn factory_id() -> &'static str {
-                "test-getclass-bounded"
+                "test-getclass-workflow"
             }
-            fn run(_c: &mut BoundedCtx, _a: &str) -> Result<(), BoundedError> {
+            fn run(_c: &mut WorkflowCtx, _a: &str) -> Result<(), WorkflowError> {
                 Ok(())
             }
         }
-        assert!(registry::get_class("test-getclass-bounded").is_none());
-        crate::register_bounded_class::<RegBounded>().unwrap();
-        assert!(registry::get_class("test-getclass-bounded").is_some());
-        assert!(registry::get_class("test-nonexistent-bounded").is_none());
+        assert!(registry::get_class("test-getclass-workflow").is_none());
+        crate::register_workflow_class::<RegWorkflow>().unwrap();
+        assert!(registry::get_class("test-getclass-workflow").is_some());
+        assert!(registry::get_class("test-nonexistent-workflow").is_none());
     }
 
     #[test]
-    fn registry_holds_bounded_as_sealed_variant() {
+    fn registry_holds_workflow_as_sealed_variant() {
         let reg = OperativeRegistry::new();
-        let (instance, _inbox_rx) = crate::bounded::instance::BoundedInstance::new(
+        let (instance, _inbox_rx) = crate::workflow::instance::WorkflowInstance::new(
             Arc::from("t1"),
             Arc::from("t1-factory"),
             Vec::new(),
             0,
             None,
         );
-        reg.register_bounded(instance);
+        reg.register_workflow(instance);
 
         assert!(reg.contains("t1"));
-        // A bounded is not a operative: the operative-only accessor returns None.
-        assert!(reg.get_unbounded("t1").is_none());
+        // A workflow is not a operative: the operative-only accessor returns None.
+        assert!(reg.get_stream("t1").is_none());
         match reg.get_operative("t1").as_deref() {
-            Some(Operative::Bounded(inst)) => assert_eq!(&*inst.instance_id, "t1"),
-            _ => panic!("expected a BoundedOperative variant"),
+            Some(Operative::Workflow(inst)) => assert_eq!(&*inst.instance_id, "t1"),
+            _ => panic!("expected a WorkflowOperative variant"),
         }
 
         assert!(matches!(
             reg.remove("t1").as_deref(),
-            Some(Operative::Bounded(_))
+            Some(Operative::Workflow(_))
         ));
         assert!(!reg.contains("t1"));
     }
 
     #[test]
     fn run_sugar_spec_has_no_topology() {
-        let spec = spec::build_spec::<EmitBounded>().expect("run-sugar spec builds");
+        let spec = spec::build_spec::<EmitWorkflow>().expect("run-sugar spec builds");
         assert!(
             spec.topology.is_none(),
             "bare run() ⇒ run-sugar (no topology)"
@@ -1971,7 +1971,7 @@ mod tests {
 
     #[test]
     fn structured_spec_resolves_linear_chain() {
-        let spec = spec::build_spec::<ChainBounded>().expect("structured spec builds");
+        let spec = spec::build_spec::<ChainWorkflow>().expect("structured spec builds");
         let topology = spec.topology.as_ref().expect("structured ⇒ topology");
         // Chain is ordered entry-consumer → terminal: Stage1 then Stage2.
         let names: Vec<&str> = spec
@@ -1980,15 +1980,15 @@ mod tests {
             .iter()
             .map(|&id| topology.procedure(id).unwrap().name.as_ref())
             .collect();
-        assert_eq!(names, vec!["bounded_stage1", "bounded_stage2"]);
+        assert_eq!(names, vec!["workflow_stage1", "workflow_stage2"]);
     }
 
     #[test]
     fn external_stop_only_authoring_is_rejected() {
-        let err = spec::build_spec::<ExternalStopOnlyBounded>()
+        let err = spec::build_spec::<ExternalStopOnlyWorkflow>()
             .expect_err("external-stop-only must be rejected at registration");
         assert!(
-            matches!(err, spec::BuildBoundedError::ExternalStopOnly { .. }),
+            matches!(err, spec::BuildWorkflowError::ExternalStopOnly { .. }),
             "expected ExternalStopOnly, got {err:?}"
         );
         // Naming the missing terminal condition is part of the contract.
@@ -1998,9 +1998,9 @@ mod tests {
     #[test]
     fn durable_structured_without_inter_proc_codec_is_rejected() {
         struct NoCodec;
-        impl BoundedOperative for NoCodec {
+        impl WorkflowOperative for NoCodec {
             fn factory_id() -> &'static str {
-                "test-no-codec-bounded"
+                "test-no-codec-workflow"
             }
             fn procedures(c: &ChannelBuilder) {
                 c.input::<String>("in")
@@ -2011,7 +2011,7 @@ mod tests {
         }
         let err = spec::build_spec::<NoCodec>().expect_err("durable class needs the codec");
         match err {
-            spec::BuildBoundedError::MissingInterProcCodec { channel, .. } => {
+            spec::BuildWorkflowError::MissingInterProcCodec { channel, .. } => {
                 assert_eq!(channel, "mid", "the error names the codec-less channel");
             }
             other => panic!("expected MissingInterProcCodec, got {other:?}"),
@@ -2019,9 +2019,9 @@ mod tests {
 
         // The opted-out shape of the same topology registers fine.
         struct NoCodecOptOut;
-        impl BoundedOperative for NoCodecOptOut {
+        impl WorkflowOperative for NoCodecOptOut {
             fn factory_id() -> &'static str {
-                "test-no-codec-optout-bounded"
+                "test-no-codec-optout-workflow"
             }
             const PERSISTENCE_ENABLED: bool = false;
             fn procedures(c: &ChannelBuilder) {
@@ -2034,23 +2034,23 @@ mod tests {
         spec::build_spec::<NoCodecOptOut>().expect("opted-out classes may omit the codec");
     }
 
-    /// `bounded-durable-loop` registration validation: a loop needs a chain to
+    /// `workflow-durable-loop` registration validation: a loop needs a chain to
     /// iterate, and a durable handoff-chained loop needs a serializable terminal
     /// batch — otherwise a crash mid-loop would re-seed iteration N+1 with an
     /// empty batch and silently read as "converged".
     #[test]
     fn loop_authoring_is_validated() {
         match spec::build_spec::<LoopWithoutChain>().expect_err("run-sugar cannot loop a chain") {
-            spec::BuildBoundedError::LoopWithoutChain { .. } => {}
+            spec::BuildWorkflowError::LoopWithoutChain { .. } => {}
             other => panic!("expected LoopWithoutChain, got {other:?}"),
         }
 
         match spec::build_spec::<ChainedLoopNoCodec>()
             .expect_err("a chained loop must be able to journal its terminal batch")
         {
-            spec::BuildBoundedError::LoopTerminalWithoutCodec { procedure, .. } => {
+            spec::BuildWorkflowError::LoopTerminalWithoutCodec { procedure, .. } => {
                 assert_eq!(
-                    procedure, "bounded_stage2",
+                    procedure, "workflow_stage2",
                     "the error names the terminal procedure"
                 );
             }
@@ -2064,23 +2064,24 @@ mod tests {
         assert_eq!(spec.dag.len(), 2);
     }
 
-    /// `bounded-entity-retry` policy surface: the defaults land on the shared
+    /// `workflow-entity-retry` policy surface: the defaults land on the shared
     /// `RetryPolicy`, `retry_attempts() = 0` collapses to the one-attempt
     /// fail-fast, and a ladder without a backoff is rejected at registration.
     #[test]
     fn retry_policy_is_resolved_and_validated() {
-        let spec = spec::build_spec::<ChainBounded>().expect("defaults register");
+        let spec = spec::build_spec::<ChainWorkflow>().expect("defaults register");
         assert_eq!(spec.retry.max_attempts, 3, "platform default is 3 attempts");
         assert_eq!(spec.retry.backoff_base_ms, 500);
 
-        let fail_fast = spec::build_spec::<RetryFailFastBounded>().expect("attempts = 0 registers");
+        let fail_fast =
+            spec::build_spec::<RetryFailFastWorkflow>().expect("attempts = 0 registers");
         assert_eq!(
             fail_fast.retry.max_attempts, 1,
             "attempts = 0 ⇒ the single fail-fast attempt"
         );
 
         struct HotLoop;
-        impl BoundedOperative for HotLoop {
+        impl WorkflowOperative for HotLoop {
             fn factory_id() -> &'static str {
                 "test-retry-hot-loop"
             }
@@ -2092,12 +2093,12 @@ mod tests {
             }
         }
         match spec::build_spec::<HotLoop>().expect_err("a retry ladder needs a backoff") {
-            spec::BuildBoundedError::ZeroRetryBackoff { attempts, .. } => assert_eq!(attempts, 3),
+            spec::BuildWorkflowError::ZeroRetryBackoff { attempts, .. } => assert_eq!(attempts, 3),
             other => panic!("expected ZeroRetryBackoff, got {other:?}"),
         }
     }
 
-    /// `bounded-branching` registration validation. A DAG is accepted (with its
+    /// `workflow-branching` registration validation. A DAG is accepted (with its
     /// nodes in Kahn topological order, every producer before its consumers —
     /// the invariant that makes completion order topological and its reverse a
     /// valid compensation order); a cycle is refused, naming a node on it.
@@ -2105,7 +2106,7 @@ mod tests {
     fn dag_topology_is_validated() {
         // A→(B,C): one channel, two consumers. The edge is (channel, consumer),
         // so both branches read what Stage1 released on `mid`.
-        let spec = spec::build_spec::<TreeBounded>().expect("a fan-out tree registers");
+        let spec = spec::build_spec::<TreeWorkflow>().expect("a fan-out tree registers");
         let topology = spec.topology.as_ref().expect("structured ⇒ topology");
         let names: Vec<&str> = spec
             .dag
@@ -2115,7 +2116,7 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            vec!["bounded_stage1", "bounded_stage2", "bounded_echo_op"],
+            vec!["workflow_stage1", "workflow_stage2", "workflow_echo_op"],
             "Kahn order: the root, then its children (= the former BFS numbering)"
         );
         assert_eq!(spec.dag.parents, vec![vec![], vec![0], vec![0]]);
@@ -2135,14 +2136,14 @@ mod tests {
         }
 
         // A linear chain is the single-branch case, unchanged.
-        let linear = spec::build_spec::<ChainBounded>().expect("linear still registers");
+        let linear = spec::build_spec::<ChainWorkflow>().expect("linear still registers");
         assert_eq!(linear.dag.children, vec![vec![1], vec![]]);
         assert_eq!(linear.dag.single_leaf(), Some(1));
 
         // A join — two streams feeding one node — registers, and Kahn numbers
         // BOTH producers before it (BFS would have enqueued the join on its
         // first producer).
-        match spec::build_spec::<JoinBounded>() {
+        match spec::build_spec::<JoinWorkflow>() {
             Ok(spec) => {
                 let topology = spec.topology.as_ref().expect("structured ⇒ topology");
                 let names: Vec<&str> = spec
@@ -2154,10 +2155,10 @@ mod tests {
                 assert_eq!(
                     names,
                     vec![
-                        "bounded_stage1",
-                        "bounded_stage2",
-                        "bounded_echo_op",
-                        "bounded_join_op"
+                        "workflow_stage1",
+                        "workflow_stage2",
+                        "workflow_echo_op",
+                        "workflow_join_op"
                     ]
                 );
                 assert_eq!(spec.dag.parents[3], vec![1, 2], "the join has two parents");
@@ -2173,9 +2174,9 @@ mod tests {
         // A cycle is refused with an error identifying it (surfaced through the
         // shared topology validation).
         struct Cyclic;
-        impl BoundedOperative for Cyclic {
+        impl WorkflowOperative for Cyclic {
             fn factory_id() -> &'static str {
-                "test-cyclic-bounded"
+                "test-cyclic-workflow"
             }
             fn procedures(c: &ChannelBuilder) {
                 c.input::<String>("in")
@@ -2189,7 +2190,7 @@ mod tests {
             }
         }
         match spec::build_spec::<Cyclic>().expect_err("a cycle is refused") {
-            spec::BuildBoundedError::Topology { detail, .. } => {
+            spec::BuildWorkflowError::Topology { detail, .. } => {
                 assert!(
                     detail.contains("Cycle") || detail.contains("cycle"),
                     "the refusal identifies the cycle: {detail}"
@@ -2198,16 +2199,16 @@ mod tests {
             other => panic!("expected the shared cycle refusal, got {other:?}"),
         }
 
-        // `multi-input-procedures`: a bounded seed is a bare payload naming no
+        // `multi-input-procedures`: a workflow seed is a bare payload naming no
         // channel, so an entry channel cannot be one merge source among
         // several — the mapping could not be selected and every entry channel
         // past the first would be unreadable. Refused by name, at definition
         // time, instead of accepted and failing every invocation on a type
         // mismatch.
-        struct EntryMergeBounded;
-        impl BoundedOperative for EntryMergeBounded {
+        struct EntryMergeWorkflow;
+        impl WorkflowOperative for EntryMergeWorkflow {
             fn factory_id() -> &'static str {
-                "test-entry-merge-bounded"
+                "test-entry-merge-workflow"
             }
             fn procedures(c: &ChannelBuilder) {
                 c.merge::<MergedJoinInput>()
@@ -2216,21 +2217,21 @@ mod tests {
                     .into::<MergeJoinProc>();
             }
         }
-        match spec::build_spec::<EntryMergeBounded>()
-            .expect_err("a bounded merge over an entry channel is refused")
+        match spec::build_spec::<EntryMergeWorkflow>()
+            .expect_err("a workflow merge over an entry channel is refused")
         {
-            spec::BuildBoundedError::MergeFromEntryChannel {
+            spec::BuildWorkflowError::MergeFromEntryChannel {
                 channel, procedure, ..
             } => {
                 assert_eq!(channel, "in");
-                assert_eq!(procedure, "bounded_merge_join_op");
+                assert_eq!(procedure, "workflow_merge_join_op");
             }
             other => panic!("expected MergeFromEntryChannel, got {other:?}"),
         }
 
         // The inter-proc form of the same merge is the supported one and still
         // registers, with the merged node as a two-parent inner node.
-        let merged = spec::build_spec::<MergeBounded>().expect("an inter-proc merge registers");
+        let merged = spec::build_spec::<MergeWorkflow>().expect("an inter-proc merge registers");
         assert_eq!(
             merged.dag.parents[3],
             vec![1, 2],
@@ -2240,9 +2241,9 @@ mod tests {
         // A handoff-chained loop over a branching tree has no single terminal
         // batch to seed iteration N+1 from.
         struct BranchingChained;
-        impl BoundedOperative for BranchingChained {
+        impl WorkflowOperative for BranchingChained {
             fn factory_id() -> &'static str {
-                "test-branching-chained-bounded"
+                "test-branching-chained-workflow"
             }
             fn loop_mode() -> LoopMode {
                 LoopMode::Chained
@@ -2254,7 +2255,7 @@ mod tests {
         match spec::build_spec::<BranchingChained>()
             .expect_err("a chained loop needs one terminal procedure")
         {
-            spec::BuildBoundedError::BranchingChainedLoop { leaves, .. } => {
+            spec::BuildWorkflowError::BranchingChainedLoop { leaves, .. } => {
                 assert_eq!(leaves, 2);
             }
             other => panic!("expected BranchingChainedLoop, got {other:?}"),
@@ -2273,7 +2274,7 @@ mod tests {
             type Clock = WallClock;
             type Config = ();
             fn name() -> &'static str {
-                "bounded_dyn_op"
+                "workflow_dyn_op"
             }
             fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
             fn run(
@@ -2285,23 +2286,23 @@ mod tests {
                 Ok(())
             }
         }
-        struct DynBounded;
-        impl BoundedOperative for DynBounded {
+        struct DynWorkflow;
+        impl WorkflowOperative for DynWorkflow {
             fn factory_id() -> &'static str {
-                "test-dyn-bounded"
+                "test-dyn-workflow"
             }
             fn procedures(c: &ChannelBuilder) {
                 // The key rides an inter-procedure edge: a keyed ENTRY edge is
-                // refused earlier, by the bounded seed's own rule.
+                // refused earlier, by the workflow seed's own rule.
                 c.input::<String>("in")
                     .into::<EchoProc>()
                     .key_by(|s: &String| s.clone())
                     .into::<DynProc>();
             }
         }
-        let err = spec::build_spec::<DynBounded>().expect_err("dynamic entities must be rejected");
+        let err = spec::build_spec::<DynWorkflow>().expect_err("dynamic entities must be rejected");
         assert!(
-            matches!(err, spec::BuildBoundedError::DynamicEntities { .. }),
+            matches!(err, spec::BuildWorkflowError::DynamicEntities { .. }),
             "expected DynamicEntities, got {err:?}"
         );
     }
@@ -2309,18 +2310,18 @@ mod tests {
     // ---- single driver-observation test --------------------------------------
     //
     // Installs the process-global coordinator trigger so it can observe the
-    // EmitBoundedOutput / EmitBoundedCompleted messages the driver routes
+    // EmitWorkflowOutput / EmitWorkflowCompleted messages the driver routes
     // through it; the shared runner-state lock keeps that install exclusive
     // against the other tests that install one. Scenarios run strictly
     // sequentially (each drained to its completion before the next) so a
     // single shared channel stays unambiguous.
     #[test]
-    fn bounded_driver_scenarios() {
+    fn workflow_driver_scenarios() {
         let _runner_guard = crate::runner::env_test_guard();
         let (tx, rx) = crossbeam::channel::unbounded::<RunnerMessage>();
         install_reconnect_trigger(tx);
 
-        // Durable bounded operatives in this test ship WAL frames through the
+        // Durable workflow operatives in this test ship WAL frames through the
         // process-global sink; hold the shared sink lock for the whole test so
         // it never races the entity-state sink tests, and install a capturing
         // sink to observe the frames.
@@ -2336,50 +2337,50 @@ mod tests {
         );
         crate::entity::state_sink::install_global_sink(wal_sink);
 
-        crate::register_bounded_class::<EmitBounded>().unwrap();
-        crate::register_bounded_class::<FailBounded>().unwrap();
-        crate::register_bounded_class::<PanicBounded>().unwrap();
-        crate::register_bounded_class::<CompleteBounded>().unwrap();
-        crate::register_bounded_class::<LoopBounded>().unwrap();
-        crate::register_bounded_class::<TimedBounded>().unwrap();
-        crate::register_bounded_class::<EchoStructured>().unwrap();
-        crate::register_bounded_class::<ChainBounded>().unwrap();
-        crate::register_bounded_class::<TreeBounded>().unwrap();
-        crate::register_bounded_class::<TreeSaga>().unwrap();
-        crate::register_bounded_class::<FanBounded>().unwrap();
-        crate::register_bounded_class::<FanOptOutBounded>().unwrap();
-        crate::register_bounded_class::<HybridBounded>().unwrap();
-        crate::register_bounded_class::<SagaBounded>().unwrap();
-        crate::register_bounded_class::<KeepProgressSaga>().unwrap();
-        crate::register_bounded_class::<CleanSaga>().unwrap();
-        crate::register_bounded_class::<FanSaga>().unwrap();
-        crate::register_bounded_class::<StopSaga>().unwrap();
-        crate::register_bounded_class::<ResumeSaga>().unwrap();
-        crate::register_bounded_class::<LeakBounded>().unwrap();
-        crate::register_bounded_class::<UndoSaga>().unwrap();
-        crate::register_bounded_class::<ChatLoop>().unwrap();
-        crate::register_bounded_class::<LoopSagaAllOrNothing>().unwrap();
-        crate::register_bounded_class::<LoopSagaKeepProgress>().unwrap();
-        crate::register_bounded_class::<RetryBounded>().unwrap();
-        crate::register_bounded_class::<RetryFailFastBounded>().unwrap();
-        crate::register_bounded_class::<RetrySlowBackoffBounded>().unwrap();
-        crate::register_bounded_class::<StepProbeBounded>().unwrap();
-        crate::register_bounded_class::<DiamondBounded>().unwrap();
-        crate::register_bounded_class::<DiamondSaga>().unwrap();
-        crate::register_bounded_class::<MergeBounded>().unwrap();
-        crate::register_bounded_class::<PanickingMergeBounded>().unwrap();
-        crate::register_bounded_class::<PanickingTransformBounded>().unwrap();
+        crate::register_workflow_class::<EmitWorkflow>().unwrap();
+        crate::register_workflow_class::<FailWorkflow>().unwrap();
+        crate::register_workflow_class::<PanicWorkflow>().unwrap();
+        crate::register_workflow_class::<CompleteWorkflow>().unwrap();
+        crate::register_workflow_class::<LoopWorkflow>().unwrap();
+        crate::register_workflow_class::<TimedWorkflow>().unwrap();
+        crate::register_workflow_class::<EchoStructured>().unwrap();
+        crate::register_workflow_class::<ChainWorkflow>().unwrap();
+        crate::register_workflow_class::<TreeWorkflow>().unwrap();
+        crate::register_workflow_class::<TreeSaga>().unwrap();
+        crate::register_workflow_class::<FanWorkflow>().unwrap();
+        crate::register_workflow_class::<FanOptOutWorkflow>().unwrap();
+        crate::register_workflow_class::<HybridWorkflow>().unwrap();
+        crate::register_workflow_class::<SagaWorkflow>().unwrap();
+        crate::register_workflow_class::<KeepProgressSaga>().unwrap();
+        crate::register_workflow_class::<CleanSaga>().unwrap();
+        crate::register_workflow_class::<FanSaga>().unwrap();
+        crate::register_workflow_class::<StopSaga>().unwrap();
+        crate::register_workflow_class::<ResumeSaga>().unwrap();
+        crate::register_workflow_class::<LeakWorkflow>().unwrap();
+        crate::register_workflow_class::<UndoSaga>().unwrap();
+        crate::register_workflow_class::<ChatLoop>().unwrap();
+        crate::register_workflow_class::<LoopSagaAllOrNothing>().unwrap();
+        crate::register_workflow_class::<LoopSagaKeepProgress>().unwrap();
+        crate::register_workflow_class::<RetryWorkflow>().unwrap();
+        crate::register_workflow_class::<RetryFailFastWorkflow>().unwrap();
+        crate::register_workflow_class::<RetrySlowBackoffWorkflow>().unwrap();
+        crate::register_workflow_class::<StepProbeWorkflow>().unwrap();
+        crate::register_workflow_class::<DiamondWorkflow>().unwrap();
+        crate::register_workflow_class::<DiamondSaga>().unwrap();
+        crate::register_workflow_class::<MergeWorkflow>().unwrap();
+        crate::register_workflow_class::<PanickingMergeWorkflow>().unwrap();
+        crate::register_workflow_class::<PanickingTransformWorkflow>().unwrap();
 
         let mut node = RunnerNode::new("test-ns".to_string());
 
         // --- run-sugar: run once, args echoed, status "ok" ---
         EMIT_RUNS.store(0, Ordering::SeqCst);
-        assert!(node.start_bounded(
-            "test-emit-bounded".into(),
-            "bounded-ok".into(),
+        assert!(node.start_workflow(
+            "test-emit-workflow".into(),
+            "workflow-ok".into(),
             "hello".into()
         ));
-        let (outs, done) = drain(&rx, "bounded-ok");
+        let (outs, done) = drain(&rx, "workflow-ok");
         assert_eq!(
             EMIT_RUNS.load(Ordering::SeqCst),
             1,
@@ -2389,14 +2390,14 @@ mod tests {
         assert_eq!((done.0.as_str(), done.1.as_str()), ("ok", ""));
 
         // Instance stays registered; a duplicate start is idempotent (no re-run).
-        assert!(node.has_operative("bounded-ok"));
+        assert!(node.has_operative("workflow-ok"));
         assert!(
-            node.get_unbounded("bounded-ok").is_none(),
-            "a bounded is not a operative"
+            node.get_stream("workflow-ok").is_none(),
+            "a workflow is not a operative"
         );
-        assert!(node.start_bounded(
-            "test-emit-bounded".into(),
-            "bounded-ok".into(),
+        assert!(node.start_workflow(
+            "test-emit-workflow".into(),
+            "workflow-ok".into(),
             "hello".into()
         ));
         assert_eq!(
@@ -2407,8 +2408,12 @@ mod tests {
 
         // --- run-sugar: terminal error, with no retry ladder to climb ---
         FAIL_RUNS.store(0, Ordering::SeqCst);
-        assert!(node.start_bounded("test-fail-bounded".into(), "bounded-err".into(), "".into()));
-        let (_o, done) = drain(&rx, "bounded-err");
+        assert!(node.start_workflow(
+            "test-fail-workflow".into(),
+            "workflow-err".into(),
+            "".into()
+        ));
+        let (_o, done) = drain(&rx, "workflow-err");
         assert_eq!(done.0, "error");
         assert!(done.1.contains("boom"));
         assert_eq!(
@@ -2418,71 +2423,71 @@ mod tests {
         );
 
         // --- run-sugar: panic caught and reported as "error" ---
-        assert!(node.start_bounded(
-            "test-panic-bounded".into(),
-            "bounded-panic".into(),
+        assert!(node.start_workflow(
+            "test-panic-workflow".into(),
+            "workflow-panic".into(),
             "".into()
         ));
-        let (_o, done) = drain(&rx, "bounded-panic");
+        let (_o, done) = drain(&rx, "workflow-panic");
         assert_eq!(done.0, "error");
         assert!(done.1.contains("kaboom"));
 
         // --- run-sugar: ctx.complete carries the result payload ---
-        assert!(node.start_bounded(
-            "test-complete-bounded".into(),
-            "bounded-c".into(),
+        assert!(node.start_workflow(
+            "test-complete-workflow".into(),
+            "workflow-c".into(),
             "z".into()
         ));
-        let (_o, done) = drain(&rx, "bounded-c");
+        let (_o, done) = drain(&rx, "workflow-c");
         assert_eq!(done.0, "ok");
         assert_eq!(
             done.2,
             b"result:z".to_vec(),
-            "complete() result reaches BoundedCompleted"
+            "complete() result reaches WorkflowCompleted"
         );
 
         // --- inbox + loop: post-start input is processed, terminal predicate exits ok ---
-        assert!(node.start_bounded("test-loop-bounded".into(), "loop-1".into(), "".into()));
+        assert!(node.start_workflow("test-loop-workflow".into(), "loop-1".into(), "".into()));
         assert!(
-            node.get_bounded("loop-1")
+            node.get_workflow("loop-1")
                 .is_some_and(|i| i.push_inbox(b"alpha".to_vec(), 0)),
             "inbox delivers to running instance"
         );
         assert!(node
-            .get_bounded("loop-1")
+            .get_workflow("loop-1")
             .is_some_and(|i| i.push_inbox(b"beta".to_vec(), 0)));
         assert!(node
-            .get_bounded("loop-1")
+            .get_workflow("loop-1")
             .is_some_and(|i| i.push_inbox(b"quit".to_vec(), 0)));
         let (outs, done) = drain(&rx, "loop-1");
         assert_eq!(outs, vec![b"got:alpha".to_vec(), b"got:beta".to_vec()]);
         assert_eq!(done.0, "ok", "terminal predicate ⇒ ok");
 
-        // --- external stop (BoundedStop handler) → cancelled ---
-        assert!(node.start_bounded("test-loop-bounded".into(), "loop-2".into(), "".into()));
+        // --- external stop (WorkflowStop handler) → cancelled ---
+        assert!(node.start_workflow("test-loop-workflow".into(), "loop-2".into(), "".into()));
         assert!(node
-            .get_bounded("loop-2")
+            .get_workflow("loop-2")
             .is_some_and(|i| i.push_inbox(b"one".to_vec(), 0)));
         // Drain the echo first so the instance is definitely live before stop.
         wait_for_output(&rx, "loop-2", b"got:one");
-        let stop = BoundedStop {
+        let stop = WorkflowStop {
             operative_id: "loop-2".into(),
         };
         let mut errs = Vec::new();
         stop.handle(&mut node, "", &mut errs);
         assert!(errs.is_empty());
         let (_o, done) = drain(&rx, "loop-2");
-        assert_eq!(done.0, "cancelled", "BoundedStop ⇒ cancelled");
+        assert_eq!(done.0, "cancelled", "WorkflowStop ⇒ cancelled");
 
-        // --- hard removal (RemOperative → stop_operative) cancels a bounded ---
-        assert!(node.start_bounded("test-loop-bounded".into(), "loop-3".into(), "".into()));
+        // --- hard removal (RemOperative → stop_operative) cancels a workflow ---
+        assert!(node.start_workflow("test-loop-workflow".into(), "loop-3".into(), "".into()));
         assert!(node
-            .get_bounded("loop-3")
+            .get_workflow("loop-3")
             .is_some_and(|i| i.push_inbox(b"x".to_vec(), 0)));
         wait_for_output(&rx, "loop-3", b"got:x");
         assert!(
             node.stop_operative("loop-3"),
-            "stop_operative removes the bounded"
+            "stop_operative removes the workflow"
         );
         assert!(!node.has_operative("loop-3"));
         let (_o, done) = drain(&rx, "loop-3");
@@ -2492,22 +2497,22 @@ mod tests {
         );
 
         // --- max_duration backstop → cancelled ---
-        assert!(node.start_bounded("test-timed-bounded".into(), "timed-1".into(), "".into()));
+        assert!(node.start_workflow("test-timed-workflow".into(), "timed-1".into(), "".into()));
         let (_o, done) = drain(&rx, "timed-1");
         assert_eq!(done.0, "cancelled", "max_duration elapse ⇒ cancelled");
 
         // --- structured single-proc equals run-sugar (§2.2 equivalence) ---
-        assert!(node.start_bounded("test-echo-structured".into(), "echo-s".into(), "foo".into()));
+        assert!(node.start_workflow("test-echo-structured".into(), "echo-s".into(), "foo".into()));
         let (struct_outs, done) = drain(&rx, "echo-s");
         assert_eq!(done.0, "ok");
         assert_eq!(struct_outs, vec![b"echo:foo".to_vec()]);
-        // The run-sugar equivalent (EmitBounded-style) would emit the same bytes
+        // The run-sugar equivalent (EmitWorkflow-style) would emit the same bytes
         // for the same transform — assert the structured single-proc form matches
         // a hand-written one-procedure echo.
         assert_eq!(struct_outs, vec![format!("echo:{}", "foo").into_bytes()]);
 
         // --- structured multi-proc chain runs in order with a barrier ---
-        assert!(node.start_bounded("test-chain-bounded".into(), "chain-1".into(), "x".into()));
+        assert!(node.start_workflow("test-chain-workflow".into(), "chain-1".into(), "x".into()));
         let (chain_outs, done) = drain(&rx, "chain-1");
         assert_eq!(done.0, "ok");
         assert_eq!(
@@ -2517,8 +2522,8 @@ mod tests {
         );
 
         // --- structured parallel static entities + barrier + per-entity state ---
-        assert!(node.start_bounded(
-            "test-fan-bounded".into(),
+        assert!(node.start_workflow(
+            "test-fan-workflow".into(),
             "fan-1".into(),
             "a,bb,ccc,dddd".into(),
         ));
@@ -2537,7 +2542,7 @@ mod tests {
         assert_eq!(fan_outs, expected);
 
         // --- hybrid channel: inter-proc output also routed to a plugin sink ---
-        assert!(node.start_bounded("test-hybrid-bounded".into(), "hybrid-1".into(), "z".into()));
+        assert!(node.start_workflow("test-hybrid-workflow".into(), "hybrid-1".into(), "z".into()));
         let (mut hybrid_outs, done) = drain(&rx, "hybrid-1");
         assert_eq!(done.0, "ok");
         hybrid_outs.sort();
@@ -2549,7 +2554,7 @@ mod tests {
 
         // --- §7b.1 saga: a failed step rolls back completed steps in reverse ---
         let _ = drain_comp_log();
-        assert!(node.start_bounded("test-saga-bounded".into(), "saga-1".into(), "X".into()));
+        assert!(node.start_workflow("test-saga-workflow".into(), "saga-1".into(), "X".into()));
         let (_o, done) = drain(&rx, "saga-1");
         assert_eq!(done.0, "error", "a failed terminal step ⇒ status error");
         assert!(done.1.contains("ship failed"));
@@ -2567,7 +2572,7 @@ mod tests {
         // pass (the mode only diverges with committed iterations) — proves
         // rollback_mode() reaches the driver ---
         let _ = drain_comp_log();
-        assert!(node.start_bounded(
+        assert!(node.start_workflow(
             "test-keep-progress-saga".into(),
             "saga-kp".into(),
             "Y".into()
@@ -2584,7 +2589,7 @@ mod tests {
 
         // --- §7b.1 clean completion does NOT compensate ---
         let _ = drain_comp_log();
-        assert!(node.start_bounded("test-clean-saga".into(), "saga-ok".into(), "Z".into()));
+        assert!(node.start_workflow("test-clean-saga".into(), "saga-ok".into(), "Z".into()));
         let (clean_outs, done) = drain(&rx, "saga-ok");
         assert_eq!(done.0, "ok");
         assert_eq!(clean_outs, vec![b"echo:charged:reserved:Z".to_vec()]);
@@ -2596,7 +2601,7 @@ mod tests {
         // --- §7b.1 per-entity compensation: once per entity that ran;
         // hookless SplitProc is skipped ---
         let _ = drain_comp_log();
-        assert!(node.start_bounded("test-fan-saga".into(), "fan-saga".into(), "a,bb,ccc".into()));
+        assert!(node.start_workflow("test-fan-saga".into(), "fan-saga".into(), "a,bb,ccc".into()));
         let (_o, done) = drain(&rx, "fan-saga");
         assert_eq!(done.0, "error");
         let mut fan_comp = drain_comp_log();
@@ -2615,11 +2620,11 @@ mod tests {
         let _ = drain_comp_log();
         STAGE0_RAN.store(false, Ordering::SeqCst);
         STAGE0_RELEASE.store(false, Ordering::SeqCst);
-        assert!(node.start_bounded("test-stop-saga".into(), "stop-saga".into(), "W".into()));
+        assert!(node.start_workflow("test-stop-saga".into(), "stop-saga".into(), "W".into()));
         while !STAGE0_RAN.load(Ordering::SeqCst) {
             std::thread::sleep(Duration::from_millis(5));
         }
-        node.get_bounded("stop-saga")
+        node.get_workflow("stop-saga")
             .expect("live instance accepts cancel")
             .request_cancel();
         STAGE0_RELEASE.store(true, Ordering::SeqCst);
@@ -2631,12 +2636,12 @@ mod tests {
             vec!["undo-stop-reserve:reserved:W".to_string()],
         );
 
-        // --- AddOperative --kind bounded routes to the bounded path ---
+        // --- AddOperative --kind workflow routes to the workflow path ---
         let add = AddOperative {
-            operative_id: "bounded-via-add".into(),
-            factory_id: "test-emit-bounded".into(),
+            operative_id: "workflow-via-add".into(),
+            factory_id: "test-emit-workflow".into(),
             init_values: "argz".into(),
-            kind: "bounded".into(),
+            kind: "workflow".into(),
             resume_entity_count: 0,
             proc_journal: None,
         };
@@ -2644,30 +2649,30 @@ mod tests {
         add.handle(&mut node, "", &mut errors);
         assert!(
             errors.is_empty(),
-            "AddOperative --kind bounded should not error: {errors:?}"
+            "AddOperative --kind workflow should not error: {errors:?}"
         );
-        let (outs, done) = drain(&rx, "bounded-via-add");
+        let (outs, done) = drain(&rx, "workflow-via-add");
         assert_eq!(outs, vec![b"argz".to_vec()]);
         assert_eq!(done.0, "ok");
 
-        // --- AddOperative --kind bounded for an unregistered factory reports it ---
+        // --- AddOperative --kind workflow for an unregistered factory reports it ---
         let add_bad = AddOperative {
-            operative_id: "bounded-bad".into(),
+            operative_id: "workflow-bad".into(),
             factory_id: "test-unregistered".into(),
             init_values: "".into(),
-            kind: "bounded".into(),
+            kind: "workflow".into(),
             resume_entity_count: 0,
             proc_journal: None,
         };
         let mut errors_bad = Vec::new();
         add_bad.handle(&mut node, "", &mut errors_bad);
         assert_eq!(errors_bad.len(), 1);
-        assert!(errors_bad[0].contains("BoundedOperative class"));
+        assert!(errors_bad[0].contains("WorkflowOperative class"));
 
         // --- AddOperative with an unknown kind literal is rejected ---
         let add_unknown = AddOperative {
             operative_id: "kind-bad".into(),
-            factory_id: "test-emit-bounded".into(),
+            factory_id: "test-emit-workflow".into(),
             init_values: "".into(),
             kind: "continuous".into(),
             resume_entity_count: 0,
@@ -2677,25 +2682,25 @@ mod tests {
         add_unknown.handle(&mut node, "", &mut errors_unknown);
         assert_eq!(errors_unknown.len(), 1);
         assert!(errors_unknown[0].contains("unknown compute-unit kind 'continuous'"));
-        assert!(node.get_bounded("kind-bad").is_none());
+        assert!(node.get_workflow("kind-bad").is_none());
 
-        // --- §5b.1/§7c.1 durable bounded actually writes WAL; opt-out writes nothing ---
-        // FanBounded is durable-by-default; its FanProc applies a Change per item,
+        // --- §5b.1/§7c.1 durable workflow actually writes WAL; opt-out writes nothing ---
+        // FanWorkflow is durable-by-default; its FanProc applies a Change per item,
         // which the driver flushes as an entity_state_change frame to the sink.
         WAL_FRAMES.lock().unwrap().clear();
-        assert!(node.start_bounded("test-fan-bounded".into(), "fan-wal".into(), "a,bb".into()));
+        assert!(node.start_workflow("test-fan-workflow".into(), "fan-wal".into(), "a,bb".into()));
         let (_o, done) = drain(&rx, "fan-wal");
         assert_eq!(done.0, "ok");
         assert!(
             !WAL_FRAMES.lock().unwrap().is_empty(),
-            "a durable bounded operative ships entity_state_change frames to the WAL"
+            "a durable workflow operative ships entity_state_change frames to the WAL"
         );
 
         // The opt-out twin does identical work with PERSISTENCE_ENABLED=false:
         // Changes drain-and-discard, nothing reaches the WAL.
         WAL_FRAMES.lock().unwrap().clear();
-        assert!(node.start_bounded(
-            "test-fan-optout-bounded".into(),
+        assert!(node.start_workflow(
+            "test-fan-optout-workflow".into(),
             "fan-optout".into(),
             "a,bb".into(),
         ));
@@ -2703,31 +2708,34 @@ mod tests {
         assert_eq!(done.0, "ok");
         assert!(
             WAL_FRAMES.lock().unwrap().is_empty(),
-            "an opt-out bounded operative writes nothing to the WAL"
+            "an opt-out workflow operative writes nothing to the WAL"
         );
 
-        // --- §5b.2 crash-resume gate: a durable structured bounded holds its
+        // --- §5b.2 crash-resume gate: a durable structured workflow holds its
         // first Procedure until the Controller's Entity restores land, and its
         // Entities are reachable by the restore handler via wire identity ---
         WAL_FRAMES.lock().unwrap().clear();
         // Spawn as a "respawn" expecting one Entity restore: the driver builds
         // and registers its Entities, then parks on the resume gate — nothing
         // runs yet because no restore has landed.
-        assert!(node.start_bounded_resumable(
-            "test-fan-bounded".into(),
+        assert!(node.start_workflow_resumable(
+            "test-fan-workflow".into(),
             "resume-inst".into(),
             "a,bb".into(),
             1,
             None,
         ));
-        // The bounded Entities are now reachable by wire identity — the restore
-        // handler could not see them before this change (the unbounded lookup
-        // only scans UnboundedInstance entities).
-        let even_id =
-            crate::entity::flusher::encode_entity_identity("resume-inst", "bounded_fan_op", "even");
+        // The workflow Entities are now reachable by wire identity — the restore
+        // handler could not see them before this change (the stream lookup
+        // only scans StreamInstance entities).
+        let even_id = crate::entity::flusher::encode_entity_identity(
+            "resume-inst",
+            "workflow_fan_op",
+            "even",
+        );
         let (resume_instance, _slot) = node
-            .find_bounded_entity(&even_id)
-            .expect("a durable bounded Entity is reachable by the restore handler");
+            .find_workflow_entity(&even_id)
+            .expect("a durable workflow Entity is reachable by the restore handler");
         // Release one restore, exactly as the RestoreInitState handler does after
         // applying a persisted Entity: the parked driver wakes and runs to
         // completion (resume-not-cold-start is proven end-to-end in the Elixir
@@ -2739,12 +2747,12 @@ mod tests {
             "the driver resumes once the expected Entity restore lands"
         );
 
-        // --- bounded-proc-journal §D3: a durable structured chain commits every
+        // --- workflow-proc-journal §D3: a durable structured chain commits every
         // proc boundary — one ProcCommit per stage, gated on the (fake
         // controller's) durable ack, carrying the codec-serialized handoff ---
         let _ = drain_proc_commits();
-        assert!(node.start_bounded(
-            "test-chain-bounded".into(),
+        assert!(node.start_workflow(
+            "test-chain-workflow".into(),
             "chain-commit".into(),
             "x".into()
         ));
@@ -2773,7 +2781,7 @@ mod tests {
             "one entity ran in stage 0"
         );
 
-        // bounded-transactional-outbox: the terminal stage's plugin output did
+        // workflow-transactional-outbox: the terminal stage's plugin output did
         // NOT go to the wire — it was staged and rode INSIDE that stage's
         // commit, keyed by the producing entity and its per-proc sequence.
         assert!(
@@ -2794,15 +2802,15 @@ mod tests {
         // The run-sugar path is untouched: no procedures, no barrier to stage
         // against, so its emit goes straight to the wire (at-least-once).
         assert_eq!(
-            wire_emits_for("bounded-ok"),
+            wire_emits_for("workflow-ok"),
             vec![b"hello".to_vec()],
             "run-sugar keeps the direct wire path"
         );
 
         // Opt-out twin: no journal, no handshake — zero commits, and (having
         // nothing that could ever flush a staged outbox) it still emits direct.
-        assert!(node.start_bounded(
-            "test-fan-optout-bounded".into(),
+        assert!(node.start_workflow(
+            "test-fan-optout-workflow".into(),
             "optout-no-commit".into(),
             "a".into(),
         ));
@@ -2819,8 +2827,8 @@ mod tests {
         );
         assert_eq!(outs, vec![b"1:a".to_vec()]);
 
-        // --- bounded-transactional-outbox: a failed procedure leaks nothing ---
-        assert!(node.start_bounded("test-leak-bounded".into(), "leak-1".into(), "x".into()));
+        // --- workflow-transactional-outbox: a failed procedure leaks nothing ---
+        assert!(node.start_workflow("test-leak-workflow".into(), "leak-1".into(), "x".into()));
         let (outs, done) = drain(&rx, "leak-1");
         assert_eq!(done.0, "error");
         assert!(
@@ -2832,10 +2840,10 @@ mod tests {
             "the proc never committed, so its staged output was never journaled"
         );
 
-        // --- bounded-transactional-outbox §D5: a compensate hook's undo output
+        // --- workflow-transactional-outbox §D5: a compensate hook's undo output
         // is staged too, and rides a `compensating` commit for the procedure it
         // reverses (the forward output already flushed under its own key) ---
-        assert!(node.start_bounded("test-undo-saga".into(), "undo-1".into(), "u".into()));
+        assert!(node.start_workflow("test-undo-saga".into(), "undo-1".into(), "u".into()));
         let (outs, done) = drain(&rx, "undo-1");
         assert_eq!(done.0, "error");
         assert!(
@@ -2864,7 +2872,7 @@ mod tests {
         // controller flushes each commit's outbox on ack), in that order.
         assert_eq!(outs, vec![b"did:u".to_vec(), b"undo:did:u".to_vec()]);
 
-        // --- bounded-proc-journal §D5: resume-skip — a shipped journal skips the
+        // --- workflow-proc-journal §D5: resume-skip — a shipped journal skips the
         // committed stages and seeds the next one from the journaled handoff ---
         let (outs, done) = resume_chain_with_journal(
             &node,
@@ -2874,7 +2882,7 @@ mod tests {
                 committed_proc_idxs: vec![0],
                 // The seed is the COMMITTING procedure's own handoff — keyed by
                 // its proc_idx, so a fan-out's children each take their own
-                // parent's edge (`bounded-branching`).
+                // parent's edge (`workflow-branching`).
                 proc_handoffs: vec![instance::EdgeHandoff {
                     proc_idx: 0,
                     handoff: vec![(1, postcard::to_allocvec(&"seed".to_string()).unwrap())],
@@ -2923,7 +2931,7 @@ mod tests {
         let _ = drain_comp_log();
         // reserve + charge complete (both compensable ⇒ 2 intents); ship fails ⇒
         // both roll back (2 dones). Hookless ship_fails never completed ⇒ no record.
-        assert!(node.start_bounded("test-saga-bounded".into(), "saga-rec".into(), "42".into()));
+        assert!(node.start_workflow("test-saga-workflow".into(), "saga-rec".into(), "42".into()));
         let (_o, done) = drain(&rx, "saga-rec");
         assert_eq!(done.0, "error");
         assert_eq!(
@@ -2939,7 +2947,7 @@ mod tests {
         let _ = drain_comp_log();
         // Respawn a durable saga expecting one restore: the driver parks on the
         // gate while we seed the markers the RestoreInitState handler would carry.
-        assert!(node.start_bounded_resumable(
+        assert!(node.start_workflow_resumable(
             "test-resume-saga".into(),
             "resume-saga".into(),
             "x".into(),
@@ -2951,8 +2959,8 @@ mod tests {
         let b_id =
             crate::entity::flusher::encode_entity_identity("resume-saga", "resume_undo_b", "");
         let (saga_inst, _slot) = node
-            .find_bounded_entity(&a_id)
-            .expect("a durable bounded saga Entity is reachable by the restore handler");
+            .find_workflow_entity(&a_id)
+            .expect("a durable workflow saga Entity is reachable by the restore handler");
         // Original run: A + B both completed (intent); B was already undone before
         // the crash (done). Resume must undo A and SKIP B — in reverse — without
         // re-running the forward chain (so no fresh intents, no `a:`/`b:` output).
@@ -2984,12 +2992,12 @@ mod tests {
             "a compensation-resume records no new intent (forward chain not re-run)"
         );
 
-        // --- bounded-branching fan-in: the join runs once, after BOTH
+        // --- workflow-branching fan-in: the join runs once, after BOTH
         // producers committed, with the accumulated batch ---
         let _ = drain_diamond_log();
         let _ = drain_proc_commits();
-        assert!(node.start_bounded(
-            "test-diamond-bounded".into(),
+        assert!(node.start_workflow(
+            "test-diamond-workflow".into(),
             "diamond-1".into(),
             "x".into()
         ));
@@ -3024,13 +3032,13 @@ mod tests {
             "the join processed each contribution exactly once"
         );
 
-        // --- bounded-branching crash-resume over a join: one journaled and one
+        // --- workflow-branching crash-resume over a join: one journaled and one
         // fresh producer — the committed branch never re-runs, and the join
         // accumulates B's JOURNALED handoff with C's fresh output ---
         let _ = drain_diamond_log();
         let da_id = crate::entity::flusher::encode_entity_identity("diamond-r", "diamond_a", "");
         let diamond_spec =
-            registry::get_class("test-diamond-bounded").expect("diamond class registered");
+            registry::get_class("test-diamond-workflow").expect("diamond class registered");
         let diamond_topo = diamond_spec.topology.as_ref().expect("structured");
         let d_fan = diamond_topo.lookup_channel_id("d_fan").unwrap();
         let d_b = diamond_topo.lookup_channel_id("d_b").unwrap();
@@ -3066,15 +3074,15 @@ mod tests {
             ],
             ..Default::default()
         };
-        assert!(node.start_bounded_resumable(
-            "test-diamond-bounded".into(),
+        assert!(node.start_workflow_resumable(
+            "test-diamond-workflow".into(),
             "diamond-r".into(),
             "x".into(),
             1,
             Some(ab_committed(d_fan, d_b, vec![da_id.clone()], Vec::new())),
         ));
         let (diamond_inst, _slot) = node
-            .find_bounded_entity(&da_id)
+            .find_workflow_entity(&da_id)
             .expect("a durable diamond Entity is reachable by the restore handler");
         diamond_inst.note_restored();
         let (outs, done) = drain(&rx, "diamond-r");
@@ -3104,12 +3112,12 @@ mod tests {
             "the resume commits only C and the join"
         );
 
-        // --- bounded-branching reverse-topological undo: the join is undone
+        // --- workflow-branching reverse-topological undo: the join is undone
         // before either producer, the shared root last ---
         let _ = drain_comp_log();
         let _ = drain_diamond_log();
         let _ = drain_proc_commits();
-        assert!(node.start_bounded("test-diamond-saga".into(), "diamond-s".into(), "x".into()));
+        assert!(node.start_workflow("test-diamond-saga".into(), "diamond-s".into(), "x".into()));
         let (_o, done) = drain(&rx, "diamond-s");
         assert_eq!(done.0, "error");
         assert_eq!(
@@ -3129,7 +3137,7 @@ mod tests {
         // so a node whose Input is neither producer's Output still dispatches ---
         let _ = drain_diamond_log();
         let _ = drain_proc_commits();
-        assert!(node.start_bounded("test-merge-bounded".into(), "merge-1".into(), "x".into()));
+        assert!(node.start_workflow("test-merge-workflow".into(), "merge-1".into(), "x".into()));
         let (outs, done) = drain(&rx, "merge-1");
         assert_eq!(done.0, "ok");
         assert_eq!(
@@ -3143,19 +3151,20 @@ mod tests {
         let _ = drain_diamond_log();
         let _ = drain_proc_commits();
         let ma_id = crate::entity::flusher::encode_entity_identity("merge-r", "diamond_a", "");
-        let merge_spec = registry::get_class("test-merge-bounded").expect("merge class registered");
+        let merge_spec =
+            registry::get_class("test-merge-workflow").expect("merge class registered");
         let merge_topo = merge_spec.topology.as_ref().expect("structured");
         let m_fan = merge_topo.lookup_channel_id("m_fan").unwrap();
         let m_b = merge_topo.lookup_channel_id("m_b").unwrap();
-        assert!(node.start_bounded_resumable(
-            "test-merge-bounded".into(),
+        assert!(node.start_workflow_resumable(
+            "test-merge-workflow".into(),
             "merge-r".into(),
             "x".into(),
             1,
             Some(ab_committed(m_fan, m_b, vec![ma_id.clone()], Vec::new())),
         ));
         let (merge_inst, _slot) = node
-            .find_bounded_entity(&ma_id)
+            .find_workflow_entity(&ma_id)
             .expect("a durable merge Entity is reachable by the restore handler");
         merge_inst.note_restored();
         let (outs, done) = drain(&rx, "merge-r");
@@ -3168,12 +3177,12 @@ mod tests {
 
         // --- a panicking mapping is CONTAINED. It runs on the driver thread,
         // outside any entity invocation, so an unguarded unwind would kill the
-        // thread before `emit_bounded_completed` and strand the instance ---
+        // thread before `emit_workflow_completed` and strand the instance ---
         let _ = drain_comp_log();
         let _ = drain_diamond_log();
         let _ = drain_proc_commits();
-        assert!(node.start_bounded(
-            "test-panic-merge-bounded".into(),
+        assert!(node.start_workflow(
+            "test-panic-merge-workflow".into(),
             "merge-panic".into(),
             "x".into()
         ));
@@ -3213,8 +3222,8 @@ mod tests {
         let _ = drain_comp_log();
         let _ = drain_diamond_log();
         let _ = drain_proc_commits();
-        assert!(node.start_bounded(
-            "test-panic-transform-bounded".into(),
+        assert!(node.start_workflow(
+            "test-panic-transform-workflow".into(),
             "map-panic".into(),
             "x".into()
         ));
@@ -3251,13 +3260,13 @@ mod tests {
         let pb_id =
             crate::entity::flusher::encode_entity_identity("merge-panic-r", "diamond_b", "");
         let panic_spec =
-            registry::get_class("test-panic-merge-bounded").expect("panic merge class registered");
+            registry::get_class("test-panic-merge-workflow").expect("panic merge class registered");
         let panic_topo = panic_spec.topology.as_ref().expect("structured");
         let pm_fan = panic_topo.lookup_channel_id("pm_fan").unwrap();
         let pm_b = panic_topo.lookup_channel_id("pm_b").unwrap();
         WAL_FRAMES.lock().unwrap().clear();
-        assert!(node.start_bounded_resumable(
-            "test-panic-merge-bounded".into(),
+        assert!(node.start_workflow_resumable(
+            "test-panic-merge-workflow".into(),
             "merge-panic-r".into(),
             "x".into(),
             1,
@@ -3269,7 +3278,7 @@ mod tests {
             )),
         ));
         let (panic_inst, _slot) = node
-            .find_bounded_entity(&pa_id)
+            .find_workflow_entity(&pa_id)
             .expect("a durable resumed Entity is reachable by the restore handler");
         panic_inst.note_restored();
         let (outs, done) = drain(&rx, "merge-panic-r");
@@ -3307,13 +3316,13 @@ mod tests {
             "reverse-topological: B's entity is undone before A's"
         );
 
-        // --- bounded-durable-loop: one iteration per inbox item, each ending in
+        // --- workflow-durable-loop: one iteration per inbox item, each ending in
         // a durable iteration commit; an idle inbox parks the instance ---
-        std::env::set_var("FLEZHA_BOUNDED_PARK_IDLE_MS", "300");
+        std::env::set_var("FLEZHA_WORKFLOW_PARK_IDLE_MS", "300");
         let _ = drain_proc_commits();
-        assert!(node.start_bounded("test-chat-loop".into(), "chat-1".into(), "ignored".into()));
+        assert!(node.start_workflow("test-chat-loop".into(), "chat-1".into(), "ignored".into()));
         let chat = node
-            .get_bounded("chat-1")
+            .get_workflow("chat-1")
             .expect("the loop's instance is registered before its driver runs");
         // Two chat turns, at durable-inbox offsets 4 and 7 (the controller's
         // offsets are opaque to the driver — it only echoes them back).
@@ -3364,8 +3373,8 @@ mod tests {
 
         // --- resume-at-iteration: a journal recording iterations 0-1 committed
         // enters iteration 2 — the committed turns never re-run ---
-        let s1_id = crate::entity::flusher::encode_entity_identity("chat-2", "bounded_stage1", "");
-        assert!(node.start_bounded_resumable(
+        let s1_id = crate::entity::flusher::encode_entity_identity("chat-2", "workflow_stage1", "");
+        assert!(node.start_workflow_resumable(
             "test-chat-loop".into(),
             "chat-2".into(),
             "ignored".into(),
@@ -3389,7 +3398,7 @@ mod tests {
             }),
         ));
         let (chat2, _slot) = node
-            .find_bounded_entity(&s1_id)
+            .find_workflow_entity(&s1_id)
             .expect("the loop's Entity is reachable by the restore handler");
         chat2.note_restored();
         assert!(chat2.push_inbox(b"third".to_vec(), 9));
@@ -3409,7 +3418,7 @@ mod tests {
         );
         assert_eq!(iters[0].consumed_offset, 9);
 
-        // --- bounded-durable-loop D2: KeepProgress/AllOrNothing are backed by
+        // --- workflow-durable-loop D2: KeepProgress/AllOrNothing are backed by
         // the JOURNAL — the `committed` iterations a crash-resumed run rolls
         // back come from `iter_committed` records, not from memory ---
         for (factory, id, expected) in [
@@ -3432,7 +3441,7 @@ mod tests {
             let _ = drain_comp_log();
             let seg = crate::entity::flusher::encode_entity_identity(id, "loop_reserve", "");
             // Journal: iteration 0 committed both of its procedures.
-            assert!(node.start_bounded_resumable(
+            assert!(node.start_workflow_resumable(
                 factory.into(),
                 id.into(),
                 "ignored".into(),
@@ -3456,7 +3465,7 @@ mod tests {
                 }),
             ));
             let (inst, _slot) = node
-                .find_bounded_entity(&seg)
+                .find_workflow_entity(&seg)
                 .expect("the loop saga's Entity is reachable by the restore handler");
             inst.note_restored();
             assert!(inst.push_inbox(b"boom".to_vec(), 5));
@@ -3470,7 +3479,7 @@ mod tests {
             );
         }
 
-        // --- bounded-loop-rewind: a journal carrying `rewind_undo` unwinds those
+        // --- workflow-loop-rewind: a journal carrying `rewind_undo` unwinds those
         // iterations — reverse iteration, reverse stage — BEFORE the loop resumes
         // forward at the rewound-to iteration ---
         let _ = drain_comp_log();
@@ -3488,7 +3497,7 @@ mod tests {
                 iter,
                 entities_ran,
             };
-        assert!(node.start_bounded_resumable(
+        assert!(node.start_workflow_resumable(
             "test-loop-saga-keep".into(),
             id.into(),
             "ignored".into(),
@@ -3507,7 +3516,7 @@ mod tests {
             }),
         ));
         let (inst, _slot) = node
-            .find_bounded_entity(&seg)
+            .find_workflow_entity(&seg)
             .expect("the loop saga's Entity is reachable by the restore handler");
         inst.note_restored();
         // The resumed turn fails, so the run reaches a terminal state (the fake
@@ -3540,13 +3549,13 @@ mod tests {
              of the next fold's outstanding work"
         );
 
-        std::env::remove_var("FLEZHA_BOUNDED_PARK_IDLE_MS");
+        std::env::remove_var("FLEZHA_WORKFLOW_PARK_IDLE_MS");
 
-        // --- bounded-entity-retry: a transient entity failure recovers in
+        // --- workflow-entity-retry: a transient entity failure recovers in
         // place — the sibling entity is NOT re-run and nothing compensates ---
         arm_flaky(1, false);
-        assert!(node.start_bounded(
-            "test-retry-bounded".into(),
+        assert!(node.start_workflow(
+            "test-retry-workflow".into(),
             "retry-ok".into(),
             "a,bb".into()
         ));
@@ -3577,8 +3586,8 @@ mod tests {
         // --- retry exhaustion fails the procedure exactly as before: the
         // original error surfaces and completed procedures compensate ---
         arm_flaky(99, false);
-        assert!(node.start_bounded(
-            "test-retry-bounded".into(),
+        assert!(node.start_workflow(
+            "test-retry-workflow".into(),
             "retry-exhausted".into(),
             "a,bb".into()
         ));
@@ -3602,8 +3611,8 @@ mod tests {
 
         // --- a non-retryable error skips the ladder entirely ---
         arm_flaky(99, true);
-        assert!(node.start_bounded(
-            "test-retry-bounded".into(),
+        assert!(node.start_workflow(
+            "test-retry-workflow".into(),
             "retry-permanent".into(),
             "a,bb".into()
         ));
@@ -3618,8 +3627,8 @@ mod tests {
 
         // --- retry_attempts() = 0 restores the pre-change fail-fast ---
         arm_flaky(99, false);
-        assert!(node.start_bounded(
-            "test-retry-failfast-bounded".into(),
+        assert!(node.start_workflow(
+            "test-retry-failfast-workflow".into(),
             "retry-failfast".into(),
             "a,bb".into()
         ));
@@ -3637,13 +3646,13 @@ mod tests {
         // wait). The stop rides a helper thread because this thread is the fake
         // controller — it must stay in `drain` to ack the chain's proc commits ---
         arm_flaky(99, false);
-        assert!(node.start_bounded(
-            "test-retry-slow-bounded".into(),
+        assert!(node.start_workflow(
+            "test-retry-slow-workflow".into(),
             "retry-stop".into(),
             "a,bb".into()
         ));
         let stop_target = node
-            .get_bounded("retry-stop")
+            .get_workflow("retry-stop")
             .expect("live instance accepts cancel");
         let stopper = std::thread::spawn(move || {
             while ODD_ATTEMPTS.load(Ordering::SeqCst) == 0 {
@@ -3671,12 +3680,12 @@ mod tests {
         // workers, so a backoff that occupied its worker would leave the pool
         // starved and the core would answer with threads above the base set ---
         STEP_ATTEMPTS.lock().unwrap().clear();
-        assert!(node.start_bounded(
-            "test-step-probe-bounded".into(),
-            "bounded-steps".into(),
+        assert!(node.start_workflow(
+            "test-step-probe-workflow".into(),
+            "workflow-steps".into(),
             "go".into()
         ));
-        let (outs, done) = drain(&rx, "bounded-steps");
+        let (outs, done) = drain(&rx, "workflow-steps");
         assert_eq!((done.0.as_str(), done.1.as_str()), ("ok", ""));
         assert_eq!(
             outs.len(),
@@ -3701,11 +3710,11 @@ mod tests {
             );
         }
 
-        // --- bounded-branching: A→(B,C) runs to DONE — both branches receive
+        // --- workflow-branching: A→(B,C) runs to DONE — both branches receive
         // what A released on the channel they consume, and the operative is `ok`
         // exactly when every leaf has committed ---
         let _ = drain_proc_commits();
-        assert!(node.start_bounded("test-tree-bounded".into(), "tree-1".into(), "x".into()));
+        assert!(node.start_workflow("test-tree-workflow".into(), "tree-1".into(), "x".into()));
         let (mut tree_outs, done) = drain(&rx, "tree-1");
         assert_eq!(
             done.0, "ok",
@@ -3724,14 +3733,14 @@ mod tests {
             "the root commits before its children, which commit independently"
         );
 
-        // --- bounded-branching resume: the journal records A and B committed, so
+        // --- workflow-branching resume: the journal records A and B committed, so
         // only C re-runs — seeded from A's journaled edge, not from B's ---
         let _ = drain_proc_commits();
         let id = "tree-resume";
-        let root_seg = crate::entity::flusher::encode_entity_identity(id, "bounded_stage1", "");
+        let root_seg = crate::entity::flusher::encode_entity_identity(id, "workflow_stage1", "");
         // Channel ids follow declaration order: `in` = 0, `mid` = 1.
-        assert!(node.start_bounded_resumable(
-            "test-tree-bounded".into(),
+        assert!(node.start_workflow_resumable(
+            "test-tree-workflow".into(),
             id.into(),
             "ignored-args".into(),
             1,
@@ -3757,7 +3766,7 @@ mod tests {
             }),
         ));
         let (inst, _slot) = node
-            .find_bounded_entity(&root_seg)
+            .find_workflow_entity(&root_seg)
             .expect("the tree's root Entity is reachable by the restore handler");
         inst.note_restored();
         let (outs, done) = drain(&rx, id);
@@ -3776,10 +3785,10 @@ mod tests {
             "the committed root and its committed sibling did NOT re-run"
         );
 
-        // --- bounded-branching compensation: a failure under one branch unwinds
+        // --- workflow-branching compensation: a failure under one branch unwinds
         // BOTH branches before their shared parent (reverse topological) ---
         let _ = drain_comp_log();
-        assert!(node.start_bounded("test-tree-saga".into(), "tree-saga".into(), "o1".into()));
+        assert!(node.start_workflow("test-tree-saga".into(), "tree-saga".into(), "o1".into()));
         let (_o, done) = drain(&rx, "tree-saga");
         assert_eq!(done.0, "error");
         assert_eq!(
@@ -3794,7 +3803,7 @@ mod tests {
         );
     }
 
-    /// Respawn `test-chain-bounded` as a crash-resume carrying `journal` on the
+    /// Respawn `test-chain-workflow` as a crash-resume carrying `journal` on the
     /// bind (exactly what the AddOperative handler passes), release the restore
     /// gate, and drain it to completion.
     fn resume_chain_with_journal(
@@ -3803,36 +3812,36 @@ mod tests {
         id: &str,
         journal: instance::JournalResume,
     ) -> (Vec<Vec<u8>>, (String, String, Vec<u8>)) {
-        assert!(node.start_bounded_resumable(
-            "test-chain-bounded".into(),
+        assert!(node.start_workflow_resumable(
+            "test-chain-workflow".into(),
             id.into(),
             "ignored-args".into(),
             1,
             Some(journal),
         ));
-        let s1_id = crate::entity::flusher::encode_entity_identity(id, "bounded_stage1", "");
+        let s1_id = crate::entity::flusher::encode_entity_identity(id, "workflow_stage1", "");
         let (inst, _slot) = node
-            .find_bounded_entity(&s1_id)
+            .find_workflow_entity(&s1_id)
             .expect("chain entity reachable by the restore handler");
         inst.note_restored();
         drain(rx, id)
     }
 
-    /// Proc-commits observed by the fake controller (`bounded-proc-journal`
+    /// Proc-commits observed by the fake controller (`workflow-proc-journal`
     /// barrier): every `ProcCommit` the drain helpers ack is recorded here
     /// so the gating/handoff assertions can inspect what would be journaled.
     static PROC_COMMITS: Mutex<Vec<crate::pb::ProcCommit>> = Mutex::new(Vec::new());
 
-    /// Iteration commits observed by the fake controller (`bounded-durable-loop`
+    /// Iteration commits observed by the fake controller (`workflow-durable-loop`
     /// boundary) — what the journal would record as `iter_committed`.
     static ITER_COMMITS: Mutex<Vec<crate::pb::IterCommit>> = Mutex::new(Vec::new());
 
     /// Park notifications observed by the fake controller
-    /// (`bounded-durable-suspension`) — the instance evicted itself at a
+    /// (`workflow-durable-suspension`) — the instance evicted itself at a
     /// committed boundary.
     static ITER_PARKS: Mutex<Vec<crate::pb::IterPark>> = Mutex::new(Vec::new());
 
-    /// Every `EmitBoundedOutput` the drain helpers saw — output that went
+    /// Every `EmitWorkflowOutput` the drain helpers saw — output that went
     /// STRAIGHT to the wire, bypassing any proc boundary. A durable structured
     /// operative must produce none of these (it stages); `run`-sugar and
     /// opted-out classes still do.
@@ -3903,7 +3912,7 @@ mod tests {
         }
     }
 
-    /// Drain output frames until the `BoundedCompleted` for `id`, returning the
+    /// Drain output frames until the `WorkflowCompleted` for `id`, returning the
     /// collected outputs and the `(status, error, result)` completion tuple.
     /// "Output" is what reaches the plugins: a `run`-sugar / opted-out emit
     /// straight off the wire, plus a structured operative's staged outbox once
@@ -3915,9 +3924,9 @@ mod tests {
             let remaining = deadline.saturating_duration_since(Instant::now());
             let msg = rx
                 .recv_timeout(remaining)
-                .unwrap_or_else(|_| panic!("timed out waiting for bounded {id}"));
+                .unwrap_or_else(|_| panic!("timed out waiting for workflow {id}"));
             match msg {
-                RunnerMessage::EmitBoundedOutput {
+                RunnerMessage::EmitWorkflowOutput {
                     operative_id,
                     payload,
                 } if operative_id == id => {
@@ -3927,7 +3936,7 @@ mod tests {
                         .push((operative_id, payload.clone()));
                     outs.push(payload);
                 }
-                RunnerMessage::EmitBoundedCompleted {
+                RunnerMessage::EmitWorkflowCompleted {
                     operative_id,
                     status,
                     error,
@@ -3976,7 +3985,7 @@ mod tests {
                         return;
                     }
                 }
-                RunnerMessage::EmitBoundedOutput {
+                RunnerMessage::EmitWorkflowOutput {
                     operative_id,
                     payload: p,
                 } => {

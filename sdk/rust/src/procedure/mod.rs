@@ -46,12 +46,12 @@ pub const DEFAULT_PROCEDURE_ON_TIMER_PANIC_MESSAGE: &str =
 
 /// Default per-Entity bound on pending timers, used by
 /// [`Procedure::max_timers_per_entity`]. A per-Entity timer set is
-/// author-controlled memory multiplied by an unbounded Entity count; the cap
+/// author-controlled memory multiplied by a stream Entity count; the cap
 /// is what keeps a runaway registration a refusal rather than an OOM.
 pub const DEFAULT_MAX_TIMERS_PER_ENTITY: usize = 10_000;
 pub use flz_core::persistence::DEFAULT_COMPACT_AFTER_BYTES;
 
-/// One Procedure in an UnboundedOperative topology. Stateless dispatcher; per-entity
+/// One Procedure in a StreamOperative topology. Stateless dispatcher; per-entity
 /// State is held by the runtime and threaded through `run` via a
 /// [`StateHandle`].
 ///
@@ -72,7 +72,7 @@ pub use flz_core::persistence::DEFAULT_COMPACT_AFTER_BYTES;
 ///
 /// State persistence (added by `operative-state-persistence`):
 ///
-/// - [`Self::Change`] — associated type bounded on
+/// - [`Self::Change`] — associated type workflow on
 ///   `Serialize + DeserializeOwned + Send + Sync + 'static`. Default
 ///   [`NoChange`] opts out of persistence machinery.
 /// - [`Self::Clock`] — sealed trait. Default [`WallClock`].
@@ -93,7 +93,7 @@ pub trait Procedure: Send + Sync + 'static + Default {
     /// shared-Arc case (`Arc::unwrap_or_clone`).
     type Input: Send + Sync + 'static + Clone;
     type Output: Send + Sync + 'static;
-    /// Per-Entity state. Bounded on `Serialize + DeserializeOwned` so
+    /// Per-Entity state. Workflow on `Serialize + DeserializeOwned` so
     /// the runtime can serialize state for `EntityState` /
     /// `MigrationSerialization` and seed it from `AddOperative.init_values`
     /// without going through the user's `init_state`.
@@ -124,10 +124,10 @@ pub trait Procedure: Send + Sync + 'static + Default {
     /// Bump on non-additive Change-schema edits.
     const SCHEMA_VERSION: u32 = 1;
 
-    /// Stable identifier within the UnboundedOperative class. Must be unique per UnboundedOperative.
+    /// Stable identifier within the StreamOperative class. Must be unique per StreamOperative.
     fn name() -> &'static str;
 
-    /// Per-entity state factory. Called once per Entity at UnboundedOperative
+    /// Per-entity state factory. Called once per Entity at StreamOperative
     /// startup. `entity_key` is `None` in single-entity mode and
     /// `Some(k)` for static mode where `k` is one of the values returned
     /// by `entity_keys()`.
@@ -238,7 +238,7 @@ pub trait Procedure: Send + Sync + 'static + Default {
     const ENTITIES_FOR_OVERRIDDEN: bool = false;
 
     /// Dynamic-mode idle eviction window. `None` (default) = no eviction:
-    /// Entities live as long as the UnboundedOperative, like static ones. `Some(ttl)`
+    /// Entities live as long as the StreamOperative, like static ones. `Some(ttl)`
     /// opts a per-Procedure reaper in; eviction is destructive (in-memory slot +
     /// on-disk WAL/snapshot dropped) and a later input cold-starts fresh —
     /// no restore-from-disk. Ignored for single/static Procedures.
@@ -271,7 +271,7 @@ pub trait Procedure: Send + Sync + 'static + Default {
     /// `MAILBOX_CAPACITY_OVERRIDDEN = true` so the runtime can tell an
     /// explicit-but-equal-to-default override from the inherited default.
     /// Capacity must be in `1..=1_048_576`; out-of-range values fail
-    /// `define_unbounded::<R>()` with the offending Procedure name.
+    /// `define_stream::<R>()` with the offending Procedure name.
     fn mailbox_capacity() -> usize {
         Self::DEFAULT_MAILBOX_CAPACITY
     }
@@ -340,10 +340,10 @@ pub trait Procedure: Send + Sync + 'static + Default {
         DEFAULT_MAX_TIMERS_PER_ENTITY
     }
 
-    /// Optional saga **compensation** hook (bounded operatives only). An
+    /// Optional saga **compensation** hook (workflow operatives only). An
     /// procedure whose `run` commits a reversible side effect declares this to
-    /// undo it. The bounded driver fires it ONLY during abnormal-termination
-    /// rollback — never on a clean `ok`, never for an unbounded operative — once
+    /// undo it. The workflow driver fires it ONLY during abnormal-termination
+    /// rollback — never on a clean `ok`, never for a stream operative — once
     /// per entity that ran, in reverse completion order, handing back that
     /// entity's own collected outputs (zero-copy `Arc`s) and its
     /// [`StateHandle`], so it can reverse precisely. Compensation MUST be
@@ -351,7 +351,7 @@ pub trait Procedure: Send + Sync + 'static + Default {
     ///
     /// The default is a no-op; a procedure that overrides this MUST also set
     /// [`COMPENSATE_OVERRIDDEN`](Self::COMPENSATE_OVERRIDDEN) `= true` so the
-    /// bounded driver registers it as compensable (hookless procedures are
+    /// workflow driver registers it as compensable (hookless procedures are
     /// skipped during rollback).
     fn compensate(
         &mut self,
@@ -364,7 +364,7 @@ pub trait Procedure: Send + Sync + 'static + Default {
 
     /// Override-detection sentinel for [`Self::compensate`]. Default `false`; an
     /// procedure that overrides `compensate` MUST set this to `true` so the
-    /// bounded driver knows the procedure participates in saga rollback.
+    /// workflow driver knows the procedure participates in saga rollback.
     const COMPENSATE_OVERRIDDEN: bool = false;
 }
 

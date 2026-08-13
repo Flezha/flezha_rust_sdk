@@ -13,10 +13,10 @@ use std::time::Duration;
 
 use flezha_runner::channel::ChannelBuilder;
 use flezha_runner::entity::dynamic::DynamicEntityRegistry;
-use flezha_runner::operative::UnboundedInstance;
+use flezha_runner::operative::StreamInstance;
 use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError};
 use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_runner::UnboundedOperative;
+use flezha_runner::StreamOperative;
 
 mod common;
 use common::{dispatch_input, dummy_stream, setup, wait_until};
@@ -27,7 +27,7 @@ fn key_of(input: &str) -> String {
 
 /// A `String`-in, `()`-state dynamic-mode Procedure keyed by [`key_of`]. The
 /// base form takes the `init_state` + `run` bodies; `dyn_procedure!` adds
-/// trivial ones plus a paired single-entry UnboundedOperative. Extra trait items (TTL,
+/// trivial ones plus a paired single-entry StreamOperative. Extra trait items (TTL,
 /// cap) are appended verbatim.
 macro_rules! dyn_procedure_base {
     ($procedure:ident, $operative:ident, $name:literal, $factory:literal, { $($item:item)* }) => {
@@ -44,7 +44,7 @@ macro_rules! dyn_procedure_base {
             $($item)*
         }
         struct $operative;
-        impl UnboundedOperative for $operative {
+        impl StreamOperative for $operative {
             fn factory_id() -> &'static str { $factory }
             fn channels(c: &ChannelBuilder) {
                 c.input::<String>("inp")
@@ -123,7 +123,7 @@ dyn_procedure_base!(
 );
 
 /// The single dynamic registry on a one-procedure operative instance.
-fn registry(instance: &Arc<UnboundedInstance>) -> Arc<DynamicEntityRegistry> {
+fn registry(instance: &Arc<StreamInstance>) -> Arc<DynamicEntityRegistry> {
     Arc::clone(
         instance.dynamic_registries[0]
             .as_ref()

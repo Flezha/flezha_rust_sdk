@@ -1,8 +1,8 @@
-//! Procedure-requested spawn of a bounded operative
+//! Procedure-requested spawn of a workflow operative
 //! (`procedure-requested-spawn`).
 //!
-//! [`ProcedureCtx::spawn_bounded`](crate::procedure::ProcedureCtx::spawn_bounded)
-//! ships one `SpawnBoundedRequest` on the control plane and hands the caller a
+//! [`ProcedureCtx::spawn_workflow`](crate::procedure::ProcedureCtx::spawn_workflow)
+//! ships one `SpawnWorkflowRequest` on the control plane and hands the caller a
 //! [`SpawnHandle`]. The request never blocks the procedure and its failure is
 //! never the procedure's failure: everything the controller decides comes back
 //! through the handle, and a handle nobody looks at reports a failure to the
@@ -73,7 +73,7 @@ pub enum SpawnError {
     Unavailable,
 }
 
-/// The async result of a [`spawn_bounded`](crate::procedure::ProcedureCtx::spawn_bounded)
+/// The async result of a [`spawn_workflow`](crate::procedure::ProcedureCtx::spawn_workflow)
 /// request. Observing it is optional: a handle dropped before its result
 /// arrives keeps waiting in the background and logs a warning if the request
 /// failed, so a fire-and-forget requester never loses the diagnosis.
@@ -187,7 +187,7 @@ fn interpret(
 }
 
 fn warn(instance_id: &str, factory_id: &str, error: &SpawnError) {
-    eprintln!("[flezha] spawn_bounded({instance_id}, {factory_id}) failed: {error}");
+    eprintln!("[flezha] spawn_workflow({instance_id}, {factory_id}) failed: {error}");
 }
 
 /// Hand an unobserved handle's receiver to the reaper so its failure still
@@ -228,7 +228,7 @@ pub(crate) fn request(
     if_running: IfRunning,
 ) -> SpawnHandle {
     let reference_id = format!(
-        "spawn-bounded-{}-{}",
+        "spawn-workflow-{}-{}",
         instance_id,
         crate::util::nonce_suffix()
     );
@@ -239,8 +239,8 @@ pub(crate) fn request(
     let sent =
         crate::runner::coordinator_try_send(crate::runner::RunnerMessage::EmitControlRequest {
             reference_id: reference_id.clone(),
-            command: crate::pb::command_request::Command::SpawnBoundedRequest(
-                crate::pb::SpawnBoundedRequest {
+            command: crate::pb::command_request::Command::SpawnWorkflowRequest(
+                crate::pb::SpawnWorkflowRequest {
                     instance_id: instance_id.clone(),
                     factory_id: factory_id.clone(),
                     payload,

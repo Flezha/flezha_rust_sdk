@@ -6,7 +6,7 @@
 //! (`crossbeam::queue::ArrayQueue` + `AtomicBool inflight`). The typed
 //! layer's poll workers drain them through `flz_core`'s activation engine
 //! (`poll() → dispatch → complete`). A `DashMap`-backed
-//! [`operative::registry::OperativeRegistry`] holds live UnboundedOperative
+//! [`operative::registry::OperativeRegistry`] holds live StreamOperative
 //! instances; the central coordinator runs but only handles
 //! control-plane traffic.
 //!
@@ -14,7 +14,7 @@
 //!
 //! ```no_run
 //! use flezha_runner::{
-//!     Flezha, ChannelBuilder, UnboundedOperative, Procedure, ProcedureCtx, ProcedureError,
+//!     Flezha, ChannelBuilder, StreamOperative, Procedure, ProcedureCtx, ProcedureError,
 //! };
 //! use flezha_runner::state::{
 //!     Change, NoChange, RestoreInitPayload, StateHandle, WallClock,
@@ -56,7 +56,7 @@
 //! }
 //!
 //! struct AppendOperative;
-//! impl UnboundedOperative for AppendOperative {
+//! impl StreamOperative for AppendOperative {
 //!     fn factory_id() -> &'static str { "appender" }
 //!     fn channels(c: &ChannelBuilder) {
 //!         c.input::<String>("input").into::<AppendProcedure>();
@@ -65,7 +65,7 @@
 //!
 //! # fn main() -> Result<(), flezha_runner::FlezhaError> {
 //! Flezha::create_runner("my_namespace")?
-//!     .define_unbounded::<AppendOperative>()?
+//!     .define_stream::<AppendOperative>()?
 //!     .run()?; // `let runner = ...start()?;` instead to keep the calling thread
 //! # Ok(())
 //! # }
@@ -75,7 +75,7 @@
 //! Method names and lifecycle verbs follow `docs/sdk_naming_conventions.md`
 //! (repository root), mirrored 1:1 with the Java SDK.
 //!
-//! When 10,000 messages targeting one `appender` UnboundedOperative instance arrive
+//! When 10,000 messages targeting one `appender` StreamOperative instance arrive
 //! on the entry channel, the final `state.seen` vector contains those
 //! 10,000 inputs in arrival order — the per-Entity inflight CAS
 //! guarantees no two `Procedure::run` calls overlap on the same entity.
@@ -84,7 +84,7 @@
 //!
 //! The SDK's reconnect loop runs forever with capped exponential
 //! backoff. On every successful reconnect the controller re-issues
-//! `AddOperative` for every UnboundedOperative instance ProcessHub still has tagged
+//! `AddOperative` for every StreamOperative instance ProcessHub still has tagged
 //! to this runner's profile. The handler is idempotent on duplicate
 //! `operative_id`: if the local registry already contains the instance
 //! it logs and returns without re-registering, so the existing
@@ -103,8 +103,8 @@
 //! - `FLEZHA_TRANSPORT` — `"uds"` (default) or `"quic"`.
 //! - `FLEZHA_QUIC_ADDRESS` — QUIC endpoint address.
 
-pub mod bounded;
 pub mod channel;
+pub mod workflow;
 pub use flz_core::command;
 pub mod entity;
 pub mod operative;
@@ -136,8 +136,6 @@ pub mod state {
 use std::collections::HashMap;
 use std::sync::{Arc, Condvar, Mutex, RwLock, Weak};
 
-pub use bounded::spec::BuildBoundedError;
-pub use bounded::{BoundedCtx, BoundedError, BoundedOperative, LoopMode, RollbackMode};
 pub use channel::builder::TopologyIssue;
 pub use channel::{
     Channel, ChannelBuilder, EntryStream, Merge, MergeSource, OverflowPolicy, RetryPolicy, Stream,
@@ -154,20 +152,22 @@ pub use flz_transport::{service, transport};
 /// collection without the user adding an `inventory` dependency.
 pub use inventory;
 pub use operative::builder::TopologyBuildError;
-pub use operative::UnboundedOperative;
+pub use operative::StreamOperative;
 pub use procedure::{
     Change, Clock, ClockFor, CoalesceKey, DerivedState, EventTimeFrom, LogicalClock, NoChange,
     Procedure, ProcedureCtx, ProcedureError, StableId, StateHandle, TimeExtractor, WallClock,
 };
+pub use workflow::spec::BuildWorkflowError;
+pub use workflow::{LoopMode, RollbackMode, WorkflowCtx, WorkflowError, WorkflowOperative};
 
 /// An operative using the single-procedure auto-wire path (`#[flezha::procedure(sink = …)]`) or
-/// `flezha::operative!` registers without an explicit `.define_unbounded::<R>()` call.
+/// `flezha::operative!` registers without an explicit `.define_stream::<R>()` call.
 /// Generated code `submit!`s one of these; every [`FlezhaRunner::start`]
 /// harvests the collection into the runner's declared set.
 pub struct AutoOperative {
     /// The class's controller-facing factory id (for duplicate detection).
     pub factory_id: fn() -> &'static str,
-    /// Registers the class topology (`__register_unbounded::<R>()`).
+    /// Registers the class topology (`__register_stream::<R>()`).
     pub register: fn(),
 }
 
@@ -195,42 +195,42 @@ pub fn register_inventory_operatives() {
 
 pub use flz_core::pb;
 
-use crate::operative::instance::UnboundedInstance;
+use crate::operative::instance::StreamInstance;
 use crate::runner::{ClientResponseMessage, RunnerMessage};
 use crate::shutdown::ShutdownBridge;
 
-/// Register an UnboundedOperative class topology in the global class registry.
-/// The internal body behind [`FlezhaRunner::define_unbounded`]; kept separate
-/// so macro-generated auto-wire code can reuse it via [`__register_unbounded`].
-pub(crate) fn register_unbounded_class<R: UnboundedOperative>() -> Result<(), TopologyBuildError> {
+/// Register a StreamOperative class topology in the global class registry.
+/// The internal body behind [`FlezhaRunner::define_stream`]; kept separate
+/// so macro-generated auto-wire code can reuse it via [`__register_stream`].
+pub(crate) fn register_stream_class<R: StreamOperative>() -> Result<(), TopologyBuildError> {
     let topology = operative::builder::build_topology_for::<R>()?;
     operative::registry::register_class(R::factory_id(), topology);
     Ok(())
 }
 
-/// Register a bounded class spec in the global class registry — the same
-/// body `FlezhaRunner::define_bounded` runs, kept callable without a runner
-/// for the bounded driver's unit scenarios.
+/// Register a workflow class spec in the global class registry — the same
+/// body `FlezhaRunner::define_workflow` runs, kept callable without a runner
+/// for the workflow driver's unit scenarios.
 #[cfg(test)]
-pub(crate) fn register_bounded_class<T: BoundedOperative>() -> Result<(), BuildBoundedError> {
-    let spec = bounded::spec::build_spec::<T>()?;
-    bounded::registry::register_class(T::factory_id(), spec);
+pub(crate) fn register_workflow_class<T: WorkflowOperative>() -> Result<(), BuildWorkflowError> {
+    let spec = workflow::spec::build_spec::<T>()?;
+    workflow::registry::register_class(T::factory_id(), spec);
     Ok(())
 }
 
 /// Macro plumbing for `#[flezha::procedure(...)]` / `flezha::operative!`
 /// auto-registration. Not part of the public API — declare classes with
-/// [`FlezhaRunner::define_unbounded`]. Panics on an invalid topology: the
+/// [`FlezhaRunner::define_stream`]. Panics on an invalid topology: the
 /// topology is machine-generated, so a failure here is an SDK bug, not an
 /// authoring mistake the user could handle.
 #[doc(hidden)]
-pub fn __register_unbounded<R: UnboundedOperative>() {
-    register_unbounded_class::<R>().expect("flezha: auto-wired operative has an invalid topology");
+pub fn __register_stream<R: StreamOperative>() {
+    register_stream_class::<R>().expect("flezha: auto-wired operative has an invalid topology");
 }
 
 /// The ONE public error of the entry-point chain: every fallible call on
 /// [`FlezhaRunner`] returns `Result<_, FlezhaError>`, so
-/// `Flezha::create_runner(ns)?.define_unbounded::<A>()?.run()?` compiles
+/// `Flezha::create_runner(ns)?.define_stream::<A>()?.run()?` compiles
 /// under a single `?`. Java throws the identically-named failure classes
 /// (naming rule 6 in `docs/sdk_naming_conventions.md`).
 #[derive(Debug, thiserror::Error)]
@@ -250,14 +250,14 @@ pub enum FlezhaError {
     /// delivering its connection confirmation.
     #[error("controller connection failed: {0}")]
     ConnectFailed(String),
-    /// `define_unbounded` found an invalid topology (duplicate channel names,
+    /// `define_stream` found an invalid topology (duplicate channel names,
     /// unwired channels, type mismatches, ...) — reported at the declaring
     /// call site, never a panic.
     #[error(transparent)]
     InvalidTopology(#[from] TopologyBuildError),
-    /// `define_bounded` found invalid bounded authoring.
+    /// `define_workflow` found invalid workflow authoring.
     #[error(transparent)]
-    InvalidBounded(#[from] BuildBoundedError),
+    InvalidWorkflow(#[from] BuildWorkflowError),
     /// The factory id is already in this runner's declared set.
     #[error("factory `{factory_id}` is already defined on this runner")]
     DuplicateFactoryId { factory_id: String },
@@ -304,8 +304,8 @@ pub struct Flezha;
 impl Flezha {
     /// Create this process's runner for `namespace` — one object carries
     /// declaration and lifecycle (Beam's `Pipeline.create()` shape). Declare
-    /// operative classes with [`FlezhaRunner::define_unbounded`] /
-    /// [`FlezhaRunner::define_bounded`] (legal before AND after start), then
+    /// operative classes with [`FlezhaRunner::define_stream`] /
+    /// [`FlezhaRunner::define_workflow`] (legal before AND after start), then
     /// [`FlezhaRunner::start`] (keep the calling thread) or
     /// [`FlezhaRunner::run`] (block until shutdown). Creating a runner never
     /// connects, claims the process singleton slot, or spawns a thread.
@@ -313,12 +313,12 @@ impl Flezha {
     /// ```no_run
     /// # use flezha_runner::{Flezha, FlezhaError};
     /// # struct MyOperative;
-    /// # impl flezha_runner::UnboundedOperative for MyOperative {
+    /// # impl flezha_runner::StreamOperative for MyOperative {
     /// #     fn factory_id() -> &'static str { "my_operative" }
     /// #     fn channels(_c: &flezha_runner::ChannelBuilder) {}
     /// # }
     /// # fn main() -> Result<(), FlezhaError> {
-    /// Flezha::create_runner("my_app")?.define_unbounded::<MyOperative>()?.run()?;
+    /// Flezha::create_runner("my_app")?.define_stream::<MyOperative>()?.run()?;
     /// # Ok(())
     /// # }
     /// ```
@@ -424,7 +424,7 @@ impl FlezhaRunner {
         &self.core.namespace
     }
 
-    /// Declare an UnboundedOperative class the runtime can spawn instances of
+    /// Declare a StreamOperative class the runtime can spawn instances of
     /// later (via the controller's `AddOperative`). Calls `R::channels(...)`
     /// once and records the topology in the global class registry. Legal
     /// before and after `start()` — a post-start define ships the runner's
@@ -432,7 +432,7 @@ impl FlezhaRunner {
     /// topology (duplicate channel names, unwired channels, missing
     /// `entities_for` overrides, type mismatches, ...) is reported here, at
     /// the declaring call site — not a panic.
-    pub fn define_unbounded<R: UnboundedOperative>(&self) -> Result<&Self, FlezhaError> {
+    pub fn define_stream<R: StreamOperative>(&self) -> Result<&Self, FlezhaError> {
         // Build/validate BEFORE touching the declared set: an invalid
         // topology must leave the runner exactly as it was.
         let topology = operative::builder::build_topology_for::<R>()?;
@@ -442,30 +442,30 @@ impl FlezhaRunner {
         Ok(self)
     }
 
-    /// Declare a BoundedOperative class. Sibling of [`Self::define_unbounded`];
+    /// Declare a WorkflowOperative class. Sibling of [`Self::define_stream`];
     /// builds the class spec (run-sugar body or structured chain) and reports
     /// invalid authoring here, at the declaring call site.
-    pub fn define_bounded<T: BoundedOperative>(&self) -> Result<&Self, FlezhaError> {
-        let spec = bounded::spec::build_spec::<T>()?;
+    pub fn define_workflow<T: WorkflowOperative>(&self) -> Result<&Self, FlezhaError> {
+        let spec = workflow::spec::build_spec::<T>()?;
         self.declare(T::factory_id(), || {
-            bounded::registry::register_class(T::factory_id(), spec)
+            workflow::registry::register_class(T::factory_id(), spec)
         })?;
         Ok(self)
     }
 
-    /// Remove an UnboundedOperative class from this runner. Legal before and
+    /// Remove a StreamOperative class from this runner. Legal before and
     /// after `start()`. Refuses with
     /// [`FlezhaError::OperativeTypeInUse`] while live instances of the
     /// factory exist (the type stays defined) and with
     /// [`FlezhaError::NotDefined`] for a factory this runner never declared.
     /// A post-start remove ships the remaining full factory set to the
     /// controller (`UpdateFactories`).
-    pub fn remove_unbounded<R: UnboundedOperative>(&self) -> Result<&Self, FlezhaError> {
+    pub fn remove_stream<R: StreamOperative>(&self) -> Result<&Self, FlezhaError> {
         self.remove(R::factory_id(), false)
     }
 
-    /// Remove a BoundedOperative class. Sibling of [`Self::remove_unbounded`].
-    pub fn remove_bounded<T: BoundedOperative>(&self) -> Result<&Self, FlezhaError> {
+    /// Remove a WorkflowOperative class. Sibling of [`Self::remove_stream`].
+    pub fn remove_workflow<T: WorkflowOperative>(&self) -> Result<&Self, FlezhaError> {
         self.remove(T::factory_id(), true)
     }
 
@@ -522,10 +522,10 @@ impl FlezhaRunner {
         self.await_termination()
     }
 
-    /// Snapshot of the live UnboundedOperative-instance registry, keyed by
+    /// Snapshot of the live StreamOperative-instance registry, keyed by
     /// what the wire calls `operative_id`. `Err(NotStarted)` on a
     /// never-started runner — never a panic.
-    pub fn operatives(&self) -> Result<HashMap<String, Arc<UnboundedInstance>>, FlezhaError> {
+    pub fn operatives(&self) -> Result<HashMap<String, Arc<StreamInstance>>, FlezhaError> {
         let started = self.core.started.lock().unwrap();
         let Some(live) = started.as_ref() else {
             return Err(FlezhaError::NotStarted);
@@ -577,7 +577,7 @@ impl FlezhaRunner {
     /// with `AddOperative` handling by construction, so the check is
     /// race-free. Pre-start no instances can exist, so the class is
     /// unregistered directly.
-    fn remove(&self, factory_id: &str, bounded: bool) -> Result<&Self, FlezhaError> {
+    fn remove(&self, factory_id: &str, workflow: bool) -> Result<&Self, FlezhaError> {
         if !self
             .core
             .declared
@@ -597,7 +597,7 @@ impl FlezhaRunner {
                 Some(live) => {
                     match live.exchange(RunnerMessage::RemoveFactory {
                         factory_id: factory_id.to_string(),
-                        bounded,
+                        workflow,
                     })? {
                         ClientResponseMessage::RemoveFactoryResult(Ok(())) => {}
                         ClientResponseMessage::RemoveFactoryResult(Err(live_instances)) => {
@@ -614,8 +614,8 @@ impl FlezhaRunner {
                     }
                 }
                 None => {
-                    if bounded {
-                        bounded::registry::unregister_class(factory_id);
+                    if workflow {
+                        workflow::registry::unregister_class(factory_id);
                     } else {
                         operative::registry::unregister_class(factory_id);
                     }

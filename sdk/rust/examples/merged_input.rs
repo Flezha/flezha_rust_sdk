@@ -22,7 +22,7 @@
 //!
 //! Run it with:
 //!     Flezha::create_runner("default")?
-//!         .define_unbounded::<Thermostat>()?
+//!         .define_stream::<Thermostat>()?
 //!         .run()?;
 //!
 //! then feed the two channels independently:
@@ -31,7 +31,7 @@
 
 use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError};
 use flezha_runner::state::{Change, RestoreInitPayload, StateHandle, WallClock};
-use flezha_runner::{ChannelBuilder, UnboundedOperative};
+use flezha_runner::{ChannelBuilder, StreamOperative};
 use serde::{Deserialize, Serialize};
 
 // -- the two feeds ----------------------------------------------------------
@@ -136,7 +136,7 @@ impl Procedure for Detector {
 
 struct Thermostat;
 
-impl UnboundedOperative for Thermostat {
+impl StreamOperative for Thermostat {
     fn factory_id() -> &'static str {
         "thermostat"
     }

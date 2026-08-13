@@ -16,10 +16,10 @@ use bi::OperativeDispatchHandle;
 use flezha_runner::channel::ChannelBuilder;
 use flezha_runner::operative::builder::build_topology_for;
 use flezha_runner::operative::registry::OperativeRegistry;
-use flezha_runner::operative::UnboundedInstance;
+use flezha_runner::operative::StreamInstance;
 use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError};
 use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_runner::{__dispatch_internals as bi, OverflowPolicy, UnboundedOperative};
+use flezha_runner::{__dispatch_internals as bi, OverflowPolicy, StreamOperative};
 
 mod common;
 use common::{dispatch_input, dispatch_marked, dummy_stream, setup, wait_until};
@@ -34,7 +34,7 @@ test_procedure!(AppendProcedure, "append_procedure", String => String, (), |inpu
 });
 
 struct AppendOperative;
-impl UnboundedOperative for AppendOperative {
+impl StreamOperative for AppendOperative {
     fn factory_id() -> &'static str {
         "append_operative"
     }
@@ -103,7 +103,7 @@ test_procedure!(ConcurrencyProbeProcedure, "concurrency_probe_procedure", String
 });
 
 struct ConcurrencyProbeOperative;
-impl UnboundedOperative for ConcurrencyProbeOperative {
+impl StreamOperative for ConcurrencyProbeOperative {
     fn factory_id() -> &'static str {
         "concurrency_probe_operative"
     }
@@ -120,8 +120,8 @@ fn same_entity_never_runs_concurrently() {
 
     let topology = build_topology_for::<ConcurrencyProbeOperative>().expect("topology");
     let registry = Arc::new(OperativeRegistry::new());
-    let instance = UnboundedInstance::new(topology, Arc::from("conc-instance"));
-    registry.register_unbounded(instance);
+    let instance = StreamInstance::new(topology, Arc::from("conc-instance"));
+    registry.register_stream(instance);
     let handle = OperativeDispatchHandle {
         registry: Arc::clone(&registry),
     };
@@ -239,7 +239,7 @@ impl Procedure for ParallelStaticProcedure {
 }
 
 struct ParallelOperative;
-impl UnboundedOperative for ParallelOperative {
+impl StreamOperative for ParallelOperative {
     fn factory_id() -> &'static str {
         "parallel_operative"
     }
@@ -299,8 +299,8 @@ test_procedure!(CountingProcedure, "counting_procedure", String => String, Count
     Ok(())
 });
 
-struct UnboundedA;
-impl UnboundedOperative for UnboundedA {
+struct StreamA;
+impl StreamOperative for StreamA {
     fn factory_id() -> &'static str {
         "ns_operative_a"
     }
@@ -309,8 +309,8 @@ impl UnboundedOperative for UnboundedA {
     }
 }
 
-struct UnboundedB;
-impl UnboundedOperative for UnboundedB {
+struct StreamB;
+impl StreamOperative for StreamB {
     fn factory_id() -> &'static str {
         "ns_operative_b"
     }
@@ -321,8 +321,8 @@ impl UnboundedOperative for UnboundedB {
 
 #[test]
 fn per_operative_namespace_isolation() {
-    let topology_a = build_topology_for::<UnboundedA>().expect("topology a");
-    let topology_b = build_topology_for::<UnboundedB>().expect("topology b");
+    let topology_a = build_topology_for::<StreamA>().expect("topology a");
+    let topology_b = build_topology_for::<StreamB>().expect("topology b");
     assert_ne!(topology_a.factory_id, topology_b.factory_id);
 
     // Same channel name on each is a separate ChannelDescriptor with id 0
@@ -354,7 +354,7 @@ test_procedure!(MetaConsumerProcedure, "meta_consumer_procedure", String => (), 
 });
 
 struct MetaRejectOperative;
-impl UnboundedOperative for MetaRejectOperative {
+impl StreamOperative for MetaRejectOperative {
     fn factory_id() -> &'static str {
         "meta_reject_operative"
     }
@@ -402,7 +402,7 @@ test_procedure!(BlockStressProcedure, "block_stress_procedure", Vec<u8> => (), (
 });
 
 struct BlockStressOperative;
-impl UnboundedOperative for BlockStressOperative {
+impl StreamOperative for BlockStressOperative {
     fn factory_id() -> &'static str {
         "block_stress_operative"
     }
@@ -485,7 +485,7 @@ test_procedure!(DropNewestProcedure, "drop_newest_procedure", Vec<u8> => (), (),
 });
 
 struct DropNewestOperative;
-impl UnboundedOperative for DropNewestOperative {
+impl StreamOperative for DropNewestOperative {
     fn factory_id() -> &'static str {
         "drop_newest_operative"
     }
@@ -561,7 +561,7 @@ test_procedure!(DropOldestProcedure, "drop_oldest_procedure", Vec<u8> => (), (),
 });
 
 struct DropOldestOperative;
-impl UnboundedOperative for DropOldestOperative {
+impl StreamOperative for DropOldestOperative {
     fn factory_id() -> &'static str {
         "drop_oldest_operative"
     }
@@ -648,7 +648,7 @@ test_procedure!(InterProcedureConsumer, "inter_procedure_consumer", String => ()
 });
 
 struct InterProcedureDefaultBlockOperative;
-impl UnboundedOperative for InterProcedureDefaultBlockOperative {
+impl StreamOperative for InterProcedureDefaultBlockOperative {
     fn factory_id() -> &'static str {
         "inter_procedure_default_block_operative"
     }
@@ -661,17 +661,17 @@ impl UnboundedOperative for InterProcedureDefaultBlockOperative {
     }
 }
 
-// ----- Sticky ordering preserved under bounded Block (BoundedOperative 8.3) -----
+// ----- Sticky ordering preserved under workflow Block (WorkflowOperative 8.3) -----
 
-static STICKY_BOUNDED_CONCURRENT: AtomicUsize = AtomicUsize::new(0);
-static STICKY_BOUNDED_MAX_CONCURRENT: AtomicUsize = AtomicUsize::new(0);
-static STICKY_BOUNDED_DELIVERED: AtomicUsize = AtomicUsize::new(0);
+static STICKY_WORKFLOW_CONCURRENT: AtomicUsize = AtomicUsize::new(0);
+static STICKY_WORKFLOW_MAX_CONCURRENT: AtomicUsize = AtomicUsize::new(0);
+static STICKY_WORKFLOW_DELIVERED: AtomicUsize = AtomicUsize::new(0);
 
-test_procedure!(StickyBoundedProcedure, "sticky_bounded_procedure", Vec<u8> => (), (), cap 16, |_input, _state, _ctx| {
-    let cur = STICKY_BOUNDED_CONCURRENT.fetch_add(1, Ordering::AcqRel) + 1;
-    let mut prev = STICKY_BOUNDED_MAX_CONCURRENT.load(Ordering::Acquire);
+test_procedure!(StickyWorkflowProcedure, "sticky_workflow_procedure", Vec<u8> => (), (), cap 16, |_input, _state, _ctx| {
+    let cur = STICKY_WORKFLOW_CONCURRENT.fetch_add(1, Ordering::AcqRel) + 1;
+    let mut prev = STICKY_WORKFLOW_MAX_CONCURRENT.load(Ordering::Acquire);
     while cur > prev {
-        match STICKY_BOUNDED_MAX_CONCURRENT.compare_exchange_weak(
+        match STICKY_WORKFLOW_MAX_CONCURRENT.compare_exchange_weak(
             prev,
             cur,
             Ordering::AcqRel,
@@ -684,20 +684,20 @@ test_procedure!(StickyBoundedProcedure, "sticky_bounded_procedure", Vec<u8> => (
     for _ in 0..32 {
         std::hint::spin_loop();
     }
-    STICKY_BOUNDED_CONCURRENT.fetch_sub(1, Ordering::AcqRel);
-    STICKY_BOUNDED_DELIVERED.fetch_add(1, Ordering::Relaxed);
+    STICKY_WORKFLOW_CONCURRENT.fetch_sub(1, Ordering::AcqRel);
+    STICKY_WORKFLOW_DELIVERED.fetch_add(1, Ordering::Relaxed);
     Ok(())
 });
 
-struct StickyBoundedOperative;
-impl UnboundedOperative for StickyBoundedOperative {
+struct StickyWorkflowOperative;
+impl StreamOperative for StickyWorkflowOperative {
     fn factory_id() -> &'static str {
-        "sticky_bounded_operative"
+        "sticky_workflow_operative"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<Vec<u8>>("input")
             .on_full(OverflowPolicy::Block)
-            .into::<StickyBoundedProcedure>();
+            .into::<StickyWorkflowProcedure>();
     }
 }
 
@@ -707,12 +707,12 @@ impl UnboundedOperative for StickyBoundedOperative {
 /// guarantees mutual exclusion regardless of how many producers are
 /// parked at the entry edge.
 #[test]
-fn sticky_ordering_holds_under_bounded_block() {
-    STICKY_BOUNDED_CONCURRENT.store(0, Ordering::Release);
-    STICKY_BOUNDED_MAX_CONCURRENT.store(0, Ordering::Release);
-    STICKY_BOUNDED_DELIVERED.store(0, Ordering::Release);
+fn sticky_ordering_holds_under_workflow_block() {
+    STICKY_WORKFLOW_CONCURRENT.store(0, Ordering::Release);
+    STICKY_WORKFLOW_MAX_CONCURRENT.store(0, Ordering::Release);
+    STICKY_WORKFLOW_DELIVERED.store(0, Ordering::Release);
 
-    let (handle, instance) = setup::<StickyBoundedOperative>("sticky-bounded-instance");
+    let (handle, instance) = setup::<StickyWorkflowOperative>("sticky-workflow-instance");
     let stream = dummy_stream();
 
     let producers = 4usize;
@@ -728,7 +728,7 @@ fn sticky_ordering_holds_under_bounded_block() {
                 let mut md = HashMap::new();
                 md.insert("channel".to_string(), "input".to_string());
                 handle.dispatch(
-                    "sticky-bounded-instance",
+                    "sticky-workflow-instance",
                     format!("{tid}-{i}").into_bytes(),
                     &md,
                     Arc::clone(&stream),
@@ -741,12 +741,12 @@ fn sticky_ordering_holds_under_bounded_block() {
     }
 
     assert!(wait_until(
-        || STICKY_BOUNDED_DELIVERED.load(Ordering::Acquire) == total,
+        || STICKY_WORKFLOW_DELIVERED.load(Ordering::Acquire) == total,
         Duration::from_secs(60)
     ));
 
     assert_eq!(
-        STICKY_BOUNDED_MAX_CONCURRENT.load(Ordering::Acquire),
+        STICKY_WORKFLOW_MAX_CONCURRENT.load(Ordering::Acquire),
         1,
         "bounded-mailbox single-entity allowed concurrent dispatch"
     );
@@ -781,7 +781,7 @@ test_procedure!(WireFastBProcedure, "wire_fast_b_procedure", Vec<u8> => (), (), 
 });
 
 struct WireOperativeADefault;
-impl UnboundedOperative for WireOperativeADefault {
+impl StreamOperative for WireOperativeADefault {
     fn factory_id() -> &'static str {
         "wire_operative_a_default"
     }
@@ -791,7 +791,7 @@ impl UnboundedOperative for WireOperativeADefault {
 }
 
 struct WireOperativeABlock;
-impl UnboundedOperative for WireOperativeABlock {
+impl StreamOperative for WireOperativeABlock {
     fn factory_id() -> &'static str {
         "wire_operative_a_block"
     }
@@ -803,7 +803,7 @@ impl UnboundedOperative for WireOperativeABlock {
 }
 
 struct WireOperativeB;
-impl UnboundedOperative for WireOperativeB {
+impl StreamOperative for WireOperativeB {
     fn factory_id() -> &'static str {
         "wire_operative_b"
     }
@@ -813,9 +813,9 @@ impl UnboundedOperative for WireOperativeB {
 }
 
 /// Spec scenario "Default entry policy keeps wire reader running":
-/// when UnboundedOperative A's entry mailbox is artificially saturated under default
+/// when StreamOperative A's entry mailbox is artificially saturated under default
 /// `DropNewest`, the simulated wire-reader continues dispatching frames
-/// to sibling UnboundedOperative B without delay.
+/// to sibling StreamOperative B without delay.
 #[test]
 fn default_entry_policy_does_not_stall_sibling_operatives() {
     let _serial = WIRE_TEST_LOCK.lock().unwrap();
@@ -826,10 +826,10 @@ fn default_entry_policy_does_not_stall_sibling_operatives() {
 
     let topology_a = build_topology_for::<WireOperativeADefault>().expect("topology a");
     let topology_b = build_topology_for::<WireOperativeB>().expect("topology b");
-    let instance_a = UnboundedInstance::new(topology_a, Arc::from("wire-a-default"));
-    let instance_b = UnboundedInstance::new(topology_b, Arc::from("wire-b-default"));
-    registry.register_unbounded(Arc::clone(&instance_a));
-    registry.register_unbounded(Arc::clone(&instance_b));
+    let instance_a = StreamInstance::new(topology_a, Arc::from("wire-a-default"));
+    let instance_b = StreamInstance::new(topology_b, Arc::from("wire-b-default"));
+    registry.register_stream(Arc::clone(&instance_a));
+    registry.register_stream(Arc::clone(&instance_b));
 
     // Saturate A's mailbox; pre-acquire inflight so A's drain does not
     // make room for new frames during the test.
@@ -885,10 +885,10 @@ fn default_entry_policy_does_not_stall_sibling_operatives() {
 }
 
 /// Spec scenario "Opt-in entry Block drains inline instead of stalling":
-/// when UnboundedOperative A's explicit `OverflowPolicy::Block` entry channel
+/// when StreamOperative A's explicit `OverflowPolicy::Block` entry channel
 /// saturates while A's drain exists only as a scheduled-but-not-running
-/// pool bounded (inflight marked, no active drainer), the wire-reader
-/// thread drains A inline rather than parking — sibling UnboundedOperative B keeps
+/// pool workflow (inflight marked, no active drainer), the wire-reader
+/// thread drains A inline rather than parking — sibling StreamOperative B keeps
 /// flowing and no frame is lost. Parking here was the 2026-06-10 prod
 /// self-deadlock.
 #[test]
@@ -901,10 +901,10 @@ fn opt_in_entry_block_drains_inline_without_stalling_siblings() {
 
     let topology_a = build_topology_for::<WireOperativeABlock>().expect("topology a");
     let topology_b = build_topology_for::<WireOperativeB>().expect("topology b");
-    let instance_a = UnboundedInstance::new(topology_a, Arc::from("wire-a-block"));
-    let instance_b = UnboundedInstance::new(topology_b, Arc::from("wire-b-block"));
-    registry.register_unbounded(Arc::clone(&instance_a));
-    registry.register_unbounded(Arc::clone(&instance_b));
+    let instance_a = StreamInstance::new(topology_a, Arc::from("wire-a-block"));
+    let instance_b = StreamInstance::new(topology_b, Arc::from("wire-b-block"));
+    registry.register_stream(Arc::clone(&instance_a));
+    registry.register_stream(Arc::clone(&instance_b));
 
     // Phantom drain: inflight held but no thread is draining, so only the
     // producer itself can free the full mailbox.
@@ -1065,7 +1065,7 @@ test_procedure!(FlushOrderSinkProcedure, "flush_order_sink_procedure", String =>
 });
 
 struct FlushOrderOperative;
-impl UnboundedOperative for FlushOrderOperative {
+impl StreamOperative for FlushOrderOperative {
     fn factory_id() -> &'static str {
         "flush_order_operative"
     }
@@ -1139,7 +1139,7 @@ test_procedure!(PanicProcedure, "panic_procedure", String => (), (), |input, _st
 });
 
 struct PanicOperative;
-impl UnboundedOperative for PanicOperative {
+impl StreamOperative for PanicOperative {
     fn factory_id() -> &'static str {
         "panic_operative"
     }
@@ -1202,8 +1202,8 @@ fn procedure_panic_does_not_wedge_the_entity() {
 // ----- Block-policy producer on a one-worker pool must not self-deadlock -----
 //
 // The single pool worker, mid-producer-dispatch, emits into a full Block
-// consumer mailbox whose drain bounded sits queued behind the producer's own
-// bounded. Parking the worker there is a permanent self-deadlock (the freeze
+// consumer mailbox whose drain workflow sits queued behind the producer's own
+// workflow. Parking the worker there is a permanent self-deadlock (the freeze
 // that took prod down on 2026-06-10); the Block arm must drain the full
 // slot inline instead.
 
@@ -1222,7 +1222,7 @@ test_procedure!(BlockedConsumerProcedure, "blocked_consumer_procedure", String =
 });
 
 struct BlockDeadlockOperative;
-impl UnboundedOperative for BlockDeadlockOperative {
+impl StreamOperative for BlockDeadlockOperative {
     fn factory_id() -> &'static str {
         "block_deadlock_operative"
     }
@@ -1383,7 +1383,7 @@ impl Procedure for KeyedStampProcedure {
 }
 
 struct KeyedStampOperative;
-impl UnboundedOperative for KeyedStampOperative {
+impl StreamOperative for KeyedStampOperative {
     fn factory_id() -> &'static str {
         "keyed_stamp_operative"
     }
@@ -1445,7 +1445,7 @@ fn non_keyed_frame_is_byte_identical_to_prechange_layout() {
     // MetaProducerProcedure-free operative: reuse FlushOrderOperative's shape
     // via a minimal pure-plugin operative.
     struct PlainPluginOperative;
-    impl UnboundedOperative for PlainPluginOperative {
+    impl StreamOperative for PlainPluginOperative {
         fn factory_id() -> &'static str {
             "plain_plugin_operative"
         }
@@ -1610,7 +1610,7 @@ impl Procedure for TierStampProcedure {
 }
 
 struct TierOperative;
-impl UnboundedOperative for TierOperative {
+impl StreamOperative for TierOperative {
     fn factory_id() -> &'static str {
         "tier_operative"
     }
@@ -1795,7 +1795,7 @@ test_procedure!(LogicalNowSinkProcedure, "logical_now_sink_procedure", String =>
 });
 
 struct LogicalNowOperative;
-impl UnboundedOperative for LogicalNowOperative {
+impl StreamOperative for LogicalNowOperative {
     fn factory_id() -> &'static str {
         "logical_now_operative"
     }
@@ -1875,7 +1875,7 @@ fn logical_clock_serves_change_seq_and_survives_restore_rearm() {
 
 // ----- Late-input correction: the event-time-ordered replay drain -----
 //
-// The load-bearing behaviour of `unbounded-late-input-correction`. Re-forwarding
+// The load-bearing behaviour of `stream-late-input-correction`. Re-forwarding
 // a replayed slice in ARRIVAL order would put the late trade back after the
 // trades that overtook it and recompute exactly the wrong answer the correction
 // exists to repair. So the Entity holds the slice until the controller closes
@@ -1915,7 +1915,7 @@ impl Procedure for ReplayProcedure {
 }
 
 struct ReplayOperative;
-impl UnboundedOperative for ReplayOperative {
+impl StreamOperative for ReplayOperative {
     fn factory_id() -> &'static str {
         "replay_operative"
     }
@@ -2025,7 +2025,7 @@ impl Procedure for HighWaterProcedure {
 }
 
 struct HighWaterOperative;
-impl UnboundedOperative for HighWaterOperative {
+impl StreamOperative for HighWaterOperative {
     fn factory_id() -> &'static str {
         "high_water_operative"
     }
@@ -2194,7 +2194,7 @@ impl Procedure for CheckpointProcedure {
 }
 
 struct CheckpointOperative;
-impl UnboundedOperative for CheckpointOperative {
+impl StreamOperative for CheckpointOperative {
     fn factory_id() -> &'static str {
         "checkpoint_operative"
     }

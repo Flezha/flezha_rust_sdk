@@ -1,4 +1,4 @@
-//! Relocated kernel tests: `UnboundedInstance` construction with typed fixtures.
+//! Relocated kernel tests: `StreamInstance` construction with typed fixtures.
 
 #[cfg(test)]
 mod tests {
@@ -9,7 +9,7 @@ mod tests {
 
     use crate::channel::ChannelBuilder;
     use crate::operative::builder::build_topology_with_persistence;
-    use crate::operative::UnboundedOperative;
+    use crate::operative::StreamOperative;
     use crate::procedure::change::NoChange;
     use crate::procedure::clock::WallClock;
     use crate::procedure::ctx::ProcedureCtx;
@@ -41,7 +41,7 @@ mod tests {
     }
 
     struct DummyOperative;
-    impl UnboundedOperative for DummyOperative {
+    impl StreamOperative for DummyOperative {
         fn factory_id() -> &'static str {
             "dummy_operative_persistence_test"
         }
@@ -60,7 +60,7 @@ mod tests {
             DummyOperative::PERSISTENCE_ENABLED,
         )
         .expect("topology");
-        let instance = UnboundedInstance::new(topology, Arc::from("instance"));
+        let instance = StreamInstance::new(topology, Arc::from("instance"));
         assert!(instance.persistence_enabled());
     }
 
@@ -74,11 +74,8 @@ mod tests {
             DummyOperative::PERSISTENCE_ENABLED,
         )
         .expect("topology");
-        let instance = UnboundedInstance::with_persistence_override(
-            topology,
-            Arc::from("instance"),
-            Some(false),
-        );
+        let instance =
+            StreamInstance::with_persistence_override(topology, Arc::from("instance"), Some(false));
         assert!(!instance.persistence_enabled());
         // Every EntitySlot inherits the resolved value.
         for procedure_entities in &instance.entities {

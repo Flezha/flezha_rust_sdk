@@ -15,7 +15,7 @@ use flezha_runner::entity::park::{self, ParkBody};
 use flezha_runner::entity::state_sink::{install_global_sink, PARK_PAYLOAD_PAYLOAD_ID};
 use flezha_runner::operative::builder::build_topology_for;
 use flezha_runner::operative::registry::OperativeRegistry;
-use flezha_runner::operative::{UnboundedInstance, UnboundedOperative};
+use flezha_runner::operative::{StreamInstance, StreamOperative};
 use flz_transport::transport::FlezhaStream;
 
 /// A throwaway secondary stream for dispatch calls that never write back.
@@ -36,13 +36,13 @@ pub fn wait_until<F: Fn() -> bool>(predicate: F, timeout: Duration) -> bool {
     true
 }
 
-/// Build + register a single UnboundedOperative instance, returning a dispatch handle
+/// Build + register a single StreamOperative instance, returning a dispatch handle
 /// and the live instance (for counter / state assertions).
-pub fn setup<R: UnboundedOperative>(id: &str) -> (OperativeDispatchHandle, Arc<UnboundedInstance>) {
+pub fn setup<R: StreamOperative>(id: &str) -> (OperativeDispatchHandle, Arc<StreamInstance>) {
     let topology = build_topology_for::<R>().expect("topology");
     let registry = Arc::new(OperativeRegistry::new());
-    let instance = UnboundedInstance::new(topology, Arc::from(id));
-    registry.register_unbounded(Arc::clone(&instance));
+    let instance = StreamInstance::new(topology, Arc::from(id));
+    registry.register_stream(Arc::clone(&instance));
     (OperativeDispatchHandle { registry }, instance)
 }
 

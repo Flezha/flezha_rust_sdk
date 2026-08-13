@@ -11,7 +11,7 @@ use std::time::Duration;
 use flezha_runner::channel::ChannelBuilder;
 use flezha_runner::entity::park;
 use flezha_runner::procedure::ProcedureError;
-use flezha_runner::UnboundedOperative;
+use flezha_runner::StreamOperative;
 
 mod common;
 use common::{dispatch_input, dummy_stream, install_auto_acking_sink, setup, wait_until};
@@ -34,7 +34,7 @@ test_procedure!(TransientProcedure, "transient_procedure", String => String, (),
 });
 
 struct TransientOperative;
-impl UnboundedOperative for TransientOperative {
+impl StreamOperative for TransientOperative {
     fn factory_id() -> &'static str {
         "transient_operative"
     }
@@ -98,7 +98,7 @@ test_procedure!(NonRetryableProcedure, "non_retryable_procedure", String => Stri
 });
 
 struct NonRetryableOperative;
-impl UnboundedOperative for NonRetryableOperative {
+impl StreamOperative for NonRetryableOperative {
     fn factory_id() -> &'static str {
         "non_retryable_operative"
     }
@@ -166,7 +166,7 @@ test_procedure!(PanickyProcedure, "panicky_procedure", String => String, (), |in
 });
 
 struct PanickyOperative;
-impl UnboundedOperative for PanickyOperative {
+impl StreamOperative for PanickyOperative {
     fn factory_id() -> &'static str {
         "panicky_operative"
     }
@@ -240,7 +240,7 @@ test_procedure!(TypedOrderProcedure, "typed_order_procedure", TypedOrder => Stri
 });
 
 struct TypedEntryOperative;
-impl UnboundedOperative for TypedEntryOperative {
+impl StreamOperative for TypedEntryOperative {
     fn factory_id() -> &'static str {
         "typed_entry_operative"
     }

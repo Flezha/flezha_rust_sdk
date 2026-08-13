@@ -17,7 +17,7 @@ use std::time::Duration;
 use bi::OperativeDispatchHandle;
 use flezha_runner::channel::ChannelBuilder;
 use flezha_runner::operative::builder::build_topology_for;
-use flezha_runner::{__dispatch_internals as bi, UnboundedOperative};
+use flezha_runner::{__dispatch_internals as bi, StreamOperative};
 use flz_transport::service::payloader;
 use flz_transport::transport::FlezhaStream;
 
@@ -81,7 +81,7 @@ test_procedure!(SingleConsumer, "hybrid_single_consumer", u32 => (), (), |input,
 });
 
 struct SingleHybridOperative;
-impl UnboundedOperative for SingleHybridOperative {
+impl StreamOperative for SingleHybridOperative {
     fn factory_id() -> &'static str {
         "hybrid_single"
     }
@@ -155,7 +155,7 @@ test_procedure!(ThreeConsumerC, "hybrid_three_c", u32 => (), (), |input, _state,
 });
 
 struct ThreeHybridOperative;
-impl UnboundedOperative for ThreeHybridOperative {
+impl StreamOperative for ThreeHybridOperative {
     fn factory_id() -> &'static str {
         "hybrid_three"
     }
@@ -232,7 +232,7 @@ test_procedure!(PanicConsumer, "hybrid_panic_consumer", u32 => (), (), |input, _
 });
 
 struct PanicHybridOperative;
-impl UnboundedOperative for PanicHybridOperative {
+impl StreamOperative for PanicHybridOperative {
     fn factory_id() -> &'static str {
         "hybrid_panic"
     }
@@ -306,7 +306,7 @@ test_procedure!(DupProducer, "hybrid_dup_producer", String => u32, (), |_input, 
 });
 
 struct DupHybridOperative;
-impl UnboundedOperative for DupHybridOperative {
+impl StreamOperative for DupHybridOperative {
     fn factory_id() -> &'static str {
         "hybrid_dup"
     }
@@ -356,7 +356,7 @@ test_procedure!(MetaConsumer, "hybrid_meta_consumer", u32 => (), (), |input, _st
 });
 
 struct MetaHybridOperative;
-impl UnboundedOperative for MetaHybridOperative {
+impl StreamOperative for MetaHybridOperative {
     fn factory_id() -> &'static str {
         "hybrid_meta"
     }
@@ -431,7 +431,7 @@ test_procedure!(PureConsumer, "hybrid_pure_consumer", u32 => (), (), |input, _st
 });
 
 struct PureOperative;
-impl UnboundedOperative for PureOperative {
+impl StreamOperative for PureOperative {
     fn factory_id() -> &'static str {
         "hybrid_pure"
     }

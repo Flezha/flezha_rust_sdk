@@ -20,20 +20,20 @@ use std::sync::{Arc, Mutex, Weak};
 
 use flz_transport::transport::FlezhaStream;
 
-use crate::bounded::{BoundedCollectSink, BoundedError};
 use crate::channel::builder::BuildEntityArgs;
 use crate::channel::{ChannelId, ChannelKind, ProcedureId, RetryPolicy};
 use crate::entity::flusher::{EntityFlusher, FlushableBuffer, TypedBuffer};
 use crate::entity::header::HeaderTemplate;
 use crate::entity::timer::{PendingTimers, TimerKind, TimerOp, TimerPolicy};
 use crate::entity::{EntityItem, EntityPayload, EntitySlot, ProcedureDispatcher};
-use crate::operative::instance::UnboundedInstance;
+use crate::operative::instance::StreamInstance;
 use crate::operative::topology::OperativeTopology;
 use crate::procedure::change::NoChange;
 use crate::procedure::ctx::EmitSink;
 use crate::procedure::state_handle::StateHandle;
 use crate::procedure::{Procedure, ProcedureCtx, ProcedureError};
 use crate::util::LockRecover;
+use crate::workflow::{WorkflowCollectSink, WorkflowError};
 
 /// Per-entity holder for a typed Procedure instance + its State. Boxed and
 /// type-erased into `EntitySlot.state`.
@@ -180,8 +180,8 @@ impl<S: Procedure> ProcedureDispatcherImpl<S> {
 
     /// Ship the Changes (and, under the effectively-once tier, the captured
     /// outputs as one atomic effect entry) a collecting-path proc applied — or
-    /// drain and discard when the class opted out. The bounded analog of the
-    /// unbounded `dispatch` flush hook; both feed `flusher::flush_one`.
+    /// drain and discard when the class opted out. The workflow analog of the
+    /// stream `dispatch` flush hook; both feed `flusher::flush_one`.
     fn flush_collected(
         &self,
         buffer: RefCell<Vec<S::Change>>,
@@ -193,7 +193,7 @@ impl<S: Procedure> ProcedureDispatcherImpl<S> {
             if changes.is_empty() && outputs.is_empty() {
                 return;
             }
-            // Bounded inputs arrive via args/inbox, not the input-log —
+            // Workflow inputs arrive via args/inbox, not the input-log —
             // no consumed-offset to carry.
             TypedBuffer::<S> {
                 effects: vec![crate::entity::flusher::EffectEntry {
@@ -249,7 +249,7 @@ impl<S: Procedure> ProcedureDispatcherImpl<S> {
         live_timers: &mut PendingTimers,
         committed_ops: &mut Vec<TimerOp>,
         stream: &Arc<FlezhaStream>,
-        instance: &Weak<UnboundedInstance>,
+        instance: &Weak<StreamInstance>,
     ) -> Option<String> {
         let consumed_offset = what.consumed_offset();
         let replay = what.replay();
@@ -552,7 +552,7 @@ impl<S: Procedure> ProcedureDispatcher for ProcedureDispatcherImpl<S> {
         state: &mut Box<dyn Any + Send>,
         flush_buffer: &mut Box<dyn FlushableBuffer>,
         timers: &mut PendingTimers,
-        instance: &Weak<UnboundedInstance>,
+        instance: &Weak<StreamInstance>,
     ) -> crate::entity::ItemDisposition {
         use crate::entity::ItemDisposition;
 
@@ -614,7 +614,7 @@ impl<S: Procedure> ProcedureDispatcher for ProcedureDispatcherImpl<S> {
                 } = payload;
 
                 // Downcast value to Arc<S::Input>. Consumers with different
-                // Input types in the same UnboundedOperative downcast
+                // Input types in the same StreamOperative downcast
                 // independently because the channel wiring guarantees they
                 // only ever receive their own type.
                 let input_arc = match Arc::downcast::<S::Input>(value) {
@@ -743,11 +743,11 @@ impl<S: Procedure> ProcedureDispatcher for ProcedureDispatcherImpl<S> {
         input: Arc<dyn Any + Send + Sync>,
         state: &mut Box<dyn Any + Send>,
         topology: &OperativeTopology,
-        sink: &mut dyn BoundedCollectSink,
-    ) -> Result<(), BoundedError> {
+        sink: &mut dyn WorkflowCollectSink,
+    ) -> Result<(), WorkflowError> {
         let input_arc = Arc::downcast::<S::Input>(input).map_err(|_| {
-            BoundedError::from(format!(
-                "bounded procedure {} received an input of the wrong type",
+            WorkflowError::from(format!(
+                "workflow procedure {} received an input of the wrong type",
                 S::name()
             ))
         })?;
@@ -764,10 +764,10 @@ impl<S: Procedure> ProcedureDispatcher for ProcedureDispatcherImpl<S> {
         let (now, invocation_seq) = self.invocation_inputs(Some(&input));
 
         // Tier mode: keyed plugin emits are captured for the invocation's
-        // atomic effect record instead of the bounded plugin wire.
+        // atomic effect record instead of the workflow plugin wire.
         let effect_outputs = self.effect_capture();
 
-        let mut collect_sink = BoundedCollectAdapter {
+        let mut collect_sink = WorkflowCollectAdapter {
             sink,
             output_channel_id: self.output_channel_id,
             output_channel_kind: self.output_channel_kind,
@@ -798,14 +798,14 @@ impl<S: Procedure> ProcedureDispatcher for ProcedureDispatcherImpl<S> {
 
         match outcome {
             Ok(Ok(())) => Ok(()),
-            // The author's own classification rides through to the bounded
+            // The author's own classification rides through to the workflow
             // retry ladder; a panic stays retryable (the author never got to
-            // classify it), as on the unbounded retry-then-park path.
-            Ok(Err(err)) => Err(BoundedError::new(
+            // classify it), as on the stream retry-then-park path.
+            Ok(Err(err)) => Err(WorkflowError::new(
                 format!("procedure {} failed: {}", S::name(), err),
                 err.is_non_retryable(),
             )),
-            Err(panic) => Err(BoundedError::from(format!(
+            Err(panic) => Err(WorkflowError::from(format!(
                 "procedure {} panicked: {}",
                 S::name(),
                 crate::procedure::error::format_panic(panic)
@@ -818,15 +818,15 @@ impl<S: Procedure> ProcedureDispatcher for ProcedureDispatcherImpl<S> {
         outputs: Vec<Arc<dyn Any + Send + Sync>>,
         state: &mut Box<dyn Any + Send>,
         topology: &OperativeTopology,
-        sink: &mut dyn BoundedCollectSink,
-    ) -> Result<(), BoundedError> {
+        sink: &mut dyn WorkflowCollectSink,
+    ) -> Result<(), WorkflowError> {
         // Recover the typed outputs the entity collected on its forward run.
         let mut typed_outputs: Vec<Arc<S::Output>> = Vec::with_capacity(outputs.len());
         for value in outputs {
             match Arc::downcast::<S::Output>(value) {
                 Ok(out) => typed_outputs.push(out),
                 Err(_) => {
-                    return Err(BoundedError::from(format!(
+                    return Err(WorkflowError::from(format!(
                         "compensate: collected output of the wrong type for procedure {}",
                         S::name()
                     )))
@@ -846,7 +846,7 @@ impl<S: Procedure> ProcedureDispatcher for ProcedureDispatcherImpl<S> {
         let (now, invocation_seq) = self.invocation_inputs(None);
         // Compensation keeps the pre-tier emit contract (keyed emits are
         // rejected); under the tier its changes still flush atomically.
-        let mut collect_sink = BoundedCollectAdapter {
+        let mut collect_sink = WorkflowCollectAdapter {
             sink,
             output_channel_id: self.output_channel_id,
             output_channel_kind: self.output_channel_kind,
@@ -874,12 +874,12 @@ impl<S: Procedure> ProcedureDispatcher for ProcedureDispatcherImpl<S> {
 
         match outcome {
             Ok(Ok(())) => Ok(()),
-            Ok(Err(err)) => Err(BoundedError::from(format!(
+            Ok(Err(err)) => Err(WorkflowError::from(format!(
                 "compensation for procedure {} failed: {}",
                 S::name(),
                 err
             ))),
-            Err(panic) => Err(BoundedError::from(format!(
+            Err(panic) => Err(WorkflowError::from(format!(
                 "compensation for procedure {} panicked: {}",
                 S::name(),
                 crate::procedure::error::format_panic(panic)
@@ -1001,7 +1001,7 @@ impl<S: Procedure> ProcedureDispatcher for ProcedureDispatcherImpl<S> {
 type FlushBeforeEmit<'a> = Box<dyn FnMut() + 'a>;
 
 /// Per-invocation emit sink, constructed fresh inside each `dispatch`
-/// call. Holds an upgraded `Arc<UnboundedInstance>` for the duration of the
+/// call. Holds an upgraded `Arc<StreamInstance>` for the duration of the
 /// run; if the instance has been dropped, every emit returns
 /// `UnknownChannel`.
 struct EntityEmitSink<'a> {
@@ -1018,7 +1018,7 @@ struct EntityEmitSink<'a> {
     change_seq: &'a AtomicU64,
     /// Emit ordinal within this invocation; second half of `flz.seq`.
     emit_ordinal: u32,
-    instance: Option<Arc<UnboundedInstance>>,
+    instance: Option<Arc<StreamInstance>>,
     stream: Arc<FlezhaStream>,
     /// `Some` for persistence-enabled entities with the flush-before-emit
     /// knob on. Called at the top of every emit so this run's just-applied
@@ -1054,10 +1054,10 @@ impl<'a> EntityEmitSink<'a> {
         }
     }
 
-    /// Resolve the channel descriptor + UnboundedInstance for the cached
+    /// Resolve the channel descriptor + StreamInstance for the cached
     /// output channel. Returns `UnknownChannel` if either has been
     /// dropped or is unset.
-    fn resolve_channel(&self) -> Result<(Arc<UnboundedInstance>, ChannelId), ProcedureError> {
+    fn resolve_channel(&self) -> Result<(Arc<StreamInstance>, ChannelId), ProcedureError> {
         let cid = self
             .output_channel_id
             .ok_or_else(|| self.unknown_channel())?;
@@ -1091,7 +1091,7 @@ impl<'a> EntityEmitSink<'a> {
     /// the dispatcher thread is unaffected.
     fn emit_plugin_sink(
         &mut self,
-        instance: &UnboundedInstance,
+        instance: &StreamInstance,
         descriptor: &crate::channel::ChannelDescriptor,
         sink: &crate::channel::PluginSink,
         value: &Arc<dyn Any + Send + Sync>,
@@ -1238,24 +1238,24 @@ impl<'a> EmitSink for EntityEmitSink<'a> {
     }
 }
 
-/// Emit sink for the bounded sequential driver. Inter-procedure output is
+/// Emit sink for the workflow sequential driver. Inter-procedure output is
 /// **collected** for handoff to the next stage at the barrier; plugin-bound
-/// output is serialized and routed to the wire via the `BoundedCollectSink`.
+/// output is serialized and routed to the wire via the `WorkflowCollectSink`.
 /// Constructed fresh per `run_collecting` call, so it never threads through
-/// the unbounded push-dispatch mailbox path.
-struct BoundedCollectAdapter<'a> {
-    sink: &'a mut dyn BoundedCollectSink,
+/// the stream push-dispatch mailbox path.
+struct WorkflowCollectAdapter<'a> {
+    sink: &'a mut dyn WorkflowCollectSink,
     output_channel_id: Option<ChannelId>,
     output_channel_kind: ChannelKind,
     output_channel_name: Option<&'a str>,
     topology: &'a OperativeTopology,
     /// `Some` under the effectively-once tier: plugin emits (keyed
     /// included) are captured into the invocation's atomic effect record
-    /// instead of the metadata-less bounded plugin wire.
+    /// instead of the metadata-less workflow plugin wire.
     effect_outputs: Option<&'a RefCell<Vec<crate::entity::flusher::OutputRecord>>>,
 }
 
-impl<'a> BoundedCollectAdapter<'a> {
+impl<'a> WorkflowCollectAdapter<'a> {
     fn unknown_channel(&self) -> ProcedureError {
         ProcedureError::UnknownChannel {
             channel: self
@@ -1268,7 +1268,7 @@ impl<'a> BoundedCollectAdapter<'a> {
     /// Serialize a plugin-bound value via the producer-edge channel's
     /// serializer (pure `output`) or hybrid plugin sink
     /// (`also_output_with`) and route the bytes: into the invocation's
-    /// effect record under the tier, else to the bounded plugin wire.
+    /// effect record under the tier, else to the workflow plugin wire.
     fn route_plugin(
         &mut self,
         value: &Arc<dyn Any + Send + Sync>,
@@ -1290,7 +1290,7 @@ impl<'a> BoundedCollectAdapter<'a> {
             .or_else(|| descriptor.plugin_sink.as_ref().map(|s| &s.serializer))
             .ok_or_else(|| {
                 ProcedureError::Custom(format!(
-                    "bounded plugin channel `{}` is missing a serializer",
+                    "workflow plugin channel `{}` is missing a serializer",
                     descriptor.name
                 ))
             })?;
@@ -1304,8 +1304,8 @@ impl<'a> BoundedCollectAdapter<'a> {
     }
 }
 
-impl<'a> BoundedCollectAdapter<'a> {
-    /// The bounded plugin wire (`emit_plugin_bytes`) carries no metadata,
+impl<'a> WorkflowCollectAdapter<'a> {
+    /// The workflow plugin wire (`emit_plugin_bytes`) carries no metadata,
     /// so `.keyed()` identity stamps cannot ride it. Reject rather than
     /// silently dropping the identity contract — except under the
     /// effectively-once tier, where emits ride the effect record (which
@@ -1313,8 +1313,8 @@ impl<'a> BoundedCollectAdapter<'a> {
     fn reject_key(&self, key: &Option<String>) -> Result<(), ProcedureError> {
         if self.effect_outputs.is_none() && key.is_some() {
             return Err(ProcedureError::Custom(format!(
-                "keyed output identity is not supported on bounded operatives \
-                 (channel `{}`): the bounded plugin wire carries no metadata",
+                "keyed output identity is not supported on workflow operatives \
+                 (channel `{}`): the workflow plugin wire carries no metadata",
                 self.channel_name()
             )));
         }
@@ -1322,7 +1322,7 @@ impl<'a> BoundedCollectAdapter<'a> {
     }
 }
 
-impl<'a> EmitSink for BoundedCollectAdapter<'a> {
+impl<'a> EmitSink for WorkflowCollectAdapter<'a> {
     fn emit_inter_procedure(
         &mut self,
         value: Arc<dyn Any + Send + Sync>,
@@ -1357,7 +1357,7 @@ impl<'a> EmitSink for BoundedCollectAdapter<'a> {
     }
 
     fn channel_name(&self) -> &str {
-        self.output_channel_name.unwrap_or("<bounded>")
+        self.output_channel_name.unwrap_or("<workflow>")
     }
 
     fn is_plugin_bound(&self) -> bool {
@@ -1420,7 +1420,7 @@ pub(crate) fn apply_identity_stamps(
     }
 }
 
-/// Tier-mode capture (shared by the unbounded emit sink and the bounded
+/// Tier-mode capture (shared by the stream emit sink and the workflow
 /// collect adapter): push one plugin output into the invocation's atomic
 /// effect record instead of any wire path. Key-sorted user metadata keeps
 /// the record bytes replay-deterministic (HashMap iteration order is not);
@@ -1478,11 +1478,11 @@ pub(super) fn run_activation(
     let EngineActivation { token, payload } = act;
     let (slot, items) = match payload {
         EnginePayload::Work { slot, items } => (slot, items),
-        // One entity partition of a bounded stage. It carries its own reply,
+        // One entity partition of a workflow stage. It carries its own reply,
         // so it releases this worker the moment it answers — a retry backoff
         // is timed by the driver at its barrier, never slept here.
-        EnginePayload::BoundedStep(step) => {
-            flz_core::bounded::step::run_bounded_step(step);
+        EnginePayload::WorkflowStep(step) => {
+            flz_core::workflow::step::run_workflow_step(step);
             return;
         }
         // Command/prepare payloads are host-only (C-ABI classes); a typed
@@ -1549,7 +1549,7 @@ fn flusher_registered<S: Procedure>(effectively_once: bool) -> bool {
 
 /// Build one `EntitySlot` for a Procedure. Captures S statically; the
 /// channel builder collects this closure into `ProcedureEntry.build_entity`
-/// during `UnboundedOperative::channels` and `build_topology` invokes it once per
+/// during `StreamOperative::channels` and `build_topology` invokes it once per
 /// entity at operative-instance startup.
 pub fn build_entity_slot<S: Procedure>(args: BuildEntityArgs<'_>) -> Arc<EntitySlot> {
     // The slot's rounds are served by the typed layer's poll workers; make
@@ -1647,12 +1647,12 @@ pub fn build_entity_slot<S: Procedure>(args: BuildEntityArgs<'_>) -> Arc<EntityS
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bounded::BoundedCollectSink;
     use crate::channel::ChannelBuilder;
     use crate::entity::restore::RestoreInitPayload;
-    use crate::operative::UnboundedOperative;
+    use crate::operative::StreamOperative;
     use crate::procedure::state_handle::StateHandle;
     use crate::procedure::{Procedure, ProcedureCtx, ProcedureError};
+    use crate::workflow::WorkflowCollectSink;
 
     #[derive(Default)]
     struct KeyedProc;
@@ -1664,7 +1664,7 @@ mod tests {
         type Clock = crate::procedure::WallClock;
         type Config = ();
         fn name() -> &'static str {
-            "bounded_keyed_op"
+            "workflow_keyed_op"
         }
         fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
         fn run(
@@ -1678,9 +1678,9 @@ mod tests {
     }
 
     struct KeyedOperative;
-    impl UnboundedOperative for KeyedOperative {
+    impl StreamOperative for KeyedOperative {
         fn factory_id() -> &'static str {
-            "bounded_keyed_operative"
+            "workflow_keyed_operative"
         }
         fn channels(c: &ChannelBuilder) {
             c.input::<String>("in")
@@ -1695,23 +1695,23 @@ mod tests {
     struct NullCollect {
         plugin_bytes: usize,
     }
-    impl BoundedCollectSink for NullCollect {
+    impl WorkflowCollectSink for NullCollect {
         fn collect(&mut self, _value: Arc<dyn Any + Send + Sync>) {}
         fn emit_plugin_bytes(&mut self, _channel: &str, _bytes: Vec<u8>) {
             self.plugin_bytes += 1;
         }
     }
 
-    /// The bounded plugin wire carries no metadata, so a keyed emit
-    /// through the bounded adapter must fail typed, never silently drop
+    /// The workflow plugin wire carries no metadata, so a keyed emit
+    /// through the workflow adapter must fail typed, never silently drop
     /// the identity contract.
     #[test]
-    fn bounded_adapter_rejects_keyed_emits() {
+    fn workflow_adapter_rejects_keyed_emits() {
         let topology =
             crate::operative::builder::build_topology_for::<KeyedOperative>().expect("topology");
         let out_id = topology.lookup_channel_id("out");
         let mut collect = NullCollect::default();
-        let mut adapter = BoundedCollectAdapter {
+        let mut adapter = WorkflowCollectAdapter {
             sink: &mut collect,
             output_channel_id: out_id,
             output_channel_kind: ChannelKind::PluginBound,
@@ -1720,25 +1720,25 @@ mod tests {
             effect_outputs: None,
         };
         assert!(adapter.is_keyed(), "descriptor keyed flag must surface");
-        let mut ctx = ProcedureCtx::new(&mut adapter, 0, 0, b"bounded/keyed/");
+        let mut ctx = ProcedureCtx::new(&mut adapter, 0, 0, b"workflow/keyed/");
         let err = ctx
             .emit_keyed::<String>("k", "v".into())
-            .expect_err("keyed emit on the bounded wire must fail");
-        assert!(err.to_string().contains("bounded"));
+            .expect_err("keyed emit on the workflow wire must fail");
+        assert!(err.to_string().contains("workflow"));
         assert_eq!(collect.plugin_bytes, 0, "nothing may reach the wire");
     }
 
-    /// Under the effectively-once tier the bounded adapter accepts keyed
+    /// Under the effectively-once tier the workflow adapter accepts keyed
     /// emits and captures them for the atomic effect record — never the
-    /// metadata-less bounded plugin wire.
+    /// metadata-less workflow plugin wire.
     #[test]
-    fn bounded_adapter_captures_keyed_emits_under_the_tier() {
+    fn workflow_adapter_captures_keyed_emits_under_the_tier() {
         let topology =
             crate::operative::builder::build_topology_for::<KeyedOperative>().expect("topology");
         let out_id = topology.lookup_channel_id("out");
         let mut collect = NullCollect::default();
         let effect_outputs = RefCell::new(Vec::new());
-        let mut adapter = BoundedCollectAdapter {
+        let mut adapter = WorkflowCollectAdapter {
             sink: &mut collect,
             output_channel_id: out_id,
             output_channel_kind: ChannelKind::PluginBound,
@@ -1746,11 +1746,11 @@ mod tests {
             topology: &topology,
             effect_outputs: Some(&effect_outputs),
         };
-        let mut ctx = ProcedureCtx::new(&mut adapter, 0, 0, b"bounded/keyed/");
+        let mut ctx = ProcedureCtx::new(&mut adapter, 0, 0, b"workflow/keyed/");
         ctx.emit_keyed::<String>("BTC/1m", "v".into())
             .expect("keyed emit must succeed under the tier");
 
-        assert_eq!(collect.plugin_bytes, 0, "the bounded wire carries nothing");
+        assert_eq!(collect.plugin_bytes, 0, "the workflow wire carries nothing");
         let captured = effect_outputs.into_inner();
         assert_eq!(captured.len(), 1);
         assert_eq!(captured[0].channel, "out");
@@ -1758,7 +1758,7 @@ mod tests {
         assert_eq!(captured[0].payload, b"v".to_vec());
     }
 
-    /// A bounded stage and a `compensate` hook both get a context with no
+    /// A workflow stage and a `compensate` hook both get a context with no
     /// timer session — the two places the design excludes. The refusal is
     /// structural (there is nothing to register into), and typed rather than
     /// a silent drop.
@@ -1767,7 +1767,7 @@ mod tests {
         let topology =
             crate::operative::builder::build_topology_for::<KeyedOperative>().expect("topology");
         let mut collect = NullCollect::default();
-        let mut adapter = BoundedCollectAdapter {
+        let mut adapter = WorkflowCollectAdapter {
             sink: &mut collect,
             output_channel_id: topology.lookup_channel_id("out"),
             output_channel_kind: ChannelKind::PluginBound,
@@ -1775,7 +1775,7 @@ mod tests {
             topology: &topology,
             effect_outputs: None,
         };
-        let ctx = ProcedureCtx::new(&mut adapter, 0, 0, b"bounded/keyed/");
+        let ctx = ProcedureCtx::new(&mut adapter, 0, 0, b"workflow/keyed/");
         let err = ctx
             .timer_after(std::time::Duration::from_secs(1))
             .expect_err("a session-less context must refuse");

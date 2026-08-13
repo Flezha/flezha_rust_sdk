@@ -176,7 +176,7 @@ mod tests {
     use super::*;
     use crate::channel::ChannelBuilder;
     use crate::entity::restore::RestoreInitPayload;
-    use crate::operative::UnboundedOperative;
+    use crate::operative::StreamOperative;
     use crate::procedure::state_handle::StateHandle;
     use crate::procedure::{Procedure, ProcedureCtx, ProcedureError};
     use crate::runner::poll_core_tests::fixtures::{build_slot_of, push_input};
@@ -218,7 +218,7 @@ mod tests {
     }
 
     struct GatedOperative;
-    impl UnboundedOperative for GatedOperative {
+    impl StreamOperative for GatedOperative {
         fn factory_id() -> &'static str {
             "poll_pool_gated_operative"
         }

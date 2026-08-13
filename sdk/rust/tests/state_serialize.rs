@@ -10,10 +10,10 @@ use flezha_runner::command::entity_state::{
     PROCEDURE_NOT_FOUND,
 };
 use flezha_runner::operative::builder::build_topology_for;
-use flezha_runner::operative::UnboundedInstance;
+use flezha_runner::operative::StreamInstance;
 use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError};
 use flezha_runner::state::{Change, NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_runner::UnboundedOperative;
+use flezha_runner::StreamOperative;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -65,7 +65,7 @@ impl Procedure for CounterProcedure {
 }
 
 struct CounterOperative;
-impl UnboundedOperative for CounterOperative {
+impl StreamOperative for CounterOperative {
     fn factory_id() -> &'static str {
         "counter_operative"
     }
@@ -77,7 +77,7 @@ impl UnboundedOperative for CounterOperative {
 #[test]
 fn single_mode_procedure_serializes_under_procedure_name_key() {
     let topology = build_topology_for::<CounterOperative>().expect("topology");
-    let instance = UnboundedInstance::new(topology, Arc::from("inst-1"));
+    let instance = StreamInstance::new(topology, Arc::from("inst-1"));
 
     // Cold start: state is the default.
     let bytes = serialize_operative_state(&instance);
@@ -88,7 +88,7 @@ fn single_mode_procedure_serializes_under_procedure_name_key() {
 #[test]
 fn apply_init_values_seeds_single_mode_procedure() {
     let topology = build_topology_for::<CounterOperative>().expect("topology");
-    let instance = UnboundedInstance::new(topology, Arc::from("inst-2"));
+    let instance = StreamInstance::new(topology, Arc::from("inst-2"));
 
     apply_init_values(&instance, "{\"counter\":{\"value\":42}}").unwrap();
 
@@ -137,7 +137,7 @@ impl Procedure for OhlcProcedure {
 }
 
 struct OhlcOperative;
-impl UnboundedOperative for OhlcOperative {
+impl StreamOperative for OhlcOperative {
     fn factory_id() -> &'static str {
         "ohlc_operative"
     }
@@ -149,7 +149,7 @@ impl UnboundedOperative for OhlcOperative {
 #[test]
 fn static_mode_procedure_serializes_under_keyed_object() {
     let topology = build_topology_for::<OhlcOperative>().expect("topology");
-    let instance = UnboundedInstance::new(topology, Arc::from("inst-3"));
+    let instance = StreamInstance::new(topology, Arc::from("inst-3"));
 
     let bytes = serialize_operative_state(&instance);
     let v: Value = serde_json::from_slice(&bytes).unwrap();
@@ -159,7 +159,7 @@ fn static_mode_procedure_serializes_under_keyed_object() {
 #[test]
 fn apply_init_values_seeds_static_mode_procedure_per_key() {
     let topology = build_topology_for::<OhlcOperative>().expect("topology");
-    let instance = UnboundedInstance::new(topology, Arc::from("inst-4"));
+    let instance = StreamInstance::new(topology, Arc::from("inst-4"));
 
     apply_init_values(
         &instance,
@@ -175,7 +175,7 @@ fn apply_init_values_seeds_static_mode_procedure_per_key() {
 #[test]
 fn apply_init_values_empty_string_is_noop() {
     let topology = build_topology_for::<CounterOperative>().expect("topology");
-    let instance = UnboundedInstance::new(topology, Arc::from("inst-5"));
+    let instance = StreamInstance::new(topology, Arc::from("inst-5"));
 
     apply_init_values(&instance, "").unwrap();
     let bytes = serialize_operative_state(&instance);
@@ -186,7 +186,7 @@ fn apply_init_values_empty_string_is_noop() {
 #[test]
 fn apply_init_values_unknown_procedure_is_ignored() {
     let topology = build_topology_for::<CounterOperative>().expect("topology");
-    let instance = UnboundedInstance::new(topology, Arc::from("inst-6"));
+    let instance = StreamInstance::new(topology, Arc::from("inst-6"));
 
     apply_init_values(
         &instance,
@@ -201,7 +201,7 @@ fn apply_init_values_unknown_procedure_is_ignored() {
 #[test]
 fn round_trip_static_mode_through_serialize_then_apply() {
     let topology = build_topology_for::<OhlcOperative>().expect("topology");
-    let src = UnboundedInstance::new(Arc::clone(&topology), Arc::from("src"));
+    let src = StreamInstance::new(Arc::clone(&topology), Arc::from("src"));
     apply_init_values(
         &src,
         "{\"ohlc\":{\"1m\":{\"high\":42},\"1h\":{\"high\":7}}}",
@@ -211,7 +211,7 @@ fn round_trip_static_mode_through_serialize_then_apply() {
     let bytes = serialize_operative_state(&src);
     let json_str = std::str::from_utf8(&bytes).unwrap();
 
-    let dst = UnboundedInstance::new(topology, Arc::from("dst"));
+    let dst = StreamInstance::new(topology, Arc::from("dst"));
     apply_init_values(&dst, json_str).unwrap();
 
     let dst_bytes = serialize_operative_state(&dst);
@@ -223,7 +223,7 @@ fn round_trip_static_mode_through_serialize_then_apply() {
 /// Two Procedures on one Operative, so a `procedure` selector has something to
 /// exclude.
 struct PairOperative;
-impl UnboundedOperative for PairOperative {
+impl StreamOperative for PairOperative {
     fn factory_id() -> &'static str {
         "pair_operative"
     }
@@ -268,7 +268,7 @@ impl Procedure for CandleProcedure {
 }
 
 struct CandleOperative;
-impl UnboundedOperative for CandleOperative {
+impl StreamOperative for CandleOperative {
     fn factory_id() -> &'static str {
         "candle_operative"
     }
@@ -280,7 +280,7 @@ impl UnboundedOperative for CandleOperative {
 }
 
 fn read(
-    instance: &Arc<UnboundedInstance>,
+    instance: &Arc<StreamInstance>,
     procedure: Option<&str>,
     key: Option<&str>,
 ) -> (Value, Option<u64>) {
@@ -548,7 +548,7 @@ fn a_selector_less_entity_state_command_encodes_exactly_as_before() {
 
 /// Pinned cross-language fixture: the identical literal is asserted by
 /// `jsonShapeMatchesTheRustSdk` in the Java SDK's
-/// `UnboundedOperativeStateSerializerTest`. Both encoders sort object keys, so
+/// `StreamOperativeStateSerializerTest`. Both encoders sort object keys, so
 /// a controller decoding either runtime's reply sees one shape.
 #[test]
 fn the_json_shape_matches_the_java_sdk_byte_for_byte() {

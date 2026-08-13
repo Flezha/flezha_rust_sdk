@@ -12,19 +12,19 @@ pub(crate) mod fixtures {
     use crate::channel::ChannelBuilder;
     use crate::entity::{EntityItem, EntityPayload, EntitySlot};
     use crate::operative::builder::build_topology_with_persistence;
-    use crate::operative::instance::UnboundedInstance;
-    use crate::operative::UnboundedOperative;
+    use crate::operative::instance::StreamInstance;
+    use crate::operative::StreamOperative;
     use crate::runner::poll_core::PollCore;
 
     /// One instance of `O` and its first Entity.
-    pub(crate) fn build_slot_of<O: UnboundedOperative>(
+    pub(crate) fn build_slot_of<O: StreamOperative>(
         instance_id: &str,
-    ) -> (Arc<UnboundedInstance>, Arc<EntitySlot>) {
+    ) -> (Arc<StreamInstance>, Arc<EntitySlot>) {
         let cb = ChannelBuilder::new();
         O::channels(&cb);
         let topology = build_topology_with_persistence(O::factory_id(), cb, O::PERSISTENCE_ENABLED)
             .expect("topology");
-        let instance = UnboundedInstance::new(topology, Arc::from(instance_id));
+        let instance = StreamInstance::new(topology, Arc::from(instance_id));
         let slot = Arc::clone(&instance.entities[0][0]);
         (instance, slot)
     }
@@ -71,8 +71,8 @@ mod tests {
     use crate::channel::ChannelBuilder;
     use crate::entity::timer::{TimerKind, TimerOp};
     use crate::entity::{EntityItem, EntitySlot};
-    use crate::operative::instance::UnboundedInstance;
-    use crate::operative::UnboundedOperative;
+    use crate::operative::instance::StreamInstance;
+    use crate::operative::StreamOperative;
     use crate::procedure::change::NoChange;
     use crate::procedure::clock::WallClock;
     use crate::procedure::ctx::ProcedureCtx;
@@ -104,7 +104,7 @@ mod tests {
     }
 
     struct PollOp;
-    impl UnboundedOperative for PollOp {
+    impl StreamOperative for PollOp {
         fn factory_id() -> &'static str {
             "poll_core_exclusivity_op"
         }
@@ -116,7 +116,7 @@ mod tests {
     /// A backoff long enough to observe the deferral window from the outside:
     /// base 2 s, so attempt 1 comes due in 1–3 s.
     struct SlowRetryOp;
-    impl UnboundedOperative for SlowRetryOp {
+    impl StreamOperative for SlowRetryOp {
         fn factory_id() -> &'static str {
             "poll_core_slow_retry_op"
         }
@@ -127,7 +127,7 @@ mod tests {
         }
     }
 
-    fn build_slot(instance_id: &str) -> (Arc<UnboundedInstance>, Arc<EntitySlot>) {
+    fn build_slot(instance_id: &str) -> (Arc<StreamInstance>, Arc<EntitySlot>) {
         build_slot_of::<PollOp>(instance_id)
     }
 
@@ -589,7 +589,7 @@ mod tests {
         let (_ih, healthy) = build_slot("poll-correlated-healthy");
         let stream = unix_stream();
 
-        let failing: Vec<(Arc<UnboundedInstance>, Arc<EntitySlot>)> = (0..4)
+        let failing: Vec<(Arc<StreamInstance>, Arc<EntitySlot>)> = (0..4)
             .map(|i| build_slot_of::<SlowRetryOp>(&format!("poll-correlated-{i}")))
             .collect();
         for (_instance, slot) in &failing {
@@ -717,7 +717,7 @@ mod tests {
     }
 
     /// A direct activation queued with nobody to take it is starvation too,
-    /// and unlike entity work the cap does not gate it: a bounded driver is
+    /// and unlike entity work the cap does not gate it: a workflow driver is
     /// blocked on its step, so "every worker is inside user code" must buy a
     /// thread rather than wedge the stage.
     #[test]

@@ -18,7 +18,7 @@ use flezha_runner::channel::ChannelBuilder;
 use flezha_runner::operative::builder::build_topology_for;
 use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError};
 use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_runner::UnboundedOperative;
+use flezha_runner::StreamOperative;
 
 mod common;
 use common::{dispatch_input, dispatch_marked, dummy_stream, setup, wait_until};
@@ -75,7 +75,7 @@ test_procedure!(SignalSinkProcedure, "merge_signal_sink_procedure", String => St
 });
 
 struct TypedMergeOperative;
-impl UnboundedOperative for TypedMergeOperative {
+impl StreamOperative for TypedMergeOperative {
     fn factory_id() -> &'static str {
         "typed_merge_operative"
     }
@@ -165,7 +165,7 @@ test_procedure!(TunedProcedure, "merge_tuned_procedure", TunedInput => String, (
 });
 
 struct EntryMergeOperative;
-impl UnboundedOperative for EntryMergeOperative {
+impl StreamOperative for EntryMergeOperative {
     fn factory_id() -> &'static str {
         "entry_merge_operative"
     }
@@ -375,7 +375,7 @@ impl Procedure for EntityTunedProcedure {
 }
 
 struct EntityMergeOperative;
-impl UnboundedOperative for EntityMergeOperative {
+impl StreamOperative for EntityMergeOperative {
     fn factory_id() -> &'static str {
         "entity_merge_operative"
     }
@@ -433,7 +433,7 @@ fn entities_for_is_evaluated_on_the_mapped_value() {
 // ----- 4: definition-time validation -----
 
 struct OneSourceMergeOperative;
-impl UnboundedOperative for OneSourceMergeOperative {
+impl StreamOperative for OneSourceMergeOperative {
     fn factory_id() -> &'static str {
         "one_source_merge_operative"
     }
@@ -463,7 +463,7 @@ fn a_merge_with_fewer_than_two_sources_is_refused() {
 }
 
 struct DuplicateSourceMergeOperative;
-impl UnboundedOperative for DuplicateSourceMergeOperative {
+impl StreamOperative for DuplicateSourceMergeOperative {
     fn factory_id() -> &'static str {
         "duplicate_source_merge_operative"
     }
@@ -505,7 +505,7 @@ fn a_duplicated_merge_source_is_refused_naming_the_channel() {
 /// than dropped: the procedure would otherwise receive the first declaration's
 /// value forever, with nothing said at definition time or at runtime.
 struct RewiredMergeSourceOperative;
-impl UnboundedOperative for RewiredMergeSourceOperative {
+impl StreamOperative for RewiredMergeSourceOperative {
     fn factory_id() -> &'static str {
         "rewired_merge_source_operative"
     }
@@ -543,7 +543,7 @@ fn a_merge_source_may_not_re_wire_an_edge_that_is_already_declared() {
 /// The same edge claimed first by a plain `.into` and then by a merge: the
 /// channel's payload cannot both BE the input and be mapped into it.
 struct PlainThenMergedOperative;
-impl UnboundedOperative for PlainThenMergedOperative {
+impl StreamOperative for PlainThenMergedOperative {
     fn factory_id() -> &'static str {
         "plain_then_merged_operative"
     }

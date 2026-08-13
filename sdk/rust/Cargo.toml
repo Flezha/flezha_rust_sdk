@@ -124,7 +124,7 @@ name = "entity_timers"
 required-features = ["bench-internals", "testing"]
 
 [[test]]
-name = "bounded_scaling"
+name = "workflow_scaling"
 required-features = ["bench-internals"]
 
 [lints.rust]

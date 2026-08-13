@@ -25,10 +25,10 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use flezha_runner::channel::ChannelBuilder;
 use flezha_runner::operative::builder::build_topology_for;
 use flezha_runner::operative::registry::OperativeRegistry;
-use flezha_runner::operative::UnboundedInstance;
+use flezha_runner::operative::StreamInstance;
 use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError};
 use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_runner::{__dispatch_internals as bi, OverflowPolicy, UnboundedOperative};
+use flezha_runner::{__dispatch_internals as bi, OverflowPolicy, StreamOperative};
 use flz_transport::transport::FlezhaStream;
 
 // ----- shared bench helpers -----
@@ -109,7 +109,7 @@ impl Procedure for Pure1Consumer {
 }
 
 struct Pure1Operative;
-impl UnboundedOperative for Pure1Operative {
+impl StreamOperative for Pure1Operative {
     fn factory_id() -> &'static str {
         "bench_pure_inter_procedure_1c"
     }
@@ -180,7 +180,7 @@ pure3_consumer!(Pure3ConsumerB, "pure3_b");
 pure3_consumer!(Pure3ConsumerC, "pure3_c");
 
 struct Pure3Operative;
-impl UnboundedOperative for Pure3Operative {
+impl StreamOperative for Pure3Operative {
     fn factory_id() -> &'static str {
         "bench_pure_inter_procedure_3c"
     }
@@ -223,7 +223,7 @@ impl Procedure for PluginBoundProducer {
 }
 
 struct PluginBoundOperative;
-impl UnboundedOperative for PluginBoundOperative {
+impl StreamOperative for PluginBoundOperative {
     fn factory_id() -> &'static str {
         "bench_pure_plugin_bound"
     }
@@ -286,7 +286,7 @@ impl Procedure for Hybrid1Consumer {
 }
 
 struct Hybrid1Operative;
-impl UnboundedOperative for Hybrid1Operative {
+impl StreamOperative for Hybrid1Operative {
     fn factory_id() -> &'static str {
         "bench_hybrid_1c"
     }
@@ -358,7 +358,7 @@ hybrid3_consumer!(Hybrid3ConsumerB, "hybrid3_b");
 hybrid3_consumer!(Hybrid3ConsumerC, "hybrid3_c");
 
 struct Hybrid3Operative;
-impl UnboundedOperative for Hybrid3Operative {
+impl StreamOperative for Hybrid3Operative {
     fn factory_id() -> &'static str {
         "bench_hybrid_3c"
     }
@@ -377,7 +377,7 @@ impl UnboundedOperative for Hybrid3Operative {
 
 // ----- bench harness -----
 
-fn run_bench<R: UnboundedOperative>(
+fn run_bench<R: StreamOperative>(
     c: &mut Criterion,
     name: &'static str,
     instance_id: &'static str,
@@ -386,8 +386,8 @@ fn run_bench<R: UnboundedOperative>(
 ) {
     let topology = build_topology_for::<R>().expect("topology");
     let registry = Arc::new(OperativeRegistry::new());
-    let inst = UnboundedInstance::new(topology, Arc::from(instance_id));
-    registry.register_unbounded(inst);
+    let inst = StreamInstance::new(topology, Arc::from(instance_id));
+    registry.register_stream(inst);
     let handle = bi::OperativeDispatchHandle {
         registry: Arc::clone(&registry),
     };

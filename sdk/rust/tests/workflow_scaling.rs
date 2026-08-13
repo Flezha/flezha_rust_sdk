@@ -1,6 +1,6 @@
-//! Instance-count scaling probe for the bounded driver.
+//! Instance-count scaling probe for the workflow driver.
 //!
-//! One driver thread runs per actively-running bounded instance. This probe
+//! One driver thread runs per actively-running workflow instance. This probe
 //! measures what that costs at population: resident memory per instance, the
 //! CPU a *blocked* population still burns, how long starting and tearing one
 //! down takes, and whether an unrelated instance beside it still completes at
@@ -13,13 +13,13 @@
 //!
 //! ```text
 //! FLEZHA_SCALE_N=10000 FLEZHA_SCALE_SHAPE=step \
-//!   FLEZHA_BOUNDED_DRIVER_STACK_KIB=256 \
+//!   FLEZHA_WORKFLOW_DRIVER_STACK_KIB=256 \
 //!   cargo test -p flezha_runner --features bench-internals --release \
-//!     --test bounded_scaling -- --ignored --nocapture
+//!     --test workflow_scaling -- --ignored --nocapture
 //! ```
 //!
 //! Classes are declared through the ordinary authoring path
-//! (`Flezha::create_runner(..).define_bounded::<T>()`, which registers without
+//! (`Flezha::create_runner(..).define_workflow::<T>()`, which registers without
 //! connecting to anything) and driven through a `RunnerNode`, so the probe
 //! measures what an operator's runner does rather than a test back door. The
 //! SDK's poll workers spawn themselves on the first instance's entity build,
@@ -47,7 +47,7 @@ use crossbeam::channel::Receiver;
 use flezha_runner::channel::ChannelBuilder;
 use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError, StateHandle};
 use flezha_runner::state::{NoChange, RestoreInitPayload, WallClock};
-use flezha_runner::{BoundedOperative, Flezha, LoopMode};
+use flezha_runner::{Flezha, LoopMode, WorkflowOperative};
 use flz_core::fast::RunnerNode;
 use flz_core::runner::{install_reconnect_trigger, RunnerMessage};
 use flz_core::util::env_parse;
@@ -126,10 +126,10 @@ impl Procedure for ShortProc {
 /// which is where `build_spec` asks — because that backstop is a third thread
 /// per run (`spawn_duration_watcher`), and whether it is armed is exactly the
 /// difference between two and three OS threads per blocked turn.
-struct ScaleStepBounded;
-impl BoundedOperative for ScaleStepBounded {
+struct ScaleStepWorkflow;
+impl WorkflowOperative for ScaleStepWorkflow {
     fn factory_id() -> &'static str {
-        "scale-step-bounded"
+        "scale-step-workflow"
     }
     const PERSISTENCE_ENABLED: bool = false;
     fn max_duration() -> Option<Duration> {
@@ -148,10 +148,10 @@ impl BoundedOperative for ScaleStepBounded {
 /// running) and no duration watcher — which is what isolates the per-driver
 /// cost. It is `self_terminating` in the declared sense: the loop ends when
 /// its inbox closes.
-struct ScaleIdleBounded;
-impl BoundedOperative for ScaleIdleBounded {
+struct ScaleIdleWorkflow;
+impl WorkflowOperative for ScaleIdleWorkflow {
     fn factory_id() -> &'static str {
-        "scale-idle-bounded"
+        "scale-idle-workflow"
     }
     const PERSISTENCE_ENABLED: bool = false;
     fn loop_mode() -> LoopMode {
@@ -163,10 +163,10 @@ impl BoundedOperative for ScaleIdleBounded {
 }
 
 /// The instance measured beside the population.
-struct ScaleControlBounded;
-impl BoundedOperative for ScaleControlBounded {
+struct ScaleControlWorkflow;
+impl WorkflowOperative for ScaleControlWorkflow {
     fn factory_id() -> &'static str {
-        "scale-control-bounded"
+        "scale-control-workflow"
     }
     const PERSISTENCE_ENABLED: bool = false;
     fn procedures(c: &ChannelBuilder) {
@@ -182,7 +182,7 @@ const ENV_SHAPE: &str = "FLEZHA_SCALE_SHAPE";
 const ENV_HOLD_MS: &str = "FLEZHA_SCALE_HOLD_MS";
 const ENV_POOL: &str = "FLEZHA_SCALE_POOL";
 const ENV_MAX_DURATION_MS: &str = "FLEZHA_SCALE_MAX_DURATION_MS";
-const ENV_DRIVER_STACK_KIB: &str = "FLEZHA_BOUNDED_DRIVER_STACK_KIB";
+const ENV_DRIVER_STACK_KIB: &str = "FLEZHA_WORKFLOW_DRIVER_STACK_KIB";
 
 /// How long the unloaded baseline, the discarded warmup, and each quiet-CPU
 /// window run for. Short on purpose — the population, not the baseline, is
@@ -225,8 +225,8 @@ impl Shape {
 
     fn factory_id(self) -> &'static str {
         match self {
-            Shape::Step => ScaleStepBounded::factory_id(),
-            Shape::Idle => ScaleIdleBounded::factory_id(),
+            Shape::Step => ScaleStepWorkflow::factory_id(),
+            Shape::Idle => ScaleIdleWorkflow::factory_id(),
         }
     }
 
@@ -308,8 +308,8 @@ fn control_sample(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>, seq: usiz
     let id = format!("scale-control-{seq}");
     let started = Instant::now();
     assert!(
-        node.start_bounded(
-            ScaleControlBounded::factory_id().into(),
+        node.start_workflow(
+            ScaleControlWorkflow::factory_id().into(),
             id.clone(),
             "ping".into()
         ),
@@ -320,7 +320,7 @@ fn control_sample(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>, seq: usiz
         let msg = rx
             .recv_timeout(deadline.saturating_duration_since(Instant::now()))
             .unwrap_or_else(|_| panic!("control instance {id} never completed"));
-        if let RunnerMessage::EmitBoundedCompleted {
+        if let RunnerMessage::EmitWorkflowCompleted {
             operative_id,
             status,
             ..
@@ -377,7 +377,7 @@ fn quiet_cpu_pct(window: Duration) -> f64 {
 
 #[test]
 #[ignore = "instance-count scaling probe: thousands of threads, tens of seconds"]
-fn bounded_instance_scaling_probe() {
+fn workflow_instance_scaling_probe() {
     let n = env_parse(ENV_N, 1_000usize);
     let shape = Shape::from_env();
     let hold = Duration::from_millis(env_parse(ENV_HOLD_MS, 15_000u64));
@@ -404,9 +404,9 @@ fn bounded_instance_scaling_probe() {
     // dials a controller, which is all this probe needs from it.
     let _runner = Flezha::create_runner("scale-ns")
         .and_then(|r| {
-            r.define_bounded::<ScaleStepBounded>()?
-                .define_bounded::<ScaleIdleBounded>()?
-                .define_bounded::<ScaleControlBounded>()?;
+            r.define_workflow::<ScaleStepWorkflow>()?
+                .define_workflow::<ScaleIdleWorkflow>()?
+                .define_workflow::<ScaleControlWorkflow>()?;
             Ok(r)
         })
         .expect("declaring the probe classes");
@@ -435,7 +435,7 @@ fn bounded_instance_scaling_probe() {
     let start_began = Instant::now();
     for i in 0..n {
         assert!(
-            node.start_bounded(
+            node.start_workflow(
                 shape.factory_id().into(),
                 format!("scale-{i}"),
                 "work".into()
@@ -490,7 +490,7 @@ fn bounded_instance_scaling_probe() {
     let p99_ratio = loaded_p99.as_secs_f64() / baseline_p99.as_secs_f64().max(f64::EPSILON);
     let shape = shape.name();
 
-    println!("--- bounded instance scaling probe -------------------------------");
+    println!("--- workflow instance scaling probe -------------------------------");
     println!(
         "shape={shape} n={n} driver_stack_kib={stack} hold={hold:?} max_duration_ms={watchdog}"
     );

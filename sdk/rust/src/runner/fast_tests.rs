@@ -11,7 +11,7 @@ mod remove_factory_tests {
 
     use crate::procedure::state_handle::StateHandle;
     use crate::procedure::{NoChange, Procedure, ProcedureCtx, ProcedureError, WallClock};
-    use crate::{ChannelBuilder, UnboundedOperative};
+    use crate::{ChannelBuilder, StreamOperative};
 
     #[derive(Default)]
     struct SeamProc;
@@ -37,7 +37,7 @@ mod remove_factory_tests {
     }
 
     struct SeamOperative;
-    impl UnboundedOperative for SeamOperative {
+    impl StreamOperative for SeamOperative {
         fn factory_id() -> &'static str {
             "remove_factory_seam_probe"
         }
@@ -49,7 +49,7 @@ mod remove_factory_tests {
     #[test]
     fn removal_refuses_while_instances_live_and_unregisters_after() {
         let runner = RunnerNode::new("seam_ns".to_string());
-        crate::register_unbounded_class::<SeamOperative>().expect("valid topology");
+        crate::register_stream_class::<SeamOperative>().expect("valid topology");
 
         runner
             .start_operative(

@@ -34,7 +34,7 @@ use crate::procedure::Procedure;
 
 /// Type-erased dispatcher factory for one Procedure. Stored on
 /// `BuilderState::procedures` and consumed by `build_topology` to produce
-/// per-entity slots in each `UnboundedInstance`.
+/// per-entity slots in each `StreamInstance`.
 pub(crate) struct ProcedureEntry {
     /// Node identity: the procedure's `name()`, or the explicit node name
     /// given at wiring time (`into_named`). Feeds everything `name()` feeds —
@@ -49,7 +49,7 @@ pub(crate) struct ProcedureEntry {
     pub entity_keys: Vec<&'static str>,
     pub entities_for_overridden: bool,
     /// `Procedure::COMPENSATE_OVERRIDDEN` captured at registration time. The
-    /// bounded driver consults the resolved descriptor flag to fire saga
+    /// workflow driver consults the resolved descriptor flag to fire saga
     /// compensation only for procedures that declared a `compensate` hook.
     pub compensate_overridden: bool,
     /// Channels this node consumes. Several = a fan-in, or a merge whose
@@ -169,11 +169,11 @@ pub(crate) struct ChannelEntry {
     /// `.retry_max(...)` / `.retry_backoff_ms(...)` overwrite the defaults.
     pub retry: crate::channel::RetryPolicy,
     /// Inter-proc byte codec declared via `.codec()` / `.codec_with(...)`.
-    /// Required for durable structured bounded classes (`bounded-proc-journal`).
+    /// Required for durable structured workflow classes (`workflow-proc-journal`).
     pub codec: Option<crate::channel::ChannelCodec>,
 }
 
-/// Reasons `UnboundedOperative::channels(c)` declarations fail at registration time.
+/// Reasons `StreamOperative::channels(c)` declarations fail at registration time.
 #[derive(Debug, thiserror::Error)]
 pub enum TopologyIssue {
     #[error("channel `{0}` declared more than once on this operative")]
@@ -386,7 +386,7 @@ pub(crate) struct BuilderState {
     pub ack_granularity: crate::operative::topology::AckGranularity,
 }
 
-/// Builder collected by `UnboundedOperative::channels`. Internal state turns into a
+/// Builder collected by `StreamOperative::channels`. Internal state turns into a
 /// frozen `OperativeTopology` at `build_topology` time. Stream handles hold a
 /// shared reference to the builder, so its interior is a `RefCell`.
 pub struct ChannelBuilder {
@@ -416,7 +416,7 @@ impl ChannelBuilder {
         self.state.into_inner()
     }
 
-    /// Whether any procedure was declared (`false` selects the bounded
+    /// Whether any procedure was declared (`false` selects the workflow
     /// run-sugar path).
     pub(crate) fn has_procedures(&self) -> bool {
         !self.state.borrow().procedures.is_empty()
@@ -553,11 +553,11 @@ impl ChannelBuilder {
     /// ```
     ///
     /// Sources may be entry streams (sealed payloads) or another procedure's
-    /// output stream, freely mixed — on an **unbounded** operative. A bounded
+    /// output stream, freely mixed — on an **stream** operative. A workflow
     /// operative is seeded from its spawn args through one entry channel and
     /// nothing on that path says which channel a payload arrived on, so a
-    /// bounded merge over an entry channel is refused at registration
-    /// (`BuildBoundedError::MergeFromEntryChannel`); its sources are the
+    /// workflow merge over an entry channel is refused at registration
+    /// (`BuildWorkflowError::MergeFromEntryChannel`); its sources are the
     /// output streams of two or more of its procedures.
     ///
     /// `entities_for` and the merge's own `key_by` are evaluated on the
@@ -576,8 +576,8 @@ impl ChannelBuilder {
     ///
     /// A panicking mapping is contained everywhere it can be: on an
     /// inter-procedure source it is caught as the producing procedure's panic
-    /// (unbounded) or turned into a terminal chain error the saga compensates
-    /// (bounded). The one unguarded seam is an unbounded entry-channel source,
+    /// (stream) or turned into a terminal chain error the saga compensates
+    /// (workflow). The one unguarded seam is a stream entry-channel source,
     /// where the mapping runs on the wire-reader path — the same exposure the
     /// entry parser there already carries. `docs/multi_input_procedures.md`
     /// tabulates it.
@@ -1459,8 +1459,8 @@ impl<'b, T: 'static + Send + Sync> Stream<'b, T, NodeTarget> {
 
     /// Declare the standard inter-proc byte codec (postcard over `T`'s serde
     /// derives) so this channel's handoff batch is journal-able at the
-    /// bounded proc-commit barrier and re-seedable on crash-resume. Required
-    /// on every inter-proc channel of a durable structured bounded class.
+    /// workflow proc-commit barrier and re-seedable on crash-resume. Required
+    /// on every inter-proc channel of a durable structured workflow class.
     pub fn codec(self) -> Self
     where
         T: serde::Serialize + serde::de::DeserializeOwned,

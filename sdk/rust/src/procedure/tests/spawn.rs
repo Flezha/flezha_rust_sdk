@@ -12,7 +12,7 @@ use crate::shutdown::AckResult;
 
 const IDENTITY: &[u8] = b"spawn/test/";
 
-/// Minimal sink: `spawn_bounded` touches nothing on the emit path, which is
+/// Minimal sink: `spawn_workflow` touches nothing on the emit path, which is
 /// exactly what these tests pin.
 struct NullSink;
 
@@ -126,7 +126,7 @@ fn a_dropped_handle_is_not_an_error_for_the_procedure() {
     // failure it carries is reported by the reaper, not by the caller.
     let mut sink = NullSink;
     let ctx = ProcedureCtx::new(&mut sink, 0, 0, IDENTITY);
-    let _ = ctx.spawn_bounded("w1", "worker", b"payload".to_vec(), IfRunning::Deliver);
+    let _ = ctx.spawn_workflow("w1", "worker", b"payload".to_vec(), IfRunning::Deliver);
 }
 
 #[test]
@@ -137,7 +137,7 @@ fn a_replayed_invocation_issues_no_request() {
 
     let mut sink = NullSink;
     let ctx = ProcedureCtx::new(&mut sink, 0, 0, IDENTITY).during_replay(true);
-    let handle = ctx.spawn_bounded("w1", "worker", b"payload".to_vec(), IfRunning::Deliver);
+    let handle = ctx.spawn_workflow("w1", "worker", b"payload".to_vec(), IfRunning::Deliver);
 
     assert_eq!(handle.wait(), Ok(SpawnOutcome::SkippedOnReplay));
     assert!(rx.try_recv().is_err(), "a replay must reach no coordinator");
@@ -151,20 +151,20 @@ fn a_live_invocation_ships_the_request_the_controller_reads() {
 
     let mut sink = NullSink;
     let ctx = ProcedureCtx::new(&mut sink, 0, 0, IDENTITY);
-    let handle = ctx.spawn_bounded("w1", "worker", b"payload".to_vec(), IfRunning::Error);
+    let handle = ctx.spawn_workflow("w1", "worker", b"payload".to_vec(), IfRunning::Error);
 
     match rx.try_recv().expect("a live invocation ships one request") {
         crate::runner::RunnerMessage::EmitControlRequest {
             reference_id,
-            command: crate::pb::command_request::Command::SpawnBoundedRequest(request),
+            command: crate::pb::command_request::Command::SpawnWorkflowRequest(request),
         } => {
-            assert!(reference_id.starts_with("spawn-bounded-w1-"));
+            assert!(reference_id.starts_with("spawn-workflow-w1-"));
             assert_eq!(request.instance_id, "w1");
             assert_eq!(request.factory_id, "worker");
             assert_eq!(request.payload, b"payload".to_vec());
             assert_eq!(request.if_running, "error");
         }
-        _ => panic!("expected a SpawnBoundedRequest on the coordinator channel"),
+        _ => panic!("expected a SpawnWorkflowRequest on the coordinator channel"),
     }
 
     // The reply never arrives (no controller behind the channel), so the

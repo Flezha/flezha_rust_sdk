@@ -1,5 +1,5 @@
 //! `build_topology` consumes a `ChannelBuilder` (populated by
-//! `UnboundedOperative::channels`) and produces a frozen `Arc<OperativeTopology>`.
+//! `StreamOperative::channels`) and produces a frozen `Arc<OperativeTopology>`.
 //!
 //! Build-time validation:
 //! - reject duplicate channel names (derived, `.named(...)`-overridden, and
@@ -44,12 +44,12 @@ pub struct TopologyBuildError {
 
 /// Result of the shared graph-shape walk (`sdk-graph-authoring`): Kahn
 /// topological order over the procedure nodes plus reachability from the
-/// entry. One walk serves both the unbounded validation and the bounded
+/// entry. One walk serves both the stream validation and the workflow
 /// `ProcDag` construction — the shape rule is one rule, so its mechanism is one
 /// mechanism.
 pub(crate) struct GraphOrder {
     /// Node ids in Kahn topological order (FIFO — for a tree this is exactly
-    /// BFS from the root, so bounded `proc_idx` numbering stays stable).
+    /// BFS from the root, so workflow `proc_idx` numbering stays stable).
     pub order: Vec<crate::channel::ProcedureId>,
     /// Node id → position in `order`; `usize::MAX` for a node on a cycle.
     pub pos: Vec<usize>,
@@ -120,9 +120,9 @@ pub fn build_topology(
     build_topology_with_persistence(factory_id, builder, true)
 }
 
-/// Like [`build_topology`] but accepts the `UnboundedOperative::PERSISTENCE_ENABLED`
+/// Like [`build_topology`] but accepts the `StreamOperative::PERSISTENCE_ENABLED`
 /// const captured at registration. `build_topology_for::<R>()` is the
-/// canonical caller; tests that exercise topology without an UnboundedOperative
+/// canonical caller; tests that exercise topology without a StreamOperative
 /// generic call [`build_topology`] which defaults the const to `true`.
 pub fn build_topology_with_persistence(
     factory_id: &'static str,
@@ -376,11 +376,11 @@ pub fn build_topology_with_persistence(
     }))
 }
 
-/// Convenience constructor used by `define_unbounded::<R>()`. Calls
+/// Convenience constructor used by `define_stream::<R>()`. Calls
 /// `R::channels(...)` once and returns the resulting topology, capturing
-/// `R::PERSISTENCE_ENABLED` so `UnboundedInstance::new` can resolve the
+/// `R::PERSISTENCE_ENABLED` so `StreamInstance::new` can resolve the
 /// final per-instance flag.
-pub fn build_topology_for<R: crate::operative::UnboundedOperative>(
+pub fn build_topology_for<R: crate::operative::StreamOperative>(
 ) -> Result<Arc<OperativeTopology>, TopologyBuildError> {
     let cb = ChannelBuilder::new();
     R::channels(&cb);

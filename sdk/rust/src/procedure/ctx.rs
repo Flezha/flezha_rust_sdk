@@ -31,7 +31,7 @@ pub struct ProcedureCtx<'a> {
     checkpoint: bool,
     replay: bool,
     /// Timer surface for this invocation. `None` where timers do not apply —
-    /// a bounded operative's stage (it has its own wake model) and a
+    /// a workflow operative's stage (it has its own wake model) and a
     /// `compensate` hook — so the refusal is structural, not a runtime check.
     timers: Option<&'a RefCell<TimerSession>>,
 }
@@ -138,7 +138,7 @@ impl<'a> ProcedureCtx<'a> {
         }
     }
 
-    /// Attach this invocation's timer session. Set by the unbounded dispatcher
+    /// Attach this invocation's timer session. Set by the stream dispatcher
     /// for `run` and `on_timer`; every other construction site leaves it off.
     pub(crate) fn with_timers(mut self, timers: &'a RefCell<TimerSession>) -> Self {
         self.timers = Some(timers);
@@ -147,7 +147,7 @@ impl<'a> ProcedureCtx<'a> {
 
     /// Mark the invocation as a replay of already-processed input. Set by the
     /// dispatcher from the entity payload; it is what makes
-    /// [`Self::spawn_bounded`] a live-processing-only side effect.
+    /// [`Self::spawn_workflow`] a live-processing-only side effect.
     pub(crate) fn during_replay(mut self, replay: bool) -> Self {
         self.replay = replay;
         self
@@ -196,7 +196,7 @@ impl<'a> ProcedureCtx<'a> {
         StableId::derive(self.entity_identity, self.invocation_seq, ordinal)
     }
 
-    /// Ask the controller for a bounded instance: start `factory_id` under
+    /// Ask the controller for a workflow instance: start `factory_id` under
     /// `instance_id` if that id is free, otherwise apply `if_running`
     /// ([`IfRunning::Deliver`] feeds the running instance, [`IfRunning::Error`]
     /// reports [`SpawnError::AlreadyRunning`]). `payload` is the instance's
@@ -218,7 +218,7 @@ impl<'a> ProcedureCtx<'a> {
     /// The timer calls on this same context behave the OPPOSITE way and
     /// deliberately so: a timer is internal state, so a replay registers it,
     /// where skipping would rebuild a pending set the live run never had.
-    pub fn spawn_bounded(
+    pub fn spawn_workflow(
         &self,
         instance_id: impl Into<String>,
         factory_id: impl Into<String>,

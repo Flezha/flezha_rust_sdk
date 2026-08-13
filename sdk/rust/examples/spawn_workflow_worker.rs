@@ -1,11 +1,11 @@
-//! An unbounded detector that hands each interesting event to a short-lived
-//! bounded worker (`procedure-requested-spawn`).
+//! A stream detector that hands each interesting event to a short-lived
+//! workflow worker (`procedure-requested-spawn`).
 //!
 //! The pattern this exists for: a stream operative notices something worth
 //! doing real work about, and wants a worker for it — without an external
 //! dispatcher, and without becoming one itself.
 //!
-//! `ctx.spawn_bounded` is spawn-or-deliver on one id: the first alert for
+//! `ctx.spawn_workflow` is spawn-or-deliver on one id: the first alert for
 //! `ACME` starts `triage@ACME`, every later alert for `ACME` is fed to the
 //! instance already working on it. Concurrent alerts resolve controller-side
 //! to exactly one instance. The call is fire-and-forget — the detector's own
@@ -13,21 +13,21 @@
 //!
 //! Run the pair with a runner that defines both:
 //!     Flezha::create_runner("default")?
-//!         .define_unbounded::<AlertDetector>()?
-//!         .define_bounded::<Triage>()?
+//!         .define_stream::<AlertDetector>()?
+//!         .define_workflow::<Triage>()?
 //!         .run()?;
 
 use flezha_runner::procedure::{IfRunning, Procedure, ProcedureCtx, ProcedureError};
 use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
 use flezha_runner::{
-    BoundedCtx, BoundedError, BoundedOperative, ChannelBuilder, UnboundedOperative,
+    ChannelBuilder, StreamOperative, WorkflowCtx, WorkflowError, WorkflowOperative,
 };
 
-// -- the detector: unbounded, one instance, runs forever ---------------------
+// -- the detector: stream, one instance, runs forever ---------------------
 
 struct AlertDetector;
 
-impl UnboundedOperative for AlertDetector {
+impl StreamOperative for AlertDetector {
     fn factory_id() -> &'static str {
         "alert_detector"
     }
@@ -71,7 +71,7 @@ impl Procedure for Detect {
         // as its first input, later alerts are delivered to the same instance.
         // The handle is dropped — a failed request logs itself and this
         // procedure carries on emitting.
-        let _ = ctx.spawn_bounded(
+        let _ = ctx.spawn_workflow(
             format!("triage@{subject}"),
             "triage",
             input.as_bytes().to_vec(),
@@ -82,23 +82,23 @@ impl Procedure for Detect {
     }
 }
 
-// -- the worker: bounded, one per subject, torn down when it returns ---------
+// -- the worker: workflow, one per subject, torn down when it returns ---------
 
 struct Triage;
 
-impl BoundedOperative for Triage {
+impl WorkflowOperative for Triage {
     fn factory_id() -> &'static str {
         "triage"
     }
 
-    fn run(ctx: &mut BoundedCtx, args: &str) -> Result<(), BoundedError> {
+    fn run(ctx: &mut WorkflowCtx, args: &str) -> Result<(), WorkflowError> {
         ctx.emit(format!("triaged:{args}").into_bytes())?;
         Ok(())
     }
 }
 
 fn main() {
-    // Compile-only example: `cargo run --example spawn_bounded_worker` needs a
+    // Compile-only example: `cargo run --example spawn_workflow_worker` needs a
     // controller to connect to, so the runner wiring is documented above
     // rather than executed here.
     println!(

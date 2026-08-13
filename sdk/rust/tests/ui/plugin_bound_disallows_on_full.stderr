@@ -2,11 +2,11 @@ error[E0599]: no method named `on_full` found for struct `Channel<T>` in the cur
   --> tests/ui/plugin_bound_disallows_on_full.rs:32:10
    |
 29 |       c.input::<String>("in")
-   |       - --------------------- method `on_full` is available on `Stream<'_, String, EntryTarget>`
+   |       - --------------------- method `on_full` is available on `flezha_runner::Stream<'_, String, EntryTarget>`
    |  _____|
    | |
 30 | |         .into::<PluginProducer>()
-   | |          ------------------------ method `on_full` is available on `Stream<'_, Vec<u8>>`
+   | |          ------------------------ method `on_full` is available on `flezha_runner::Stream<'_, Vec<u8>>`
 31 | |         .output("k")
 32 | |         .on_full(OverflowPolicy::Block);
    | |         -^^^^^^^ method not found in `Channel<Vec<u8>>`

@@ -2,7 +2,7 @@
 //! `output` / `also_output` / `named` / `codec` / `keyed` stay on a
 //! procedure's output stream.
 struct Op;
-impl flezha_runner::UnboundedOperative for Op {
+impl flezha_runner::StreamOperative for Op {
     fn factory_id() -> &'static str {
         "entry_no_sink"
     }

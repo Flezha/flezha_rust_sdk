@@ -1,7 +1,7 @@
 //! `Change` trait, `NoChange` zero-variant default, and `CoalesceKey`
 //! newtype per `operative-state-persistence/design.md` Decisions 3 and 4.
 //!
-//! The `Change` trait is a marker bounded on
+//! The `Change` trait is a marker workflow on
 //! `Serialize + DeserializeOwned + Send + Sync + 'static` with one
 //! defaulted method: `coalesce_key(&self) -> Option<CoalesceKey>`. The
 //! default returns `None`, meaning records are kept verbatim by the

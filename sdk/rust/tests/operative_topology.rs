@@ -1,4 +1,4 @@
-//! Section 2 unit tests: topology construction + UnboundedInstance entity
+//! Section 2 unit tests: topology construction + StreamInstance entity
 //! creation. Covers the umbrella scenarios:
 //! - "Single entity for a Procedure with no entity declared"
 //! - "Static entities created at operative startup"
@@ -12,7 +12,7 @@ use flezha_runner::channel::ChannelBuilder;
 use flezha_runner::operative::builder::build_topology_for;
 use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError};
 use flezha_runner::state::{Change, NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_runner::UnboundedOperative;
+use flezha_runner::StreamOperative;
 
 mod common;
 
@@ -21,7 +21,7 @@ test_procedure!(EchoProcedure, "echo_procedure", String => String, (), |_input, 
 });
 
 struct SingleOperative;
-impl UnboundedOperative for SingleOperative {
+impl StreamOperative for SingleOperative {
     fn factory_id() -> &'static str {
         "single_operative"
     }
@@ -90,7 +90,7 @@ impl Procedure for StaticProcedure {
 }
 
 struct StaticOperative;
-impl UnboundedOperative for StaticOperative {
+impl StreamOperative for StaticOperative {
     fn factory_id() -> &'static str {
         "static_operative"
     }
@@ -133,7 +133,7 @@ impl Procedure for DynamicOnlyProcedure {
 }
 
 struct DynamicOnlyOperative;
-impl UnboundedOperative for DynamicOnlyOperative {
+impl StreamOperative for DynamicOnlyOperative {
     fn factory_id() -> &'static str {
         "dynamic_only_operative"
     }
@@ -186,7 +186,7 @@ impl Procedure for UnannotatedStaticProcedure {
 }
 
 struct UnannotatedOperative;
-impl UnboundedOperative for UnannotatedOperative {
+impl StreamOperative for UnannotatedOperative {
     fn factory_id() -> &'static str {
         "unannotated_operative"
     }
@@ -215,7 +215,7 @@ test_procedure!(ZeroCapacityProcedure, "zero_capacity_procedure", String => Stri
 });
 
 struct ZeroCapacityOperative;
-impl UnboundedOperative for ZeroCapacityOperative {
+impl StreamOperative for ZeroCapacityOperative {
     fn factory_id() -> &'static str {
         "zero_capacity_operative"
     }
@@ -247,7 +247,7 @@ test_procedure!(ExplicitCapProcedure, "explicit_cap_procedure", String => String
 });
 
 struct ExplicitCapOperative;
-impl UnboundedOperative for ExplicitCapOperative {
+impl StreamOperative for ExplicitCapOperative {
     fn factory_id() -> &'static str {
         "explicit_cap_operative"
     }
@@ -276,7 +276,7 @@ fn default_capacity_is_1024_in_topology() {
 fn operative_instance_creates_entities() {
     let topology = build_topology_for::<StaticOperative>().expect("topology");
     let instance =
-        flezha_runner::operative::UnboundedInstance::new(topology, Arc::from("instance-id"));
+        flezha_runner::operative::StreamInstance::new(topology, Arc::from("instance-id"));
     assert_eq!(instance.entities.len(), 1);
     assert_eq!(instance.entities[0].len(), 3);
     assert_eq!(instance.entity_key_to_idx[0].get("a"), Some(&0));
@@ -297,7 +297,7 @@ test_procedure!(KeyedConsumerProcedure, "keyed_consumer_procedure", String => ()
 
 /// `.keyed()` with a pure plugin wire is accepted and recorded.
 struct KeyedPluginOperative;
-impl UnboundedOperative for KeyedPluginOperative {
+impl StreamOperative for KeyedPluginOperative {
     fn factory_id() -> &'static str {
         "keyed_plugin_operative"
     }
@@ -320,7 +320,7 @@ fn keyed_plugin_channel_is_accepted_and_marked() {
 
 /// `.keyed()` on a hybrid (`also_output_with`) channel is accepted.
 struct KeyedHybridOperative;
-impl UnboundedOperative for KeyedHybridOperative {
+impl StreamOperative for KeyedHybridOperative {
     fn factory_id() -> &'static str {
         "keyed_hybrid_operative"
     }
@@ -345,7 +345,7 @@ fn keyed_hybrid_channel_is_accepted_and_marked() {
 /// `.keyed()` on a channel with no plugin wire fails the build with a
 /// typed error naming the channel.
 struct KeyedInterProcedureOperative;
-impl UnboundedOperative for KeyedInterProcedureOperative {
+impl StreamOperative for KeyedInterProcedureOperative {
     fn factory_id() -> &'static str {
         "keyed_inter_procedure_operative"
     }
@@ -398,7 +398,7 @@ impl Procedure for FrozenLogicalProcedure {
 }
 
 struct FrozenLogicalOperative;
-impl UnboundedOperative for FrozenLogicalOperative {
+impl StreamOperative for FrozenLogicalOperative {
     fn factory_id() -> &'static str {
         "frozen_logical_operative"
     }
@@ -466,7 +466,7 @@ fn topo_shape(t: &flezha_runner::operative::OperativeTopology) -> (Vec<ChannelSh
 #[test]
 fn branch_builds_the_identical_topology() {
     struct ByHandles;
-    impl UnboundedOperative for ByHandles {
+    impl StreamOperative for ByHandles {
         fn factory_id() -> &'static str {
             "graph_by_handles"
         }
@@ -477,7 +477,7 @@ fn branch_builds_the_identical_topology() {
         }
     }
     struct ByBranch;
-    impl UnboundedOperative for ByBranch {
+    impl StreamOperative for ByBranch {
         fn factory_id() -> &'static str {
             "graph_by_branch"
         }
@@ -500,7 +500,7 @@ fn branch_builds_the_identical_topology() {
 #[test]
 fn branch_with_fewer_than_two_arms_is_refused() {
     struct OneArm;
-    impl UnboundedOperative for OneArm {
+    impl StreamOperative for OneArm {
         fn factory_id() -> &'static str {
             "graph_one_arm"
         }
@@ -528,7 +528,7 @@ fn branch_with_fewer_than_two_arms_is_refused() {
 #[test]
 fn named_nodes_reuse_one_class_at_two_positions() {
     struct TwoFilters;
-    impl UnboundedOperative for TwoFilters {
+    impl StreamOperative for TwoFilters {
         fn factory_id() -> &'static str {
             "graph_two_filters"
         }
@@ -566,7 +566,7 @@ fn named_nodes_reuse_one_class_at_two_positions() {
 #[test]
 fn unnamed_mentions_unify_into_a_fan_in() {
     struct FanInGraph;
-    impl UnboundedOperative for FanInGraph {
+    impl StreamOperative for FanInGraph {
         fn factory_id() -> &'static str {
             "graph_fan_in"
         }
@@ -589,7 +589,7 @@ fn unnamed_mentions_unify_into_a_fan_in() {
 #[test]
 fn node_identity_collision_is_refused() {
     struct Colliding;
-    impl UnboundedOperative for Colliding {
+    impl StreamOperative for Colliding {
         fn factory_id() -> &'static str {
             "graph_identity_collision"
         }
@@ -618,7 +618,7 @@ fn node_identity_collision_is_refused() {
 #[test]
 fn channel_names_derive_from_the_producer_identity() {
     struct Derived;
-    impl UnboundedOperative for Derived {
+    impl StreamOperative for Derived {
         fn factory_id() -> &'static str {
             "graph_derived_names"
         }
@@ -641,7 +641,7 @@ fn channel_names_derive_from_the_producer_identity() {
     );
 
     struct NameClash;
-    impl UnboundedOperative for NameClash {
+    impl StreamOperative for NameClash {
         fn factory_id() -> &'static str {
             "graph_name_clash"
         }
@@ -665,7 +665,7 @@ fn channel_names_derive_from_the_producer_identity() {
 #[test]
 fn a_cycle_is_refused() {
     struct Cyclic;
-    impl UnboundedOperative for Cyclic {
+    impl StreamOperative for Cyclic {
         fn factory_id() -> &'static str {
             "graph_cyclic"
         }
@@ -693,7 +693,7 @@ fn multiple_entry_channels_build() {
     // feed on distinct channels). The controller routes each frame to its
     // entry by `metadata["channel"]`. Both entries and their subgraphs resolve.
     struct TwoEntries;
-    impl UnboundedOperative for TwoEntries {
+    impl StreamOperative for TwoEntries {
         fn factory_id() -> &'static str {
             "graph_two_entries"
         }
@@ -732,7 +732,7 @@ test_procedure!(OrderConsumer, "order_consumer", OrderEvent => String, (), |_inp
 #[test]
 fn typed_entry_decodes_json_at_the_edge() {
     struct TypedEntry;
-    impl UnboundedOperative for TypedEntry {
+    impl StreamOperative for TypedEntry {
         fn factory_id() -> &'static str {
             "graph_typed_entry"
         }
@@ -764,7 +764,7 @@ fn typed_entry_decodes_json_at_the_edge() {
 #[test]
 fn a_custom_parser_replaces_the_default_json() {
     struct CustomEntry;
-    impl UnboundedOperative for CustomEntry {
+    impl StreamOperative for CustomEntry {
         fn factory_id() -> &'static str {
             "graph_custom_entry"
         }
@@ -807,7 +807,7 @@ fn bytes_and_string_entries_stay_passthrough() {
         Ok(())
     });
     struct BytesEntry;
-    impl UnboundedOperative for BytesEntry {
+    impl StreamOperative for BytesEntry {
         fn factory_id() -> &'static str {
             "graph_bytes_entry"
         }

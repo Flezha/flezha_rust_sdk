@@ -9,7 +9,7 @@ use flezha_runner::Flezha;
 
 fn main() -> Result<(), flezha_runner::FlezhaError> {
     Flezha::create_runner("my_app")?        // the namespace
-        .define_unbounded::<MyOperative>()? // legal before AND after start()/run()
+        .define_stream::<MyOperative>()? // legal before AND after start()/run()
         .run()?;                            // connect + block until shutdown
     Ok(())
 }
@@ -20,14 +20,14 @@ binary. Embedding into a larger app? `start()` keeps your thread — bind the
 runner (`let runner = Flezha::create_runner(ns)?.start()?;`, a chained
 temporary would Drop and shut it down at statement end); dropping it runs the
 graceful-shutdown sequence, and `Flezha::current_runner()` reaches it from
-anywhere. Types are dynamic: `define_unbounded`/`define_bounded` and their
-inverses `remove_unbounded`/`remove_bounded` are legal before and after
+anywhere. Types are dynamic: `define_stream`/`define_workflow` and their
+inverses `remove_stream`/`remove_workflow` are legal before and after
 `start()` (a post-start change ships `UpdateFactories` to the controller);
 starting with zero declared types is legal. At most one runner is started per
 process: a second `start()` returns
 `Err(FlezhaError::AlreadyRunning { .. })` naming the running namespace. Every
 fallible call returns `Result<_, FlezhaError>` — the whole chain compiles
-under a single `?`; invalid topologies surface at the `define_unbounded` call
+under a single `?`; invalid topologies surface at the `define_stream` call
 site — no panics. Lifecycle vocabulary: `docs/sdk_naming_conventions.md`.
 
 ## Authoring a topology
@@ -41,7 +41,7 @@ identity; entry names are explicit, they are the operative's address).
 
 ```rust
 struct OrdersOperative;
-impl UnboundedOperative for OrdersOperative {
+impl StreamOperative for OrdersOperative {
     fn factory_id() -> &'static str { "orders" }
     fn channels(c: &ChannelBuilder) {
         // Typed entry: OrderEvent is deserialized from JSON at the edge
@@ -129,7 +129,7 @@ changelog-style sink:
 
 ```rust
 struct RiskOperative;
-impl UnboundedOperative for RiskOperative {
+impl StreamOperative for RiskOperative {
     fn factory_id() -> &'static str { "risk" }
     fn channels(c: &ChannelBuilder) {
         // Entry-side config chains BEFORE .into: this channel retries a
@@ -162,17 +162,17 @@ hold, and the only names in the graph are the ones something external needs —
 the entry (`orders`), the tap (`audit`), the sink (`verdict_sink`), and any
 channel you chose to `.named(...)`.
 
-### A structured bounded DAG
+### A structured workflow DAG
 
-Bounded operatives author on the same builder. A durable class journals each
+Workflow operatives author on the same builder. A durable class journals each
 proc barrier, so inter-proc channels declare `.codec()`; a fan-in node runs once,
 after **all** its producers committed, with the accumulated batch — and on an
 abnormal exit the saga unwinds reverse-topologically (the join before either
 producer, the shared root last):
 
 ```rust
-struct SettleBounded;
-impl BoundedOperative for SettleBounded {
+struct SettleWorkflow;
+impl WorkflowOperative for SettleWorkflow {
     fn factory_id() -> &'static str { "settle" }
     fn retry_attempts() -> u32 { 3 } // per-entity ladder before the saga fires
     fn procedures(c: &ChannelBuilder) {

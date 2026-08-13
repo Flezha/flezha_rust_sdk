@@ -1,25 +1,25 @@
-//! The typed half of bounded-spec construction: `build_spec::<T>()` runs the
+//! The typed half of workflow-spec construction: `build_spec::<T>()` runs the
 //! author's `procedures` against a `ChannelBuilder` and validates the chain.
-//! The spec/DAG data structures live in `flz_core::bounded::spec`.
+//! The spec/DAG data structures live in `flz_core::workflow::spec`.
 
-pub use flz_core::bounded::spec::*;
-use flz_core::bounded::{BoundedRunFn, LoopMode};
 use flz_core::operative::topology::{EntityMode, OperativeTopology};
+pub use flz_core::workflow::spec::*;
+use flz_core::workflow::{LoopMode, WorkflowRunFn};
 
-use crate::bounded::BoundedOperative;
 use crate::channel::{ChannelBuilder, ChannelKind, ProcedureId, RetryPolicy};
 use crate::operative::builder::{build_topology, graph_order};
+use crate::workflow::WorkflowOperative;
 
-/// Build and validate the spec for a bounded class. Empty `procedures()`
+/// Build and validate the spec for a workflow class. Empty `procedures()`
 /// selects the run-sugar path; a non-empty declaration is validated as a
 /// static DAG.
-pub fn build_spec<T: BoundedOperative>() -> Result<BoundedSpec, BuildBoundedError> {
+pub fn build_spec<T: WorkflowOperative>() -> Result<WorkflowSpec, BuildWorkflowError> {
     let factory_id = T::factory_id();
 
     // Self-termination guard: an operative whose only exit is an external stop,
     // with no duration backstop, can never terminate cooperatively.
     if !T::self_terminating() && T::max_duration().is_none() {
-        return Err(BuildBoundedError::ExternalStopOnly { factory_id });
+        return Err(BuildWorkflowError::ExternalStopOnly { factory_id });
     }
 
     let retry = retry_policy::<T>(factory_id)?;
@@ -30,12 +30,12 @@ pub fn build_spec<T: BoundedOperative>() -> Result<BoundedSpec, BuildBoundedErro
     // No declared procedures ⇒ run-sugar. A loop needs a chain to iterate.
     if !cb.has_procedures() {
         if T::loop_mode() != LoopMode::Once {
-            return Err(BuildBoundedError::LoopWithoutChain { factory_id });
+            return Err(BuildWorkflowError::LoopWithoutChain { factory_id });
         }
 
-        return Ok(BoundedSpec {
+        return Ok(WorkflowSpec {
             host: false,
-            run: T::run as BoundedRunFn,
+            run: T::run as WorkflowRunFn,
             topology: None,
             dag: ProcDag::default(),
             max_duration: T::max_duration(),
@@ -47,7 +47,7 @@ pub fn build_spec<T: BoundedOperative>() -> Result<BoundedSpec, BuildBoundedErro
         });
     }
 
-    let topology = build_topology(factory_id, cb).map_err(|e| BuildBoundedError::Topology {
+    let topology = build_topology(factory_id, cb).map_err(|e| BuildWorkflowError::Topology {
         factory_id,
         detail: format!("{e}"),
     })?;
@@ -57,14 +57,14 @@ pub fn build_spec<T: BoundedOperative>() -> Result<BoundedSpec, BuildBoundedErro
     // batch, so "the terminal procedure" must be unambiguous — a graph with
     // several leaves has no single terminal batch to carry forward.
     if T::loop_mode() == LoopMode::Chained && dag.single_leaf().is_none() {
-        return Err(BuildBoundedError::BranchingChainedLoop {
+        return Err(BuildWorkflowError::BranchingChainedLoop {
             factory_id,
             leaves: dag.leaves().count(),
         });
     }
 
     // Durable structured classes journal the inter-proc handoff at every proc
-    // boundary (`bounded-proc-journal`), which requires every inter-procedure
+    // boundary (`workflow-proc-journal`), which requires every inter-procedure
     // channel to carry a byte codec. Unpublished library: fail registration
     // instead of shimming.
     if T::PERSISTENCE_ENABLED {
@@ -73,7 +73,7 @@ pub fn build_spec<T: BoundedOperative>() -> Result<BoundedSpec, BuildBoundedErro
             .iter()
             .find(|c| c.kind == ChannelKind::InterProcedure && c.codec.is_none())
         {
-            return Err(BuildBoundedError::MissingInterProcCodec {
+            return Err(BuildWorkflowError::MissingInterProcCodec {
                 factory_id,
                 channel: ch.name.to_string(),
             });
@@ -92,7 +92,7 @@ pub fn build_spec<T: BoundedOperative>() -> Result<BoundedSpec, BuildBoundedErro
                 .and_then(|cid| topology.channel(cid))
                 .is_some_and(|ch| ch.codec.is_some());
             if !codec_ok {
-                return Err(BuildBoundedError::LoopTerminalWithoutCodec {
+                return Err(BuildWorkflowError::LoopTerminalWithoutCodec {
                     factory_id,
                     procedure: terminal.name.to_string(),
                 });
@@ -100,9 +100,9 @@ pub fn build_spec<T: BoundedOperative>() -> Result<BoundedSpec, BuildBoundedErro
         }
     }
 
-    Ok(BoundedSpec {
+    Ok(WorkflowSpec {
         host: false,
-        run: T::run as BoundedRunFn,
+        run: T::run as WorkflowRunFn,
         topology: Some(topology),
         dag,
         max_duration: T::max_duration(),
@@ -117,13 +117,13 @@ pub fn build_spec<T: BoundedOperative>() -> Result<BoundedSpec, BuildBoundedErro
 /// Resolve the class's per-entity retry ladder onto the shared
 /// [`RetryPolicy`], rejecting a ladder that would spin without a backoff. A
 /// declared 0 collapses to the one-attempt fail-fast the driver runs.
-fn retry_policy<T: BoundedOperative>(
+fn retry_policy<T: WorkflowOperative>(
     factory_id: &'static str,
-) -> Result<RetryPolicy, BuildBoundedError> {
+) -> Result<RetryPolicy, BuildWorkflowError> {
     let attempts = T::retry_attempts();
     let backoff_base_ms = T::retry_backoff().as_millis().min(u64::MAX as u128) as u64;
     if attempts > 1 && backoff_base_ms == 0 {
-        return Err(BuildBoundedError::ZeroRetryBackoff {
+        return Err(BuildWorkflowError::ZeroRetryBackoff {
             factory_id,
             attempts,
         });
@@ -134,7 +134,7 @@ fn retry_policy<T: BoundedOperative>(
     })
 }
 
-/// Resolve the execution DAG of a structured bounded's procedures and reject
+/// Resolve the execution DAG of a structured workflow's procedures and reject
 /// anything outside the shared graph-shape rule (`sdk-graph-authoring`): one
 /// entry-rooted connected acyclic graph — fan-out and fan-in both legal — with
 /// at most one output channel per procedure, no dynamic entity mode.
@@ -146,11 +146,11 @@ fn retry_policy<T: BoundedOperative>(
 fn build_dag(
     factory_id: &'static str,
     topology: &OperativeTopology,
-) -> Result<ProcDag, BuildBoundedError> {
-    // Bounded has no `dynamic_entities?` capability.
+) -> Result<ProcDag, BuildWorkflowError> {
+    // Workflow has no `dynamic_entities?` capability.
     for proc in &topology.procedures {
         if proc.mode == EntityMode::Dynamic {
-            return Err(BuildBoundedError::DynamicEntities {
+            return Err(BuildWorkflowError::DynamicEntities {
                 factory_id,
                 procedure: proc.name.to_string(),
             });
@@ -168,7 +168,7 @@ fn build_dag(
             .filter(|c| c.producer == Some(proc_id))
             .count();
         if outgoing > 1 {
-            return Err(BuildBoundedError::MultipleOutputChannels {
+            return Err(BuildWorkflowError::MultipleOutputChannels {
                 factory_id,
                 procedure: proc.name.to_string(),
             });
@@ -191,7 +191,7 @@ fn build_dag(
             .iter()
             .find(|e| e.transform.is_some() || e.key.is_some())
         {
-            return Err(BuildBoundedError::MergeFromEntryChannel {
+            return Err(BuildWorkflowError::MergeFromEntryChannel {
                 factory_id,
                 channel: channel.name.to_string(),
                 procedure: topology.procedures[edge.procedure as usize]
@@ -204,9 +204,9 @@ fn build_dag(
         .channels
         .iter()
         .find(|c| c.kind == ChannelKind::Entry)
-        .ok_or(BuildBoundedError::NoEntryChannel { factory_id })?;
+        .ok_or(BuildWorkflowError::NoEntryChannel { factory_id })?;
     if entry.consumers.len() != 1 {
-        return Err(BuildBoundedError::EntryRoot {
+        return Err(BuildWorkflowError::EntryRoot {
             factory_id,
             channel: entry.name.to_string(),
             consumers: entry.consumers.len(),
@@ -215,7 +215,7 @@ fn build_dag(
     let root = entry.consumers[0].procedure;
 
     // The shared graph-shape walk (`operative::builder::graph_order`) — one
-    // mechanism for both SDK-level validation and the bounded execution order.
+    // mechanism for both SDK-level validation and the workflow execution order.
     // Reachability is named first, so a genuinely disconnected procedure is
     // not reported as a cycle symptom; a leftover Kahn node is on a cycle.
     // Kahn pop-in-FIFO from the root yields exactly the former BFS numbering
@@ -229,13 +229,13 @@ fn build_dag(
         .collect();
     let shape = graph_order(n, &edges, &[root]);
     if let Some(node) = shape.unreachable.filter(|_| shape.on_cycle.is_none()) {
-        return Err(BuildBoundedError::Disconnected {
+        return Err(BuildWorkflowError::Disconnected {
             factory_id,
             procedure: topology.procedures[node as usize].name.to_string(),
         });
     }
     if let Some(node) = shape.on_cycle {
-        return Err(BuildBoundedError::Cycle {
+        return Err(BuildWorkflowError::Cycle {
             factory_id,
             procedure: topology.procedures[node as usize].name.to_string(),
         });

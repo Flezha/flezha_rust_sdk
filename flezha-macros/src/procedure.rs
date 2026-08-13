@@ -1,7 +1,7 @@
 //! `#[flezha::procedure(...)]` — attribute macro on a `run` function. Infers the
 //! six `Procedure` associated types from the signature, generates the PascalCase
 //! procedure type + `Procedure` impl, and (when `sink` is given) a single-procedure
-//! auto-wired `UnboundedOperative` + inventory registration. See
+//! auto-wired `StreamOperative` + inventory registration. See
 //! `docs/sdk_authoring_contract.md` §2, §4, §5.
 
 use proc_macro2::TokenStream;
@@ -277,7 +277,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         quote! {
             #[doc(hidden)]
             #vis struct #operative_ident;
-            impl ::flezha_runner::UnboundedOperative for #operative_ident {
+            impl ::flezha_runner::StreamOperative for #operative_ident {
                 fn factory_id() -> &'static str { #id }
                 fn channels(c: &::flezha_runner::ChannelBuilder) {
                     let stream = c.input::<#input_ty>("input") #on_full .into::<#struct_ident>();
@@ -288,8 +288,8 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             }
             ::flezha_runner::inventory::submit! {
                 ::flezha_runner::AutoOperative::new(
-                    <#operative_ident as ::flezha_runner::UnboundedOperative>::factory_id,
-                    || ::flezha_runner::__register_unbounded::<#operative_ident>(),
+                    <#operative_ident as ::flezha_runner::StreamOperative>::factory_id,
+                    || ::flezha_runner::__register_stream::<#operative_ident>(),
                 )
             }
         }

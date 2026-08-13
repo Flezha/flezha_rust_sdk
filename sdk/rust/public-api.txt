@@ -11,13 +11,38 @@
 # pointer for code reviewers.
 #
 # `extract-sdk-poll-core`: the SDK's kernel (entity slots, mailbox/drain
-# gates, flusher, credit, DLQ park, timers, bounded driver, commands,
+# gates, flusher, credit, DLQ park, timers, workflow driver, commands,
 # transport loop) moved into the `flz_core` workspace crate; every path
 # listed below is unchanged and now resolves through internal re-exports
 # from `flz_core`. This is the documented internal-re-export exception —
 # the user-visible surface is byte-identical. The poll/complete engine
 # (`flz_core::poll_core`) and the C ABI (`flz_core_ffi`) are NOT part of
 # this crate's public surface.
+#
+# `rename-operative-kinds-to-stream-and-workflow`: the two operative kinds are
+# now `stream` and `workflow`. BREAKING, no shim. Every signature below that
+# names a kind CHANGED — the pairs are, verbatim:
+#
+# kind-naming-record:begin
+#   UnboundedOperative      -> StreamOperative        (trait)
+#   BoundedOperative        -> WorkflowOperative      (trait)
+#   BoundedCtx              -> WorkflowCtx            (trait)
+#   BoundedError            -> WorkflowError          (struct)
+#   BuildBoundedError       -> BuildWorkflowError     (enum, `workflow::spec`)
+#   UnboundedInstance       -> StreamInstance         (struct)
+#   BoundedInstance         -> WorkflowInstance       (struct)
+#   FlezhaError::InvalidBounded -> FlezhaError::InvalidWorkflow
+#   define_unbounded        -> define_stream          (FlezhaRunner)
+#   define_bounded          -> define_workflow        (FlezhaRunner)
+#   remove_unbounded        -> remove_stream          (FlezhaRunner)
+#   remove_bounded          -> remove_workflow        (FlezhaRunner)
+#   ProcedureCtx::spawn_bounded -> spawn_workflow
+#   __register_unbounded    -> __register_stream      (macro plumbing)
+#   module `bounded`        -> module `workflow`
+# kind-naming-record:end
+#
+# `Stream<'b, T, K>` (the channel handle) is unrelated and unchanged; a stream
+# operative is the kind that consumes streams.
 
 pub mod state {
     pub use crate::entity::restore::RestoreError;
@@ -96,7 +121,7 @@ pub use entity::timer::TimerKind;                            # ADDED by `entity-
 #   pub fn emit_with_meta<C>(&mut self, value: C, meta: HashMap<String, String>) -> Result<(), ProcedureError>;
 #   pub fn emit_keyed<C>(&mut self, key: impl Into<String>, value: C) -> Result<(), ProcedureError>;
 #   pub fn emit_keyed_with_meta<C>(&mut self, key: impl Into<String>, value: C, meta: HashMap<String, String>) -> Result<(), ProcedureError>;
-#   pub fn spawn_bounded(&self, instance_id: impl Into<String>, factory_id: impl Into<String>, payload: impl Into<Vec<u8>>, if_running: IfRunning) -> SpawnHandle;
+#   pub fn spawn_workflow(&self, instance_id: impl Into<String>, factory_id: impl Into<String>, payload: impl Into<Vec<u8>>, if_running: IfRunning) -> SpawnHandle;
 #
 # Per-Entity timers (`entity-timers`) — each returns the ABSOLUTE scheduled
 # timestamp, which is the handle a cancellation takes:
@@ -121,7 +146,7 @@ pub use entity::timer::TimerKind;                            # ADDED by `entity-
 #       pub fn try_result(&mut self) -> Option<Result<SpawnOutcome, SpawnError>>;
 #   }
 #
-# Trait surface on `UnboundedOperative`:
+# Trait surface on `StreamOperative`:
 #
 #   const PERSISTENCE_ENABLED: bool = true;
 #
@@ -209,8 +234,8 @@ pub use entity::timer::TimerKind;                            # ADDED by `entity-
 #
 #   Removed: ChannelDecl, ChannelDeclWithProducer, EntryChannel, EntryChannelType,
 #   channel::<T>("name"), .from::<S>(), to_plugin, also_to_plugin_with.
-#   Trait signatures: UnboundedOperative::channels(c: &ChannelBuilder),
-#   BoundedOperative::procedures(c: &ChannelBuilder)  (was &mut).
+#   Trait signatures: StreamOperative::channels(c: &ChannelBuilder),
+#   WorkflowOperative::procedures(c: &ChannelBuilder)  (was &mut).
 #
 # `TopologyIssue` variants (renamed from BuildTopologyError by
 # `sdk-runner-entrypoint-redesign`):
@@ -239,9 +264,9 @@ pub use entity::timer::TimerKind;                            # ADDED by `entity-
 #       UnkeyedEdgeIntoDynamicProcedure { channel: &'static str, procedure: &'static str },
 #   }
 #
-# `BuildBoundedError` variants (`bounded::spec`):
+# `BuildWorkflowError` variants (`workflow::spec`):
 #
-#   pub enum BuildBoundedError {
+#   pub enum BuildWorkflowError {
 #       /* existing variants unchanged */
 #       MergeFromEntryChannel { factory_id: &'static str, channel: String, procedure: String },
 #   }
@@ -296,7 +321,7 @@ pub use entity::timer::TimerKind;                            # ADDED by `entity-
 # `channel::builder::BuildTopologyError` name (now `TopologyIssue`; the
 # per-kind `TopologyBuildError` keeps its name).
 
-pub use bounded::spec::BuildBoundedError;
+pub use workflow::spec::BuildWorkflowError;
 pub use channel::builder::TopologyIssue;
 pub use operative::builder::TopologyBuildError;
 
@@ -310,13 +335,13 @@ pub use operative::builder::TopologyBuildError;
 #                                          # Drop of a STARTED owner = graceful shutdown
 #   impl FlezhaRunner {
 #       pub fn namespace(&self) -> &str;
-#       pub fn define_unbounded<R: UnboundedOperative>(&self) -> Result<&Self, FlezhaError>;
-#       pub fn define_bounded<T: BoundedOperative>(&self) -> Result<&Self, FlezhaError>;
-#       pub fn remove_unbounded<R: UnboundedOperative>(&self) -> Result<&Self, FlezhaError>;
-#       pub fn remove_bounded<T: BoundedOperative>(&self) -> Result<&Self, FlezhaError>;
+#       pub fn define_stream<R: StreamOperative>(&self) -> Result<&Self, FlezhaError>;
+#       pub fn define_workflow<T: WorkflowOperative>(&self) -> Result<&Self, FlezhaError>;
+#       pub fn remove_stream<R: StreamOperative>(&self) -> Result<&Self, FlezhaError>;
+#       pub fn remove_workflow<T: WorkflowOperative>(&self) -> Result<&Self, FlezhaError>;
 #       pub fn start(&self) -> Result<&Self, FlezhaError>;     # slot claimed here (CAS)
 #       pub fn run(&self) -> Result<(), FlezhaError>;          # start + await_termination
-#       pub fn operatives(&self) -> Result<HashMap<String, Arc<UnboundedInstance>>, FlezhaError>;
+#       pub fn operatives(&self) -> Result<HashMap<String, Arc<StreamInstance>>, FlezhaError>;
 #       pub fn await_termination(&self) -> Result<(), FlezhaError>;
 #   }
 #
@@ -325,7 +350,7 @@ pub use operative::builder::TopologyBuildError;
 #       AlreadyRunning { namespace: String },
 #       ConnectFailed(String),
 #       InvalidTopology(#[from] TopologyBuildError),
-#       InvalidBounded(#[from] BuildBoundedError),
+#       InvalidWorkflow(#[from] BuildWorkflowError),
 #       DuplicateFactoryId { factory_id: String },
 #       NotDefined { factory_id: String },
 #       OperativeTypeInUse { factory_id: String, live_instances: usize },
@@ -333,7 +358,7 @@ pub use operative::builder::TopologyBuildError;
 #       RunnerUnavailable(String),
 #   }
 #
-#   #[doc(hidden)] pub fn __register_unbounded<R: UnboundedOperative>();  # macro plumbing only
+#   #[doc(hidden)] pub fn __register_stream<R: StreamOperative>();  # macro plumbing only
 
 # Live Entity read (`entity-state-live-query`). The `EntityState` command
 # gained a selector; the serializer that answers it is public because the
@@ -353,9 +378,9 @@ pub use operative::builder::TopologyBuildError;
 #
 #       pub enum StatePurpose { LiveRead, Migration }
 #
-#       pub fn serialize_operative_state(&Arc<UnboundedInstance>) -> Vec<u8>;
+#       pub fn serialize_operative_state(&Arc<StreamInstance>) -> Vec<u8>;
 #       pub fn serialize_selected_state(
-#           &Arc<UnboundedInstance>, StateSelector<'_>, StatePurpose,
+#           &Arc<StreamInstance>, StateSelector<'_>, StatePurpose,
 #       ) -> Result<(Vec<u8>, Option<u64>), String>;   # (json, seq of a single Entity)
 #   }
 #
@@ -377,5 +402,5 @@ pub use operative::builder::TopologyBuildError;
 #   default, which forwards to `handle` with no metadata.
 #
 #   ADDED: `DynamicEntityRegistry::recently_evicted(&self, key: &str) -> bool`
-#   — the bounded eviction trace that lets a live read say "idle-evicted"
+#   — the workflow eviction trace that lets a live read say "idle-evicted"
 #   rather than "never existed".

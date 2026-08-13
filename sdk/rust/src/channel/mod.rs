@@ -2,7 +2,7 @@
 //! namespacing. The runtime kernel (descriptors, edges, policies) lives in
 //! `flz_core::channel` and is re-exported here; the `Channel<T>` handle is
 //! phantom-typed so wiring errors fire at compile time. Channel names are
-//! de-duplicated and assigned sequential IDs at `define_unbounded::<R>()`
+//! de-duplicated and assigned sequential IDs at `define_stream::<R>()`
 //! time and frozen with the topology.
 
 use std::marker::PhantomData;

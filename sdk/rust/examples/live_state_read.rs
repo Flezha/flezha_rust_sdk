@@ -15,7 +15,7 @@
 //!
 //! Run the operative:
 //!     Flezha::create_runner("default")?
-//!         .define_unbounded::<Market>()?
+//!         .define_stream::<Market>()?
 //!         .run()?;
 //!
 //! feed it a couple of trades:
@@ -54,13 +54,13 @@
 //!
 //! Both exit non-zero. `entity_evicted` and `entity_not_found` are different
 //! diagnoses on purpose: eviction unlinks the Entity's files, so after the fact
-//! only the SDK's bounded eviction trace can tell you the key ever existed.
+//! only the SDK's workflow eviction trace can tell you the key ever existed.
 
 use std::time::Duration;
 
 use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError};
 use flezha_runner::state::{Change, RestoreInitPayload, StateHandle, WallClock};
-use flezha_runner::{ChannelBuilder, UnboundedOperative};
+use flezha_runner::{ChannelBuilder, StreamOperative};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -137,7 +137,7 @@ impl Procedure for CandleProcedure {
 
 struct Market;
 
-impl UnboundedOperative for Market {
+impl StreamOperative for Market {
     fn factory_id() -> &'static str {
         // The FIRST path segment of `flz state get <operative>/...`.
         "market"
