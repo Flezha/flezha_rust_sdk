@@ -37,6 +37,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .define_stream::<TierStoreOperative>()?
         .define_stream::<CheckpointStoreOperative>()?
         .define_stream::<PoisonProbeOperative>()?
+        .define_stream::<WedgeProbeOperative>()?
         .define_stream::<CandleOperative>()?
         .define_workflow::<EchoWorkflow>()?
         .define_workflow::<CommitBlockWorkflow>()?
@@ -1507,6 +1508,59 @@ impl StreamOperative for PoisonProbeOperative {
             .into::<PoisonProbeProcedure>()
             .named("out")
             .output("probe_sink");
+    }
+}
+
+// -- WedgeProbeOperative (control-plane silent-wedge e2e) ------------------
+//
+// Reproduces the 2026-06-10 production freeze: the input "wedge" blocks the
+// dispatch inside user code forever, so the SDK's dispatch counter stops
+// advancing while the heartbeat thread keeps reporting the runner alive.
+// That is exactly the `runner_pool_wedged` signature the classifier looks
+// for — a runner that is connected, heartbeating, and processing nothing.
+// Every other input emits `ok:<input>`, which is how the e2e proves the
+// operative produces again once it has been rebound elsewhere.
+
+#[derive(Default)]
+struct WedgeProbeProcedure;
+impl Procedure for WedgeProbeProcedure {
+    type Input = String;
+    type Output = String;
+    type State = ();
+    type Change = NoChange;
+    type Clock = WallClock;
+    type Config = ();
+    fn name() -> &'static str {
+        "wedge_probe_procedure"
+    }
+    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
+    fn run(
+        &mut self,
+        input: String,
+        _state: StateHandle<'_, Self>,
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
+        if input == "wedge" {
+            // Never returns. The runner stays connected and heartbeating; only
+            // its dispatch progress dies. Teardown is the stdin-EOF watcher.
+            loop {
+                thread::sleep(Duration::from_secs(3600));
+            }
+        }
+        ctx.emit(format!("ok:{input}"))
+    }
+}
+
+struct WedgeProbeOperative;
+impl StreamOperative for WedgeProbeOperative {
+    fn factory_id() -> &'static str {
+        "wedge_probe"
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("input")
+            .into::<WedgeProbeProcedure>()
+            .named("out")
+            .output("wedge_sink");
     }
 }
 
