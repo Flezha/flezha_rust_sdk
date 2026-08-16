@@ -22,6 +22,7 @@ fn ui_compile_fail() {
     t.compile_fail("tests/ui/procedure_shared_ref_state.rs");
     t.compile_fail("tests/ui/procedure_sink_unit_return.rs");
     t.compile_fail("tests/ui/procedure_entity_key_removed.rs");
+    t.compile_fail("tests/ui/procedure_key_unit_return.rs");
     t.compile_fail("tests/ui/entity_keys_without_entities_for.rs");
     t.compile_fail("tests/ui/procedure_init_without_state.rs");
     t.compile_fail("tests/ui/state_on_enum.rs");

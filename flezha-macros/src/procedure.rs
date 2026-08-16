@@ -17,6 +17,7 @@ struct ProcedureArgs {
     id: Option<String>,
     sink: Option<String>,
     init: Option<syn::Path>,
+    key: Option<syn::Path>,
     keys: Option<Vec<Expr>>,
     entities_for: Option<syn::Path>,
     idle_ttl_ms: Option<Expr>,
@@ -97,6 +98,12 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
              state to initialize",
         ));
     }
+    if args.key.is_some() && !output.emits() {
+        return Err(syn::Error::new(
+            sig.span(),
+            "#[flezha::procedure] `key` requires a non-unit return type; there is no emit to key",
+        ));
+    }
 
     // --- Names. ---
     let struct_ident = snake_ident_to_pascal(fn_ident);
@@ -169,6 +176,17 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
 
     // --- run body: bind input + state, run user body, emit the output. ---
     let user_body = &func.block;
+    // `key = fn` (a `Fn(&Output) -> String`) routes the generated emit through
+    // `emit_keyed`, the only form a `.keyed()` output channel accepts. Without
+    // it the sugar could never feed a keyed sink and every such procedure would
+    // have to be hand-written.
+    let emit_out = match &args.key {
+        Some(key_path) => quote! {{
+            let __flezha_key: ::std::string::String = #key_path(&__flezha_out);
+            __flezha_ctx.emit_keyed::<Self::Output>(__flezha_key, __flezha_out)
+        }},
+        None => quote! { __flezha_ctx.emit::<Self::Output>(__flezha_out) },
+    };
     let (output_ty_tokens, run_emit) = match &output {
         Output::Unit => (
             quote! { () },
@@ -182,14 +200,14 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             quote! { #ty },
             quote! {
                 let __flezha_out: Self::Output = #user_body;
-                __flezha_ctx.emit::<Self::Output>(__flezha_out)
+                #emit_out
             },
         ),
         Output::ResultValue(ty) => (
             quote! { #ty },
             quote! {
                 let __flezha_out: Self::Output = (#user_body)?;
-                __flezha_ctx.emit::<Self::Output>(__flezha_out)
+                #emit_out
             },
         ),
         // The body is wrapped in a `move ||` so the author's `?` / `return None`
@@ -197,9 +215,9 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         Output::OptionValue(ty) => (
             quote! { #ty },
             quote! {
-                let __flezha_out: ::core::option::Option<Self::Output> = (move || #user_body)();
-                match __flezha_out {
-                    ::core::option::Option::Some(__v) => __flezha_ctx.emit::<Self::Output>(__v),
+                let __flezha_opt: ::core::option::Option<Self::Output> = (move || #user_body)();
+                match __flezha_opt {
+                    ::core::option::Option::Some(__flezha_out) => #emit_out,
                     ::core::option::Option::None => ::core::result::Result::Ok(()),
                 }
             },
@@ -207,9 +225,9 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         Output::ResultOptionValue(ty) => (
             quote! { #ty },
             quote! {
-                let __flezha_out: ::core::option::Option<Self::Output> = (move || #user_body)()?;
-                match __flezha_out {
-                    ::core::option::Option::Some(__v) => __flezha_ctx.emit::<Self::Output>(__v),
+                let __flezha_opt: ::core::option::Option<Self::Output> = (move || #user_body)()?;
+                match __flezha_opt {
+                    ::core::option::Option::Some(__flezha_out) => #emit_out,
                     ::core::option::Option::None => ::core::result::Result::Ok(()),
                 }
             },
@@ -431,6 +449,7 @@ fn parse_args(attr: TokenStream) -> syn::Result<ProcedureArgs> {
             "id" => args.id = Some(expect_str(&value)?),
             "sink" => args.sink = Some(expect_str(&value)?),
             "init" => args.init = Some(expect_path(&value)?),
+            "key" => args.key = Some(expect_path(&value)?),
             "keys" => args.keys = Some(expect_array(&value)?),
             "entities_for" => args.entities_for = Some(expect_path(&value)?),
             "entity_key" => {
