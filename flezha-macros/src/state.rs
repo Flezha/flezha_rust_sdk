@@ -141,6 +141,45 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
                         }
                     });
                 }
+
+                // `VecDeque<U>` fields get the sliding-window pair
+                // `PushBack<Field>(U)` + `PopFront<Field>(usize)` — the same
+                // deltas `map_deque` records, for a window whose entity key
+                // already is what the map would have keyed by. Without them a
+                // per-entity window could only journal whole-collection sets.
+                if let Some(elem_ty) = first_generic_arg(field_ty, "VecDeque") {
+                    let push_variant = format_ident!("PushBack{}", pascal);
+                    variants.push(quote! { #push_variant(#elem_ty) });
+                    apply_arms.push(quote! {
+                        #change_ident::#push_variant(__v) => {
+                            state.#field_ident.push_back(__v.clone());
+                        }
+                    });
+                    let push_method = format_ident!("push_back_{}", field_ident);
+                    mutator_sigs.push(quote! { fn #push_method(&mut self, value: #elem_ty); });
+                    mutator_impls.push(quote! {
+                        fn #push_method(&mut self, value: #elem_ty) {
+                            self.apply(#change_ident::#push_variant(value));
+                        }
+                    });
+
+                    let pop_variant = format_ident!("PopFront{}", pascal);
+                    let pop_method = format_ident!("pop_front_{}", field_ident);
+                    variants.push(quote! { #pop_variant(usize) });
+                    apply_arms.push(quote! {
+                        #change_ident::#pop_variant(__n) => {
+                            for _ in 0..(*__n).min(state.#field_ident.len()) {
+                                state.#field_ident.pop_front();
+                            }
+                        }
+                    });
+                    mutator_sigs.push(quote! { fn #pop_method(&mut self, n: usize); });
+                    mutator_impls.push(quote! {
+                        fn #pop_method(&mut self, n: usize) {
+                            self.apply(#change_ident::#pop_variant(n));
+                        }
+                    });
+                }
             }
         }
     }
