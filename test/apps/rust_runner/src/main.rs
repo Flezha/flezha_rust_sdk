@@ -32,6 +32,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .define_stream::<HybridChannelOperative>()?
         .define_stream::<ResumeProbeOperative>()?
         .define_stream::<DynamicEntityOperative>()?
+        .define_stream::<PartitionRelayOperative>()?
         .define_stream::<SessionTimeoutOperative>()?
         .define_stream::<MixedOperative>()?
         .define_stream::<TierStoreOperative>()?
@@ -1037,6 +1038,80 @@ impl StreamOperative for DynamicEntityOperative {
             .into::<DynamicEntityProcedure>()
             .named("kafka")
             .output("test_kafka");
+    }
+}
+
+// -- PartitionRelayOperative --------------------------------------------------
+//
+// The partitioned-operatives e2e's upstream: keyed on the wiring (so it can be
+// partitioned at all) AND emitting keyed (so a partitioned forward target can
+// resolve the owning member). Key = text before the first ':', the same
+// convention as `dynamic_entity`, so one fixture's key groups line up with the
+// other's.
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+struct RelayState {
+    seen: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+enum RelayChange {
+    Push(String),
+}
+impl Change for RelayChange {}
+
+#[derive(Default)]
+struct PartitionRelayProcedure;
+impl Procedure for PartitionRelayProcedure {
+    type Input = String;
+    type Output = String;
+    type State = RelayState;
+    type Change = RelayChange;
+    type Clock = WallClock;
+    type Config = ();
+    fn name() -> &'static str {
+        "partition_relay_procedure"
+    }
+    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> RelayState {
+        RelayState::default()
+    }
+    fn apply_change(state: &mut RelayState, change: &RelayChange) {
+        let RelayChange::Push(s) = change;
+        state.seen.push(s.clone());
+    }
+    fn run(
+        &mut self,
+        input: String,
+        mut state: StateHandle<'_, Self>,
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
+        let key = input
+            .split(':')
+            .next()
+            .unwrap_or(input.as_str())
+            .to_string();
+        state.apply(RelayChange::Push(input.clone()));
+        ctx.emit_keyed::<String>(key, input)
+    }
+}
+
+struct PartitionRelayOperative;
+impl StreamOperative for PartitionRelayOperative {
+    fn factory_id() -> &'static str {
+        "partition_relay"
+    }
+    fn channels(c: &ChannelBuilder) {
+        // The plugin channel is named `input` because a forwarded frame keeps
+        // its producing channel's name in metadata, and that is what selects
+        // the receiving operative's channel — the downstream fixture's entry
+        // channel. The entry channel here is `in` so the two names cannot
+        // collide inside this class.
+        c.input::<String>("in")
+            .key_by(|input: &String| input.split(':').next().unwrap_or(input).to_string())
+            .into::<PartitionRelayProcedure>()
+            .named("input")
+            .keyed()
+            .output("relay_out");
     }
 }
 

@@ -4,6 +4,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use flz_core::util::{fnv1a128, FNV128_OFFSET_BASIS};
+
 use crate::entity::timer::{TimerKind, TimerSession};
 use crate::procedure::error::ProcedureError;
 use crate::procedure::spawn::{self, IfRunning, SpawnHandle, SpawnOutcome};
@@ -58,18 +60,6 @@ impl StableId {
         hash = fnv1a128(hash, &ordinal.to_be_bytes());
         StableId(hash)
     }
-}
-
-const FNV128_OFFSET_BASIS: u128 = 0x6c62272e07bb014262b821756295c58d;
-const FNV128_PRIME: u128 = 0x0000000001000000000000000000013b;
-
-/// FNV-1a-128 (frozen by spec: xor byte, multiply by the FNV 128 prime).
-fn fnv1a128(mut hash: u128, bytes: &[u8]) -> u128 {
-    for &b in bytes {
-        hash ^= b as u128;
-        hash = hash.wrapping_mul(FNV128_PRIME);
-    }
-    hash
 }
 
 /// Internal trait the runtime implements per-entity. Lets ProcedureCtx stay

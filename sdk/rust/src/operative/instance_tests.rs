@@ -74,8 +74,12 @@ mod tests {
             DummyOperative::PERSISTENCE_ENABLED,
         )
         .expect("topology");
-        let instance =
-            StreamInstance::with_persistence_override(topology, Arc::from("instance"), Some(false));
+        let instance = StreamInstance::with_options(
+            topology,
+            Arc::from("instance"),
+            Some(false),
+            flz_core::operative::instance::KeyGroupRange::UNPARTITIONED,
+        );
         assert!(!instance.persistence_enabled());
         // Every EntitySlot inherits the resolved value.
         for procedure_entities in &instance.entities {

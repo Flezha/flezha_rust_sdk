@@ -127,5 +127,9 @@ required-features = ["bench-internals", "testing"]
 name = "workflow_scaling"
 required-features = ["bench-internals"]
 
+[[test]]
+name = "partition_guard"
+required-features = ["bench-internals"]
+
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(rust_analyzer)", "cfg(loom)"] }

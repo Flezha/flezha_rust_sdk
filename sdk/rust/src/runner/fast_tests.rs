@@ -55,6 +55,7 @@ mod remove_factory_tests {
             .start_operative(
                 "remove_factory_seam_probe".to_string(),
                 "seam-inst-1".to_string(),
+                flz_core::operative::instance::KeyGroupRange::UNPARTITIONED,
             )
             .expect("instance spawns");
 

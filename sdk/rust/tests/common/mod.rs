@@ -39,9 +39,19 @@ pub fn wait_until<F: Fn() -> bool>(predicate: F, timeout: Duration) -> bool {
 /// Build + register a single StreamOperative instance, returning a dispatch handle
 /// and the live instance (for counter / state assertions).
 pub fn setup<R: StreamOperative>(id: &str) -> (OperativeDispatchHandle, Arc<StreamInstance>) {
+    setup_partitioned::<R>(id, flezha_runner::operative::KeyGroupRange::UNPARTITIONED)
+}
+
+/// [`setup`] for one member of a partition group: the instance is built with
+/// the key-group range its `AddOperative` would have carried, so the dispatch
+/// guard is armed exactly as it is in production.
+pub fn setup_partitioned<R: StreamOperative>(
+    id: &str,
+    partition: flezha_runner::operative::KeyGroupRange,
+) -> (OperativeDispatchHandle, Arc<StreamInstance>) {
     let topology = build_topology_for::<R>().expect("topology");
     let registry = Arc::new(OperativeRegistry::new());
-    let instance = StreamInstance::new(topology, Arc::from(id));
+    let instance = StreamInstance::with_options(topology, Arc::from(id), None, partition);
     registry.register_stream(Arc::clone(&instance));
     (OperativeDispatchHandle { registry }, instance)
 }

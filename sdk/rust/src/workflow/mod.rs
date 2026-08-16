@@ -2681,6 +2681,7 @@ mod tests {
             kind: "workflow".into(),
             resume_entity_count: 0,
             proc_journal: None,
+            ..Default::default()
         };
         let mut errors = Vec::new();
         add.handle(&mut node, "", &mut errors);
@@ -2700,6 +2701,7 @@ mod tests {
             kind: "workflow".into(),
             resume_entity_count: 0,
             proc_journal: None,
+            ..Default::default()
         };
         let mut errors_bad = Vec::new();
         add_bad.handle(&mut node, "", &mut errors_bad);
@@ -2714,6 +2716,7 @@ mod tests {
             kind: "continuous".into(),
             resume_entity_count: 0,
             proc_journal: None,
+            ..Default::default()
         };
         let mut errors_unknown = Vec::new();
         add_unknown.handle(&mut node, "", &mut errors_unknown);
