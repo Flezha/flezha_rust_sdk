@@ -44,6 +44,7 @@ pub fn build_spec<T: WorkflowOperative>() -> Result<WorkflowSpec, BuildWorkflowE
             wake_after: None,
             retry,
             persistence_enabled: T::PERSISTENCE_ENABLED,
+            sync_durability: T::SYNC_DURABILITY,
         });
     }
 
@@ -111,6 +112,7 @@ pub fn build_spec<T: WorkflowOperative>() -> Result<WorkflowSpec, BuildWorkflowE
         wake_after: T::wake_after(),
         retry,
         persistence_enabled: T::PERSISTENCE_ENABLED,
+        sync_durability: T::SYNC_DURABILITY,
     })
 }
 

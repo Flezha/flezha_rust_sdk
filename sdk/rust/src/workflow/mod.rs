@@ -130,6 +130,19 @@ pub trait WorkflowOperative: Send + Sync + 'static {
     /// (a crash re-runs from the top). The controller resolves this
     /// durable-by-default with a per-class operator opt-out.
     const PERSISTENCE_ENABLED: bool = true;
+
+    /// Synchronous remote durability (`remote-durability-tier`): the
+    /// controller completes the remote ship of each commit barrier — the
+    /// proc-journal suffix and the inbox the barrier consumed — before it
+    /// acknowledges the barrier. The acknowledgement this driver blocks on
+    /// therefore implies the commit survives losing the controller's disk
+    /// (RPO 0), at the cost of one remote round trip per barrier.
+    ///
+    /// Inert unless the controller has a durability backend configured, and
+    /// available to workflow classes only: a stream class acknowledges at
+    /// input rates, where a remote round trip per acknowledgement is not a
+    /// guarantee anyone can keep.
+    const SYNC_DURABILITY: bool = false;
 }
 
 #[cfg(test)]
@@ -2096,6 +2109,30 @@ mod tests {
             spec::BuildWorkflowError::ZeroRetryBackoff { attempts, .. } => assert_eq!(attempts, 3),
             other => panic!("expected ZeroRetryBackoff, got {other:?}"),
         }
+    }
+
+    /// `remote-durability-tier` D5: the per-class synchronous-durability
+    /// declaration reaches the spec the controller's `AddOperative` response is
+    /// built from. Off by default — a class that says nothing never makes a
+    /// commit barrier wait on a remote store.
+    #[test]
+    fn sync_durability_is_declared_per_class_and_off_by_default() {
+        let default = spec::build_spec::<ChainWorkflow>().expect("defaults register");
+        assert!(!default.sync_durability);
+
+        struct SyncDurable;
+        impl WorkflowOperative for SyncDurable {
+            const SYNC_DURABILITY: bool = true;
+            fn factory_id() -> &'static str {
+                "test-sync-durable"
+            }
+            fn procedures(c: &ChannelBuilder) {
+                retry_chain(c);
+            }
+        }
+
+        let spec = spec::build_spec::<SyncDurable>().expect("a declaring class registers");
+        assert!(spec.sync_durability);
     }
 
     /// `workflow-branching` registration validation. A DAG is accepted (with its

@@ -40,6 +40,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .define_stream::<CandleOperative>()?
         .define_workflow::<EchoWorkflow>()?
         .define_workflow::<CommitBlockWorkflow>()?
+        .define_workflow::<SyncDurableWorkflow>()?
         .define_workflow::<OptOutCommitBlockWorkflow>()?
         .define_workflow::<TierCommitBlockWorkflow>()?
         .define_workflow::<SagaBlockWorkflow>()?
@@ -227,6 +228,26 @@ struct CommitBlockWorkflow;
 impl WorkflowOperative for CommitBlockWorkflow {
     fn factory_id() -> &'static str {
         "commit_block_workflow"
+    }
+    fn procedures(c: &ChannelBuilder) {
+        c.input::<String>("in")
+            .into::<CommitA>()
+            .named("mid")
+            .codec()
+            .into::<BlockB>();
+    }
+}
+
+// `sync_durable_workflow`: the `commit_block_workflow` shape declaring
+// SYNCHRONOUS remote durability (`remote-durability-tier`). The controller must
+// have proc A's journal barrier on the durability backend before it acks the
+// commit — which is what lets the kill-the-disk drill destroy the whole state
+// directory and still resume with proc A committed rather than re-run.
+struct SyncDurableWorkflow;
+impl WorkflowOperative for SyncDurableWorkflow {
+    const SYNC_DURABILITY: bool = true;
+    fn factory_id() -> &'static str {
+        "sync_durable_workflow"
     }
     fn procedures(c: &ChannelBuilder) {
         c.input::<String>("in")

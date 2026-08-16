@@ -150,6 +150,16 @@ pub use entity::timer::TimerKind;                            # ADDED by `entity-
 #
 #   const PERSISTENCE_ENABLED: bool = true;
 #
+# Remote durability tier (`remote-durability-tier`) — trait surface on
+# `WorkflowOperative`:
+#
+#   const SYNC_DURABILITY: bool = false;
+#
+#   When true the controller ships the commit barrier to its durability backend
+#   before acking it, so the ack the driver blocks on implies the commit
+#   survives losing the controller's disk (RPO 0). Inert unless a backend is
+#   configured; refused on a stream class at registration.
+#
 # Test harness (gated behind `cfg(any(test, feature = "testing"))`):
 #
 #   pub mod testing {
