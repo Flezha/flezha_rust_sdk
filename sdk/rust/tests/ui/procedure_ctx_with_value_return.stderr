@@ -1,0 +1,5 @@
+error: #[flezha::procedure] a `&mut ProcedureCtx` parameter makes the body responsible for every emit; `run` must then return `()` or `Result<(), _>`, and `emits = Type` declares the output type
+ --> tests/ui/procedure_ctx_with_value_return.rs:4:1
+  |
+4 | fn p(input: u64, _ctx: &mut flezha_runner::ProcedureCtx) -> u64 {
+  | ^^

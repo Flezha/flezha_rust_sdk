@@ -18,6 +18,7 @@ struct ProcedureArgs {
     sink: Option<String>,
     init: Option<syn::Path>,
     key: Option<syn::Path>,
+    emits: Option<Type>,
     keys: Option<Vec<Expr>>,
     entities_for: Option<syn::Path>,
     idle_ttl_ms: Option<Expr>,
@@ -34,9 +35,11 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
     let fn_ident = &sig.ident;
     let vis = &func.vis;
 
-    // --- Classify parameters: one by-value Input, optional `&mut State`. ---
+    // --- Classify parameters: one by-value Input, optional `&mut State`,
+    // optional trailing `&mut ProcedureCtx` (the multi-emit shape). ---
     let mut input_param: Option<(&Pat, &Type)> = None;
     let mut state_param: Option<(&Pat, &Type)> = None;
+    let mut ctx_param: Option<&Pat> = None;
     for arg in &sig.inputs {
         let FnArg::Typed(pt) = arg else {
             return Err(syn::Error::new_spanned(
@@ -44,7 +47,16 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                 "#[flezha::procedure] `run` functions are free functions; `self` is not allowed",
             ));
         };
+        if ctx_param.is_some() {
+            return Err(syn::Error::new_spanned(
+                arg,
+                "#[flezha::procedure] the `&mut ProcedureCtx` parameter must come last",
+            ));
+        }
         match &*pt.ty {
+            Type::Reference(r) if r.mutability.is_some() && is_procedure_ctx(&r.elem) => {
+                ctx_param = Some(&pt.pat);
+            }
             Type::Reference(r) if r.mutability.is_some() => {
                 if state_param.is_some() {
                     return Err(syn::Error::new_spanned(
@@ -81,6 +93,34 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
 
     // --- Output inference from the return type. ---
     let output = infer_output(&sig.output)?;
+
+    // --- The multi-emit shape: the body owns every emit, so the return type
+    // has no output left to declare and `emits = T` declares it instead. ---
+    if ctx_param.is_some() {
+        if output.emits() {
+            return Err(syn::Error::new(
+                sig.span(),
+                "#[flezha::procedure] a `&mut ProcedureCtx` parameter makes the body responsible for every \
+                 emit; `run` must then return `()` or `Result<(), _>`, and `emits = Type` declares the \
+                 output type",
+            ));
+        }
+        if args.key.is_some() {
+            return Err(syn::Error::new(
+                sig.span(),
+                "#[flezha::procedure] `key` conflicts with a `&mut ProcedureCtx` parameter; the body keys \
+                 its own emits with `ctx.emit_keyed(..)`",
+            ));
+        }
+    } else if args.emits.is_some() {
+        return Err(syn::Error::new(
+            sig.span(),
+            "#[flezha::procedure] `emits` declares the output type of a `&mut ProcedureCtx` `run`; without \
+             that parameter the return type declares it",
+        ));
+    }
+    // An output channel exists when either spelling declares one.
+    let emits_output = output.emits() || args.emits.is_some();
 
     // --- Mode validation. Dynamic keying is declared on the wiring, so the
     // only mode this sugar can express is static. ---
@@ -176,6 +216,13 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
 
     // --- run body: bind input + state, run user body, emit the output. ---
     let user_body = &func.block;
+    // The `Result` arms annotate the body with the return type the author
+    // declared, so `?` inside it resolves against that error type instead of
+    // being inferred from the generated `run`'s.
+    let declared_ret = match &sig.output {
+        ReturnType::Type(_, ty) => quote! { #ty },
+        ReturnType::Default => quote! { () },
+    };
     // `key = fn` (a `Fn(&Output) -> String`) routes the generated emit through
     // `emit_keyed`, the only form a `.keyed()` output channel accepts. Without
     // it the sugar could never feed a keyed sink and every such procedure would
@@ -187,56 +234,44 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         }},
         None => quote! { __flezha_ctx.emit::<Self::Output>(__flezha_out) },
     };
-    let (output_ty_tokens, run_emit) = match &output {
-        Output::Unit => (
-            quote! { () },
-            quote! { let _: () = #user_body; ::core::result::Result::Ok(()) },
-        ),
-        Output::ResultUnit => (
-            quote! { () },
-            quote! { let _: () = (#user_body)?; ::core::result::Result::Ok(()) },
-        ),
-        Output::Value(ty) => (
-            quote! { #ty },
-            quote! {
-                let __flezha_out: Self::Output = #user_body;
-                #emit_out
-            },
-        ),
-        Output::ResultValue(ty) => (
-            quote! { #ty },
-            quote! {
-                let __flezha_out: Self::Output = (#user_body)?;
-                #emit_out
-            },
-        ),
-        // The body is wrapped in a `move ||` so the author's `?` / `return None`
-        // resolve against `Option<Output>`, not the `Result`-typed `run`.
-        Output::OptionValue(ty) => (
-            quote! { #ty },
-            quote! {
-                let __flezha_opt: ::core::option::Option<Self::Output> = (move || #user_body)();
-                match __flezha_opt {
-                    ::core::option::Option::Some(__flezha_out) => #emit_out,
-                    ::core::option::Option::None => ::core::result::Result::Ok(()),
-                }
-            },
-        ),
-        Output::ResultOptionValue(ty) => (
-            quote! { #ty },
-            quote! {
-                let __flezha_opt: ::core::option::Option<Self::Output> = (move || #user_body)()?;
-                match __flezha_opt {
-                    ::core::option::Option::Some(__flezha_out) => #emit_out,
-                    ::core::option::Option::None => ::core::result::Result::Ok(()),
-                }
-            },
-        ),
+    // An `Option` body is wrapped in a `move ||` so the author's `?` /
+    // `return None` resolve against `Option<Output>`, not the `Result`-typed
+    // generated `run`.
+    let bound_body = match &output.shape {
+        Shape::OptionValue(_) => quote! { (move || #user_body)() },
+        _ => quote! { #user_body },
     };
-    let ctx_bind = if output.emits() {
-        quote! { __flezha_ctx: &mut ::flezha_runner::ProcedureCtx<'_> }
+    // A `Result` return is annotated with the type the author declared, so `?`
+    // inside the body resolves against that error type rather than being
+    // inferred from the generated `run`'s — then unwrapped once, here.
+    let value = if output.result {
+        quote! {{ let __flezha_res: #declared_ret = #bound_body; __flezha_res? }}
     } else {
-        quote! { _flezha_ctx: &mut ::flezha_runner::ProcedureCtx<'_> }
+        bound_body
+    };
+    let run_emit = match &output.shape {
+        Shape::Unit => quote! { let _: () = #value; ::core::result::Result::Ok(()) },
+        Shape::Value(_) => quote! {
+            let __flezha_out: Self::Output = #value;
+            #emit_out
+        },
+        Shape::OptionValue(_) => quote! {
+            let __flezha_opt: ::core::option::Option<Self::Output> = #value;
+            match __flezha_opt {
+                ::core::option::Option::Some(__flezha_out) => #emit_out,
+                ::core::option::Option::None => ::core::result::Result::Ok(()),
+            }
+        },
+    };
+    let output_ty_tokens = match (&args.emits, &output.shape) {
+        (Some(emits), _) => quote! { #emits },
+        (None, Shape::Value(ty) | Shape::OptionValue(ty)) => quote! { #ty },
+        (None, Shape::Unit) => quote! { () },
+    };
+    let ctx_bind = match (&ctx_param, output.emits()) {
+        (Some(pat), _) => quote! { #pat: &mut ::flezha_runner::ProcedureCtx<'_> },
+        (None, true) => quote! { __flezha_ctx: &mut ::flezha_runner::ProcedureCtx<'_> },
+        (None, false) => quote! { _flezha_ctx: &mut ::flezha_runner::ProcedureCtx<'_> },
     };
 
     // --- Optional Procedure-trait overrides. ---
@@ -284,10 +319,11 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                 "#[flezha::procedure] `sink` (single-procedure auto-wire) requires an `id`",
             )
         })?;
-        if !output.emits() {
+        if !emits_output {
             return Err(syn::Error::new(
                 sig.span(),
-                "#[flezha::procedure] `sink` requires a non-unit return type to feed the plugin",
+                "#[flezha::procedure] `sink` requires an output type to feed the plugin — a non-unit \
+                 return, or `emits = Type` on the context-parameter shape",
             ));
         }
         let operative_ident = format_ident!("__FlezhaAutoOperative{}", struct_ident);
@@ -351,54 +387,63 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
     })
 }
 
-enum Output {
+/// What the return type says about the emit, on its two independent axes: the
+/// shape of the value, and whether the author wrapped it in a `Result`.
+struct Output {
+    shape: Shape,
+    result: bool,
+}
+
+enum Shape {
     Unit,
-    ResultUnit,
     Value(Type),
-    ResultValue(Type),
+    /// Emits on `Some`, skips on `None`.
     OptionValue(Type),
-    ResultOptionValue(Type),
 }
 
 impl Output {
     fn emits(&self) -> bool {
-        matches!(
-            self,
-            Output::Value(_)
-                | Output::ResultValue(_)
-                | Output::OptionValue(_)
-                | Output::ResultOptionValue(_)
-        )
+        !matches!(self.shape, Shape::Unit)
     }
 }
 
 fn infer_output(ret: &ReturnType) -> syn::Result<Output> {
     let ty = match ret {
-        ReturnType::Default => return Ok(Output::Unit),
+        ReturnType::Default => {
+            return Ok(Output {
+                shape: Shape::Unit,
+                result: false,
+            })
+        }
         ReturnType::Type(_, ty) => ty,
     };
-    if is_unit(ty) {
-        return Ok(Output::Unit);
-    }
-    if let Some(inner) = first_generic_arg(ty, "Result") {
-        if is_unit(inner) {
-            return Ok(Output::ResultUnit);
-        }
-        // `Result<Option<T>, _>` emits on `Some`, skips on `None`.
-        if let Some(opt_inner) = first_generic_arg(inner, "Option") {
-            return Ok(Output::ResultOptionValue(opt_inner.clone()));
-        }
-        return Ok(Output::ResultValue(inner.clone()));
-    }
-    // `Option<T>` emits on `Some`, skips on `None`.
-    if let Some(opt_inner) = first_generic_arg(ty, "Option") {
-        return Ok(Output::OptionValue(opt_inner.clone()));
-    }
-    Ok(Output::Value((**ty).clone()))
+    let (inner, result) = match first_generic_arg(ty, "Result") {
+        Some(inner) => (inner, true),
+        None => (&**ty, false),
+    };
+    let shape = if is_unit(inner) {
+        Shape::Unit
+    } else if let Some(opt_inner) = first_generic_arg(inner, "Option") {
+        Shape::OptionValue(opt_inner.clone())
+    } else {
+        Shape::Value(inner.clone())
+    };
+    Ok(Output { shape, result })
 }
 
 fn is_unit(ty: &Type) -> bool {
     matches!(ty, Type::Tuple(t) if t.elems.is_empty())
+}
+
+/// The referent of a `&mut _` parameter names `ProcedureCtx`. Matched on the
+/// last path segment so every import spelling (`ProcedureCtx`,
+/// `flezha_runner::ProcedureCtx`, a lifetime-annotated form) classifies alike.
+fn is_procedure_ctx(ty: &Type) -> bool {
+    matches!(ty, Type::Path(tp) if tp
+        .path
+        .segments
+        .last()
+        .is_some_and(|s| s.ident == "ProcedureCtx"))
 }
 
 /// `StateHandle` mutator-trait import for a derived state type `Foo` → bring
@@ -450,6 +495,7 @@ fn parse_args(attr: TokenStream) -> syn::Result<ProcedureArgs> {
             "sink" => args.sink = Some(expect_str(&value)?),
             "init" => args.init = Some(expect_path(&value)?),
             "key" => args.key = Some(expect_path(&value)?),
+            "emits" => args.emits = Some(expect_type(&value)?),
             "keys" => args.keys = Some(expect_array(&value)?),
             "entities_for" => args.entities_for = Some(expect_path(&value)?),
             "entity_key" => {

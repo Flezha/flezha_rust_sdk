@@ -130,8 +130,12 @@ name = "entry_idle"
 required-features = ["bench-internals"]
 
 [[test]]
-name = "sugar_keyed_emit"
+name = "sugar_emit"
 required-features = ["testing"]
+
+[[test]]
+name = "simple_procedure"
+required-features = ["bench-internals", "testing"]
 
 [[test]]
 name = "workflow_scaling"

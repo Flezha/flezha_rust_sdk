@@ -4,6 +4,29 @@ All notable changes to the Rust SDK crate.
 
 ## Unreleased
 
+### Added — `SimpleProcedure` and the multi-emit sugar shape (`add-tiered-procedure-authoring`)
+
+`SimpleProcedure` declares only `Input`, `Output`, `State` plus `name`,
+`init_state` and `run`; `impl<T: SimpleProcedure> Procedure for T` supplies
+`Clock = WallClock`, `Config = ()` and `<T::State as DerivedState>::Change`.
+Stable Rust has no associated-type defaults, hence a tier rather than defaults
+on the trait itself — and the blanket impl means everything downstream still
+sees one runtime-facing trait. Implementing `Procedure` directly stays fully
+supported; a type doing both is a coherence error, which is what makes
+"explicit wins" a fact rather than a precedence rule to remember.
+`impl DerivedState for ()` is new so `type State = ()` is the stateless
+spelling in that tier.
+
+`#[flezha::procedure]` accepts a trailing `ctx: &mut ProcedureCtx` parameter
+with a unit / `Result<(), _>` return: the body then owns every emit, and
+`emits = Type` declares the output type the return value no longer can.
+`key = …` alongside it, a value return alongside it, and `emits` without it are
+each refused with a named error.
+
+Fixed in passing: the `Result`-returning sugar arms now annotate the body with
+the declared return type, so `?` inside it resolves against the author's error
+type instead of being left uninferrable.
+
 ### Added — `route_latest`, the latest-document router building block (`add-route-latest-building-block`)
 
 `ChannelBuilder::route_latest(documents, traffic, key_fn)` (and

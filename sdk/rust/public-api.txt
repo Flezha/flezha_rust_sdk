@@ -76,6 +76,7 @@ pub use procedure::IfRunning;
 pub use procedure::SpawnError;
 pub use procedure::SpawnHandle;
 pub use procedure::SpawnOutcome;
+pub use procedure::SimpleProcedure;                          # ADDED by `tiered-procedure-authoring`
 pub use procedure::StableId;
 pub use procedure::StateHandle;
 pub use procedure::TimeExtractor;
@@ -112,6 +113,27 @@ pub use entity::timer::TimerKind;                            # ADDED by `entity-
 #   Dynamic keying is declared on the wiring (`.key_by(f)`) instead. The static
 #   pair (`entity_keys` / `entities_for` / `ENTITIES_FOR_OVERRIDDEN`) and the
 #   dynamic knobs (`entity_idle_ttl`, `max_entities`) stay on the Procedure.
+#
+# `SimpleProcedure` — the simplified tier (`tiered-procedure-authoring`).
+# Stable Rust has no associated-type defaults, so the defaults are a trait
+# lifted to `Procedure` by a blanket impl; a type implementing both is a
+# coherence error, which is what makes "explicit wins" unambiguous.
+#
+#   pub trait SimpleProcedure: Send + Sync + 'static + Default {
+#       type Input: Send + Sync + 'static + Clone;
+#       type Output: Send + Sync + 'static;
+#       type State: Send + Sync + 'static + Serialize + DeserializeOwned + DerivedState;
+#       fn name() -> &'static str;
+#       fn init_state(entity_key: Option<&str>) -> Self::State;
+#       fn run(&mut self, input, state: StateHandle<'_, Self>, ctx: &mut ProcedureCtx<'_>) -> Result<(), ProcedureError>
+#           where Self: Procedure;
+#   }
+#   impl<T: SimpleProcedure> Procedure for T   # Clock = WallClock, Config = (),
+#                                              # Change = <T::State as DerivedState>::Change
+#
+#   CHANGED by `tiered-procedure-authoring`: `impl DerivedState for ()` —
+#   the stateless binding (Change = NoChange), so `type State = ()` is
+#   expressible in the simplified tier.
 #
 # `ProcedureCtx` surface (per-invocation, determinism contract):
 #

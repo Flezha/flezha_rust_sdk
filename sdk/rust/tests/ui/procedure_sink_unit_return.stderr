@@ -1,4 +1,4 @@
-error: #[flezha::procedure] `sink` requires a non-unit return type to feed the plugin
+error: #[flezha::procedure] `sink` requires an output type to feed the plugin — a non-unit return, or `emits = Type` on the context-parameter shape
  --> tests/ui/procedure_sink_unit_return.rs:2:1
   |
 2 | fn f(a: String) {

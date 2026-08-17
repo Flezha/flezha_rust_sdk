@@ -1,9 +1,12 @@
-//! Section 3.2 of the authoring contract: the `key = fn` opt-in on
-//! `#[flezha::procedure]`. It names the output's own natural key, for the
-//! output whose key is not the key its Entity was routed by — that one the
-//! keyed channel already supplies, and a single-entity procedure (which has
-//! no key at all) needs the opt-in or its emit is refused.
+//! The sugar's emit surface: the `key = fn` opt-in, which names the output's
+//! own natural key for the output whose key is not the key its Entity was
+//! routed by (that one the keyed channel already supplies, and a single-entity
+//! procedure — which has no key at all — needs the opt-in or its emit is
+//! refused); and the context-parameter shape, where the body owns every emit
+//! and `emits = Type` declares what it emits.
 
+use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError};
+use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
 use flezha_runner::testing::ProcedureTestHarness;
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -102,4 +105,81 @@ fn a_keyed_entity_stamps_its_own_key_on_a_key_less_emit() {
         "the defaulted emit and `emit_keyed` with the same key stamp identically"
     );
     defaulted.expect_emits(&[reading("BTC/USD", 1.0)]);
+}
+
+// ---- The context-parameter shape (multi-emit) ----------------------------
+
+/// One input, three emits — the shape the return-type sugar cannot express.
+fn split(input: &Reading) -> Vec<(String, Reading)> {
+    (1..=3)
+        .map(|step| {
+            (
+                format!("{}#{step}", input.symbol),
+                reading(&input.symbol, input.value * f64::from(step)),
+            )
+        })
+        .collect()
+}
+
+#[flezha_runner::procedure(id = "fanout_sugar", emits = Reading)]
+fn fanout_sugar(input: Reading, ctx: &mut ProcedureCtx) -> Result<(), ProcedureError> {
+    for (key, out) in split(&input) {
+        ctx.emit_keyed(key, out)?;
+    }
+    Ok(())
+}
+
+/// The expansion written out by hand — what "ejecting" the sugar produces.
+#[derive(Default)]
+struct FanoutManual;
+
+impl Procedure for FanoutManual {
+    type Input = Reading;
+    type Output = Reading;
+    type State = ();
+    type Change = NoChange;
+    type Clock = WallClock;
+    type Config = ();
+
+    fn name() -> &'static str {
+        "fanout_manual"
+    }
+
+    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> Self::State {}
+
+    fn run(
+        &mut self,
+        input: Self::Input,
+        _state: StateHandle<'_, Self>,
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
+        for (key, out) in split(&input) {
+            ctx.emit_keyed(key, out)?;
+        }
+        Ok(())
+    }
+}
+
+/// fails when: the context-parameter expansion stops being the hand-written
+/// implementation it claims to be — the escape hatch (§1) is that a sugared
+/// procedure can be pasted out as a full impl and behave identically, and a
+/// multi-emit body is where the two could most easily diverge.
+#[test]
+fn a_context_parameter_emits_every_value_exactly_as_the_hand_written_twin() {
+    let inputs = vec![reading("BTC/USD", 1.0), reading("ETH/USD", 2.0)];
+
+    let mut sugared = ProcedureTestHarness::<FanoutSugar>::new().with_keyed_channel();
+    sugared.apply_inputs(inputs.clone());
+    let mut manual = ProcedureTestHarness::<FanoutManual>::new().with_keyed_channel();
+    manual.apply_inputs(inputs.clone());
+
+    let expected: Vec<Reading> = inputs
+        .iter()
+        .flat_map(split)
+        .map(|(_, o)| o)
+        .collect();
+    assert_eq!(expected.len(), 6, "one input fans out to three emits");
+    assert_eq!(sugared.emitted_meta(), manual.emitted_meta());
+    sugared.expect_emits(&expected);
+    manual.expect_emits(&expected);
 }

@@ -68,6 +68,17 @@ pub trait DerivedState: Sized {
     fn apply_change(state: &mut Self, change: &Self::Change);
 }
 
+/// The stateless binding: no fields, so no change is derivable. Lets a
+/// procedure that keeps no state be written in the simplified tier, whose
+/// `State` is what supplies the change type.
+impl DerivedState for () {
+    type Change = NoChange;
+
+    fn apply_change(_state: &mut Self, change: &NoChange) {
+        match *change {}
+    }
+}
+
 /// Opaque coalescing key. Constructed via `CoalesceKey::from_hash(&value)`
 /// for any `Hash` source. The runtime hashes the source value with
 /// `DefaultHasher` (SipHash-13) and stores the resulting `u64` so the

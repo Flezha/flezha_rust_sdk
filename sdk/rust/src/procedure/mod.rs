@@ -6,6 +6,7 @@ pub mod change;
 pub mod clock;
 pub mod ctx;
 pub mod error;
+pub mod simple;
 pub mod spawn;
 pub mod state_handle;
 
@@ -19,6 +20,7 @@ pub use ctx::{ProcedureCtx, StableId};
 pub use error::ProcedureError;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+pub use simple::SimpleProcedure;
 pub use spawn::{IfRunning, SpawnError, SpawnHandle, SpawnOutcome};
 pub use state_handle::StateHandle;
 

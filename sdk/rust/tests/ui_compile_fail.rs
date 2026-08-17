@@ -23,6 +23,10 @@ fn ui_compile_fail() {
     t.compile_fail("tests/ui/procedure_sink_unit_return.rs");
     t.compile_fail("tests/ui/procedure_entity_key_removed.rs");
     t.compile_fail("tests/ui/procedure_key_unit_return.rs");
+    t.compile_fail("tests/ui/procedure_ctx_with_key.rs");
+    t.compile_fail("tests/ui/procedure_ctx_with_value_return.rs");
+    t.compile_fail("tests/ui/procedure_emits_without_ctx.rs");
+    t.compile_fail("tests/ui/simple_procedure_is_not_also_a_procedure.rs");
     t.compile_fail("tests/ui/entity_keys_without_entities_for.rs");
     t.compile_fail("tests/ui/procedure_init_without_state.rs");
     t.compile_fail("tests/ui/state_on_enum.rs");

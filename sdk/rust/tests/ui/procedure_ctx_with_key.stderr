@@ -1,0 +1,5 @@
+error: #[flezha::procedure] `key` conflicts with a `&mut ProcedureCtx` parameter; the body keys its own emits with `ctx.emit_keyed(..)`
+ --> tests/ui/procedure_ctx_with_key.rs:9:1
+  |
+9 | fn p(_input: u64, ctx: &mut flezha_runner::ProcedureCtx) -> Result<(), flezha_runner::ProcedureError> {
+  | ^^

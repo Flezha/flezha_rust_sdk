@@ -158,7 +158,8 @@ pub use operative::builder::TopologyBuildError;
 pub use operative::StreamOperative;
 pub use procedure::{
     Change, Clock, ClockFor, CoalesceKey, DerivedState, EventTimeFrom, LogicalClock, NoChange,
-    Procedure, ProcedureCtx, ProcedureError, StableId, StateHandle, TimeExtractor, WallClock,
+    Procedure, ProcedureCtx, ProcedureError, SimpleProcedure, StableId, StateHandle, TimeExtractor,
+    WallClock,
 };
 pub use workflow::spec::BuildWorkflowError;
 pub use workflow::{LoopMode, RollbackMode, WorkflowCtx, WorkflowError, WorkflowOperative};

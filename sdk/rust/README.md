@@ -225,6 +225,20 @@ Parameterized procedures use the `Config` associated type: declare
 the sanctioned path for one class serving several configurations (see the
 `Procedure::from_config` rustdoc for a compiling worked example).
 
+### Declaring less: `SimpleProcedure`
+
+Stable Rust has no associated-type defaults, so a `Procedure` impl spells all
+six even when three of them are the near-universal values. `SimpleProcedure` is
+the shorthand — `Input`, `Output`, `State` plus `name`, `init_state` and `run` —
+lifted to `Procedure` by a blanket impl with `Clock = WallClock`,
+`Config = ()` and the `State` type's derived change (`type State = ()` for a
+stateless procedure). It registers and dispatches exactly like any other
+`Procedure`; the wiring cannot tell which tier authored a node.
+
+Implement `Procedure` directly for anything the shorthand does not cover — a
+non-default clock, a typed config, a hand-written `Change`, static entity keys.
+A type cannot do both: the two impls overlap and the compiler says so.
+
 ## Public API workflow
 
 The public API surface baseline lives at `sdk/rust/public-api.txt`.
