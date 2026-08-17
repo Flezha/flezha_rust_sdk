@@ -85,6 +85,11 @@ pub struct ProcedureTestHarness<S: Procedure> {
     /// and recorded emits carry `flz.*` identity stamps like the runtime's
     /// plugin frames.
     keyed: bool,
+    /// The key the Entity under test was routed by, served to `ctx` exactly
+    /// as the runtime serves a keyed Entity's own key. `None` stands for a
+    /// single-entity Procedure, where a keyed channel still refuses a
+    /// key-less emit.
+    entity_key: Option<String>,
     /// Injected wall-clock values served to `WallClock` evaluation in
     /// order (last value repeats). `None` = real `SystemTime`.
     wall_script: Option<Vec<u64>>,
@@ -132,6 +137,7 @@ impl<S: Procedure> ProcedureTestHarness<S> {
             recorded_changes: Vec::new(),
             recorded_emits: Vec::new(),
             keyed: false,
+            entity_key: None,
             wall_script: None,
             wall_pos: Cell::new(0),
             timers: PendingTimers::default(),
@@ -162,6 +168,7 @@ impl<S: Procedure> ProcedureTestHarness<S> {
         let (state, timers) = init_entity_with_payload::<S>(entity_key, Some(&payload))?;
         let initial_state_bytes = serialize_snapshot(&state);
         let mut harness = Self::from_state(state, initial_state_bytes);
+        harness.entity_key = entity_key.map(str::to_string);
         harness.initial_timers = timers.clone();
         harness.timers = timers;
         Ok(harness)
@@ -171,6 +178,15 @@ impl<S: Procedure> ProcedureTestHarness<S> {
     /// and recorded emits carry `flz.*` identity stamps.
     pub fn with_keyed_channel(mut self) -> Self {
         self.keyed = true;
+        self
+    }
+
+    /// Stand in for the Entity routed by `key`: `ctx.entity_key()` serves it,
+    /// and a keyed-channel emit that supplies no key of its own is stamped
+    /// with it. Without this the harness is a single-entity Procedure, where
+    /// that emit is refused.
+    pub fn with_entity_key(mut self, key: impl Into<String>) -> Self {
+        self.entity_key = Some(key.into());
         self
     }
 
@@ -233,6 +249,7 @@ impl<S: Procedure> ProcedureTestHarness<S> {
             };
             let mut ctx =
                 ProcedureCtx::new(&mut sink, now, invocation_seq, HARNESS_ENTITY_IDENTITY)
+                    .with_entity_key(self.entity_key.as_deref())
                     .with_timers(&session);
             let handle = StateHandle::<S>::new(&mut self.state, &recorded);
             // Errors are surfaced as panics in the harness; tests that
@@ -275,6 +292,7 @@ impl<S: Procedure> ProcedureTestHarness<S> {
             invocation_seq,
             HARNESS_ENTITY_IDENTITY,
         )
+        .with_entity_key(self.entity_key.as_deref())
         .with_timers(&session);
         let handle = StateHandle::<S>::new(&mut self.state, &recorded);
         if let Err(e) = self
@@ -583,15 +601,7 @@ struct RecordingEmitSink<'a> {
 }
 
 impl<'a> EmitSink for RecordingEmitSink<'a> {
-    fn emit_inter_procedure(
-        &mut self,
-        value: Arc<dyn Any + Send + Sync>,
-    ) -> Result<(), ProcedureError> {
-        self.emits.push(Emit { value, meta: None });
-        Ok(())
-    }
-
-    fn emit_plugin(
+    fn emit(
         &mut self,
         value: Arc<dyn Any + Send + Sync>,
         meta: Option<HashMap<String, String>>,
@@ -618,9 +628,9 @@ impl<'a> EmitSink for RecordingEmitSink<'a> {
         self.channel_name
     }
 
-    /// Keyed harness mode stands in for a plugin-bound channel so
-    /// `emit_keyed` routes through `emit_plugin` and picks up stamps.
-    fn is_plugin_bound(&self) -> bool {
+    /// Keyed harness mode stands in for a channel carrying a `sink(...)`, so
+    /// a keyed emit picks up its identity stamps and metadata is accepted.
+    fn has_plugin_sink(&self) -> bool {
         self.keyed
     }
 

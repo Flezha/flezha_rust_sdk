@@ -1073,7 +1073,7 @@ impl StreamOperative for FlushOrderOperative {
         c.input::<String>("input")
             .into::<FlushOrderProcedure>()
             .named("out")
-            .also_output_with("probe", |_v: &String| {
+            .sink_with("probe", |_v: &String| {
                 FLUSH_ORDER_LOG.lock().unwrap().push("emit");
                 Vec::new()
             })
@@ -1392,7 +1392,7 @@ impl StreamOperative for KeyedStampOperative {
             .into::<KeyedStampProcedure>()
             .named("out")
             .keyed()
-            .output("kafka");
+            .sink("kafka");
     }
 }
 
@@ -1453,7 +1453,7 @@ fn non_keyed_frame_is_byte_identical_to_prechange_layout() {
             c.input::<String>("input")
                 .into::<PlainPluginProcedure>()
                 .named("out")
-                .output("kafka");
+                .sink("kafka");
         }
     }
 
@@ -1620,7 +1620,7 @@ impl StreamOperative for TierOperative {
             .into::<TierStampProcedure>()
             .named("out")
             .keyed()
-            .output("kafka");
+            .sink("kafka");
     }
 }
 
@@ -1926,7 +1926,7 @@ impl StreamOperative for ReplayOperative {
             .into::<ReplayProcedure>()
             .named("out")
             .keyed()
-            .output("kafka");
+            .sink("kafka");
     }
 }
 
@@ -2036,7 +2036,7 @@ impl StreamOperative for HighWaterOperative {
             .into::<HighWaterProcedure>()
             .named("out")
             .keyed()
-            .output("kafka");
+            .sink("kafka");
     }
 }
 
@@ -2205,7 +2205,7 @@ impl StreamOperative for CheckpointOperative {
             .into::<CheckpointProcedure>()
             .named("out")
             .keyed()
-            .output("kafka");
+            .sink("kafka");
     }
 }
 

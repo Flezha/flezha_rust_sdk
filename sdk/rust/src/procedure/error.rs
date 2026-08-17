@@ -14,8 +14,8 @@ pub enum ProcedureError {
     PluginSerializerPanic { channel: String, message: String },
 
     #[error(
-        "channel `{channel}` is declared .keyed(); use ctx.emit_keyed(key, value) so the \
-         output carries its natural key"
+        "channel `{channel}` is declared .keyed() and this procedure is single-entity, so \
+         there is no Entity key to emit under; use ctx.emit_keyed(key, value)"
     )]
     KeyRequiredOnKeyedChannel { channel: String },
 

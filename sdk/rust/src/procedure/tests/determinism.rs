@@ -13,22 +13,13 @@ use crate::procedure::error::ProcedureError;
 #[derive(Default)]
 struct StubSink {
     keyed: bool,
-    plugin_bound: bool,
+    plugin_sink: bool,
     keys_seen: Vec<Option<String>>,
     metas_seen: Vec<Option<HashMap<String, String>>>,
 }
 
 impl EmitSink for StubSink {
-    fn emit_inter_procedure(
-        &mut self,
-        _value: Arc<dyn Any + Send + Sync>,
-    ) -> Result<(), ProcedureError> {
-        self.keys_seen.push(None);
-        self.metas_seen.push(None);
-        Ok(())
-    }
-
-    fn emit_plugin(
+    fn emit(
         &mut self,
         _value: Arc<dyn Any + Send + Sync>,
         meta: Option<HashMap<String, String>>,
@@ -43,8 +34,8 @@ impl EmitSink for StubSink {
         "stub"
     }
 
-    fn is_plugin_bound(&self) -> bool {
-        self.plugin_bound
+    fn has_plugin_sink(&self) -> bool {
+        self.plugin_sink
     }
 
     fn is_keyed(&self) -> bool {
@@ -117,14 +108,47 @@ fn stable_id_matches_the_cross_language_fixture() {
     );
 }
 
+/// fails when: a keyed-channel emit stops defaulting to the Entity's own key
+/// — every keyed procedure would be back to re-supplying the routing key by
+/// hand, which is exactly where a key drifts from the key the input routed by.
+#[test]
+fn plain_emit_in_a_keyed_entity_carries_the_entity_key() {
+    let mut sink = StubSink {
+        keyed: true,
+        plugin_sink: true,
+        ..Default::default()
+    };
+    let mut ctx = ProcedureCtx::new(&mut sink, 0, 0, IDENTITY).with_entity_key(Some("BTC/USD"));
+    assert_eq!(ctx.entity_key(), Some("BTC/USD"));
+    ctx.emit::<String>("candle".into())
+        .expect("a keyed entity emits under its own key");
+    ctx.emit_with_meta::<String>("candle".into(), HashMap::new())
+        .expect("the metadata spelling defaults identically");
+    // An explicit key still wins — the divergent-key emit is untouched.
+    ctx.emit_keyed::<String>("BTC/1m", "candle".into())
+        .expect("explicit keys remain available");
+    assert_eq!(
+        sink.keys_seen,
+        vec![
+            Some("BTC/USD".to_string()),
+            Some("BTC/USD".to_string()),
+            Some("BTC/1m".to_string())
+        ]
+    );
+}
+
+/// fails when: a single-entity procedure's keyless emit is accepted on a
+/// keyed channel — it has no key to default to, so the record would ship
+/// keyless and a keyed sink could not upsert it.
 #[test]
 fn plain_emit_on_keyed_channel_is_rejected() {
     let mut sink = StubSink {
         keyed: true,
-        plugin_bound: true,
+        plugin_sink: true,
         ..Default::default()
     };
     let mut ctx = ProcedureCtx::new(&mut sink, 0, 0, IDENTITY);
+    assert_eq!(ctx.entity_key(), None, "single-entity mode has no key");
     let err = ctx.emit::<String>("v".into()).unwrap_err();
     assert!(matches!(
         err,
@@ -143,23 +167,31 @@ fn plain_emit_on_keyed_channel_is_rejected() {
 #[test]
 fn emit_keyed_on_non_keyed_channel_is_rejected() {
     let mut sink = StubSink {
-        plugin_bound: true,
+        plugin_sink: true,
         ..Default::default()
     };
-    let mut ctx = ProcedureCtx::new(&mut sink, 0, 0, IDENTITY);
+    // Being in a keyed Entity changes nothing here: the channel declaration
+    // is the single source of truth for whether output identity exists.
+    let mut ctx = ProcedureCtx::new(&mut sink, 0, 0, IDENTITY).with_entity_key(Some("BTC/USD"));
     let err = ctx.emit_keyed::<String>("k", "v".into()).unwrap_err();
     assert!(matches!(
         err,
         ProcedureError::KeyNotAllowedOnNonKeyedChannel { .. }
     ));
-    assert!(sink.keys_seen.is_empty(), "nothing may be emitted");
+    ctx.emit::<String>("v".into())
+        .expect("a plain emit on a non-keyed channel is unchanged");
+    assert_eq!(
+        sink.keys_seen,
+        vec![None],
+        "the refusal emitted nothing; a non-keyed channel carries no key, entity key or not"
+    );
 }
 
 #[test]
 fn emit_keyed_passes_the_natural_key_to_the_sink() {
     let mut sink = StubSink {
         keyed: true,
-        plugin_bound: true,
+        plugin_sink: true,
         ..Default::default()
     };
     let mut ctx = ProcedureCtx::new(&mut sink, 0, 0, IDENTITY);
@@ -171,7 +203,7 @@ fn emit_keyed_passes_the_natural_key_to_the_sink() {
 #[test]
 fn reserved_flz_metadata_keys_are_rejected_on_all_meta_variants() {
     let mut sink = StubSink {
-        plugin_bound: true,
+        plugin_sink: true,
         ..Default::default()
     };
     let mut meta = HashMap::new();
@@ -185,7 +217,7 @@ fn reserved_flz_metadata_keys_are_rejected_on_all_meta_variants() {
     }
     let mut keyed_sink = StubSink {
         keyed: true,
-        plugin_bound: true,
+        plugin_sink: true,
         ..Default::default()
     };
     {
@@ -203,7 +235,7 @@ fn reserved_flz_metadata_keys_are_rejected_on_all_meta_variants() {
 fn non_reserved_metadata_still_flows() {
     let mut sink = StubSink {
         keyed: true,
-        plugin_bound: true,
+        plugin_sink: true,
         ..Default::default()
     };
     let mut meta = HashMap::new();

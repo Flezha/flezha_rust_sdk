@@ -51,7 +51,7 @@ impl StreamOperative for OrdersOperative {
         c.input::<OrderEvent>("orders")
             .into::<Validate>()
             .into::<Alert>()
-            .output("alerts"); // plugin-bound terminal (was `to_plugin`)
+            .sink("alerts"); // plugin egress; terminal — nothing wired after it
     }
 }
 ```
@@ -103,7 +103,9 @@ One class can sit at several graph positions via named nodes
 (`into_named::<Filter>("spam_filter")`) — each named node keeps its own state
 identity. Graphs must be acyclic; per-channel config (`codec`, `keyed`,
 `on_full`, `retry_max`, `retry_backoff_ms`) chains on the handle; the hybrid
-tap is `also_output_with(name, serializer)` / `also_output(name)`.
+tap is the SAME method — `sink(name)` / `sink_with(name, serializer)` returns
+the handle, so a consumer wires after it. A channel is terminal by having none;
+`.sealed()` states that in the type.
 
 A procedure that needs **two feeds** — a data stream plus a live config
 stream, a join of two computed streams — subscribes them with `merge`, which
@@ -140,7 +142,7 @@ impl StreamOperative for RiskOperative {
             .retry_backoff_ms(20)
             .into::<Validate>()
             .named("orders.validated")           // overrides the derived name
-            .also_output("audit");               // tap: default JSON to `audit`
+            .sink("audit");               // tap: default JSON to `audit`
 
         // One class, two nodes: each keeps its own per-entity state under
         // its node identity (state dirs, journals, diagnostics). Both arms
@@ -152,7 +154,7 @@ impl StreamOperative for RiskOperative {
         // The join's output closes plugin-bound and keyed: every emit calls
         // ctx.emit_keyed(key, value) and frames carry flz.* identity stamps,
         // so a changelog sink upserts instead of appending.
-        verdicts.named("risk.verdicts").keyed().output("verdict_sink");
+        verdicts.named("risk.verdicts").keyed().sink("verdict_sink");
     }
 }
 ```
@@ -186,7 +188,7 @@ impl WorkflowOperative for SettleWorkflow {
         reserved.into::<Charge>().named("charged").codec().into::<Reconcile>();
         reserved.into::<Ledger>().named("booked").codec().into::<Reconcile>()
             .named("reconciled")
-            .output("settlement_sink");
+            .sink("settlement_sink");
     }
 }
 ```

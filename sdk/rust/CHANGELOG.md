@@ -4,6 +4,33 @@ All notable changes to the Rust SDK crate.
 
 ## Unreleased
 
+### BREAKING — one plugin-sink method: `sink` + `sealed` (`unify-plugin-sink-api`)
+
+`also_output(name)` / `also_output_with(name, f)` and the terminal
+`output(name)` collapse into ONE method: `sink(name)` / `sink_with(name, f)`,
+always returning the stream handle. A channel is the plugin-bound terminal by
+having no consumers wired after it, not by which method declared it — the
+runtime derives that from the wiring, which is what the two spellings were
+encoding by hand. `.sealed()` is the optional terminator, returning the
+non-chainable `Channel<T>` the old `output` returned; it is purely a
+compile-time statement that nothing follows and changes no topology.
+
+No shim, no coexistence. Migration is mechanical: `also_output_with` →
+`sink_with`, `also_output` → `sink`, `output(name)` → `sink(name)` (append
+`.sealed()` where the non-chainable return type was relied on). Wire frames,
+descriptor field names, plugin bindings and error identifiers are unchanged; a
+terminal declaration's frames are byte-identical to what `output` wrote, and a
+unit fixture holds both shapes against those literals.
+
+Consequences worth knowing: `ChannelDescriptor` lost `plugin_name` (dead) and
+`plugin_serializer` — `plugin_sink` is now the one representation for both
+shapes. A sink declared on a channel that a *later* statement also wires a
+consumer into is now correctly hybrid; before, the terminal `output` had
+already frozen the kind and those consumers silently received nothing.
+`.on_full(...)` after `sink(...)` compiles now (it did not after `output`) and
+is still never consulted on a channel with no mailbox — `.sealed()` refuses it
+as before.
+
 ### BREAKING — the operative kinds are `stream` and `workflow`
 
 <!-- kind-naming-record:begin -->
@@ -26,6 +53,28 @@ input is unbounded and whose *iteration* is the only bounded thing. The channel
 handle `Stream<'b, T, K>` is unrelated and unchanged; a stream operative is
 precisely the kind that consumes streams.
 <!-- kind-naming-record:end -->
+
+### A keyed channel's plain emit carries the Entity's own key (`default-emit-to-entity-key`)
+
+In a keyed Entity the natural key of essentially every output *is* the key its
+input routed by, and the SDK already holds it — it created the Entity from it.
+`ctx.emit(value)` / `ctx.emit_with_meta(value, meta)` on a `.keyed()` channel
+now emit under that key instead of failing with `KeyRequiredOnKeyedChannel`, so
+`flz.key` equals the routing key by construction — the procedure never
+re-derives it, and the two cannot drift apart. Both spellings share one
+stamping path, so a defaulted emit and `ctx.emit_keyed(key, value)` with the
+same key are byte-identical.
+
+- `ctx.entity_key() -> Option<&str>` — the key this Entity was routed by, the
+  one `init_state` was handed. `None` for a single-entity Procedure.
+- `ctx.emit_keyed` is unchanged: it is now for the output whose natural key
+  differs from its Entity's.
+- `ProcedureTestHarness::with_entity_key(key)` stands the harness in for that
+  Entity, so a test observes the defaulted stamp.
+
+Unchanged refusals: a single-entity Procedure's key-less emit on a keyed
+channel (there is no Entity key to default to) and `emit_keyed` on a channel
+not declared `.keyed()`. Every currently-legal call keeps its behaviour.
 
 ### Entry-input idle signal (`expose-entry-input-idle-signal`)
 

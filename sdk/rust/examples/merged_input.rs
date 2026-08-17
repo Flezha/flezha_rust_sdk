@@ -149,7 +149,7 @@ impl StreamOperative for Thermostat {
             .from(c.input::<Threshold>("config"), DetectorInput::Threshold)
             .into::<Detector>()
             .named("alerts")
-            .output("alerts_sink");
+            .sink("alerts_sink");
     }
 }
 

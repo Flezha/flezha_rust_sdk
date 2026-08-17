@@ -1,11 +1,14 @@
-// `.also_output_with(...)` chained after `.output(...)` must be a compile
-// error. `output` returns a finalized `Channel<T>` handle that exposes no
-// further builder methods. This pin guards against a future refactor that
-// accidentally relaxes the type-system constraint.
+// `.on_full(...)` chained after `.sealed()` must be a compile error: a sealed
+// channel accepts no further declaration of any kind, and a plugin-bound one
+// has no SDK-side mailbox to apply backpressure to anyway (that is wire-level
+// — OS socket buffer + transport flow control). `sealed` returns a bare
+// `Channel<T>` handle that does not expose `.on_full`, so this fails at the
+// call site.
 
 use flezha_runner::channel::ChannelBuilder;
 use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError};
 use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
+use flezha_runner::OverflowPolicy;
 
 #[derive(Default)]
 struct PluginProducer;
@@ -26,8 +29,9 @@ impl Procedure for PluginProducer {
 fn declare(c: &ChannelBuilder) {
     c.input::<String>("in")
         .into::<PluginProducer>()
-        .output("k")
-        .also_output_with("k2", |_v: &Vec<u8>| Vec::new());
+        .sink("k")
+        .sealed()
+        .on_full(OverflowPolicy::Block);
 }
 
 fn main() {}

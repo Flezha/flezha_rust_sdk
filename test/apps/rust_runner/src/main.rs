@@ -275,7 +275,7 @@ impl WorkflowOperative for OptOutCommitBlockWorkflow {
         c.input::<String>("in")
             .into::<CommitA>()
             .named("mid")
-            .also_output_with("optout_sink", |s: &String| {
+            .sink_with("optout_sink", |s: &String| {
                 format!("a-ran:{s}").into_bytes()
             })
             .into::<BlockB>();
@@ -329,7 +329,7 @@ impl WorkflowOperative for TierCommitBlockWorkflow {
             .named("mid")
             .codec()
             .keyed()
-            .also_output_with("tier_sink", |s: &String| s.as_bytes().to_vec())
+            .sink_with("tier_sink", |s: &String| s.as_bytes().to_vec())
             .into::<BlockB>();
     }
 }
@@ -382,7 +382,7 @@ impl WorkflowOperative for OutboxBlockWorkflow {
             .into::<CommitA>()
             .named("mid")
             .codec()
-            .also_output_with("outbox_sink", |s: &String| {
+            .sink_with("outbox_sink", |s: &String| {
                 format!("a-out:{s}").into_bytes()
             })
             .into::<BlockB>();
@@ -419,7 +419,7 @@ impl WorkflowOperative for UndoOutboxWorkflow {
             .into::<UndoOutboxA>()
             .named("mid")
             .codec()
-            .also_output_with("undo_sink", |s: &String| format!("out:{s}").into_bytes())
+            .sink_with("undo_sink", |s: &String| format!("out:{s}").into_bytes())
             .into::<UndoC>();
     }
 }
@@ -441,7 +441,7 @@ impl WorkflowOperative for UndoOutboxWorkflow {
 //     blocking. A, B and C have all completed, so the rollback must unwind the
 //     two branches before the root they share: `undo-c`, `undo-b`, `undo-a`.
 //
-// The inter-proc channels are hybrid (`also_output_with`), which is what makes
+// The inter-proc channels are hybrid (`sink_with`), which is what makes
 // a non-leaf procedure's forward and undo output visible at the sink.
 const BRANCH_FAIL_ENV: &str = "FLEZHA_BRANCH_FAIL";
 
@@ -535,15 +535,15 @@ impl WorkflowOperative for BranchWorkflow {
             .into::<BranchA>()
             .named("mid")
             .codec()
-            .also_output_with("branch_sink", |s: &String| format!("a:{s}").into_bytes());
+            .sink_with("branch_sink", |s: &String| format!("a:{s}").into_bytes());
         mid.into::<BranchB>()
             .named("bmid")
             .codec()
-            .also_output_with("branch_sink", |s: &String| format!("b:{s}").into_bytes())
+            .sink_with("branch_sink", |s: &String| format!("b:{s}").into_bytes())
             .into::<BranchD>()
             .named("d_out")
-            .output("branch_sink");
-        mid.into::<BranchC>().named("c_out").output("branch_sink");
+            .sink("branch_sink");
+        mid.into::<BranchC>().named("c_out").sink("branch_sink");
     }
 }
 
@@ -660,22 +660,22 @@ impl WorkflowOperative for DiamondWorkflow {
             .into::<DiamA>()
             .named("dfan")
             .codec()
-            .also_output_with("diamond_sink", |s: &String| format!("a:{s}").into_bytes());
+            .sink_with("diamond_sink", |s: &String| format!("a:{s}").into_bytes());
         fan.into::<DiamB1>()
             .named("db1")
             .codec()
             .into::<DiamB2>()
             .named("db2")
             .codec()
-            .also_output_with("diamond_sink", |s: &String| s.clone().into_bytes())
+            .sink_with("diamond_sink", |s: &String| s.clone().into_bytes())
             .into::<DiamJoin>();
         fan.into::<DiamC>()
             .named("dc")
             .codec()
-            .also_output_with("diamond_sink", |s: &String| s.clone().into_bytes())
+            .sink_with("diamond_sink", |s: &String| s.clone().into_bytes())
             .into::<DiamJoin>()
             .named("j_out")
-            .output("diamond_sink");
+            .sink("diamond_sink");
     }
 }
 
@@ -740,10 +740,10 @@ impl WorkflowOperative for RetryWorkflow {
             .into::<RetryA>()
             .named("mid")
             .codec()
-            .also_output_with("retry_sink", |s: &String| format!("res:{s}").into_bytes())
+            .sink_with("retry_sink", |s: &String| format!("res:{s}").into_bytes())
             .into::<RetryFlaky>()
             .named("out")
-            .output("retry_sink");
+            .sink("retry_sink");
     }
 }
 
@@ -847,7 +847,7 @@ impl WorkflowOperative for StatelessLoopWorkflow {
         c.input::<String>("in")
             .into::<ChatReply>()
             .named("out")
-            .output("chat_sink");
+            .sink("chat_sink");
     }
 }
 
@@ -940,7 +940,7 @@ impl WorkflowOperative for ChatRewindWorkflow {
             .codec()
             .into::<ChatReplyUndoable>()
             .named("out")
-            .output("chat_sink");
+            .sink("chat_sink");
     }
 }
 
@@ -967,7 +967,7 @@ impl WorkflowOperative for ChatLoopWorkflow {
             .codec()
             .into::<ChatReply>()
             .named("out")
-            .output("chat_sink");
+            .sink("chat_sink");
     }
 }
 
@@ -1037,7 +1037,7 @@ impl StreamOperative for DynamicEntityOperative {
             .key_by(|input: &String| input.split(':').next().unwrap_or(input).to_string())
             .into::<DynamicEntityProcedure>()
             .named("kafka")
-            .output("test_kafka");
+            .sink("test_kafka");
     }
 }
 
@@ -1111,7 +1111,7 @@ impl StreamOperative for PartitionRelayOperative {
             .into::<PartitionRelayProcedure>()
             .named("input")
             .keyed()
-            .output("relay_out");
+            .sink("relay_out");
     }
 }
 
@@ -1196,7 +1196,7 @@ impl StreamOperative for SessionTimeoutOperative {
         c.input::<String>("input")
             .into::<SessionTimeoutProcedure>()
             .named("kafka")
-            .output("test_kafka");
+            .sink("test_kafka");
     }
 }
 
@@ -1237,7 +1237,7 @@ impl StreamOperative for DoNothingOperative {
         c.input::<String>("input")
             .into::<DoNothingProcedure>()
             .named("echo")
-            .output("do_nothing_echo");
+            .sink("do_nothing_echo");
     }
 }
 
@@ -1298,7 +1298,7 @@ impl StreamOperative for StoreInputOperative {
         c.input::<String>("input")
             .into::<StoreInputProcedure>()
             .named("sink")
-            .output("store_input_sink");
+            .sink("store_input_sink");
     }
 }
 
@@ -1376,7 +1376,7 @@ impl StreamOperative for TierStoreOperative {
             .into::<TierStoreProcedure>()
             .named("sink")
             .keyed()
-            .output("tier_sink");
+            .sink("tier_sink");
     }
 }
 
@@ -1439,7 +1439,7 @@ impl StreamOperative for CheckpointStoreOperative {
             .into::<CheckpointStoreProcedure>()
             .named("sink")
             .keyed()
-            .output("tier_sink");
+            .sink("tier_sink");
     }
 }
 
@@ -1529,7 +1529,7 @@ impl StreamOperative for CandleOperative {
             .into::<CandleProcedure>()
             .named("sink")
             .keyed()
-            .output("tier_sink");
+            .sink("tier_sink");
     }
 }
 
@@ -1582,7 +1582,7 @@ impl StreamOperative for PoisonProbeOperative {
             .retry_backoff_ms(25)
             .into::<PoisonProbeProcedure>()
             .named("out")
-            .output("probe_sink");
+            .sink("probe_sink");
     }
 }
 
@@ -1635,7 +1635,7 @@ impl StreamOperative for WedgeProbeOperative {
         c.input::<String>("input")
             .into::<WedgeProbeProcedure>()
             .named("out")
-            .output("wedge_sink");
+            .sink("wedge_sink");
     }
 }
 
@@ -1706,7 +1706,7 @@ impl StreamOperative for ResumeProbeOperative {
         c.input::<String>("input")
             .into::<ResumeProbeProcedure>()
             .named("total")
-            .output("resume_probe_out");
+            .sink("resume_probe_out");
     }
 }
 
@@ -1767,7 +1767,7 @@ impl StreamOperative for CompareFilterOperative {
         c.input::<String>("input")
             .into::<CompareFilterProcedure>()
             .named("sink")
-            .output("compare_filter_sink");
+            .sink("compare_filter_sink");
     }
 }
 
@@ -1864,7 +1864,7 @@ impl StreamOperative for StaticEntityOperative {
             .named("hop")
             .into::<StaticDownstreamProcedure>()
             .named("kafka")
-            .output("test_kafka");
+            .sink("test_kafka");
     }
 }
 
@@ -2007,7 +2007,7 @@ impl StreamOperative for EntityStressOperative {
             .named("c_to_d")
             .into::<StressProcedureD>()
             .named("echo")
-            .output("entity_stress_echo");
+            .sink("entity_stress_echo");
     }
 }
 
@@ -2149,7 +2149,7 @@ impl StreamOperative for BoundedMailboxBlockOperative {
             .on_full(OverflowPolicy::Block)
             .into::<BlockTestProcedure>()
             .named("block_echo")
-            .output("bounded_mailbox_echo");
+            .sink("bounded_mailbox_echo");
     }
 }
 
@@ -2162,7 +2162,7 @@ impl StreamOperative for BoundedMailboxDropNewestOperative {
         c.input::<String>("drop_newest_input")
             .into::<DropNewestTestProcedure>()
             .named("drop_newest_echo")
-            .output("bounded_mailbox_echo");
+            .sink("bounded_mailbox_echo");
     }
 }
 
@@ -2176,7 +2176,7 @@ impl StreamOperative for BoundedMailboxDropOldestOperative {
             .on_full(OverflowPolicy::DropOldest)
             .into::<DropOldestTestProcedure>()
             .named("drop_oldest_echo")
-            .output("bounded_mailbox_echo");
+            .sink("bounded_mailbox_echo");
     }
 }
 
@@ -2451,7 +2451,7 @@ impl Procedure for PersistenceOffCounterProcedure {
 
 // -- HybridChannelOperative -------------------------------------------------------
 //
-// Demonstrates `also_output_with(...)`: the producer Procedure emits a
+// Demonstrates `sink_with(...)`: the producer Procedure emits a
 // `u32` value that fans out to an inter-procedure consumer and is also
 // serialized to bytes for the `hybrid_indicators` plugin. The
 // serializer panics on the sentinel `0xDEADBEEF` so an operator can
@@ -2521,7 +2521,7 @@ impl StreamOperative for HybridChannelOperative {
         c.input::<String>("input")
             .into::<HybridProducerProcedure>()
             .named("hybrid_indicator")
-            .also_output_with("hybrid_indicators", |v: &u32| {
+            .sink_with("hybrid_indicators", |v: &u32| {
                 if *v == 0xDEAD_BEEF {
                     panic!("hybrid_indicators: serializer rejected sentinel 0xDEADBEEF");
                 }
@@ -2634,7 +2634,7 @@ impl StreamOperative for MixedOperative {
             .named("hop")
             .into::<MixedHandDownstream>()
             .named("kafka")
-            .output("test_kafka");
+            .sink("test_kafka");
     }
 }
 

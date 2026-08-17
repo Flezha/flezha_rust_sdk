@@ -306,7 +306,7 @@ impl StreamOperative for KeyedPluginOperative {
             .into::<KeyedProducerProcedure>()
             .named("out")
             .keyed()
-            .output("kafka");
+            .sink("kafka");
     }
 }
 
@@ -318,7 +318,7 @@ fn keyed_plugin_channel_is_accepted_and_marked() {
     assert!(!topology.channels[0].keyed, "entry channel is not keyed");
 }
 
-/// `.keyed()` on a hybrid (`also_output_with`) channel is accepted.
+/// `.keyed()` on a hybrid (`sink_with`) channel is accepted.
 struct KeyedHybridOperative;
 impl StreamOperative for KeyedHybridOperative {
     fn factory_id() -> &'static str {
@@ -328,7 +328,7 @@ impl StreamOperative for KeyedHybridOperative {
         c.input::<String>("inp")
             .into::<KeyedProducerProcedure>()
             .named("out")
-            .also_output_with("kafka", |v: &String| v.clone().into_bytes())
+            .sink_with("kafka", |v: &String| v.clone().into_bytes())
             .keyed()
             .into::<KeyedConsumerProcedure>();
     }

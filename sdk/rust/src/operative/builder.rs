@@ -252,8 +252,8 @@ pub fn build_topology_with_persistence(
     let mut channel_descs: Vec<ChannelDescriptor> = Vec::with_capacity(channels.len());
     for entry in channels {
         // Identity stamps only exist on plugin frames; a keyed channel
-        // must have a plugin wire (pure `output` or hybrid sink).
-        if entry.keyed && entry.kind != ChannelKind::PluginBound && entry.plugin_sink.is_none() {
+        // must have a plugin wire.
+        if entry.keyed && entry.plugin_sink.is_none() {
             errors.push(TopologyIssue::KeyedChannelWithoutPluginWire {
                 channel: entry.name,
             });
@@ -261,33 +261,38 @@ pub fn build_topology_with_persistence(
         // The effectively-once tier deduplicates by output identity, which
         // only keyed channels carry — an unkeyed plugin wire would silently
         // break the guarantee.
-        if effectively_once
-            && !entry.keyed
-            && (entry.kind == ChannelKind::PluginBound || entry.plugin_sink.is_some())
-        {
+        if effectively_once && !entry.keyed && entry.plugin_sink.is_some() {
             errors.push(TopologyIssue::UnkeyedChannelUnderEffectivelyOnce {
                 channel: entry.name,
             });
         }
+        // Terminality is derived from the wiring, not from which method the
+        // author called: a sink with nothing consuming behind it IS the
+        // plugin-bound terminal. Deriving it here is what keeps `.sink(...)`
+        // one method and makes a sink declared alongside consumers hybrid by
+        // construction rather than by ordering.
+        let kind = if entry.plugin_sink.is_some() && entry.consumers.is_empty() {
+            ChannelKind::PluginBound
+        } else {
+            entry.kind
+        };
         let plugin_sink = entry.plugin_sink.map(|sink| PluginSink {
             name: Arc::from(sink.name),
             serializer: sink.serializer,
         });
         channel_descs.push(ChannelDescriptor {
             name: Arc::from(entry.name),
-            kind: entry.kind,
+            kind,
             producer: entry.producer,
             consumers: entry.consumers,
-            plugin_name: entry.plugin_name.map(Arc::from),
             wrap_input: entry.wrap_input,
             entry_parsed: entry.entry_parsed,
-            plugin_serializer: entry.plugin_serializer,
             plugin_sink,
             keyed: entry.keyed,
             overflow_policy: entry.overflow_policy,
             retry: entry.retry,
             codec: entry.codec,
-            entry_observation: flz_core::channel::entry_observation_for(entry.kind, entry.name),
+            entry_observation: flz_core::channel::entry_observation_for(kind, entry.name),
         });
     }
 
@@ -477,7 +482,7 @@ mod tests {
             .into::<TierProc>()
             .named("out")
             .keyed()
-            .output("kafka");
+            .sink("kafka");
         let topology = build_topology("tier_keyed_ok", cb).expect("topology");
         assert!(topology.effectively_once);
     }
@@ -489,7 +494,7 @@ mod tests {
         cb.input::<String>("in")
             .into::<TierProc>()
             .named("out")
-            .output("kafka");
+            .sink("kafka");
         let err = match build_topology("tier_unkeyed_plugin", cb) {
             Err(e) => e,
             Ok(_) => panic!("unkeyed plugin channel must fail under the tier"),
@@ -507,7 +512,7 @@ mod tests {
         cb.input::<String>("in")
             .into::<TierProc>()
             .named("mid")
-            .also_output_with("kafka", |s: &String| s.as_bytes().to_vec());
+            .sink_with("kafka", |s: &String| s.as_bytes().to_vec());
         let err = match build_topology("tier_unkeyed_hybrid", cb) {
             Err(e) => e,
             Ok(_) => panic!("unkeyed hybrid sink must fail under the tier"),
@@ -532,7 +537,7 @@ mod tests {
         cb.input::<String>("in")
             .into::<TierProc>()
             .named("out")
-            .output("kafka");
+            .sink("kafka");
         let topology = build_topology("no_tier_unkeyed_ok", cb).expect("topology");
         assert!(!topology.effectively_once);
     }
@@ -657,7 +662,7 @@ mod tests {
             .into::<S>()
             .named("out")
             .keyed()
-            .output("kafka");
+            .sink("kafka");
         cb
     }
 
@@ -685,7 +690,7 @@ mod tests {
             .into::<TierProc>()
             .named("out")
             .keyed()
-            .output("kafka");
+            .sink("kafka");
         let topology = build_topology("checkpoint_ok", cb).expect("topology");
         assert_eq!(topology.ack_granularity, AckGranularity::Checkpoint);
     }
@@ -698,7 +703,7 @@ mod tests {
             .into::<TierProc>()
             .named("out")
             .keyed()
-            .output("kafka");
+            .sink("kafka");
         let topology = build_topology("per_input_default", cb).expect("topology");
         assert_eq!(topology.ack_granularity, AckGranularity::PerInput);
     }
@@ -713,7 +718,7 @@ mod tests {
         cb.input::<String>("in")
             .into::<TierProc>()
             .named("out")
-            .output("kafka");
+            .sink("kafka");
 
         let err = build_topology("checkpoint_no_tier", cb)
             .err()

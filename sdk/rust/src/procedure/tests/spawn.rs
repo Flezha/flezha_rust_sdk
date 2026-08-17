@@ -17,14 +17,7 @@ const IDENTITY: &[u8] = b"spawn/test/";
 struct NullSink;
 
 impl EmitSink for NullSink {
-    fn emit_inter_procedure(
-        &mut self,
-        _value: Arc<dyn Any + Send + Sync>,
-    ) -> Result<(), ProcedureError> {
-        Ok(())
-    }
-
-    fn emit_plugin(
+    fn emit(
         &mut self,
         _value: Arc<dyn Any + Send + Sync>,
         _meta: Option<HashMap<String, String>>,
@@ -35,10 +28,6 @@ impl EmitSink for NullSink {
 
     fn channel_name(&self) -> &str {
         "out"
-    }
-
-    fn is_plugin_bound(&self) -> bool {
-        false
     }
 }
 

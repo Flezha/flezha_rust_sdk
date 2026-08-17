@@ -137,7 +137,7 @@ pub fn expand(item: TokenStream) -> syn::Result<TokenStream> {
                 // Pins the declared plugin payload type against the terminal
                 // procedure's `Output`.
                 let stream: ::flezha_runner::Stream<'_, #plugin_ty> = stream;
-                stream.named(#plugin_name).output(#plugin_name);
+                stream.named(#plugin_name).sink(#plugin_name);
             }
         }
         ::flezha_runner::inventory::submit! {

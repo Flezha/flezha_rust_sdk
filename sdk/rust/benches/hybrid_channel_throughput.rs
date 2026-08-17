@@ -1,4 +1,4 @@
-//! Per-emit cost of hybrid channels (`also_output_with`) vs. pure
+//! Per-emit cost of hybrid channels (`sink_with`) vs. pure
 //! inter-procedure and pure plugin-bound channels. Establishes that the
 //! hybrid path is `inter-procedure fan-out + serializer call`, with the
 //! serializer paying the same fixed cost regardless of consumer count.
@@ -232,7 +232,7 @@ impl StreamOperative for PluginBoundOperative {
             .on_full(OverflowPolicy::Block)
             .into::<PluginBoundProducer>()
             .named("out")
-            .output("bench_plugin_bound");
+            .sink("bench_plugin_bound");
     }
 }
 
@@ -295,7 +295,7 @@ impl StreamOperative for Hybrid1Operative {
             .on_full(OverflowPolicy::Block)
             .into::<Hybrid1Producer>()
             .named("out")
-            .also_output_with("bench_hybrid_plugin_1c", |v: &u32| v.to_be_bytes().to_vec())
+            .sink_with("bench_hybrid_plugin_1c", |v: &u32| v.to_be_bytes().to_vec())
             .into::<Hybrid1Consumer>();
     }
 }
@@ -368,7 +368,7 @@ impl StreamOperative for Hybrid3Operative {
             .on_full(OverflowPolicy::Block)
             .into::<Hybrid3Producer>()
             .named("out")
-            .also_output_with("bench_hybrid_plugin_3c", |v: &u32| v.to_be_bytes().to_vec());
+            .sink_with("bench_hybrid_plugin_3c", |v: &u32| v.to_be_bytes().to_vec());
         out.into::<Hybrid3ConsumerA>();
         out.into::<Hybrid3ConsumerB>();
         out.into::<Hybrid3ConsumerC>();

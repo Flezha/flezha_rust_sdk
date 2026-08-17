@@ -36,7 +36,7 @@ impl StreamOperative for AlertDetector {
         c.input::<String>("events")
             .into::<Detect>()
             .named("alerts")
-            .output("alerts_sink");
+            .sink("alerts_sink");
     }
 }
 

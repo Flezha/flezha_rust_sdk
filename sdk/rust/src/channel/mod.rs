@@ -14,18 +14,21 @@ pub use builder::{
 };
 pub use flz_core::channel::*;
 
-/// Phantom-typed channel handle. The `id` is the index into
-/// `OperativeTopology::channels`; the `T` parameter exists only for
-/// compile-time wiring checks via the builder methods.
+/// The finalized channel handle returned by [`Stream::sealed`]: a
+/// phantom-typed marker exposing no builder methods, so a consumer or a
+/// transform declared after it is a compile error.
+///
+/// It carries no state, which is what makes "sealing changes no topology"
+/// true by construction rather than by convention — the handle cannot reach
+/// the builder to record anything, not even the output channel a leaf node
+/// deliberately does not have.
 pub struct Channel<T> {
-    pub id: ChannelId,
     _phantom: PhantomData<fn() -> T>,
 }
 
 impl<T> Channel<T> {
-    pub(crate) fn new(id: ChannelId) -> Self {
+    pub(crate) fn new() -> Self {
         Self {
-            id,
             _phantom: PhantomData,
         }
     }

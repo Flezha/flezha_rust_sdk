@@ -13,7 +13,7 @@
 //!     .key_by(|s: &Slot| format!("{}@{}", s.symbol, s.tf))
 //!     .into::<Candle>()                         // one Entity per slot
 //!     .keyed()
-//!     .output("candles");
+//!     .sink("candles");
 //! ```
 //!
 //! The whole topology contains exactly ONE Procedure node. The transforms add
@@ -131,14 +131,13 @@ impl Procedure for Candle {
         ctx: &mut ProcedureCtx<'_>,
     ) -> Result<(), ProcedureError> {
         state.apply(Tick(input.price));
-        // The Entity IS the candle, so the emit key is the Entity's key.
-        ctx.emit_keyed(
-            format!("{}@{}", input.symbol, input.tf),
-            format!(
-                "{} {} h={} l={}",
-                input.symbol, input.tf, state.high, state.low
-            ),
-        )
+        // The Entity IS the candle, so the plain emit already carries the
+        // Entity's own key — `key_by`'s value — and cannot drift from it.
+        // `emit_keyed` is for the output whose key is a different one.
+        ctx.emit(format!(
+            "{} {} h={} l={}",
+            input.symbol, input.tf, state.high, state.low
+        ))
     }
 }
 
@@ -156,7 +155,7 @@ impl StreamOperative for Candles {
             .key_by(|s: &Slot| format!("{}@{}", s.symbol, s.tf))
             .into::<Candle>()
             .keyed()
-            .output("candles");
+            .sink("candles");
     }
 }
 

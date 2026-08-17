@@ -327,7 +327,7 @@ impl StreamOperative for TierOffOperative {
             .into::<TierOffProcedure>()
             .named("out")
             .keyed()
-            .output("bench");
+            .sink("bench");
     }
 }
 
@@ -343,7 +343,7 @@ impl StreamOperative for TierOnOperative {
             .into::<TierOnProcedure>()
             .named("out")
             .keyed()
-            .output("bench");
+            .sink("bench");
     }
 }
 

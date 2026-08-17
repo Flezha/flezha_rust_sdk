@@ -301,7 +301,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                     let stream = c.input::<#input_ty>("input") #on_full .into::<#struct_ident>();
                     // Pins the sink payload type against the procedure's `Output`.
                     let stream: ::flezha_runner::Stream<'_, #output_ty_tokens> = stream;
-                    stream.named(#sink).output(#sink);
+                    stream.named(#sink).sink(#sink);
                 }
             }
             ::flezha_runner::inventory::submit! {

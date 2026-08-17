@@ -1,7 +1,8 @@
 //! Section 3.2 of the authoring contract: the `key = fn` opt-in on
-//! `#[flezha::procedure]`. A `.keyed()` output channel accepts only
-//! `emit_keyed`, so without this opt-in the sugar could reach unkeyed sinks
-//! only and every keyed-output procedure would have to be hand-written.
+//! `#[flezha::procedure]`. It names the output's own natural key, for the
+//! output whose key is not the key its Entity was routed by — that one the
+//! keyed channel already supplies, and a single-entity procedure (which has
+//! no key at all) needs the opt-in or its emit is refused.
 
 use flezha_runner::testing::ProcedureTestHarness;
 
@@ -62,12 +63,43 @@ fn a_skipped_output_emits_nothing_to_key() {
     assert!(harness.emitted_meta().is_empty());
 }
 
-/// fails when: the sugar's plain `emit` is accepted on a keyed channel — the
-/// guard that makes `key` load-bearing would be gone and a keyless record
-/// would ship silently.
+/// fails when: a single-entity procedure's plain `emit` is accepted on a
+/// keyed channel — it has no Entity key to fall back on, so the guard that
+/// makes `key` load-bearing there would be gone and a keyless record would
+/// ship silently.
 #[test]
 #[should_panic(expected = "is declared .keyed()")]
-fn without_the_key_opt_in_a_keyed_channel_refuses_the_emit() {
+fn without_the_key_opt_in_a_keyed_channel_refuses_a_single_entity_emit() {
     let mut harness = ProcedureTestHarness::<UnkeyedSugar>::new().with_keyed_channel();
     harness.apply_inputs(vec![reading("BTC/USD", 1.0)]);
+}
+
+/// fails when: a key-less emit inside a keyed Entity stops carrying that
+/// Entity's own key, or stamps it differently from the explicit spelling —
+/// the whole point is that the two are one path, so a keyed procedure never
+/// has to re-supply (and so can never drift from) its routing key.
+#[test]
+fn a_keyed_entity_stamps_its_own_key_on_a_key_less_emit() {
+    let mut defaulted = ProcedureTestHarness::<UnkeyedSugar>::new()
+        .with_keyed_channel()
+        .with_entity_key("BTC/USD");
+    defaulted.apply_inputs(vec![reading("BTC/USD", 1.0)]);
+
+    let mut explicit = ProcedureTestHarness::<KeyedSugar>::new()
+        .with_keyed_channel()
+        .with_entity_key("BTC/USD");
+    explicit.apply_inputs(vec![reading("BTC/USD", 1.0)]);
+
+    assert_eq!(
+        defaulted.emitted_meta()[0]
+            .expect("keyed emit records stamped metadata")
+            .get("flz.key"),
+        Some(&"BTC/USD".to_string())
+    );
+    assert_eq!(
+        defaulted.emitted_meta(),
+        explicit.emitted_meta(),
+        "the defaulted emit and `emit_keyed` with the same key stamp identically"
+    );
+    defaulted.expect_emits(&[reading("BTC/USD", 1.0)]);
 }

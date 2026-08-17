@@ -1,0 +1,18 @@
+error[E0107]: method takes 0 generic arguments but 1 generic argument was supplied
+  --> tests/ui/sealed_disallows_wiring.rs:52:10
+   |
+52 |         .into::<Downstream>();
+   |          ^^^^ expected 0 generic arguments
+   |
+help: consider moving this generic argument to the `Into` trait, which takes up to 1 argument
+   |
+48 ~     Into::<Downstream>::into(c.input::<String>("in")
+49 +         .into::<PluginProducer>()
+50 +         .sink("k")
+51 ~         .sealed());
+   |
+help: remove the unnecessary generics
+   |
+52 -         .into::<Downstream>();
+52 +         .into();
+   |

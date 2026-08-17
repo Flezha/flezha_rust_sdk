@@ -371,7 +371,7 @@ refusal!(DanglingOperative, "refuse_dangling", |c| {
 refusal!(AfterTerminalOperative, "refuse_after_terminal", |c| {
     c.input::<String>("in")
         .into::<PlainTarget>()
-        .also_output("plugin")
+        .sink("plugin")
         .filter(|_b: &Vec<u8>| true)
         .into::<Recorder2>();
 });

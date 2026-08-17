@@ -320,7 +320,7 @@ mod tests {
             c.input::<String>("in")
                 .into::<EchoProc>()
                 .named("out")
-                .output("sink");
+                .sink("sink");
         }
     }
 
@@ -381,8 +381,8 @@ mod tests {
             .into::<Stage1>()
             .named("mid")
             .codec();
-        mid.into::<Stage2>().named("out_b").output("sink");
-        mid.into::<EchoProc>().named("out_c").output("sink");
+        mid.into::<Stage2>().named("out_b").sink("sink");
+        mid.into::<EchoProc>().named("out_c").sink("sink");
     }
 
     struct TreeWorkflow;
@@ -408,7 +408,7 @@ mod tests {
                 .codec()
                 .into::<Stage2>()
                 .named("out")
-                .output("sink");
+                .sink("sink");
         }
     }
 
@@ -436,7 +436,7 @@ mod tests {
                 .codec()
                 .into::<Stage2>()
                 .named("out")
-                .output("sink");
+                .sink("sink");
         }
     }
 
@@ -559,7 +559,7 @@ mod tests {
             .codec()
             .into::<LoopMaybeFail>()
             .named("out")
-            .output("sink");
+            .sink("sink");
     }
 
     /// A loop declared on a `run`-sugar class: no chain to iterate.
@@ -593,7 +593,7 @@ mod tests {
                 .codec()
                 .into::<Stage2>()
                 .named("out")
-                .output("sink");
+                .sink("sink");
         }
     }
 
@@ -689,7 +689,7 @@ mod tests {
                 .codec()
                 .into::<FanProc>()
                 .named("out")
-                .output("sink");
+                .sink("sink");
         }
     }
 
@@ -706,7 +706,7 @@ mod tests {
                 .named("mid")
                 .into::<FanProc>()
                 .named("out")
-                .output("sink");
+                .sink("sink");
         }
         const PERSISTENCE_ENABLED: bool = false;
     }
@@ -759,7 +759,7 @@ mod tests {
         }
     }
 
-    /// Hybrid inter-procedure channel (`also_output_with`): Stage1's output
+    /// Hybrid inter-procedure channel (`sink_with`): Stage1's output
     /// both feeds Stage2 AND is serialized to a plugin sink.
     struct HybridWorkflow;
     impl WorkflowOperative for HybridWorkflow {
@@ -771,10 +771,10 @@ mod tests {
                 .into::<HybridStage1>()
                 .named("mid")
                 .codec()
-                .also_output_with("midsink", |s: &String| format!("mid:{s}").into_bytes())
+                .sink_with("midsink", |s: &String| format!("mid:{s}").into_bytes())
                 .into::<HybridStage2>()
                 .named("out")
-                .output("out");
+                .sink("out");
         }
     }
 
@@ -973,7 +973,7 @@ mod tests {
                 .codec()
                 .into::<SagaShipFails>()
                 .named("t_ship")
-                .output("sink");
+                .sink("sink");
             // The archive leaf releases an inter-proc batch nobody consumes: it
             // stays a leaf, and its retained output is what its undo reverses
             // (a plugin-bound leaf would stage instead of collect, leaving the
@@ -997,7 +997,7 @@ mod tests {
                 .codec()
                 .into::<SagaShipFails>()
                 .named("out")
-                .output("sink");
+                .sink("sink");
         }
     }
 
@@ -1023,7 +1023,7 @@ mod tests {
                 .codec()
                 .into::<SagaShipFails>()
                 .named("out")
-                .output("sink");
+                .sink("sink");
         }
     }
 
@@ -1043,7 +1043,7 @@ mod tests {
                 .codec()
                 .into::<EchoProc>()
                 .named("out")
-                .output("sink");
+                .sink("sink");
         }
     }
 
@@ -1146,7 +1146,7 @@ mod tests {
                 .codec()
                 .into::<FailLast>()
                 .named("out")
-                .output("sink");
+                .sink("sink");
         }
     }
 
@@ -1206,7 +1206,7 @@ mod tests {
                 .codec()
                 .into::<EchoProc>()
                 .named("out")
-                .output("sink");
+                .sink("sink");
         }
     }
 
@@ -1321,7 +1321,7 @@ mod tests {
             c.input::<String>("in")
                 .into::<EmitThenFail>()
                 .named("out")
-                .output("sink");
+                .sink("sink");
         }
     }
 
@@ -1376,10 +1376,10 @@ mod tests {
                 .into::<UndoEmit>()
                 .named("mid")
                 .codec()
-                .also_output_with("undosink", |s: &String| s.clone().into_bytes())
+                .sink_with("undosink", |s: &String| s.clone().into_bytes())
                 .into::<FailLast>()
                 .named("out")
-                .output("sink");
+                .sink("sink");
         }
     }
 
@@ -1399,7 +1399,7 @@ mod tests {
                 .codec()
                 .into::<SagaShipFails>()
                 .named("out")
-                .output("sink");
+                .sink("sink");
         }
     }
 
@@ -1514,7 +1514,7 @@ mod tests {
             .codec()
             .into::<FlakyFan>()
             .named("out")
-            .output("sink");
+            .sink("sink");
     }
 
     /// Split → Reserve(compensable) → FlakyFan(even/odd). Default 3-attempt
@@ -1651,7 +1651,7 @@ mod tests {
             c.input::<String>("in")
                 .into::<StepProbe>()
                 .named("probe_out")
-                .output("sink");
+                .sink("sink");
         }
     }
 
@@ -1745,7 +1745,7 @@ mod tests {
                 .codec()
                 .into::<DiamondJoin>()
                 .named("d_out")
-                .output("sink");
+                .sink("sink");
         }
     }
 
@@ -1797,7 +1797,7 @@ mod tests {
                 .named("d_c")
                 .codec()
                 .into::<DiamondJoin>();
-            join.into::<SagaShipFails>().named("d_out").output("sink");
+            join.into::<SagaShipFails>().named("d_out").sink("sink");
         }
     }
 
@@ -1862,7 +1862,7 @@ mod tests {
                 .from(cc, MergedJoinInput::C)
                 .into::<MergeJoinProc>()
                 .named("m_out")
-                .output("sink");
+                .sink("sink");
         }
     }
 
@@ -1888,7 +1888,7 @@ mod tests {
                 .from(cc, MergedJoinInput::C)
                 .into::<MergeJoinProc>()
                 .named("pm_out")
-                .output("sink");
+                .sink("sink");
         }
     }
 
@@ -1907,7 +1907,7 @@ mod tests {
                 .map(|_: String| -> String { panic!("edge map blew up") })
                 .into::<DiamondB>()
                 .named("pt_out")
-                .output("sink");
+                .sink("sink");
         }
     }
 

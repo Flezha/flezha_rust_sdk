@@ -1,4 +1,6 @@
-//! Section 2 unit tests for hybrid channels (`also_output_with`).
+//! Unit tests for plugin egress (`sink` / `sink_with`): the hybrid channel
+//! (a sink with consumers wired after it), the plugin-bound terminal (a sink
+//! with none), and the equivalence of the two declarations on the wire.
 //!
 //! Each test uses the live dispatcher: an entry channel feeds bytes
 //! into a producer Procedure, which calls `ctx.emit(typed_value)` on a
@@ -15,7 +17,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use bi::OperativeDispatchHandle;
-use flezha_runner::channel::ChannelBuilder;
+use flezha_runner::channel::{ChannelBuilder, ChannelKind};
 use flezha_runner::operative::builder::build_topology_for;
 use flezha_runner::{__dispatch_internals as bi, StreamOperative};
 use flz_transport::service::payloader;
@@ -89,7 +91,7 @@ impl StreamOperative for SingleHybridOperative {
         c.input::<String>("input")
             .into::<SingleProducer>()
             .named("hybrid_out")
-            .also_output_with("plugin_a", |v: &u32| v.to_be_bytes().to_vec())
+            .sink_with("plugin_a", |v: &u32| v.to_be_bytes().to_vec())
             .into::<SingleConsumer>();
     }
 }
@@ -164,7 +166,7 @@ impl StreamOperative for ThreeHybridOperative {
             .input::<String>("input")
             .into::<ThreeProducer>()
             .named("three_out")
-            .also_output_with("plugin_three", |v: &u32| {
+            .sink_with("plugin_three", |v: &u32| {
                 SERIALIZER_CALLS.fetch_add(1, Ordering::SeqCst);
                 v.to_be_bytes().to_vec()
             });
@@ -240,7 +242,7 @@ impl StreamOperative for PanicHybridOperative {
         c.input::<String>("input")
             .into::<PanicProducer>()
             .named("panic_out")
-            .also_output_with("plugin_panic", |v: &u32| {
+            .sink_with("plugin_panic", |v: &u32| {
                 if *v == 13 {
                     panic!("test serializer rejected 13");
                 }
@@ -299,7 +301,7 @@ fn hybrid_serializer_panic_is_caught() {
     assert_eq!(body, &5u32.to_be_bytes().to_vec());
 }
 
-// ---------- 2.8: duplicate also_output_with rejected at registration ----------
+// ---------- 2.8: duplicate sink_with rejected at registration ----------
 
 test_procedure!(DupProducer, "hybrid_dup_producer", String => u32, (), |_input, _state, _ctx| {
     Ok(())
@@ -314,8 +316,8 @@ impl StreamOperative for DupHybridOperative {
         c.input::<String>("input")
             .into::<DupProducer>()
             .named("dup_out")
-            .also_output_with("plugin_a", |v: &u32| v.to_be_bytes().to_vec())
-            .also_output_with("plugin_b", |v: &u32| v.to_be_bytes().to_vec());
+            .sink_with("plugin_a", |v: &u32| v.to_be_bytes().to_vec())
+            .sink_with("plugin_b", |v: &u32| v.to_be_bytes().to_vec());
     }
 }
 
@@ -364,7 +366,7 @@ impl StreamOperative for MetaHybridOperative {
         c.input::<String>("input")
             .into::<MetaProducer>()
             .named("meta_out")
-            .also_output_with("plugin_meta", |v: &u32| v.to_be_bytes().to_vec())
+            .sink_with("plugin_meta", |v: &u32| v.to_be_bytes().to_vec())
             .into::<MetaConsumer>();
     }
 }
@@ -478,6 +480,209 @@ fn emit_with_meta_on_pure_inter_procedure_channel_is_rejected() {
     assert!(
         received.lock().unwrap().is_empty(),
         "no plugin frame should have been written"
+    );
+}
+
+// ---------- one `sink`: terminal, sealed and hybrid are one declaration ----------
+
+fn unified_consumer_observed() -> &'static Mutex<Vec<String>> {
+    static C: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+    C.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+test_procedure!(UnifiedProducer, "unified_producer", String => String, (), |input, _state, ctx| {
+    ctx.emit::<String>(input)
+});
+
+test_procedure!(UnifiedConsumer, "unified_consumer", String => (), (), |input, _state, _ctx| {
+    unified_consumer_observed().lock().unwrap().push(input);
+    Ok(())
+});
+
+/// `sink` and nothing after it — what the removed `output(...)` declared.
+struct TerminalSinkOperative;
+impl StreamOperative for TerminalSinkOperative {
+    fn factory_id() -> &'static str {
+        "unified_terminal"
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("input")
+            .into::<UnifiedProducer>()
+            .named("unified_out")
+            .sink("plugin_u");
+    }
+}
+
+/// The same declaration with the optional type-level terminator.
+struct SealedSinkOperative;
+impl StreamOperative for SealedSinkOperative {
+    fn factory_id() -> &'static str {
+        "unified_sealed"
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("input")
+            .into::<UnifiedProducer>()
+            .named("unified_out")
+            .sink("plugin_u")
+            .sealed();
+    }
+}
+
+/// The same sink with a consumer wired after it — what `also_output` declared.
+struct HybridSinkOperative;
+impl StreamOperative for HybridSinkOperative {
+    fn factory_id() -> &'static str {
+        "unified_hybrid"
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("input")
+            .into::<UnifiedProducer>()
+            .named("unified_out")
+            .sink("plugin_u")
+            .into::<UnifiedConsumer>();
+    }
+}
+
+/// A leaf node sealed with no sink at all — the case where "sealing changes
+/// no topology" is falsifiable: a leaf's output channel is created lazily, so
+/// a `sealed()` that reached the builder would conjure one.
+struct SealedLeafOperative;
+impl StreamOperative for SealedLeafOperative {
+    fn factory_id() -> &'static str {
+        "unified_sealed_leaf"
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("input")
+            .into::<UnifiedProducer>()
+            .sealed();
+    }
+}
+
+/// The same graph with the `sealed()` call removed.
+struct BareLeafOperative;
+impl StreamOperative for BareLeafOperative {
+    fn factory_id() -> &'static str {
+        "unified_bare_leaf"
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("input").into::<UnifiedProducer>();
+    }
+}
+
+/// Every channel in the topology, in declaration order.
+fn channel_names<R: StreamOperative>() -> Vec<String> {
+    build_topology_for::<R>()
+        .expect("topology")
+        .channels
+        .iter()
+        .map(|c| c.name.to_string())
+        .collect()
+}
+
+/// fails when: `sealed()` reaches the builder — a leaf node would then carry
+/// the phantom output channel the lazy creation exists to avoid, and the
+/// "purely type-level" contract would be false wherever no sink precedes it.
+#[test]
+fn sealing_a_leaf_declares_no_channel() {
+    assert_eq!(
+        channel_names::<SealedLeafOperative>(),
+        channel_names::<BareLeafOperative>()
+    );
+}
+
+/// Everything about one channel the sink declaration decides.
+fn sink_shape<R: StreamOperative>(channel: &str) -> (ChannelKind, usize, Option<String>, bool) {
+    let topology = build_topology_for::<R>().expect("topology");
+    let cid = topology.lookup_channel_id(channel).expect("channel id");
+    let descriptor = topology.channel(cid).expect("descriptor");
+    (
+        descriptor.kind,
+        descriptor.consumers.len(),
+        descriptor.plugin_sink.as_ref().map(|s| s.name.to_string()),
+        descriptor.keyed,
+    )
+}
+
+/// Terminality is the absence of consumers, not a second method: the same
+/// `.sink(...)` call yields the plugin-bound terminal or the hybrid channel
+/// depending only on what is wired after it — and `.sealed()` is a statement
+/// in the type system that changes neither.
+#[test]
+fn terminality_is_derived_from_the_wiring_and_sealed_changes_nothing() {
+    let terminal = sink_shape::<TerminalSinkOperative>("unified_out");
+    let sealed = sink_shape::<SealedSinkOperative>("unified_out");
+    let hybrid = sink_shape::<HybridSinkOperative>("unified_out");
+
+    assert_eq!(
+        terminal, sealed,
+        "`.sealed()` must add no topology difference"
+    );
+    assert_eq!(
+        terminal,
+        (
+            ChannelKind::PluginBound,
+            0,
+            Some("plugin_u".to_string()),
+            false
+        ),
+        "a sink with no consumers is the plugin-bound terminal"
+    );
+    assert_eq!(
+        hybrid,
+        (
+            ChannelKind::InterProcedure,
+            1,
+            Some("plugin_u".to_string()),
+            false
+        ),
+        "the same sink with a consumer after it stays inter-procedure"
+    );
+}
+
+/// Wire fixture, held against the bytes the removed `output(...)` wrote:
+/// default serialization (UTF-8 for `String`), the channel name under
+/// `channel`, and no other metadata. Both shapes of the one `sink` method are
+/// held against the same literals, so neither can drift from the other or
+/// from what the rename replaced.
+#[test]
+fn terminal_and_hybrid_sink_frames_match_the_pre_rename_fixture() {
+    let expected_meta: HashMap<String, String> =
+        HashMap::from([("channel".to_string(), "unified_out".to_string())]);
+
+    unified_consumer_observed().lock().unwrap().clear();
+
+    let (terminal_handle, _t) = setup::<TerminalSinkOperative>("uni-terminal");
+    let (terminal_stream, terminal_frames) = duplex_stream_with_reader();
+    dispatch_input(&terminal_handle, "uni-terminal", &terminal_stream, "hello");
+
+    let (hybrid_handle, _h) = setup::<HybridSinkOperative>("uni-hybrid");
+    let (hybrid_stream, hybrid_frames) = duplex_stream_with_reader();
+    dispatch_input(&hybrid_handle, "uni-hybrid", &hybrid_stream, "hello");
+
+    assert!(
+        wait_until(
+            || terminal_frames.lock().unwrap().len() == 1
+                && hybrid_frames.lock().unwrap().len() == 1
+                && unified_consumer_observed().lock().unwrap().len() == 1,
+            Duration::from_secs(5)
+        ),
+        "plugin frames or the hybrid consumer delivery did not arrive"
+    );
+
+    let terminal = terminal_frames.lock().unwrap();
+    let (_, terminal_body, terminal_meta) = terminal.first().unwrap();
+    assert_eq!(terminal_body, b"hello");
+    assert_eq!(terminal_meta, &expected_meta);
+
+    let hybrid = hybrid_frames.lock().unwrap();
+    let (_, hybrid_body, hybrid_meta) = hybrid.first().unwrap();
+    assert_eq!(hybrid_body, terminal_body);
+    assert_eq!(hybrid_meta, terminal_meta);
+
+    assert_eq!(
+        *unified_consumer_observed().lock().unwrap(),
+        vec!["hello".to_string()],
+        "the hybrid consumer still receives the typed value"
     );
 }
 

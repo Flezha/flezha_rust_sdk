@@ -173,7 +173,7 @@ impl WorkflowOperative for ScaleControlWorkflow {
         c.input::<String>("in")
             .into::<ShortProc>()
             .named("out")
-            .output("sink");
+            .sink("sink");
     }
 }
 

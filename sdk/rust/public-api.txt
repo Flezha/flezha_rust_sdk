@@ -117,10 +117,19 @@ pub use entity::timer::TimerKind;                            # ADDED by `entity-
 #
 #   pub fn now(&self) -> u64;
 #   pub fn stable_id(&self) -> StableId;
+#   pub fn entity_key(&self) -> Option<&str>;
 #   pub fn emit<C>(&mut self, value: C) -> Result<(), ProcedureError>;
 #   pub fn emit_with_meta<C>(&mut self, value: C, meta: HashMap<String, String>) -> Result<(), ProcedureError>;
 #   pub fn emit_keyed<C>(&mut self, key: impl Into<String>, value: C) -> Result<(), ProcedureError>;
 #   pub fn emit_keyed_with_meta<C>(&mut self, key: impl Into<String>, value: C, meta: HashMap<String, String>) -> Result<(), ProcedureError>;
+#
+#   On a `.keyed()` channel `emit` / `emit_with_meta` carry `entity_key()` —
+#   the routing key, by construction — and still fail
+#   `KeyRequiredOnKeyedChannel` where there is none (single-entity mode).
+#   `emit_keyed` is for the output whose key differs from its Entity's.
+#
+#   `ProcedureTestHarness::with_entity_key(key)` stands the harness in for
+#   that Entity, so a test observes the defaulted stamp.
 #   pub fn spawn_workflow(&self, instance_id: impl Into<String>, factory_id: impl Into<String>, payload: impl Into<Vec<u8>>, if_running: IfRunning) -> SpawnHandle;
 #
 # Per-Entity timers (`entity-timers`) — each returns the ABSOLUTE scheduled
@@ -217,10 +226,21 @@ pub use entity::timer::TimerKind;                            # ADDED by `entity-
 #     # --- producer-side only (K = NodeTarget) ---
 #     pub fn branch<const N: usize>(self, arms: [&dyn Fn(Stream<'b, T>); N]) -> Self;  # >= 2 arms
 #     pub fn named / keyed / codec / codec_with -> Self;
-#     pub fn also_output_with<F>(self, plugin_name: &'static str, serializer: F) -> Self
+#     # CHANGED by `unify-plugin-sink-api`: `also_output_with` -> `sink_with`,
+#     # `also_output` -> `sink`, and the terminal `output` is REMOVED (no
+#     # coexistence). One egress method, always returning the handle; a channel
+#     # is terminal by having no further wiring. `sealed()` is the opt-in
+#     # compile-time statement of that, and the only source of `Channel<T>`.
+#     pub fn sink_with<F>(self, plugin_name: &'static str, serializer: F) -> Self
 #       where F: Fn(&T) -> Vec<u8> + Send + Sync + 'static;
-#     pub fn also_output(self, plugin_name: &'static str) -> Self where T: Serialize;
-#     pub fn output(self, plugin_name: &'static str) -> Channel<T> where T: Serialize;  # terminal
+#     pub fn sink(self, plugin_name: &'static str) -> Self where T: Serialize;
+#     pub fn sealed(self) -> Channel<T>;   # no builder methods; no topology effect
+#
+#   pub struct Channel<T>;   # Copy; returned ONLY by `Stream::sealed`
+#     # CHANGED by `unify-plugin-sink-api`: the `pub id: ChannelId` field is
+#     # REMOVED. Nothing read it, and a stateless marker is what makes
+#     # "sealing records nothing" true by construction — a `sealed()` able to
+#     # reach the builder would materialize a leaf node's absent output channel.
 #
 #   Multi-input procedures (`add-multi-input-procedures`):
 #
@@ -295,6 +315,10 @@ pub use entity::timer::TimerKind;                            # ADDED by `entity-
 #
 #   pub struct ChannelDescriptor {
 #       /* existing fields unchanged */
+#       # CHANGED by `unify-plugin-sink-api`: `plugin_name` and
+#       # `plugin_serializer` are REMOVED. `plugin_sink` is the one
+#       # representation of plugin egress for both shapes, and `kind` is
+#       # DERIVED at build time (a sink with no consumers => PluginBound).
 #       pub plugin_sink: Option<PluginSink>,
 #       pub keyed: bool,
 #       pub consumers: Vec<ConsumerEdge>,

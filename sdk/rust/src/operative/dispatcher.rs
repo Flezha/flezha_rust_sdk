@@ -93,6 +93,10 @@ pub struct ProcedureDispatcherImpl<S: Procedure> {
     /// Readable Entity identity (`instance/procedure/entity_key`) stamped
     /// as `flz.entity` on keyed-channel emits.
     entity_label: Arc<str>,
+    /// The key this Entity was routed by, `None` in single-entity mode.
+    /// Served to every invocation's `ProcedureCtx`, where it is both
+    /// `ctx.entity_key()` and the default key of a keyed-channel emit.
+    entity_key: Option<Arc<str>>,
     /// Flush-before-emit wiring, mirrored from the owning `EntitySlot`
     /// so the emit sink can drain this entity's just-applied changes to
     /// the durable WAL path before its output frame is written.
@@ -137,6 +141,7 @@ impl<S: Procedure> ProcedureDispatcherImpl<S> {
         input_channel_name: Option<Arc<str>>,
         retry: RetryPolicy,
         entity_label: Arc<str>,
+        entity_key: Option<Arc<str>>,
         flush: FlushWiring,
     ) -> Self {
         Self {
@@ -148,6 +153,7 @@ impl<S: Procedure> ProcedureDispatcherImpl<S> {
             input_channel_name,
             retry,
             entity_label,
+            entity_key,
             flush,
             timers: crate::entity::timer::timer_policy_for::<S>(),
             _phantom: std::marker::PhantomData,
@@ -299,7 +305,6 @@ impl<S: Procedure> ProcedureDispatcherImpl<S> {
 
         let mut sink = EntityEmitSink {
             output_channel_id: self.output_channel_id,
-            output_channel_kind: self.output_channel_kind,
             output_channel_name: self.output_channel_name.as_deref(),
             keyed: self.output_channel_keyed,
             entity_label: &self.entity_label,
@@ -332,6 +337,7 @@ impl<S: Procedure> ProcedureDispatcherImpl<S> {
 
         let mut ctx =
             ProcedureCtx::new(&mut sink, now, invocation_seq, &self.flush.entity_identity)
+                .with_entity_key(self.entity_key.as_deref())
                 .during_replay(replay)
                 .with_timers(&session);
         let handle = StateHandle::<S>::new(&mut typed_state.state, &buffer_cell);
@@ -780,7 +786,8 @@ impl<S: Procedure> ProcedureDispatcher for ProcedureDispatcherImpl<S> {
             now,
             invocation_seq,
             &self.flush.entity_identity,
-        );
+        )
+        .with_entity_key(self.entity_key.as_deref());
         let handle = StateHandle::<S>::new(&mut typed_state.state, &buffer);
 
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -859,7 +866,8 @@ impl<S: Procedure> ProcedureDispatcher for ProcedureDispatcherImpl<S> {
             now,
             invocation_seq,
             &self.flush.entity_identity,
-        );
+        )
+        .with_entity_key(self.entity_key.as_deref());
         let handle = StateHandle::<S>::new(&mut typed_state.state, &buffer);
 
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1006,7 +1014,6 @@ type FlushBeforeEmit<'a> = Box<dyn FnMut() + 'a>;
 /// `UnknownChannel`.
 struct EntityEmitSink<'a> {
     output_channel_id: Option<ChannelId>,
-    output_channel_kind: ChannelKind,
     output_channel_name: Option<&'a str>,
     /// `.keyed()` opt-in for the output channel. Non-keyed channels take
     /// the pre-identity emit path byte-for-byte (no stamps, no extra work).
@@ -1084,10 +1091,9 @@ impl<'a> EntityEmitSink<'a> {
         }
     }
 
-    /// Hybrid plugin-sink tail: serialize once inside `catch_unwind`
-    /// and forward the bytes through the existing plugin-wire framing
-    /// path. A serializer panic surfaces as
-    /// `ProcedureError::PluginSerializerPanic` to the producing Procedure;
+    /// Plugin-sink tail: serialize once inside `catch_unwind` and forward the
+    /// bytes through the plugin-wire framing path. A serializer panic surfaces
+    /// as `ProcedureError::PluginSerializerPanic` to the producing Procedure;
     /// the dispatcher thread is unaffected.
     fn emit_plugin_sink(
         &mut self,
@@ -1121,24 +1127,16 @@ impl<'a> EntityEmitSink<'a> {
         let mut metadata = channel_metadata(meta, &descriptor.name);
         self.stamp_identity(&mut metadata, key);
 
-        // `sink.name` is informational on the SDK side (the wire frame
-        // routes by `channel: String`); kept for parity with
-        // `output(...)` semantics and useful for diagnostics.
-        let _plugin_name = &sink.name;
         send_plugin_frame(&self.stream, &instance.instance_id, &bytes, &metadata);
         Ok(())
     }
 }
 
 impl<'a> EmitSink for EntityEmitSink<'a> {
-    fn emit_inter_procedure(
-        &mut self,
-        value: Arc<dyn Any + Send + Sync>,
-    ) -> Result<(), ProcedureError> {
-        self.emit_inter_procedure_with_meta(value, None, None)
-    }
-
-    fn emit_inter_procedure_with_meta(
+    /// Fan out to the consumer mailboxes, then to the plugin sink if the
+    /// channel has one. The plugin-bound terminal is the same path with an
+    /// empty consumer list, which is why there is no second arm for it.
+    fn emit(
         &mut self,
         value: Arc<dyn Any + Send + Sync>,
         meta: Option<HashMap<String, String>>,
@@ -1170,59 +1168,14 @@ impl<'a> EmitSink for EntityEmitSink<'a> {
         Ok(())
     }
 
-    fn emit_plugin(
-        &mut self,
-        value: Arc<dyn Any + Send + Sync>,
-        meta: Option<HashMap<String, String>>,
-        key: Option<String>,
-    ) -> Result<(), ProcedureError> {
-        self.flush_pending();
-        let (instance, cid) = self.resolve_channel()?;
-        let descriptor =
-            instance
-                .topology
-                .channel(cid)
-                .ok_or_else(|| ProcedureError::UnknownChannel {
-                    channel: format!("<channel id {}>", cid),
-                })?;
-
-        let serialize = descriptor.plugin_serializer.as_ref().ok_or_else(|| {
-            ProcedureError::Custom(format!(
-                "plugin channel `{}` is missing a serializer (use .output(name) at \
-                 declaration time)",
-                descriptor.name
-            ))
-        })?;
-
-        let bytes = serialize(&*value);
-
-        if let Some(cell) = self.effect_outputs {
-            push_effect_output(cell, &descriptor.name, key, meta, bytes);
-            return Ok(());
-        }
-
-        // Reserved key: any caller-supplied "channel" entry is dropped per
-        // ProcedureCtx emit semantics, then the real channel name is stamped.
-        let mut metadata = channel_metadata(meta, &descriptor.name);
-        self.stamp_identity(&mut metadata, key);
-
-        send_plugin_frame(&self.stream, &instance.instance_id, &bytes, &metadata);
-        Ok(())
-    }
-
     fn channel_name(&self) -> &str {
         self.output_channel_name.unwrap_or("<unset>")
     }
 
-    fn is_plugin_bound(&self) -> bool {
-        matches!(self.output_channel_kind, ChannelKind::PluginBound)
-    }
-
     fn has_plugin_sink(&self) -> bool {
-        // Resolving the descriptor each time keeps the trait surface
-        // small. The cached `output_channel_kind` is used for the
-        // pure-plugin fast path; hybrid detection is rare on the hot
-        // path (a single `Option::is_some()` after a topology lookup).
+        // Resolving the descriptor each time keeps the trait surface small.
+        // `route` only asks when the emit carries metadata, which is rare, so
+        // the ordinary emit pays nothing for this lookup.
         self.instance
             .as_ref()
             .and_then(|inst| {
@@ -1265,10 +1218,9 @@ impl<'a> WorkflowCollectAdapter<'a> {
         }
     }
 
-    /// Serialize a plugin-bound value via the producer-edge channel's
-    /// serializer (pure `output`) or hybrid plugin sink
-    /// (`also_output_with`) and route the bytes: into the invocation's
-    /// effect record under the tier, else to the workflow plugin wire.
+    /// Serialize a value with the producer-edge channel's plugin sink and
+    /// route the bytes: into the invocation's effect record under the tier,
+    /// else to the workflow plugin wire.
     fn route_plugin(
         &mut self,
         value: &Arc<dyn Any + Send + Sync>,
@@ -1285,9 +1237,9 @@ impl<'a> WorkflowCollectAdapter<'a> {
                     channel: format!("<channel id {}>", cid),
                 })?;
         let serializer = descriptor
-            .plugin_serializer
+            .plugin_sink
             .as_ref()
-            .or_else(|| descriptor.plugin_sink.as_ref().map(|s| &s.serializer))
+            .map(|s| &s.serializer)
             .ok_or_else(|| {
                 ProcedureError::Custom(format!(
                     "workflow plugin channel `{}` is missing a serializer",
@@ -1310,6 +1262,10 @@ impl<'a> WorkflowCollectAdapter<'a> {
     /// silently dropping the identity contract — except under the
     /// effectively-once tier, where emits ride the effect record (which
     /// carries the key durably).
+    fn is_plugin_bound(&self) -> bool {
+        matches!(self.output_channel_kind, ChannelKind::PluginBound)
+    }
+
     fn reject_key(&self, key: &Option<String>) -> Result<(), ProcedureError> {
         if self.effect_outputs.is_none() && key.is_some() {
             return Err(ProcedureError::Custom(format!(
@@ -1323,45 +1279,27 @@ impl<'a> WorkflowCollectAdapter<'a> {
 }
 
 impl<'a> EmitSink for WorkflowCollectAdapter<'a> {
-    fn emit_inter_procedure(
-        &mut self,
-        value: Arc<dyn Any + Send + Sync>,
-    ) -> Result<(), ProcedureError> {
-        self.emit_inter_procedure_with_meta(value, None, None)
-    }
-
-    fn emit_inter_procedure_with_meta(
+    fn emit(
         &mut self,
         value: Arc<dyn Any + Send + Sync>,
         meta: Option<HashMap<String, String>>,
         key: Option<String>,
     ) -> Result<(), ProcedureError> {
         self.reject_key(&key)?;
-        // Hybrid `also_output_with`: collect for the next stage AND route
-        // a serialized copy to the plugin wire / effect record.
         if self.has_plugin_sink() {
             self.route_plugin(&value, key, meta)?;
         }
-        self.sink.collect(value);
+        // The one place a workflow channel's shape still matters: a
+        // plugin-bound channel has no consumer to hand a stage batch to, so
+        // collecting there would seed the next stage with a terminal output.
+        if !self.is_plugin_bound() {
+            self.sink.collect(value);
+        }
         Ok(())
-    }
-
-    fn emit_plugin(
-        &mut self,
-        value: Arc<dyn Any + Send + Sync>,
-        meta: Option<HashMap<String, String>>,
-        key: Option<String>,
-    ) -> Result<(), ProcedureError> {
-        self.reject_key(&key)?;
-        self.route_plugin(&value, key, meta)
     }
 
     fn channel_name(&self) -> &str {
         self.output_channel_name.unwrap_or("<workflow>")
-    }
-
-    fn is_plugin_bound(&self) -> bool {
-        matches!(self.output_channel_kind, ChannelKind::PluginBound)
     }
 
     fn has_plugin_sink(&self) -> bool {
@@ -1600,6 +1538,7 @@ pub fn build_entity_slot<S: Procedure>(args: BuildEntityArgs<'_>) -> Arc<EntityS
         input_channel.map(|c| Arc::clone(&c.name)),
         input_channel.map(|c| c.retry).unwrap_or_default(),
         Arc::clone(&parts.entity_label),
+        parts.entity_key.clone(),
         FlushWiring {
             entity_identity: Arc::clone(&parts.entity_identity),
             change_seq: Arc::clone(&parts.change_seq),
@@ -1687,7 +1626,7 @@ mod tests {
                 .into::<KeyedProc>()
                 .named("out")
                 .keyed()
-                .output("kafka");
+                .sink("kafka");
         }
     }
 
@@ -1835,6 +1774,7 @@ mod tests {
             None,
             RetryPolicy::default(),
             Arc::from("inst/proc/"),
+            None,
             FlushWiring {
                 entity_identity: Arc::new(flz_core::flusher::encode_entity_identity(
                     "inst", "proc", "",

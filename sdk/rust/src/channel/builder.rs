@@ -1,6 +1,6 @@
 //! Producer-first fluent graph builder (`sdk-graph-authoring`).
 //!
-//! `c.input::<T>("name").into::<A>().into::<B>().output("sink")` — `.into`
+//! `c.input::<T>("name").into::<A>().into::<B>().sink("plugin")` — `.into`
 //! wires a consumer and returns that procedure's **output stream handle**
 //! ([`Stream`]), so a linear pipeline is one chained expression. Branching is
 //! handle reuse (hold the handle in a variable and wire it twice) or the
@@ -12,8 +12,8 @@
 //!   consumer fires at the call site.
 //! - Channel payload types come from the producer's declared `Output`; there
 //!   is no user-supplied type token for inter-procedure channels.
-//! - `output(...)` returns a finalized [`Channel`] with no further builder
-//!   methods, so nothing can be wired after the plugin-bound terminal.
+//! - `.sealed()` returns a finalized [`Channel`] with no further builder
+//!   methods, for the author who wants "nothing follows this" in the type.
 //! - Handles borrow the builder (`Stream<'b, T>` is `Copy`), so a handle
 //!   cannot outlive the declaration: using one after the topology freezes at
 //!   registration is a compile error, not a runtime failure.
@@ -126,10 +126,11 @@ pub use flz_core::channel::{
     BuildEntityArgs, DeserializeStateFn, EntitiesForFn, EntityBuilder, ErasedFn, SerializeStateFn,
 };
 
-/// Plugin sink attached to an `InterProcedure` channel via
-/// `also_output_with(...)` / `also_output(...)`. The presence of this field
-/// flips the channel from pure inter-procedure fan-out to hybrid (consumers +
-/// plugin wire) without changing `ChannelKind`.
+/// Plugin sink attached to a channel via `sink(...)` / `sink_with(...)` — the
+/// one representation of plugin egress. A channel that also has consumers is
+/// hybrid; one that has none is the plugin-bound terminal, and
+/// `build_topology` derives that `ChannelKind` from the wiring rather than
+/// from which method was called.
 pub(crate) struct PluginSink {
     pub name: &'static str,
     pub serializer: crate::channel::PluginSerializeFn,
@@ -141,29 +142,24 @@ pub(crate) struct ChannelEntry {
     pub kind: ChannelKind,
     pub producer: Option<ProcedureId>,
     pub consumers: Vec<ConsumerEdge>,
-    pub plugin_name: Option<&'static str>,
     pub wrap_input: Option<crate::channel::EntryWrapFn>,
     /// Entry channels whose `wrap_input` is a real parser (typed JSON or a
     /// custom `input_with` parser). A failing parse rides the channel's
     /// retry→DLQ ladder; `Vec<u8>`/`String` passthrough entries keep the
     /// pre-change drop-and-log behaviour on invalid input.
     pub entry_parsed: bool,
-    pub plugin_serializer: Option<crate::channel::PluginSerializeFn>,
-    /// Hybrid plugin sink: populated by `also_output_with(...)` on
-    /// an `InterProcedure` channel. Mutually exclusive with
-    /// `plugin_name`/`plugin_serializer`, which are populated by
-    /// `output(...)` on a pure `PluginBound` channel.
+    /// The channel's plugin egress, populated by `sink(...)` / `sink_with(...)`.
     pub plugin_sink: Option<PluginSink>,
     /// Output-identity opt-in set by `.keyed()`. Valid only on channels
     /// with a plugin wire; `build_topology` rejects a keyed channel that
-    /// has neither `output` nor `also_output_with`.
+    /// has no `sink`.
     pub keyed: bool,
     /// Backpressure policy applied at the push site when the consumer
     /// mailbox is full. Initialized at channel-creation time per channel
-    /// kind (Entry → DropNewest, InterProcedure → Block); plugin-bound
-    /// declarations carry a placeholder that is never consulted because
-    /// `emit_plugin` writes straight to the wire. `.on_full(...)`
-    /// overwrites this value.
+    /// kind (Entry → DropNewest, InterProcedure → Block); a channel with no
+    /// consumers carries a placeholder that is never consulted, because a
+    /// plugin emit writes straight to the wire. `.on_full(...)` overwrites
+    /// this value.
     pub overflow_policy: OverflowPolicy,
     /// Retry-then-park policy for this channel's consumer dispatchers.
     /// `.retry_max(...)` / `.retry_backoff_ms(...)` overwrite the defaults.
@@ -262,15 +258,14 @@ pub enum TopologyIssue {
     },
 
     #[error(
-        "channel `{channel}` was declared with `also_output_with(...)` more than once; \
+        "channel `{channel}` was declared with `sink(...)` more than once; \
          only one plugin sink per channel is allowed"
     )]
     DuplicatePluginSink { channel: &'static str },
 
     #[error(
         "channel `{channel}` is declared .keyed() but has no plugin wire; output identity \
-         stamps only exist on plugin-bound frames (add .output(...) or \
-         .also_output_with(...))"
+         stamps only exist on plugin-bound frames (add .sink(...))"
     )]
     KeyedChannelWithoutPluginWire { channel: &'static str },
 
@@ -631,10 +626,8 @@ impl BuilderState {
             kind,
             producer: None,
             consumers: Vec::new(),
-            plugin_name: None,
             wrap_input: None,
             entry_parsed: false,
-            plugin_serializer: None,
             plugin_sink: None,
             keyed: false,
             overflow_policy: default_policy_for_kind(kind),
@@ -780,9 +773,7 @@ impl BuilderState {
         link: Option<EdgeTransformFn>,
         key: Option<EdgeKeyFn>,
     ) -> u32 {
-        if self.channels[channel as usize].plugin_sink.is_some()
-            || self.channels[channel as usize].kind == ChannelKind::PluginBound
-        {
+        if self.channels[channel as usize].plugin_sink.is_some() {
             let channel_name = self.channels[channel as usize].name;
             self.errors.push(TopologyIssue::TransformAfterTerminal {
                 channel: channel_name,
@@ -970,9 +961,8 @@ fn default_entry_wrap<T: DeserializeOwned + Send + Sync + 'static>(
 }
 
 /// The default plugin serialization for `T`: passthrough for `Vec<u8>`, UTF-8
-/// bytes for `String`, the SDK's default JSON codec otherwise. Shared by
-/// `output(...)` and `also_output(...)` so the two produce identical bytes for
-/// the same value.
+/// bytes for `String`, the SDK's default JSON codec otherwise — what
+/// `sink(...)` applies when the author supplies no serializer.
 fn default_plugin_serializer<T: serde::Serialize + Send + Sync + 'static>(
 ) -> crate::channel::PluginSerializeFn {
     Arc::new(|val: &dyn Any| -> Vec<u8> {
@@ -1483,40 +1473,52 @@ impl<'b, T: 'static + Send + Sync> Stream<'b, T, NodeTarget> {
     /// Opt this channel into output identity: every plugin emit must carry
     /// a natural key via `ctx.emit_keyed(key, value)` and the runtime
     /// stamps `flz.entity` / `flz.seq` / `flz.key` on the wire frame.
-    /// Requires a plugin wire (`output` or `also_output_with`);
-    /// `build_topology` rejects a keyed channel without one.
+    /// Requires a plugin wire (`sink`); `build_topology` rejects a keyed
+    /// channel without one.
     pub fn keyed(self) -> Self {
         self.with_channel(|st, cid| st.channels[cid as usize].keyed = true);
         self
     }
 
-    /// Attach a plugin sink alongside inter-procedure fan-out. The channel's
-    /// `kind` stays `InterProcedure`, further `.into::<S>()` consumer wiring
-    /// chains naturally, and a typed value emitted on this channel
-    /// reaches both the consumer mailboxes (typed) and the named plugin
-    /// (serialized to bytes via `serializer`). The serializer is invoked
-    /// once per emit regardless of consumer count.
+    /// Attach this channel to the named plugin sink: every value emitted on it
+    /// is serialized once and delivered to the controller's output layer
+    /// stamped with the channel name, where the plugins attached to that name
+    /// consume it. Several channels may name one sink.
     ///
-    /// Calling `also_output_with`/`also_output` twice on the same channel is a
-    /// registration error (`TopologyIssue::DuplicatePluginSink`);
-    /// the first call wins.
-    pub fn also_output_with<F>(self, plugin_name: &'static str, serializer: F) -> Self
+    /// The handle is returned, so `.into::<S>()` consumer wiring chains after
+    /// it and the value then reaches both the consumer mailboxes (typed) and
+    /// the sink (as bytes). A channel with no consumers is the plugin-bound
+    /// terminal — terminality is the absence of further wiring, not a
+    /// different method. [`sealed`](Stream::sealed) states that in the type.
+    ///
+    /// The serializer runs once per emit regardless of consumer count.
+    /// Declaring a second sink on one channel is a registration error
+    /// (`TopologyIssue::DuplicatePluginSink`); the first call wins.
+    pub fn sink_with<F>(self, plugin_name: &'static str, serializer: F) -> Self
     where
         F: Fn(&T) -> Vec<u8> + Send + Sync + 'static,
     {
         let serializer_erased: crate::channel::PluginSerializeFn =
-            erase::<T, _, _>("hybrid plugin serializer", serializer);
+            erase::<T, _, _>("plugin serializer", serializer);
         self.attach_plugin_sink(plugin_name, serializer_erased)
     }
 
-    /// Like [`also_output_with`](Stream::also_output_with) with the default
-    /// serialization rules of [`output`](Stream::output): passthrough for
-    /// `Vec<u8>`, UTF-8 for `String`, the SDK's default JSON codec otherwise.
-    pub fn also_output(self, plugin_name: &'static str) -> Self
+    /// [`sink_with`](Stream::sink_with) with the default serialization rules:
+    /// passthrough for `Vec<u8>`, UTF-8 for `String`, the SDK's default JSON
+    /// codec otherwise.
+    pub fn sink(self, plugin_name: &'static str) -> Self
     where
         T: serde::Serialize,
     {
         self.attach_plugin_sink(plugin_name, default_plugin_serializer::<T>())
+    }
+
+    /// State that nothing follows this channel: the returned [`Channel`]
+    /// exposes no builder methods, so a later consumer or transform is a
+    /// compile error. Purely type-level — it touches no builder state, so the
+    /// topology is identical with or without it.
+    pub fn sealed(self) -> Channel<T> {
+        Channel::new()
     }
 
     fn attach_plugin_sink(
@@ -1538,23 +1540,5 @@ impl<'b, T: 'static + Send + Sync> Stream<'b, T, NodeTarget> {
             });
         });
         self
-    }
-
-    /// Close this stream plugin-bound: the operative declares a named exit and
-    /// the controller's plugin layer receives the values, serialized with the
-    /// default rules — passthrough for `Vec<u8>`, UTF-8 for `String`, the
-    /// SDK's default JSON codec otherwise. Terminal: the returned [`Channel`]
-    /// exposes no further builder methods.
-    pub fn output(self, plugin_name: &'static str) -> Channel<T>
-    where
-        T: serde::Serialize,
-    {
-        self.with_channel(|st, cid| {
-            let entry = &mut st.channels[cid as usize];
-            entry.kind = ChannelKind::PluginBound;
-            entry.plugin_name = Some(plugin_name);
-            entry.plugin_serializer = Some(default_plugin_serializer::<T>());
-            Channel::new(cid)
-        })
     }
 }

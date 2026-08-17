@@ -152,7 +152,7 @@ impl StreamOperative for SessionOperative {
             .key_by(|s: &String| s.clone())
             .into::<SessionProc>()
             .named("out")
-            .output("sink");
+            .sink("sink");
     }
 }
 
@@ -749,7 +749,7 @@ impl StreamOperative for TierSessionOperative {
             .into::<TierSessionProc>()
             .named("out")
             .keyed()
-            .output("sink");
+            .sink("sink");
     }
 }
 

@@ -29,6 +29,10 @@ pub struct ProcedureCtx<'a> {
     now: u64,
     invocation_seq: u64,
     entity_identity: &'a [u8],
+    /// The key this Entity was routed by, `None` in single-entity mode.
+    /// Served by [`Self::entity_key`] and used as the default key of a
+    /// keyed-channel emit that supplies none.
+    entity_key: Option<&'a str>,
     stable_id_ordinal: Cell<u32>,
     checkpoint: bool,
     replay: bool,
@@ -65,39 +69,27 @@ impl StableId {
 /// Internal trait the runtime implements per-entity. Lets ProcedureCtx stay
 /// non-generic while the underlying dispatcher carries the typed wiring.
 pub(crate) trait EmitSink {
-    fn emit_inter_procedure(
-        &mut self,
-        value: Arc<dyn Any + Send + Sync>,
-    ) -> Result<(), ProcedureError>;
-
-    fn emit_plugin(
+    /// Emit one value on this Procedure's output channel. Where it goes —
+    /// consumer mailboxes, the plugin wire, a workflow stage handoff, or
+    /// several of those — is the channel's shape, resolved inside the
+    /// implementation. `meta` and `key` arrive already validated by
+    /// [`ProcedureCtx::route`].
+    ///
+    /// One method, because the shape is one question: the authoring surface
+    /// declares egress with a single `sink(...)`, and a channel is the
+    /// plugin-bound terminal by having no consumers rather than by a second
+    /// declaration.
+    fn emit(
         &mut self,
         value: Arc<dyn Any + Send + Sync>,
         meta: Option<HashMap<String, String>>,
         key: Option<String>,
     ) -> Result<(), ProcedureError>;
 
-    /// Hybrid emit: fan out to inter-procedure consumers and (if a plugin
-    /// sink is configured) serialize the value once and forward bytes
-    /// to the plugin wire with the supplied metadata + natural key.
-    /// Default implementation routes through `emit_inter_procedure` only —
-    /// sinks without a plugin attachment can ignore `meta` / `key`.
-    fn emit_inter_procedure_with_meta(
-        &mut self,
-        value: Arc<dyn Any + Send + Sync>,
-        _meta: Option<HashMap<String, String>>,
-        _key: Option<String>,
-    ) -> Result<(), ProcedureError> {
-        self.emit_inter_procedure(value)
-    }
-
     fn channel_name(&self) -> &str;
 
-    fn is_plugin_bound(&self) -> bool;
-
-    /// True iff the channel is `InterProcedure` with a `plugin_sink`
-    /// attached via `also_output_with(...)`. Hybrid emits route
-    /// through `emit_inter_procedure{,_with_meta}` rather than `emit_plugin`.
+    /// True iff the channel carries a `sink(...)`. User metadata rides the
+    /// plugin frame, so a channel without one has nowhere to put it.
     fn has_plugin_sink(&self) -> bool {
         false
     }
@@ -121,11 +113,21 @@ impl<'a> ProcedureCtx<'a> {
             now,
             invocation_seq,
             entity_identity,
+            entity_key: None,
             stable_id_ordinal: Cell::new(0),
             checkpoint: false,
             replay: false,
             timers: None,
         }
+    }
+
+    /// Attach the key this Entity was routed by. Set by every dispatch path
+    /// from the Entity's own slot; left off where there is no Entity key
+    /// (single-entity mode), which is what keeps the keyed-channel refusal
+    /// alive exactly there.
+    pub(crate) fn with_entity_key(mut self, entity_key: Option<&'a str>) -> Self {
+        self.entity_key = entity_key;
+        self
     }
 
     /// Attach this invocation's timer session. Set by the stream dispatcher
@@ -172,6 +174,14 @@ impl<'a> ProcedureCtx<'a> {
     /// determinism-contract replacement for `SystemTime::now()`.
     pub fn now(&self) -> u64 {
         self.now
+    }
+
+    /// The key this Entity was routed by — the one `init_state` was handed —
+    /// or `None` for a single-entity Procedure. It is part of the
+    /// invocation's identity, so reading it is replay-stable; a keyed-channel
+    /// emit that supplies no key of its own is emitted under it.
+    pub fn entity_key(&self) -> Option<&str> {
+        self.entity_key
     }
 
     /// A deterministic, replay-stable 128-bit identifier: derived from the
@@ -285,9 +295,13 @@ impl<'a> ProcedureCtx<'a> {
     /// Emit a typed value on the producer-edge channel for this Procedure.
     /// `C` must match `Procedure::Output`; the channel id was cached at
     /// operative-build time from the producer's output-stream wiring
-    /// (`.into::<S>()`), so this call performs no name lookups. On a `.keyed()`
-    /// channel this fails with `KeyRequiredOnKeyedChannel` — use
-    /// [`Self::emit_keyed`].
+    /// (`.into::<S>()`), so this call performs no name lookups.
+    ///
+    /// On a `.keyed()` channel the emit carries this Entity's own key
+    /// ([`Self::entity_key`]) — equal to the routing key by construction, so
+    /// it cannot drift from it. A single-entity Procedure has no such key and
+    /// fails with `KeyRequiredOnKeyedChannel`; an output whose natural key
+    /// differs from the Entity's uses [`Self::emit_keyed`].
     pub fn emit<C>(&mut self, value: C) -> Result<(), ProcedureError>
     where
         C: 'static + Send + Sync,
@@ -295,9 +309,8 @@ impl<'a> ProcedureCtx<'a> {
         self.route(Arc::new(value), None, None)
     }
 
-    /// Emit with user-attached string-keyed metadata. Valid on
-    /// plugin-bound channels and on hybrid (`InterProcedure` +
-    /// `also_output_with`) channels. Pure inter-procedure channels with
+    /// Emit with user-attached string-keyed metadata. Valid on any channel
+    /// carrying a `sink(...)`. Pure inter-procedure channels with
     /// no plugin sink return `MetadataNotAllowedOnInterProcedureChannel`.
     /// Keys in the reserved `flz.` namespace are rejected.
     pub fn emit_with_meta<C>(
@@ -311,12 +324,13 @@ impl<'a> ProcedureCtx<'a> {
         self.route(Arc::new(value), Some(meta), None)
     }
 
-    /// Emit on a `.keyed()` channel with the output's natural key. The
-    /// runtime stamps `flz.entity` / `flz.seq` / `flz.key` on the plugin
-    /// frame; the key must be replay-stable by the determinism contract
-    /// (derived from input/state/ctx, never from ambient sources). Fails
-    /// with `KeyNotAllowedOnNonKeyedChannel` on channels not declared
-    /// `.keyed()`.
+    /// Emit on a `.keyed()` channel with the output's natural key, for the
+    /// output whose key differs from the Entity's own — [`Self::emit`]
+    /// already carries that one. The runtime stamps `flz.entity` /
+    /// `flz.seq` / `flz.key` on the plugin frame; the key must be
+    /// replay-stable by the determinism contract (derived from
+    /// input/state/ctx, never from ambient sources). Fails with
+    /// `KeyNotAllowedOnNonKeyedChannel` on channels not declared `.keyed()`.
     pub fn emit_keyed<C>(&mut self, key: impl Into<String>, value: C) -> Result<(), ProcedureError>
     where
         C: 'static + Send + Sync,
@@ -341,27 +355,32 @@ impl<'a> ProcedureCtx<'a> {
 
     /// Single emit funnel: enforces the keyed-channel contract (the
     /// channel declaration is the single source of truth for whether a
-    /// key is required), rejects reserved `flz.` metadata keys, then
-    /// routes by channel shape.
+    /// key is required), rejects reserved `flz.` metadata keys and metadata
+    /// with nowhere to ride, then hands the value to the sink. Supplying no
+    /// key on a keyed channel resolves to this Entity's own key here, so the
+    /// defaulted emit and an explicit `emit_keyed` are one path from this
+    /// point on and their stamping cannot diverge.
     fn route(
         &mut self,
         arc: Arc<dyn Any + Send + Sync>,
         meta: Option<HashMap<String, String>>,
         key: Option<String>,
     ) -> Result<(), ProcedureError> {
-        match (self.emitter.is_keyed(), key.is_some()) {
-            (true, false) => {
-                return Err(ProcedureError::KeyRequiredOnKeyedChannel {
-                    channel: self.emitter.channel_name().to_string(),
-                })
-            }
-            (false, true) => {
+        let key = match (self.emitter.is_keyed(), key) {
+            (true, None) => Some(
+                self.entity_key
+                    .ok_or_else(|| ProcedureError::KeyRequiredOnKeyedChannel {
+                        channel: self.emitter.channel_name().to_string(),
+                    })?
+                    .to_string(),
+            ),
+            (false, Some(_)) => {
                 return Err(ProcedureError::KeyNotAllowedOnNonKeyedChannel {
                     channel: self.emitter.channel_name().to_string(),
                 })
             }
-            _ => {}
-        }
+            (_, key) => key,
+        };
         if let Some(meta) = &meta {
             if let Some(reserved) = meta
                 .keys()
@@ -372,18 +391,11 @@ impl<'a> ProcedureCtx<'a> {
                 });
             }
         }
-        let plugin_bound = self.emitter.is_plugin_bound();
-        if meta.is_some() && !plugin_bound && !self.emitter.has_plugin_sink() {
+        if meta.is_some() && !self.emitter.has_plugin_sink() {
             return Err(ProcedureError::MetadataNotAllowedOnInterProcedureChannel {
                 channel: self.emitter.channel_name().to_string(),
             });
         }
-        if plugin_bound {
-            self.emitter.emit_plugin(arc, meta, key)
-        } else if meta.is_some() || key.is_some() {
-            self.emitter.emit_inter_procedure_with_meta(arc, meta, key)
-        } else {
-            self.emitter.emit_inter_procedure(arc)
-        }
+        self.emitter.emit(arc, meta, key)
     }
 }
