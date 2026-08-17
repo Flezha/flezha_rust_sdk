@@ -4,6 +4,29 @@ All notable changes to the Rust SDK crate.
 
 ## Unreleased
 
+### Added — `route_latest`, the latest-document router building block (`add-route-latest-building-block`)
+
+`ChannelBuilder::route_latest(documents, traffic, key_fn)` (and
+`route_latest_named(.., node_name)`) returns a `Stream<(String, D)>`: every key
+seen on `traffic` receives each distinct document exactly once, on that key's own
+next traffic item.
+
+A keyed procedure cannot receive a broadcast — every keying declaration is
+total, and inside a partitioned member the computed key is admitted against that
+member's key-group range. The block is the bridge, with the safety property that
+is easy to get wrong encoded once: it delivers on the key's **own traffic**,
+never by fanning out over a remembered key set (which outlives key-group
+ownership and would park later deliveries against the partition guard). Cost:
+one tick of latency per key, and a key whose traffic has stopped is never
+delivered to.
+
+It is sugar — a merge into one packaged single-entity procedure whose
+`{document, version, delivered}` state rides the standard change journal. The
+packaged procedure is deliberately not public: the two methods are the whole
+surface, which is what keeps the guarantee un-bypassable. A document equal to the
+retained one is inert; a differing one bumps the version. The document is
+retained and compared with `Eq`, never parsed.
+
 ### BREAKING — one plugin-sink method: `sink` + `sealed` (`unify-plugin-sink-api`)
 
 `also_output(name)` / `also_output_with(name, f)` and the terminal

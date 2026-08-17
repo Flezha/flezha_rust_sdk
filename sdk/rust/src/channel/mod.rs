@@ -8,6 +8,7 @@
 use std::marker::PhantomData;
 
 pub mod builder;
+mod route_latest;
 
 pub use builder::{
     ChannelBuilder, EntryStream, EntryTarget, Merge, MergeSource, NodeTarget, Stream, StreamTarget,

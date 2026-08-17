@@ -262,6 +262,24 @@ pub use entity::timer::TimerKind;                            # ADDED by `entity-
 #     pub fn into<S: Procedure<Input = I>>(self) -> Stream<'b, S::Output>;
 #     pub fn into_named<S: Procedure<Input = I>>(self, node_name: &'static str) -> Stream<'b, S::Output>;
 #
+#   Latest-document router (`add-route-latest-building-block`), on
+#   `ChannelBuilder` (implemented in `channel/route_latest.rs`):
+#
+#     pub fn route_latest<'b, D, T, K1, K2, F>(&'b self,
+#             documents: Stream<'b, D, K1>, traffic: Stream<'b, T, K2>, key_fn: F,
+#         ) -> Stream<'b, (String, D)>
+#       where D: Clone + Eq + Serialize + DeserializeOwned + Send + Sync + 'static,
+#             T: Send + Sync + 'static, K1: StreamTarget, K2: StreamTarget,
+#             F: Fn(&T) -> String + Send + Sync + 'static;
+#     pub fn route_latest_named<..same..>(.., node_name: &'static str) -> Stream<'b, (String, D)>;
+#     # Sugar, not a runtime feature: expands to `merge` into ONE packaged
+#     # single-entity procedure (node identity `route_latest`) whose journaled
+#     # `{document, version, delivered}` state delivers each distinct document
+#     # to a key on that key's OWN next traffic item. The packaged procedure and
+#     # its state/change/input types are deliberately NOT public — the two
+#     # methods are the whole surface, which is what keeps the
+#     # deliver-on-own-traffic guarantee un-bypassable.
+#
 #   Removed: ChannelDecl, ChannelDeclWithProducer, EntryChannel, EntryChannelType,
 #   channel::<T>("name"), .from::<S>(), to_plugin, also_to_plugin_with.
 #   Trait signatures: StreamOperative::channels(c: &ChannelBuilder),

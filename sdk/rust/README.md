@@ -121,6 +121,27 @@ c.merge::<DetectorInput>()
 Per-source FIFO is preserved and nothing is ordered across sources; see
 `docs/multi_input_procedures.md`.
 
+When that config stream is **operative-wide** and the consumer is keyed, a merge
+alone is not enough: a keyed procedure cannot receive a broadcast, since the key
+function is total and inside a partitioned member the computed key is admitted
+against that member's key-group range. `route_latest` is the packaged bridge —
+every key seen on the traffic stream receives each distinct document exactly
+once, on that key's own next traffic item:
+
+```rust
+let routed = c.route_latest(config, readings, |r: &Reading| r.sensor.clone());
+c.merge::<DetectorInput>()
+    .from(readings, DetectorInput::Reading)
+    .from(routed, |(key, doc)| DetectorInput::Threshold { key, doc })
+    .key_by(DetectorInput::key)
+    .into::<Detector>();
+```
+
+Delivering on the key's own traffic — rather than fanning a new document out
+over a remembered key set — is what keeps every emitted key one this member
+owns. The price is one tick of latency per key; §4.1 of
+`docs/sdk_authoring_contract.md` has the full contract.
+
 ### A fuller graph: named nodes, a hybrid tap, a keyed sink
 
 Everything composes on the same handles. Here one `Filter` class serves two

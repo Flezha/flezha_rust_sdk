@@ -1089,7 +1089,11 @@ impl<'b, I: Send + Sync + 'static> Merge<'b, I> {
         self.wire::<S>(Some(node_name))
     }
 
-    fn wire<S: Procedure<Input = I>>(
+    /// Close the merge on `S`, named or not — the one body behind both public
+    /// spellings, and the seam a packaged building block
+    /// ([`ChannelBuilder::route_latest`]) closes its own merge with instead of
+    /// re-deriving the named/unnamed dispatch.
+    pub(crate) fn wire<S: Procedure<Input = I>>(
         self,
         node_name: Option<&'static str>,
     ) -> Stream<'b, S::Output> {
@@ -1325,8 +1329,23 @@ impl<'b, T: 'static + Send + Sync, K: StreamTarget> Stream<'b, T, K> {
         U: Send + Sync + 'static,
         F: Fn(T) -> U + Send + Sync + 'static,
     {
-        let link = erase_transform::<T, _>("map", move |typed: &T, _| {
-            EdgeYield::One(Arc::new(f(typed.clone())) as Arc<dyn Any + Send + Sync>)
+        // The owned-value spelling of `map_ref`: the clone is what the author's
+        // `Fn(T) -> U` asks for, and nothing else differs.
+        self.map_ref("map", move |typed: &T| f(typed.clone()))
+    }
+
+    /// The one value-reshaping link: [`map`](Stream::map) is this over an owned
+    /// clone, and the packaged building blocks reach it directly to derive a
+    /// small value from a payload they then discard (`route_latest`'s key
+    /// function) without paying that clone. `what` names the declaration in the
+    /// impossible-downcast panic, like every other erasure.
+    pub(crate) fn map_ref<U, F>(self, what: &'static str, f: F) -> Stream<'b, U, K>
+    where
+        U: Send + Sync + 'static,
+        F: Fn(&T) -> U + Send + Sync + 'static,
+    {
+        let link = erase_transform::<T, _>(what, move |typed: &T, _| {
+            EdgeYield::One(Arc::new(f(typed)) as Arc<dyn Any + Send + Sync>)
         });
         self.relink(Some(link), None)
     }
