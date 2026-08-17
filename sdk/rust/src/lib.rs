@@ -108,6 +108,7 @@ pub mod workflow;
 pub use flz_core::command;
 pub mod diag;
 pub mod entity;
+pub mod entry_idle;
 pub mod operative;
 pub mod procedure;
 mod runner;
@@ -144,6 +145,7 @@ pub use channel::{
 use crossbeam::channel::{Receiver, Sender};
 pub use entity::timer::TimerKind;
 pub use entity::{RestoreError, RestoreInitPayload};
+pub use entry_idle::IdleObserver;
 /// Authoring sugar. `#[flezha::procedure]`, `#[derive(flezha::State)]`, and
 /// `flezha::operative!` expand to the trait surface above; see
 /// `docs/sdk_authoring_contract.md`.
@@ -335,6 +337,7 @@ impl Flezha {
                 started: Mutex::new(None),
                 terminated: Mutex::new(false),
                 terminated_cv: Condvar::new(),
+                idle: entry_idle::IdleWatcher::new(),
             }),
             owner: true,
         })
@@ -381,6 +384,10 @@ struct RunnerCore {
     started: Mutex<Option<Started>>,
     terminated: Mutex<bool>,
     terminated_cv: Condvar,
+    /// This runner's entry-idle observers and their tick thread. Owned here
+    /// so registrations are per-runner (generation 2 registers its own) and
+    /// the ticker ends when the runner does.
+    idle: Arc<entry_idle::IdleWatcher>,
 }
 
 /// The runner's live-thread plumbing, present only after a successful
@@ -538,6 +545,50 @@ impl FlezhaRunner {
                 "unexpected reply from the runner thread".to_string(),
             )),
         }
+    }
+
+    /// When the runner last delivered a frame to entry channel `channel`, or
+    /// `None` before its first frame (and for a name no declared operative
+    /// has — both mean "nothing has arrived here"). Reading never blocks
+    /// delivery.
+    ///
+    /// The instant is the *signal*; whether the silence since then is
+    /// anomalous is the application's call. Register an observer with
+    /// [`Self::on_entry_idle`] instead of polling this in a loop.
+    pub fn last_entry_delivery(&self, channel: &str) -> Option<std::time::Instant> {
+        flz_core::entry_input::last_delivery(channel)
+    }
+    /// Observe silence on entry channel `channel`: `observer` is notified once
+    /// per idle episode, when the gap since the last delivered frame first
+    /// exceeds `threshold`, and once again when a frame resumes it. Silence
+    /// before the channel's very first frame is never an episode.
+    ///
+    /// Legal before and after [`Self::start`]. Evaluation runs on one
+    /// background tick per runner — never on the delivery path — so an
+    /// observer that blocks or panics costs the data plane nothing. Several
+    /// observers may watch one channel.
+    ///
+    /// ```no_run
+    /// # use std::time::Duration;
+    /// # use flezha_runner::{Flezha, FlezhaError};
+    /// # fn main() -> Result<(), FlezhaError> {
+    /// let runner = Flezha::create_runner("my_app")?;
+    /// runner.on_entry_idle("trades_in", Duration::from_secs(90), |gap: Duration| {
+    ///     eprintln!("trades_in silent for {gap:?}");
+    /// });
+    /// runner.run()
+    /// # }
+    /// ```
+    pub fn on_entry_idle(
+        &self,
+        channel: impl Into<String>,
+        threshold: std::time::Duration,
+        observer: impl IdleObserver,
+    ) -> &Self {
+        self.core
+            .idle
+            .register(channel.into(), threshold, Arc::new(observer));
+        self
     }
 
     /// Block the calling thread until the runner shuts down (the owning

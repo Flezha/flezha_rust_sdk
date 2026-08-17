@@ -126,6 +126,10 @@ name = "entity_timers"
 required-features = ["bench-internals", "testing"]
 
 [[test]]
+name = "entry_idle"
+required-features = ["bench-internals"]
+
+[[test]]
 name = "sugar_keyed_emit"
 required-features = ["testing"]
 

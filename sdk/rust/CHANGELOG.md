@@ -27,6 +27,31 @@ handle `Stream<'b, T, K>` is unrelated and unchanged; a stream operative is
 precisely the kind that consumes streams.
 <!-- kind-naming-record:end -->
 
+### Entry-input idle signal (`expose-entry-input-idle-signal`)
+
+The SDK owns the IO threads, so when an input goes quiet the application sees
+nothing: procedures simply stop being called. Two additions on `FlezhaRunner`
+close that blind spot without deciding anything for the application.
+
+- `last_entry_delivery(channel) -> Option<Instant>` — when a frame last reached
+  that entry channel. Absent (never a start-time value) before the first frame,
+  and for a name no declared operative has.
+- `on_entry_idle(channel, threshold, observer) -> &Self` — legal before AND
+  after `start()`. `observer` is any `IdleObserver`; a bare
+  `Fn(Duration)` closure is one, and `resumed` defaults to a no-op.
+
+The observer fires **once per idle episode**, when the gap since the last frame
+first exceeds `threshold`, and again (as `resumed`) when a frame ends it,
+re-arming the latch. Silence before the channel's first frame ever is not an
+episode — an operative waiting for its subscriptions to take is not an
+incident. Evaluation runs on one background tick per runner
+(`threshold / 4`, clamped to `[250 ms, 1 s]`), never on the delivery path,
+where the whole cost is one relaxed atomic store; a panicking observer is
+contained and logged on `flezha::entry_idle`.
+
+No default threshold and no default action ship: the *signal* is the SDK's, the
+*policy* is the application's. `docs/entry_input_observability.md`.
+
 ### A dead secondary stream can no longer stall a runner permanently and silently
 
 Two defects in `flz_core` let a runner whose secondary (state-write) stream had

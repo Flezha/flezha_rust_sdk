@@ -287,6 +287,7 @@ pub fn build_topology_with_persistence(
             overflow_policy: entry.overflow_policy,
             retry: entry.retry,
             codec: entry.codec,
+            entry_observation: flz_core::channel::entry_observation_for(entry.kind, entry.name),
         });
     }
 
