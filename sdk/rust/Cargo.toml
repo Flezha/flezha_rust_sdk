@@ -54,6 +54,8 @@ signal-hook = "0.3"
 postcard = { version = "1.0", features = ["use-std"] }
 crc32fast = "1.4"
 tracing = "0.1"
+# Backs `diag::init_default_tracing` (EnvFilter + fmt subscriber).
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
@@ -122,6 +124,10 @@ required-features = ["bench-internals"]
 [[test]]
 name = "entity_timers"
 required-features = ["bench-internals", "testing"]
+
+[[test]]
+name = "sugar_keyed_emit"
+required-features = ["testing"]
 
 [[test]]
 name = "workflow_scaling"

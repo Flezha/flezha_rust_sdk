@@ -106,6 +106,7 @@
 pub mod channel;
 pub mod workflow;
 pub use flz_core::command;
+pub mod diag;
 pub mod entity;
 pub mod operative;
 pub mod procedure;

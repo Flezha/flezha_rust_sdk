@@ -414,3 +414,16 @@ pub use operative::builder::TopologyBuildError;
 #   ADDED: `DynamicEntityRegistry::recently_evicted(&self, key: &str) -> bool`
 #   — the workflow eviction trace that lets a live read say "idle-evicted"
 #   rather than "never existed".
+
+# Exported tracing defaults (`export-rust-sdk-tracing-defaults`). The SDK's
+# diagnostic-target inventory as an EnvFilter directive list plus an opt-in
+# subscriber installer, so applications stop enumerating SDK internals.
+# Guarded by tests/diag.rs; a new diagnostic target ships with a
+# DEFAULT_DIRECTIVES entry in the same change (naming conventions rule 11).
+#
+#   pub mod diag {
+#       pub const DEFAULT_DIRECTIVES: &str;  # "flezha=warn,flz_core=warn,
+#                                            #  flz_transport=warn,flezha_runner=warn"
+#       pub fn init_default_tracing();       # RUST_LOG wins when set; a second
+#                                            # install warns and returns, never panics
+#   }
