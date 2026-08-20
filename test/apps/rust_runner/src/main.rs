@@ -1371,7 +1371,11 @@ impl StreamOperative for TierStoreOperative {
         c.effectively_once();
         // 300 ms backoff base keeps the min-watermark freeze observable
         // (~0.9 s from first failure to park) in the DLQ e2e.
+        // Block, not the entry default of DropNewest: a durable-input-log
+        // operative that sheds at its mailbox would hold the min-watermark on
+        // the shed offset forever while the log behind it keeps growing.
         c.input::<String>("input")
+            .on_full(OverflowPolicy::Block)
             .retry_backoff_ms(300)
             .into::<TierStoreProcedure>()
             .named("sink")
