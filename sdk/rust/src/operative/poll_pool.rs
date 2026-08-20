@@ -132,7 +132,9 @@ impl PollPool {
             match self.core.poll(POLL_TIMEOUT) {
                 Polled::Activation(act) => {
                     idle = Duration::ZERO;
-                    super::dispatcher::run_activation(self.core, act);
+                    flz_core::routing::in_activation(|| {
+                        super::dispatcher::run_activation(self.core, act)
+                    });
                 }
                 Polled::Timeout => {
                     idle += POLL_TIMEOUT;
@@ -160,12 +162,13 @@ pub(crate) fn ensure_poll_workers() {
 }
 
 /// Serve one slot inline: assemble its round on the calling thread and run
-/// it. How a Block-policy producer drains a full consumer without waiting on
-/// a poll worker (a parked worker could be the only one able to serve it).
+/// it. How a Block-policy producer on a pool worker drains a full consumer
+/// without waiting on another worker (a parked worker could be the only one
+/// able to serve it).
 pub(crate) fn serve_slot(slot: &Arc<EntitySlot>) {
     let core = global();
     if let Some(act) = core.try_assemble(slot) {
-        super::dispatcher::run_activation(core, act);
+        flz_core::routing::in_activation(|| super::dispatcher::run_activation(core, act));
     }
 }
 
