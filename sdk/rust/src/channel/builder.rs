@@ -314,6 +314,12 @@ pub enum TopologyIssue {
     CorrectionWindowZero,
 
     #[error(
+        "operative declares checkpoint_every(0); an interval that closes every zero inputs is \
+         not an interval — omit it to close only on an explicit ctx.checkpoint()"
+    )]
+    CheckpointEveryZero,
+
+    #[error(
         "operative declares checkpoint_ack() without effectively_once(); the checkpoint is \
          where the tier's consumed-offset advances, and an at-least-once operative has no \
          durable offset to hold back (nor a durable input log to replay the interval from)"
@@ -492,12 +498,64 @@ impl ChannelBuilder {
     ///
     /// Requires `effectively_once()`; `build_topology` refuses it otherwise.
     /// Emits made before a checkpoint are still flushed as they happen —
-    /// checkpointing moves the *acknowledgement*, not the output.
+    /// checkpointing moves the *acknowledgement*, not the output. To hold them
+    /// for the interval too, see [`outputs_at_checkpoint`].
     ///
     /// [`ProcedureCtx::checkpoint`]: crate::procedure::ProcedureCtx::checkpoint
+    /// [`outputs_at_checkpoint`]: ChannelBuilder::outputs_at_checkpoint
     pub fn checkpoint_ack(&self) {
-        self.state.borrow_mut().ack_granularity =
-            crate::operative::topology::AckGranularity::Checkpoint;
+        self.checkpoint_policy(|_policy| {});
+    }
+
+    /// Close the checkpoint interval once `inputs` inputs have folded into it,
+    /// instead of waiting for an explicit [`ProcedureCtx::checkpoint`].
+    ///
+    /// An explicit checkpoint still closes the interval early; this is the
+    /// ceiling, not the only closer. Implies `checkpoint_ack()`.
+    ///
+    /// [`ProcedureCtx::checkpoint`]: crate::procedure::ProcedureCtx::checkpoint
+    pub fn checkpoint_every(&self, inputs: u32) {
+        self.checkpoint_policy(|policy| policy.every = Some(inputs));
+    }
+
+    /// Hold the interval's outputs with its changes and ship them inside its
+    /// checkpoint record, which the controller flushes as one batch after that
+    /// record is fsynced — one WAL append per interval instead of one per
+    /// invocation.
+    ///
+    /// The trade is output latency: an emit is not visible downstream until
+    /// its interval closes. `max_delay_ms` bounds that — the interval closes
+    /// that long after the input that opened it even if nothing else arrives,
+    /// so a quiet Entity never holds an output indefinitely. It is a parameter
+    /// rather than an option because an unbounded hold is not a posture anyone
+    /// should be able to declare by omission.
+    ///
+    /// Replay is exactly the mode's existing contract: an interval that did not
+    /// checkpoint re-produces its outputs when it replays, a checkpointed
+    /// record re-drives with identical identity, and the keyed-sink dedup the
+    /// tier already requires absorbs both. Implies `checkpoint_ack()`.
+    pub fn outputs_at_checkpoint(&self, max_delay_ms: u64) {
+        self.checkpoint_policy(|policy| {
+            policy.outputs = crate::operative::topology::CheckpointOutputs::AtCheckpoint;
+            policy.max_delay_ms = Some(max_delay_ms);
+        });
+    }
+
+    /// Turn the checkpoint granularity on (idempotent) and amend its policy,
+    /// so each option is one call that preserves the others.
+    fn checkpoint_policy(
+        &self,
+        amend: impl FnOnce(&mut crate::operative::topology::CheckpointPolicy),
+    ) {
+        use crate::operative::topology::{AckGranularity, CheckpointPolicy};
+
+        let mut st = self.state.borrow_mut();
+        let mut policy = st
+            .ack_granularity
+            .checkpoint()
+            .unwrap_or(CheckpointPolicy::default());
+        amend(&mut policy);
+        st.ack_granularity = AckGranularity::Checkpoint(policy);
     }
 
     /// Declare the entry channel fed by the controller — the operative's

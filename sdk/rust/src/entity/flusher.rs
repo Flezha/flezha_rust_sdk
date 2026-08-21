@@ -24,6 +24,21 @@ pub struct EffectEntry<S: crate::procedure::Procedure> {
     pub timers: Vec<crate::entity::timer::TimerOp>,
 }
 
+impl<S: crate::procedure::Procedure> EffectEntry<S> {
+    /// The record a fold or a deadline close produced, plus the park that rides
+    /// it — the typed twin of `EffectRecordBody::from_shipped`.
+    pub fn from_shipped(record: ShippedRecord<S::Change>, dlq: Option<DlqEntryBody>) -> Self {
+        Self {
+            changes: record.changes,
+            outputs: record.outputs,
+            consumed_offset: record.offset,
+            dlq,
+            event_time: record.event_time,
+            timers: record.timers,
+        }
+    }
+}
+
 /// Concrete per-Procedure buffer. The dispatcher downcasts the type-erased
 /// `dyn FlushableBuffer` to `TypedBuffer<S>` to get a `&mut Vec<S::Change>`
 /// for `StateHandle::new`. Exactly one of `inner` / `effects` is ever
@@ -42,14 +57,13 @@ pub struct EffectEntry<S: crate::procedure::Procedure> {
 /// instead and this stays empty.
 pub struct TypedBuffer<S: crate::procedure::Procedure> {
     pub inner: Vec<S::Change>,
-    pub staged: Vec<S::Change>,
+    /// An open checkpoint interval's unacknowledged accumulation — changes,
+    /// timer registrations and (under `CheckpointOutputs::AtCheckpoint`)
+    /// outputs. Shipping any of it alone would leave state, a pending timer or
+    /// a delivered output ahead of the offset that acknowledges them.
+    pub staged: StagedInterval<S::Change>,
     pub effects: Vec<EffectEntry<S>>,
     pub timer_ops: Vec<crate::entity::timer::TimerOp>,
-    /// `staged`'s counterpart for timer ops: an open checkpoint interval's
-    /// registrations are as unacknowledged as the changes beside them, and
-    /// shipping one alone would leave a timer pending for a state the restore
-    /// never rebuilds.
-    pub staged_timers: Vec<crate::entity::timer::TimerOp>,
     /// Changes a failed-but-retryable attempt applied to in-memory state,
     /// held out of the flusher's reach until the item resolves; the next
     /// attempt re-takes them so durable state cannot diverge from memory.
@@ -60,10 +74,9 @@ impl<S: crate::procedure::Procedure> Default for TypedBuffer<S> {
     fn default() -> Self {
         Self {
             inner: Vec::new(),
-            staged: Vec::new(),
+            staged: StagedInterval::default(),
             effects: Vec::new(),
             timer_ops: Vec::new(),
-            staged_timers: Vec::new(),
             pending_attempt: Vec::new(),
         }
     }
@@ -121,7 +134,6 @@ impl<S: crate::procedure::Procedure> FlushableBuffer for TypedBuffer<S> {
 
     fn discard_staged(&mut self) {
         self.staged.clear();
-        self.staged_timers.clear();
         // A mid-ladder attempt's changes belong to the same superseded past.
         self.pending_attempt.clear();
     }

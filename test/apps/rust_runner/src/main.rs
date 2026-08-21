@@ -37,6 +37,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .define_stream::<MixedOperative>()?
         .define_stream::<TierStoreOperative>()?
         .define_stream::<CheckpointStoreOperative>()?
+        .define_stream::<CheckpointBatchedOperative>()?
         .define_stream::<PoisonProbeOperative>()?
         .define_stream::<WedgeProbeOperative>()?
         .define_stream::<CandleOperative>()?
@@ -1439,6 +1440,30 @@ impl StreamOperative for CheckpointStoreOperative {
     fn channels(c: &ChannelBuilder) {
         c.effectively_once();
         c.checkpoint_ack();
+        c.input::<String>("input")
+            .into::<CheckpointStoreProcedure>()
+            .named("sink")
+            .keyed()
+            .sink("tier_sink");
+    }
+}
+
+// -- CheckpointBatchedOperative (amortise-effectively-once-output-confirmation) --
+//
+// The same procedure as `checkpoint_store`, declared `outputs_at_checkpoint`:
+// the interval's outputs are held with its changes and ship inside its
+// checkpoint record. `checkpoint_every` is deliberately absent so the test
+// drives the close itself — with `commit:` for the batch case, and with the
+// delay alone for the quiet-Entity case.
+struct CheckpointBatchedOperative;
+impl StreamOperative for CheckpointBatchedOperative {
+    fn factory_id() -> &'static str {
+        "checkpoint_batched_store"
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.effectively_once();
+        c.checkpoint_ack();
+        c.outputs_at_checkpoint(1_500);
         c.input::<String>("input")
             .into::<CheckpointStoreProcedure>()
             .named("sink")

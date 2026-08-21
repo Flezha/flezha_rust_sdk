@@ -2340,8 +2340,8 @@ fn a_restore_discards_the_open_interval() {
     use flezha_runner::entity::flusher::{FlushableBuffer, TypedBuffer};
 
     let mut buf: TypedBuffer<CheckpointProcedure> = TypedBuffer::default();
-    buf.staged.push(TickChange);
-    buf.staged.push(TickChange);
+    buf.staged.changes.push(TickChange);
+    buf.staged.changes.push(TickChange);
 
     // An open interval is not flushable: the background flusher must never
     // ship it on its own (that would put state ahead of its offset).
@@ -2352,7 +2352,7 @@ fn a_restore_discards_the_open_interval() {
 
     buf.discard_staged();
     assert!(
-        buf.staged.is_empty(),
+        buf.staged.changes.is_empty() && !buf.staged.is_open(),
         "a restore must drop the open interval"
     );
 }

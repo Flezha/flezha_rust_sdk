@@ -16,9 +16,7 @@ use std::sync::Arc;
 
 use crate::channel::builder::{BuilderState, ChannelBuilder, TopologyIssue};
 use crate::channel::{ChannelDescriptor, ChannelKind, PluginSink};
-use crate::operative::topology::{
-    AckGranularity, EntityMode, OperativeTopology, ProcedureDescriptor,
-};
+use crate::operative::topology::{EntityMode, OperativeTopology, ProcedureDescriptor};
 
 /// Built-in default per-Entity mailbox capacity used when a Procedure does
 /// not override `mailbox_capacity()` and `FLEZHA_MAILBOX_CAPACITY` is
@@ -212,8 +210,14 @@ pub fn build_topology_with_persistence(
     // precondition — every plugin channel keyed, so the interval's re-emitted
     // outputs are absorbed by sink dedup — is already enforced for the whole
     // tier by `UnkeyedChannelUnderEffectivelyOnce` below.
-    if ack_granularity == AckGranularity::Checkpoint && !effectively_once {
+    if ack_granularity.is_checkpoint() && !effectively_once {
         errors.push(TopologyIssue::CheckpointAckWithoutTier);
+    }
+    if ack_granularity
+        .checkpoint()
+        .is_some_and(|p| p.every == Some(0))
+    {
+        errors.push(TopologyIssue::CheckpointEveryZero);
     }
 
     // Entity mode is read off the WIRING now: a procedure reached by an edge
@@ -692,7 +696,78 @@ mod tests {
             .keyed()
             .sink("kafka");
         let topology = build_topology("checkpoint_ok", cb).expect("topology");
-        assert_eq!(topology.ack_granularity, AckGranularity::Checkpoint);
+        assert!(topology.ack_granularity.is_checkpoint());
+    }
+
+    #[test]
+    fn the_interval_options_reach_the_topology_and_imply_the_granularity() {
+        use crate::operative::topology::CheckpointOutputs;
+
+        let cb = ChannelBuilder::new();
+        cb.effectively_once();
+        cb.checkpoint_every(500);
+        cb.outputs_at_checkpoint(50);
+        cb.input::<String>("in")
+            .into::<TierProc>()
+            .named("out")
+            .keyed()
+            .sink("kafka");
+        let topology = build_topology("checkpoint_options", cb).expect("topology");
+
+        let policy = topology
+            .ack_granularity
+            .checkpoint()
+            .expect("an interval option implies the checkpoint granularity");
+        assert_eq!(policy.every, Some(500));
+        assert_eq!(policy.outputs, CheckpointOutputs::AtCheckpoint);
+        assert_eq!(
+            policy.max_delay_ms,
+            Some(50),
+            "the delay is a parameter of the option, so it cannot be omitted"
+        );
+    }
+
+    #[test]
+    fn a_bare_checkpoint_ack_holds_no_outputs() {
+        use crate::operative::topology::CheckpointOutputs;
+
+        let cb = ChannelBuilder::new();
+        cb.effectively_once();
+        cb.checkpoint_ack();
+        cb.input::<String>("in")
+            .into::<TierProc>()
+            .named("out")
+            .keyed()
+            .sink("kafka");
+        let topology = build_topology("checkpoint_bare", cb).expect("topology");
+
+        let policy = topology.ack_granularity.checkpoint().expect("checkpoint");
+        assert_eq!(
+            policy.outputs,
+            CheckpointOutputs::AsProduced,
+            "checkpointing moves the acknowledgement, not the output"
+        );
+        assert_eq!(policy.every, None);
+    }
+
+    #[test]
+    fn a_zero_interval_is_refused() {
+        let cb = ChannelBuilder::new();
+        cb.effectively_once();
+        cb.checkpoint_every(0);
+        cb.input::<String>("in")
+            .into::<TierProc>()
+            .named("out")
+            .keyed()
+            .sink("kafka");
+        let err = build_topology("checkpoint_zero", cb)
+            .err()
+            .expect("an interval that closes every zero inputs is not an interval");
+
+        assert!(err
+            .errors
+            .iter()
+            .any(|e| matches!(e, TopologyIssue::CheckpointEveryZero)));
     }
 
     #[test]
@@ -705,7 +780,7 @@ mod tests {
             .keyed()
             .sink("kafka");
         let topology = build_topology("per_input_default", cb).expect("topology");
-        assert_eq!(topology.ack_granularity, AckGranularity::PerInput);
+        assert!(!topology.ack_granularity.is_checkpoint());
     }
 
     #[test]

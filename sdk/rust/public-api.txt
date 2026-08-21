@@ -219,6 +219,11 @@ pub use entity::timer::TimerKind;                            # ADDED by `entity-
 #       where P: Fn(Vec<u8>) -> Result<T, String> + Send + Sync + 'static;
 #     pub fn merge<I: Send + Sync + 'static>(&self) -> Merge<'_, I>;
 #     # effectively_once / checkpoint_ack / correction_window / beyond_window_policy (&self)
+#     # ADDED by `amortise-effectively-once-output-confirmation`:
+#     pub fn checkpoint_every(&self, inputs: u32);
+#     pub fn outputs_at_checkpoint(&self, max_delay_ms: u64);
+#     #   `max_delay_ms` is a parameter, not an option: an unbounded output
+#     #   hold must not be declarable by omission.
 #
 #   CHANGED by `stream-dsl-keyby-and-transforms`: the two handles are ONE
 #   struct parameterized by a target marker, so their shared surface —

@@ -119,10 +119,11 @@ struct FlushWiring {
     /// on the reliable state sink instead of the primary stream.
     effectively_once: bool,
     /// Checkpoint ack-granularity (`AckGranularity::Checkpoint`): the
-    /// consumed-offset advances only at an explicit `ctx.checkpoint()`, and
-    /// the changes an open interval applies are held in the flush buffer
-    /// until it does.
-    checkpoint_ack: bool,
+    /// consumed-offset advances only when the interval closes, and the
+    /// changes it applies — with its outputs, under
+    /// `CheckpointOutputs::AtCheckpoint` — are held in the flush buffer
+    /// until then. `None` under the per-input default.
+    checkpoint: Option<crate::operative::topology::CheckpointPolicy>,
     /// Late-input correction policy, `None` unless the class declared a
     /// `correction_window()`. Admission and the high-water live in the
     /// engine's assembly (`runner::poll_core`), which reads this through
@@ -431,43 +432,25 @@ impl<S: Procedure> ProcedureDispatcherImpl<S> {
             // effect-free invocation contributes nothing durable — unless it
             // parked, in which case the entry MUST ship so the dead-letter
             // park and the consumed-offset advance stay atomic.
-            let changes = buffer_cell.into_inner();
-            let outputs = outputs_cell.into_inner();
-            let (changes, timer_ops, consumed_offset, ship) = if self.flush.checkpoint_ack {
-                typed_buffer.staged.extend(changes);
-                typed_buffer.staged_timers.extend(timer_ops);
-                // The interval closes on an explicit checkpoint — or on a
-                // park, whose poison input is about to be acknowledged into
-                // the DLQ and must never be replayed back onto the procedure.
-                if checkpointed || dlq.is_some() {
-                    // Even a checkpoint that accumulated nothing ships: the
-                    // record exists to carry the offset.
-                    let staged = std::mem::take(&mut typed_buffer.staged);
-                    let staged_timers = std::mem::take(&mut typed_buffer.staged_timers);
-                    (staged, staged_timers, consumed_offset, true)
-                } else {
-                    // Mid-interval: emits still flush as they happen, but they
-                    // acknowledge nothing — the state they were computed from
-                    // is not durable yet, so a record carrying their offset
-                    // would let a restore resume past inputs it never saw.
-                    (Vec::new(), Vec::new(), None, !outputs.is_empty())
-                }
-            } else {
-                let ship = !(changes.is_empty() && outputs.is_empty() && timer_ops.is_empty())
-                    || dlq.is_some();
-                (changes, timer_ops, consumed_offset, ship)
-            };
-            if ship {
+            let shipped = typed_buffer.staged.fold(
+                self.flush.checkpoint,
+                crate::entity::flusher::InvocationEffects {
+                    changes: buffer_cell.into_inner(),
+                    timers: timer_ops,
+                    outputs: outputs_cell.into_inner(),
+                    offset: consumed_offset,
+                    event_time: now,
+                    checkpointed,
+                    parked: dlq.is_some(),
+                },
+                crate::util::wall_now_ms(),
+            );
+            if let Some(record) = shipped {
                 typed_buffer
                     .effects
-                    .push(crate::entity::flusher::EffectEntry {
-                        changes,
-                        outputs,
-                        consumed_offset,
-                        dlq,
-                        event_time: now,
-                        timers: timer_ops,
-                    });
+                    .push(crate::entity::flusher::EffectEntry::from_shipped(
+                        record, dlq,
+                    ));
             }
         } else {
             // Return any changes not yet drained by flush-before-emit (or all
@@ -579,6 +562,9 @@ impl<S: Procedure> ProcedureDispatcher for ProcedureDispatcherImpl<S> {
 
         let mut committed: Vec<TimerOp> = Vec::new();
         match item {
+            // Consumed by the batch assembler, which closes the interval
+            // without an invocation — it never reaches dispatch.
+            EntityItem::CloseInterval => ItemDisposition::Done { ops: committed },
             EntityItem::Timer(fire) => {
                 // Assembly validated the firing, but the set is the
                 // authority: re-check under the held locks — a restore
@@ -704,6 +690,42 @@ impl<S: Procedure> ProcedureDispatcher for ProcedureDispatcherImpl<S> {
                 }
             }
         }
+    }
+
+    fn close_interval(
+        &self,
+        flush_buffer: &mut Box<dyn flz_core::flusher::FlushableBuffer>,
+    ) -> bool {
+        // Only a checkpoint class has an interval to close.
+        if self.flush.checkpoint.is_none() {
+            return false;
+        }
+        let Some(buffer) = flush_buffer
+            .as_any_mut()
+            .downcast_mut::<crate::entity::flusher::TypedBuffer<S>>()
+        else {
+            return false;
+        };
+        let Some(record) = buffer.staged.close_on_deadline() else {
+            return false;
+        };
+        buffer
+            .effects
+            .push(crate::entity::flusher::EffectEntry::from_shipped(
+                record, None,
+            ));
+        true
+    }
+
+    fn interval_deadline(
+        &self,
+        flush_buffer: &mut Box<dyn flz_core::flusher::FlushableBuffer>,
+    ) -> Option<u64> {
+        let policy = self.flush.checkpoint?;
+        let buffer = flush_buffer
+            .as_any_mut()
+            .downcast_mut::<crate::entity::flusher::TypedBuffer<S>>()?;
+        buffer.staged.deadline_ms(policy)
     }
 
     fn procedure_id(&self) -> ProcedureId {
@@ -1436,6 +1458,12 @@ pub(super) fn run_activation(
         let stream = match &work.item {
             EntityItem::Input(payload) => Arc::clone(&payload.stream),
             EntityItem::Timer(fire) => Arc::clone(&fire.stream),
+            // Never dispatched (see `dispatch_item`); without a connection of
+            // its own it takes the live secondary.
+            EntityItem::CloseInterval => match flz_core::state_sink::secondary_stream() {
+                Some(stream) => stream,
+                None => return,
+            },
         };
         let (now, attempt, is_final) = (work.now, work.attempt, work.is_final);
         let disposition = {
@@ -1457,6 +1485,7 @@ pub(super) fn run_activation(
                 // straight back onto this slot's mailbox, and the drain that
                 // would run it needs them.
                 crate::entity::timer::apply_ops(&slot, &ops, &stream);
+                flz_core::timer::arm_interval_deadline(&slot);
                 crate::entity::DISPATCHES_COMPLETED.fetch_add(1, Ordering::Relaxed);
             }
             ItemDisposition::RetryLater { item, error } => {
@@ -1545,8 +1574,7 @@ pub fn build_entity_slot<S: Procedure>(args: BuildEntityArgs<'_>) -> Arc<EntityS
             header: crate::entity::header::header_template_for::<S>(),
             persistence_enabled: args.persistence_enabled,
             effectively_once: topology.effectively_once,
-            checkpoint_ack: topology.ack_granularity
-                == crate::operative::topology::AckGranularity::Checkpoint,
+            checkpoint: topology.ack_granularity.checkpoint(),
             correction: topology.correction,
         },
     )) as Arc<dyn ProcedureDispatcher>;
@@ -1783,7 +1811,7 @@ mod tests {
                 header: crate::entity::header::header_template_for::<CounterProc>(),
                 persistence_enabled: false,
                 effectively_once: false,
-                checkpoint_ack: false,
+                checkpoint: None,
                 correction: None,
             },
         );
