@@ -630,7 +630,7 @@ impl BuilderState {
             entry_parsed: false,
             plugin_sink: None,
             keyed: false,
-            overflow_policy: default_policy_for_kind(kind),
+            overflow_policy: OverflowPolicy::default(),
             retry: crate::channel::RetryPolicy::default(),
             codec: None,
         });
@@ -857,19 +857,6 @@ fn compose(
                 },
             ))
         }
-    }
-}
-
-/// Per-kind default for the channel's `OverflowPolicy`. Entry channels
-/// drop to keep the wire reader running; inter-procedure channels block to
-/// preserve ordering through stateful pipelines. Plugin-bound channels
-/// have no SDK mailbox and the value is never consulted; we still set
-/// `Block` so the field is always meaningful and to keep the descriptor
-/// cheap to compare against.
-pub(crate) fn default_policy_for_kind(kind: ChannelKind) -> OverflowPolicy {
-    match kind {
-        ChannelKind::Entry => OverflowPolicy::DropNewest,
-        ChannelKind::InterProcedure | ChannelKind::PluginBound => OverflowPolicy::Block,
     }
 }
 
@@ -1412,12 +1399,12 @@ impl<'b, T: 'static + Send + Sync, K: StreamTarget> Stream<'b, T, K> {
         self.relink(None, Some(erase::<T, _, _>("key_by", key)))
     }
 
-    /// Override the per-kind default `OverflowPolicy`. Entry channels default
-    /// to `DropNewest` — declare `Block` there only if you accept stalling the
-    /// shared wire reader on this operative's saturation (see
-    /// `docs/operative_architecture.md` for the co-tenancy hazard).
-    /// Inter-procedure channels default to `Block`; switch to `DropNewest` /
-    /// `DropOldest` when ordering can be sacrificed for liveness.
+    /// Override the default `OverflowPolicy` (`Block` for every channel
+    /// kind). On an entry channel `Block` parks the shared wire reader
+    /// on this operative's saturation (see `docs/operative_architecture.md`
+    /// for the co-tenancy cost); declare `DropNewest` / `DropOldest` when
+    /// shedding under saturation is acceptable and ordering or completeness
+    /// can be sacrificed for liveness.
     pub fn on_full(self, policy: OverflowPolicy) -> Self {
         self.with_channel(|st, cid| st.channels[cid as usize].overflow_policy = policy);
         self

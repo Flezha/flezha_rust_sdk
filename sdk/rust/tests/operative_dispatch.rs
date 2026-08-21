@@ -490,13 +490,15 @@ impl StreamOperative for DropNewestOperative {
         "drop_newest_operative"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<Vec<u8>>("input").into::<DropNewestProcedure>();
+        c.input::<Vec<u8>>("input")
+            .on_full(OverflowPolicy::DropNewest)
+            .into::<DropNewestProcedure>();
     }
 }
 
 /// Spec scenarios "DropNewest discards the incoming item",
-/// "Default entry policy is DropNewest", "DropNewest increments only
-/// drops_newest_total". Pre-marks the slot's inflight CAS so no drain
+/// "An entry channel still drops when it says so", "DropNewest increments
+/// only drops_newest_total". Pre-marks the slot's inflight CAS so no drain
 /// runs during the test — that keeps the cap-2 mailbox saturated while
 /// we exercise the DropNewest path deterministically.
 #[test]
@@ -802,6 +804,18 @@ impl StreamOperative for WireOperativeABlock {
     }
 }
 
+struct WireOperativeADropNewest;
+impl StreamOperative for WireOperativeADropNewest {
+    fn factory_id() -> &'static str {
+        "wire_operative_a_drop_newest"
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.input::<Vec<u8>>("input")
+            .on_full(OverflowPolicy::DropNewest)
+            .into::<WireSlowAProcedure>();
+    }
+}
+
 struct WireOperativeB;
 impl StreamOperative for WireOperativeB {
     fn factory_id() -> &'static str {
@@ -812,22 +826,22 @@ impl StreamOperative for WireOperativeB {
     }
 }
 
-/// Spec scenario "Default entry policy keeps wire reader running":
-/// when StreamOperative A's entry mailbox is artificially saturated under default
-/// `DropNewest`, the simulated wire-reader continues dispatching frames
-/// to sibling StreamOperative B without delay.
+/// Spec scenario "A declared drop policy keeps the wire reader running":
+/// when StreamOperative A's entry mailbox is artificially saturated under a
+/// declared `DropNewest`, the simulated wire-reader continues dispatching
+/// frames to sibling StreamOperative B without delay.
 #[test]
-fn default_entry_policy_does_not_stall_sibling_operatives() {
+fn declared_drop_newest_entry_does_not_stall_sibling_operatives() {
     let _serial = WIRE_TEST_LOCK.lock().unwrap();
     WIRE_A_DELIVERED.store(0, Ordering::Release);
     WIRE_B_DELIVERED.store(0, Ordering::Release);
 
     let registry = Arc::new(OperativeRegistry::new());
 
-    let topology_a = build_topology_for::<WireOperativeADefault>().expect("topology a");
+    let topology_a = build_topology_for::<WireOperativeADropNewest>().expect("topology a");
     let topology_b = build_topology_for::<WireOperativeB>().expect("topology b");
-    let instance_a = StreamInstance::new(topology_a, Arc::from("wire-a-default"));
-    let instance_b = StreamInstance::new(topology_b, Arc::from("wire-b-default"));
+    let instance_a = StreamInstance::new(topology_a, Arc::from("wire-a-drop"));
+    let instance_b = StreamInstance::new(topology_b, Arc::from("wire-b-drop"));
     registry.register_stream(Arc::clone(&instance_a));
     registry.register_stream(Arc::clone(&instance_b));
 
@@ -845,21 +859,11 @@ fn default_entry_policy_does_not_stall_sibling_operatives() {
 
     // Wire-reader-shaped loop: alternate frames addressed to A and B
     // 50 times each. A's mailbox saturates at cap 2 → subsequent A
-    // frames hit DropNewest and the loop continues without delay.
+    // frames hit the declared DropNewest and the loop continues without delay.
     let start = Instant::now();
     for _ in 0..50 {
-        handle.dispatch(
-            "wire-a-default",
-            b"a-frame".to_vec(),
-            &md,
-            Arc::clone(&stream),
-        );
-        handle.dispatch(
-            "wire-b-default",
-            b"b-frame".to_vec(),
-            &md,
-            Arc::clone(&stream),
-        );
+        handle.dispatch("wire-a-drop", b"a-frame".to_vec(), &md, Arc::clone(&stream));
+        handle.dispatch("wire-b-drop", b"b-frame".to_vec(), &md, Arc::clone(&stream));
     }
     let dispatch_elapsed = start.elapsed();
 
@@ -867,7 +871,7 @@ fn default_entry_policy_does_not_stall_sibling_operatives() {
     // far quicker than would be possible if the reader had blocked.
     assert!(
         dispatch_elapsed < Duration::from_millis(500),
-        "default-entry dispatch took {dispatch_elapsed:?}; loop should not park"
+        "declared-drop dispatch took {dispatch_elapsed:?}; loop should not park"
     );
 
     // Release A's inflight + drain B → B's 50 frames all land.
@@ -884,26 +888,40 @@ fn default_entry_policy_does_not_stall_sibling_operatives() {
     assert_eq!(counters_a.pushes_blocked_total.load(Ordering::Relaxed), 0);
 }
 
-/// Spec scenario "Opt-in entry Block opts into co-tenancy hazard": when
-/// StreamOperative A's explicit `OverflowPolicy::Block` entry channel
-/// saturates while A's round is queued but not yet served, the wire-reader
-/// thread parks on the push. It never runs A's procedures itself — serving a
-/// consumer inline is a pool thread's move; a reader doing it would run one
-/// operative's work while every sibling on the connection waits — so B's
-/// frame, queued behind the parked push, waits too. Once the pool serves A's
-/// round, a pop unparks the reader and every frame lands, none lost.
+/// Spec scenarios "Default entry policy is Block" and "Default entry Block
+/// parks the reader and loses nothing": an entry channel declared without
+/// `.on_full(...)` blocks exactly like a declared `Block`.
 #[test]
-fn opt_in_entry_block_parks_the_reader_until_the_pool_drains() {
+fn default_entry_policy_blocks_and_loses_nothing() {
+    entry_block_parks_reader_until_pool_drains::<WireOperativeADefault>("default");
+}
+
+#[test]
+fn declared_entry_block_parks_the_reader_until_the_pool_drains() {
+    entry_block_parks_reader_until_pool_drains::<WireOperativeABlock>("block");
+}
+
+/// Shared body of the entry-edge `Block` scenarios: when StreamOperative A's
+/// entry channel saturates while A's round is queued but not yet served, the
+/// wire-reader thread parks on the push. It never runs A's procedures itself
+/// — serving a consumer inline is a pool thread's move; a reader doing it
+/// would run one operative's work while every sibling on the connection waits
+/// — so B's frame, queued behind the parked push, waits too. Once the pool
+/// serves A's round, a pop unparks the reader and every frame lands, none
+/// lost and none counted as dropped.
+fn entry_block_parks_reader_until_pool_drains<A: StreamOperative>(tag: &str) {
     let _serial = WIRE_TEST_LOCK.lock().unwrap();
     WIRE_A_DELIVERED.store(0, Ordering::Release);
     WIRE_B_DELIVERED.store(0, Ordering::Release);
 
     let registry = Arc::new(OperativeRegistry::new());
 
-    let topology_a = build_topology_for::<WireOperativeABlock>().expect("topology a");
+    let id_a = format!("wire-a-{tag}");
+    let id_b = format!("wire-b-{tag}");
+    let topology_a = build_topology_for::<A>().expect("topology a");
     let topology_b = build_topology_for::<WireOperativeB>().expect("topology b");
-    let instance_a = StreamInstance::new(topology_a, Arc::from("wire-a-block"));
-    let instance_b = StreamInstance::new(topology_b, Arc::from("wire-b-block"));
+    let instance_a = StreamInstance::new(topology_a, Arc::from(id_a.as_str()));
+    let instance_b = StreamInstance::new(topology_b, Arc::from(id_b.as_str()));
     registry.register_stream(Arc::clone(&instance_a));
     registry.register_stream(Arc::clone(&instance_b));
 
@@ -925,19 +943,9 @@ fn opt_in_entry_block_parks_the_reader_until_the_pool_drains() {
         let mut md = HashMap::new();
         md.insert("channel".to_string(), "input".to_string());
         for _ in 0..3 {
-            handle_clone.dispatch(
-                "wire-a-block",
-                b"a-frame".to_vec(),
-                &md,
-                Arc::clone(&stream_clone),
-            );
+            handle_clone.dispatch(&id_a, b"a-frame".to_vec(), &md, Arc::clone(&stream_clone));
         }
-        handle_clone.dispatch(
-            "wire-b-block",
-            b"b-frame".to_vec(),
-            &md,
-            Arc::clone(&stream_clone),
-        );
+        handle_clone.dispatch(&id_b, b"b-frame".to_vec(), &md, Arc::clone(&stream_clone));
         completed_clone.store(true, Ordering::Release);
     });
 
@@ -977,6 +985,10 @@ fn opt_in_entry_block_parks_the_reader_until_the_pool_drains() {
         },
         Duration::from_secs(5)
     ));
+
+    let counters_a = slot_a.counters();
+    assert_eq!(counters_a.drops_newest_total.load(Ordering::Relaxed), 0);
+    assert_eq!(counters_a.drops_oldest_total.load(Ordering::Relaxed), 0);
 }
 
 /// Spec scenarios "Default inter-procedure policy is Block" and
