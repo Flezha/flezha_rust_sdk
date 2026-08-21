@@ -23,6 +23,7 @@ use flezha_runner::operative::StreamOperative;
 use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError, StateHandle};
 use flezha_runner::state::{NoChange, RestoreInitPayload};
 use flezha_runner::testing::ProcedureTestHarness;
+use flezha_runner::OverflowPolicy;
 
 /// The state sink is process-global and several cases arm real deadlines;
 /// every such case takes this so they cannot clobber each other.
@@ -93,12 +94,13 @@ fn note_firing(key: &str, kind: TimerKind, fired_at: u64) {
 
 /// The worked session-timeout shape: each input pushes the idle deadline out,
 /// and the firing closes the session. Wall clock, so `timer_after` anchors on
-/// real time and a due promotion is what fires it.
+/// real time and a due promotion is what fires it. `CAP` overrides the
+/// mailbox capacity; `0` keeps the Procedure default.
 #[derive(Default)]
-struct SessionProc {
+struct SessionProc<const CAP: usize = 0> {
     key: String,
 }
-impl Procedure for SessionProc {
+impl<const CAP: usize> Procedure for SessionProc<CAP> {
     type Input = String;
     type Output = String;
     type State = SessionState;
@@ -108,6 +110,14 @@ impl Procedure for SessionProc {
     fn name() -> &'static str {
         "timers_session_procedure"
     }
+    fn mailbox_capacity() -> usize {
+        if CAP == 0 {
+            Self::DEFAULT_MAILBOX_CAPACITY
+        } else {
+            CAP
+        }
+    }
+    const MAILBOX_CAPACITY_OVERRIDDEN: bool = CAP != 0;
     fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> SessionState {
         SessionState::default()
     }
@@ -151,6 +161,23 @@ impl StreamOperative for SessionOperative {
         c.input::<String>("in")
             .key_by(|s: &String| s.clone())
             .into::<SessionProc>()
+            .named("out")
+            .sink("sink");
+    }
+}
+
+/// [`SessionOperative`] with a two-slot, `Block`-policy entry mailbox, so a
+/// case can saturate it with two frames and watch a firing meet it.
+struct SaturatedSessionOperative;
+impl StreamOperative for SaturatedSessionOperative {
+    fn factory_id() -> &'static str {
+        "timers_saturated_session_operative"
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("in")
+            .on_full(OverflowPolicy::Block)
+            .key_by(|s: &String| s.clone())
+            .into::<SessionProc<2>>()
             .named("out")
             .sink("sink");
     }
@@ -479,6 +506,62 @@ fn a_processing_time_timer_fires_from_the_wake_list_with_its_scheduled_time() {
     );
 }
 
+/// Spec (`sdk-poll-core`) "A due firing into a saturated consumer drains it":
+/// the poller promoting a due timer is a pool thread and may be the only one,
+/// so when the firing meets a full `Block` mailbox whose round nobody is
+/// serving it runs that round itself — the firing lands instead of the poller
+/// parking on a mailbox no one else drains.
+#[test]
+fn a_firing_into_a_saturated_consumer_drains_it_inline() {
+    let _guard = timer_test_guard();
+    take_firings();
+    let (sock, _peer) = std::os::unix::net::UnixStream::pair().expect("pair");
+    state_sink::set_secondary_stream(Some(Arc::new(
+        flezha_runner::transport::FlezhaStream::Unix(sock),
+    )));
+
+    let (handle, instance) = setup::<SaturatedSessionOperative>("timers-saturated");
+    let registry = Arc::clone(instance.dynamic_registries[0].as_ref().expect("dynamic"));
+    let slot = registry.get_or_create("alice").expect("entity");
+    let stream = dummy_stream();
+
+    // Inflight held with no drainer, then both slots filled: nothing pops
+    // until whoever pushes next serves the round.
+    assert!(slot.mailbox.try_mark_inflight());
+    for _ in 0..2 {
+        dispatch_input(
+            &handle,
+            "timers-saturated",
+            "in",
+            b"alice".to_vec(),
+            &stream,
+        );
+    }
+    assert!(slot.mailbox.is_full());
+
+    // A deadline already in the past: the next poll pass promotes it.
+    slot.timers
+        .lock()
+        .unwrap()
+        .apply(&TimerOp::register(TimerKind::ProcessingTime, 1));
+    flezha_runner::entity::timer::rearm_restored(&slot);
+
+    assert!(
+        wait_until(|| !firings_snapshot().is_empty(), Duration::from_secs(5)),
+        "the due firing must drain the saturated mailbox inline and land"
+    );
+    assert!(
+        slot.counters().pushes_blocked_total.load(Ordering::Relaxed) >= 1,
+        "the firing must have met the full mailbox"
+    );
+
+    // The two queued inputs re-armed the deadline; let it fire before the
+    // next case counts firings.
+    std::thread::sleep(Duration::from_millis(TIMEOUT_MS * 3));
+    take_firings();
+    state_sink::set_secondary_stream(None);
+}
+
 // ------------------------------------------------------------ durability
 
 /// Spec: "A crash before firing leaves the timer pending" — the pending set is
@@ -711,7 +794,7 @@ impl Procedure for TierSessionProc {
         SessionState::default()
     }
     fn apply_change(state: &mut SessionState, change: &SessionChange) {
-        SessionProc::apply_change(state, change)
+        <SessionProc as Procedure>::apply_change(state, change)
     }
     fn run(
         &mut self,

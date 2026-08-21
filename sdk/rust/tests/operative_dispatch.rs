@@ -884,15 +884,16 @@ fn default_entry_policy_does_not_stall_sibling_operatives() {
     assert_eq!(counters_a.pushes_blocked_total.load(Ordering::Relaxed), 0);
 }
 
-/// Spec scenario "Opt-in entry Block drains inline instead of stalling":
-/// when StreamOperative A's explicit `OverflowPolicy::Block` entry channel
-/// saturates while A's drain exists only as a scheduled-but-not-running
-/// pool workflow (inflight marked, no active drainer), the wire-reader
-/// thread drains A inline rather than parking — sibling StreamOperative B keeps
-/// flowing and no frame is lost. Parking here was the 2026-06-10 prod
-/// self-deadlock.
+/// Spec scenario "Opt-in entry Block opts into co-tenancy hazard": when
+/// StreamOperative A's explicit `OverflowPolicy::Block` entry channel
+/// saturates while A's round is queued but not yet served, the wire-reader
+/// thread parks on the push. It never runs A's procedures itself — serving a
+/// consumer inline is a pool thread's move; a reader doing it would run one
+/// operative's work while every sibling on the connection waits — so B's
+/// frame, queued behind the parked push, waits too. Once the pool serves A's
+/// round, a pop unparks the reader and every frame lands, none lost.
 #[test]
-fn opt_in_entry_block_drains_inline_without_stalling_siblings() {
+fn opt_in_entry_block_parks_the_reader_until_the_pool_drains() {
     let _serial = WIRE_TEST_LOCK.lock().unwrap();
     WIRE_A_DELIVERED.store(0, Ordering::Release);
     WIRE_B_DELIVERED.store(0, Ordering::Release);
@@ -906,8 +907,8 @@ fn opt_in_entry_block_drains_inline_without_stalling_siblings() {
     registry.register_stream(Arc::clone(&instance_a));
     registry.register_stream(Arc::clone(&instance_b));
 
-    // Phantom drain: inflight held but no thread is draining, so only the
-    // producer itself can free the full mailbox.
+    // A's round is marked inflight but not handed to the pool, so nothing
+    // drains A until the test schedules it below.
     let slot_a = Arc::clone(&instance_a.entities[0][0]);
     assert!(slot_a.mailbox.try_mark_inflight());
 
@@ -940,18 +941,15 @@ fn opt_in_entry_block_drains_inline_without_stalling_siblings() {
         completed_clone.store(true, Ordering::Release);
     });
 
-    // The reader must complete on its own: the third A push finds the
-    // cap-2 mailbox full and drains it inline instead of parking.
+    // The third A push finds the cap-2 mailbox full: the reader parks there,
+    // runs nothing, and B's frame behind it has not been dispatched.
+    std::thread::sleep(Duration::from_millis(300));
     assert!(
-        wait_until(
-            || reader_completed.load(Ordering::Acquire),
-            Duration::from_secs(5)
-        ),
-        "wire reader stalled on A's saturated Block mailbox"
+        !reader_completed.load(Ordering::Acquire),
+        "the wire reader must park on A's saturated Block mailbox, not drain it inline"
     );
-    reader.join().expect("reader thread panicked");
-
-    // The full push was recorded as blocked, then every frame landed.
+    assert_eq!(WIRE_A_DELIVERED.load(Ordering::Acquire), 0);
+    assert_eq!(WIRE_B_DELIVERED.load(Ordering::Acquire), 0);
     assert!(
         slot_a
             .counters()
@@ -959,6 +957,19 @@ fn opt_in_entry_block_drains_inline_without_stalling_siblings() {
             .load(Ordering::Relaxed)
             >= 1
     );
+
+    // Hand A's queued round to the pool: its first pop unparks the reader.
+    flz_core::poll_core::global().schedule(&slot_a);
+
+    assert!(
+        wait_until(
+            || reader_completed.load(Ordering::Acquire),
+            Duration::from_secs(5)
+        ),
+        "wire reader stayed parked after the pool drained A"
+    );
+    reader.join().expect("reader thread panicked");
+
     assert!(wait_until(
         || {
             WIRE_A_DELIVERED.load(Ordering::Acquire) == 3
