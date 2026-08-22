@@ -1953,6 +1953,7 @@ mod tests {
             Arc::from("t1-factory"),
             Vec::new(),
             0,
+            0,
             None,
         );
         reg.register_workflow(instance);
@@ -2763,6 +2764,7 @@ mod tests {
             "resume-inst".into(),
             "a,bb".into(),
             1,
+            0,
             None,
         ));
         // The workflow Entities are now reachable by wire identity — the restore
@@ -2992,6 +2994,7 @@ mod tests {
             "resume-saga".into(),
             "x".into(),
             1,
+            0,
             None,
         ));
         let a_id =
@@ -3119,7 +3122,8 @@ mod tests {
             "diamond-r".into(),
             "x".into(),
             1,
-            Some(ab_committed(d_fan, d_b, vec![da_id.clone()], Vec::new())),
+            0,
+            Some(ab_committed(d_fan, d_b, vec![da_id.clone()], Vec::new()))
         ));
         let (diamond_inst, _slot) = node
             .find_workflow_entity(&da_id)
@@ -3201,7 +3205,8 @@ mod tests {
             "merge-r".into(),
             "x".into(),
             1,
-            Some(ab_committed(m_fan, m_b, vec![ma_id.clone()], Vec::new())),
+            0,
+            Some(ab_committed(m_fan, m_b, vec![ma_id.clone()], Vec::new()))
         ));
         let (merge_inst, _slot) = node
             .find_workflow_entity(&ma_id)
@@ -3310,12 +3315,13 @@ mod tests {
             "merge-panic-r".into(),
             "x".into(),
             1,
+            0,
             Some(ab_committed(
                 pm_fan,
                 pm_b,
                 vec![pa_id.clone()],
                 vec![pb_id.clone()],
-            )),
+            ))
         ));
         let (panic_inst, _slot) = node
             .find_workflow_entity(&pa_id)
@@ -3419,6 +3425,7 @@ mod tests {
             "chat-2".into(),
             "ignored".into(),
             1,
+            0,
             Some(instance::JournalResume {
                 iter: 2,
                 consumed_offset: 7,
@@ -3435,7 +3442,7 @@ mod tests {
                     },
                 ],
                 ..Default::default()
-            }),
+            })
         ));
         let (chat2, _slot) = node
             .find_workflow_entity(&s1_id)
@@ -3486,6 +3493,7 @@ mod tests {
                 id.into(),
                 "ignored".into(),
                 1,
+                0,
                 Some(instance::JournalResume {
                     iter: 1,
                     consumed_offset: 2,
@@ -3502,7 +3510,7 @@ mod tests {
                         },
                     ],
                     ..Default::default()
-                }),
+                })
             ));
             let (inst, _slot) = node
                 .find_workflow_entity(&seg)
@@ -3542,6 +3550,7 @@ mod tests {
             id.into(),
             "ignored".into(),
             1,
+            0,
             Some(instance::JournalResume {
                 iter: 1,
                 consumed_offset: 1,
@@ -3553,7 +3562,7 @@ mod tests {
                     undo_op(1, 2, Vec::new()),
                 ],
                 ..Default::default()
-            }),
+            })
         ));
         let (inst, _slot) = node
             .find_workflow_entity(&seg)
@@ -3784,6 +3793,7 @@ mod tests {
             id.into(),
             "ignored-args".into(),
             1,
+            0,
             Some(instance::JournalResume {
                 committed_proc_idxs: vec![0, 1],
                 proc_handoffs: vec![instance::EdgeHandoff {
@@ -3803,7 +3813,7 @@ mod tests {
                     },
                 ],
                 ..Default::default()
-            }),
+            })
         ));
         let (inst, _slot) = node
             .find_workflow_entity(&root_seg)
@@ -3857,7 +3867,8 @@ mod tests {
             id.into(),
             "ignored-args".into(),
             1,
-            Some(journal),
+            0,
+            Some(journal)
         ));
         let s1_id = crate::entity::flusher::encode_entity_identity(id, "workflow_stage1", "");
         let (inst, _slot) = node
