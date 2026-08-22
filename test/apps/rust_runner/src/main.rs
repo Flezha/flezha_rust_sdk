@@ -36,8 +36,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .define_stream::<SessionTimeoutOperative>()?
         .define_stream::<MixedOperative>()?
         .define_stream::<TierStoreOperative>()?
+        .define_stream::<BenchEchoOperative>()?
+        .define_stream::<BenchKeyedOperative>()?
+        .define_stream::<BenchKeyedNoPersistOperative>()?
         .define_stream::<CheckpointStoreOperative>()?
         .define_stream::<CheckpointBatchedOperative>()?
+        .define_stream::<BenchCheckpointOperative>()?
         .define_stream::<PoisonProbeOperative>()?
         .define_stream::<WedgeProbeOperative>()?
         .define_stream::<CandleOperative>()?
@@ -55,6 +59,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .define_workflow::<RetryWorkflow>()?
         .define_workflow::<BranchWorkflow>()?
         .define_workflow::<DiamondWorkflow>()?
+        .define_workflow::<BenchChain1>()?
+        .define_workflow::<BenchChain4>()?
+        .define_workflow::<BenchChain16>()?
+        .define_workflow::<BenchChainOptOut4>()?
+        .define_workflow::<BenchLoopWorkflow>()?
         .run()?;
     Ok(())
 }
@@ -972,6 +981,164 @@ impl WorkflowOperative for ChatLoopWorkflow {
     }
 }
 
+// -- Bench workflow fixtures (`mix bench.workflow`) -------------------------------
+//
+// Durable K-procedure chains and a long-lived chat loop for the workflow
+// operative bench. Every chain step is the `durable_step!` shape — one
+// idempotent Change per proc, the payload passed through unchanged — so the
+// sink receives the seed input and the bench reads its own seq + send
+// timestamp back. The loop is the `chat_loop_workflow` shape with a bounded
+// per-turn state, a day-long duration backstop (soaks outlive 600 s) and a
+// wake deadline taken from `FLEZHA_BENCH_WAKE_AFTER_MS` for the timer-wake
+// measurements.
+
+durable_step!(BenchS0, "bench_s0");
+durable_step!(BenchS1, "bench_s1");
+durable_step!(BenchS2, "bench_s2");
+durable_step!(BenchS3, "bench_s3");
+durable_step!(BenchS4, "bench_s4");
+durable_step!(BenchS5, "bench_s5");
+durable_step!(BenchS6, "bench_s6");
+durable_step!(BenchS7, "bench_s7");
+durable_step!(BenchS8, "bench_s8");
+durable_step!(BenchS9, "bench_s9");
+durable_step!(BenchS10, "bench_s10");
+durable_step!(BenchS11, "bench_s11");
+durable_step!(BenchS12, "bench_s12");
+durable_step!(BenchS13, "bench_s13");
+durable_step!(BenchS14, "bench_s14");
+durable_step!(BenchS15, "bench_s15");
+
+// A linear chain `in → $first → $rest… → bench_sink`, every inter-proc edge
+// codec'd (required for a durable structured class).
+macro_rules! bench_chain {
+    ($ty:ident, $factory:literal, persist: $persist:expr, $first:ident $(, $rest:ident)*) => {
+        struct $ty;
+        impl WorkflowOperative for $ty {
+            const PERSISTENCE_ENABLED: bool = $persist;
+            fn factory_id() -> &'static str {
+                $factory
+            }
+            fn procedures(c: &ChannelBuilder) {
+                let s = c.input::<String>("in").into::<$first>();
+                $(
+                    let s = s
+                        .named(concat!("edge_", stringify!($rest)))
+                        .codec()
+                        .into::<$rest>();
+                )*
+                s.named("out").sink("bench_sink");
+            }
+        }
+    };
+}
+
+bench_chain!(BenchChain1, "bench_chain_1", persist: true, BenchS0);
+bench_chain!(BenchChain4, "bench_chain_4", persist: true, BenchS0, BenchS1, BenchS2, BenchS3);
+bench_chain!(
+    BenchChain16,
+    "bench_chain_16",
+    persist: true,
+    BenchS0,
+    BenchS1,
+    BenchS2,
+    BenchS3,
+    BenchS4,
+    BenchS5,
+    BenchS6,
+    BenchS7,
+    BenchS8,
+    BenchS9,
+    BenchS10,
+    BenchS11,
+    BenchS12,
+    BenchS13,
+    BenchS14,
+    BenchS15
+);
+bench_chain!(
+    BenchChainOptOut4,
+    "bench_chain_optout_4",
+    persist: false,
+    BenchS0,
+    BenchS1,
+    BenchS2,
+    BenchS3
+);
+
+// One turn's durable state: how many turns ran and the last one — bounded,
+// so a million-turn soak snapshots the same few bytes at every iteration.
+#[derive(Serialize, Deserialize, Clone, Default)]
+struct BenchTurnState {
+    turns: u64,
+    last: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+struct BenchTurnSeen(String);
+impl Change for BenchTurnSeen {}
+
+#[derive(Default)]
+struct BenchTurn;
+impl Procedure for BenchTurn {
+    type Input = String;
+    type Output = String;
+    type State = BenchTurnState;
+    type Change = BenchTurnSeen;
+    type Clock = WallClock;
+    type Config = ();
+    fn name() -> &'static str {
+        "bench_turn"
+    }
+    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> BenchTurnState {
+        BenchTurnState::default()
+    }
+    fn apply_change(state: &mut BenchTurnState, change: &BenchTurnSeen) {
+        state.turns += 1;
+        state.last = change.0.clone();
+    }
+    fn run(
+        &mut self,
+        input: String,
+        mut state: StateHandle<'_, Self>,
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
+        state.apply(BenchTurnSeen(input.clone()));
+        ctx.emit::<String>(input)
+    }
+}
+
+struct BenchLoopWorkflow;
+impl WorkflowOperative for BenchLoopWorkflow {
+    fn factory_id() -> &'static str {
+        "bench_loop_workflow"
+    }
+    fn loop_mode() -> LoopMode {
+        LoopMode::PerInput
+    }
+    fn self_terminating() -> bool {
+        false
+    }
+    fn max_duration() -> Option<Duration> {
+        Some(Duration::from_secs(24 * 3600))
+    }
+    fn wake_after() -> Option<Duration> {
+        env::var("FLEZHA_BENCH_WAKE_AFTER_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .map(Duration::from_millis)
+    }
+    fn procedures(c: &ChannelBuilder) {
+        c.input::<String>("in")
+            .into::<BenchTurn>()
+            .named("mid")
+            .codec()
+            .into::<ChatReply>()
+            .named("out")
+            .sink("bench_sink");
+    }
+}
+
 // -- DynamicEntityOperative ----------------------------------------------------
 //
 // Dynamic-mode operative shared by the e2e correctness test and `mix bench
@@ -1385,6 +1552,66 @@ impl StreamOperative for TierStoreOperative {
     }
 }
 
+// -- BenchKeyedOperative (mix bench.roundtrip, --workload keyed) -------------
+//
+// `tier_store` minus the effectively-once declaration, so the round-trip bench
+// can measure the same keyed upsert under both durability postures.
+// `c.effectively_once()` is a compile-time channel declaration, not a runtime
+// flag, so the posture cannot be threaded through one factory.
+// Echo with a declared Block on its entry mailbox. `do_nothing` is the
+// merge-blocking `mix bench` factory and must not change; a separate factory
+// keeps the round-trip bench's back-pressure posture independent of it.
+struct BenchEchoOperative;
+impl StreamOperative for BenchEchoOperative {
+    fn factory_id() -> &'static str {
+        "bench_echo"
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("input")
+            .on_full(OverflowPolicy::Block)
+            .into::<DoNothingProcedure>()
+            .named("echo")
+            .sink("bench_echo_sink");
+    }
+}
+
+struct BenchKeyedOperative;
+impl StreamOperative for BenchKeyedOperative {
+    fn factory_id() -> &'static str {
+        "bench_keyed"
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("input")
+            .on_full(OverflowPolicy::Block)
+            .into::<TierStoreProcedure>()
+            .named("sink")
+            .keyed()
+            .sink("tier_sink");
+    }
+}
+
+// Same again with local state persistence off. `bench_keyed` still writes a WAL
+// record per input even with the durability tier off, because per-Entity
+// persistence is a separate, default-on class property — so it is not a
+// like-for-like against an engine whose keyed state is pure heap. This variant
+// isolates that cost.
+struct BenchKeyedNoPersistOperative;
+impl StreamOperative for BenchKeyedNoPersistOperative {
+    const PERSISTENCE_ENABLED: bool = false;
+
+    fn factory_id() -> &'static str {
+        "bench_keyed_nopersist"
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("input")
+            .on_full(OverflowPolicy::Block)
+            .into::<TierStoreProcedure>()
+            .named("sink")
+            .keyed()
+            .sink("tier_sink");
+    }
+}
+
 // -- CheckpointStoreOperative (effectively-once-checkpoint-granularity e2e) --
 //
 // Same store as TierStoreOperative, but acknowledging only at an explicit
@@ -1466,6 +1693,76 @@ impl StreamOperative for CheckpointBatchedOperative {
         c.outputs_at_checkpoint(1_500);
         c.input::<String>("input")
             .into::<CheckpointStoreProcedure>()
+            .named("sink")
+            .keyed()
+            .sink("tier_sink");
+    }
+}
+
+// -- BenchCheckpointOperative (mix bench.roundtrip, --durability checkpoint) --
+//
+// `checkpoint_store` driven by a DECLARED cadence instead of a "commit:" input:
+// the same keyed upsert, acknowledging every `FLEZHA_BENCH_CHECKPOINT_EVERY`
+// inputs (default 500) per Entity. The amortised posture, comparable to Flink's
+// checkpoint barrier. `FLEZHA_BENCH_CHECKPOINT_OUTPUTS=at_checkpoint` (with
+// `FLEZHA_BENCH_CHECKPOINT_DELAY_MS`) additionally holds the interval's outputs
+// until it closes, which is the part-2 opt-in under measurement.
+#[derive(Default)]
+struct BenchCheckpointProcedure;
+impl Procedure for BenchCheckpointProcedure {
+    type Input = String;
+    type Output = String;
+    type State = TierStoreState;
+    type Change = TierStoreChange;
+    type Clock = WallClock;
+    type Config = ();
+    fn name() -> &'static str {
+        "bench_checkpoint_procedure"
+    }
+    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> TierStoreState {
+        TierStoreState::default()
+    }
+    fn apply_change(state: &mut TierStoreState, change: &TierStoreChange) {
+        match change {
+            TierStoreChange::Set(key, value) => {
+                state.values.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    fn run(
+        &mut self,
+        input: String,
+        mut state: StateHandle<'_, Self>,
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
+        let (key, value) = input.split_once(':').unwrap_or((input.as_str(), ""));
+        let (key, value) = (key.to_string(), value.to_string());
+        state.apply(TierStoreChange::Set(key.clone(), value.clone()));
+        ctx.emit_keyed::<String>(key.clone(), format!("{key}={value}"))
+    }
+}
+
+struct BenchCheckpointOperative;
+impl StreamOperative for BenchCheckpointOperative {
+    fn factory_id() -> &'static str {
+        "bench_checkpoint"
+    }
+    fn channels(c: &ChannelBuilder) {
+        fn env_u64(key: &str, default: u64) -> u64 {
+            std::env::var(key)
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(default)
+        }
+
+        c.effectively_once();
+        c.checkpoint_every(env_u64("FLEZHA_BENCH_CHECKPOINT_EVERY", 500) as u32);
+        if std::env::var("FLEZHA_BENCH_CHECKPOINT_OUTPUTS").as_deref() == Ok("at_checkpoint") {
+            c.outputs_at_checkpoint(env_u64("FLEZHA_BENCH_CHECKPOINT_DELAY_MS", 50));
+        }
+        c.input::<String>("input")
+            .on_full(OverflowPolicy::Block)
+            .into::<BenchCheckpointProcedure>()
             .named("sink")
             .keyed()
             .sink("tier_sink");
