@@ -1,0 +1,108 @@
+{
+  "runtime": "rust",
+  "command": {
+    "test": "cargo run --quiet --manifest-path={artifact} --target-dir=./target -- {namespace}",
+    "bench": "{artifact} {namespace}"
+  },
+  "artifacts": {
+    "test": [
+      "Cargo.toml"
+    ],
+    "bench": [
+      "../../../target/release/rust_runner",
+      "target/release/rust_runner",
+      "../../../target/debug/rust_runner",
+      "target/debug/rust_runner"
+    ]
+  },
+  "build": {
+    "test": "cargo build --manifest-path=test/apps/rust_runner/Cargo.toml --target-dir=./target",
+    "bench": "cargo build -p rust_runner --release"
+  },
+  "connect_timeout_ms": 120000,
+  "transports": [
+    "uds",
+    "quic"
+  ],
+  "deferred": [],
+  "fixtures": {
+    "runner_lifecycle": [
+      "do_nothing",
+      "compare_filter",
+      "bench_echo"
+    ],
+    "graph_builder": [
+      "sugar_do_nothing",
+      "sugar_store_input",
+      "sugar_static_entity",
+      "static_entity",
+      "mixed_operative",
+      "hybrid_channel",
+      "entity_stress",
+      "bench_keyed_nopersist"
+    ],
+    "liveness": [
+      "wedge_probe"
+    ],
+    "retry_ladder": [
+      "poison_probe",
+      "bounded_mailbox_block",
+      "bounded_mailbox_drop_newest",
+      "bounded_mailbox_drop_oldest"
+    ],
+    "state_persistence": [
+      "store_input",
+      "stateful_counter",
+      "coalescing_counter",
+      "persistence_off_counter",
+      "resume_probe",
+      "bench_keyed"
+    ],
+    "effectively_once": [
+      "tier_store",
+      "checkpoint_store",
+      "checkpoint_batched_store",
+      "bench_checkpoint"
+    ],
+    "entity_timers": [
+      "session_timeout"
+    ],
+    "correction_window": [
+      "candle"
+    ],
+    "keyed_channels": [
+      "partition_relay"
+    ],
+    "workflow": [
+      "echo_workflow",
+      "commit_block_workflow",
+      "sync_durable_workflow",
+      "optout_commit_block",
+      "tier_commit_block_workflow",
+      "saga_block_workflow",
+      "outbox_block_workflow",
+      "undo_outbox_workflow",
+      "chat_loop_workflow",
+      "stateless_loop_workflow",
+      "chat_rewind_workflow",
+      "retry_workflow",
+      "branch_workflow",
+      "diamond_workflow",
+      "bench_chain_1",
+      "bench_chain_4",
+      "bench_chain_16",
+      "bench_chain_optout_4",
+      "bench_loop_workflow"
+    ],
+    "dynamic_entity": [
+      "dynamic_entity"
+    ],
+    "entry_idle": [],
+    "partitioned": [
+      "partition_relay",
+      "dynamic_entity"
+    ],
+    "pool_wedge": []
+  },
+  "docs": "docs/architecture/runner.md"
+}

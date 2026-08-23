@@ -2862,7 +2862,7 @@ impl StreamOperative for HybridChannelOperative {
 // Authoring-sugar twins (`simplify-sdk-authoring`). Each mirrors a
 // hand-written operative above to prove the macros expand to the same trait
 // surface and interoperate with raw procedures. See
-// `docs/sdk_authoring_contract.md`.
+// `docs/sdk/authoring_contract.md`.
 // ---------------------------------------------------------------------------
 
 // Single-procedure stateless sugar — twin of `DoNothingProcedure` / `DoNothingOperative`.
@@ -3142,7 +3142,7 @@ mod macro_twin_tests {
         Some(c.iter().sum::<f64>() / window as f64)
     }
 
-    // Cross-SDK conformance (`docs/sdk_authoring_contract.md` §6): the reference
+    // Cross-SDK conformance (`docs/sdk/authoring_contract.md` §6): the reference
     // operative's procedures expand to this exact associated-type mapping. A divergence
     // is a compile error, not a silent drift. The Java SugarTwinTest asserts the
     // same mapping at runtime.
