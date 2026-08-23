@@ -2,6 +2,9 @@
 name = "flezha_runner"
 version = "0.1.0"
 edition = "2021"
+description = "Flezha Rust SDK — author stream and workflow operatives and run them against a Flezha controller"
+license.workspace = true
+repository.workspace = true
 
 # The `no_run` example in src/lib.rs is illustrative documentation; the
 # workspace-wide `cargo test` collects two `flz_transport` metadata

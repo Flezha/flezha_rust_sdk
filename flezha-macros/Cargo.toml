@@ -2,6 +2,9 @@
 name = "flezha-macros"
 version = "0.1.0"
 edition = "2021"
+description = "Procedural macros for the Flezha Rust SDK"
+license.workspace = true
+repository.workspace = true
 
 [lib]
 proc-macro = true
