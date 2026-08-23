@@ -1,7 +1,7 @@
 //! The typed layer's poll workers: this SDK's half of the poll/complete seam.
 //!
 //! The core decides what runs and caps how much may be underway; a host's only
-//! job is to bring the threads (`docs/sdk_poll_core.md`). Rust has no cheap
+//! job is to bring the threads (`docs/sdk/poll_core.md`). Rust has no cheap
 //! blocking, so this host answers with a pool that grows: a base set that
 //! never retires, plus one supervisor parked in the core's starvation wait —
 //! work queued with no thread inside `poll` at all. Each observation adds one

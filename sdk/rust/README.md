@@ -28,7 +28,7 @@ process: a second `start()` returns
 `Err(FlezhaError::AlreadyRunning { .. })` naming the running namespace. Every
 fallible call returns `Result<_, FlezhaError>` — the whole chain compiles
 under a single `?`; invalid topologies surface at the `define_stream` call
-site — no panics. Lifecycle vocabulary: `docs/sdk_naming_conventions.md`.
+site — no panics. Lifecycle vocabulary: `docs/sdk/naming_conventions.md`.
 
 ## Authoring a topology
 
@@ -119,7 +119,7 @@ c.merge::<DetectorInput>()
 ```
 
 Per-source FIFO is preserved and nothing is ordered across sources; see
-`docs/multi_input_procedures.md`.
+`docs/sdk/multi_input_procedures.md`.
 
 When that config stream is **operative-wide** and the consumer is keyed, a merge
 alone is not enough: a keyed procedure cannot receive a broadcast, since the key
@@ -140,7 +140,7 @@ c.merge::<DetectorInput>()
 Delivering on the key's own traffic — rather than fanning a new document out
 over a remembered key set — is what keeps every emitted key one this member
 owns. The price is one tick of latency per key; §4.1 of
-`docs/sdk_authoring_contract.md` has the full contract.
+`docs/sdk/authoring_contract.md` has the full contract.
 
 ### A fuller graph: named nodes, a hybrid tap, a keyed sink
 
@@ -267,8 +267,13 @@ After any public-API-affecting change:
 
 This crate is the typed layer over the shared runner kernel: the `flz_core`
 workspace crate owns dispatch, durability, retries, timers and transport,
-and this crate's poll workers drive it (`docs/sdk_poll_core.md`). See
-`docs/operative_architecture.md` for the dispatch pipeline,
-`docs/operative_state_persistence.md` for the state-persistence trait
+and this crate's poll workers drive it (`docs/sdk/poll_core.md`). See
+`docs/sdk/rust_operative_architecture.md` for the dispatch pipeline,
+`docs/sdk/state_persistence.md` for the state-persistence trait
 surface,
-and `docs/sdk_protocol_spec.md` for the wire format.
+and `docs/sdk/protocol_spec.md` for the wire format.
+
+## License
+
+Apache-2.0 — [`LICENSES/Apache-2.0.txt`](../../LICENSES/Apache-2.0.txt). The
+per-path map for the whole repository is [`REUSE.toml`](../../REUSE.toml).

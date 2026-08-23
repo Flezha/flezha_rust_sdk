@@ -72,7 +72,7 @@
 //! # fn _ref() -> Option<NoChange> { None }
 //! ```
 //!
-//! Method names and lifecycle verbs follow `docs/sdk_naming_conventions.md`
+//! Method names and lifecycle verbs follow `docs/sdk/naming_conventions.md`
 //! (repository root), mirrored 1:1 with the Java SDK.
 //!
 //! When 10,000 messages targeting one `appender` StreamOperative instance arrive
@@ -148,7 +148,7 @@ pub use entity::{RestoreError, RestoreInitPayload};
 pub use entry_idle::IdleObserver;
 /// Authoring sugar. `#[flezha::procedure]`, `#[derive(flezha::State)]`, and
 /// `flezha::operative!` expand to the trait surface above; see
-/// `docs/sdk_authoring_contract.md`.
+/// `docs/sdk/authoring_contract.md`.
 pub use flezha_macros::{operative, procedure, State};
 pub use flz_transport::{service, transport};
 /// Re-exported so macro-generated code can `submit!` into the auto-operative
@@ -236,7 +236,7 @@ pub fn __register_stream<R: StreamOperative>() {
 /// [`FlezhaRunner`] returns `Result<_, FlezhaError>`, so
 /// `Flezha::create_runner(ns)?.define_stream::<A>()?.run()?` compiles
 /// under a single `?`. Java throws the identically-named failure classes
-/// (naming rule 6 in `docs/sdk_naming_conventions.md`).
+/// (naming rule 6 in `docs/sdk/naming_conventions.md`).
 #[derive(Debug, thiserror::Error)]
 pub enum FlezhaError {
     /// [`Flezha::create_runner`] was given an empty namespace.
@@ -301,7 +301,7 @@ static ACTIVE_RUNNER: Mutex<Option<ActiveRunner>> = Mutex::new(None);
 /// Static-only entry point of the SDK: [`Flezha::create_runner`] to create
 /// the process's runner, [`Flezha::current_runner`] to reach it from code
 /// that does not control startup ordering. Method names and lifecycle verbs
-/// follow `docs/sdk_naming_conventions.md`, mirrored 1:1 with the Java SDK's
+/// follow `docs/sdk/naming_conventions.md`, mirrored 1:1 with the Java SDK's
 /// `com.flezha.sdk.Flezha`.
 pub struct Flezha;
 

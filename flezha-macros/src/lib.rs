@@ -10,7 +10,7 @@
 //!   to a `channels()` body + auto-registration.
 //!
 //! Everything expands to the existing trait surface; see
-//! `docs/sdk_authoring_contract.md`.
+//! `docs/sdk/authoring_contract.md`.
 
 use proc_macro::TokenStream;
 

@@ -145,7 +145,7 @@ where the whole cost is one relaxed atomic store; a panicking observer is
 contained and logged on `flezha::entry_idle`.
 
 No default threshold and no default action ship: the *signal* is the SDK's, the
-*policy* is the application's. `docs/entry_input_observability.md`.
+*policy* is the application's. `docs/sdk/entry_input_idle.md`.
 
 ### A dead secondary stream can no longer stall a runner permanently and silently
 
@@ -222,7 +222,7 @@ support on `state_sink`: `reset_for_test`, `reconnect_requested_for_test`.
   than "never existed". Beyond the cap it degrades to the latter, which is the
   safe direction.
 - Example: `sdk/rust/examples/live_state_read.rs`. Docs:
-  `docs/entity_state_live_query.md`.
+  `docs/internals/state_persistence.md`.
 
 ### Stream transforms and edge keying (`stream-dsl-keyby-and-transforms`)
 
@@ -287,7 +287,7 @@ support on `state_sink`: `reset_for_test`, `reconnect_requested_for_test`.
   **crash-resume re-seed** site Rust also unwinds the journaled stages (the
   resumed iteration's completed list is seeded from the journal); the Java arm
   does not, a pre-existing gap in its resumed chains recorded under "Known
-  limitation" in `docs/multi_input_procedures.md`. `Merge` is `#[must_use]`: a merge left unclosed by
+  limitation" in `docs/sdk/multi_input_procedures.md`. `Merge` is `#[must_use]`: a merge left unclosed by
   `.into` declares no edges at all.
 - **Per-source FIFO is preserved; nothing is ordered across sources** — the
   guarantee two independent consumers already had. Mappings MUST be pure: they

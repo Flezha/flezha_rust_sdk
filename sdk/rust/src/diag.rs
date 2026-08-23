@@ -14,7 +14,7 @@
 /// on, at `warn` and above. Applications that build their own filter
 /// start from this list instead of enumerating SDK internals. A new
 /// diagnostic target ships with an entry here in the same change
-/// (`docs/sdk_naming_conventions.md`, rule 11).
+/// (`docs/sdk/naming_conventions.md`, rule 11).
 pub const DEFAULT_DIRECTIVES: &str =
     "flezha=warn,flz_core=warn,flz_transport=warn,flezha_runner=warn";
 

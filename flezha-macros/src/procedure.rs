@@ -2,7 +2,7 @@
 //! six `Procedure` associated types from the signature, generates the PascalCase
 //! procedure type + `Procedure` impl, and (when `sink` is given) a single-procedure
 //! auto-wired `StreamOperative` + inventory registration. See
-//! `docs/sdk_authoring_contract.md` §2, §4, §5.
+//! `docs/sdk/authoring_contract.md` §2, §4, §5.
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};

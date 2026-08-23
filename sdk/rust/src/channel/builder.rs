@@ -632,7 +632,7 @@ impl ChannelBuilder {
     /// (stream) or turned into a terminal chain error the saga compensates
     /// (workflow). The one unguarded seam is a stream entry-channel source,
     /// where the mapping runs on the wire-reader path — the same exposure the
-    /// entry parser there already carries. `docs/multi_input_procedures.md`
+    /// entry parser there already carries. `docs/sdk/multi_input_procedures.md`
     /// tabulates it.
     ///
     /// A source's payload must be [`Clone`]: the mapping is handed the
@@ -1459,7 +1459,7 @@ impl<'b, T: 'static + Send + Sync, K: StreamTarget> Stream<'b, T, K> {
 
     /// Override the default `OverflowPolicy` (`Block` for every channel
     /// kind). On an entry channel `Block` parks the shared wire reader
-    /// on this operative's saturation (see `docs/operative_architecture.md`
+    /// on this operative's saturation (see `docs/sdk/rust_operative_architecture.md`
     /// for the co-tenancy cost); declare `DropNewest` / `DropOldest` when
     /// shedding under saturation is acceptable and ordering or completeness
     /// can be sacrificed for liveness.

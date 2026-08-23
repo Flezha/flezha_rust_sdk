@@ -1,6 +1,6 @@
 //! `#[derive(flezha::State)]` — generates a field-granular `Change` enum,
 //! `apply_change`, the `DerivedState` binding, and journaling mutators on the
-//! state handle. See `docs/sdk_authoring_contract.md` §3.
+//! state handle. See `docs/sdk/authoring_contract.md` §3.
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};

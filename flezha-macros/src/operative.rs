@@ -1,7 +1,7 @@
 //! `flezha::operative! { id: "...", pipeline: input::<T> -> A -> B -> plugin::<U>("k") }`
 //! — lowers a strictly linear pipeline to a `channels()` body + inventory
 //! auto-registration. Fan-out / multi-input is rejected with a message
-//! pointing at an explicit `channels()`. See `docs/sdk_authoring_contract.md`
+//! pointing at an explicit `channels()`. See `docs/sdk/authoring_contract.md`
 //! §5 and design D6.
 
 use proc_macro2::TokenStream;
