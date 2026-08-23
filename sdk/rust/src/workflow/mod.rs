@@ -110,6 +110,17 @@ pub trait WorkflowOperative: Send + Sync + 'static {
         Duration::from_millis(500)
     }
 
+    /// Sends of one commit barrier (`ProcCommit` / `IterCommit`, first send
+    /// included) before an ack that never arrives fails the run. Default 3;
+    /// `0` or `1` is the single wait. A re-send carries the same
+    /// `reference_id`, and the controller journals a barrier once by its
+    /// identity, so a transient control-channel stall delays the chain
+    /// instead of ending it. The re-sends wait out
+    /// [`retry_backoff`](Self::retry_backoff) between attempts.
+    fn barrier_retry_attempts() -> u32 {
+        3
+    }
+
     /// Saga rollback scope, applied when the operative terminates abnormally
     /// after partial progress. Default [`RollbackMode::AllOrNothing`] undoes
     /// every completed procedure in reverse, back to the start;
@@ -396,25 +407,69 @@ mod tests {
     }
 
     /// Two-stage linear chain: Stage1 → Stage2 → plugin.
+    /// The two-stage durable chain every chain/loop fixture below declares:
+    /// `in -> Stage1 -> mid (codec) -> Stage2 -> out -> sink`.
+    fn two_stage_chain(c: &ChannelBuilder) {
+        c.input::<String>("in")
+            .into::<Stage1>()
+            .named("mid")
+            .codec()
+            .into::<Stage2>()
+            .named("out")
+            .sink("sink");
+    }
+
     struct ChainWorkflow;
     impl WorkflowOperative for ChainWorkflow {
         fn factory_id() -> &'static str {
             "test-chain-workflow"
         }
         fn procedures(c: &ChannelBuilder) {
-            c.input::<String>("in")
-                .into::<Stage1>()
-                .named("mid")
-                .codec()
-                .into::<Stage2>()
-                .named("out")
-                .sink("sink");
+            two_stage_chain(c);
         }
     }
 
     /// The same chain, driven as a chat-style inbox loop: one iteration per
     /// post-start input, parking when the inbox goes quiet
     /// (`workflow-durable-loop` + `workflow-durable-suspension`).
+    /// `ChainWorkflow` with a short re-send backoff, so the barrier re-send
+    /// scenarios wait out their ladder inside the drain's deadline.
+    struct ResendChain;
+    impl WorkflowOperative for ResendChain {
+        fn factory_id() -> &'static str {
+            "test-resend-chain"
+        }
+        fn retry_backoff() -> Duration {
+            Duration::from_millis(50)
+        }
+        fn procedures(c: &ChannelBuilder) {
+            two_stage_chain(c);
+        }
+    }
+
+    /// `ChatLoop` with a short re-send backoff.
+    struct ResendLoop;
+    impl WorkflowOperative for ResendLoop {
+        fn factory_id() -> &'static str {
+            "test-resend-loop"
+        }
+        fn loop_mode() -> LoopMode {
+            LoopMode::PerInput
+        }
+        fn self_terminating() -> bool {
+            false
+        }
+        fn max_duration() -> Option<Duration> {
+            Some(Duration::from_secs(30))
+        }
+        fn retry_backoff() -> Duration {
+            Duration::from_millis(50)
+        }
+        fn procedures(c: &ChannelBuilder) {
+            two_stage_chain(c);
+        }
+    }
+
     struct ChatLoop;
     impl WorkflowOperative for ChatLoop {
         fn factory_id() -> &'static str {
@@ -430,13 +485,7 @@ mod tests {
             Some(Duration::from_secs(30))
         }
         fn procedures(c: &ChannelBuilder) {
-            c.input::<String>("in")
-                .into::<Stage1>()
-                .named("mid")
-                .codec()
-                .into::<Stage2>()
-                .named("out")
-                .sink("sink");
+            two_stage_chain(c);
         }
     }
 
@@ -2397,6 +2446,8 @@ mod tests {
         crate::register_workflow_class::<LeakWorkflow>().unwrap();
         crate::register_workflow_class::<UndoSaga>().unwrap();
         crate::register_workflow_class::<ChatLoop>().unwrap();
+        crate::register_workflow_class::<ResendChain>().unwrap();
+        crate::register_workflow_class::<ResendLoop>().unwrap();
         crate::register_workflow_class::<LoopSagaAllOrNothing>().unwrap();
         crate::register_workflow_class::<LoopSagaKeepProgress>().unwrap();
         crate::register_workflow_class::<RetryWorkflow>().unwrap();
@@ -3851,6 +3902,98 @@ mod tests {
             "descendants before ancestors: the sibling leaf and the failing branch's \
              committed procedure both unwind before the root they share"
         );
+
+        // --- workflow-durable-path-throughput: an unacked barrier is re-sent
+        // under the same reference_id, and the controller journals it once ---
+        std::env::set_var("FLEZHA_WORKFLOW_ACK_TIMEOUT_MS", "300");
+        let _ = drain_proc_commits();
+        let _ = drain_barrier_sends();
+
+        // The first ProcCommit's ack is lost: the re-send continues the chain.
+        lose_acks("resend-1", 1);
+        assert!(node.start_workflow("test-resend-chain".into(), "resend-1".into(), "x".into()));
+        let (outs, done) = drain(&rx, "resend-1");
+        assert_eq!(
+            (done.0.as_str(), done.1.as_str()),
+            ("ok", ""),
+            "a lost ack delays the chain, it does not end it"
+        );
+        assert_eq!(
+            outs,
+            vec![b"x-1-2".to_vec()],
+            "the journaled outbox reaches the plugins once"
+        );
+        let sends = barrier_sends_of("resend-1");
+        assert_eq!(sends.len(), 3, "stage 0 twice, stage 1 once");
+        assert_eq!(
+            sends[0], sends[1],
+            "the re-send carries the same reference_id"
+        );
+        assert_ne!(sends[1], sends[2]);
+        assert_eq!(
+            drain_proc_commits()
+                .iter()
+                .map(|c| c.proc_idx)
+                .collect::<Vec<_>>(),
+            vec![0, 1],
+            "each barrier is journaled once"
+        );
+
+        // No ack ever arrives: the bounded ladder fails the run.
+        lose_acks("resend-2", usize::MAX);
+        assert!(node.start_workflow("test-resend-chain".into(), "resend-2".into(), "y".into()));
+        let (_outs, done) = drain(&rx, "resend-2");
+        assert_eq!(done.0, "error");
+        assert!(
+            done.1.contains("ack timed out after 3 attempt(s)"),
+            "the exhausted ladder is the terminal error: {}",
+            done.1
+        );
+        let sends = barrier_sends_of("resend-2");
+        assert_eq!(sends.len(), 3, "the default ladder sends three times");
+        assert!(sends.iter().all(|r| r == &sends[0]));
+        let _ = drain_proc_commits();
+
+        // A re-sent IterCommit is idempotent on the controller: the turn's
+        // barriers each lose their first ack, and each is journaled once.
+        std::env::set_var("FLEZHA_WORKFLOW_PARK_IDLE_MS", "300");
+        let _ = drain_iter_commits();
+        let _ = drain_iter_parks();
+        lose_acks("resend-3", 3);
+        assert!(node.start_workflow(
+            "test-resend-loop".into(),
+            "resend-3".into(),
+            "ignored".into()
+        ));
+        let resend_loop = node
+            .get_workflow("resend-3")
+            .expect("the loop's instance is registered before its driver runs");
+        assert!(resend_loop.push_inbox(b"hi".to_vec(), 4));
+        let (outs, done) = drain(&rx, "resend-3");
+        assert_eq!(done.0, "parked");
+        assert_eq!(outs, vec![b"hi-1-2".to_vec()]);
+        assert_eq!(
+            drain_iter_commits()
+                .iter()
+                .map(|c| (c.iter, c.consumed_offset))
+                .collect::<Vec<_>>(),
+            vec![(0, 4)],
+            "one iter_committed for two sends"
+        );
+        assert_eq!(
+            drain_proc_commits()
+                .iter()
+                .map(|c| (c.iter, c.proc_idx))
+                .collect::<Vec<_>>(),
+            vec![(0, 0), (0, 1)]
+        );
+        let sends = barrier_sends_of("resend-3");
+        assert_eq!(sends.len(), 6, "every barrier of the turn was sent twice");
+        assert!(
+            sends.chunks(2).all(|pair| pair[0] == pair[1]),
+            "each re-send carries its barrier's own reference_id"
+        );
+        std::env::remove_var("FLEZHA_WORKFLOW_ACK_TIMEOUT_MS");
     }
 
     /// Respawn `test-chain-workflow` as a crash-resume carrying `journal` on the
@@ -3892,6 +4035,20 @@ mod tests {
     /// committed boundary.
     static ITER_PARKS: Mutex<Vec<crate::pb::IterPark>> = Mutex::new(Vec::new());
 
+    /// Every barrier send the fake controller saw, `(operative_id,
+    /// reference_id)`, re-sends included.
+    static BARRIER_SENDS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+
+    /// Reference ids the fake controller has journaled: a re-send under one of
+    /// them is acked from the existing entry, never recorded twice.
+    static JOURNALED_REFS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    /// Per operative, how many barriers lose their first ack on the way back
+    /// (`usize::MAX` = every send of every barrier). A lost ack is the real
+    /// controller's: the entry is journaled and its outbox flushed, only the
+    /// reply never reaches the driver.
+    static LOST_ACKS: Mutex<Vec<(String, usize)>> = Mutex::new(Vec::new());
+
     /// Every `EmitWorkflowOutput` the drain helpers saw — output that went
     /// STRAIGHT to the wire, bypassing any proc boundary. A durable structured
     /// operative must produce none of these (it stages); `run`-sugar and
@@ -3908,6 +4065,76 @@ mod tests {
 
     fn drain_iter_parks() -> Vec<crate::pb::IterPark> {
         std::mem::take(&mut *ITER_PARKS.lock().unwrap())
+    }
+
+    fn drain_barrier_sends() -> Vec<(String, String)> {
+        std::mem::take(&mut *BARRIER_SENDS.lock().unwrap())
+    }
+
+    /// The reference ids of `operative_id`'s barrier sends, in order.
+    fn barrier_sends_of(operative_id: &str) -> Vec<String> {
+        BARRIER_SENDS
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(id, _)| id == operative_id)
+            .map(|(_, reference_id)| reference_id.clone())
+            .collect()
+    }
+
+    fn lose_acks(operative_id: &str, count: usize) {
+        LOST_ACKS
+            .lock()
+            .unwrap()
+            .push((operative_id.to_string(), count));
+    }
+
+    /// Whether this send's ack is lost: a barrier's first send consumes one of
+    /// the operative's losses, a re-send is acked — unless every ack is lost.
+    fn ack_lost(operative_id: &str, first_send: bool) -> bool {
+        let mut lost = LOST_ACKS.lock().unwrap();
+        match lost.iter_mut().find(|(id, _)| id == operative_id) {
+            Some((_, n)) if *n == usize::MAX => true,
+            Some((_, n)) if *n > 0 && first_send => {
+                *n -= 1;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The controller's barrier handling: a first send is journaled (`record`)
+    /// and its outbox released, a re-send is acked from the existing entry —
+    /// unless this operative's ack is lost on the way back.
+    fn journal_barrier(
+        operative_id: &str,
+        reference_id: &str,
+        flushed: Vec<Vec<u8>>,
+        record: impl FnOnce(),
+    ) -> Vec<Vec<u8>> {
+        BARRIER_SENDS
+            .lock()
+            .unwrap()
+            .push((operative_id.to_string(), reference_id.to_string()));
+        let fresh = {
+            let mut refs = JOURNALED_REFS.lock().unwrap();
+            let fresh = !refs.iter().any(|r| r == reference_id);
+            if fresh {
+                refs.push(reference_id.to_string());
+            }
+            fresh
+        };
+        if fresh {
+            record();
+        }
+        if !ack_lost(operative_id, fresh) {
+            crate::shutdown::signal_result(reference_id, Ok(String::new()));
+        }
+        if fresh {
+            flushed
+        } else {
+            Vec::new()
+        }
     }
 
     fn wire_emits_for(id: &str) -> Vec<Vec<u8>> {
@@ -3935,14 +4162,16 @@ mod tests {
             Command::ProcCommit(commit) => {
                 let flushed: Vec<Vec<u8>> =
                     commit.outbox.iter().map(|o| o.payload.clone()).collect();
-                PROC_COMMITS.lock().unwrap().push(commit);
-                crate::shutdown::signal_result(&reference_id, Ok(String::new()));
-                flushed
+                let operative_id = commit.operative_id.clone();
+                journal_barrier(&operative_id, &reference_id, flushed, || {
+                    PROC_COMMITS.lock().unwrap().push(commit)
+                })
             }
             Command::IterCommit(commit) => {
-                ITER_COMMITS.lock().unwrap().push(commit);
-                crate::shutdown::signal_result(&reference_id, Ok(String::new()));
-                Vec::new()
+                let operative_id = commit.operative_id.clone();
+                journal_barrier(&operative_id, &reference_id, Vec::new(), || {
+                    ITER_COMMITS.lock().unwrap().push(commit)
+                })
             }
             Command::IterPark(park) => {
                 ITER_PARKS.lock().unwrap().push(park);

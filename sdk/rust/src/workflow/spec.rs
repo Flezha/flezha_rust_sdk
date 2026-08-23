@@ -43,6 +43,7 @@ pub fn build_spec<T: WorkflowOperative>() -> Result<WorkflowSpec, BuildWorkflowE
             loop_mode: LoopMode::Once,
             wake_after: None,
             retry,
+            barrier_retry_attempts: T::barrier_retry_attempts(),
             persistence_enabled: T::PERSISTENCE_ENABLED,
             sync_durability: T::SYNC_DURABILITY,
         });
@@ -111,6 +112,7 @@ pub fn build_spec<T: WorkflowOperative>() -> Result<WorkflowSpec, BuildWorkflowE
         loop_mode: T::loop_mode(),
         wake_after: T::wake_after(),
         retry,
+        barrier_retry_attempts: T::barrier_retry_attempts(),
         persistence_enabled: T::PERSISTENCE_ENABLED,
         sync_durability: T::SYNC_DURABILITY,
     })
