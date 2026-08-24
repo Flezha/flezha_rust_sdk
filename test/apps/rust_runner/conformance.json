@@ -102,7 +102,9 @@
       "partition_relay",
       "dynamic_entity"
     ],
-    "pool_wedge": [],
+    "pool_wedge": [
+      "wedge_probe"
+    ],
     "schema_evolution": [
       "schema_evolution_v1",
       "schema_evolution_v2"

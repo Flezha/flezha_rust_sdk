@@ -1914,15 +1914,28 @@ impl StreamOperative for PoisonProbeOperative {
     }
 }
 
-// -- WedgeProbeOperative (control-plane silent-wedge e2e) ------------------
+// -- WedgeProbeOperative (runner-dispatch-wedge e2e) -----------------------
 //
-// Reproduces the 2026-06-10 production freeze: the input "wedge" blocks the
-// dispatch inside user code forever, so the SDK's dispatch counter stops
-// advancing while the heartbeat thread keeps reporting the runner alive.
-// That is exactly the `runner_pool_wedged` signature the classifier looks
-// for — a runner that is connected, heartbeating, and processing nothing.
+// The `pool_wedge` fixture: the two ways a runner stops doing work, on one
+// operative.
+//
+//   "wedge" — blocks the dispatch inside user code forever, so the SDK's
+//     dispatch counter stops advancing while the heartbeat thread keeps
+//     reporting the runner alive. That is the `runner_pool_wedged` signature
+//     (the 2026-06-10 production freeze): connected, heartbeating, processing
+//     nothing. Teardown is the stdin-EOF watcher.
+//   "abort" — ends its activation as violently as this host allows, WITHOUT
+//     emitting, once per process. Rust has no way for user code to kill a poll
+//     worker outright: the dispatcher catches the unwind per item and the
+//     panic rides the retry ladder. That is what the scenario asserts is
+//     survivable — whatever the host does with a violent failure, the Entity
+//     must be served again and the aborting item must not produce twice.
+//
 // Every other input emits `ok:<input>`, which is how the e2e proves the
-// operative produces again once it has been rebound elsewhere.
+// operative produces again once the remedy has landed.
+
+static WEDGE_PROBE_ABORTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 #[derive(Default)]
 struct WedgeProbeProcedure;
@@ -1944,11 +1957,13 @@ impl Procedure for WedgeProbeProcedure {
         ctx: &mut ProcedureCtx<'_>,
     ) -> Result<(), ProcedureError> {
         if input == "wedge" {
-            // Never returns. The runner stays connected and heartbeating; only
-            // its dispatch progress dies. Teardown is the stdin-EOF watcher.
             loop {
                 thread::sleep(Duration::from_secs(3600));
             }
+        }
+        if input == "abort" && !WEDGE_PROBE_ABORTED.swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            panic!("wedge_probe: killing the worker holding this activation");
         }
         ctx.emit(format!("ok:{input}"))
     }

@@ -63,7 +63,7 @@ mod tests {
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
-    use flz_core::poll_core::{EngineActivation, PollCore, Polled, Starvation};
+    use flz_core::poll_core::{Answered, EngineActivation, PollCore, Polled, Starvation};
     use flz_core::restore::RestoreInitPayload;
     use flz_transport::transport::FlezhaStream;
 
@@ -346,7 +346,7 @@ mod tests {
     /// no attempt bump, no backoff (the tail never failed). This is exactly
     /// how a healthy payload queued behind a poison one stays deliverable.
     #[test]
-    fn rehand_unprocessed_returns_the_tail_untouched() {
+    fn abandon_returns_the_tail_untouched() {
         let core = PollCore::new();
         let (_i, slot) = build_slot("poll-rehand");
         let stream = unix_stream();
@@ -358,7 +358,7 @@ mod tests {
         let started = Instant::now();
         let (token, _slot, items) = act.into_work().expect("work activation");
         let tail: Vec<_> = items.into_iter().skip(1).collect();
-        core.rehand_unprocessed(token, tail);
+        core.abandon(token, tail);
 
         let act = match core.poll(Duration::from_millis(500)) {
             Polled::Activation(a) => a,
@@ -381,14 +381,114 @@ mod tests {
             Polled::Activation(a) => a,
             _ => panic!("expected an activation"),
         };
-        core.rehand_unprocessed(act.token, Vec::new());
+        core.abandon(act.token, Vec::new());
         assert!(slot.mailbox.try_push(payload(10, &stream)).is_ok());
         assert!(slot.mailbox.try_mark_inflight());
         core.schedule(&slot);
         match core.poll(Duration::from_millis(500)) {
-            Polled::Activation(a) => core.complete(a.token),
+            Polled::Activation(a) => {
+                core.complete(a.token);
+            }
             _ => panic!("entity not released after an empty re-hand"),
         }
+    }
+
+    /// The third answer, on the path it exists for: a host that took a batch
+    /// and could not finish it re-hands EVERYTHING untouched. Per-entity
+    /// exclusivity is the handout, so without this the entity would never
+    /// appear in another poll result for the life of the process.
+    #[test]
+    fn abandon_rehands_the_whole_batch_and_releases_the_entity() {
+        let core = PollCore::new();
+        let (_i, slot) = build_slot("poll-abandon");
+        let stream = unix_stream();
+
+        let act = queue_and_hand_out(&core, &slot, &stream, 3);
+        let (token, _slot, items) = act.into_work().expect("work activation");
+        assert_eq!(core.outstanding_count(), 1);
+        assert_eq!(core.abandon(token, items), Answered::Released);
+        assert_eq!(core.outstanding_count(), 0);
+
+        let act = match core.poll(Duration::from_millis(500)) {
+            Polled::Activation(a) => a,
+            _ => panic!("an abandoned entity must be pollable again"),
+        };
+        assert_eq!(
+            ordinals(&act),
+            vec![0, 1, 2],
+            "items must come back in order"
+        );
+        for item in act.items() {
+            assert_eq!(item.attempt, 1, "an abandon consumes no ladder attempt");
+            assert!(!item.is_final);
+        }
+        core.complete(act.token);
+    }
+
+    /// A token the core does not hold is a host defect — a double answer, or
+    /// one from a context that never held it. Reporting it is what turns a
+    /// silent second release (which would re-arm an entity another worker is
+    /// already draining) into a caught bug.
+    #[test]
+    fn a_second_answer_is_rejected_not_silently_ignored() {
+        let core = PollCore::new();
+        let (_i, slot) = build_slot("poll-double-answer");
+        let stream = unix_stream();
+
+        let act = queue_and_hand_out(&core, &slot, &stream, 1);
+        let token = act.token;
+        drop(act);
+        assert_eq!(core.complete(token), Answered::Released);
+
+        assert_eq!(core.complete(token), Answered::UnknownToken);
+        assert_eq!(core.abandon(token, Vec::new()), Answered::UnknownToken);
+        assert_eq!(
+            core.retry_after_failure(token, Vec::new(), "boom".into()),
+            Answered::UnknownToken
+        );
+        assert_eq!(
+            core.abandon(u64::MAX, Vec::new()),
+            Answered::UnknownToken,
+            "a token never handed out is refused the same way"
+        );
+    }
+
+    /// Handout liveness, the two values the heartbeat carries: one wedged
+    /// Entity is invisible to the runner-wide dispatch counter, and these are
+    /// what make it visible. Reporting only — nothing here reclaims.
+    #[test]
+    fn handout_liveness_reports_the_count_and_the_oldest_age() {
+        let core = PollCore::new();
+        let (_ia, first) = build_slot("poll-liveness-a");
+        let (_ib, second) = build_slot("poll-liveness-b");
+        let stream = unix_stream();
+
+        assert_eq!(core.outstanding_count(), 0);
+        assert_eq!(
+            core.outstanding_oldest_age_ms(),
+            0,
+            "an idle core reports zero"
+        );
+
+        let old = queue_and_hand_out(&core, &first, &stream, 1);
+        std::thread::sleep(Duration::from_millis(60));
+        let young = queue_and_hand_out(&core, &second, &stream, 1);
+
+        assert_eq!(core.outstanding_count(), 2);
+        let age = core.outstanding_oldest_age_ms();
+        assert!(
+            age >= 60,
+            "the OLDEST handout's age is what is reported, got {age}ms"
+        );
+
+        core.complete(old.token);
+        assert_eq!(core.outstanding_count(), 1);
+        assert!(
+            core.outstanding_oldest_age_ms() < age,
+            "the remaining handout is younger than the one just answered"
+        );
+        core.complete(young.token);
+        assert_eq!(core.outstanding_oldest_age_ms(), 0);
     }
 
     // ------------------------------------------------ the deferred-wake list
@@ -805,7 +905,9 @@ mod tests {
             "work a waiting poller can serve must not read as starvation"
         );
         match poller.join().unwrap() {
-            Polled::Activation(act) => core.complete(act.token),
+            Polled::Activation(act) => {
+                core.complete(act.token);
+            }
             _ => panic!("the waiting poller did not take the queued work"),
         }
     }

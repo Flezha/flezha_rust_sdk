@@ -9,6 +9,12 @@
 //! idle streak, so a workload that never starves observes exactly the base
 //! pool. (Java's counterpart hands each activation to a virtual thread and
 //! never starves; the two arms share the core, not a mechanism.)
+//!
+//! That supervisor is also the pool's only self-heal: a worker that leaves for
+//! any reason releases its slot through a guard that runs on an unwind, and the
+//! supervisor restores the pool to `base` whenever it finds it short. A
+//! shrunken-but-sufficient pool starves nobody, so waiting for a starvation
+//! signal would leave the runner permanently below the operator's size.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -79,42 +85,78 @@ impl PollPool {
             .expect("spawn poll supervisor");
     }
 
-    /// Every observation means work is queued with nobody inside `poll` to
-    /// take it, so the answer is one more thread. Growth is self-limiting
-    /// without a settle here: the spawned worker's own `poll` entry restarts
-    /// the core's dwell, so the next thread is at least a dwell away and only
-    /// if the runner is still stuck.
+    /// The pool's one control loop, with two conditions.
+    ///
+    /// Every starvation observation means work is queued with nobody inside
+    /// `poll` to take it, so the answer is one more thread. Growth is
+    /// self-limiting without a settle here: the spawned worker's own `poll`
+    /// entry restarts the core's dwell, so the next thread is at least a dwell
+    /// away and only if the runner is still stuck.
+    ///
+    /// The other condition is a pool that has gone SHORT. A worker that
+    /// unwound out of its loop released its slot, and nothing else would ever
+    /// bring it back: a shrunken-but-still-sufficient pool starves nobody, so
+    /// waiting for a starvation signal would leave the runner permanently
+    /// below the size the operator asked for. Every wake checks, so a
+    /// replacement is at most one park behind the death.
     fn supervise(self: Arc<Self>) {
         loop {
-            match self.core.wait_starvation(SUPERVISOR_WAIT) {
-                Starvation::Observed => self.grow(),
-                Starvation::Timeout => {}
-                Starvation::ShuttingDown => return,
+            let starvation = self.core.wait_starvation(SUPERVISOR_WAIT);
+            if matches!(starvation, Starvation::ShuttingDown) {
+                return;
+            }
+            self.top_up();
+            if matches!(starvation, Starvation::Observed) {
+                self.grow();
             }
         }
     }
 
-    /// Add one worker if the ceiling allows. The slot is reserved before the
-    /// spawn because a retiring worker may be decrementing concurrently, and
-    /// the ceiling has to hold exactly.
+    /// Bring the pool back to `base`, one worker per missing slot. Each
+    /// replacement is logged: a pool respawning into a repeating crash is a hot
+    /// loop, and the log is what makes it visible.
+    fn top_up(self: &Arc<Self>) {
+        while self.spawn_into_slot(self.base, false) {
+            tracing::warn!(
+                target: "flezha::dispatch",
+                base = self.base,
+                "replaced a poll worker that left the pool"
+            );
+        }
+    }
+
+    /// Add one worker if the ceiling allows.
     fn grow(self: &Arc<Self>) {
+        self.spawn_into_slot(self.max, true);
+    }
+
+    /// Reserve a slot below `limit` and spawn a worker into it, releasing the
+    /// reservation again if the spawn fails. `false` means no worker joined —
+    /// the limit left no room, or the thread could not be created — which is
+    /// also what ends `top_up`'s loop.
+    ///
+    /// The slot is reserved BEFORE the spawn because a retiring worker may be
+    /// decrementing concurrently and the ceiling has to hold exactly.
+    fn spawn_into_slot(self: &Arc<Self>, limit: usize, above_base: bool) -> bool {
         if self
             .live
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |live| {
-                (live < self.max).then_some(live + 1)
+                (live < limit).then_some(live + 1)
             })
             .is_err()
         {
-            return;
+            return false;
         }
-        if let Err(e) = self.spawn_worker(true) {
+        if let Err(e) = self.spawn_worker(above_base) {
             self.live.fetch_sub(1, Ordering::AcqRel);
             tracing::warn!(
                 target: "flezha::dispatch",
                 error = %e,
-                "starved runner could not grow its poll pool"
+                "could not spawn a poll worker"
             );
+            return false;
         }
+        true
     }
 
     fn spawn_worker(self: &Arc<Self>, above_base: bool) -> std::io::Result<()> {
@@ -127,6 +169,7 @@ impl PollPool {
     }
 
     fn work(self: Arc<Self>, above_base: bool) {
+        let _slot = LiveWorker(Arc::clone(&self));
         let mut idle = Duration::ZERO;
         loop {
             match self.core.poll(POLL_TIMEOUT) {
@@ -145,7 +188,26 @@ impl PollPool {
                 Polled::ShuttingDown => break,
             }
         }
-        self.live.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// A worker's claim on one pool slot, released on ANY exit — a clean
+/// retirement, or an unwind straight past the loop. The live count is the
+/// ceiling's denominator and the supervisor's top-up trigger, so a departed
+/// worker still counted would both shrink the pool's headroom and hide the
+/// death: an ordinary trailing `fetch_sub` is skipped by exactly the exit that
+/// most needs it.
+struct LiveWorker(Arc<PollPool>);
+
+impl Drop for LiveWorker {
+    fn drop(&mut self) {
+        self.0.live.fetch_sub(1, Ordering::AcqRel);
+        if std::thread::panicking() {
+            tracing::error!(
+                target: "flezha::dispatch",
+                "a poll worker panicked out of its loop; the supervisor will replace it"
+            );
+        }
     }
 }
 
@@ -294,6 +356,97 @@ mod tests {
         GATE_HELD.store(false, Ordering::Release);
         wait_until("the grown worker to retire", || {
             pool.live.load(Ordering::Acquire) == pool.base
+        });
+        pool.core.shutdown();
+    }
+
+    /// The accounting has to survive an unwind, because that is exactly the
+    /// exit a trailing `fetch_sub` would skip: a worker gone but still counted
+    /// keeps a slot in the ceiling and hides its own death from the supervisor.
+    #[test]
+    fn a_worker_that_unwinds_frees_its_slot() {
+        let _serialized = POOL_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let pool = private_pool(1, 4, 300);
+        wait_until("the base pool to come up", || {
+            pool.live.load(Ordering::Acquire) == pool.base
+        });
+
+        let before = pool.live.load(Ordering::Acquire);
+        let claim = Arc::clone(&pool);
+        claim.live.fetch_add(1, Ordering::AcqRel);
+        let died = std::thread::spawn(move || {
+            let _slot = LiveWorker(claim);
+            panic!("a poll worker died");
+        })
+        .join();
+
+        assert!(died.is_err(), "the worker really did unwind");
+        assert_eq!(
+            pool.live.load(Ordering::Acquire),
+            before,
+            "an unwinding worker must release its pool slot"
+        );
+        pool.core.shutdown();
+    }
+
+    /// A shrunken pool that still keeps up starves nobody, so no starvation
+    /// signal would ever arrive to replace a dead worker. The supervisor's
+    /// second condition is what brings the pool back — and the replacement has
+    /// to actually fetch.
+    #[test]
+    fn a_short_pool_is_topped_back_up_to_base_and_serves_again() {
+        let _serialized = POOL_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        GATE_HELD.store(false, Ordering::Release);
+        let pool = private_pool(2, 8, 300);
+        wait_until("the base pool to come up", || {
+            pool.live.load(Ordering::Acquire) == pool.base
+        });
+
+        // A worker died: its slot is free and the count is short.
+        pool.live.fetch_sub(1, Ordering::AcqRel);
+        wait_until("the supervisor to replace the dead worker", || {
+            pool.live.load(Ordering::Acquire) == pool.base
+        });
+
+        let (_i, slot) = build_slot_of::<GatedOperative>("poll-pool-replaced");
+        let before = SERVED.load(Ordering::Acquire);
+        push_input(pool.core, &slot, 1);
+        wait_until("the replacement worker to serve work", || {
+            SERVED.load(Ordering::Acquire) > before
+        });
+        pool.core.shutdown();
+    }
+
+    /// Growth is measured against the LIVE count, so a departed worker frees
+    /// the headroom it occupied instead of pushing the ceiling permanently
+    /// out of reach.
+    #[test]
+    fn a_departed_worker_does_not_consume_the_ceiling() {
+        let _serialized = POOL_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        GATE_HELD.store(false, Ordering::Release);
+        let pool = private_pool(1, 2, 300);
+        wait_until("the base pool to come up", || {
+            pool.live.load(Ordering::Acquire) == pool.base
+        });
+
+        pool.grow();
+        wait_until("the pool to reach its ceiling", || {
+            pool.live.load(Ordering::Acquire) == pool.max
+        });
+        pool.grow();
+        assert_eq!(
+            pool.live.load(Ordering::Acquire),
+            pool.max,
+            "the ceiling must hold exactly"
+        );
+
+        // The grown worker retires; its slot returns to the ceiling's budget.
+        wait_until("the grown worker to retire", || {
+            pool.live.load(Ordering::Acquire) == pool.base
+        });
+        pool.grow();
+        wait_until("growth to be possible again", || {
+            pool.live.load(Ordering::Acquire) == pool.max
         });
         pool.core.shutdown();
     }

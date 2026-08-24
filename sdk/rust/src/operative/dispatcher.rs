@@ -1429,6 +1429,78 @@ fn flush_before_emit_enabled() -> bool {
 }
 use flz_core::routing::send_plugin_frame;
 
+/// Answers a handout exactly once, whatever becomes of the worker holding it.
+///
+/// Per-entity exclusivity IS the handout: an activation that is never answered
+/// retires its entity for the life of the process, silently. `Drop` closes
+/// every way that could happen — an early return, a `?`, a panic unwinding
+/// past the dispatcher's own guards — by abandoning, which puts the items this
+/// worker did not finish back untouched and makes the entity pollable again.
+struct Handout<'a> {
+    core: &'a crate::runner::poll_core::PollCore,
+    token: u64,
+    /// What the worker has not finished. The item being dispatched stays here
+    /// until it resolves — the dispatch runs on a shallow clone — so an unwind
+    /// mid-item re-hands it rather than losing it.
+    remaining: std::collections::VecDeque<crate::runner::poll_core::WorkItem>,
+    answered: bool,
+}
+
+impl<'a> Handout<'a> {
+    fn new(
+        core: &'a crate::runner::poll_core::PollCore,
+        token: u64,
+        items: Vec<crate::runner::poll_core::WorkItem>,
+    ) -> Self {
+        Self {
+            core,
+            token,
+            remaining: items.into(),
+            answered: false,
+        }
+    }
+
+    fn next_item(&self) -> Option<crate::runner::poll_core::WorkItem> {
+        self.remaining.front().cloned()
+    }
+
+    fn item_done(&mut self) {
+        self.remaining.pop_front();
+    }
+
+    /// The head failed retryably: it and the untouched tail ride the ladder.
+    fn retry(mut self, head: crate::runner::poll_core::WorkItem, error: String) {
+        self.remaining.pop_front();
+        let mut rest = Vec::with_capacity(self.remaining.len() + 1);
+        rest.push(head);
+        rest.extend(self.remaining.drain(..));
+        self.answered = true;
+        self.core.retry_after_failure(self.token, rest, error);
+    }
+
+    fn complete(mut self) {
+        self.answered = true;
+        self.core.complete(self.token);
+    }
+}
+
+impl Drop for Handout<'_> {
+    fn drop(&mut self) {
+        if self.answered {
+            return;
+        }
+        tracing::error!(
+            target: "flezha::dispatch",
+            token = self.token,
+            unfinished = self.remaining.len(),
+            panicking = std::thread::panicking(),
+            "a poll worker left an activation unanswered; abandoning it so its entity keeps serving"
+        );
+        let items: Vec<_> = self.remaining.drain(..).collect();
+        self.core.abandon(self.token, items);
+    }
+}
+
 /// Run one activation: one attempt per item through the typed dispatch, then
 /// either complete the batch or hand the failed head (and unprocessed tail)
 /// back to the engine's ladder. The engine owns handout exclusivity,
@@ -1455,8 +1527,8 @@ pub(super) fn run_activation(
         // share a process.
         _ => return,
     };
-    let mut queue: std::collections::VecDeque<WorkItem> = items.into();
-    while let Some(work) = queue.pop_front() {
+    let mut handout = Handout::new(core, token, items);
+    while let Some(work) = handout.next_item() {
         // The connection this item rides — inherited by any processing-time
         // timer it arms, so a firing's plugin emits leave the same way an
         // input's would.
@@ -1464,7 +1536,9 @@ pub(super) fn run_activation(
             EntityItem::Input(payload) => Arc::clone(&payload.stream),
             EntityItem::Timer(fire) => Arc::clone(&fire.stream),
             // Never dispatched (see `dispatch_item`); without a connection of
-            // its own it takes the live secondary.
+            // its own it takes the live secondary. With none live the close
+            // cannot ship, and returning is safe only because the guard
+            // abandons on the way out.
             EntityItem::CloseInterval => match flz_core::state_sink::secondary_stream() {
                 Some(stream) => stream,
                 None => return,
@@ -1486,6 +1560,7 @@ pub(super) fn run_activation(
         };
         match disposition {
             ItemDisposition::Done { ops } => {
+                handout.item_done();
                 // Outside the locks: arming can fire an already-due timer
                 // straight back onto this slot's mailbox, and the drain that
                 // would run it needs them.
@@ -1494,20 +1569,20 @@ pub(super) fn run_activation(
                 crate::entity::DISPATCHES_COMPLETED.fetch_add(1, Ordering::Relaxed);
             }
             ItemDisposition::RetryLater { item, error } => {
-                let mut rest = Vec::with_capacity(queue.len() + 1);
-                rest.push(WorkItem {
-                    item,
-                    now,
-                    attempt,
-                    is_final,
-                });
-                rest.extend(queue);
-                core.retry_after_failure(token, rest, error);
+                handout.retry(
+                    WorkItem {
+                        item,
+                        now,
+                        attempt,
+                        is_final,
+                    },
+                    error,
+                );
                 return;
             }
         }
     }
-    core.complete(token);
+    handout.complete();
 }
 
 /// Whether a Procedure's Entities join the background flusher's drain pass.
@@ -1625,6 +1700,49 @@ mod tests {
     use crate::procedure::state_handle::StateHandle;
     use crate::procedure::{Procedure, ProcedureCtx, ProcedureError};
     use crate::workflow::WorkflowCollectSink;
+
+    /// The worker's guard, on exactly the path it exists for. Per-entity
+    /// exclusivity IS the handout, so a worker that leaves without answering —
+    /// a panic past the dispatcher's own `catch_unwind`s, or an early return
+    /// like the `CloseInterval` arm with no secondary stream — would retire its
+    /// entity for the life of the process. The guard turns both into an
+    /// abandon: the items come back untouched and the next worker serves them.
+    #[test]
+    fn an_unwinding_worker_re_hands_its_activation_instead_of_retiring_the_entity() {
+        use crate::runner::poll_core::{PollCore, Polled};
+        use crate::runner::poll_core_tests::fixtures::{build_slot_of, push_input};
+
+        let core = PollCore::new();
+        let (_instance, slot) = build_slot_of::<KeyedOperative>("dispatcher-unwind");
+        push_input(&core, &slot, 1);
+
+        let act = match core.poll(std::time::Duration::from_millis(500)) {
+            Polled::Activation(a) => a,
+            _ => panic!("no activation handed out"),
+        };
+        let (token, _slot, items) = act.into_work().expect("work activation");
+        assert_eq!(core.outstanding_count(), 1);
+
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _handout = Handout::new(&core, token, items);
+            panic!("the worker died holding an activation");
+        }));
+        assert!(unwound.is_err(), "the worker really did unwind");
+        assert_eq!(core.outstanding_count(), 0, "the handout was not released");
+
+        match core.poll(std::time::Duration::from_millis(500)) {
+            Polled::Activation(again) => {
+                assert_eq!(again.items().len(), 1, "the item was not re-handed");
+                assert_eq!(
+                    again.items()[0].attempt,
+                    1,
+                    "an abandon consumes no ladder attempt"
+                );
+                core.complete(again.token);
+            }
+            _ => panic!("the entity was retired by the unwound worker"),
+        }
+    }
 
     #[derive(Default)]
     struct KeyedProc;
