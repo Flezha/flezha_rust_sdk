@@ -80,7 +80,10 @@ pub use flz_core::persistence::DEFAULT_COMPACT_AFTER_BYTES;
 /// - [`Self::Clock`] — sealed trait. Default [`WallClock`].
 /// - [`Self::Config`] — typed startup config bound to `DeserializeOwned`.
 ///   Default `()` invokes `Self::default()`.
-/// - [`Self::SCHEMA_VERSION`] — bump on non-additive Change-schema edits.
+/// - [`Self::SCHEMA_VERSION`] — bump on non-additive `State` or `Change`
+///   schema edits; [`Self::MIN_READABLE_SCHEMA_VERSION`] plus
+///   [`Self::migrate_state`] / [`Self::migrate_change`] read what an earlier
+///   version wrote.
 /// - [`Self::apply_change`] — fold a Change into the State; MUST be
 ///   deterministic; verified by `ProcedureTestHarness::replay_equals`.
 /// - [`Self::compact_after_bytes`] — per-Entity WAL compaction
@@ -122,9 +125,75 @@ pub trait Procedure: Send + Sync + 'static + Default {
     /// `type Config = ();` explicitly.
     type Config: DeserializeOwned + Send + Sync + 'static;
 
-    /// Per-Procedure schema version stamped into persisted Change headers.
-    /// Bump on non-additive Change-schema edits.
+    /// Per-Procedure schema version stamped into every persisted record this
+    /// Procedure writes — change records and state snapshots alike.
+    ///
+    /// Bump it on any non-additive edit to [`Self::State`] **or**
+    /// [`Self::Change`]. Both are encoded positionally by a codec that is not
+    /// self-describing, so reordering fields, removing one, or changing a
+    /// field's type is not a compatibility question the codec can answer: v1
+    /// bytes read as v2 either fail mid-buffer or decode into the wrong
+    /// fields. The version is what turns that into a decision instead of a
+    /// silent corruption.
+    ///
+    /// A bump alone refuses the old records. Declare
+    /// [`Self::MIN_READABLE_SCHEMA_VERSION`] and the migration entry points to
+    /// read them.
     const SCHEMA_VERSION: u32 = 1;
+
+    /// The oldest `SCHEMA_VERSION` whose persisted records this Procedure can
+    /// still read. Defaults to [`Self::SCHEMA_VERSION`] — "I read only what I
+    /// wrote".
+    ///
+    /// Lowering it is a promise that [`Self::migrate_state`] and
+    /// [`Self::migrate_change`] handle every version in
+    /// `MIN_READABLE_SCHEMA_VERSION .. SCHEMA_VERSION`. A record below the
+    /// floor, and any record stamped ABOVE `SCHEMA_VERSION` (older code
+    /// meeting newer state), is refused rather than guessed at.
+    const MIN_READABLE_SCHEMA_VERSION: u32 = Self::SCHEMA_VERSION;
+
+    /// Rebuild [`Self::State`] from a snapshot written at an older
+    /// `SCHEMA_VERSION`. Invoked only for records in
+    /// `MIN_READABLE_SCHEMA_VERSION .. SCHEMA_VERSION`; `bytes` is the
+    /// snapshot body exactly as that version wrote it.
+    ///
+    /// Keep the old type in your own source and decode it here — the runtime
+    /// cannot know a type that no longer exists in this binary:
+    ///
+    /// ```ignore
+    /// fn migrate_state(from_version: u32, bytes: &[u8]) -> Result<Cart, String> {
+    ///     match from_version {
+    ///         1 => {
+    ///             #[derive(serde::Deserialize)]
+    ///             struct CartV1 { items: u32 }
+    ///             let old: CartV1 = postcard::from_bytes(bytes).map_err(|e| e.to_string())?;
+    ///             Ok(Cart { items: old.items, currency: "EUR".into() })
+    ///         }
+    ///         v => Err(format!("no migration from {v}")),
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// Must be deterministic: crash-resume, retry-replay and rewind all
+    /// re-enter the restore fold, and the same bytes must produce the same
+    /// state every time — the contract [`Self::apply_change`] already carries.
+    fn migrate_state(from_version: u32, _bytes: &[u8]) -> Result<Self::State, String> {
+        Err(format!(
+            "procedure `{}` declares no state migration from schema_version {from_version}",
+            Self::name()
+        ))
+    }
+
+    /// Rebuild [`Self::Change`] from a change record written at an older
+    /// `SCHEMA_VERSION`. Same contract as [`Self::migrate_state`]; a WAL
+    /// legitimately holds records from more than one version, so this is
+    /// invoked per record rather than once per restore.
+    fn migrate_change(from_version: u32, _bytes: &[u8]) -> Result<Self::Change, String> {
+        Err(format!(
+            "procedure `{}` declares no change migration from schema_version {from_version}",
+            Self::name()
+        ))
+    }
 
     /// Stable identifier within the StreamOperative class. Must be unique per StreamOperative.
     fn name() -> &'static str;

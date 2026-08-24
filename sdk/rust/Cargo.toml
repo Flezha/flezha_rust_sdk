@@ -137,6 +137,10 @@ name = "sugar_emit"
 required-features = ["testing"]
 
 [[test]]
+name = "state_evolution"
+required-features = ["testing"]
+
+[[test]]
 name = "simple_procedure"
 required-features = ["bench-internals", "testing"]
 

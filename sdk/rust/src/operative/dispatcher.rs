@@ -921,15 +921,17 @@ impl<S: Procedure> ProcedureDispatcher for ProcedureDispatcherImpl<S> {
         &self,
         state: &mut Box<dyn Any + Send>,
         timers: &mut PendingTimers,
+        snapshot_header: &[u8],
         snapshot_bytes: &[u8],
         change_log_bytes: &[u8],
         entity_key: Option<&str>,
-    ) -> Result<u64, flz_core::header::RestoreError> {
+    ) -> Result<flz_core::restore::RestoreOutcome, flz_core::header::RestoreError> {
         use crate::entity::restore::{
             init_entity_with_payload, iter_change_log_records, RestoreInitPayload,
         };
 
         let payload = RestoreInitPayload {
+            snapshot_header,
             snapshot_bytes,
             change_log_bytes,
         };
@@ -937,7 +939,7 @@ impl<S: Procedure> ProcedureDispatcher for ProcedureDispatcherImpl<S> {
         // Rebuild the typed state from snapshot + change-log replay. This runs
         // the same path as cold-start `init_state` + `apply_change`, so a
         // counter that summed to N comes back at N rather than 0.
-        let (new_state, restored_timers) =
+        let (new_state, restored_timers, migrated) =
             init_entity_with_payload::<S>(entity_key, Some(&payload))?;
 
         let typed = state
@@ -956,7 +958,10 @@ impl<S: Procedure> ProcedureDispatcher for ProcedureDispatcherImpl<S> {
         for record in iter_change_log_records(change_log_bytes) {
             terminal = terminal.max(record?.seq);
         }
-        Ok(terminal)
+        Ok(flz_core::restore::RestoreOutcome {
+            terminal_seq: terminal,
+            migrated,
+        })
     }
 
     fn snapshot_frame(
@@ -1839,12 +1844,18 @@ mod tests {
         let body = &frame[body_len_off + 4..body_len_off + 4 + body_len];
         assert_eq!(size, body.len(), "reported byte size is the body length");
 
+        // The header the frame carries is what the controller stores and now
+        // ships back beside the body.
+        let header = &frame[2 + pid_len + 8..2 + pid_len + 8 + 16];
         let payload = RestoreInitPayload {
+            snapshot_header: header,
             snapshot_bytes: body,
             change_log_bytes: &[],
         };
-        let (restored, _timers) = init_entity_with_payload::<CounterProc>(None, Some(&payload))
-            .expect("the snapshot body must decode through the restore path");
+        let (restored, _timers, migrated) =
+            init_entity_with_payload::<CounterProc>(None, Some(&payload))
+                .expect("the snapshot body must decode through the restore path");
+        assert!(!migrated, "same version restores without a migration");
         assert_eq!(
             restored, 115,
             "snapshot round-trips back to the original state"

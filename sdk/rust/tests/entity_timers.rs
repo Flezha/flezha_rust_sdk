@@ -1221,14 +1221,16 @@ fn restore<S: Procedure>(change_log: &[u8]) -> (S::State, PendingTimers)
 where
     S::State: serde::de::DeserializeOwned,
 {
-    flezha_runner::entity::restore::init_entity_with_payload::<S>(
+    let (state, timers, _migrated) = flezha_runner::entity::restore::init_entity_with_payload::<S>(
         None,
         Some(&RestoreInitPayload {
+            snapshot_header: &[],
             snapshot_bytes: &[],
             change_log_bytes: change_log,
         }),
     )
-    .expect("restore")
+    .expect("restore");
+    (state, timers)
 }
 
 /// Every state frame the runtime shipped, as `(payload_id, frame)`.

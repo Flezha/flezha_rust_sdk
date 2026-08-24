@@ -7,7 +7,7 @@ use flezha_runner::procedure::{
     EventTimeFrom, Procedure, ProcedureCtx, ProcedureError, TimeExtractor,
 };
 use flezha_runner::state::{
-    Change, CoalesceKey, NoChange, RestoreInitPayload, StateHandle, WallClock,
+    postcard, Change, CoalesceKey, NoChange, RestoreInitPayload, StateHandle, WallClock,
 };
 use flezha_runner::{
     ChannelBuilder, Flezha, LoopMode, OverflowPolicy, StreamOperative, WorkflowCtx, WorkflowError,
@@ -31,6 +31,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .define_stream::<PersistenceOffOperative>()?
         .define_stream::<HybridChannelOperative>()?
         .define_stream::<ResumeProbeOperative>()?
+        .define_stream::<SchemaEvolutionV1Operative>()?
+        .define_stream::<SchemaEvolutionV2Operative>()?
         .define_stream::<DynamicEntityOperative>()?
         .define_stream::<PartitionRelayOperative>()?
         .define_stream::<SessionTimeoutOperative>()?
@@ -2033,6 +2035,170 @@ impl StreamOperative for ResumeProbeOperative {
             .into::<ResumeProbeProcedure>()
             .named("total")
             .sink("resume_probe_out");
+    }
+}
+
+// -- SchemaEvolutionOperative -----------------------------------------------------
+//
+// The same class either side of a deploy that edits its own state type. Both
+// halves declare the SAME procedure name, so an operative started under v1 and
+// restarted under v2 restores from the very WAL v1 wrote — which is what a
+// deploy does, with the two binaries collapsed into one for the fixture.
+//
+// v1: `{total}`. v2: `{total, currency}` at SCHEMA_VERSION 2, reading down to
+// 1 through a declared migration. Output is `total:currency` so the e2e can
+// read the migrated field off the wire.
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+struct EvolvingCartV1 {
+    total: i64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+enum EvolvingCartChangeV1 {
+    Add(i64),
+}
+impl Change for EvolvingCartChangeV1 {}
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+struct EvolvingCartV2 {
+    total: i64,
+    currency: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+enum EvolvingCartChangeV2 {
+    Add { delta: i64, note: String },
+}
+impl Change for EvolvingCartChangeV2 {}
+
+#[derive(Default)]
+struct SchemaEvolutionV1Procedure;
+impl Procedure for SchemaEvolutionV1Procedure {
+    type Input = String;
+    type Output = Vec<u8>;
+    type State = EvolvingCartV1;
+    type Change = EvolvingCartChangeV1;
+    type Clock = WallClock;
+    type Config = ();
+    fn name() -> &'static str {
+        "evolving_cart"
+    }
+    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> EvolvingCartV1 {
+        EvolvingCartV1::default()
+    }
+    fn apply_change(state: &mut EvolvingCartV1, change: &EvolvingCartChangeV1) {
+        match change {
+            EvolvingCartChangeV1::Add(d) => state.total = state.total.saturating_add(*d),
+        }
+    }
+    fn run(
+        &mut self,
+        input: String,
+        mut state: StateHandle<'_, Self>,
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
+        let delta: i64 = input.parse().unwrap_or(0);
+        let total = state.total.saturating_add(delta);
+        state.apply(EvolvingCartChangeV1::Add(delta));
+        ctx.emit::<Vec<u8>>(format!("{total}:").into_bytes())
+    }
+}
+
+#[derive(Default)]
+struct SchemaEvolutionV2Procedure;
+impl Procedure for SchemaEvolutionV2Procedure {
+    type Input = String;
+    type Output = Vec<u8>;
+    type State = EvolvingCartV2;
+    type Change = EvolvingCartChangeV2;
+    type Clock = WallClock;
+    type Config = ();
+    const SCHEMA_VERSION: u32 = 2;
+    const MIN_READABLE_SCHEMA_VERSION: u32 = 1;
+    fn name() -> &'static str {
+        "evolving_cart"
+    }
+    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> EvolvingCartV2 {
+        EvolvingCartV2::default()
+    }
+    fn migrate_state(from_version: u32, bytes: &[u8]) -> Result<EvolvingCartV2, String> {
+        match from_version {
+            1 => {
+                let old: EvolvingCartV1 = postcard::from_bytes(bytes).map_err(|e| e.to_string())?;
+                Ok(EvolvingCartV2 {
+                    total: old.total,
+                    currency: "EUR".to_string(),
+                })
+            }
+            v => Err(format!("no migration from {v}")),
+        }
+    }
+    fn migrate_change(from_version: u32, bytes: &[u8]) -> Result<EvolvingCartChangeV2, String> {
+        match from_version {
+            1 => {
+                let old: EvolvingCartChangeV1 =
+                    postcard::from_bytes(bytes).map_err(|e| e.to_string())?;
+                let EvolvingCartChangeV1::Add(delta) = old;
+                Ok(EvolvingCartChangeV2::Add {
+                    delta,
+                    note: "migrated".to_string(),
+                })
+            }
+            v => Err(format!("no migration from {v}")),
+        }
+    }
+    fn apply_change(state: &mut EvolvingCartV2, change: &EvolvingCartChangeV2) {
+        match change {
+            EvolvingCartChangeV2::Add { delta, .. } => {
+                state.total = state.total.saturating_add(*delta)
+            }
+        }
+    }
+    fn run(
+        &mut self,
+        input: String,
+        mut state: StateHandle<'_, Self>,
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
+        let delta: i64 = input.parse().unwrap_or(0);
+        let total = state.total.saturating_add(delta);
+        let currency = if state.currency.is_empty() {
+            "EUR".to_string()
+        } else {
+            state.currency.clone()
+        };
+        state.apply(EvolvingCartChangeV2::Add {
+            delta,
+            note: "live".to_string(),
+        });
+        ctx.emit::<Vec<u8>>(format!("{total}:{currency}").into_bytes())
+    }
+}
+
+struct SchemaEvolutionV1Operative;
+impl StreamOperative for SchemaEvolutionV1Operative {
+    fn factory_id() -> &'static str {
+        "schema_evolution_v1"
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("input")
+            .into::<SchemaEvolutionV1Procedure>()
+            .named("total")
+            .sink("schema_evolution_out");
+    }
+}
+
+struct SchemaEvolutionV2Operative;
+impl StreamOperative for SchemaEvolutionV2Operative {
+    fn factory_id() -> &'static str {
+        "schema_evolution_v2"
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("input")
+            .into::<SchemaEvolutionV2Procedure>()
+            .named("total")
+            .sink("schema_evolution_out");
     }
 }
 

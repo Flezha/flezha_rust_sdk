@@ -1566,14 +1566,15 @@ fn keyed_stamps_replay_identically_after_crash_restore() {
                 &mut guard,
                 &mut flezha_runner::entity::timer::PendingTimers::default(),
                 &[],
+                &[],
                 &change_log,
                 None,
             )
             .expect("restore_state")
     };
-    assert_eq!(terminal, 0);
+    assert_eq!(terminal.terminal_seq, 0);
     slot.change_seq
-        .store(terminal + 1, std::sync::atomic::Ordering::Release);
+        .store(terminal.terminal_seq + 1, std::sync::atomic::Ordering::Release);
 
     let (stream_b, mut observer_b) = stream_pair();
     dispatch_input(
@@ -1869,14 +1870,15 @@ fn logical_clock_serves_change_seq_and_survives_restore_rearm() {
                 &mut guard,
                 &mut flezha_runner::entity::timer::PendingTimers::default(),
                 &[],
+                &[],
                 &change_log,
                 None,
             )
             .expect("restore_state")
     };
-    assert_eq!(terminal, 1);
+    assert_eq!(terminal.terminal_seq, 1);
     slot.change_seq
-        .store(terminal + 1, std::sync::atomic::Ordering::Release);
+        .store(terminal.terminal_seq + 1, std::sync::atomic::Ordering::Release);
 
     dispatch_input(
         &handle_b,

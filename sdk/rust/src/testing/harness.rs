@@ -165,7 +165,7 @@ impl<S: Procedure> ProcedureTestHarness<S> {
     where
         S::State: serde::de::DeserializeOwned + serde::Serialize,
     {
-        let (state, timers) = init_entity_with_payload::<S>(entity_key, Some(&payload))?;
+        let (state, timers, _migrated) = init_entity_with_payload::<S>(entity_key, Some(&payload))?;
         let initial_state_bytes = serialize_snapshot(&state);
         let mut harness = Self::from_state(state, initial_state_bytes);
         harness.entity_key = entity_key.map(str::to_string);

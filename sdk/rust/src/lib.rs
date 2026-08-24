@@ -126,6 +126,12 @@ pub mod testing;
 pub mod state {
     pub use flz_core::header::RestoreError;
     pub use flz_core::restore::RestoreInitPayload;
+    /// The codec the runtime encodes persisted `State` and `Change` bodies
+    /// with, re-exported so a `migrate_state` / `migrate_change` can decode an
+    /// earlier version's bytes at exactly the version the runtime wrote them —
+    /// a separately-pinned postcard in the author's own crate would not be the
+    /// same guarantee.
+    pub use postcard;
 
     pub use crate::entity::timer::TimerKind;
     pub use crate::procedure::change::{Change, CoalesceKey, NoChange};
