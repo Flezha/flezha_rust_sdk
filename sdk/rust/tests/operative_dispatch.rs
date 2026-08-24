@@ -1573,8 +1573,10 @@ fn keyed_stamps_replay_identically_after_crash_restore() {
             .expect("restore_state")
     };
     assert_eq!(terminal.terminal_seq, 0);
-    slot.change_seq
-        .store(terminal.terminal_seq + 1, std::sync::atomic::Ordering::Release);
+    slot.change_seq.store(
+        terminal.terminal_seq + 1,
+        std::sync::atomic::Ordering::Release,
+    );
 
     let (stream_b, mut observer_b) = stream_pair();
     dispatch_input(
@@ -1877,8 +1879,10 @@ fn logical_clock_serves_change_seq_and_survives_restore_rearm() {
             .expect("restore_state")
     };
     assert_eq!(terminal.terminal_seq, 1);
-    slot.change_seq
-        .store(terminal.terminal_seq + 1, std::sync::atomic::Ordering::Release);
+    slot.change_seq.store(
+        terminal.terminal_seq + 1,
+        std::sync::atomic::Ordering::Release,
+    );
 
     dispatch_input(
         &handle_b,

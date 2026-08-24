@@ -173,11 +173,7 @@ fn a_context_parameter_emits_every_value_exactly_as_the_hand_written_twin() {
     let mut manual = ProcedureTestHarness::<FanoutManual>::new().with_keyed_channel();
     manual.apply_inputs(inputs.clone());
 
-    let expected: Vec<Reading> = inputs
-        .iter()
-        .flat_map(split)
-        .map(|(_, o)| o)
-        .collect();
+    let expected: Vec<Reading> = inputs.iter().flat_map(split).map(|(_, o)| o).collect();
     assert_eq!(expected.len(), 6, "one input fans out to three emits");
     assert_eq!(sugared.emitted_meta(), manual.emitted_meta());
     sugared.expect_emits(&expected);
