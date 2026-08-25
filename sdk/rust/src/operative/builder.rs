@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::channel::builder::{BuilderState, ChannelBuilder, TopologyIssue};
-use crate::channel::{ChannelDescriptor, ChannelKind, PluginSink};
+use crate::channel::{ChannelDescriptor, ChannelKind, OverflowPolicy, PluginSink};
 use crate::operative::topology::{EntityMode, OperativeTopology, ProcedureDescriptor};
 
 /// Built-in default per-Entity mailbox capacity used when a Procedure does
@@ -269,6 +269,24 @@ pub fn build_topology_with_persistence(
             errors.push(TopologyIssue::UnkeyedChannelUnderEffectivelyOnce {
                 channel: entry.name,
             });
+        }
+        // Promising effectively-once and asking to shed is not a trade-off,
+        // it is a contradiction: a dropped input's offset is advanced past by
+        // a later item's watermark, so the loss is permanent under a contract
+        // that says nothing is lost. A correction window needs the tier
+        // (`CorrectionWithoutTier` above), so this one arm covers it too.
+        if effectively_once {
+            let policy = match entry.overflow_policy {
+                OverflowPolicy::DropNothing => None,
+                OverflowPolicy::DropNewest => Some("DropNewest"),
+                OverflowPolicy::DropOldest => Some("DropOldest"),
+            };
+            if let Some(policy) = policy {
+                errors.push(TopologyIssue::DroppingPolicyUnderEffectivelyOnce {
+                    channel: entry.name,
+                    policy,
+                });
+            }
         }
         // Terminality is derived from the wiring, not from which method the
         // author called: a sink with nothing consuming behind it IS the
@@ -782,6 +800,51 @@ mod tests {
             .sink("kafka");
         let topology = build_topology("per_input_default", cb).expect("topology");
         assert!(!topology.ack_granularity.is_checkpoint());
+    }
+
+    #[test]
+    fn a_dropping_policy_under_the_tier_is_refused_naming_the_channel() {
+        // Promising effectively-once and asking to shed is a contradiction:
+        // a dropped input's offset is advanced past by a later item's
+        // watermark, so the loss is permanent under a contract that says
+        // nothing is lost.
+        for policy in [OverflowPolicy::DropNewest, OverflowPolicy::DropOldest] {
+            let cb = ChannelBuilder::new();
+            cb.effectively_once();
+            cb.input::<String>("in")
+                .on_full(policy)
+                .into::<TierProc>()
+                .named("out")
+                .keyed()
+                .sink("kafka");
+
+            let err = build_topology("tier_sheds", cb)
+                .err()
+                .expect("a shedding channel under the tier must fail");
+
+            assert!(
+                err.errors.iter().any(|e| matches!(
+                    e,
+                    TopologyIssue::DroppingPolicyUnderEffectivelyOnce { channel: "in", .. }
+                )),
+                "the refusal names the channel: {:?}",
+                err.errors
+            );
+        }
+    }
+
+    #[test]
+    fn a_dropping_policy_off_the_tier_still_builds() {
+        // Shedding is a legitimate intent — it is only the combination that
+        // is refused.
+        let cb = ChannelBuilder::new();
+        cb.input::<String>("in")
+            .on_full(OverflowPolicy::DropNewest)
+            .into::<TierProc>()
+            .named("out")
+            .sink("kafka");
+
+        build_topology("plain_sheds", cb).expect("a shedding class without the tier builds");
     }
 
     #[test]

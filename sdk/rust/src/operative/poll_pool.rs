@@ -244,7 +244,7 @@ mod tests {
     use crate::operative::StreamOperative;
     use crate::procedure::state_handle::StateHandle;
     use crate::procedure::{Procedure, ProcedureCtx, ProcedureError};
-    use crate::runner::poll_core_tests::fixtures::{build_slot_of, push_input};
+    use crate::runner::poll_core_tests::fixtures::{build_slot_of, push_input, wait_until};
 
     /// Blocks on a process-wide gate for input `0`, returns immediately for
     /// anything else: the two halves of "one entity stuck in user code must
@@ -309,17 +309,6 @@ mod tests {
         });
         pool.start();
         pool
-    }
-
-    fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        while !done() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "timed out waiting for {what}"
-            );
-            std::thread::sleep(Duration::from_millis(10));
-        }
     }
 
     /// The whole point of the adaptive pool: with every base worker blocked

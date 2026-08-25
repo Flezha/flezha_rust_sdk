@@ -506,13 +506,13 @@ fn a_processing_time_timer_fires_from_the_wake_list_with_its_scheduled_time() {
     );
 }
 
-/// Spec (`sdk-poll-core`) "A due firing into a saturated consumer drains it":
-/// the poller promoting a due timer is a pool thread and may be the only one,
-/// so when the firing meets a full `Block` mailbox whose round nobody is
-/// serving it runs that round itself — the firing lands instead of the poller
-/// parking on a mailbox no one else drains.
+/// Spec (`sdk-poll-core`) "A due wake that cannot be delivered stays on the
+/// wake list": the poller promoting a due timer neither serves the saturated
+/// consumer inline nor parks on it. It re-records the entry and returns, and
+/// the firing lands on a later pass once room appears — the firing is delayed,
+/// never dropped, and no thread is held inside `poll` while it waits.
 #[test]
-fn a_firing_into_a_saturated_consumer_drains_it_inline() {
+fn a_firing_into_a_saturated_consumer_waits_for_room_without_holding_a_poller() {
     let _guard = timer_test_guard();
     take_firings();
     let (sock, _peer) = std::os::unix::net::UnixStream::pair().expect("pair");
@@ -546,13 +546,30 @@ fn a_firing_into_a_saturated_consumer_drains_it_inline() {
         .apply(&TimerOp::register(TimerKind::ProcessingTime, 1));
     flezha_runner::entity::timer::rearm_restored(&slot);
 
+    // Held, not delivered and not lost: with no room the promotion pass keeps
+    // re-recording the entry. (The retired behaviour ran the round inline here
+    // and the firing landed with the mailbox still full.)
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(
+        firings_snapshot().is_empty(),
+        "a firing must not be delivered into a mailbox with no room"
+    );
+    assert!(slot.mailbox.is_full(), "the mailbox is still saturated");
+
+    // Room appears and the round gets a drainer: the deferred firing lands.
+    assert!(slot.mailbox.pop().is_some());
+    slot.mailbox.release_inflight();
+    dispatch_input(
+        &handle,
+        "timers-saturated",
+        "in",
+        b"alice".to_vec(),
+        &stream,
+    );
+
     assert!(
         wait_until(|| !firings_snapshot().is_empty(), Duration::from_secs(5)),
-        "the due firing must drain the saturated mailbox inline and land"
-    );
-    assert!(
-        slot.counters().pushes_blocked_total.load(Ordering::Relaxed) >= 1,
-        "the firing must have met the full mailbox"
+        "the deferred firing must land once the mailbox has room"
     );
 
     // The two queued inputs re-armed the deadline; let it fire before the

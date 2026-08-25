@@ -293,6 +293,17 @@ pub enum TopologyIssue {
     RetryMaxZero { channel: &'static str },
 
     #[error(
+        "channel `{channel}` declares .on_full({policy}) on an operative that declares \
+         effectively_once(); a shed input's offset is still advanced past by the tier's \
+         watermark, so the loss is permanent and reported nowhere — declare one or the other, \
+         not both (a correction window implies the tier, so it is refused here too)"
+    )]
+    DroppingPolicyUnderEffectivelyOnce {
+        channel: &'static str,
+        policy: &'static str,
+    },
+
+    #[error(
         "operative declares correction_window() without effectively_once(); correction \
          replays the input log against a rewound baseline, and only the tier journals \
          inputs before forwarding them (an at-least-once operative has no durable input \

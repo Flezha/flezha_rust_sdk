@@ -45,6 +45,20 @@ pub(crate) mod fixtures {
         })
     }
 
+    /// Drive `done` until it holds, failing the test at a 10 s deadline with
+    /// `what` naming the condition. Shared by the engine's own tests and the
+    /// poll pool's.
+    pub(crate) fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !done() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for {what}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
     /// Queue one input and claim its round — the producer protocol.
     pub(crate) fn push_input(core: &PollCore, slot: &Arc<EntitySlot>, value: usize) {
         assert!(slot
@@ -67,7 +81,7 @@ mod tests {
     use flz_core::restore::RestoreInitPayload;
     use flz_transport::transport::FlezhaStream;
 
-    use super::fixtures::{build_slot_of, payload, unix_stream};
+    use super::fixtures::{build_slot_of, payload, unix_stream, wait_until};
     use crate::channel::ChannelBuilder;
     use crate::entity::timer::{TimerKind, TimerOp};
     use crate::entity::{EntityItem, EntitySlot};
@@ -111,6 +125,57 @@ mod tests {
         fn channels(c: &ChannelBuilder) {
             c.input::<usize>("input").into::<PollProc>();
         }
+    }
+
+    /// A one-slot mailbox: the smallest thing that can be full, so a wake
+    /// promoted against it always meets the no-room path.
+    #[derive(Default)]
+    struct TinyProc;
+    impl Procedure for TinyProc {
+        type Input = usize;
+        type Output = ();
+        type State = ();
+        type Change = NoChange;
+        type Clock = WallClock;
+        type Config = ();
+        fn name() -> &'static str {
+            "poll_core_tiny_mailbox_proc"
+        }
+        fn mailbox_capacity() -> usize {
+            1
+        }
+        const MAILBOX_CAPACITY_OVERRIDDEN: bool = true;
+        fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
+        fn run(
+            &mut self,
+            _: usize,
+            _: StateHandle<'_, Self>,
+            _: &mut ProcedureCtx<'_>,
+        ) -> Result<(), ProcedureError> {
+            Ok(())
+        }
+    }
+
+    struct TinyOp;
+    impl StreamOperative for TinyOp {
+        fn factory_id() -> &'static str {
+            "poll_core_tiny_mailbox_op"
+        }
+        fn channels(c: &ChannelBuilder) {
+            c.input::<usize>("input").into::<TinyProc>();
+        }
+    }
+
+    /// A slot whose one mailbox slot is taken and whose round is claimed by
+    /// nobody: every wake promoted against it meets a full mailbox.
+    fn full_slot(instance_id: &str) -> (Arc<StreamInstance>, Arc<EntitySlot>) {
+        let (instance, slot) = build_slot_of::<TinyOp>(instance_id);
+        assert!(slot.mailbox.try_push(payload(0, &unix_stream())).is_ok());
+        assert!(slot.mailbox.is_full());
+        // Claim the round so nothing drains it — the caller decides when room
+        // appears.
+        assert!(slot.mailbox.try_mark_inflight());
+        (instance, slot)
     }
 
     /// A backoff long enough to observe the deferral window from the outside:
@@ -531,6 +596,108 @@ mod tests {
             "ascending scheduled order; fired_at is the scheduled timestamp"
         );
         core.complete(act.token);
+    }
+
+    /// The regression this fix exists for. A due firing whose target mailbox
+    /// is full used to be pushed under `DropNothing` from inside `poll`, so
+    /// the promoter parked there — and a thread inside `poll` is counted by
+    /// `pollers_inside`, which makes the starvation wait answer "a thread is
+    /// about to take work". A single-poller host (every C-ABI host, which can
+    /// install no inline-serve hook) therefore wedged permanently with the
+    /// supervisor blind to it: measured at 1 of 3 firings with the pool
+    /// ceiling free to grow.
+    ///
+    /// Now the pass returns, the entry stays on the list, and the firing lands
+    /// once room appears — still carrying the timestamp it was ARMED with,
+    /// which is what the pending set cancels by.
+    #[test]
+    fn a_due_firing_into_a_full_mailbox_defers_instead_of_parking() {
+        let core = PollCore::new();
+        let (_i, slot) = full_slot("poll-wake-full-timer");
+        let at = flz_core::util::wall_now_ms() - 1;
+        slot.timers
+            .lock()
+            .unwrap()
+            .apply(&TimerOp::register(TimerKind::ProcessingTime, at));
+        core.arm_timer(&slot, at, unix_stream());
+        assert_eq!(core.timers_armed(), 1);
+
+        // The pass RETURNS. Before the fix this call never came back.
+        let started = Instant::now();
+        assert!(matches!(
+            core.poll(Duration::from_millis(0)),
+            Polled::Timeout
+        ));
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "the promoter must not wait for mailbox room"
+        );
+        assert_eq!(
+            core.timers_armed(),
+            1,
+            "the undeliverable firing stays on the wake list"
+        );
+
+        // And the condition is reportable: a due entry no pass could service
+        // is starvation with no dwell, which is what buys the host a thread.
+        assert!(
+            matches!(
+                core.wait_starvation(Duration::from_secs(5)),
+                Starvation::Observed
+            ),
+            "a wake nobody can deliver must read as starvation"
+        );
+
+        // Room appears; a later pass lands it.
+        assert!(slot.mailbox.pop().is_some());
+        wait_until(
+            "the deferred firing to land once the mailbox has room",
+            || {
+                let _ = core.poll(Duration::from_millis(10));
+                core.timers_armed() == 0
+            },
+        );
+        let (token, fired_at) = assemble_timer(&core, &slot);
+        assert_eq!(
+            fired_at, at,
+            "a deferred firing keeps its ARMED timestamp, not the retry's due time"
+        );
+        core.complete(token);
+    }
+
+    /// The same rule for the other wake a saturated mailbox can meet. A close
+    /// silently dropped would hold the interval's outputs until the next
+    /// input — exactly what `checkpoint_max_delay_ms` exists to prevent — so
+    /// it defers rather than parking or vanishing.
+    #[test]
+    fn a_due_interval_close_into_a_full_mailbox_defers_instead_of_parking() {
+        let core = PollCore::new();
+        let (_i, slot) = full_slot("poll-wake-full-close");
+        core.arm_interval_close(&slot, flz_core::util::wall_now_ms() - 1);
+
+        let started = Instant::now();
+        assert!(matches!(
+            core.poll(Duration::from_millis(0)),
+            Polled::Timeout
+        ));
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "the promoter must not wait for mailbox room"
+        );
+        assert_eq!(slot.mailbox.len(), 1, "nothing was admitted");
+
+        assert!(slot.mailbox.pop().is_some());
+        wait_until(
+            "the deferred close to land once the mailbox has room",
+            || {
+                let _ = core.poll(Duration::from_millis(10));
+                slot.mailbox.len() == 1
+            },
+        );
+        assert!(matches!(
+            slot.mailbox.pop(),
+            Some(EntityItem::CloseInterval)
+        ));
     }
 
     /// An entry armed while a poller is already blocked shortens that

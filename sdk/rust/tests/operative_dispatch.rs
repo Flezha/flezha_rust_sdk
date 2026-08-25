@@ -504,6 +504,7 @@ impl StreamOperative for DropNewestOperative {
 #[test]
 fn drop_newest_discards_when_full_and_only_bumps_newest_counter() {
     DROP_NEWEST_RECEIVED.store(0, Ordering::Release);
+    let drops_newest_before = flezha_runner::entity::drops_newest_total();
     let (handle, instance) = setup::<DropNewestOperative>("drop-newest-instance");
     let slot = Arc::clone(&instance.entities[0][0]);
 
@@ -549,6 +550,14 @@ fn drop_newest_discards_when_full_and_only_bumps_newest_counter() {
     );
     assert_eq!(counters.drops_oldest_total.load(Ordering::Relaxed), 0);
     assert_eq!(counters.pushes_blocked_total.load(Ordering::Relaxed), 0);
+    // The per-Entity counter stays in the process; the aggregate beside it is
+    // what the data heartbeat carries, and a drop nobody outside can count is
+    // the defect this closes.
+    assert_eq!(
+        flezha_runner::entity::drops_newest_total() - drops_newest_before,
+        5,
+        "the process-wide aggregate the heartbeat reports must move with it"
+    );
 
     // Release inflight so the slot is in a consistent state at drop;
     // any residual items go away with the test's pool.
@@ -580,6 +589,7 @@ impl StreamOperative for DropOldestOperative {
 #[test]
 fn drop_oldest_evicts_head_and_bumps_oldest_counter() {
     DROP_OLDEST_OBSERVED.lock().unwrap().clear();
+    let drops_oldest_before = flezha_runner::entity::drops_oldest_total();
     let (handle, instance) = setup::<DropOldestOperative>("drop-oldest-instance");
     let slot = Arc::clone(&instance.entities[0][0]);
 
@@ -601,13 +611,20 @@ fn drop_oldest_evicts_head_and_bumps_oldest_counter() {
     }
 
     // After 4 pushes into a cap-2 mailbox under DropOldest:
-    //   pushes_total counts the 2 pre-saturation successes;
+    //   pushes_total counts all 4 — a force-push that admits IS a successful
+    //   enqueue by that counter's definition, and counting only the
+    //   pre-saturation two made `processed` exceed `admitted` for this policy;
     //   drops_oldest_total counts the 2 force_push evictions.
     let counters = slot.counters();
-    assert_eq!(counters.pushes_total.load(Ordering::Relaxed), 2);
+    assert_eq!(counters.pushes_total.load(Ordering::Relaxed), 4);
     assert_eq!(counters.drops_oldest_total.load(Ordering::Relaxed), 2);
     assert_eq!(counters.drops_newest_total.load(Ordering::Relaxed), 0);
     assert_eq!(counters.pushes_blocked_total.load(Ordering::Relaxed), 0);
+    assert_eq!(
+        flezha_runner::entity::drops_oldest_total() - drops_oldest_before,
+        2,
+        "the process-wide aggregate the heartbeat reports must move with it"
+    );
 
     // Surface the surviving pair without going through the WS pool: pop
     // the mailbox manually and verify recency wins.
@@ -623,6 +640,67 @@ fn drop_oldest_evicts_head_and_bumps_oldest_counter() {
     assert_eq!(surviving, vec![b"new1".to_vec(), b"new2".to_vec()]);
 }
 
+/// Spec (`operative-procedure-entity-model`) "A replay slice is never shed": a
+/// correction's answer may not depend on arrival timing, so a slice member
+/// takes the `DropNothing` path whatever the channel declared. A dropped
+/// member would leave `replay_open` set and `replay_depth` short, the slice
+/// would still close on the end-of-slice broadcast, and the correction would
+/// fold whatever arrived — a wrong answer with no error anywhere.
+#[test]
+fn a_replay_slice_member_is_never_shed_by_a_dropping_channel() {
+    DROP_NEWEST_RECEIVED.store(0, Ordering::Release);
+    let (handle, instance) = setup::<DropNewestOperative>("drop-newest-replay-instance");
+    let slot = Arc::clone(&instance.entities[0][0]);
+    assert!(slot.mailbox.try_mark_inflight());
+
+    let stream = dummy_stream();
+    let mut md = HashMap::new();
+    md.insert("channel".to_string(), "input".to_string());
+    for tag in [b"a".to_vec(), b"b".to_vec()] {
+        handle.dispatch("drop-newest-replay-instance", tag, &md, Arc::clone(&stream));
+    }
+    assert_eq!(slot.mailbox.len(), 2, "the mailbox is saturated");
+
+    // A slice member into the same full mailbox. A live input here would be
+    // dropped on the spot; this one waits.
+    let mut replay_md = md.clone();
+    replay_md.insert("flz.replay".to_string(), "1".to_string());
+    let member = {
+        let handle = handle.clone();
+        let stream = Arc::clone(&stream);
+        std::thread::spawn(move || {
+            handle.dispatch(
+                "drop-newest-replay-instance",
+                b"member".to_vec(),
+                &replay_md,
+                stream,
+            )
+        })
+    };
+
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(!member.is_finished(), "the member waits for room");
+    assert_eq!(
+        slot.counters().drops_newest_total.load(Ordering::Relaxed),
+        0,
+        "a slice member is never shed"
+    );
+
+    // Room appears and the member lands.
+    assert!(slot.mailbox.pop().is_some());
+    member.join().expect("the member is admitted");
+    assert_eq!(
+        slot.counters().drops_newest_total.load(Ordering::Relaxed),
+        0
+    );
+    assert_eq!(
+        slot.mailbox.len(),
+        2,
+        "the slice member joined the queue rather than replacing one"
+    );
+    slot.mailbox.release_inflight();
+}
+
 /// Spec scenario "Counters present at runtime": fresh EntitySlot
 /// exposes a counters() accessor with all four atomics at 0.
 #[test]
@@ -633,6 +711,127 @@ fn fresh_entity_counters_start_at_zero() {
     assert_eq!(counters.pushes_blocked_total.load(Ordering::Relaxed), 0);
     assert_eq!(counters.drops_newest_total.load(Ordering::Relaxed), 0);
     assert_eq!(counters.drops_oldest_total.load(Ordering::Relaxed), 0);
+}
+
+static DROP_OLDEST_PROCESSED: AtomicUsize = AtomicUsize::new(0);
+
+test_procedure!(DropOldestStressProcedure, "drop_oldest_stress_procedure", Vec<u8> => (), (), cap 2, |_input, _state, _ctx| {
+    // Slow the drain just enough that producers genuinely race it, which is
+    // what makes `force_push` fire and what made the counters disagree.
+    for _ in 0..64 {
+        std::hint::spin_loop();
+    }
+    DROP_OLDEST_PROCESSED.fetch_add(1, Ordering::Relaxed);
+    Ok(())
+});
+
+struct DropOldestStressOperative;
+impl StreamOperative for DropOldestStressOperative {
+    fn factory_id() -> &'static str {
+        "drop_oldest_stress_operative"
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.input::<Vec<u8>>("input")
+            .on_full(OverflowPolicy::DropOldest)
+            .into::<DropOldestStressProcedure>();
+    }
+}
+
+/// The measurement the counter fix exists for: under real contention a
+/// `DropOldest` channel's **admitted** count must never come out below what the
+/// consumer **processed**.
+///
+/// It used to. `force_push` admits the item — that is the whole policy — but
+/// `pushes_total` counted only the `try_push` half, so every item that entered
+/// through an eviction was processed while never being counted as admitted.
+/// The probe measured `processed > admitted` in every run of four. A unit
+/// assertion cannot show this: the inversion needs producers actually racing a
+/// live drain, which is the only thing that makes `force_push` fire.
+///
+/// Four rounds, each on a fresh instance, printing its own numbers.
+#[test]
+fn drop_oldest_stress_admitted_never_below_processed() {
+    let producers = 8usize;
+    let per_producer = 2_000usize;
+    let sent = producers * per_producer;
+
+    for round in 1..=4 {
+        DROP_OLDEST_PROCESSED.store(0, Ordering::Release);
+        let id = format!("drop-oldest-stress-{round}");
+        let (handle, instance) = setup::<DropOldestStressOperative>(&id);
+        let stream = dummy_stream();
+
+        let mut threads = Vec::new();
+        for tid in 0..producers {
+            let handle = handle.clone();
+            let stream = Arc::clone(&stream);
+            let id = id.clone();
+            threads.push(std::thread::spawn(move || {
+                let mut md = HashMap::new();
+                md.insert("channel".to_string(), "input".to_string());
+                for i in 0..per_producer {
+                    let payload = format!("{tid}-{i}").into_bytes();
+                    handle.dispatch(&id, payload, &md, Arc::clone(&stream));
+                }
+            }));
+        }
+        for t in threads {
+            t.join().unwrap();
+        }
+
+        // Let the queue drain and the dispatch count settle, so `remaining` is
+        // really zero rather than "not yet served".
+        let slot = Arc::clone(&instance.entities[0][0]);
+        assert!(
+            wait_until(
+                || {
+                    let seen = DROP_OLDEST_PROCESSED.load(Ordering::Acquire);
+                    std::thread::sleep(Duration::from_millis(50));
+                    slot.mailbox.is_empty() && DROP_OLDEST_PROCESSED.load(Ordering::Acquire) == seen
+                },
+                Duration::from_secs(60)
+            ),
+            "round {round}: the mailbox never drained"
+        );
+
+        let counters = slot.counters();
+        let admitted = counters.pushes_total.load(Ordering::Relaxed) as usize;
+        let dropped = counters.drops_oldest_total.load(Ordering::Relaxed) as usize;
+        let processed = DROP_OLDEST_PROCESSED.load(Ordering::Acquire);
+        let remaining = slot.mailbox.len();
+        println!(
+            "drop_oldest round {round}: sent={sent} admitted={admitted} \
+             processed={processed} dropped={dropped} remaining={remaining}"
+        );
+
+        // The probe's finding, inverted back: nothing can be processed that was
+        // never admitted.
+        assert!(
+            processed <= admitted,
+            "round {round}: processed ({processed}) exceeded admitted ({admitted}) \
+             — the DropOldest admission is uncounted again"
+        );
+        // And every send IS an admission under this policy, whichever half of
+        // the push admitted it.
+        assert_eq!(
+            admitted, sent,
+            "round {round}: a force-push that admitted was not counted"
+        );
+        // The gap between what was admitted and what came out is exactly what
+        // the drop counter is for. It may over-state: a `force_push` that finds
+        // the queue already drained admits without evicting, and the policy
+        // still applied, so the counter still moves.
+        assert!(
+            admitted - processed - remaining <= dropped,
+            "round {round}: {} items vanished unaccounted (dropped={dropped})",
+            admitted - processed - remaining
+        );
+        // A round that never evicted would prove nothing.
+        assert!(
+            dropped > 0,
+            "round {round}: no eviction happened — the probe did not saturate"
+        );
+    }
 }
 
 // ----- Inter-procedure default-Block coverage -----
@@ -929,6 +1128,7 @@ fn entry_drop_nothing_parks_reader_until_pool_drains<A: StreamOperative>(tag: &s
     // drains A until the test schedules it below.
     let slot_a = Arc::clone(&instance_a.entities[0][0]);
     assert!(slot_a.mailbox.try_mark_inflight());
+    let blocked_before = flezha_runner::entity::pushes_blocked_total();
 
     let handle = OperativeDispatchHandle {
         registry: Arc::clone(&registry),
@@ -964,6 +1164,16 @@ fn entry_drop_nothing_parks_reader_until_pool_drains<A: StreamOperative>(tag: &s
             .pushes_blocked_total
             .load(Ordering::Relaxed)
             >= 1
+    );
+    // Per WAIT ITERATION, not once per episode. A counter that bumped once
+    // would leave this runner showing a frozen dispatch count beside a frozen
+    // block count — byte for byte the picture a wedged runner shows, which is
+    // the distinction the controller's stall classifier hangs off. The park is
+    // bounded at 50 ms, so 300 ms of blocking is several iterations.
+    let climbed = flezha_runner::entity::pushes_blocked_total() - blocked_before;
+    assert!(
+        climbed > 1,
+        "a sustained block episode must keep the counter moving; it advanced {climbed}"
     );
 
     // Hand A's queued round to the pool: its first pop unparks the reader.
