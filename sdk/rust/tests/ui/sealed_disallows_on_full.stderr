@@ -10,7 +10,7 @@ error[E0599]: no method named `on_full` found for struct `Channel<T>` in the cur
 32 | |         .sink("k")
    | |          --------- method `on_full` is available on `flezha_runner::Stream<'_, Vec<u8>>`
 33 | |         .sealed()
-34 | |         .on_full(OverflowPolicy::Block);
+34 | |         .on_full(OverflowPolicy::DropNothing);
    | |         -^^^^^^^ method not found in `Channel<Vec<u8>>`
    | |_________|
    |

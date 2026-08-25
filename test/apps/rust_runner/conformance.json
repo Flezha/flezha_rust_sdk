@@ -47,7 +47,7 @@
     ],
     "retry_ladder": [
       "poison_probe",
-      "bounded_mailbox_block",
+      "bounded_mailbox_drop_nothing",
       "bounded_mailbox_drop_newest",
       "bounded_mailbox_drop_oldest"
     ],

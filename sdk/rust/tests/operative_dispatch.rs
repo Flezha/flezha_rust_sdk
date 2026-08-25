@@ -387,42 +387,42 @@ fn emit_with_meta_rejected_on_inter_procedure() {
     );
 }
 
-// ----- Section 4 / 7 / 8 scenario coverage: Block stress + counters -----
+// ----- Section 4 / 7 / 8 scenario coverage: DropNothing stress + counters -----
 
-static BLOCK_STRESS_RECEIVED: AtomicUsize = AtomicUsize::new(0);
+static DROP_NOTHING_STRESS_RECEIVED: AtomicUsize = AtomicUsize::new(0);
 
-test_procedure!(BlockStressProcedure, "block_stress_procedure", Vec<u8> => (), (), cap 16, |_input, _state, _ctx| {
+test_procedure!(DropNothingStressProcedure, "drop_nothing_stress_procedure", Vec<u8> => (), (), cap 16, |_input, _state, _ctx| {
     // Tiny pause so producers actually get to park rather than
     // repeatedly winning the push race uncontested.
     for _ in 0..32 {
         std::hint::spin_loop();
     }
-    BLOCK_STRESS_RECEIVED.fetch_add(1, Ordering::Relaxed);
+    DROP_NOTHING_STRESS_RECEIVED.fetch_add(1, Ordering::Relaxed);
     Ok(())
 });
 
-struct BlockStressOperative;
-impl StreamOperative for BlockStressOperative {
+struct DropNothingStressOperative;
+impl StreamOperative for DropNothingStressOperative {
     fn factory_id() -> &'static str {
-        "block_stress_operative"
+        "drop_nothing_stress_operative"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<Vec<u8>>("input")
-            .on_full(OverflowPolicy::Block)
-            .into::<BlockStressProcedure>();
+            .on_full(OverflowPolicy::DropNothing)
+            .into::<DropNothingStressProcedure>();
     }
 }
 
 /// Spec scenario "Parked producer does not block its consumer's drain"
-/// (`Block parking does not violate sticky per-entity ordering`)
+/// (`DropNothing parking does not violate sticky per-entity ordering`)
 /// stress-tested with 100 producer threads × 1000 items each on a
 /// capacity-16 mailbox. Asserts every push eventually delivers and that
 /// the per-Entity `pushes_total` matches the total emitted; this
 /// covers Tasks 4.4, 5.6, 6.4, 7.7, 8.1, and 9.2 in one run.
 #[test]
-fn block_stress_100_producers_no_loss() {
-    BLOCK_STRESS_RECEIVED.store(0, Ordering::Release);
-    let (handle, instance) = setup::<BlockStressOperative>("block-stress-instance");
+fn drop_nothing_stress_100_producers_no_loss() {
+    DROP_NOTHING_STRESS_RECEIVED.store(0, Ordering::Release);
+    let (handle, instance) = setup::<DropNothingStressOperative>("block-stress-instance");
     let stream = dummy_stream();
 
     let producers = 100usize;
@@ -448,16 +448,16 @@ fn block_stress_100_producers_no_loss() {
 
     assert!(
         wait_until(
-            || BLOCK_STRESS_RECEIVED.load(Ordering::Acquire) == total,
+            || DROP_NOTHING_STRESS_RECEIVED.load(Ordering::Acquire) == total,
             Duration::from_secs(60)
         ),
         "block-stress: only {} of {} delivered",
-        BLOCK_STRESS_RECEIVED.load(Ordering::Acquire),
+        DROP_NOTHING_STRESS_RECEIVED.load(Ordering::Acquire),
         total
     );
 
     // Per-Entity counters are populated through the producer-side
-    // enqueue path. With Block policy and a capacity-16 mailbox under
+    // enqueue path. With DropNothing policy and a capacity-16 mailbox under
     // 100×1000 contention, every successful push bumps `pushes_total`
     // and at least one park event bumps `pushes_blocked_total`.
     let slot = &instance.entities[0][0];
@@ -698,18 +698,18 @@ impl StreamOperative for StickyWorkflowOperative {
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<Vec<u8>>("input")
-            .on_full(OverflowPolicy::Block)
+            .on_full(OverflowPolicy::DropNothing)
             .into::<StickyWorkflowProcedure>();
     }
 }
 
 /// Spec scenario "Same entity is never concurrent" re-validated
-/// under bounded mailbox capacity 16 with a 10K input burst and Block
-/// entry policy. No drop / no concurrency violation; the inflight CAS
+/// under bounded mailbox capacity 16 with a 10K input burst and a
+/// `DropNothing` entry policy. No drop / no concurrency violation; the inflight CAS
 /// guarantees mutual exclusion regardless of how many producers are
 /// parked at the entry edge.
 #[test]
-fn sticky_ordering_holds_under_workflow_block() {
+fn sticky_ordering_holds_under_drop_nothing_entry() {
     STICKY_WORKFLOW_CONCURRENT.store(0, Ordering::Release);
     STICKY_WORKFLOW_MAX_CONCURRENT.store(0, Ordering::Release);
     STICKY_WORKFLOW_DELIVERED.store(0, Ordering::Release);
@@ -799,7 +799,7 @@ impl StreamOperative for WireOperativeABlock {
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<Vec<u8>>("input")
-            .on_full(OverflowPolicy::Block)
+            .on_full(OverflowPolicy::DropNothing)
             .into::<WireSlowAProcedure>();
     }
 }
@@ -888,17 +888,17 @@ fn declared_drop_newest_entry_does_not_stall_sibling_operatives() {
     assert_eq!(counters_a.pushes_blocked_total.load(Ordering::Relaxed), 0);
 }
 
-/// Spec scenarios "Default entry policy is Block" and "Default entry Block
+/// Spec scenarios "Default entry policy discards nothing" and "Default entry
 /// parks the reader and loses nothing": an entry channel declared without
-/// `.on_full(...)` blocks exactly like a declared `Block`.
+/// `.on_full(...)` waits exactly like a declared `DropNothing`.
 #[test]
-fn default_entry_policy_blocks_and_loses_nothing() {
-    entry_block_parks_reader_until_pool_drains::<WireOperativeADefault>("default");
+fn default_entry_policy_waits_and_loses_nothing() {
+    entry_drop_nothing_parks_reader_until_pool_drains::<WireOperativeADefault>("default");
 }
 
 #[test]
-fn declared_entry_block_parks_the_reader_until_the_pool_drains() {
-    entry_block_parks_reader_until_pool_drains::<WireOperativeABlock>("block");
+fn declared_entry_drop_nothing_parks_the_reader_until_the_pool_drains() {
+    entry_drop_nothing_parks_reader_until_pool_drains::<WireOperativeABlock>("block");
 }
 
 /// Shared body of the entry-edge `Block` scenarios: when StreamOperative A's
@@ -909,7 +909,7 @@ fn declared_entry_block_parks_the_reader_until_the_pool_drains() {
 /// — so B's frame, queued behind the parked push, waits too. Once the pool
 /// serves A's round, a pop unparks the reader and every frame lands, none
 /// lost and none counted as dropped.
-fn entry_block_parks_reader_until_pool_drains<A: StreamOperative>(tag: &str) {
+fn entry_drop_nothing_parks_reader_until_pool_drains<A: StreamOperative>(tag: &str) {
     let _serial = WIRE_TEST_LOCK.lock().unwrap();
     WIRE_A_DELIVERED.store(0, Ordering::Release);
     WIRE_B_DELIVERED.store(0, Ordering::Release);
@@ -994,7 +994,7 @@ fn entry_block_parks_reader_until_pool_drains<A: StreamOperative>(tag: &str) {
 /// Spec scenarios "Default inter-procedure policy is Block" and
 /// "Successful push increments pushes_total". 200 inputs flow through a
 /// producer → consumer pipeline; the inter-procedure channel uses the
-/// default Block policy. Even if the consumer briefly stalls, no item
+/// default DropNothing policy. Even if the consumer briefly stalls, no item
 /// is lost and `pushes_total` on the consumer Entity equals 200.
 #[test]
 fn default_inter_procedure_policy_is_block_and_pushes_total_increments() {
@@ -1222,9 +1222,9 @@ fn procedure_panic_does_not_wedge_the_entity() {
     );
 }
 
-// ----- Block-policy producer on a one-worker pool must not self-deadlock -----
+// ----- DropNothing producer on a one-worker pool must not self-deadlock -----
 //
-// The single pool worker, mid-producer-dispatch, emits into a full Block
+// The single pool worker, mid-producer-dispatch, emits into a full DropNothing
 // consumer mailbox whose drain workflow sits queued behind the producer's own
 // workflow. Parking the worker there is a permanent self-deadlock (the freeze
 // that took prod down on 2026-06-10); the Block arm must drain the full
@@ -1277,7 +1277,7 @@ fn block_policy_emit_on_single_worker_pool_does_not_deadlock() {
             || BLOCKED_CONSUMED.load(Ordering::Acquire) == 8,
             Duration::from_secs(10)
         ),
-        "Block-policy emit deadlocked the one-worker pool: {} of 8 consumed",
+        "DropNothing emit deadlocked the one-worker pool: {} of 8 consumed",
         BLOCKED_CONSUMED.load(Ordering::Acquire)
     );
 }

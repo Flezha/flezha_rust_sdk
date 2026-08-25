@@ -100,7 +100,7 @@ impl StreamOperative for SingleEntityOperative {
         // park briefly until the consumer drains, which is the desired
         // measurement under sustained back-pressure.
         c.input::<Vec<u8>>("input")
-            .on_full(OverflowPolicy::Block)
+            .on_full(OverflowPolicy::DropNothing)
             .into::<SingleEntityProcedure>();
     }
 }
@@ -201,7 +201,7 @@ impl StreamOperative for StaticFanoutOperative {
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<Vec<u8>>("input")
-            .on_full(OverflowPolicy::Block)
+            .on_full(OverflowPolicy::DropNothing)
             .into::<FanoutProcedure>();
     }
 }
@@ -323,7 +323,7 @@ impl StreamOperative for TierOffOperative {
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<Vec<u8>>("input")
-            .on_full(OverflowPolicy::Block)
+            .on_full(OverflowPolicy::DropNothing)
             .into::<TierOffProcedure>()
             .named("out")
             .keyed()
@@ -339,7 +339,7 @@ impl StreamOperative for TierOnOperative {
     fn channels(c: &ChannelBuilder) {
         c.effectively_once();
         c.input::<Vec<u8>>("input")
-            .on_full(OverflowPolicy::Block)
+            .on_full(OverflowPolicy::DropNothing)
             .into::<TierOnProcedure>()
             .named("out")
             .keyed()

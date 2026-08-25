@@ -216,7 +216,7 @@ impl Drop for LiveWorker {
 pub(crate) fn ensure_poll_workers() {
     static STARTED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
     STARTED.get_or_init(|| {
-        // A Block-policy producer facing a full consumer drains it on its own
+        // A DropNothing producer facing a full consumer drains it on its own
         // thread through this hook (one-worker self-deadlock fix).
         flz_core::routing::install_inline_serve(serve_slot);
         PollPool::from_env(global()).start();
@@ -224,7 +224,7 @@ pub(crate) fn ensure_poll_workers() {
 }
 
 /// Serve one slot inline: assemble its round on the calling thread and run
-/// it. How a Block-policy producer on a pool worker drains a full consumer
+/// it. How a DropNothing producer on a pool worker drains a full consumer
 /// without waiting on another worker (a parked worker could be the only one
 /// able to serve it).
 pub(crate) fn serve_slot(slot: &Arc<EntitySlot>) {

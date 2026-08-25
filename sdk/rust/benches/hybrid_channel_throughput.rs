@@ -115,7 +115,7 @@ impl StreamOperative for Pure1Operative {
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<Vec<u8>>("input")
-            .on_full(OverflowPolicy::Block)
+            .on_full(OverflowPolicy::DropNothing)
             .into::<Pure1Producer>()
             .named("out")
             .into::<Pure1Consumer>();
@@ -187,7 +187,7 @@ impl StreamOperative for Pure3Operative {
     fn channels(c: &ChannelBuilder) {
         let out = c
             .input::<Vec<u8>>("input")
-            .on_full(OverflowPolicy::Block)
+            .on_full(OverflowPolicy::DropNothing)
             .into::<Pure3Producer>()
             .named("out");
         out.into::<Pure3ConsumerA>();
@@ -229,7 +229,7 @@ impl StreamOperative for PluginBoundOperative {
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<Vec<u8>>("input")
-            .on_full(OverflowPolicy::Block)
+            .on_full(OverflowPolicy::DropNothing)
             .into::<PluginBoundProducer>()
             .named("out")
             .sink("bench_plugin_bound");
@@ -292,7 +292,7 @@ impl StreamOperative for Hybrid1Operative {
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<Vec<u8>>("input")
-            .on_full(OverflowPolicy::Block)
+            .on_full(OverflowPolicy::DropNothing)
             .into::<Hybrid1Producer>()
             .named("out")
             .sink_with("bench_hybrid_plugin_1c", |v: &u32| v.to_be_bytes().to_vec())
@@ -365,7 +365,7 @@ impl StreamOperative for Hybrid3Operative {
     fn channels(c: &ChannelBuilder) {
         let out = c
             .input::<Vec<u8>>("input")
-            .on_full(OverflowPolicy::Block)
+            .on_full(OverflowPolicy::DropNothing)
             .into::<Hybrid3Producer>()
             .named("out")
             .sink_with("bench_hybrid_plugin_3c", |v: &u32| v.to_be_bytes().to_vec());

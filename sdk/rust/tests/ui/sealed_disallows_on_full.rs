@@ -31,7 +31,7 @@ fn declare(c: &ChannelBuilder) {
         .into::<PluginProducer>()
         .sink("k")
         .sealed()
-        .on_full(OverflowPolicy::Block);
+        .on_full(OverflowPolicy::DropNothing);
 }
 
 fn main() {}

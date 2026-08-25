@@ -166,7 +166,7 @@ impl StreamOperative for SessionOperative {
     }
 }
 
-/// [`SessionOperative`] with a two-slot, `Block`-policy entry mailbox, so a
+/// [`SessionOperative`] with a two-slot, `DropNothing` entry mailbox, so a
 /// case can saturate it with two frames and watch a firing meet it.
 struct SaturatedSessionOperative;
 impl StreamOperative for SaturatedSessionOperative {
@@ -175,7 +175,7 @@ impl StreamOperative for SaturatedSessionOperative {
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
-            .on_full(OverflowPolicy::Block)
+            .on_full(OverflowPolicy::DropNothing)
             .key_by(|s: &String| s.clone())
             .into::<SessionProc<2>>()
             .named("out")

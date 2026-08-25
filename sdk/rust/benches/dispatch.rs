@@ -101,7 +101,7 @@ impl StreamOperative for RegressionOperative {
         // the throughput number would silently misrepresent the
         // dispatch hot path.
         c.input::<Vec<u8>>("input")
-            .on_full(OverflowPolicy::Block)
+            .on_full(OverflowPolicy::DropNothing)
             .into::<RegressionProcedure>();
     }
 }
@@ -319,7 +319,7 @@ impl StreamOperative for EntityStressBenchOperative {
         // mailbox. Inter-procedure channels keep their default Block
         // policy, which preserves ordering through the pipeline.
         c.input::<Vec<u8>>("input")
-            .on_full(OverflowPolicy::Block)
+            .on_full(OverflowPolicy::DropNothing)
             .into::<StressBenchProcedureA>()
             .named("a_to_b")
             .into::<StressBenchProcedureB>()

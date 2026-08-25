@@ -464,16 +464,15 @@ fn on_full_call(on_full: &Option<syn::Ident>) -> syn::Result<TokenStream> {
     let Some(id) = on_full else {
         return Ok(quote! {});
     };
-    let variant =
-        match id.to_string().as_str() {
-            "block" => quote! { Block },
-            "drop_newest" => quote! { DropNewest },
-            "drop_oldest" => quote! { DropOldest },
-            _ => return Err(syn::Error::new_spanned(
-                id,
-                "#[flezha::procedure] `on_full` must be one of: block, drop_newest, drop_oldest",
-            )),
-        };
+    let variant = match id.to_string().as_str() {
+        "drop_nothing" => quote! { DropNothing },
+        "drop_newest" => quote! { DropNewest },
+        "drop_oldest" => quote! { DropOldest },
+        _ => return Err(syn::Error::new_spanned(
+            id,
+            "#[flezha::procedure] `on_full` must be one of: drop_nothing, drop_newest, drop_oldest",
+        )),
+    };
     Ok(quote! { .on_full(::flezha_runner::OverflowPolicy::#variant) })
 }
 

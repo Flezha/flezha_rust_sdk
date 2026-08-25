@@ -71,7 +71,7 @@ impl StreamOperative for SteadyDynOperative {
     fn channels(c: &ChannelBuilder) {
         // First 8 bytes (hex-ish) are the key; cheap and deterministic.
         c.input::<Vec<u8>>("input")
-            .on_full(OverflowPolicy::Block)
+            .on_full(OverflowPolicy::DropNothing)
             .key_by(|input: &Vec<u8>| {
                 String::from_utf8_lossy(&input[..input.len().min(8)]).into_owned()
             })

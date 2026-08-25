@@ -23,7 +23,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .define_stream::<CompareFilterOperative>()?
         .define_stream::<StaticEntityOperative>()?
         .define_stream::<EntityStressOperative>()?
-        .define_stream::<BoundedMailboxBlockOperative>()?
+        .define_stream::<BoundedMailboxDropNothingOperative>()?
         .define_stream::<BoundedMailboxDropNewestOperative>()?
         .define_stream::<BoundedMailboxDropOldestOperative>()?
         .define_stream::<StatefulCounterOperative>()?
@@ -1202,7 +1202,7 @@ impl StreamOperative for DynamicEntityOperative {
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
-            .on_full(OverflowPolicy::Block)
+            .on_full(OverflowPolicy::DropNothing)
             .filter(|input: &String| input != "drop")
             .key_by(|input: &String| input.split(':').next().unwrap_or(input).to_string())
             .into::<DynamicEntityProcedure>()
@@ -1541,11 +1541,11 @@ impl StreamOperative for TierStoreOperative {
         c.effectively_once();
         // 300 ms backoff base keeps the min-watermark freeze observable
         // (~0.9 s from first failure to park) in the DLQ e2e.
-        // Declared Block: a durable-input-log operative that sheds at its
+        // Declared DropNothing: a durable-input-log operative that sheds at its
         // mailbox would hold the min-watermark on the shed offset forever
         // while the log behind it keeps growing.
         c.input::<String>("input")
-            .on_full(OverflowPolicy::Block)
+            .on_full(OverflowPolicy::DropNothing)
             .retry_backoff_ms(300)
             .into::<TierStoreProcedure>()
             .named("sink")
@@ -1560,7 +1560,7 @@ impl StreamOperative for TierStoreOperative {
 // can measure the same keyed upsert under both durability postures.
 // `c.effectively_once()` is a compile-time channel declaration, not a runtime
 // flag, so the posture cannot be threaded through one factory.
-// Echo with a declared Block on its entry mailbox. `do_nothing` is the
+// Echo with a declared DropNothing on its entry mailbox. `do_nothing` is the
 // merge-blocking `mix bench` factory and must not change; a separate factory
 // keeps the round-trip bench's back-pressure posture independent of it.
 struct BenchEchoOperative;
@@ -1570,7 +1570,7 @@ impl StreamOperative for BenchEchoOperative {
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
-            .on_full(OverflowPolicy::Block)
+            .on_full(OverflowPolicy::DropNothing)
             .into::<DoNothingProcedure>()
             .named("echo")
             .sink("bench_echo_sink");
@@ -1584,7 +1584,7 @@ impl StreamOperative for BenchKeyedOperative {
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
-            .on_full(OverflowPolicy::Block)
+            .on_full(OverflowPolicy::DropNothing)
             .into::<TierStoreProcedure>()
             .named("sink")
             .keyed()
@@ -1606,7 +1606,7 @@ impl StreamOperative for BenchKeyedNoPersistOperative {
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
-            .on_full(OverflowPolicy::Block)
+            .on_full(OverflowPolicy::DropNothing)
             .into::<TierStoreProcedure>()
             .named("sink")
             .keyed()
@@ -1763,7 +1763,7 @@ impl StreamOperative for BenchCheckpointOperative {
             c.outputs_at_checkpoint(env_u64("FLEZHA_BENCH_CHECKPOINT_DELAY_MS", 50));
         }
         c.input::<String>("input")
-            .on_full(OverflowPolicy::Block)
+            .on_full(OverflowPolicy::DropNothing)
             .into::<BenchCheckpointProcedure>()
             .named("sink")
             .keyed()
@@ -2536,8 +2536,8 @@ fn apply_inc(state: &mut WorkflowProcedureState, _: &WorkflowChange) {
 }
 
 #[derive(Default)]
-struct BlockTestProcedure;
-impl Procedure for BlockTestProcedure {
+struct DropNothingTestProcedure;
+impl Procedure for DropNothingTestProcedure {
     type Input = String;
     type Output = Vec<u8>;
     type State = WorkflowProcedureState;
@@ -2545,7 +2545,7 @@ impl Procedure for BlockTestProcedure {
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "block_test_procedure"
+        "drop_nothing_test_procedure"
     }
     fn init_state(
         _: Option<&str>,
@@ -2646,16 +2646,16 @@ impl Procedure for DropOldestTestProcedure {
 // One operative per overflow policy: the graph-shape rule
 // (`sdk-graph-authoring`) allows exactly one entry channel per operative, so
 // the former three-entry BoundedMailboxOperative is now three classes.
-struct BoundedMailboxBlockOperative;
-impl StreamOperative for BoundedMailboxBlockOperative {
+struct BoundedMailboxDropNothingOperative;
+impl StreamOperative for BoundedMailboxDropNothingOperative {
     fn factory_id() -> &'static str {
-        "bounded_mailbox_block"
+        "bounded_mailbox_drop_nothing"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<String>("block_input")
-            .on_full(OverflowPolicy::Block)
-            .into::<BlockTestProcedure>()
-            .named("block_echo")
+        c.input::<String>("drop_nothing_input")
+            .on_full(OverflowPolicy::DropNothing)
+            .into::<DropNothingTestProcedure>()
+            .named("drop_nothing_echo")
             .sink("bounded_mailbox_echo");
     }
 }

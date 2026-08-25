@@ -154,12 +154,12 @@ pub(crate) struct ChannelEntry {
     /// with a plugin wire; `build_topology` rejects a keyed channel that
     /// has no `sink`.
     pub keyed: bool,
-    /// Backpressure policy applied at the push site when the consumer
-    /// mailbox is full. Initialized at channel-creation time per channel
-    /// kind (Entry → DropNewest, InterProcedure → Block); a channel with no
-    /// consumers carries a placeholder that is never consulted, because a
-    /// plugin emit writes straight to the wire. `.on_full(...)` overwrites
-    /// this value.
+    /// What this channel discards when the consumer mailbox is full,
+    /// applied at the push site. Initialized at channel-creation time to
+    /// `OverflowPolicy::default()` (`DropNothing`, every kind); a channel
+    /// with no consumers carries a placeholder that is never consulted,
+    /// because a plugin emit writes straight to the wire. `.on_full(...)`
+    /// overwrites this value.
     pub overflow_policy: OverflowPolicy,
     /// Retry-then-park policy for this channel's consumer dispatchers.
     /// `.retry_max(...)` / `.retry_backoff_ms(...)` overwrite the defaults.
@@ -1457,12 +1457,12 @@ impl<'b, T: 'static + Send + Sync, K: StreamTarget> Stream<'b, T, K> {
         self.relink(None, Some(erase::<T, _, _>("key_by", key)))
     }
 
-    /// Override the default `OverflowPolicy` (`Block` for every channel
-    /// kind). On an entry channel `Block` parks the shared wire reader
-    /// on this operative's saturation (see `docs/sdk/rust_operative_architecture.md`
-    /// for the co-tenancy cost); declare `DropNewest` / `DropOldest` when
-    /// shedding under saturation is acceptable and ordering or completeness
-    /// can be sacrificed for liveness.
+    /// Override the default `OverflowPolicy` (`DropNothing` for every
+    /// channel kind). On an entry channel `DropNothing` parks the shared wire
+    /// reader on this operative's saturation (see
+    /// `docs/sdk/rust_operative_architecture.md` for the co-tenancy cost);
+    /// declare `DropNewest` / `DropOldest` when shedding under saturation is
+    /// acceptable and ordering or completeness can be sacrificed for liveness.
     pub fn on_full(self, policy: OverflowPolicy) -> Self {
         self.with_channel(|st, cid| st.channels[cid as usize].overflow_policy = policy);
         self
