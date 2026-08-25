@@ -171,18 +171,44 @@ mod tests {
             schema_version,
             ..crate::entity::header::header_template_for::<FoldProc>()
         };
-        let header = template.stamp(body);
-        let mut hasher = crc32fast::Hasher::new();
-        hasher.update(&header);
-        hasher.update(body);
-        let crc = hasher.finalize();
-        let mut out = Vec::new();
-        out.extend_from_slice(&seq.to_be_bytes());
-        out.extend_from_slice(&((16 + body.len()) as u32).to_be_bytes());
-        out.extend_from_slice(&header);
-        out.extend_from_slice(body);
-        out.extend_from_slice(&crc.to_be_bytes());
-        out
+        flz_core::restore::frame_record(seq, &template.stamp(body), body)
+    }
+
+    /// One WAL record written by another SDK, in the shape the controller
+    /// ships it. Mirrors `wal_record_at` but stamps a foreign byte 0.
+    fn wal_record_of_lang(seq: u64, sdk_lang: u8, body: &[u8]) -> Vec<u8> {
+        let template = HeaderTemplate {
+            sdk_lang,
+            ..crate::entity::header::header_template_for::<FoldProc>()
+        };
+        flz_core::restore::frame_record(seq, &template.stamp(body), body)
+    }
+
+    /// The typed arm's half of the language gate — the mirror of
+    /// `flz_core::restore`'s host-arm test, so both arms are pinned by a test
+    /// rather than by the fact that they happen to share a walk today.
+    #[test]
+    fn the_typed_arm_refuses_another_sdks_records() {
+        let log = wal_record_of_lang(0, flz_core::header::SDK_LANG_JAVA, b"kryo-bytes");
+        let payload = RestoreInitPayload {
+            snapshot_header: &[],
+            snapshot_bytes: &[],
+            change_log_bytes: &log,
+        };
+
+        let err = init_entity_with_payload::<FoldProc>(None, Some(&payload))
+            .expect_err("a Java-written log is refused by a Rust class");
+
+        assert!(
+            matches!(
+                err,
+                RestoreError::LangMismatch {
+                    expected: flz_core::header::SDK_LANG_RUST,
+                    found: flz_core::header::SDK_LANG_JAVA,
+                }
+            ),
+            "expected a language mismatch, got {err:?}"
+        );
     }
 
     #[test]

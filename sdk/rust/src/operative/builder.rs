@@ -374,6 +374,7 @@ pub fn build_topology_with_persistence(
     }
 
     Ok(Arc::new(OperativeTopology {
+        sdk_lang: flz_core::header::SDK_LANG_RUST,
         channels: channel_descs,
         name_to_id,
         procedures: procedure_descs,

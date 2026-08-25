@@ -708,6 +708,7 @@ impl FlezhaRunner {
                 .map(|id| pb::FactoryDecl {
                     id: id.clone(),
                     description: String::new(),
+                    sdk_lang: flz_core::operative::registry::sdk_lang_for_factory(id) as u32,
                 })
                 .collect();
             let _ = live.runner_tx.send(RunnerMessage::EmitControlRequest {

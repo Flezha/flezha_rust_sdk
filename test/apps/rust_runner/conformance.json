@@ -1,5 +1,6 @@
 {
   "runtime": "rust",
+  "sdk_lang": 1,
   "command": {
     "test": "cargo run --quiet --manifest-path={artifact} --target-dir=./target -- {namespace}",
     "bench": "{artifact} {namespace}"

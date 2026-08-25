@@ -34,6 +34,7 @@ pub fn build_spec<T: WorkflowOperative>() -> Result<WorkflowSpec, BuildWorkflowE
         }
 
         return Ok(WorkflowSpec {
+            sdk_lang: flz_core::header::SDK_LANG_RUST,
             host: false,
             run: T::run as WorkflowRunFn,
             topology: None,
@@ -103,6 +104,7 @@ pub fn build_spec<T: WorkflowOperative>() -> Result<WorkflowSpec, BuildWorkflowE
     }
 
     Ok(WorkflowSpec {
+        sdk_lang: flz_core::header::SDK_LANG_RUST,
         host: false,
         run: T::run as WorkflowRunFn,
         topology: Some(topology),
