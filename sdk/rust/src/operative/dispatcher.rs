@@ -246,6 +246,7 @@ impl<S: Procedure> ProcedureDispatcherImpl<S> {
     fn invoke_once(
         &self,
         what: Invocation<S>,
+        slot: &Arc<EntitySlot>,
         now: u64,
         attempt: u32,
         is_final: bool,
@@ -305,6 +306,7 @@ impl<S: Procedure> ProcedureDispatcherImpl<S> {
         let effect_outputs = self.effect_capture();
 
         let mut sink = EntityEmitSink {
+            producer: slot,
             output_channel_id: self.output_channel_id,
             output_channel_name: self.output_channel_name.as_deref(),
             keyed: self.output_channel_keyed,
@@ -538,6 +540,7 @@ impl<S: Procedure> ProcedureDispatcher for ProcedureDispatcherImpl<S> {
     fn dispatch_item(
         &self,
         work: crate::runner::poll_core::WorkItem,
+        slot: &Arc<EntitySlot>,
         state: &mut Box<dyn Any + Send>,
         flush_buffer: &mut Box<dyn FlushableBuffer>,
         timers: &mut PendingTimers,
@@ -577,6 +580,7 @@ impl<S: Procedure> ProcedureDispatcher for ProcedureDispatcherImpl<S> {
                         fired_at: fire.scheduled_at,
                         kind: fire.kind,
                     },
+                    slot,
                     fire.scheduled_at,
                     attempt,
                     is_final,
@@ -636,6 +640,7 @@ impl<S: Procedure> ProcedureDispatcher for ProcedureDispatcherImpl<S> {
                             consumed_offset,
                             replay,
                         },
+                        slot,
                         now,
                         attempt,
                         true,
@@ -663,6 +668,7 @@ impl<S: Procedure> ProcedureDispatcher for ProcedureDispatcherImpl<S> {
                             consumed_offset,
                             replay,
                         },
+                        slot,
                         now,
                         attempt,
                         false,
@@ -1040,6 +1046,10 @@ type FlushBeforeEmit<'a> = Box<dyn FnMut() + 'a>;
 /// run; if the instance has been dropped, every emit returns
 /// `UnknownChannel`.
 struct EntityEmitSink<'a> {
+    /// The Entity this invocation belongs to. An emit it cannot deliver is
+    /// held against this slot and this slot is handed no further work — the
+    /// backpressure the parked producing thread used to express.
+    producer: &'a Arc<EntitySlot>,
     output_channel_id: Option<ChannelId>,
     output_channel_name: Option<&'a str>,
     /// `.keyed()` opt-in for the output channel. Non-keyed channels take
@@ -1188,6 +1198,7 @@ impl<'a> EmitSink for EntityEmitSink<'a> {
             &self.stream,
             self.consumed_offset,
             false,
+            Some(self.producer),
         );
         if let Some(sink) = descriptor.plugin_sink.as_ref() {
             self.emit_plugin_sink(&instance, descriptor, sink, &value, meta, key)?;
@@ -1482,6 +1493,15 @@ impl<'a> Handout<'a> {
         self.answered = true;
         self.core.complete(self.token);
     }
+
+    /// End the batch early and hand the untouched tail back. Only for items
+    /// this worker did NOT run — re-handing one it already ran would execute
+    /// it twice.
+    fn hand_back(&mut self) {
+        self.answered = true;
+        let items: Vec<_> = self.remaining.drain(..).collect();
+        self.core.abandon(self.token, items);
+    }
 }
 
 impl Drop for Handout<'_> {
@@ -1496,8 +1516,7 @@ impl Drop for Handout<'_> {
             panicking = std::thread::panicking(),
             "a poll worker left an activation unanswered; abandoning it so its entity keeps serving"
         );
-        let items: Vec<_> = self.remaining.drain(..).collect();
-        self.core.abandon(self.token, items);
+        self.hand_back();
     }
 }
 
@@ -1552,6 +1571,7 @@ pub(super) fn run_activation(
             let instance_weak = Weak::clone(&slot.instance);
             slot.dispatcher.dispatch_item(
                 work,
+                &slot,
                 &mut state_guard,
                 &mut buffer_guard,
                 &mut timer_guard,
@@ -1567,6 +1587,15 @@ pub(super) fn run_activation(
                 crate::entity::timer::apply_ops(&slot, &ops, &stream);
                 flz_core::timer::arm_interval_deadline(&slot);
                 crate::entity::DISPATCHES_COMPLETED.fetch_add(1, Ordering::Relaxed);
+                // This item's emit could not be delivered. The parked producer
+                // this replaces stopped here too — its thread never returned
+                // into the batch — so the untouched tail goes back to the head
+                // of the entity's line and runs once the push lands. Without
+                // this the holdback would grow by a whole batch.
+                if slot.push_deferred.load(Ordering::Acquire) {
+                    handout.hand_back();
+                    return;
+                }
             }
             ItemDisposition::RetryLater { item, error } => {
                 handout.retry(
@@ -1674,6 +1703,7 @@ pub fn build_entity_slot<S: Procedure>(args: BuildEntityArgs<'_>) -> Arc<EntityS
             args.persistence_enabled,
             Arc::clone(&parts.change_seq),
             crate::entity::header::header_template_for::<S>(),
+            Arc::clone(&parts.push_deferred),
         ))
     } else {
         None
