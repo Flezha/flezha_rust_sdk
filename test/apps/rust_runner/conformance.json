@@ -25,6 +25,14 @@
     "uds",
     "quic"
   ],
+  "dispatch": {
+    "model": "thread-pool",
+    "detail": "A worker pool of OS threads; per-entity exclusivity keeps one Entity on one worker at a time.",
+    "env": {
+      "FLEZHA_WORKER_POOL_SIZE": "worker threads (default: the host's core count)"
+    }
+  },
+  "toolchain": "rustc --version",
   "deferred": [],
   "fixtures": {
     "runner_lifecycle": [
