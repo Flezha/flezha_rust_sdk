@@ -40,6 +40,9 @@
       "compare_filter",
       "bench_echo"
     ],
+    "connect_discovery": [
+      "do_nothing"
+    ],
     "graph_builder": [
       "sugar_do_nothing",
       "sugar_store_input",

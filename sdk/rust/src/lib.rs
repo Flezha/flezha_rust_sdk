@@ -101,7 +101,8 @@
 //!   underway at once (default: 1024). Read by `flz_core`, so it applies to
 //!   every host over the same core.
 //! - `FLEZHA_TRANSPORT` — `"uds"` (default) or `"quic"`.
-//! - `FLEZHA_QUIC_ADDRESS` — QUIC endpoint address.
+//! - `FLEZHA_QUIC_ADDRESSES` — comma list of QUIC controller endpoints, each
+//!   a name or a literal with an optional port, re-resolved every attempt.
 
 pub mod channel;
 pub mod workflow;
