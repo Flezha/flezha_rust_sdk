@@ -17,3 +17,6 @@ erased-serde="0.4.6"
 # Enables `flezha_runner::testing::ShardTestHarness` for the macro-twin
 # equivalence tests in `src/main.rs`.
 flezha_runner = { path = "../../../sdk/rust", features = ["testing"] }
+
+[lints]
+workspace = true

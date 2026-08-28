@@ -76,7 +76,7 @@ fn emitting_past_the_bound_delivers_everything_in_order() {
     flz_core::routing::set_holdback_max_for_tests(usize::MAX);
     assert!(
         drained,
-        "a bounded holdback lost or wedged work: {} of {EMITS} arrived",
+        "a holdback with a bound lost or wedged work: {} of {EMITS} arrived",
         SEEN.lock().unwrap().len()
     );
     let seen = SEEN.lock().unwrap().clone();
