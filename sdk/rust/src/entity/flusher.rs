@@ -1,164 +1,68 @@
-//! The typed half of the per-Entity flush path: `TypedBuffer<S>` (what
-//! `StateHandle::apply` writes into), drain-time coalescing, and the frame
-//! builders that serialize `S::Change`. The erased flusher — registry,
-//! linger thread, `flush_one`, frame assembly — lives in
-//! `flz_core::flusher` and is re-exported here.
+//! The typed half of the per-Entity flush path: [`TypedBodies`], the codec
+//! marker that hands `flz_core`'s shared [`EffectBuffer`] the author's own
+//! `S::Change`, plus drain-time coalescing and the change-frame builder. The
+//! erased flusher — registry, linger thread, `flush_one`, frame assembly —
+//! lives in `flz_core::flusher` and is re-exported here.
 
-use std::any::Any;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::marker::PhantomData;
 
 pub use flz_core::flusher::*;
 use flz_core::header::HeaderTemplate;
 
 use crate::procedure::change::{Change, CoalesceKey};
+use crate::procedure::Procedure;
 
-/// One invocation's buffered effect entry (effectively-once tier). Typed on
-/// the Procedure's Change; serialized into an [`EffectRecordBody`] at drain.
-pub struct EffectEntry<S: crate::procedure::Procedure> {
-    pub changes: Vec<S::Change>,
-    pub outputs: Vec<OutputRecord>,
-    pub consumed_offset: Option<u64>,
-    pub dlq: Option<DlqEntryBody>,
-    pub event_time: u64,
-    pub timers: Vec<crate::entity::timer::TimerOp>,
-}
+/// How a typed class's changes become record bodies: coalesced on the
+/// author's `coalesce_key`, then postcard-encoded — the codec
+/// `entity/restore.rs` folds back.
+pub struct TypedBodies<S: Procedure>(PhantomData<fn() -> S>);
 
-impl<S: crate::procedure::Procedure> EffectEntry<S> {
-    /// The record a fold or a deadline close produced, plus the park that rides
-    /// it — the typed twin of `EffectRecordBody::from_shipped`.
-    pub fn from_shipped(record: ShippedRecord<S::Change>, dlq: Option<DlqEntryBody>) -> Self {
-        Self {
-            changes: record.changes,
-            outputs: record.outputs,
-            consumed_offset: record.offset,
-            dlq,
-            event_time: record.event_time,
-            timers: record.timers,
-        }
+impl<S: Procedure> Bodies for TypedBodies<S> {
+    type Change = S::Change;
+
+    fn coalesce(changes: Vec<S::Change>) -> Vec<S::Change> {
+        coalesce(changes)
     }
-}
 
-/// Concrete per-Procedure buffer. The dispatcher downcasts the type-erased
-/// `dyn FlushableBuffer` to `TypedBuffer<S>` to get a `&mut Vec<S::Change>`
-/// for `StateHandle::new`. Exactly one of `inner` / `effects` is ever
-/// populated: plain changes outside the effectively-once tier, per-invocation
-/// effect entries inside it.
-///
-/// `staged` is neither: under checkpoint ack-granularity it holds the changes
-/// an open interval has applied, which are not flushable yet — they become
-/// durable only inside the effect record the closing `ctx.checkpoint()` ships,
-/// together with the offset that acknowledges them. Draining them on their own
-/// would put the state ahead of its offset, which is the tear the mode exists
-/// to prevent.
-/// `timer_ops` is the tier-off home for pending-timer mutations: outside the
-/// tier there is no effect record to ride, so they drain as their own
-/// `format_id = 3` record. Under the tier they ride `EffectEntry::timers`
-/// instead and this stays empty.
-pub struct TypedBuffer<S: crate::procedure::Procedure> {
-    pub inner: Vec<S::Change>,
-    /// An open checkpoint interval's unacknowledged accumulation — changes,
-    /// timer registrations and (under `CheckpointOutputs::AtCheckpoint`)
-    /// outputs. Shipping any of it alone would leave state, a pending timer or
-    /// a delivered output ahead of the offset that acknowledges them.
-    pub staged: StagedInterval<S::Change>,
-    pub effects: Vec<EffectEntry<S>>,
-    pub timer_ops: Vec<crate::entity::timer::TimerOp>,
-    /// Changes a failed-but-retryable attempt applied to in-memory state,
-    /// held out of the flusher's reach until the item resolves; the next
-    /// attempt re-takes them so durable state cannot diverge from memory.
-    pub pending_attempt: Vec<S::Change>,
-}
-
-impl<S: crate::procedure::Procedure> Default for TypedBuffer<S> {
-    fn default() -> Self {
-        Self {
-            inner: Vec::new(),
-            staged: StagedInterval::default(),
-            effects: Vec::new(),
-            timer_ops: Vec::new(),
-            pending_attempt: Vec::new(),
-        }
-    }
-}
-
-impl<S: crate::procedure::Procedure> FlushableBuffer for TypedBuffer<S> {
-    fn drain_to_frames(
-        &mut self,
-        entity_identity: &[u8],
-        change_seq: &AtomicU64,
-        header: &HeaderTemplate,
-    ) -> (usize, Vec<FlushFrame>) {
-        // Serialize the coalesced changes, then share the bytes-level drain
-        // tail with the host's `BytesBuffer` (`flusher::frame_change_bodies`).
-        let bodies: Vec<Vec<u8>> = coalesce(std::mem::take(&mut self.inner))
+    fn into_bodies(changes: Vec<S::Change>) -> Vec<Vec<u8>> {
+        changes
             .iter()
             .map(|c| {
                 postcard::to_allocvec(c)
                     .expect("postcard serialization of Change failed; Change must be Serialize")
             })
-            .collect();
-        // Timer ops fold into the pending set, never into `S::State`, so their
-        // order relative to the change records is immaterial — only their
-        // order among themselves is, and that is the Vec's.
-        let mut frames = flz_core::flusher::frame_change_bodies(
-            bodies,
-            std::mem::take(&mut self.timer_ops),
-            entity_identity,
-            change_seq,
-            header,
-        );
-        // Effect records are never coalesced or merged: a coalesced-away
-        // record would drop its outputs and consumed-offset.
-        if !self.effects.is_empty() {
-            frames.extend(std::mem::take(&mut self.effects).into_iter().map(|entry| {
-                let seq = change_seq.fetch_add(1, Ordering::Relaxed);
-                FlushFrame {
-                    payload_id: crate::entity::state_sink::ENTITY_EFFECT_RECORD_PAYLOAD_ID,
-                    bytes: build_entity_effect_record_frame::<S>(
-                        entity_identity,
-                        seq,
-                        header,
-                        entry,
-                    ),
-                }
-            }));
-        }
-        let count = frames.len();
-        (count, frames)
-    }
-
-    fn is_empty(&self) -> bool {
-        self.inner.is_empty() && self.effects.is_empty() && self.timer_ops.is_empty()
-    }
-
-    fn discard_staged(&mut self) {
-        self.staged.clear();
-        // A mid-ladder attempt's changes belong to the same superseded past.
-        self.pending_attempt.clear();
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
+            .collect()
     }
 }
 
+/// The per-Entity flush buffer on a Procedure's own change type. The
+/// dispatcher downcasts the type-erased `dyn FlushableBuffer` back to this to
+/// reach `&mut Vec<S::Change>` for `StateHandle::new`.
+pub type TypedBuffer<S> = EffectBuffer<TypedBodies<S>>;
+
 /// Drain-time coalesce: keep the latest record per `coalesce_key`, preserve
 /// order of kept records, and retain `coalesce_key() == None` records
-/// verbatim.
+/// verbatim. Nothing is allocated until the first keyed record appears, so a
+/// buffer with no keys at all comes back as the same allocation.
 pub fn coalesce<C: Change>(buf: Vec<C>) -> Vec<C> {
-    if buf.is_empty() {
-        return buf;
-    }
-    let mut latest: HashMap<CoalesceKey, usize> = HashMap::with_capacity(buf.len());
-    let mut keep_mask = vec![true; buf.len()];
+    let mut latest: HashMap<CoalesceKey, usize> = HashMap::new();
+    // Empty until the first key: also the flag that says nothing is collapsed.
+    let mut keep_mask: Vec<bool> = Vec::new();
     for (i, c) in buf.iter().enumerate() {
-        if let Some(k) = c.coalesce_key() {
-            if let Some(&prev_i) = latest.get(&k) {
-                keep_mask[prev_i] = false;
-            }
-            latest.insert(k, i);
+        let Some(k) = c.coalesce_key() else {
+            continue;
+        };
+        if keep_mask.is_empty() {
+            keep_mask = vec![true; buf.len()];
+            latest.reserve(buf.len() - i);
         }
+        if let Some(prev_i) = latest.insert(k, i) {
+            keep_mask[prev_i] = false;
+        }
+    }
+    if keep_mask.is_empty() {
+        return buf;
     }
     let mut out = Vec::with_capacity(buf.len());
     for (i, c) in buf.into_iter().enumerate() {
@@ -182,37 +86,10 @@ pub fn build_entity_state_change_frame<C: Change>(
     build_entity_frame(entity_identity, seq, &header_bytes, &change_bytes)
 }
 
-/// Build one `entity_effect_record` frame (effectively-once tier), stamped
-/// with `format_id = 2` so mixed WALs stay readable.
-pub fn build_entity_effect_record_frame<S: crate::procedure::Procedure>(
-    entity_identity: &[u8],
-    seq: u64,
-    header: &HeaderTemplate,
-    entry: EffectEntry<S>,
-) -> Vec<u8> {
-    let changes: Vec<Vec<u8>> = entry
-        .changes
-        .iter()
-        .map(|c| {
-            postcard::to_allocvec(c)
-                .expect("postcard serialization of Change failed; Change must be Serialize")
-        })
-        .collect();
-    let body = EffectRecordBody {
-        changes,
-        outputs: entry.outputs,
-        consumed_offset: entry.consumed_offset,
-        dlq: entry.dlq,
-        event_time: entry.event_time,
-        timers: entry.timers,
-    };
-    // The bytes-level framing (format_id 2 stamp + entity frame) is the
-    // core's; this builder only serializes the typed changes first.
-    flz_core::flusher::build_effect_record_frame(entity_identity, seq, header, &body)
-}
-
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicU64;
+
     use flz_core::header::FORMAT_ID_EFFECT_RECORD;
     use serde::{Deserialize, Serialize};
 
@@ -259,6 +136,24 @@ mod tests {
         for (i, c) in out.iter().enumerate() {
             assert_eq!(c.ts, i as u64);
         }
+    }
+
+    /// With no record carrying a key there is nothing to collapse: the input
+    /// comes back as the same allocation, which is what proves the map and
+    /// the mask were never allocated.
+    #[test]
+    fn coalesce_returns_a_keyless_buffer_by_move() {
+        let buf: Vec<TestChange> = (0..50)
+            .map(|i| TestChange {
+                key: None,
+                ts: i,
+                value: i as i64,
+            })
+            .collect();
+        let allocation = buf.as_ptr();
+        let out = coalesce(buf);
+        assert_eq!(out.as_ptr(), allocation, "a keyless coalesce is a move");
+        assert_eq!(out.len(), 50);
     }
 
     #[test]
@@ -366,7 +261,7 @@ mod tests {
             ts: 7,
             value: 42,
         };
-        let entry = EffectEntry::<EffProc> {
+        let entry = EffectEntry::<TestChange> {
             event_time: 0,
             changes: vec![change.clone()],
             outputs: vec![OutputRecord {
@@ -384,7 +279,12 @@ mod tests {
         };
         let template = HeaderTemplate::new(0x010203, 1);
         let identity = encode_entity_identity("Proc", "stage", "k");
-        let frame = build_entity_effect_record_frame::<EffProc>(&identity, 9, &template, entry);
+        let frame = build_effect_record_frame(
+            &identity,
+            9,
+            &template,
+            &entry.into_body::<TypedBodies<EffProc>>(),
+        );
 
         // Same outer layout as a change frame; header format_id = 2.
         let pid_len = u16::from_be_bytes([frame[0], frame[1]]) as usize;
@@ -418,7 +318,7 @@ mod tests {
             value: 9,
         };
         let mut buffer = TypedBuffer::<EffProc> {
-            inner: vec![change.clone()],
+            changes: vec![change.clone()],
             ..Default::default()
         };
         let seq = AtomicU64::new(5);
@@ -479,7 +379,7 @@ mod tests {
     fn effect_records_are_never_coalesced_at_drain() {
         // Two entries whose changes share a coalesce key AND carry outputs:
         // both must ship — a coalesced-away record would drop its outputs.
-        let mk = |ts: u64| EffectEntry::<EffProc> {
+        let mk = |ts: u64| EffectEntry::<TestChange> {
             event_time: ts,
             changes: vec![TestChange {
                 key: Some(7),
