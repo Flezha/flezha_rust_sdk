@@ -361,7 +361,8 @@ fn an_entity_key_without_a_procedure_is_refused() {
         },
         StatePurpose::LiveRead,
     )
-    .expect_err("an Entity key is unique only within its Procedure");
+    .expect_err("an Entity key is unique only within its Procedure")
+    .to_string();
 
     assert!(
         err.starts_with(ENTITY_KEY_WITHOUT_PROCEDURE),
@@ -380,7 +381,8 @@ fn an_unknown_procedure_is_refused() {
         },
         StatePurpose::LiveRead,
     )
-    .expect_err("no such Procedure");
+    .expect_err("no such Procedure")
+    .to_string();
 
     assert!(err.starts_with(PROCEDURE_NOT_FOUND), "got: {err}");
 }
@@ -401,7 +403,8 @@ fn an_unknown_key_is_refused_distinctly_from_an_evicted_one() {
         },
         StatePurpose::LiveRead,
     )
-    .expect_err("no Entity by that key");
+    .expect_err("no Entity by that key")
+    .to_string();
     assert!(never.starts_with(ENTITY_NOT_FOUND), "got: {never}");
 
     // Evict destructively, then read the same key back. Backdating the
@@ -410,7 +413,7 @@ fn an_unknown_key_is_refused_distinctly_from_an_evicted_one() {
         .entities
         .get("BTCUSD@1m")
         .expect("live before the sweep")
-        .last_activity_at
+        .last_activity_ms
         .store(-1_000, std::sync::atomic::Ordering::Relaxed);
     registry.reap_sweep(std::time::Duration::ZERO);
     assert!(registry.entities.is_empty(), "the idle Entity is evicted");
@@ -423,7 +426,8 @@ fn an_unknown_key_is_refused_distinctly_from_an_evicted_one() {
         },
         StatePurpose::LiveRead,
     )
-    .expect_err("an evicted Entity is refused, not resurrected");
+    .expect_err("an evicted Entity is refused, not resurrected")
+    .to_string();
     assert!(
         evicted.starts_with(ENTITY_EVICTED),
         "eviction is a distinct diagnosis, got: {evicted}"
