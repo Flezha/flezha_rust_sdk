@@ -17,6 +17,7 @@ use crate::channel::ChannelBuilder;
 /// [`procedures`](Self::procedures) to grow into an explicit DAG of
 /// Procedures/Channels/Entities without rewriting unrelated code. Capabilities
 /// attach to the kind, not here — choosing the workflow kind is sufficient.
+/// A worked example of both forms: `sdk/rust/examples/spawn_workflow_worker.rs`.
 pub trait WorkflowOperative: Send + Sync + 'static {
     /// Stable, controller-facing factory identifier.
     fn factory_id() -> &'static str;

@@ -10,7 +10,8 @@ use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::{Expr, ExprLit, FnArg, ItemFn, Lit, MetaNameValue, Pat, ReturnType, Token, Type};
 
-use crate::util::{first_generic_arg, snake_ident_to_pascal};
+use crate::operative::{auto_operative, AutoWiring};
+use crate::util::{generic_args, snake_ident_to_pascal};
 
 #[derive(Default)]
 struct ProcedureArgs {
@@ -92,7 +93,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
     })?;
 
     // --- Output inference from the return type. ---
-    let output = infer_output(&sig.output)?;
+    let output = resolve_output(&sig.output)?;
 
     // --- The multi-emit shape: the body owns every emit, so the return type
     // has no output left to declare and `emits = T` declares it instead. ---
@@ -327,26 +328,16 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             ));
         }
         let operative_ident = format_ident!("__FlezhaAutoOperative{}", struct_ident);
-        let on_full = on_full_call(&args.on_full)?;
-        quote! {
-            #[doc(hidden)]
-            #vis struct #operative_ident;
-            impl ::flezha_runner::StreamOperative for #operative_ident {
-                fn factory_id() -> &'static str { #id }
-                fn channels(c: &::flezha_runner::ChannelBuilder) {
-                    let stream = c.input::<#input_ty>("input") #on_full .into::<#struct_ident>();
-                    // Pins the sink payload type against the procedure's `Output`.
-                    let stream: ::flezha_runner::Stream<'_, #output_ty_tokens> = stream;
-                    stream.named(#sink).sink(#sink);
-                }
-            }
-            ::flezha_runner::inventory::submit! {
-                ::flezha_runner::AutoOperative::new(
-                    <#operative_ident as ::flezha_runner::StreamOperative>::factory_id,
-                    || ::flezha_runner::__register_stream::<#operative_ident>(),
-                )
-            }
-        }
+        auto_operative(AutoWiring {
+            vis: quote! { #vis },
+            ident: &operative_ident,
+            id,
+            input_ty,
+            on_full: on_full_call(&args.on_full)?,
+            chain: quote! { .into::<#struct_ident>(); },
+            payload: output_ty_tokens.clone(),
+            sink,
+        })
     } else {
         quote! {}
     };
@@ -407,7 +398,7 @@ impl Output {
     }
 }
 
-fn infer_output(ret: &ReturnType) -> syn::Result<Output> {
+fn resolve_output(ret: &ReturnType) -> syn::Result<Output> {
     let ty = match ret {
         ReturnType::Default => {
             return Ok(Output {
@@ -417,13 +408,13 @@ fn infer_output(ret: &ReturnType) -> syn::Result<Output> {
         }
         ReturnType::Type(_, ty) => ty,
     };
-    let (inner, result) = match first_generic_arg(ty, "Result") {
+    let (inner, result) = match generic_args(ty, "Result").next() {
         Some(inner) => (inner, true),
         None => (&**ty, false),
     };
     let shape = if is_unit(inner) {
         Shape::Unit
-    } else if let Some(opt_inner) = first_generic_arg(inner, "Option") {
+    } else if let Some(opt_inner) = generic_args(inner, "Option").next() {
         Shape::OptionValue(opt_inner.clone())
     } else {
         Shape::Value(inner.clone())
@@ -490,13 +481,13 @@ fn parse_args(attr: TokenStream) -> syn::Result<ProcedureArgs> {
             .to_string();
         let value = meta.value;
         match key.as_str() {
-            "id" => args.id = Some(expect_str(&value)?),
-            "sink" => args.sink = Some(expect_str(&value)?),
-            "init" => args.init = Some(expect_path(&value)?),
-            "key" => args.key = Some(expect_path(&value)?),
-            "emits" => args.emits = Some(expect_type(&value)?),
-            "keys" => args.keys = Some(expect_array(&value)?),
-            "entities_for" => args.entities_for = Some(expect_path(&value)?),
+            "id" => args.id = Some(try_str(&value)?),
+            "sink" => args.sink = Some(try_str(&value)?),
+            "init" => args.init = Some(try_path(&value)?),
+            "key" => args.key = Some(try_path(&value)?),
+            "emits" => args.emits = Some(try_type(&value)?),
+            "keys" => args.keys = Some(try_array(&value)?),
+            "entities_for" => args.entities_for = Some(try_path(&value)?),
             "entity_key" => {
                 return Err(syn::Error::new_spanned(
                     &meta.path,
@@ -507,8 +498,8 @@ fn parse_args(attr: TokenStream) -> syn::Result<ProcedureArgs> {
             "idle_ttl" => args.idle_ttl_ms = Some(value),
             "max_entities" => args.max_entities = Some(value),
             "capacity" => args.capacity = Some(value),
-            "on_full" => args.on_full = Some(expect_ident(&value)?),
-            "clock" => args.clock = Some(expect_type(&value)?),
+            "on_full" => args.on_full = Some(try_ident(&value)?),
+            "clock" => args.clock = Some(try_type(&value)?),
             other => {
                 return Err(syn::Error::new_spanned(
                     &meta.path,
@@ -522,7 +513,7 @@ fn parse_args(attr: TokenStream) -> syn::Result<ProcedureArgs> {
 
 use syn::parse::Parser;
 
-fn expect_str(expr: &Expr) -> syn::Result<String> {
+fn try_str(expr: &Expr) -> syn::Result<String> {
     match expr {
         Expr::Lit(ExprLit {
             lit: Lit::Str(s), ..
@@ -531,7 +522,7 @@ fn expect_str(expr: &Expr) -> syn::Result<String> {
     }
 }
 
-fn expect_array(expr: &Expr) -> syn::Result<Vec<Expr>> {
+fn try_array(expr: &Expr) -> syn::Result<Vec<Expr>> {
     match expr {
         Expr::Array(arr) => Ok(arr.elems.iter().cloned().collect()),
         _ => Err(syn::Error::new_spanned(
@@ -541,7 +532,7 @@ fn expect_array(expr: &Expr) -> syn::Result<Vec<Expr>> {
     }
 }
 
-fn expect_path(expr: &Expr) -> syn::Result<syn::Path> {
+fn try_path(expr: &Expr) -> syn::Result<syn::Path> {
     match expr {
         Expr::Path(p) => Ok(p.path.clone()),
         _ => Err(syn::Error::new_spanned(
@@ -551,18 +542,15 @@ fn expect_path(expr: &Expr) -> syn::Result<syn::Path> {
     }
 }
 
-fn expect_ident(expr: &Expr) -> syn::Result<syn::Ident> {
-    match expr {
-        Expr::Path(p) => p
-            .path
-            .get_ident()
-            .cloned()
-            .ok_or_else(|| syn::Error::new_spanned(expr, "expected a bare identifier")),
-        _ => Err(syn::Error::new_spanned(expr, "expected a bare identifier")),
-    }
+fn try_ident(expr: &Expr) -> syn::Result<syn::Ident> {
+    let ident = match expr {
+        Expr::Path(p) => p.path.get_ident().cloned(),
+        _ => None,
+    };
+    ident.ok_or_else(|| syn::Error::new_spanned(expr, "expected a bare identifier"))
 }
 
-fn expect_type(expr: &Expr) -> syn::Result<Type> {
+fn try_type(expr: &Expr) -> syn::Result<Type> {
     match expr {
         Expr::Path(p) => Ok(Type::Path(syn::TypePath {
             qself: p.qself.clone(),

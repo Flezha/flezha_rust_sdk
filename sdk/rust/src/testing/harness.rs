@@ -24,7 +24,7 @@ use flz_core::header::RestoreError;
 
 use crate::entity::restore::{init_entity_with_payload, RestoreInitPayload};
 use crate::entity::timer::{PendingTimers, TimerKind, TimerOp, TimerSession};
-use crate::operative::dispatcher::apply_identity_stamps;
+use crate::operative::dispatcher::emit_sink::apply_identity_stamps;
 use crate::procedure::clock::{wall_now_ms, ClockFor};
 use crate::procedure::ctx::EmitSink;
 use crate::procedure::{Procedure, ProcedureCtx, ProcedureError, StateHandle};

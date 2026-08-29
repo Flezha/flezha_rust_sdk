@@ -2,7 +2,7 @@
 //! — lowers a strictly linear pipeline to a `channels()` body + inventory
 //! auto-registration. Fan-out / multi-input is rejected with a message
 //! pointing at an explicit `channels()`. See `docs/sdk/authoring_contract.md`
-//! §5 and design D6.
+//! §5.
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
@@ -19,61 +19,70 @@ struct OperativeDef {
     plugin_name: String,
 }
 
+/// The next token as the keyword `want`, or `msg` spanned on what stands
+/// there instead. The identifier is returned because a later refusal spans off
+/// it.
+fn keyword(input: ParseStream, want: &str, msg: &str) -> syn::Result<Ident> {
+    let kw: Ident = input.parse()?;
+    if kw != want {
+        return Err(syn::Error::new_spanned(kw, msg));
+    }
+    Ok(kw)
+}
+
+/// The `::<T>` a keyword carries its type in.
+fn parse_turbofish_ty(input: ParseStream) -> syn::Result<Type> {
+    input.parse::<Token![::]>()?;
+    input.parse::<Token![<]>()?;
+    let ty: Type = input.parse()?;
+    input.parse::<Token![>]>()?;
+    Ok(ty)
+}
+
+/// A parsed pipeline tail: the procedure hops in order, and the terminal
+/// `plugin::<U>("name")` when one was written.
+type Pipeline = (Vec<Path>, Option<(Type, String)>);
+
+/// The `-> procedure -> ... -> plugin::<U>("name")` tail. Stops at the plugin
+/// hop; whatever follows it is left for `parse`'s fan-out refusal to name.
+fn parse_pipeline(input: ParseStream) -> syn::Result<Pipeline> {
+    let mut procedures: Vec<Path> = Vec::new();
+    let mut plugin: Option<(Type, String)> = None;
+    while input.peek(Token![->]) {
+        input.parse::<Token![->]>()?;
+        let ahead = input.fork();
+        let is_plugin = ahead
+            .parse::<Ident>()
+            .map(|i| i == "plugin")
+            .unwrap_or(false);
+        if is_plugin {
+            input.parse::<Ident>()?; // plugin
+            let ty = parse_turbofish_ty(input)?;
+            let content;
+            syn::parenthesized!(content in input);
+            let name: LitStr = content.parse()?;
+            plugin = Some((ty, name.value()));
+            break;
+        }
+        procedures.push(input.parse::<Path>()?);
+    }
+    Ok((procedures, plugin))
+}
+
 impl Parse for OperativeDef {
     fn parse(input: ParseStream) -> syn::Result<Self> {
-        // `id: "..."`,
-        let id_kw: Ident = input.parse()?;
-        if id_kw != "id" {
-            return Err(syn::Error::new_spanned(id_kw, "expected `id:`"));
-        }
+        keyword(input, "id", "expected `id:`")?;
         input.parse::<Token![:]>()?;
         let id: LitStr = input.parse()?;
         input.parse::<Token![,]>()?;
 
-        // `pipeline:`
-        let pipe_kw: Ident = input.parse()?;
-        if pipe_kw != "pipeline" {
-            return Err(syn::Error::new_spanned(pipe_kw, "expected `pipeline:`"));
-        }
+        keyword(input, "pipeline", "expected `pipeline:`")?;
         input.parse::<Token![:]>()?;
 
-        // `input::<T>`
-        let input_kw: Ident = input.parse()?;
-        if input_kw != "input" {
-            return Err(syn::Error::new_spanned(
-                input_kw,
-                "pipeline must start with `input::<T>`",
-            ));
-        }
-        input.parse::<Token![::]>()?;
-        input.parse::<Token![<]>()?;
-        let input_ty: Type = input.parse()?;
-        input.parse::<Token![>]>()?;
+        let input_kw = keyword(input, "input", "pipeline must start with `input::<T>`")?;
+        let input_ty = parse_turbofish_ty(input)?;
 
-        // `-> procedure -> procedure -> ... -> plugin::<U>("name")`
-        let mut procedures: Vec<Path> = Vec::new();
-        let mut plugin: Option<(Type, String)> = None;
-        while input.peek(Token![->]) {
-            input.parse::<Token![->]>()?;
-            let ahead = input.fork();
-            let is_plugin = ahead
-                .parse::<Ident>()
-                .map(|i| i == "plugin")
-                .unwrap_or(false);
-            if is_plugin {
-                input.parse::<Ident>()?; // plugin
-                input.parse::<Token![::]>()?;
-                input.parse::<Token![<]>()?;
-                let ty: Type = input.parse()?;
-                input.parse::<Token![>]>()?;
-                let content;
-                syn::parenthesized!(content in input);
-                let name: LitStr = content.parse()?;
-                plugin = Some((ty, name.value()));
-                break;
-            }
-            procedures.push(input.parse::<Path>()?);
-        }
+        let (procedures, plugin) = parse_pipeline(input)?;
 
         if !input.is_empty() {
             return Err(syn::Error::new(
@@ -107,46 +116,91 @@ impl Parse for OperativeDef {
     }
 }
 
-pub fn expand(item: TokenStream) -> syn::Result<TokenStream> {
-    let def: OperativeDef = syn::parse2(item)?;
+/// The hidden `StreamOperative` an auto-wire path emits: one entry channel
+/// threaded through a procedure chain, the terminal payload type pinned, the
+/// stream sunk under `sink`, and an `AutoOperative` submitted so a runner
+/// harvests the class without a `define_stream` call.
+pub(crate) struct AutoWiring<'a> {
+    /// Visibility of the generated struct — the procedure's own on the
+    /// attribute path, private for `operative!`.
+    pub vis: TokenStream,
+    pub ident: &'a Ident,
+    pub id: &'a str,
+    pub input_ty: &'a Type,
+    /// The entry channel's `.on_full(...)`, empty when none was declared.
+    pub on_full: TokenStream,
+    /// The `.into::<P>()` hops the entry stream is threaded through, including
+    /// the statement's own `;` and any further `let stream = ...` hops.
+    pub chain: TokenStream,
+    /// The type the terminal stream's payload is pinned against.
+    pub payload: TokenStream,
+    /// The plugin sink's name; the producing channel is named after it.
+    pub sink: &'a str,
+}
 
-    let id = &def.id;
-    let input_ty = &def.input_ty;
-    let plugin_ty = &def.plugin_ty;
-    let plugin_name = &def.plugin_name;
-    let first_procedure = &def.procedures[0];
-
-    let operative_ident = format_ident!("__FlezhaOperative_{}", sanitize_ident(&def.id));
-
-    // Chained hops on the stream handle; each `.into` returns the consumed
-    // procedure's output stream.
-    let hops = def.procedures.iter().skip(1).map(|cons| {
-        quote! {
-            let stream = stream.into::<#cons>();
-        }
-    });
-
-    Ok(quote! {
+pub(crate) fn auto_operative(wiring: AutoWiring<'_>) -> TokenStream {
+    let AutoWiring {
+        vis,
+        ident,
+        id,
+        input_ty,
+        on_full,
+        chain,
+        payload,
+        sink,
+    } = wiring;
+    quote! {
         #[doc(hidden)]
-        struct #operative_ident;
-        impl ::flezha_runner::StreamOperative for #operative_ident {
+        #vis struct #ident;
+        impl ::flezha_runner::StreamOperative for #ident {
             fn factory_id() -> &'static str { #id }
             fn channels(c: &::flezha_runner::ChannelBuilder) {
-                let stream = c.input::<#input_ty>("input").into::<#first_procedure>();
-                #(#hops)*
-                // Pins the declared plugin payload type against the terminal
+                let stream = c.input::<#input_ty>("input") #on_full #chain
+                // Pins the declared sink payload type against the terminal
                 // procedure's `Output`.
-                let stream: ::flezha_runner::Stream<'_, #plugin_ty> = stream;
-                stream.named(#plugin_name).sink(#plugin_name);
+                let stream: ::flezha_runner::Stream<'_, #payload> = stream;
+                stream.named(#sink).sink(#sink);
             }
         }
         ::flezha_runner::inventory::submit! {
             ::flezha_runner::AutoOperative::new(
-                <#operative_ident as ::flezha_runner::StreamOperative>::factory_id,
-                || ::flezha_runner::__register_stream::<#operative_ident>(),
+                <#ident as ::flezha_runner::StreamOperative>::factory_id,
+                || ::flezha_runner::__register_stream::<#ident>(),
             )
         }
-    })
+    }
+}
+
+pub fn expand(item: TokenStream) -> syn::Result<TokenStream> {
+    let def: OperativeDef = syn::parse2(item)?;
+
+    let first_procedure = &def.procedures[0];
+    let plugin_ty = &def.plugin_ty;
+    let ident = format_ident!("__FlezhaOperative_{}", sanitize_ident(&def.id));
+
+    // Chained hops on the stream handle; each `.into` returns the consumed
+    // procedure's output stream.
+    let hops: TokenStream = def
+        .procedures
+        .iter()
+        .skip(1)
+        .map(|cons| {
+            quote! {
+                let stream = stream.into::<#cons>();
+            }
+        })
+        .collect();
+
+    Ok(auto_operative(AutoWiring {
+        vis: quote! {},
+        ident: &ident,
+        id: &def.id,
+        input_ty: &def.input_ty,
+        on_full: quote! {},
+        chain: quote! { .into::<#first_procedure>(); #hops },
+        payload: quote! { #plugin_ty },
+        sink: &def.plugin_name,
+    }))
 }
 
 /// Make a struct-name suffix from a factory id string.

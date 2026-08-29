@@ -2,41 +2,26 @@
 
 use syn::{GenericArgument, Ident, PathArguments, Type};
 
-/// If `ty` is `Name<T, ..>` (matching the last path segment), return `T` —
-/// e.g. `Vec<U>` → `U`, `Result<O, E>` → `O`.
-pub fn first_generic_arg<'a>(ty: &'a Type, name: &str) -> Option<&'a Type> {
-    let Type::Path(tp) = ty else { return None };
-    let seg = tp.path.segments.last()?;
-    if seg.ident != name {
-        return None;
-    }
-    let PathArguments::AngleBracketed(args) = &seg.arguments else {
-        return None;
+/// The type arguments of `ty` when its last path segment is `name`:
+/// `Vec<U>` → `U`, `Result<O, E>` → `O, E`, `HashMap<K, V>` → `K, V`. Empty
+/// for any other shape, so a caller reads exactly the arity it needs.
+pub fn generic_args<'a>(ty: &'a Type, name: &str) -> impl Iterator<Item = &'a Type> {
+    let args = match ty {
+        Type::Path(tp) => tp
+            .path
+            .segments
+            .last()
+            .filter(|seg| seg.ident == name)
+            .and_then(|seg| match &seg.arguments {
+                PathArguments::AngleBracketed(args) => Some(&args.args),
+                _ => None,
+            }),
+        _ => None,
     };
-    args.args.iter().find_map(|a| match a {
+    args.into_iter().flatten().filter_map(|a| match a {
         GenericArgument::Type(t) => Some(t),
         _ => None,
     })
-}
-
-/// If `ty` is `HashMap<K, V>` (matching the last path segment named
-/// `HashMap`), return `(K, V)`.
-pub fn map_kv(ty: &Type) -> Option<(&Type, &Type)> {
-    let Type::Path(tp) = ty else { return None };
-    let seg = tp.path.segments.last()?;
-    if seg.ident != "HashMap" {
-        return None;
-    }
-    let PathArguments::AngleBracketed(args) = &seg.arguments else {
-        return None;
-    };
-    let mut tys = args.args.iter().filter_map(|a| match a {
-        GenericArgument::Type(t) => Some(t),
-        _ => None,
-    });
-    let k = tys.next()?;
-    let v = tys.next()?;
-    Some((k, v))
 }
 
 /// `do_nothing` → `DoNothing`. Used for the generated procedure type name and for

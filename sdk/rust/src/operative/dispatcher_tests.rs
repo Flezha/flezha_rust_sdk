@@ -2,10 +2,15 @@
 //! for, the workflow collect adapter's keyed-emit contract, and a snapshot
 //! round trip through the real restore path.
 
+use std::cell::RefCell;
+
+use super::emit_sink::WorkflowCollectAdapter;
+use super::invocation::collect_failure;
 use super::*;
 use crate::channel::ChannelBuilder;
 use crate::entity::restore::RestoreInitPayload;
 use crate::operative::StreamOperative;
+use crate::procedure::ctx::EmitSink;
 use crate::procedure::state_handle::StateHandle;
 use crate::procedure::{Procedure, ProcedureCtx, ProcedureError};
 use crate::workflow::WorkflowCollectSink;
