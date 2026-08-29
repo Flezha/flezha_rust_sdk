@@ -4,16 +4,10 @@
 //! - a panicking procedure follows the same policy as a returned error
 //!   and the entity continues — never a silent drop
 
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Mutex;
-use std::time::Duration;
-
-use flezha_runner::channel::ChannelBuilder;
 use flezha_runner::entity::park;
-use flezha_runner::procedure::ProcedureError;
-use flezha_runner::StreamOperative;
 
 mod common;
+use common::prelude::*;
 use common::{dispatch_input, dummy_stream, install_auto_acking_sink, setup, wait_until};
 
 /// Serializes the tests that install the process-global sink.

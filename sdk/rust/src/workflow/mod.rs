@@ -45,7 +45,7 @@ pub trait WorkflowOperative: Send + Sync + 'static {
     /// becomes runnable only after **every** producer feeding it has committed
     /// — fan-out branches interleave independently, and a fan-in node is
     /// dispatched once, with the accumulated batch of all its producers.
-    /// Cycles are rejected at registration.
+    /// Cycles are refused at registration.
     fn procedures(_c: &ChannelBuilder) {}
 
     /// Optional wall-clock backstop. `None` (the default) means no duration
@@ -59,7 +59,7 @@ pub trait WorkflowOperative: Send + Sync + 'static {
     /// the operative ends on its own (a `run`/chain that returns, or a loop
     /// with a terminal predicate / exhausted input). An operative whose **only**
     /// possible exit is an external stop sets this `false`; combined with no
-    /// [`max_duration`](Self::max_duration) it is **rejected** at registration
+    /// [`max_duration`](Self::max_duration) it is **refused** at registration
     /// with a message directing the author to add a terminal condition.
     fn self_terminating() -> bool {
         true
@@ -70,7 +70,7 @@ pub trait WorkflowOperative: Send + Sync + 'static {
     /// iteration durably — journal + boundary snapshot + outbox flush — so a
     /// crash resumes at the iteration after the last committed one, and
     /// [`RollbackMode::KeepProgress`] keeps every committed iteration. Declaring
-    /// a loop on a `run`-sugar class (no `procedures`) is rejected at
+    /// a loop on a `run`-sugar class (no `procedures`) is refused at
     /// registration: there is no chain to iterate.
     fn loop_mode() -> LoopMode {
         LoopMode::Once

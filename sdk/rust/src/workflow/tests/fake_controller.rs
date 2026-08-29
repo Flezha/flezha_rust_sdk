@@ -234,8 +234,8 @@ pub(crate) fn drain(
     }
 }
 
-/// Block until a specific output frame for `id` is observed (used to confirm
-/// an interactive instance is live before stopping it).
+/// Block until a specific output frame for `id` is observed, confirming an
+/// interactive instance is live before stopping it.
 pub(crate) fn wait_for_output(rx: &Receiver<RunnerMessage>, id: &str, payload: &[u8]) {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {

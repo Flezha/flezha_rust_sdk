@@ -5,7 +5,7 @@ use flezha_runner::entity::timer::TimerKind;
 use flezha_runner::testing::ProcedureTestHarness;
 
 mod common;
-use common::*;
+use common::prelude::*;
 
 // -------------------------------------------------- surface and refusals
 

@@ -1,16 +1,10 @@
 //! Entity modes: one entity for a procedure that declares none, the static
 //! set created at startup, and a dynamic declaration classified as such.
 
-use std::sync::Arc;
-
-use flezha_runner::channel::ChannelBuilder;
-use flezha_runner::operative::builder::build_topology_for;
-use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError};
 use flezha_runner::state::{Change, NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_runner::StreamOperative;
 
 mod common;
-use common::*;
+use common::prelude::*;
 
 #[test]
 fn single_mode_entity_creation() {

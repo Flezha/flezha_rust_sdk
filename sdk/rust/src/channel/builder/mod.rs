@@ -1,22 +1,18 @@
-//! Producer-first fluent graph builder (`sdk-graph-authoring`).
+//! Producer-first fluent graph builder.
 //!
 //! `c.input::<T>("name").into::<A>().into::<B>().sink("plugin")` — `.into`
 //! wires a consumer and returns that procedure's **output stream handle**
 //! ([`Stream`]), so a linear pipeline is one chained expression. Branching is
-//! handle reuse (hold the handle in a variable and wire it twice) or the
-//! equivalent [`Stream::branch`] sugar. Fan-in is two streams naming the same
-//! consumer node.
+//! handle reuse or the equivalent [`Stream::branch`] sugar; fan-in is two
+//! streams naming the same consumer node.
 //!
-//! Compile-time enforcement:
-//! - `.into::<S>()` requires `S: Procedure<Input = T>` — a type-mismatched
-//!   consumer fires at the call site.
-//! - Channel payload types come from the producer's declared `Output`; there
-//!   is no user-supplied type token for inter-procedure channels.
-//! - `.sealed()` returns a finalized [`Channel`] with no further builder
-//!   methods, for the author who wants "nothing follows this" in the type.
-//! - Handles borrow the builder (`Stream<'b, T>` is `Copy`), so a handle
-//!   cannot outlive the declaration: using one after the topology freezes at
-//!   registration is a compile error, not a runtime failure.
+//! What the types enforce: `.into::<S>()` requires `S: Procedure<Input = T>`,
+//! so a mismatched consumer fires at the call site; channel payload types come
+//! from the producer's declared `Output`, never a user-supplied token;
+//! `.sealed()` returns a finalized [`Channel`] with no further builder methods;
+//! and a handle borrows the builder (`Stream<'b, T>` is `Copy`), so using one
+//! after the topology freezes at registration is a compile error rather than a
+//! runtime failure.
 
 mod issue;
 mod merge;
@@ -125,7 +121,7 @@ impl ChannelBuilder {
     /// effect record on the reliable state sink (with the state change and
     /// consumed input offset), and the controller flushes them to plugins
     /// only after the record is fsynced. Identity is the dedup contract:
-    /// `build_topology` rejects the declaration when any plugin-bound
+    /// `build_topology` refuses the declaration when any plugin-bound
     /// channel lacks `.keyed()`. Default is off — operatives that do not
     /// call this keep the at-least-once paths byte-identical.
     pub fn effectively_once(&self) {

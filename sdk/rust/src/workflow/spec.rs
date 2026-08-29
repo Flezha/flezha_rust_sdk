@@ -149,7 +149,7 @@ fn refuse_missing_codecs<T: WorkflowOperative>(
 }
 
 /// Resolve the class's per-entity retry ladder onto the shared
-/// [`RetryPolicy`], rejecting a ladder that would spin without a backoff. A
+/// [`RetryPolicy`], refusing a ladder that would spin without a backoff. A
 /// declared 0 collapses to the one-attempt fail-fast the driver runs.
 fn retry_policy<T: WorkflowOperative>(
     factory_id: &'static str,
@@ -168,7 +168,7 @@ fn retry_policy<T: WorkflowOperative>(
     })
 }
 
-/// Resolve the execution DAG of a structured workflow's procedures and reject
+/// Resolve the execution DAG of a structured workflow's procedures and refuse
 /// anything outside the shared graph-shape rule (`sdk-graph-authoring`): one
 /// entry-rooted connected acyclic graph — fan-out and fan-in both legal — with
 /// at most one output channel per procedure, no dynamic entity mode.

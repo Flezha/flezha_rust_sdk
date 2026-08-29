@@ -6,19 +6,13 @@
 //! `:`. There is no keyless-drop path — the literal `"drop"` is removed by a
 //! `filter` declared before the keying, which is how an input is discarded.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
 use std::thread;
-use std::time::Duration;
 
-use flezha_runner::channel::ChannelBuilder;
 use flezha_runner::entity::dynamic::DynamicEntityRegistry;
-use flezha_runner::operative::StreamInstance;
-use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError};
-use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_runner::StreamOperative;
 
 mod common;
+use common::prelude::*;
 use common::{dispatch_input, dummy_stream, setup, wait_until};
 
 fn key_of(input: &str) -> String {

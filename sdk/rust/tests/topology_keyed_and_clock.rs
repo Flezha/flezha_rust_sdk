@@ -1,13 +1,10 @@
 //! Keyed-channel declaration and the build-time clock check: what a keyed
 //! edge must carry, and which clock a class may ask for.
 
-use flezha_runner::channel::ChannelBuilder;
-use flezha_runner::operative::builder::build_topology_for;
-use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError};
 use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle};
-use flezha_runner::StreamOperative;
 
 mod common;
+use common::prelude::*;
 
 // ----- Keyed channel declaration + build-time clock validation -----
 

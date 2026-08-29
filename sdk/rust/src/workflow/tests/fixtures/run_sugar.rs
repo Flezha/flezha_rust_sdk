@@ -110,7 +110,7 @@ impl WorkflowOperative for TimedWorkflow {
 }
 
 /// External-stop-only: declares it does not self-terminate and has no
-/// duration backstop — rejected at registration.
+/// duration backstop — refused at registration.
 pub(crate) struct ExternalStopOnlyWorkflow;
 impl WorkflowOperative for ExternalStopOnlyWorkflow {
     fn factory_id() -> &'static str {

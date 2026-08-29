@@ -12,12 +12,11 @@
 
 use std::os::unix::net::UnixListener;
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
 use std::thread;
-use std::time::Duration;
 
 mod common;
+use common::prelude::*;
 use common::{stays_quiet, wait_until};
 use flezha_runner::state::{NoChange, RestoreInitPayload, WallClock};
 use flezha_runner::transport::FlezhaStream;
@@ -202,19 +201,10 @@ fn update_factories_set(frames: &Arc<Mutex<Vec<CapturedFrame>>>, min_count: usiz
     )
 }
 
-#[test]
-fn runner_lifecycle_and_singleton_guard() {
-    let dir = std::env::temp_dir().join(format!("flz-lifecycle-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("create socket dir");
-    std::env::set_var("FLEZHA_SOCKET_FILES_PATH", &dir);
-    std::env::set_var("FLEZHA_RUNNER_ID_PATH", dir.join("runner.id"));
-    std::env::set_var("FLEZHA_TRANSPORT", "uds");
-    // Keep the reader's ack deadline far above the test's runtime so the
-    // frame-less fake controller never triggers reconnect churn mid-test.
-    std::env::set_var("FLEZHA_CONTROL_ACK_TIMEOUT_MS", "300000");
-
-    let (accepted, frames) = start_fake_controller(&dir);
-
+/// Every refusal the entrypoint owes before any runner claims the slot: an
+/// empty namespace, an invalid topology, a duplicate factory id, a remove of
+/// something never defined — and none of them takes the singleton slot.
+fn refuses_before_any_start() {
     // -- before anything starts, the accessor is empty and never throws --
     assert!(Flezha::current_runner().is_none());
 
@@ -268,6 +258,151 @@ fn runner_lifecycle_and_singleton_guard() {
 
     // -- creating (and mutating) runners never claims the slot --
     assert!(Flezha::current_runner().is_none());
+}
+
+/// What a started runner serves: the init frame it wrote, the double-start
+/// refusal, the accessor, a second runner refused without dialling, and
+/// post-start define/remove shipping the full factory set.
+fn serves_the_started_runner(
+    runner: &flezha_runner::FlezhaRunner,
+    frames: &Arc<Mutex<Vec<CapturedFrame>>>,
+    accepted: &Arc<AtomicUsize>,
+    winner_ns: &str,
+) {
+    // -- the init frame carried exactly the winner's declared factory --
+    let winner_factory = if winner_ns == "ns_one" {
+        "lifecycle_probe_a"
+    } else {
+        "lifecycle_probe_b"
+    };
+    assert_eq!(init_frame_factories(frames, 0), vec![winner_factory]);
+
+    // -- double-start on one runner is an error --
+    match runner.start() {
+        Err(FlezhaError::AlreadyRunning { namespace }) => assert_eq!(namespace, winner_ns),
+        Ok(_) => panic!("second start() on the same runner must fail"),
+        Err(other) => panic!("expected AlreadyRunning, got: {other}"),
+    }
+
+    // -- the accessor reflects the active runner --
+    let current = Flezha::current_runner().expect("a runner is active");
+    assert_eq!(current.namespace(), winner_ns);
+    drop(current);
+
+    // -- a second runner's start() is rejected without dialing the controller --
+    let accepts_before = accepted.load(Ordering::SeqCst);
+    let second = Flezha::create_runner("ns_second").unwrap();
+    match second.start() {
+        Err(FlezhaError::AlreadyRunning { namespace }) => assert_eq!(namespace, winner_ns),
+        Ok(_) => panic!("expected AlreadyRunning, got a started runner"),
+        Err(other) => panic!("expected AlreadyRunning, got: {other}"),
+    }
+    assert_eq!(
+        accepted.load(Ordering::SeqCst),
+        accepts_before,
+        "a rejected start() must not attempt a connection"
+    );
+    drop(second);
+
+    // -- post-start define ships the FULL factory set as UpdateFactories --
+    runner
+        .define_stream::<ProbeOperativeC>()
+        .expect("post-start define is legal");
+    let mut expected = vec![winner_factory.to_string(), "lifecycle_probe_c".to_string()];
+    expected.sort();
+    assert_eq!(update_factories_set(frames, 1), expected);
+
+    // -- post-start remove (no live instances) ships the remaining set --
+    runner
+        .remove_stream::<ProbeOperativeC>()
+        .expect("post-start remove of an instance-less type is legal");
+    assert_eq!(
+        update_factories_set(frames, 2),
+        vec![winner_factory.to_string()]
+    );
+    assert!(
+        flezha_runner::operative::registry::get_class("lifecycle_probe_c").is_none(),
+        "the removed class must be unregistered"
+    );
+
+    // -- pre-start awaits/operatives error typed; started runner serves them --
+    let never_started = Flezha::create_runner("ns_cold").unwrap();
+    assert!(matches!(
+        never_started.await_termination(),
+        Err(FlezhaError::NotStarted)
+    ));
+    assert!(matches!(
+        never_started.operatives(),
+        Err(FlezhaError::NotStarted)
+    ));
+    drop(never_started);
+    assert!(
+        runner.operatives().expect("started runner").is_empty(),
+        "no AddOperative was issued, so the instance registry is empty"
+    );
+}
+
+/// Each generation declares from empty: nothing a previous generation
+/// registered survives into the next init frame, and a pre-start
+/// define+remove pair shapes the frame the next start writes.
+fn restart_generations_declare_from_empty(frames: &Arc<Mutex<Vec<CapturedFrame>>>) {
+    // -- restart: generation 2's declared set starts EMPTY (no leak) --
+    let restarted = Flezha::create_runner("ns_restart").unwrap();
+    restarted
+        .start()
+        .expect("restart after close must succeed — zero-op start is legal");
+    assert_eq!(restarted.namespace(), "ns_restart");
+    assert_eq!(
+        Flezha::current_runner().expect("active again").namespace(),
+        "ns_restart"
+    );
+    // Generation 1 declared probe factories; generation 2 declared nothing,
+    // so its init frame must carry an EMPTY factory list (zero-op start) —
+    // pinning the empty-per-generation contract the old cross-generation
+    // registry leak violated.
+    assert_eq!(
+        init_frame_factories(frames, 1),
+        Vec::<String>::new(),
+        "generation 2 must re-declare: the init frame starts empty"
+    );
+
+    // -- pre-start define+remove shaped the NEXT generation's init frame --
+    drop(restarted);
+    assert!(Flezha::current_runner().is_none());
+
+    let shaped = Flezha::create_runner("ns_shaped").unwrap();
+    shaped
+        .define_stream::<ProbeOperativeA>()
+        .expect("define A")
+        .define_stream::<ProbeOperativeB>()
+        .expect("define B");
+    shaped
+        .remove_stream::<ProbeOperativeB>()
+        .expect("pre-start remove is legal");
+    shaped.start().expect("start");
+    assert_eq!(
+        init_frame_factories(frames, 2),
+        vec!["lifecycle_probe_a".to_string()],
+        "the init frame must reflect the pre-start remove"
+    );
+    drop(shaped);
+    assert!(Flezha::current_runner().is_none());
+}
+
+#[test]
+fn runner_lifecycle_and_singleton_guard() {
+    let dir = std::env::temp_dir().join(format!("flz-lifecycle-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create socket dir");
+    std::env::set_var("FLEZHA_SOCKET_FILES_PATH", &dir);
+    std::env::set_var("FLEZHA_RUNNER_ID_PATH", dir.join("runner.id"));
+    std::env::set_var("FLEZHA_TRANSPORT", "uds");
+    // Keep the reader's ack deadline far above the test's runtime so the
+    // frame-less fake controller never triggers reconnect churn mid-test.
+    std::env::set_var("FLEZHA_CONTROL_ACK_TIMEOUT_MS", "300000");
+
+    let (accepted, frames) = start_fake_controller(&dir);
+
+    refuses_before_any_start();
 
     // -- two threads race start(); exactly one wins deterministically --
     let barrier = Arc::new(Barrier::new(2));
@@ -308,77 +443,7 @@ fn runner_lifecycle_and_singleton_guard() {
     }
     assert_eq!(runner.namespace(), winner_ns);
 
-    // -- the init frame carried exactly the winner's declared factory --
-    let winner_factory = if winner_ns == "ns_one" {
-        "lifecycle_probe_a"
-    } else {
-        "lifecycle_probe_b"
-    };
-    assert_eq!(init_frame_factories(&frames, 0), vec![winner_factory]);
-
-    // -- double-start on one runner is an error --
-    match runner.start() {
-        Err(FlezhaError::AlreadyRunning { namespace }) => assert_eq!(namespace, winner_ns),
-        Ok(_) => panic!("second start() on the same runner must fail"),
-        Err(other) => panic!("expected AlreadyRunning, got: {other}"),
-    }
-
-    // -- the accessor reflects the active runner --
-    let current = Flezha::current_runner().expect("a runner is active");
-    assert_eq!(current.namespace(), winner_ns);
-    drop(current);
-
-    // -- a second runner's start() is rejected without dialing the controller --
-    let accepts_before = accepted.load(Ordering::SeqCst);
-    let second = Flezha::create_runner("ns_second").unwrap();
-    match second.start() {
-        Err(FlezhaError::AlreadyRunning { namespace }) => assert_eq!(namespace, winner_ns),
-        Ok(_) => panic!("expected AlreadyRunning, got a started runner"),
-        Err(other) => panic!("expected AlreadyRunning, got: {other}"),
-    }
-    assert_eq!(
-        accepted.load(Ordering::SeqCst),
-        accepts_before,
-        "a rejected start() must not attempt a connection"
-    );
-    drop(second);
-
-    // -- post-start define ships the FULL factory set as UpdateFactories --
-    runner
-        .define_stream::<ProbeOperativeC>()
-        .expect("post-start define is legal");
-    let mut expected = vec![winner_factory.to_string(), "lifecycle_probe_c".to_string()];
-    expected.sort();
-    assert_eq!(update_factories_set(&frames, 1), expected);
-
-    // -- post-start remove (no live instances) ships the remaining set --
-    runner
-        .remove_stream::<ProbeOperativeC>()
-        .expect("post-start remove of an instance-less type is legal");
-    assert_eq!(
-        update_factories_set(&frames, 2),
-        vec![winner_factory.to_string()]
-    );
-    assert!(
-        flezha_runner::operative::registry::get_class("lifecycle_probe_c").is_none(),
-        "the removed class must be unregistered"
-    );
-
-    // -- pre-start awaits/operatives error typed; started runner serves them --
-    let never_started = Flezha::create_runner("ns_cold").unwrap();
-    assert!(matches!(
-        never_started.await_termination(),
-        Err(FlezhaError::NotStarted)
-    ));
-    assert!(matches!(
-        never_started.operatives(),
-        Err(FlezhaError::NotStarted)
-    ));
-    drop(never_started);
-    assert!(
-        runner.operatives().expect("started runner").is_empty(),
-        "no AddOperative was issued, so the instance registry is empty"
-    );
+    serves_the_started_runner(&runner, &frames, &accepted, winner_ns);
 
     // -- await_termination() unblocks when the owning handle drops --
     let observer = Flezha::current_runner().expect("active");
@@ -397,45 +462,5 @@ fn runner_lifecycle_and_singleton_guard() {
     // -- the accessor is empty again after shutdown --
     assert!(Flezha::current_runner().is_none());
 
-    // -- restart: generation 2's declared set starts EMPTY (no leak) --
-    let restarted = Flezha::create_runner("ns_restart").unwrap();
-    restarted
-        .start()
-        .expect("restart after close must succeed — zero-op start is legal");
-    assert_eq!(restarted.namespace(), "ns_restart");
-    assert_eq!(
-        Flezha::current_runner().expect("active again").namespace(),
-        "ns_restart"
-    );
-    // Generation 1 declared probe factories; generation 2 declared nothing,
-    // so its init frame must carry an EMPTY factory list (zero-op start) —
-    // pinning the empty-per-generation contract the old cross-generation
-    // registry leak violated.
-    assert_eq!(
-        init_frame_factories(&frames, 1),
-        Vec::<String>::new(),
-        "generation 2 must re-declare: the init frame starts empty"
-    );
-
-    // -- pre-start define+remove shaped the NEXT generation's init frame --
-    drop(restarted);
-    assert!(Flezha::current_runner().is_none());
-
-    let shaped = Flezha::create_runner("ns_shaped").unwrap();
-    shaped
-        .define_stream::<ProbeOperativeA>()
-        .expect("define A")
-        .define_stream::<ProbeOperativeB>()
-        .expect("define B");
-    shaped
-        .remove_stream::<ProbeOperativeB>()
-        .expect("pre-start remove is legal");
-    shaped.start().expect("start");
-    assert_eq!(
-        init_frame_factories(&frames, 2),
-        vec!["lifecycle_probe_a".to_string()],
-        "the init frame must reflect the pre-start remove"
-    );
-    drop(shaped);
-    assert!(Flezha::current_runner().is_none());
+    restart_generations_declare_from_empty(&frames);
 }

@@ -8,15 +8,8 @@
 //! Pinning the ceiling at 1 is the whole point — it is the host shape every
 //! C-ABI host has: one thread, with no supervisor rescue available.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
-
-use flezha_runner::channel::{ChannelBuilder, OverflowPolicy};
-use flezha_runner::operative::StreamOperative;
-
 mod common;
-use common::*;
+use common::prelude::*;
 
 /// The pool is ONE worker and the assertions read process-global engine state
 /// (jobs underway, deferrals outstanding), so the cases take turns.

@@ -1,12 +1,8 @@
 //! Graph authoring: the shapes the wiring accepts, the refusals it answers
 //! with, and how a typed entry channel decodes at the edge.
 
-use flezha_runner::channel::ChannelBuilder;
-use flezha_runner::operative::builder::build_topology_for;
-use flezha_runner::StreamOperative;
-
 mod common;
-use common::*;
+use common::prelude::*;
 
 // ---- sdk-graph-authoring pins -------------------------------------------
 

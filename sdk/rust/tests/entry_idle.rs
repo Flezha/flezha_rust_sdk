@@ -6,14 +6,10 @@
 //! are wired, not that the state machine is right in isolation (that is
 //! covered by the unit cases in `src/entry_idle.rs`).
 
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
-
-use flezha_runner::channel::ChannelBuilder;
 use flezha_runner::{Flezha, IdleObserver, StreamOperative};
 
 mod common;
+use common::prelude::*;
 use common::{dispatch_input, dummy_stream, setup, stays_quiet, wait_until};
 
 /// Short enough to keep the suite quick, long enough that the derived

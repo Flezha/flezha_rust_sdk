@@ -34,7 +34,7 @@ pub(super) type FlushBeforeEmit<'a> = Box<dyn FnMut() + 'a>;
 pub(super) struct EntityEmitSink<'a> {
     /// The Entity this invocation belongs to. An emit it cannot deliver is
     /// held against this slot and this slot is handed no further work — the
-    /// backpressure the parked producing thread used to express.
+    /// backpressure a mailbox at capacity owes its producer.
     pub(super) producer: &'a Arc<EntitySlot>,
     pub(super) output_channel_id: Option<ChannelId>,
     pub(super) output_channel_name: Option<&'a str>,
@@ -282,7 +282,7 @@ impl<'a> WorkflowCollectAdapter<'a> {
 
 impl<'a> WorkflowCollectAdapter<'a> {
     /// The workflow plugin wire (`emit_plugin_bytes`) carries no metadata,
-    /// so `.keyed()` identity stamps cannot ride it. Reject rather than
+    /// so `.keyed()` identity stamps cannot ride it. Refuse rather than
     /// silently dropping the identity contract — except under the
     /// effectively-once tier, where emits ride the effect record (which
     /// carries the key durably).
@@ -290,7 +290,7 @@ impl<'a> WorkflowCollectAdapter<'a> {
         matches!(self.output_channel_kind, ChannelKind::PluginBound)
     }
 
-    fn reject_key(&self, key: &Option<String>) -> Result<(), ProcedureError> {
+    fn refuse_key(&self, key: &Option<String>) -> Result<(), ProcedureError> {
         if self.effect_outputs.is_none() && key.is_some() {
             return Err(ProcedureError::Custom(format!(
                 "keyed output identity is not supported on workflow operatives \
@@ -309,7 +309,7 @@ impl<'a> EmitSink for WorkflowCollectAdapter<'a> {
         meta: Option<HashMap<String, String>>,
         key: Option<String>,
     ) -> Result<(), ProcedureError> {
-        self.reject_key(&key)?;
+        self.refuse_key(&key)?;
         if self.has_plugin_sink() {
             self.route_plugin(&value, key, meta)?;
         }
@@ -341,11 +341,6 @@ impl<'a> EmitSink for WorkflowCollectAdapter<'a> {
     }
 }
 
-/// Apply the channel's `OverflowPolicy` when pushing onto an Entity's
-/// bounded mailbox. Bumps the appropriate per-Entity counter on every
-/// outcome and submits a drain task on success / DropOldest. On Block,
-/// parks the calling thread on the slot's `Waiters` and retries
-/// until the push succeeds (Decision 3).
 /// Build the emit wire metadata: drop any caller-supplied reserved
 /// `channel` key, then stamp the descriptor's channel name.
 fn channel_metadata(

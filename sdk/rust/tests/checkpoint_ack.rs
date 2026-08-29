@@ -2,16 +2,8 @@
 //! interval closes, mid-interval outputs ship without one, and a restore
 //! discards the open interval.
 
-use std::sync::Arc;
-use std::time::Duration;
-
-use flezha_runner::channel::ChannelBuilder;
-use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError};
-use flezha_runner::state::{RestoreInitPayload, StateHandle, WallClock};
-use flezha_runner::StreamOperative;
-
 mod common;
-use common::*;
+use common::prelude::*;
 
 // ---------------------------------------------------------------------------
 // effectively-once-checkpoint-granularity

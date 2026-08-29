@@ -1,4 +1,4 @@
-//! The partition dispatch guard (`partitioned-operatives` D6).
+//! The partition dispatch guard.
 //!
 //! A partitioned operative's correctness rests on one convention: the routing
 //! item — the source's subscription string, the emitter's `flz.key` — equals
@@ -8,15 +8,11 @@
 //! partitioning would cost every operative that uses it.
 
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Mutex;
-use std::time::Duration;
 
-use flezha_runner::channel::ChannelBuilder;
 use flezha_runner::operative::KeyGroupRange;
-use flezha_runner::StreamOperative;
 
 mod common;
+use common::prelude::*;
 use common::{
     dispatch_input, dummy_stream, install_auto_acking_sink, setup, setup_partitioned, wait_until,
 };

@@ -179,7 +179,7 @@ impl<'b, T: 'static + Send + Sync, K: StreamTarget> Stream<'b, T, K> {
         self.relink(Some(link), None)
     }
 
-    /// Drop the values the predicate rejects. A surviving value is forwarded
+    /// Drop every value the predicate does not admit. A surviving value is forwarded
     /// by pointer — a filtered stream costs one predicate call per input and
     /// nothing else. Same purity and cost contract as [`map`](Stream::map).
     pub fn filter<F>(self, predicate: F) -> Self
@@ -321,7 +321,7 @@ impl<'b, T: 'static + Send + Sync> Stream<'b, T, NodeTarget> {
     /// Opt this channel into output identity: every plugin emit must carry
     /// a natural key via `ctx.emit_keyed(key, value)` and the runtime
     /// stamps `flz.entity` / `flz.seq` / `flz.key` on the wire frame.
-    /// Requires a plugin wire (`sink`); `build_topology` rejects a keyed
+    /// Requires a plugin wire (`sink`); `build_topology` refuses a keyed
     /// channel without one.
     pub fn keyed(self) -> Self {
         self.with_channel(|st, cid| st.channels[cid as usize].keyed = true);
@@ -391,7 +391,7 @@ impl<'b, T: 'static + Send + Sync> Stream<'b, T, NodeTarget> {
     }
 }
 
-/// Apply a `.retry_max(...)` declaration, rejecting a zero budget at
+/// Apply a `.retry_max(...)` declaration, refusing a zero budget at
 /// registration time (surfaced by `build_topology` like every other
 /// declaration error).
 fn set_retry_max(st: &mut BuilderState, channel_id: u32, max_attempts: u32) {
@@ -406,7 +406,7 @@ fn set_retry_max(st: &mut BuilderState, channel_id: u32, max_attempts: u32) {
 
 /// Install the standard inter-proc byte codec for `T` — postcard over the
 /// SDK's standard serde derives, the same wire format the effect records
-/// use. Shared by the `.codec()` declarations on both builder stages.
+/// use. The default behind a bare `.codec::<T>()`.
 fn set_codec<T>(st: &mut BuilderState, channel_id: u32)
 where
     T: serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static,

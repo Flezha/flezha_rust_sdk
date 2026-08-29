@@ -2,16 +2,10 @@
 //! every item, DropNewest and DropOldest each shed their own end, and every
 //! outcome is counted.
 
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
-
-use flezha_runner::channel::ChannelBuilder;
 use flezha_runner::{OverflowPolicy, StreamOperative};
 
 mod common;
-use common::*;
+use common::prelude::*;
 
 /// `entity::drops_newest_total` and `drops_oldest_total` are PROCESS-wide: a
 /// case that asserts on its own delta and a case that sheds concurrently
@@ -386,12 +380,11 @@ impl StreamOperative for DropOldestStressOperative {
 /// `DropOldest` channel's **admitted** count must never come out below what the
 /// consumer **processed**.
 ///
-/// It used to. `force_push` admits the item — that is the whole policy — but
-/// `pushes_total` counted only the `try_push` half, so every item that entered
-/// through an eviction was processed while never being counted as admitted.
-/// The probe measured `processed > admitted` in every run of four. A unit
-/// assertion cannot show this: the inversion needs producers actually racing a
-/// live drain, which is the only thing that makes `force_push` fire.
+/// `force_push` admits the item — that is the whole policy — so `pushes_total`
+/// must count that half as well as `try_push`, or an item that entered through
+/// an eviction is processed while never counted as admitted. A unit assertion
+/// cannot show the inversion: it needs producers actually racing a live drain,
+/// which is the only thing that makes `force_push` fire.
 ///
 /// Four rounds, each on a fresh instance, printing its own numbers.
 #[test]

@@ -8,12 +8,11 @@
 //! `apply_inputs`, and records emitted values + Changes for inspection.
 //!
 //! The determinism gate is `replay_equals(&self) -> Result<(), ReplayMismatch>`:
-//! it folds the recorded change log against a fresh re-constructed
-//! initial state and asserts byte-equality with the harness's terminal
-//! state (via `serde::Serialize` round-trip). Panics from
-//! `Procedure::apply_change` surface as test failures; non-determinism
-//! surfaces as a `ReplayMismatch` carrying serialized expected and
-//! actual states for hex-diff inspection.
+//! it folds the recorded change log against a fresh re-constructed initial
+//! state and asserts byte-equality with the harness's terminal state (via
+//! `serde::Serialize` round-trip). Panics from `Procedure::apply_change`
+//! surface as test failures; non-determinism surfaces as a `ReplayMismatch`
+//! carrying serialized expected and actual states for hex-diff inspection.
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};

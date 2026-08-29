@@ -6,15 +6,13 @@
 //! All three clocks yield `u64`:
 //!
 //! - [`WallClock`] — milliseconds since the Unix epoch, read at dispatch
-//!   entry. Consistent within an invocation; non-deterministic across
-//!   replays *by declared intent*.
-//! - [`EventTimeFrom<F>`] — the value `F::extract` pulls from the input
-//!   being dispatched. Fully deterministic; the recommended clock for
-//!   time-like ordering.
-//! - [`LogicalClock`] — the Entity's durable change sequence (the same
-//!   counter that orders WAL records and is re-armed from the WAL on
-//!   restore). Version-like: advances as applied changes are flushed,
-//!   survives crash-restore, and is `0` until the first change ships.
+//!   entry. Consistent within an invocation, non-deterministic across replays
+//!   *by declared intent*.
+//! - [`EventTimeFrom<F>`] — the value `F::extract` pulls from the input being
+//!   dispatched. Fully deterministic; the recommended clock for time-like
+//!   ordering.
+//! - [`LogicalClock`] — the Entity's durable change sequence: advances as
+//!   applied changes are flushed, survives crash-restore, `0` until the first.
 
 mod sealed {
     pub trait Sealed {}
@@ -22,7 +20,7 @@ mod sealed {
 
 /// Time source declared by a Procedure. Sealed: the only impls are
 /// `WallClock`, `LogicalClock`, and `EventTimeFrom<F>`. Custom Clocks
-/// are rejected at compile time.
+/// are refused at compile time.
 pub trait Clock: sealed::Sealed + Send + Sync + 'static {
     /// Time value served by `ProcedureCtx::now()`. All shipped clocks use
     /// `u64` (epoch milliseconds, extracted event time, or change seq).

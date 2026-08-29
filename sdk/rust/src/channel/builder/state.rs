@@ -46,7 +46,7 @@ pub(crate) struct ProcedureEntry {
 
     /// `Procedure::Clock::type_name()` captured at registration time, plus
     /// whether the Procedure's `Change` is `NoChange`. `build_topology`
-    /// rejects clock configurations the runtime cannot serve (a
+    /// refuses clock configurations the runtime cannot serve (a
     /// `LogicalClock` without persistent changes never advances).
     pub clock_type_name: &'static str,
     /// `Clock::IS_EVENT_TIME` — whether this procedure's clock yields a time
@@ -132,7 +132,7 @@ pub(crate) struct ChannelEntry {
     /// The channel's plugin egress, populated by `sink(...)` / `sink_with(...)`.
     pub plugin_sink: Option<PluginSink>,
     /// Output-identity opt-in set by `.keyed()`. Valid only on channels
-    /// with a plugin wire; `build_topology` rejects a keyed channel that
+    /// with a plugin wire; `build_topology` refuses a keyed channel that
     /// has no `sink`.
     pub keyed: bool,
     /// What this channel discards when the consumer mailbox is full,

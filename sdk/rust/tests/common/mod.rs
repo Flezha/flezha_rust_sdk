@@ -26,6 +26,26 @@ pub use tier::*;
 pub use timers::*;
 pub use wire::*;
 
+/// The header every dispatch binary would otherwise repeat: the authoring
+/// surface, the dispatch internals, and this module's own fixtures, in one
+/// `use common::prelude::*;`.
+pub mod prelude {
+    pub use std::collections::HashMap;
+    pub use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    pub use std::sync::{Arc, Mutex};
+    pub use std::time::{Duration, Instant};
+
+    pub use flezha_runner::__dispatch_internals::OperativeDispatchHandle;
+    pub use flezha_runner::channel::{ChannelBuilder, OverflowPolicy};
+    pub use flezha_runner::operative::builder::build_topology_for;
+    pub use flezha_runner::operative::registry::OperativeRegistry;
+    pub use flezha_runner::operative::{StreamInstance, StreamOperative};
+    pub use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError};
+    pub use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
+
+    pub use super::*;
+}
+
 /// A throwaway secondary stream for dispatch calls that never write back.
 pub fn dummy_stream() -> Arc<FlezhaStream> {
     flz_core::bench_support::stream_pair().0

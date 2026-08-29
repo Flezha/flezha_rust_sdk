@@ -1,20 +1,15 @@
 //! The pending set is folded state: it reaches the WAL as timer ops, and a
 //! replay rebuilds it exactly, overdue entries included.
 
-use std::sync::Arc;
-use std::time::Duration;
-
-use flezha_runner::channel::ChannelBuilder;
 use flezha_runner::entity::header::FORMAT_ID_TIMER_OPS;
 use flezha_runner::entity::state_sink;
 use flezha_runner::entity::timer::{TimerKind, TimerOp};
-use flezha_runner::operative::StreamOperative;
 use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError, StateHandle};
 use flezha_runner::state::{NoChange, RestoreInitPayload};
 use flezha_runner::testing::ProcedureTestHarness;
 
 mod common;
-use common::*;
+use common::prelude::*;
 
 // ------------------------------------------------------------ durability
 

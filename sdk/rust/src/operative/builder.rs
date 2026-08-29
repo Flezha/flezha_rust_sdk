@@ -2,14 +2,14 @@
 //! `StreamOperative::channels`) and produces a frozen `Arc<OperativeTopology>`.
 //!
 //! Build-time validation:
-//! - reject duplicate channel names (derived, `.named(...)`-overridden, and
+//! - refuse duplicate channel names (derived, `.named(...)`-overridden, and
 //!   entry names share one per-operative namespace)
 //! - enforce the shared graph-shape rule (`sdk-graph-authoring`): one entry
 //!   channel, every node reachable from it, no cycles — fan-out and fan-in
 //!   are both legal
-//! - reject `entities_for` default impl on procedures with non-empty
-//!   `entity_keys()` per `design.md` Open Question 1 (resolved via the
-//!   `ENTITIES_FOR_OVERRIDDEN` const sentinel on the `Procedure` trait)
+//! - refuse an `entities_for` default impl on a procedure with non-empty
+//!   `entity_keys()`, told apart by the `ENTITIES_FOR_OVERRIDDEN` const
+//!   sentinel on the `Procedure` trait
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -437,8 +437,8 @@ pub fn build_topology_for<R: crate::operative::StreamOperative>(
     build_topology_with_persistence(R::factory_id(), cb, R::PERSISTENCE_ENABLED)
 }
 
-/// Resolve a Procedure's mailbox capacity per Decision 6: an explicit
-/// override on the Procedure wins over `FLEZHA_MAILBOX_CAPACITY`, which wins
+/// Resolve a Procedure's mailbox capacity: an explicit override on the
+/// Procedure wins over `FLEZHA_MAILBOX_CAPACITY`, which wins
 /// over the built-in default. Out-of-range values fail registration with
 /// the offending Procedure's name; an unparseable env var falls through to
 /// the default rather than failing (runners tolerate typos in env
@@ -456,10 +456,11 @@ pub(crate) fn resolve_mailbox_capacity(
             .and_then(|s| s.parse::<usize>().ok())
             .unwrap_or(DEFAULT_MAILBOX_CAPACITY)
     };
-    validate_capacity(procedure_name, resolved)
+    refuse_capacity(procedure_name, resolved)
 }
 
-fn validate_capacity(procedure_name: &'static str, value: usize) -> Result<usize, TopologyIssue> {
+/// Refuse a capacity outside the declared range, naming the Procedure.
+fn refuse_capacity(procedure_name: &'static str, value: usize) -> Result<usize, TopologyIssue> {
     if value == 0 {
         return Err(TopologyIssue::MailboxCapacityZero {
             procedure: procedure_name,

@@ -2,21 +2,16 @@
 //!
 //! A dynamically-keyed procedure cannot receive a broadcast — every merge key
 //! is total, and inside a partitioned member a computed key is admitted against
-//! that member's key-group range. So "one operative-wide document every keyed
-//! Entity must eventually see" (a threshold table, a feature flag, a config
-//! document) needs a bridge, and the safe bridge is not the obvious one:
-//! delivering by fanning out over a remembered key set emits keys this member
-//! may no longer own, which parks against the partition guard after a rescale
-//! or a stray out-of-range item seen during a reconcile window.
+//! that member's key-group range. So an operative-wide document (a threshold
+//! table, a feature flag) needs a bridge, and the obvious one is unsafe:
+//! fanning out over a remembered key set emits keys this member may no longer
+//! own, which parks against the partition guard after a rescale.
 //!
-//! This block delivers on the key's **own next traffic item** instead, which
-//! makes over-delivery impossible by construction: the only keys emitted are
-//! keys whose traffic just proved this member owns them. The price is one tick
-//! of latency per key, and it is the whole design.
-//!
-//! The expansion is a merge into one single-entity procedure with journaled
-//! state — existing primitives only, so there is no new runtime semantics, no
-//! wire change and no new replay path.
+//! This block delivers on the key's **own next traffic item** instead, so the
+//! only keys emitted are keys whose traffic just proved this member owns them.
+//! The price is one tick of latency per key. The expansion is a merge into one
+//! single-entity procedure with journaled state — existing primitives only, so
+//! no new runtime semantics, wire change or replay path.
 
 use std::collections::HashMap;
 use std::marker::PhantomData;

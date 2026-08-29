@@ -9,23 +9,18 @@
 //! the consumer Procedure; the plugin-side delivery is observed by reading
 //! the receiving end of the unix socket pair and parsing wire frames.
 
-use std::collections::HashMap;
 use std::io::Read;
 use std::os::unix::net::UnixStream;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
 
-use bi::OperativeDispatchHandle;
 use flezha_runner::channel::{ChannelBuilder, ChannelKind};
-use flezha_runner::operative::builder::build_topology_for;
-use flezha_runner::{__dispatch_internals as bi, StreamOperative};
 use flz_transport::service::payloader;
 use flz_transport::transport::FlezhaStream;
 
 // ---------- shared scaffolding ----------
 
 mod common;
+use common::prelude::*;
 use common::{setup, stays_quiet, wait_until};
 
 type ReceivedFrame = (String, Vec<u8>, HashMap<String, String>);

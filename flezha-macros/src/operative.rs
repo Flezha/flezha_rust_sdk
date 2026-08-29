@@ -1,6 +1,6 @@
 //! `flezha::operative! { id: "...", pipeline: input::<T> -> A -> B -> plugin::<U>("k") }`
 //! — lowers a strictly linear pipeline to a `channels()` body + inventory
-//! auto-registration. Fan-out / multi-input is rejected with a message
+//! auto-registration. Fan-out / multi-input is refused with a message
 //! pointing at an explicit `channels()`. See `docs/sdk/authoring_contract.md`
 //! §5.
 

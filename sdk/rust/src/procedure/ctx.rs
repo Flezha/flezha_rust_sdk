@@ -12,7 +12,7 @@ use crate::procedure::spawn::{self, IfRunning, SpawnHandle, SpawnOutcome};
 
 /// Reserved metadata namespace: runtime identity stamps (`flz.entity`,
 /// `flz.seq`, `flz.key`) live here; user-supplied keys with this prefix
-/// are rejected at emit time so stamps can never be spoofed or clobbered.
+/// are refused at emit time so stamps can never be spoofed or clobbered.
 pub const RESERVED_METADATA_PREFIX: &str = "flz.";
 
 /// Per-invocation context for a Procedure's `run` method. Borrows the runner's
@@ -312,7 +312,7 @@ impl<'a> ProcedureCtx<'a> {
     /// Emit with user-attached string-keyed metadata. Valid on any channel
     /// carrying a `sink(...)`. Pure inter-procedure channels with
     /// no plugin sink return `MetadataNotAllowedOnInterProcedureChannel`.
-    /// Keys in the reserved `flz.` namespace are rejected.
+    /// Keys in the reserved `flz.` namespace are refused.
     pub fn emit_with_meta<C>(
         &mut self,
         value: C,
@@ -340,7 +340,7 @@ impl<'a> ProcedureCtx<'a> {
 
     /// [`Self::emit_keyed`] with user metadata. Identity stamps are
     /// appended after user metadata so they can never be clobbered; keys
-    /// in the reserved `flz.` namespace are rejected.
+    /// in the reserved `flz.` namespace are refused.
     pub fn emit_keyed_with_meta<C>(
         &mut self,
         key: impl Into<String>,
@@ -355,7 +355,7 @@ impl<'a> ProcedureCtx<'a> {
 
     /// Single emit funnel: enforces the keyed-channel contract (the
     /// channel declaration is the single source of truth for whether a
-    /// key is required), rejects reserved `flz.` metadata keys and metadata
+    /// key is required), refuses reserved `flz.` metadata keys and metadata
     /// with nowhere to ride, then hands the value to the sink. Supplying no
     /// key on a keyed channel resolves to this Entity's own key here, so the
     /// defaulted emit and an explicit `emit_keyed` are one path from this

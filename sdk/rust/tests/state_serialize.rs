@@ -1,23 +1,17 @@
 //! Round-trip tests for `serialize_operative_state` + `apply_init_values`
 //! per `entity_state.rs` Section 4 / Decision 10.
 
-use std::sync::Arc;
-
-use flezha_runner::channel::ChannelBuilder;
 use flezha_runner::command::entity_state::{
     apply_init_values, serialize_operative_state, serialize_selected_state, StatePurpose,
     StateSelector, ENTITY_EVICTED, ENTITY_KEY_WITHOUT_PROCEDURE, ENTITY_NOT_FOUND,
     PROCEDURE_NOT_FOUND,
 };
-use flezha_runner::operative::builder::build_topology_for;
-use flezha_runner::operative::StreamInstance;
-use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError};
 use flezha_runner::state::{Change, NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_runner::StreamOperative;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 mod common;
+use common::prelude::*;
 use common::{dispatch_input, dummy_stream, setup, wait_until};
 
 // ----- Single-mode Procedure -----

@@ -157,8 +157,8 @@ pub trait Procedure: Send + Sync + 'static + Default {
     /// `MIN_READABLE_SCHEMA_VERSION .. SCHEMA_VERSION`; `bytes` is the
     /// snapshot body exactly as that version wrote it.
     ///
-    /// Keep the old type in your own source and decode it here — the runtime
-    /// cannot know a type that no longer exists in this binary:
+    /// Keep the retired type in your own source and decode it here — the
+    /// runtime knows only the types this binary still declares:
     ///
     /// ```ignore
     /// fn migrate_state(from_version: u32, bytes: &[u8]) -> Result<Cart, String> {
@@ -297,7 +297,7 @@ pub trait Procedure: Send + Sync + 'static + Default {
     ///
     /// Static-mode procedures (`entity_keys()` non-empty) MUST override this
     /// AND set `ENTITIES_FOR_OVERRIDDEN = true`; the topology builder
-    /// rejects the operative otherwise.
+    /// refuses the operative otherwise.
     fn entities_for(_input: &Self::Input) -> Vec<&'static str> {
         Vec::new()
     }
@@ -305,7 +305,7 @@ pub trait Procedure: Send + Sync + 'static + Default {
     /// Override-detection sentinel. Default `false`; static-mode Procedures
     /// MUST set this to `true` alongside their `entities_for` override.
     /// `build_topology` checks the const+`entity_keys()` consistency at
-    /// startup and rejects mismatched declarations.
+    /// startup and refuses mismatched declarations.
     const ENTITIES_FOR_OVERRIDDEN: bool = false;
 
     /// Dynamic-mode idle eviction window. `None` (default) = no eviction:

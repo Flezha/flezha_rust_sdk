@@ -1,20 +1,8 @@
 //! The entry edge under load: what the wire reader does when the first
 //! Entity's mailbox is full, and what the runner reports while it waits.
 
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
-
-use bi::OperativeDispatchHandle;
-use flezha_runner::channel::ChannelBuilder;
-use flezha_runner::operative::builder::build_topology_for;
-use flezha_runner::operative::registry::OperativeRegistry;
-use flezha_runner::operative::StreamInstance;
-use flezha_runner::{__dispatch_internals as bi, OverflowPolicy, StreamOperative};
-
 mod common;
-use common::*;
+use common::prelude::*;
 
 // ----- Wire-reader behavior at the entry edge (Section 9) -----
 

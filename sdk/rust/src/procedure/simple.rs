@@ -9,11 +9,10 @@
 //! The shorthand carries only what it declares. A procedure that needs any
 //! other `Procedure` item — a non-default `Clock`, a typed `Config`, a
 //! hand-written `Change`, static entity keys, [`Procedure::on_timer`] or
-//! [`Procedure::compensate`] — implements `Procedure` directly. `on_timer` is
-//! the one worth naming: registering a timer without it is a runtime panic
-//! rather than a build error, and this tier cannot override it. A type cannot
-//! sit in both tiers — the blanket impl and a direct impl overlap, which the
-//! compiler refuses.
+//! [`Procedure::compensate`] — implements `Procedure` directly; `on_timer` is
+//! the one worth naming, since registering a timer without it is a runtime
+//! panic rather than a build error. A type cannot sit in both tiers: the
+//! blanket impl and a direct impl overlap, which the compiler refuses.
 
 use serde::de::DeserializeOwned;
 use serde::Serialize;

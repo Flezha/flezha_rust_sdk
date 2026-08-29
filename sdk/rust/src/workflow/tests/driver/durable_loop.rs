@@ -115,9 +115,9 @@ pub(super) fn durable_loop(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) 
 }
 
 pub(super) fn loop_saga_and_rewind(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
-    // --- workflow-durable-loop D2: KeepProgress/AllOrNothing are backed by
-    // the JOURNAL — the `committed` iterations a crash-resumed run rolls
-    // back come from `iter_committed` records, not from memory ---
+    // --- KeepProgress/AllOrNothing are backed by the JOURNAL — the
+    // `committed` iterations a crash-resumed run rolls back come from
+    // `iter_committed` records, not from memory ---
     for (factory, id, expected) in [
         // All-or-nothing: the failing turn unwinds itself AND the journaled
         // turn below it. `undo-loop:1` is the in-flight iteration (outputs

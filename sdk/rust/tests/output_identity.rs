@@ -2,17 +2,11 @@
 //! an emit, the byte layout a non-keyed frame keeps, and the identical
 //! stamps a crash-restore replay produces.
 
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::Duration;
-
-use flezha_runner::channel::ChannelBuilder;
 use flezha_runner::entity::header::header_template_for;
-use flezha_runner::StreamOperative;
 use flz_transport::service::payloader;
 
 mod common;
-use common::*;
+use common::prelude::*;
 
 // ----- Output identity: keyed-channel stamps, byte-identity, replay -----
 

@@ -6,9 +6,7 @@
 //! never retires, plus one supervisor parked in the core's starvation wait —
 //! work queued with no thread inside `poll` at all. Each observation adds one
 //! thread, up to a ceiling, and the threads above the base retire after an
-//! idle streak, so a workload that never starves observes exactly the base
-//! pool. (Java's counterpart hands each activation to a virtual thread and
-//! never starves; the two arms share the core, not a mechanism.)
+//! idle streak, so a workload that never starves observes exactly the base pool.
 //!
 //! That supervisor is also the pool's only self-heal: a worker that leaves for
 //! any reason releases its slot through a guard that runs on an unwind, and the

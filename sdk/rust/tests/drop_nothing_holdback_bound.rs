@@ -9,15 +9,8 @@
 //! this case at all: its outputs are materialized as bytes before the core
 //! sees them, so its holdback is bounded by one completion's output count.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
-
-use flezha_runner::channel::{ChannelBuilder, OverflowPolicy};
-use flezha_runner::operative::StreamOperative;
-
 mod common;
-use common::*;
+use common::prelude::*;
 
 const EMITS: usize = 40;
 const BOUND: usize = 2;

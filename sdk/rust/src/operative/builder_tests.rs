@@ -129,7 +129,7 @@ fn env_var_missing_falls_through_to_default() {
 
 #[test]
 fn capacity_zero_is_rejected_with_procedure_name() {
-    // Override path: explicit 0 is rejected.
+    // Override path: explicit 0 is refused.
     let err = resolve_mailbox_capacity("ohlc", 0, true, None).unwrap_err();
     match err {
         TopologyIssue::MailboxCapacityZero { procedure } => assert_eq!(procedure, "ohlc"),

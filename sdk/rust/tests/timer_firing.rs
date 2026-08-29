@@ -2,14 +2,11 @@
 //! processing-time one rides the wall clock, and each arrives through the
 //! Entity mailbox rather than a direct `on_timer` call.
 
-use std::sync::Arc;
-use std::time::Duration;
-
 use flezha_runner::entity::state_sink;
 use flezha_runner::entity::timer::{TimerKind, TimerOp};
 
 mod common;
-use common::*;
+use common::prelude::*;
 
 // ------------------------------------------------------- event-time firing
 

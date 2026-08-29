@@ -233,7 +233,7 @@ pub(super) fn add_operative_routing(node: &mut RunnerNode, rx: &Receiver<RunnerM
     assert_eq!(errors_bad.len(), 1);
     assert!(errors_bad[0].contains("WorkflowOperative class"));
 
-    // --- AddOperative with an unknown kind literal is rejected ---
+    // --- AddOperative with an unknown kind literal is refused ---
     let add_unknown = AddOperative {
         operative_id: "kind-bad".into(),
         factory_id: "test-emit-workflow".into(),

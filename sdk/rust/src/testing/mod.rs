@@ -1,5 +1,4 @@
-//! Test harness for `Procedure` implementations per
-//! `operative-state-persistence/design.md` Decision 6.
+//! Test harness for `Procedure` implementations.
 //!
 //! Gated by `cfg(any(test, feature = "testing"))` so downstream crates
 //! must explicitly opt in via `--features testing`.

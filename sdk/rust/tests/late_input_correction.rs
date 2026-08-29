@@ -1,20 +1,11 @@
 //! Late-input correction: a replayed slice is re-forwarded in event-time
 //! order, not arrival order, and the replay never lowers the high-water.
 
-use std::collections::HashMap;
-use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
-
-use bi::OperativeDispatchHandle;
-use flezha_runner::channel::ChannelBuilder;
-use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError};
 use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle};
-use flezha_runner::{__dispatch_internals as bi, StreamOperative};
 use flz_transport::transport::FlezhaStream;
 
 mod common;
-use common::*;
+use common::prelude::*;
 
 // ----- Late-input correction: the event-time-ordered replay drain -----
 //
@@ -207,12 +198,13 @@ fn dispatch_hw(
 
 #[test]
 fn a_replay_does_not_lower_the_event_time_high_water() {
-    // Regression: `dispatch_replay_slice` used to reset the high-water to -1 and
-    // rebuild it from the slice alone. Every replay is preceded by a restore that
-    // already set the high-water from the state it restored — so on a crash-resume
-    // whose unconsumed tail carries a LOWER max event time than the recovered
-    // state, that reset silently lowered the high-water, and a genuinely late input
-    // afterwards would read as on-time. A missed correction, and a silent one.
+    // `dispatch_replay_slice` must not rebuild the high-water from the slice
+    // alone. Every replay is preceded by a restore that already set the
+    // high-water from the state it restored — so on a crash-resume whose
+    // unconsumed tail carries a LOWER max event time than the recovered state,
+    // resetting it would silently lower the high-water, and a genuinely late
+    // input afterwards would read as on-time. A missed correction, and a
+    // silent one.
     //
     // Asserted on the high-water itself rather than on dispatch behaviour: with no
     // controller transport installed a correctable input falls back to being

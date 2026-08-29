@@ -2,17 +2,13 @@
 //! set with it, and a firing is excluded while the Entity is busy.
 
 use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
 
-use flezha_runner::channel::ChannelBuilder;
 use flezha_runner::entity::timer::TimerKind;
-use flezha_runner::operative::StreamOperative;
 use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError, StateHandle};
 use flezha_runner::state::{NoChange, RestoreInitPayload};
 
 mod common;
-use common::*;
+use common::prelude::*;
 
 // ------------------------------------------------------------ eviction
 

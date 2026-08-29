@@ -54,14 +54,11 @@ fn poll_entry_promotes_due_timers_in_ascending_order() {
     core.complete(act.token);
 }
 
-/// The regression this fix exists for. A due firing whose target mailbox
-/// is full used to be pushed under `DropNothing` from inside `poll`, so
-/// the promoter parked there — and a thread inside `poll` is counted by
-/// `pollers_inside`, which makes the starvation wait answer "a thread is
-/// about to take work". A single-poller host (every C-ABI host, which can
-/// install no inline-serve hook) therefore wedged permanently with the
-/// supervisor blind to it: measured at 1 of 3 firings with the pool
-/// ceiling free to grow.
+/// A due firing whose target mailbox is full must not park the promoter
+/// inside `poll`: a thread there is counted by `pollers_inside`, which
+/// makes the starvation wait answer "a thread is about to take work". A
+/// single-poller host (every C-ABI host, which can install no inline-serve
+/// hook) would then wedge permanently with the supervisor blind to it.
 ///
 /// Now the pass returns, the entry stays on the list, and the firing lands
 /// once room appears — still carrying the timestamp it was ARMED with,

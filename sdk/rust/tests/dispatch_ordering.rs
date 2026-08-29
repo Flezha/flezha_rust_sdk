@@ -2,22 +2,8 @@
 //! concurrently, its inputs keep enqueue order, different entities run in
 //! parallel, and two operatives' same-named channels stay independent.
 
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
-
-use bi::OperativeDispatchHandle;
-use flezha_runner::channel::ChannelBuilder;
-use flezha_runner::operative::builder::build_topology_for;
-use flezha_runner::operative::registry::OperativeRegistry;
-use flezha_runner::operative::StreamInstance;
-use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError};
-use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_runner::{__dispatch_internals as bi, StreamOperative};
-
 mod common;
-use common::*;
+use common::prelude::*;
 
 // ----- Per-entity ordering (single mode) -----
 

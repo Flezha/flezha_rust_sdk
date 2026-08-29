@@ -2,9 +2,7 @@
 //! target the SDK emits on must pass `DEFAULT_DIRECTIVES`, so a new
 //! target added without a directive fails here — in the repo where the
 //! drift happens — instead of silently disappearing from application
-//! logs (the 2026-08-09 flezha_market freeze produced two log lines in
-//! 28 hours because its filter predated a target the SDK had since
-//! started using).
+//! logs, which is what a filter that predates a target does.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -83,7 +81,7 @@ fn scan_sources(dir: &Path, targets: &mut BTreeSet<String>) -> bool {
             untargeted |= scan_sources(&path, targets);
             continue;
         }
-        if !path.extension().is_some_and(|e| e == "rs") {
+        if path.extension().is_none_or(|e| e != "rs") {
             continue;
         }
         let src = std::fs::read_to_string(&path).expect("source file readable");

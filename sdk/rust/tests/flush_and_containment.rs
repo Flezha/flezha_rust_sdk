@@ -2,18 +2,8 @@
 //! reaches the sink before the output it justifies, and a panicking
 //! procedure takes nothing else down.
 
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
-
-use flezha_runner::channel::ChannelBuilder;
-use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError};
-use flezha_runner::state::{RestoreInitPayload, StateHandle, WallClock};
-use flezha_runner::StreamOperative;
-
 mod common;
-use common::*;
+use common::prelude::*;
 
 // ----- Flush-before-emit ordering (durability fix) -----
 //
@@ -209,9 +199,8 @@ fn procedure_panic_does_not_wedge_the_entity() {
 //
 // The single pool worker, mid-producer-dispatch, emits into a full DropNothing
 // consumer mailbox whose drain workflow sits queued behind the producer's own
-// workflow. Parking the worker there is a permanent self-deadlock (the freeze
-// that took prod down on 2026-06-10); the Block arm must drain the full
-// slot inline instead.
+// workflow. Parking the worker there is a permanent self-deadlock; the
+// DropNothing arm must drain the full slot inline instead.
 
 static BLOCKED_CONSUMED: AtomicUsize = AtomicUsize::new(0);
 

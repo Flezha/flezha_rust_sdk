@@ -53,9 +53,9 @@ pub(super) fn durable_wal_and_journal(node: &mut RunnerNode, rx: &Receiver<Runne
         0,
         None,
     ));
-    // The workflow Entities are now reachable by wire identity — the restore
-    // handler could not see them before this change (the stream lookup
-    // only scans StreamInstance entities).
+    // The workflow Entities are reachable by wire identity: the stream
+    // lookup only scans StreamInstance entities, so the restore handler
+    // finds a workflow Entity by identity or not at all.
     let even_id =
         crate::entity::flusher::encode_entity_identity("resume-inst", "workflow_fan_op", "even");
     let (resume_instance, _slot) = node
@@ -74,7 +74,7 @@ pub(super) fn durable_wal_and_journal(node: &mut RunnerNode, rx: &Receiver<Runne
 }
 
 pub(super) fn proc_journal_commits(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
-    // --- workflow-proc-journal §D3: a durable structured chain commits every
+    // --- a durable structured chain commits every
     // proc boundary — one ProcCommit per stage, gated on the (fake
     // controller's) durable ack, carrying the codec-serialized handoff ---
     let _ = drain_proc_commits();
@@ -169,7 +169,7 @@ pub(super) fn transactional_outbox(node: &mut RunnerNode, rx: &Receiver<RunnerMe
         "the proc never committed, so its staged output was never journaled"
     );
 
-    // --- workflow-transactional-outbox §D5: a compensate hook's undo output
+    // --- a compensate hook's undo output
     // is staged too, and rides a `compensating` commit for the procedure it
     // reverses (the forward output already flushed under its own key) ---
     assert!(node.start_workflow("test-undo-saga".into(), "undo-1".into(), "u".into()));
@@ -203,8 +203,8 @@ pub(super) fn transactional_outbox(node: &mut RunnerNode, rx: &Receiver<RunnerMe
 }
 
 pub(super) fn resume_skip(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
-    // --- workflow-proc-journal §D5: resume-skip — a shipped journal skips the
-    // committed stages and seeds the next one from the journaled handoff ---
+    // --- resume-skip: a shipped journal skips the committed stages and
+    // seeds the next one from the journaled handoff ---
     let (outs, done) = resume_chain_with_journal(
         node,
         rx,

@@ -100,7 +100,7 @@ fn structured_spec_resolves_linear_chain() {
 #[test]
 fn external_stop_only_authoring_is_rejected() {
     let err = spec::build_spec::<ExternalStopOnlyWorkflow>()
-        .expect_err("external-stop-only must be rejected at registration");
+        .expect_err("external-stop-only must be refused at registration");
     assert!(
         matches!(err, spec::BuildWorkflowError::ExternalStopOnly { .. }),
         "expected ExternalStopOnly, got {err:?}"
@@ -180,7 +180,7 @@ fn loop_authoring_is_validated() {
 
 /// `workflow-entity-retry` policy surface: the defaults land on the shared
 /// `RetryPolicy`, `retry_attempts() = 0` collapses to the one-attempt
-/// fail-fast, and a ladder without a backoff is rejected at registration.
+/// fail-fast, and a ladder without a backoff is refused at registration.
 #[test]
 fn retry_policy_is_resolved_and_validated() {
     let spec = spec::build_spec::<ChainWorkflow>().expect("defaults register");
@@ -211,8 +211,7 @@ fn retry_policy_is_resolved_and_validated() {
     }
 }
 
-/// `remote-durability-tier` D5: the per-class synchronous-durability
-/// declaration reaches the spec the controller's `AddOperative` response is
+/// The per-class synchronous-durability declaration reaches the spec the controller's `AddOperative` response is
 /// built from. Off by default — a class that says nothing never makes a
 /// commit barrier wait on a remote store.
 #[test]
@@ -437,7 +436,7 @@ fn dynamic_entity_procedure_is_rejected() {
                 .into::<DynProc>();
         }
     }
-    let err = spec::build_spec::<DynWorkflow>().expect_err("dynamic entities must be rejected");
+    let err = spec::build_spec::<DynWorkflow>().expect_err("dynamic entities must be refused");
     assert!(
         matches!(err, spec::BuildWorkflowError::DynamicEntities { .. }),
         "expected DynamicEntities, got {err:?}"
