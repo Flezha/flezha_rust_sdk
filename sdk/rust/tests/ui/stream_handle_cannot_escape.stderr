@@ -1,19 +1,19 @@
-error[E0277]: `RefCell<flezha_runner::channel::builder::BuilderState>` cannot be shared between threads safely
+error[E0277]: `RefCell<flezha_runner::channel::builder::state::BuilderState>` cannot be shared between threads safely
   --> tests/ui/stream_handle_cannot_escape.rs:27:15
    |
 27 | static STASH: std::sync::Mutex<Option<Stream<'static, String>>> = std::sync::Mutex::new(None);
-   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `RefCell<flezha_runner::channel::builder::BuilderState>` cannot be shared between threads safely
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `RefCell<flezha_runner::channel::builder::state::BuilderState>` cannot be shared between threads safely
    |
-   = help: within `ChannelBuilder`, the trait `Sync` is not implemented for `RefCell<flezha_runner::channel::builder::BuilderState>`
+   = help: within `ChannelBuilder`, the trait `Sync` is not implemented for `RefCell<flezha_runner::channel::builder::state::BuilderState>`
    = note: if you want to do aliasing and mutation between multiple threads, use `std::sync::RwLock` instead
 note: required because it appears within the type `ChannelBuilder`
-  --> src/channel/builder.rs
+  --> src/channel/builder/mod.rs
    |
    | pub struct ChannelBuilder {
    |            ^^^^^^^^^^^^^^
    = note: required for `&'static ChannelBuilder` to implement `Send`
 note: required because it appears within the type `flezha_runner::Stream<'static, String>`
-  --> src/channel/builder.rs
+  --> src/channel/builder/stream.rs
    |
    | pub struct Stream<'b, T, K = NodeTarget> {
    |            ^^^^^^
