@@ -164,7 +164,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use crossbeam::channel::Receiver;
-    use flz_core::fast::RunnerNode;
+    use flz_core::runner::RunnerNode;
     use serde::{Deserialize, Serialize};
 
     use super::*;

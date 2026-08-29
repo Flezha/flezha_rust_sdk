@@ -75,7 +75,7 @@ pub(crate) mod fixtures {
             .mailbox
             .try_push(payload(value, &unix_stream()))
             .is_ok());
-        if slot.mailbox.try_mark_inflight() {
+        if slot.mailbox.claim_inflight() {
             core.schedule(slot);
         }
     }
@@ -184,7 +184,7 @@ mod tests {
         assert!(slot.mailbox.is_full());
         // Claim the round so nothing drains it — the caller decides when room
         // appears.
-        assert!(slot.mailbox.try_mark_inflight());
+        assert!(slot.mailbox.claim_inflight());
         (instance, slot)
     }
 
@@ -207,14 +207,14 @@ mod tests {
     }
 
     /// Arm one already-due processing-time timer and keep its firing on this
-    /// core: `routing::enqueue` only schedules a round when it wins the
+    /// core: `admission::admit_from_reader` only schedules a round when it wins the
     /// inflight CAS, and the caller has already taken it.
     fn arm_due_timer(core: &PollCore, slot: &Arc<EntitySlot>, at: u64) {
         slot.timers
             .lock()
             .unwrap()
             .apply(&TimerOp::register(TimerKind::ProcessingTime, at));
-        assert!(slot.mailbox.try_mark_inflight());
+        assert!(slot.mailbox.claim_inflight());
         core.arm_timer(slot, at, unix_stream());
     }
 
@@ -241,7 +241,7 @@ mod tests {
         for i in 0..count {
             assert!(slot.mailbox.try_push(payload(i, stream)).is_ok());
         }
-        assert!(slot.mailbox.try_mark_inflight());
+        assert!(slot.mailbox.claim_inflight());
         core.schedule(slot);
         match core.poll(Duration::from_millis(100)) {
             Polled::Activation(act) => act,
@@ -322,7 +322,7 @@ mod tests {
         for i in 0..PER_ENTITY {
             for slot in [&slot_a, &slot_b] {
                 assert!(slot.mailbox.try_push(payload(i, &stream)).is_ok());
-                if slot.mailbox.try_mark_inflight() {
+                if slot.mailbox.claim_inflight() {
                     core.schedule(slot);
                 }
             }
@@ -355,7 +355,7 @@ mod tests {
         // Arrives mid-flight: the producer's CAS fails (round still held),
         // so nothing is scheduled — and poll must NOT hand the entity out.
         assert!(slot.mailbox.try_push(payload(1, &stream)).is_ok());
-        assert!(!slot.mailbox.try_mark_inflight());
+        assert!(!slot.mailbox.claim_inflight());
         match core.poll(Duration::from_millis(50)) {
             Polled::Timeout => {}
             _ => panic!("entity handed out while outstanding"),
@@ -448,7 +448,7 @@ mod tests {
 
         // An empty tail is a plain completion: the entity is released.
         assert!(slot.mailbox.try_push(payload(9, &stream)).is_ok());
-        assert!(slot.mailbox.try_mark_inflight());
+        assert!(slot.mailbox.claim_inflight());
         core.schedule(&slot);
         let act = match core.poll(Duration::from_millis(100)) {
             Polled::Activation(a) => a,
@@ -456,7 +456,7 @@ mod tests {
         };
         core.abandon(act.token, Vec::new());
         assert!(slot.mailbox.try_push(payload(10, &stream)).is_ok());
-        assert!(slot.mailbox.try_mark_inflight());
+        assert!(slot.mailbox.claim_inflight());
         core.schedule(&slot);
         match core.poll(Duration::from_millis(500)) {
             Polled::Activation(a) => {
@@ -833,7 +833,7 @@ mod tests {
         // A producer during the window: it enqueues, but the entity is still
         // handed out, so no round can be claimed and no poller may serve it.
         assert!(slot.mailbox.try_push(payload(9, &stream)).is_ok());
-        assert!(!slot.mailbox.try_mark_inflight());
+        assert!(!slot.mailbox.claim_inflight());
         assert!(matches!(
             core.poll(Duration::from_millis(300)),
             Polled::Timeout
@@ -906,7 +906,7 @@ mod tests {
 
         // The third entity's round is queued and runnable; the cap holds it.
         assert!(slots[2].mailbox.try_push(payload(0, &stream)).is_ok());
-        assert!(slots[2].mailbox.try_mark_inflight());
+        assert!(slots[2].mailbox.claim_inflight());
         core.schedule(&slots[2]);
         assert!(
             matches!(core.poll(Duration::from_millis(100)), Polled::Timeout),
@@ -936,7 +936,7 @@ mod tests {
 
         let (_ic, other) = build_slot("poll-cap-command-other");
         assert!(other.mailbox.try_push(payload(0, &stream)).is_ok());
-        assert!(other.mailbox.try_mark_inflight());
+        assert!(other.mailbox.claim_inflight());
         core.schedule(&other);
 
         let (reply, _rx) = crossbeam::channel::bounded(1);
@@ -978,7 +978,7 @@ mod tests {
 
         let started = Instant::now();
         assert!(slot.mailbox.try_push(payload(0, &stream)).is_ok());
-        assert!(slot.mailbox.try_mark_inflight());
+        assert!(slot.mailbox.claim_inflight());
         core.schedule(&slot);
 
         assert!(
@@ -1036,7 +1036,7 @@ mod tests {
             .lock()
             .unwrap()
             .apply(&TimerOp::register(TimerKind::ProcessingTime, 0));
-        assert!(slot.mailbox.try_mark_inflight());
+        assert!(slot.mailbox.claim_inflight());
         // Due 150 ms out: the waiter must shorten its own wait to it.
         core.arm_timer(&slot, flz_core::util::wall_now_ms() + 150, unix_stream());
 
@@ -1070,7 +1070,7 @@ mod tests {
         };
         wait_until("the poller to enter poll", || core.pollers_inside() >= 1);
         assert!(slot.mailbox.try_push(payload(0, &stream)).is_ok());
-        assert!(slot.mailbox.try_mark_inflight());
+        assert!(slot.mailbox.claim_inflight());
         core.schedule(&slot);
 
         assert!(

@@ -816,6 +816,6 @@ mod entry_point_tests {
 #[cfg(feature = "bench-internals")]
 #[doc(hidden)]
 pub mod __dispatch_internals {
-    pub use flz_core::fast::OperativeDispatchHandle;
     pub use flz_core::mailbox::Mailbox;
+    pub use flz_core::runner::OperativeDispatchHandle;
 }

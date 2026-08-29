@@ -5,7 +5,6 @@ pub mod builder;
 pub mod dispatcher;
 pub(crate) mod poll_pool;
 pub use flz_core::operative::{instance, registry, topology};
-pub use flz_core::persistence;
 pub use instance::{KeyGroupRange, StreamInstance};
 pub use topology::OperativeTopology;
 

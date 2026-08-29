@@ -1,4 +1,4 @@
-//! Relocated kernel tests: `flz_core::fast` seams driven with typed fixtures.
+//! Relocated kernel tests: `flz_core::coordinator` seams driven with typed fixtures.
 
 #[cfg(test)]
 mod remove_factory_tests {
@@ -6,8 +6,8 @@ mod remove_factory_tests {
     //! (`RunnerNode::remove_factory`): a factory with live instances refuses
     //! and stays registered; once the last instance stops, the removal
     //! unregisters the class.
-    use flz_core::fast::*;
     use flz_core::restore::RestoreInitPayload;
+    use flz_core::runner::*;
 
     use crate::procedure::state_handle::StateHandle;
     use crate::procedure::{NoChange, Procedure, ProcedureCtx, ProcedureError, WallClock};
@@ -97,8 +97,7 @@ mod reconnect_tests {
     //! and the cross-language matrix.
     use std::sync::Arc;
 
-    use flz_core::fast::*;
-    use flz_core::runner::RunnerStatus;
+    use flz_core::runner::{RunnerStatus, *};
 
     #[test]
     fn runner_id_and_registry_are_preserved_across_status_flap() {

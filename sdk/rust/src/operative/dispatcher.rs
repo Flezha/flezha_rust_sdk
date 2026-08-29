@@ -539,7 +539,7 @@ impl<S: Procedure> Invocation<S> {
 impl<S: Procedure> ProcedureDispatcher for ProcedureDispatcherImpl<S> {
     fn dispatch_item(
         &self,
-        work: crate::runner::poll_core::WorkItem,
+        work: crate::runner::poll_core::ItemAttempt,
         slot: &Arc<EntitySlot>,
         state: &mut Box<dyn Any + Send>,
         flush_buffer: &mut Box<dyn FlushableBuffer>,
@@ -556,7 +556,7 @@ impl<S: Procedure> ProcedureDispatcher for ProcedureDispatcherImpl<S> {
             .downcast_mut::<TypedBuffer<S>>()
             .expect("dispatcher: flush buffer type mismatch for procedure");
 
-        let crate::runner::poll_core::WorkItem {
+        let crate::runner::poll_core::ItemAttempt {
             item,
             now,
             attempt,
@@ -1358,7 +1358,7 @@ impl<'a> EmitSink for WorkflowCollectAdapter<'a> {
 /// Apply the channel's `OverflowPolicy` when pushing onto an Entity's
 /// bounded mailbox. Bumps the appropriate per-Entity counter on every
 /// outcome and submits a drain task on success / DropOldest. On Block,
-/// parks the calling thread on the slot's `BlockParker` and retries
+/// parks the calling thread on the slot's `Waiters` and retries
 /// until the push succeeds (Decision 3).
 /// Build the emit wire metadata: drop any caller-supplied reserved
 /// `channel` key, then stamp the descriptor's channel name.
@@ -1453,7 +1453,7 @@ struct Handout<'a> {
     /// What the worker has not finished. The item being dispatched stays here
     /// until it resolves — the dispatch runs on a shallow clone — so an unwind
     /// mid-item re-hands it rather than losing it.
-    remaining: std::collections::VecDeque<crate::runner::poll_core::WorkItem>,
+    remaining: std::collections::VecDeque<crate::runner::poll_core::ItemAttempt>,
     answered: bool,
 }
 
@@ -1461,7 +1461,7 @@ impl<'a> Handout<'a> {
     fn new(
         core: &'a crate::runner::poll_core::PollCore,
         token: u64,
-        items: Vec<crate::runner::poll_core::WorkItem>,
+        items: Vec<crate::runner::poll_core::ItemAttempt>,
     ) -> Self {
         Self {
             core,
@@ -1471,7 +1471,7 @@ impl<'a> Handout<'a> {
         }
     }
 
-    fn next_item(&self) -> Option<crate::runner::poll_core::WorkItem> {
+    fn next_item(&self) -> Option<crate::runner::poll_core::ItemAttempt> {
         self.remaining.front().cloned()
     }
 
@@ -1480,7 +1480,7 @@ impl<'a> Handout<'a> {
     }
 
     /// The head failed retryably: it and the untouched tail ride the ladder.
-    fn retry(mut self, head: crate::runner::poll_core::WorkItem, error: String) {
+    fn retry(mut self, head: crate::runner::poll_core::ItemAttempt, error: String) {
         self.remaining.pop_front();
         let mut rest = Vec::with_capacity(self.remaining.len() + 1);
         rest.push(head);
@@ -1529,7 +1529,7 @@ pub(super) fn run_activation(
     act: crate::runner::poll_core::EngineActivation,
 ) {
     use crate::entity::ItemDisposition;
-    use crate::runner::poll_core::{EngineActivation, EnginePayload, WorkItem};
+    use crate::runner::poll_core::{EngineActivation, EnginePayload, ItemAttempt};
 
     let EngineActivation { token, payload } = act;
     let (slot, items) = match payload {
@@ -1599,7 +1599,7 @@ pub(super) fn run_activation(
             }
             ItemDisposition::RetryLater { item, error } => {
                 handout.retry(
-                    WorkItem {
+                    ItemAttempt {
                         item,
                         now,
                         attempt,

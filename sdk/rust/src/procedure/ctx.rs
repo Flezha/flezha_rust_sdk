@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use flz_core::util::{fnv1a128, FNV128_OFFSET_BASIS};
+use flz_core::operative::instance::{fnv1a128, FNV128_OFFSET_BASIS};
 
 use crate::entity::timer::{TimerKind, TimerSession};
 use crate::procedure::error::ProcedureError;

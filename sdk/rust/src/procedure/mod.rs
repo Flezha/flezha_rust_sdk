@@ -51,7 +51,7 @@ pub const DEFAULT_PROCEDURE_ON_TIMER_PANIC_MESSAGE: &str =
 /// author-controlled memory multiplied by a stream Entity count; the cap
 /// is what keeps a runaway registration a refusal rather than an OOM.
 pub const DEFAULT_MAX_TIMERS_PER_ENTITY: usize = 10_000;
-pub use flz_core::persistence::DEFAULT_COMPACT_AFTER_BYTES;
+pub use flz_core::operative::topology::DEFAULT_COMPACT_AFTER_BYTES;
 
 /// One Procedure in a StreamOperative topology. Stateless dispatcher; per-entity
 /// State is held by the runtime and threaded through `run` via a

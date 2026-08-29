@@ -533,7 +533,7 @@ fn a_firing_into_a_saturated_consumer_waits_for_room_without_holding_a_poller() 
 
     // Inflight held with no drainer, then both slots filled: nothing pops
     // until whoever pushes next serves the round.
-    assert!(slot.mailbox.try_mark_inflight());
+    assert!(slot.mailbox.claim_inflight());
     for _ in 0..2 {
         dispatch_input(
             &handle,

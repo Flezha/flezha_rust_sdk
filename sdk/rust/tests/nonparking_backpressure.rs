@@ -29,7 +29,7 @@ fn pin_single_worker_host() -> std::sync::MutexGuard<'static, ()> {
         std::env::set_var("FLEZHA_WORKER_POOL_SIZE", "1");
         std::env::set_var("FLEZHA_WORKER_POOL_MAX", "1");
         std::env::set_var("FLEZHA_MAX_INFLIGHT_ACTIVATIONS", "2");
-        flz_core::routing::set_nonparking_for_tests(true);
+        flz_core::admission::set_nonparking_for_tests(true);
     });
     SERIAL.lock().unwrap_or_else(|p| p.into_inner())
 }
@@ -259,7 +259,7 @@ fn a_gated_producer_holds_its_round_and_is_reported() {
 
     // Claim the consumer's round and fill it: no assembly can run, so every
     // emit the producer makes has to be held rather than delivered.
-    assert!(tail.mailbox.try_mark_inflight());
+    assert!(tail.mailbox.claim_inflight());
     let mut saturating = 0;
     while tail.mailbox.try_push(blob(&stream)).is_ok() {
         saturating += 1;
@@ -278,7 +278,7 @@ fn a_gated_producer_holds_its_round_and_is_reported() {
     assert_eq!(head.push_holdback.lock().unwrap().len(), FANOUT);
     // The reaper's own skip condition, unchanged: a round already claimed.
     assert!(
-        !head.mailbox.try_mark_inflight(),
+        !head.mailbox.claim_inflight(),
         "a gated producer must hold its round so the reaper skips it"
     );
     assert_eq!(
@@ -295,7 +295,7 @@ fn a_gated_producer_holds_its_round_and_is_reported() {
     // Let the consumer run: its first pop re-arms the producer, and the
     // holdback drains behind the item that was already queued.
     tail.mailbox.release_inflight();
-    if tail.mailbox.try_mark_inflight() {
+    if tail.mailbox.claim_inflight() {
         core.schedule(&tail);
     }
     assert!(

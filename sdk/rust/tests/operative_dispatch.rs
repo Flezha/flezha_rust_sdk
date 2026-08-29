@@ -507,10 +507,10 @@ fn drop_newest_discards_when_full_and_only_bumps_newest_counter() {
     let slot = Arc::clone(&instance.entities[0][0]);
 
     // Pre-acquire inflight: subsequent enqueue paths skip submit_drain
-    // because their try_mark_inflight returns false. Items pile up in
+    // because their claim_inflight returns false. Items pile up in
     // the bounded mailbox without being popped.
     assert!(
-        slot.mailbox.try_mark_inflight(),
+        slot.mailbox.claim_inflight(),
         "fresh slot must yield inflight ownership"
     );
 
@@ -593,7 +593,7 @@ fn drop_oldest_evicts_head_and_bumps_oldest_counter() {
 
     // Pre-acquire inflight so no drain runs during the deterministic
     // push sequence below; pop / dispatch happens after the assertions.
-    assert!(slot.mailbox.try_mark_inflight());
+    assert!(slot.mailbox.claim_inflight());
 
     let stream = dummy_stream();
     let mut md = HashMap::new();
@@ -649,7 +649,7 @@ fn a_replay_slice_member_is_never_shed_by_a_dropping_channel() {
     DROP_NEWEST_RECEIVED.store(0, Ordering::Release);
     let (handle, instance) = setup::<DropNewestOperative>("drop-newest-replay-instance");
     let slot = Arc::clone(&instance.entities[0][0]);
-    assert!(slot.mailbox.try_mark_inflight());
+    assert!(slot.mailbox.claim_inflight());
 
     let stream = dummy_stream();
     let mut md = HashMap::new();
@@ -1057,7 +1057,7 @@ fn declared_drop_newest_entry_does_not_stall_sibling_operatives() {
     // Saturate A's mailbox; pre-acquire inflight so A's drain does not
     // make room for new frames during the test.
     let slot_a = Arc::clone(&instance_a.entities[0][0]);
-    assert!(slot_a.mailbox.try_mark_inflight());
+    assert!(slot_a.mailbox.claim_inflight());
 
     let handle = OperativeDispatchHandle {
         registry: Arc::clone(&registry),
@@ -1137,7 +1137,7 @@ fn entry_drop_nothing_parks_reader_until_pool_drains<A: StreamOperative>(tag: &s
     // A's round is marked inflight but not handed to the pool, so nothing
     // drains A until the test schedules it below.
     let slot_a = Arc::clone(&instance_a.entities[0][0]);
-    assert!(slot_a.mailbox.try_mark_inflight());
+    assert!(slot_a.mailbox.claim_inflight());
     let blocked_before = flezha_runner::entity::pushes_blocked_total();
 
     let handle = OperativeDispatchHandle {
@@ -2017,10 +2017,20 @@ fn tier_replay_skips_inputs_at_or_below_the_consumed_floor() {
         "exactly the above-floor input must produce an effect record"
     );
 
-    // No late frame appears for the skipped offsets.
-    let seen = TIER_SINK_FRAMES.lock().unwrap().len();
+    // No late effect record appears for the skipped offsets. Counted by
+    // payload id: the sink is process-global, and a sibling test's park frame
+    // landing in this window says nothing about these offsets.
+    let effect_records = || {
+        TIER_SINK_FRAMES
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(pid, _)| pid == "entity_effect_record")
+            .count()
+    };
+    let seen = effect_records();
     assert!(stays_quiet(
-        || TIER_SINK_FRAMES.lock().unwrap().len() > seen,
+        || effect_records() > seen,
         Duration::from_millis(50)
     ));
     let effect_count = TIER_SINK_FRAMES

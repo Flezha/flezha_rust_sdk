@@ -48,8 +48,7 @@ use flezha_runner::channel::ChannelBuilder;
 use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError, StateHandle};
 use flezha_runner::state::{NoChange, RestoreInitPayload, WallClock};
 use flezha_runner::{Flezha, LoopMode, WorkflowOperative};
-use flz_core::fast::RunnerNode;
-use flz_core::runner::{install_reconnect_trigger, RunnerMessage};
+use flz_core::runner::{install_reconnect_trigger, RunnerMessage, RunnerNode};
 use flz_core::util::env_parse;
 
 /// The gate the population parks on, opened once the hold window has elapsed.

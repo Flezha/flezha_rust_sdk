@@ -56,8 +56,8 @@ static BLOCKED_BEFORE: AtomicUsize = AtomicUsize::new(0);
 /// reordering the sequence it exists to bound.
 #[test]
 fn emitting_past_the_bound_delivers_everything_in_order() {
-    flz_core::routing::set_nonparking_for_tests(true);
-    flz_core::routing::set_holdback_max_for_tests(BOUND);
+    flz_core::admission::set_nonparking_for_tests(true);
+    flz_core::admission::set_holdback_max_for_tests(BOUND);
     SEEN.lock().unwrap().clear();
     BLOCKED_BEFORE.store(
         flz_core::entity::pushes_blocked_total() as usize,
@@ -73,7 +73,7 @@ fn emitting_past_the_bound_delivers_everything_in_order() {
         Duration::from_secs(30),
     );
     // Restore the bound before asserting so a failure cannot leak it.
-    flz_core::routing::set_holdback_max_for_tests(usize::MAX);
+    flz_core::admission::set_holdback_max_for_tests(usize::MAX);
     assert!(
         drained,
         "a holdback with a bound lost or wedged work: {} of {EMITS} arrived",
@@ -155,7 +155,7 @@ impl StreamOperative for LoadOperative {
 /// against a real completion.
 #[test]
 fn concurrent_feeders_against_a_live_drain_never_leak_a_gate() {
-    flz_core::routing::set_nonparking_for_tests(true);
+    flz_core::admission::set_nonparking_for_tests(true);
     LOAD_SEEN.store(0, Ordering::Release);
 
     let (handle, instance) = setup::<LoadOperative>("holdback-load");
