@@ -15,9 +15,6 @@
 //! pool). The consumer Procedures count receipts atomically so `iter_custom`
 //! waits for full drain before stopping the timer.
 
-use std::collections::HashMap;
-use std::os::unix::net::UnixStream;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -29,35 +26,17 @@ use flezha_runner::operative::StreamInstance;
 use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError};
 use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
 use flezha_runner::{__dispatch_internals as bi, OverflowPolicy, StreamOperative};
-use flz_transport::transport::FlezhaStream;
-
-// ----- shared bench helpers -----
-
-fn dummy_stream() -> Arc<FlezhaStream> {
-    let (a, _b) = UnixStream::pair().expect("UnixStream::pair");
-    Arc::new(FlezhaStream::Unix(a))
-}
-
-fn wait_until<F: Fn() -> bool>(predicate: F, timeout: Duration) -> bool {
-    let start = Instant::now();
-    while !predicate() {
-        if start.elapsed() > timeout {
-            return false;
-        }
-        std::thread::sleep(Duration::from_micros(50));
-    }
-    true
-}
+use flz_core::bench_support::{fan_in, stream_pair, Settle};
 
 const MSGS_PER_ITER: usize = 5_000;
 
 // Each bench configuration uses its own atomic counter so concurrent
 // criterion runs don't cross-contaminate results.
-static PURE_1C_COUNT: AtomicUsize = AtomicUsize::new(0);
-static PURE_3C_COUNT: AtomicUsize = AtomicUsize::new(0);
-static PLUGIN_BOUND_PRODUCE_COUNT: AtomicUsize = AtomicUsize::new(0);
-static HYBRID_1C_COUNT: AtomicUsize = AtomicUsize::new(0);
-static HYBRID_3C_COUNT: AtomicUsize = AtomicUsize::new(0);
+static PURE_1C_COUNT: Settle = Settle::new();
+static PURE_3C_COUNT: Settle = Settle::new();
+static PLUGIN_BOUND_PRODUCE_COUNT: Settle = Settle::new();
+static HYBRID_1C_COUNT: Settle = Settle::new();
+static HYBRID_3C_COUNT: Settle = Settle::new();
 
 // ---------- pure inter-procedure, 1 consumer ----------
 
@@ -103,7 +82,7 @@ impl Procedure for Pure1Consumer {
         _: StateHandle<'_, Self>,
         _: &mut ProcedureCtx<'_>,
     ) -> Result<(), ProcedureError> {
-        PURE_1C_COUNT.fetch_add(1, Ordering::Relaxed);
+        PURE_1C_COUNT.add(1);
         Ok(())
     }
 }
@@ -168,7 +147,7 @@ macro_rules! pure3_consumer {
                 _: StateHandle<'_, Self>,
                 _: &mut ProcedureCtx<'_>,
             ) -> Result<(), ProcedureError> {
-                PURE_3C_COUNT.fetch_add(1, Ordering::Relaxed);
+                PURE_3C_COUNT.add(1);
                 Ok(())
             }
         }
@@ -217,7 +196,7 @@ impl Procedure for PluginBoundProducer {
         _: StateHandle<'_, Self>,
         ctx: &mut ProcedureCtx<'_>,
     ) -> Result<(), ProcedureError> {
-        PLUGIN_BOUND_PRODUCE_COUNT.fetch_add(1, Ordering::Relaxed);
+        PLUGIN_BOUND_PRODUCE_COUNT.add(1);
         ctx.emit::<Vec<u8>>(b"x".to_vec())
     }
 }
@@ -280,7 +259,7 @@ impl Procedure for Hybrid1Consumer {
         _: StateHandle<'_, Self>,
         _: &mut ProcedureCtx<'_>,
     ) -> Result<(), ProcedureError> {
-        HYBRID_1C_COUNT.fetch_add(1, Ordering::Relaxed);
+        HYBRID_1C_COUNT.add(1);
         Ok(())
     }
 }
@@ -346,7 +325,7 @@ macro_rules! hybrid3_consumer {
                 _: StateHandle<'_, Self>,
                 _: &mut ProcedureCtx<'_>,
             ) -> Result<(), ProcedureError> {
-                HYBRID_3C_COUNT.fetch_add(1, Ordering::Relaxed);
+                HYBRID_3C_COUNT.add(1);
                 Ok(())
             }
         }
@@ -381,7 +360,7 @@ fn run_bench<R: StreamOperative>(
     c: &mut Criterion,
     name: &'static str,
     instance_id: &'static str,
-    counter: &'static AtomicUsize,
+    counter: &'static Settle,
     expected_per_msg: usize,
 ) {
     let topology = build_topology_for::<R>().expect("topology");
@@ -391,8 +370,9 @@ fn run_bench<R: StreamOperative>(
     let handle = bi::OperativeDispatchHandle {
         registry: Arc::clone(&registry),
     };
-    let stream = dummy_stream();
+    let stream = stream_pair().0;
     let payload: Vec<u8> = b"x".repeat(8);
+    let ids = [instance_id.to_string()];
 
     let mut group = c.benchmark_group("hybrid_channel_throughput");
     group.measurement_time(Duration::from_secs(15));
@@ -402,23 +382,23 @@ fn run_bench<R: StreamOperative>(
         b.iter_custom(|iters| {
             let mut elapsed = Duration::ZERO;
             for _ in 0..iters {
-                counter.store(0, Ordering::Release);
+                counter.reset();
                 let target = MSGS_PER_ITER * expected_per_msg;
                 let start = Instant::now();
-                for _ in 0..MSGS_PER_ITER {
-                    let mut md = HashMap::new();
-                    md.insert("channel".to_string(), "input".to_string());
-                    handle.dispatch(instance_id, payload.clone(), &md, Arc::clone(&stream));
-                }
-                let drained = wait_until(
-                    || counter.load(Ordering::Acquire) == target,
-                    Duration::from_secs(15),
+                fan_in(
+                    &handle,
+                    &ids,
+                    MSGS_PER_ITER,
+                    &[payload.as_slice()],
+                    None,
+                    &stream,
                 );
+                let drained = counter.wait_for(target, Duration::from_secs(15));
                 elapsed += start.elapsed();
                 assert!(
                     drained,
                     "{name} drain timed out: {} of {}",
-                    counter.load(Ordering::Acquire),
+                    counter.current(),
                     target
                 );
             }

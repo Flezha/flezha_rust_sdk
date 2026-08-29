@@ -12,9 +12,6 @@
 //! Both rely on the `bench-internals` feature for access to the
 //! `OperativeDispatchHandle`.
 
-use std::collections::HashMap;
-use std::os::unix::net::UnixStream;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -26,9 +23,14 @@ use flezha_runner::operative::StreamInstance;
 use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError};
 use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
 use flezha_runner::{__dispatch_internals as bi, OverflowPolicy, StreamOperative};
-use flz_transport::transport::FlezhaStream;
+use flz_core::bench_support::{
+    allocations, fan_in, measurement_secs_default, report, stream_pair, Counting, Settle,
+};
 
-// ----- Shared bench helpers (Decision 10: duplicated locally per bench file) -----
+/// Allocation counting for rows 1 and 2: at most one `#[global_allocator]` per
+/// binary, so the static lives here and the machinery in `bench_support`.
+#[global_allocator]
+static GLOBAL: Counting = Counting;
 
 /// The SDK's base worker count for this run — what the entity-stress
 /// benchmark id is labelled with. The pool is process-global and sized at
@@ -45,25 +47,9 @@ fn worker_count_from_env_or_cpus() -> usize {
         })
 }
 
-fn dummy_stream() -> Arc<FlezhaStream> {
-    let (a, _b) = UnixStream::pair().expect("UnixStream::pair");
-    Arc::new(FlezhaStream::Unix(a))
-}
-
-fn wait_until<F: Fn() -> bool>(predicate: F, timeout: Duration) -> bool {
-    let start = Instant::now();
-    while !predicate() {
-        if start.elapsed() > timeout {
-            return false;
-        }
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    true
-}
-
 // ----- Regression bench: 100 operatives × 1 procedure × 1 entity × 10K msg -----
 
-static REG_COUNTER: AtomicUsize = AtomicUsize::new(0);
+static REG_COUNTER: Settle = Settle::new();
 
 #[derive(Default)]
 struct RegressionProcedure;
@@ -84,7 +70,7 @@ impl Procedure for RegressionProcedure {
         _: StateHandle<'_, RegressionProcedure>,
         _: &mut ProcedureCtx<'_>,
     ) -> Result<(), ProcedureError> {
-        REG_COUNTER.fetch_add(1, Ordering::Relaxed);
+        REG_COUNTER.add(1);
         Ok(())
     }
 }
@@ -125,38 +111,42 @@ fn regression_bench(c: &mut Criterion) {
     let handle = bi::OperativeDispatchHandle {
         registry: Arc::clone(&registry),
     };
-    let stream = dummy_stream();
+    let stream = stream_pair().0;
     let payload: Vec<u8> = b"x".repeat(64);
 
     let mut group = c.benchmark_group("operative_dispatch");
-    group.measurement_time(Duration::from_secs(60));
+    group.measurement_time(Duration::from_secs(measurement_secs_default(60)));
     group.sample_size(10);
     group.throughput(criterion::Throughput::Elements(total as u64));
     group.bench_function("regression_100x1x1x10k", |b| {
         b.iter_custom(|iters| {
+            let allocs_before = allocations();
             let mut elapsed = Duration::ZERO;
             for _ in 0..iters {
-                REG_COUNTER.store(0, Ordering::Release);
+                REG_COUNTER.reset();
                 let start = Instant::now();
-                for id in &instance_ids {
-                    for _ in 0..msgs_per_operative {
-                        let mut md = HashMap::new();
-                        md.insert("channel".to_string(), "input".to_string());
-                        handle.dispatch(id, payload.clone(), &md, Arc::clone(&stream));
-                    }
-                }
-                let drained = wait_until(
-                    || REG_COUNTER.load(Ordering::Acquire) == total,
-                    Duration::from_secs(60),
+                fan_in(
+                    &handle,
+                    &instance_ids,
+                    msgs_per_operative,
+                    &[payload.as_slice()],
+                    None,
+                    &stream,
                 );
+                let drained = REG_COUNTER.wait_for(total, Duration::from_secs(60));
                 elapsed += start.elapsed();
                 assert!(
                     drained,
                     "regression bench drain timed out: {} of {}",
-                    REG_COUNTER.load(Ordering::Acquire),
+                    REG_COUNTER.current(),
                     total
                 );
             }
+            report(
+                "regression_100x1x1x10k",
+                allocs_before,
+                (iters as usize * total) as u64,
+            );
             elapsed
         });
     });
@@ -165,7 +155,7 @@ fn regression_bench(c: &mut Criterion) {
 
 // ----- Entity-stress bench: 4 procedures × 8 entities, fan-out 8 -----
 
-static PART_COUNTER: AtomicUsize = AtomicUsize::new(0);
+static PART_COUNTER: Settle = Settle::new();
 
 const STRESS_KEYS: &[&str] = &["p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7"];
 
@@ -210,7 +200,7 @@ impl Procedure for StressBenchProcedureA {
         _: StateHandle<'_, StressBenchProcedureA>,
         ctx: &mut ProcedureCtx<'_>,
     ) -> Result<(), ProcedureError> {
-        PART_COUNTER.fetch_add(1, Ordering::Relaxed);
+        PART_COUNTER.add(1);
         ctx.emit::<Vec<u8>>(input)
     }
 }
@@ -241,7 +231,7 @@ impl Procedure for StressBenchProcedureB {
         _: StateHandle<'_, StressBenchProcedureB>,
         ctx: &mut ProcedureCtx<'_>,
     ) -> Result<(), ProcedureError> {
-        PART_COUNTER.fetch_add(1, Ordering::Relaxed);
+        PART_COUNTER.add(1);
         ctx.emit::<Vec<u8>>(input)
     }
 }
@@ -272,7 +262,7 @@ impl Procedure for StressBenchProcedureC {
         _: StateHandle<'_, StressBenchProcedureC>,
         ctx: &mut ProcedureCtx<'_>,
     ) -> Result<(), ProcedureError> {
-        PART_COUNTER.fetch_add(1, Ordering::Relaxed);
+        PART_COUNTER.add(1);
         ctx.emit::<Vec<u8>>(input)
     }
 }
@@ -303,7 +293,7 @@ impl Procedure for StressBenchProcedureD {
         _: StateHandle<'_, StressBenchProcedureD>,
         _: &mut ProcedureCtx<'_>,
     ) -> Result<(), ProcedureError> {
-        PART_COUNTER.fetch_add(1, Ordering::Relaxed);
+        PART_COUNTER.add(1);
         Ok(())
     }
 }
@@ -336,10 +326,7 @@ fn entity_stress_bench(c: &mut Criterion) {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(20_000usize);
-    let measurement_secs = std::env::var("FLEZHA_BENCH_MEASUREMENT_SECS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(30u64);
+    let measurement_secs = measurement_secs_default(30);
     let inputs_total = n_operatives * msgs_per_operative;
     let fan_out = STRESS_KEYS.len();
     let procedures = 4usize;
@@ -350,7 +337,7 @@ fn entity_stress_bench(c: &mut Criterion) {
 
     let topology = build_topology_for::<EntityStressBenchOperative>().expect("topology");
     let payload: Vec<u8> = b"x".repeat(64);
-    let stream = dummy_stream();
+    let stream = stream_pair().0;
 
     let mut group = c.benchmark_group("entity_stress_8x4x8x20k");
     group.measurement_time(Duration::from_secs(measurement_secs));
@@ -373,29 +360,33 @@ fn entity_stress_bench(c: &mut Criterion) {
 
         group.bench_with_input(BenchmarkId::from_parameter(workers), &workers, |b, _| {
             b.iter_custom(|iters| {
+                let allocs_before = allocations();
                 let mut elapsed = Duration::ZERO;
                 for _ in 0..iters {
-                    PART_COUNTER.store(0, Ordering::Release);
+                    PART_COUNTER.reset();
                     let start = Instant::now();
-                    for id in &instance_ids {
-                        for _ in 0..msgs_per_operative {
-                            let mut md = HashMap::new();
-                            md.insert("channel".to_string(), "input".to_string());
-                            handle.dispatch(id, payload.clone(), &md, Arc::clone(&stream));
-                        }
-                    }
-                    let drained = wait_until(
-                        || PART_COUNTER.load(Ordering::Acquire) == expected_runs,
-                        Duration::from_secs(120),
+                    fan_in(
+                        &handle,
+                        &instance_ids,
+                        msgs_per_operative,
+                        &[payload.as_slice()],
+                        None,
+                        &stream,
                     );
+                    let drained = PART_COUNTER.wait_for(expected_runs, Duration::from_secs(120));
                     elapsed += start.elapsed();
                     assert!(
                         drained,
                         "entity stress drain timed out: {} of {}",
-                        PART_COUNTER.load(Ordering::Acquire),
+                        PART_COUNTER.current(),
                         expected_runs
                     );
                 }
+                report(
+                    "entity_stress_8x4x8x20k",
+                    allocs_before,
+                    (iters as usize * expected_runs) as u64,
+                );
                 elapsed
             });
         });

@@ -3,9 +3,6 @@
 //! Measures the dynamic routing hot path (one `entity_key` + one DashMap
 //! lookup per input). Needs the `bench-internals` feature.
 
-use std::collections::HashMap;
-use std::os::unix::net::UnixStream;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -17,25 +14,9 @@ use flezha_runner::operative::StreamInstance;
 use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError};
 use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
 use flezha_runner::{__dispatch_internals as bi, OverflowPolicy, StreamOperative};
-use flz_transport::transport::FlezhaStream;
+use flz_core::bench_support::{fan_in, stream_pair, Settle};
 
-fn dummy_stream() -> Arc<FlezhaStream> {
-    let (a, _b) = UnixStream::pair().expect("UnixStream::pair");
-    Arc::new(FlezhaStream::Unix(a))
-}
-
-fn wait_until<F: Fn() -> bool>(predicate: F, timeout: Duration) -> bool {
-    let start = Instant::now();
-    while !predicate() {
-        if start.elapsed() > timeout {
-            return false;
-        }
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    true
-}
-
-static DYN_COUNTER: AtomicUsize = AtomicUsize::new(0);
+static DYN_COUNTER: Settle = Settle::new();
 
 /// Dynamic Procedure with eviction OFF (default `entity_idle_ttl == None`),
 /// so the steady-state bench measures routing only, not reaping.
@@ -58,7 +39,7 @@ impl Procedure for SteadyDynProcedure {
         _: StateHandle<'_, Self>,
         _: &mut ProcedureCtx<'_>,
     ) -> Result<(), ProcedureError> {
-        DYN_COUNTER.fetch_add(1, Ordering::Relaxed);
+        DYN_COUNTER.add(1);
         Ok(())
     }
 }
@@ -95,13 +76,15 @@ fn steady_state_bench(c: &mut Criterion) {
     let handle = bi::OperativeDispatchHandle {
         registry: Arc::clone(&registry),
     };
-    let stream = dummy_stream();
+    let stream = stream_pair().0;
 
     // Pre-build the per-key payloads (8-byte key prefix) so the measured
     // loop pays only dispatch cost, not formatting.
     let payloads: Vec<Vec<u8>> = (0..n_keys)
         .map(|i| format!("{:08}", i).into_bytes())
         .collect();
+    let feed: Vec<&[u8]> = payloads.iter().map(|payload| payload.as_slice()).collect();
+    let ids = ["steady-dyn-0".to_string()];
 
     let mut group = c.benchmark_group("dynamic_entity");
     group.measurement_time(Duration::from_secs(30));
@@ -111,22 +94,10 @@ fn steady_state_bench(c: &mut Criterion) {
         b.iter_custom(|iters| {
             let mut elapsed = Duration::ZERO;
             for _ in 0..iters {
-                DYN_COUNTER.store(0, Ordering::Release);
+                DYN_COUNTER.reset();
                 let start = Instant::now();
-                for i in 0..msgs {
-                    let mut md = HashMap::new();
-                    md.insert("channel".to_string(), "input".to_string());
-                    handle.dispatch(
-                        "steady-dyn-0",
-                        payloads[i % n_keys].clone(),
-                        &md,
-                        Arc::clone(&stream),
-                    );
-                }
-                let drained = wait_until(
-                    || DYN_COUNTER.load(Ordering::Acquire) == msgs,
-                    Duration::from_secs(60),
-                );
+                fan_in(&handle, &ids, msgs, &feed, None, &stream);
+                let drained = DYN_COUNTER.wait_for(msgs, Duration::from_secs(60));
                 elapsed += start.elapsed();
                 assert!(drained, "steady-state drain timed out");
             }

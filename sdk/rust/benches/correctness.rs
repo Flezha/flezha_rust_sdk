@@ -24,9 +24,6 @@
 //! `SINGLE_ENTITY_FLOOR_MSG_PER_SEC` in `docs/operations/benchmarking.md` as a
 //! diagnostic, not a hard gate.
 
-use std::collections::HashMap;
-use std::os::unix::net::UnixStream;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -38,30 +35,18 @@ use flezha_runner::operative::StreamInstance;
 use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError};
 use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
 use flezha_runner::{__dispatch_internals as bi, OverflowPolicy, StreamOperative};
-use flz_transport::transport::FlezhaStream;
+use flz_core::bench_support::{
+    allocations, drained_pair, fan_in, report, stream_pair, Counting, Settle,
+};
 
-// Helpers — duplicated from `dispatch.rs` per `operative-bench-harness/design.md`
-// Decision 10 (two copies of 5 lines beats a shared `common.rs` for trivial gain).
-
-fn dummy_stream() -> Arc<FlezhaStream> {
-    let (a, _b) = UnixStream::pair().expect("UnixStream::pair");
-    Arc::new(FlezhaStream::Unix(a))
-}
-
-fn wait_until<F: Fn() -> bool>(predicate: F, timeout: Duration) -> bool {
-    let start = Instant::now();
-    while !predicate() {
-        if start.elapsed() > timeout {
-            return false;
-        }
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    true
-}
+/// Allocation counting for rows 3 and 4: at most one `#[global_allocator]` per
+/// binary, so the static lives here and the machinery in `bench_support`.
+#[global_allocator]
+static GLOBAL: Counting = Counting;
 
 // ----- Single-entity microbench -----
 
-static SINGLE_COUNTER: AtomicUsize = AtomicUsize::new(0);
+static SINGLE_COUNTER: Settle = Settle::new();
 
 #[derive(Default)]
 struct SingleEntityProcedure;
@@ -82,7 +67,7 @@ impl Procedure for SingleEntityProcedure {
         _: StateHandle<'_, SingleEntityProcedure>,
         _: &mut ProcedureCtx<'_>,
     ) -> Result<(), ProcedureError> {
-        SINGLE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        SINGLE_COUNTER.add(1);
         Ok(())
     }
 }
@@ -116,8 +101,10 @@ fn throughput_single_entity(c: &mut Criterion) {
     let handle = bi::OperativeDispatchHandle {
         registry: Arc::clone(&registry),
     };
-    let stream = dummy_stream();
+    let stream = stream_pair().0;
     let payload: Vec<u8> = b"x".repeat(64);
+
+    let ids = ["single-entity-bench".to_string()];
 
     let mut group = c.benchmark_group("throughput_single_entity");
     group.measurement_time(Duration::from_secs(20));
@@ -127,27 +114,22 @@ fn throughput_single_entity(c: &mut Criterion) {
         b.iter_custom(|iters| {
             let mut elapsed = Duration::ZERO;
             for _ in 0..iters {
-                SINGLE_COUNTER.store(0, Ordering::Release);
+                SINGLE_COUNTER.reset();
                 let start = Instant::now();
-                for _ in 0..msgs_per_iter {
-                    let mut md = HashMap::new();
-                    md.insert("channel".to_string(), "input".to_string());
-                    handle.dispatch(
-                        "single-entity-bench",
-                        payload.clone(),
-                        &md,
-                        Arc::clone(&stream),
-                    );
-                }
-                let drained = wait_until(
-                    || SINGLE_COUNTER.load(Ordering::Acquire) == msgs_per_iter,
-                    Duration::from_secs(30),
+                fan_in(
+                    &handle,
+                    &ids,
+                    msgs_per_iter,
+                    &[payload.as_slice()],
+                    None,
+                    &stream,
                 );
+                let drained = SINGLE_COUNTER.wait_for(msgs_per_iter, Duration::from_secs(30));
                 elapsed += start.elapsed();
                 assert!(
                     drained,
                     "single-entity microbench drain timed out: {} of {}",
-                    SINGLE_COUNTER.load(Ordering::Acquire),
+                    SINGLE_COUNTER.current(),
                     msgs_per_iter
                 );
             }
@@ -159,7 +141,7 @@ fn throughput_single_entity(c: &mut Criterion) {
 
 // ----- Static-mode entity fan-out microbench (fan-out width 4) -----
 
-static FANOUT_COUNTER: AtomicUsize = AtomicUsize::new(0);
+static FANOUT_COUNTER: Settle = Settle::new();
 
 const FANOUT_KEYS: &[&str] = &["k0", "k1", "k2", "k3"];
 
@@ -189,7 +171,7 @@ impl Procedure for FanoutProcedure {
         _: StateHandle<'_, FanoutProcedure>,
         _: &mut ProcedureCtx<'_>,
     ) -> Result<(), ProcedureError> {
-        FANOUT_COUNTER.fetch_add(1, Ordering::Relaxed);
+        FANOUT_COUNTER.add(1);
         Ok(())
     }
 }
@@ -219,8 +201,10 @@ fn throughput_static_fanout(c: &mut Criterion) {
     let handle = bi::OperativeDispatchHandle {
         registry: Arc::clone(&registry),
     };
-    let stream = dummy_stream();
+    let stream = stream_pair().0;
     let payload: Vec<u8> = b"x".repeat(64);
+
+    let ids = ["static-fanout-bench".to_string()];
 
     let mut group = c.benchmark_group("throughput_static_fanout");
     group.measurement_time(Duration::from_secs(20));
@@ -230,27 +214,22 @@ fn throughput_static_fanout(c: &mut Criterion) {
         b.iter_custom(|iters| {
             let mut elapsed = Duration::ZERO;
             for _ in 0..iters {
-                FANOUT_COUNTER.store(0, Ordering::Release);
+                FANOUT_COUNTER.reset();
                 let start = Instant::now();
-                for _ in 0..inputs_per_iter {
-                    let mut md = HashMap::new();
-                    md.insert("channel".to_string(), "input".to_string());
-                    handle.dispatch(
-                        "static-fanout-bench",
-                        payload.clone(),
-                        &md,
-                        Arc::clone(&stream),
-                    );
-                }
-                let drained = wait_until(
-                    || FANOUT_COUNTER.load(Ordering::Acquire) == expected_runs,
-                    Duration::from_secs(30),
+                fan_in(
+                    &handle,
+                    &ids,
+                    inputs_per_iter,
+                    &[payload.as_slice()],
+                    None,
+                    &stream,
                 );
+                let drained = FANOUT_COUNTER.wait_for(expected_runs, Duration::from_secs(30));
                 elapsed += start.elapsed();
                 assert!(
                     drained,
                     "static-fanout microbench drain timed out: {} of {}",
-                    FANOUT_COUNTER.load(Ordering::Acquire),
+                    FANOUT_COUNTER.current(),
                     expected_runs
                 );
             }
@@ -271,8 +250,8 @@ use flezha_runner::entity::flusher::{SendError, SendFrameFn};
 use flezha_runner::entity::state_sink;
 use serde::{Deserialize, Serialize};
 
-static TIER_OFF_COUNTER: AtomicUsize = AtomicUsize::new(0);
-static TIER_ON_COUNTER: AtomicUsize = AtomicUsize::new(0);
+static TIER_OFF_COUNTER: Settle = Settle::new();
+static TIER_ON_COUNTER: Settle = Settle::new();
 
 #[derive(Serialize, Deserialize)]
 struct BumpChange;
@@ -306,7 +285,7 @@ macro_rules! tier_bench_procedure {
             ) -> Result<(), ProcedureError> {
                 state.apply(BumpChange);
                 ctx.emit_keyed::<Vec<u8>>("k".to_string(), input)?;
-                $counter.fetch_add(1, Ordering::Relaxed);
+                $counter.add(1);
                 Ok(())
             }
         }
@@ -347,18 +326,6 @@ impl StreamOperative for TierOnOperative {
     }
 }
 
-/// Socketpair whose read half is drained by a background thread, so the
-/// tier-off variant's primary-stream emits never block on a full buffer.
-fn drained_stream() -> Arc<FlezhaStream> {
-    let (a, mut b) = UnixStream::pair().expect("UnixStream::pair");
-    std::thread::spawn(move || {
-        use std::io::Read;
-        let mut buf = [0u8; 65536];
-        while b.read(&mut buf).map(|n| n > 0).unwrap_or(false) {}
-    });
-    Arc::new(FlezhaStream::Unix(a))
-}
-
 fn throughput_effectively_once_tiers(c: &mut Criterion) {
     let msgs_per_iter = 50_000usize;
 
@@ -387,7 +354,7 @@ fn throughput_effectively_once_tiers(c: &mut Criterion) {
     let handle = bi::OperativeDispatchHandle {
         registry: Arc::clone(&registry),
     };
-    let stream = drained_stream();
+    let stream = drained_pair();
     let payload: Vec<u8> = b"x".repeat(64);
 
     let mut group = c.benchmark_group("throughput_effectively_once_tiers");
@@ -399,30 +366,36 @@ fn throughput_effectively_once_tiers(c: &mut Criterion) {
         ("tier_off", "tier-off-bench", &TIER_OFF_COUNTER),
         ("tier_on", "tier-on-bench", &TIER_ON_COUNTER),
     ] {
+        let ids = [instance_id.to_string()];
         group.bench_function(bench_name, |b| {
             b.iter_custom(|iters| {
+                let allocs_before = allocations();
                 let mut elapsed = Duration::ZERO;
                 for _ in 0..iters {
-                    counter.store(0, Ordering::Release);
+                    counter.reset();
                     let start = Instant::now();
-                    for i in 0..msgs_per_iter {
-                        let mut md = HashMap::new();
-                        md.insert("channel".to_string(), "input".to_string());
-                        md.insert("flz.offset".to_string(), i.to_string());
-                        handle.dispatch(instance_id, payload.clone(), &md, Arc::clone(&stream));
-                    }
-                    let drained = wait_until(
-                        || counter.load(Ordering::Acquire) == msgs_per_iter,
-                        Duration::from_secs(30),
+                    fan_in(
+                        &handle,
+                        &ids,
+                        msgs_per_iter,
+                        &[payload.as_slice()],
+                        Some("flz.offset"),
+                        &stream,
                     );
+                    let drained = counter.wait_for(msgs_per_iter, Duration::from_secs(30));
                     elapsed += start.elapsed();
                     assert!(
                         drained,
                         "{bench_name} drain timed out: {} of {}",
-                        counter.load(Ordering::Acquire),
+                        counter.current(),
                         msgs_per_iter
                     );
                 }
+                report(
+                    bench_name,
+                    allocs_before,
+                    (iters as usize * msgs_per_iter) as u64,
+                );
                 elapsed
             });
         });

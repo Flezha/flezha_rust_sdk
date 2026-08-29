@@ -21,9 +21,10 @@ doctest = false
 [features]
 default = []
 # Exposes internal dispatch types (mailbox, dispatch handle, registry
-# constructors) for the crate's own benches/tests. NOT a stable public API.
-# Only enabled by the `[[bench]]` targets via `required-features`.
-bench-internals = []
+# constructors) for the crate's own benches/tests, and the shared bench
+# scaffolding in `flz_core::bench_support`. NOT a stable public API.
+# Only enabled by the `[[bench]]` and `[[test]]` targets via `required-features`.
+bench-internals = ["flz_core/bench-internals"]
 # Exposes `flezha_runner::testing::ProcedureTestHarness` for downstream
 # crates that want to write replay-equality tests. Test code in this crate
 # also compiles the surface under `cfg(test)` regardless of the feature.
@@ -150,6 +151,18 @@ required-features = ["bench-internals"]
 
 [[test]]
 name = "partition_guard"
+required-features = ["bench-internals"]
+
+[[test]]
+name = "runner_lifecycle"
+required-features = ["bench-internals"]
+
+[[test]]
+name = "nonparking_backpressure"
+required-features = ["bench-internals"]
+
+[[test]]
+name = "nonparking_holdback_bound"
 required-features = ["bench-internals"]
 
 [lints]

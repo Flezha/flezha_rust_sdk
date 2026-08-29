@@ -5,7 +5,6 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
-use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -20,8 +19,7 @@ use flz_transport::transport::FlezhaStream;
 
 /// A throwaway secondary stream for dispatch calls that never write back.
 pub fn dummy_stream() -> Arc<FlezhaStream> {
-    let (a, _b) = UnixStream::pair().expect("UnixStream::pair");
-    Arc::new(FlezhaStream::Unix(a))
+    flz_core::bench_support::stream_pair().0
 }
 
 /// Spin-wait until `predicate` holds, or `timeout` elapses. The one polling
