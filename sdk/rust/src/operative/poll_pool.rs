@@ -257,7 +257,7 @@ mod tests {
             _: &mut ProcedureCtx<'_>,
         ) -> Result<(), ProcedureError> {
             while input == 0 && GATE_HELD.load(Ordering::Acquire) {
-                std::thread::sleep(Duration::from_millis(5));
+                std::thread::yield_now();
             }
             SERVED.fetch_add(1, Ordering::Release);
             Ok(())

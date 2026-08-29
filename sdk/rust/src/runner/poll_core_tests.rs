@@ -45,9 +45,19 @@ pub(crate) mod fixtures {
         })
     }
 
+    /// Occupy the calling thread for `span` — a stand-in for work — without
+    /// yielding it to the scheduler the way a sleep would.
+    pub(crate) fn hold_for(span: std::time::Duration) {
+        let started = std::time::Instant::now();
+        while started.elapsed() < span {
+            std::hint::spin_loop();
+        }
+    }
+
     /// Drive `done` until it holds, failing the test at a 10 s deadline with
     /// `what` naming the condition. Shared by the engine's own tests and the
-    /// poll pool's.
+    /// poll pool's. The one polling loop in the crate's own tests; its
+    /// interval is the one deliberate sleep.
     pub(crate) fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while !done() {
@@ -81,7 +91,7 @@ mod tests {
     use flz_core::restore::RestoreInitPayload;
     use flz_transport::transport::FlezhaStream;
 
-    use super::fixtures::{build_slot_of, payload, unix_stream, wait_until};
+    use super::fixtures::{build_slot_of, hold_for, payload, unix_stream, wait_until};
     use crate::channel::ChannelBuilder;
     use crate::entity::timer::{TimerKind, TimerOp};
     use crate::entity::{EntityItem, EntitySlot};
@@ -318,11 +328,9 @@ mod tests {
             }
         }
 
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while total.load(Ordering::Relaxed) < PER_ENTITY * 2 {
-            assert!(Instant::now() < deadline, "activations did not all arrive");
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        wait_until("every activation to arrive", || {
+            total.load(Ordering::Relaxed) >= PER_ENTITY * 2
+        });
         core.shutdown();
         for w in workers {
             w.join().unwrap();
@@ -536,7 +544,10 @@ mod tests {
         );
 
         let old = queue_and_hand_out(&core, &first, &stream, 1);
-        std::thread::sleep(Duration::from_millis(60));
+        // The first handout ages on the clock before the second is issued.
+        wait_until("the first handout to age", || {
+            core.outstanding_oldest_age_ms() >= 60
+        });
         let young = queue_and_hand_out(&core, &second, &stream, 1);
 
         assert_eq!(core.outstanding_count(), 2);
@@ -711,19 +722,14 @@ mod tests {
             let core = Arc::clone(&core);
             std::thread::spawn(move || core.poll(Duration::from_secs(30)))
         };
-        // Let the poller reach its wait, then arm an overdue deadline.
-        std::thread::sleep(Duration::from_millis(50));
+        // The poller is inside `poll` before the overdue deadline is armed.
+        wait_until("the poller to enter poll", || core.pollers_inside() >= 1);
         let started = Instant::now();
         arm_due_timer(&core, &slot, flz_core::util::wall_now_ms() - 1);
 
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while core.timers_armed() > 0 {
-            assert!(
-                Instant::now() < deadline,
-                "a blocked poller never promoted the entry"
-            );
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        wait_until("a blocked poller to promote the entry", || {
+            core.timers_armed() == 0
+        });
         assert!(
             started.elapsed() < Duration::from_secs(5),
             "the wait was not shortened to the nearest due entry"
@@ -966,6 +972,8 @@ mod tests {
             let core = Arc::clone(&core);
             std::thread::spawn(move || core.wait_starvation(Duration::from_secs(5)))
         };
+        // No state says a supervisor has reached its wait; this orders the two
+        // threads for the wake path rather than the immediate one.
         std::thread::sleep(Duration::from_millis(50));
 
         let started = Instant::now();
@@ -999,6 +1007,7 @@ mod tests {
             let core = Arc::clone(&core);
             std::thread::spawn(move || core.wait_starvation(Duration::from_secs(5)))
         };
+        // As above: no observable wait state for a supervisor.
         std::thread::sleep(Duration::from_millis(50));
 
         let (reply, _rx) = crossbeam::channel::bounded(1);
@@ -1059,7 +1068,7 @@ mod tests {
             let core = Arc::clone(&core);
             std::thread::spawn(move || core.poll(Duration::from_secs(2)))
         };
-        std::thread::sleep(Duration::from_millis(50));
+        wait_until("the poller to enter poll", || core.pollers_inside() >= 1);
         assert!(slot.mailbox.try_push(payload(0, &stream)).is_ok());
         assert!(slot.mailbox.try_mark_inflight());
         core.schedule(&slot);
@@ -1101,7 +1110,7 @@ mod tests {
                     for slot in &slots {
                         crate::runner::poll_core_tests::fixtures::push_input(&core, slot, 1);
                     }
-                    std::thread::sleep(Duration::from_millis(1));
+                    hold_for(Duration::from_millis(1));
                 }
             })
         };
@@ -1113,7 +1122,8 @@ mod tests {
             std::thread::spawn(move || {
                 while !stop.load(Ordering::Acquire) {
                     if let Polled::Activation(act) = core.poll(Duration::from_millis(20)) {
-                        std::thread::sleep(Duration::from_millis(5));
+                        // "User code" running: the worker is outside `poll`.
+                        hold_for(Duration::from_millis(5));
                         core.complete(act.token);
                     }
                 }

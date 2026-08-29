@@ -11,7 +11,7 @@ mod common;
 
 use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use common::*;
 use flezha_runner::channel::ChannelBuilder;
@@ -456,7 +456,10 @@ fn a_quiet_entity_never_fires_its_event_time_timer() {
     ));
 
     // Wall time passes; nothing arrives.
-    std::thread::sleep(Duration::from_millis(200));
+    assert!(stays_quiet(
+        || order_snapshot().len() > 1,
+        Duration::from_millis(200)
+    ));
 
     assert_eq!(
         take_order(),
@@ -491,9 +494,12 @@ fn a_processing_time_timer_fires_from_the_wake_list_with_its_scheduled_time() {
         wait_until(|| !firings_snapshot().is_empty(), Duration::from_secs(5)),
         "the deadline must fire"
     );
-    // Give a stray second firing a chance to appear before asserting there is
-    // none — a per-Entity timer must not fan out.
-    std::thread::sleep(Duration::from_millis(100));
+    // A stray second firing gets its chance to appear and does not — a
+    // per-Entity timer must not fan out.
+    assert!(stays_quiet(
+        || firings_snapshot().len() > 1,
+        Duration::from_millis(100)
+    ));
     let fired = take_firings();
     assert_eq!(fired.len(), 1, "one Entity, one timer, one firing");
     let (key, kind, fired_at) = &fired[0];
@@ -549,9 +555,11 @@ fn a_firing_into_a_saturated_consumer_waits_for_room_without_holding_a_poller() 
     // Held, not delivered and not lost: with no room the promotion pass keeps
     // re-recording the entry. (The retired behaviour ran the round inline here
     // and the firing landed with the mailbox still full.)
-    std::thread::sleep(Duration::from_millis(200));
     assert!(
-        firings_snapshot().is_empty(),
+        stays_quiet(
+            || !firings_snapshot().is_empty(),
+            Duration::from_millis(200)
+        ),
         "a firing must not be delivered into a mailbox with no room"
     );
     assert!(slot.mailbox.is_full(), "the mailbox is still saturated");
@@ -574,7 +582,11 @@ fn a_firing_into_a_saturated_consumer_waits_for_room_without_holding_a_poller() 
 
     // The two queued inputs re-armed the deadline; let it fire before the
     // next case counts firings.
-    std::thread::sleep(Duration::from_millis(TIMEOUT_MS * 3));
+    take_firings();
+    assert!(wait_until(
+        || !firings_snapshot().is_empty(),
+        Duration::from_millis(TIMEOUT_MS * 3)
+    ));
     take_firings();
     state_sink::set_secondary_stream(None);
 }
@@ -999,11 +1011,14 @@ fn an_idle_evicted_entity_loses_its_timers() {
 
     // Sweep directly rather than waiting on the reaper's cadence: the seam
     // under test is what the sweep does, not when it decides to run.
-    std::thread::sleep(Duration::from_millis(20));
-    registry.reap_sweep(Duration::from_millis(10));
-
     assert!(
-        registry.entities.get("gone").is_none(),
+        wait_until(
+            || {
+                registry.reap_sweep(Duration::from_millis(1));
+                registry.entities.get("gone").is_none()
+            },
+            Duration::from_secs(5)
+        ),
         "the Entity is evicted"
     );
     assert_eq!(
@@ -1120,7 +1135,11 @@ impl ExclusionProc {
         if INSIDE.fetch_add(1, Ordering::SeqCst) != 0 {
             OVERLAPS.fetch_add(1, Ordering::SeqCst);
         }
-        std::thread::sleep(Duration::from_millis(5));
+        // Hold the section long enough for a concurrent entry to overlap it.
+        let held = Instant::now();
+        while held.elapsed() < Duration::from_millis(5) {
+            std::hint::spin_loop();
+        }
     }
     fn leave() {
         INSIDE.fetch_sub(1, Ordering::SeqCst);

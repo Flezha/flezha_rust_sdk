@@ -77,6 +77,7 @@ dyn_procedure!(TtlProcedure, TtlOperative, "ttl_procedure", "ttl_operative"
 );
 
 static SLEEP_RUN_STARTED: AtomicBool = AtomicBool::new(false);
+static SLEEP_RUN_RELEASE: AtomicBool = AtomicBool::new(false);
 static SLEEP_RUN_DONE: AtomicBool = AtomicBool::new(false);
 dyn_procedure_base!(
     SleepProcedure,
@@ -91,8 +92,13 @@ dyn_procedure_base!(
             _: StateHandle<'_, Self>,
             _: &mut ProcedureCtx<'_>,
         ) -> Result<(), ProcedureError> {
+            // Held until the test releases it: a run that lasts exactly as
+            // long as the sweep it must survive.
             SLEEP_RUN_STARTED.store(true, Ordering::Release);
-            thread::sleep(Duration::from_millis(500));
+            common::wait_until(
+                || SLEEP_RUN_RELEASE.load(Ordering::Acquire),
+                Duration::from_secs(30),
+            );
             SLEEP_RUN_DONE.store(true, Ordering::Release);
             Ok(())
         }
@@ -216,6 +222,7 @@ fn idle_entity_is_reaped() {
 #[test]
 fn reaper_skips_entity_with_active_run() {
     SLEEP_RUN_STARTED.store(false, Ordering::Release);
+    SLEEP_RUN_RELEASE.store(false, Ordering::Release);
     SLEEP_RUN_DONE.store(false, Ordering::Release);
     let (handle, instance) = setup::<SleepOperative>("sleep-1");
     let stream = dummy_stream();
@@ -236,6 +243,7 @@ fn reaper_skips_entity_with_active_run() {
     assert_eq!(evicted(&reg), 0);
 
     // Once the run releases the gate, the next sweep evicts.
+    SLEEP_RUN_RELEASE.store(true, Ordering::Release);
     assert!(wait_until(
         || SLEEP_RUN_DONE.load(Ordering::Acquire),
         Duration::from_secs(10)

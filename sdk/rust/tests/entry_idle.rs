@@ -14,7 +14,7 @@ use flezha_runner::channel::ChannelBuilder;
 use flezha_runner::{Flezha, IdleObserver, StreamOperative};
 
 mod common;
-use common::{dispatch_input, dummy_stream, setup, wait_until};
+use common::{dispatch_input, dummy_stream, setup, stays_quiet, wait_until};
 
 /// Short enough to keep the suite quick, long enough that the derived
 /// 250 ms tick samples an episode several times before it is asserted on.
@@ -114,7 +114,11 @@ fn a_delivery_stamps_its_channel_and_a_channel_with_no_frame_reads_absent() {
     let first = runner.last_entry_delivery("stamp_in").expect("stamped");
     assert!(first >= before, "the stamp is at or after the delivery");
 
-    std::thread::sleep(Duration::from_millis(20));
+    // The clock has moved past the first stamp before the second delivery.
+    assert!(wait_until(
+        || std::time::Instant::now() > first,
+        Duration::from_secs(1)
+    ));
     dispatch_input(
         &handle,
         "entry-idle-stamp-1",
@@ -139,10 +143,8 @@ fn an_episode_fires_once_then_a_resume_re_arms_the_next_one() {
 
     // Cold start: no frame has ever arrived, so however long the tick runs,
     // there is no episode to report.
-    std::thread::sleep(THRESHOLD * 3);
-    assert_eq!(
-        counts.idle.load(Ordering::SeqCst),
-        0,
+    assert!(
+        stays_quiet(|| counts.idle.load(Ordering::SeqCst) > 0, THRESHOLD * 3),
         "cold start never fires"
     );
 
@@ -163,10 +165,8 @@ fn an_episode_fires_once_then_a_resume_re_arms_the_next_one() {
         "the reported gap exceeds the threshold: {gap:?}"
     );
 
-    std::thread::sleep(THRESHOLD * 3);
-    assert_eq!(
-        counts.idle.load(Ordering::SeqCst),
-        1,
+    assert!(
+        stays_quiet(|| counts.idle.load(Ordering::SeqCst) > 1, THRESHOLD * 3),
         "latched — the episode is reported once, not once per tick"
     );
     assert_eq!(counts.resumed.load(Ordering::SeqCst), 0);

@@ -22,7 +22,7 @@ use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock}
 use flezha_runner::{__dispatch_internals as bi, OverflowPolicy, StreamOperative};
 
 mod common;
-use common::{dispatch_input, dispatch_marked, dummy_stream, setup, wait_until};
+use common::{dispatch_input, dispatch_marked, dummy_stream, setup, stays_quiet, wait_until};
 
 // ----- Per-entity ordering (single mode) -----
 
@@ -150,9 +150,10 @@ fn same_entity_never_runs_concurrently() {
         t.join().unwrap();
     }
 
-    // Wait for drain.
+    // Wait for drain: nothing running and nothing queued.
+    let slot = Arc::clone(&registry_instance(&registry, "conc-instance").entities[0][0]);
     assert!(wait_until(
-        || APPEND_CONCURRENT.load(Ordering::Acquire) == 0 && workers_idle(),
+        || APPEND_CONCURRENT.load(Ordering::Acquire) == 0 && slot.mailbox.is_empty(),
         Duration::from_secs(10)
     ));
 
@@ -163,11 +164,8 @@ fn same_entity_never_runs_concurrently() {
     );
 }
 
-fn workers_idle() -> bool {
-    // Heuristic: short sleep then assume idle. A round self-completes when
-    // the mailbox empties; the poll core exposes no "idle" predicate.
-    std::thread::sleep(Duration::from_millis(50));
-    true
+fn registry_instance(registry: &Arc<OperativeRegistry>, id: &str) -> Arc<StreamInstance> {
+    registry.get_stream(id).expect("registered instance")
 }
 
 // ----- Parallel entities of the same procedure -----
@@ -678,7 +676,11 @@ fn a_replay_slice_member_is_never_shed_by_a_dropping_channel() {
         })
     };
 
-    std::thread::sleep(Duration::from_millis(200));
+    // The member is parked on the full mailbox once its push is counted blocked.
+    assert!(wait_until(
+        || slot.counters().pushes_blocked_total.load(Ordering::Relaxed) >= 1,
+        Duration::from_secs(5)
+    ));
     assert!(!member.is_finished(), "the member waits for room");
     assert_eq!(
         slot.counters().drops_newest_total.load(Ordering::Relaxed),
@@ -779,20 +781,28 @@ fn drop_oldest_stress_admitted_never_below_processed() {
             t.join().unwrap();
         }
 
-        // Let the queue drain and the dispatch count settle, so `remaining` is
-        // really zero rather than "not yet served".
+        // Let the queue drain and the last admitted item be served, so
+        // `remaining` is really zero rather than "not yet served": the empty
+        // mailbox is the settle, the count going quiet after it is the proof.
         let slot = Arc::clone(&instance.entities[0][0]);
         assert!(
-            wait_until(
-                || {
-                    let seen = DROP_OLDEST_PROCESSED.load(Ordering::Acquire);
-                    std::thread::sleep(Duration::from_millis(50));
-                    slot.mailbox.is_empty() && DROP_OLDEST_PROCESSED.load(Ordering::Acquire) == seen
-                },
-                Duration::from_secs(60)
-            ),
+            wait_until(|| slot.mailbox.is_empty(), Duration::from_secs(60)),
             "round {round}: the mailbox never drained"
         );
+        let drained = Instant::now();
+        loop {
+            let seen = DROP_OLDEST_PROCESSED.load(Ordering::Acquire);
+            if stays_quiet(
+                || DROP_OLDEST_PROCESSED.load(Ordering::Acquire) != seen,
+                Duration::from_millis(50),
+            ) {
+                break;
+            }
+            assert!(
+                drained.elapsed() < Duration::from_secs(60),
+                "round {round}: the dispatch count never settled"
+            );
+        }
 
         let counters = slot.counters();
         let admitted = counters.pushes_total.load(Ordering::Relaxed) as usize;
@@ -1150,8 +1160,18 @@ fn entry_drop_nothing_parks_reader_until_pool_drains<A: StreamOperative>(tag: &s
     });
 
     // The third A push finds the cap-2 mailbox full: the reader parks there,
-    // runs nothing, and B's frame behind it has not been dispatched.
-    std::thread::sleep(Duration::from_millis(300));
+    // runs nothing, and B's frame behind it has not been dispatched. Two
+    // counted wait iterations (the park is bounded at 50 ms) prove it stayed.
+    assert!(wait_until(
+        || {
+            slot_a
+                .counters()
+                .pushes_blocked_total
+                .load(Ordering::Relaxed)
+                >= 2
+        },
+        Duration::from_secs(5)
+    ));
     assert!(
         !reader_completed.load(Ordering::Acquire),
         "the wire reader must park on A's saturated Block mailbox, not drain it inline"
@@ -1397,7 +1417,12 @@ fn procedure_panic_does_not_wedge_the_entity() {
                     "panic-instance/panic_procedure/#{nonce}"
                 ));
             }
-            std::thread::sleep(Duration::from_millis(25));
+            if wait_until(
+                || PANIC_AFTER.load(Ordering::Acquire) == 1,
+                Duration::from_millis(25),
+            ) {
+                break;
+            }
         }
     });
     let (handle, instance) = setup::<PanicOperative>("panic-instance");
@@ -1556,27 +1581,30 @@ fn parse_frames(mut bytes: &[u8]) -> Vec<WireFrame> {
 /// after `timeout`).
 fn read_frames(sock: &mut UnixStream, expected: usize, timeout: Duration) -> Vec<WireFrame> {
     let deadline = Instant::now() + timeout;
-    let mut buf = Vec::new();
-    loop {
-        let mut tmp = [0u8; 4096];
-        match sock.read(&mut tmp) {
-            Ok(0) => {}
-            Ok(n) => buf.extend_from_slice(&tmp[..n]),
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-            Err(e) => panic!("frame read failed: {e}"),
-        }
-        let frames = parse_frames(&buf);
-        if frames.len() >= expected {
-            return frames;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "timed out with {} of {} frames",
-            frames.len(),
-            expected
-        );
-        std::thread::sleep(Duration::from_millis(1));
-    }
+    let buf = Vec::new();
+    let buf = std::cell::RefCell::new(buf);
+    let sock = std::cell::RefCell::new(sock);
+    let arrived = wait_until(
+        || {
+            let mut tmp = [0u8; 4096];
+            match sock.borrow_mut().read(&mut tmp) {
+                Ok(0) => {}
+                Ok(n) => buf.borrow_mut().extend_from_slice(&tmp[..n]),
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(e) => panic!("frame read failed: {e}"),
+            }
+            parse_frames(&buf.borrow()).len() >= expected
+        },
+        deadline.saturating_duration_since(Instant::now()),
+    );
+    let frames = parse_frames(&buf.borrow());
+    assert!(
+        arrived,
+        "timed out with {} of {} frames",
+        frames.len(),
+        expected
+    );
+    frames
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -1924,15 +1952,26 @@ fn tier_emits_ride_the_state_sink_as_one_effect_record() {
     assert_eq!(body.outputs[0].key, "BTC/1m");
     assert_eq!(body.outputs[0].payload, b"BTC/1m".to_vec());
 
-    // And the primary stream carried nothing.
-    std::thread::sleep(Duration::from_millis(50));
+    // And the primary stream carried nothing: a blocking read with a deadline on it
+    // times out rather than yielding a frame.
+    observer.set_nonblocking(false).expect("observer blocking");
+    observer
+        .set_read_timeout(Some(Duration::from_millis(50)))
+        .expect("observer read timeout");
     let mut buf = Vec::new();
     let mut tmp = [0u8; 4096];
     loop {
         match observer.read(&mut tmp) {
             Ok(0) => break,
             Ok(n) => buf.extend_from_slice(&tmp[..n]),
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                break
+            }
             Err(e) => panic!("observer read failed: {e}"),
         }
     }
@@ -1978,8 +2017,12 @@ fn tier_replay_skips_inputs_at_or_below_the_consumed_floor() {
         "exactly the above-floor input must produce an effect record"
     );
 
-    // A linger window proves no late frames appear for the skipped offsets.
-    std::thread::sleep(Duration::from_millis(50));
+    // No late frame appears for the skipped offsets.
+    let seen = TIER_SINK_FRAMES.lock().unwrap().len();
+    assert!(stays_quiet(
+        || TIER_SINK_FRAMES.lock().unwrap().len() > seen,
+        Duration::from_millis(50)
+    ));
     let effect_count = TIER_SINK_FRAMES
         .lock()
         .unwrap()
@@ -2190,7 +2233,10 @@ fn a_replayed_slice_dispatches_in_event_time_order() {
 
     // Held, not dispatched: the slice is still open, so ordering it would be
     // guessing.
-    std::thread::sleep(Duration::from_millis(100));
+    assert!(stays_quiet(
+        || !REPLAY_OBSERVED.lock().unwrap().is_empty(),
+        Duration::from_millis(100)
+    ));
     assert!(
         REPLAY_OBSERVED.lock().unwrap().is_empty(),
         "an open slice must not dispatch"

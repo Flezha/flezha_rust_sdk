@@ -1222,7 +1222,7 @@ mod tests {
         ) -> Result<(), ProcedureError> {
             STAGE0_RAN.store(true, Ordering::SeqCst);
             while !STAGE0_RELEASE.load(Ordering::SeqCst) {
-                std::thread::sleep(Duration::from_millis(5));
+                std::thread::yield_now();
             }
             ctx.emit(format!("reserved:{input}"))?;
             Ok(())
@@ -2711,7 +2711,7 @@ mod tests {
         STAGE0_RELEASE.store(false, Ordering::SeqCst);
         assert!(node.start_workflow("test-stop-saga".into(), "stop-saga".into(), "W".into()));
         while !STAGE0_RAN.load(Ordering::SeqCst) {
-            std::thread::sleep(Duration::from_millis(5));
+            std::thread::yield_now();
         }
         node.get_workflow("stop-saga")
             .expect("live instance accepts cancel")
@@ -3756,7 +3756,7 @@ mod tests {
             .expect("live instance accepts cancel");
         let stopper = std::thread::spawn(move || {
             while ODD_ATTEMPTS.load(Ordering::SeqCst) == 0 {
-                std::thread::sleep(Duration::from_millis(5));
+                std::thread::yield_now();
             }
             stop_target.request_cancel();
         });

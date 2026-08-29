@@ -24,7 +24,9 @@ pub fn dummy_stream() -> Arc<FlezhaStream> {
     Arc::new(FlezhaStream::Unix(a))
 }
 
-/// Spin-wait until `predicate` holds, or `timeout` elapses.
+/// Spin-wait until `predicate` holds, or `timeout` elapses. The one polling
+/// loop in these tests: a state read is the settle signal of last resort, and
+/// its interval is the suite's one deliberate sleep.
 pub fn wait_until<F: Fn() -> bool>(predicate: F, timeout: Duration) -> bool {
     let start = Instant::now();
     while !predicate() {
@@ -34,6 +36,12 @@ pub fn wait_until<F: Fn() -> bool>(predicate: F, timeout: Duration) -> bool {
         std::thread::sleep(Duration::from_millis(1));
     }
     true
+}
+
+/// `true` when `happened` never holds inside `window` — the time-boxed negative
+/// check that follows a positive settle, returning early the moment it fails.
+pub fn stays_quiet<F: Fn() -> bool>(happened: F, window: Duration) -> bool {
+    !wait_until(happened, window)
 }
 
 /// Build + register a single StreamOperative instance, returning a dispatch handle

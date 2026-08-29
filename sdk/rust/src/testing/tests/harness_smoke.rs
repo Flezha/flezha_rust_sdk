@@ -133,9 +133,12 @@ impl Procedure for NoisyProcedure {
 fn non_deterministic_procedure_replay_equals_fails() {
     let mut harness = ProcedureTestHarness::<NoisyProcedure>::new();
     harness.apply_inputs(vec![(); 4]);
-    // Sleep so the replay's `SystemTime::now()` calls observe distinct
-    // sub-second nanos values from the original run.
-    std::thread::sleep(std::time::Duration::from_millis(2));
+    // The replay's `SystemTime::now()` calls must observe a clock that has
+    // moved since the original run.
+    let recorded_at = std::time::SystemTime::now();
+    while std::time::SystemTime::now() == recorded_at {
+        std::hint::spin_loop();
+    }
     let result = harness.replay_equals();
     assert!(
         result.is_err(),

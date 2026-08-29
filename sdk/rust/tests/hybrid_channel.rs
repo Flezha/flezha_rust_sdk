@@ -26,7 +26,7 @@ use flz_transport::transport::FlezhaStream;
 // ---------- shared scaffolding ----------
 
 mod common;
-use common::{setup, wait_until};
+use common::{setup, stays_quiet, wait_until};
 
 type ReceivedFrame = (String, Vec<u8>, HashMap<String, String>);
 
@@ -476,9 +476,11 @@ fn emit_with_meta_on_pure_inter_procedure_channel_is_rejected() {
         pure_consumer_observed().lock().unwrap().is_empty(),
         "consumer must not see the value when emit_with_meta rejects"
     );
-    std::thread::sleep(Duration::from_millis(50));
     assert!(
-        received.lock().unwrap().is_empty(),
+        stays_quiet(
+            || !received.lock().unwrap().is_empty(),
+            Duration::from_millis(50)
+        ),
         "no plugin frame should have been written"
     );
 }

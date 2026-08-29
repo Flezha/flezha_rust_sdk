@@ -15,8 +15,10 @@ use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
+mod common;
+use common::{stays_quiet, wait_until};
 use flezha_runner::state::{NoChange, RestoreInitPayload, WallClock};
 use flezha_runner::transport::FlezhaStream;
 use flezha_runner::{
@@ -137,14 +139,16 @@ fn await_captured<T>(
     what: &str,
     probe: impl Fn(&[CapturedFrame]) -> Option<T>,
 ) -> T {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        if let Some(found) = probe(&frames.lock().unwrap()) {
-            return found;
-        }
-        assert!(Instant::now() < deadline, "timed out waiting for {what}");
-        thread::sleep(Duration::from_millis(20));
-    }
+    let found = std::cell::RefCell::new(None);
+    let arrived = wait_until(
+        || {
+            *found.borrow_mut() = probe(&frames.lock().unwrap());
+            found.borrow().is_some()
+        },
+        Duration::from_secs(5),
+    );
+    assert!(arrived, "timed out waiting for {what}");
+    found.into_inner().expect("probed value")
 }
 
 /// The `factory_ids` list of the `index`-th connect init frame (0-based),
@@ -379,9 +383,11 @@ fn runner_lifecycle_and_singleton_guard() {
     // -- await_termination() unblocks when the owning handle drops --
     let observer = Flezha::current_runner().expect("active");
     let waiter = thread::spawn(move || observer.await_termination());
-    // Give the waiter time to actually block before we drop the owner.
-    thread::sleep(Duration::from_millis(100));
-    assert!(!waiter.is_finished(), "await_termination returned early");
+    // The waiter blocks for as long as the owner lives.
+    assert!(
+        stays_quiet(|| waiter.is_finished(), Duration::from_millis(100)),
+        "await_termination returned early"
+    );
     drop(runner);
     waiter
         .join()
