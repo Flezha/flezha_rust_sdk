@@ -6,16 +6,17 @@
 //! down takes, and whether an unrelated instance beside it still completes at
 //! its unloaded latency.
 //!
-//! Ignored by default — it spawns thousands of threads and takes tens of
-//! seconds. One configuration per process, all of it read from the
+//! A `harness = false` bench, not a test: it spawns thousands of threads and
+//! takes tens of seconds, and it reports numbers rather than asserting a
+//! contract. One configuration per process, all of it read from the
 //! environment, so a run is reproducible and every delta is measured against a
 //! process that has done nothing else:
 //!
 //! ```text
 //! FLEZHA_SCALE_N=10000 FLEZHA_SCALE_SHAPE=step \
 //!   FLEZHA_WORKFLOW_DRIVER_STACK_KIB=256 \
-//!   cargo test -p flezha_runner --features bench-internals --release \
-//!     --test workflow_scaling -- --ignored --nocapture
+//!   cargo bench -p flezha_runner --features bench-internals \
+//!     --bench workflow_scaling
 //! ```
 //!
 //! Classes are declared through the ordinary authoring path
@@ -36,6 +37,9 @@
 //!   thread alone, which is what isolates the per-driver number the gate
 //!   criterion is stated in.
 
+// The suite's one polling primitive, reached from `benches/` rather than
+// copied: charter §9 allows exactly one `wait_until` per layer.
+#[path = "../tests/common/mod.rs"]
 mod common;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -374,8 +378,10 @@ fn quiet_cpu_pct(window: Duration) -> f64 {
     100.0 * cpu_ms().saturating_sub(before) as f64 / elapsed.as_millis().max(1) as f64
 }
 
-#[test]
-#[ignore = "instance-count scaling probe: thousands of threads, tens of seconds"]
+fn main() {
+    workflow_instance_scaling_probe();
+}
+
 fn workflow_instance_scaling_probe() {
     let n = env_parse(ENV_N, 1_000usize);
     let shape = Shape::from_env();

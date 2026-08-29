@@ -1,11 +1,12 @@
-//! `DropNothing` backpressure that withholds work instead of holding a thread.
+//! `DropNothing` withholds work; it never holds a thread. A push into a full
+//! consumer is held in the producing Entity's holdback and that Entity is
+//! handed no further work, so the invariant is that nothing is discarded AND
+//! no worker parks.
 //!
 //! Its own test binary because the three things it pins are process-wide and
 //! read once: the worker pool's size AND ceiling, and the jobs-underway cap.
-//! Pinning the ceiling at 1 is the whole point — it reproduces the host shape
-//! the deleted inline-serve hook existed for and that every C-ABI host has
-//! always had: one thread, no supervisor rescue available. That probe
-//! delivered 0 of 20 and wedged for 15 s before this change.
+//! Pinning the ceiling at 1 is the whole point — it is the host shape every
+//! C-ABI host has: one thread, with no supervisor rescue available.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;

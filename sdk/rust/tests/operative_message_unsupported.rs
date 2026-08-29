@@ -1,27 +1,29 @@
-//! Section 5.4 — regression test: `OperativeMessage` always returns the
-//! canonical "unsupported" error per `operative-mvp-rust/design.md` Decision 9.
-//!
-//! `operative-message-handlers` re-enables per-Procedure `handle_message`. Until
-//! then, every `OperativeMessage` request the SDK receives is answered
-//! with `OperativeMessageResponse{ payload: "", error: "operative does
-//! not support handle_message" }`.
+//! `OperativeMessage` is answered with the canonical refusal. Per-Procedure
+//! `handle_message` is not implemented (`operative-message-handlers` owes it),
+//! and until it is, every request must come back with an empty payload and the
+//! one refusal string — never with silence, and never with a decode error.
 
+use flezha_runner::command::CommandAction;
+use flezha_runner::pb::{OperativeMessage, OperativeMessageResponse};
 use prost::Message;
 
 #[test]
 fn operative_message_always_returns_unsupported() {
-    use flezha_runner::pb::OperativeMessageResponse;
-
-    // Synthesize the byte response the handler would write.
-    // (Constructing RunnerNode requires the full SDK boot path;
-    //  the handler doesn't read it for OperativeMessage anymore, so a
-    //  unit-level check on the response shape is sufficient.)
-    let canonical = OperativeMessageResponse {
-        payload: Vec::new(),
-        error: "operative does not support handle_message".to_string(),
+    let mut runner = flz_core::runner::RunnerNode::new("test-ns".to_string());
+    let request = OperativeMessage {
+        operative_id: "any-instance".to_string(),
+        payload: b"anything".to_vec(),
     };
-    let bytes = canonical.encode_to_vec();
-    let decoded = OperativeMessageResponse::decode(bytes.as_slice()).expect("decode");
+    let mut errors = Vec::new();
+
+    let reply = request.handle(&mut runner, "", &mut errors);
+
+    assert!(
+        errors.is_empty(),
+        "the refusal rides the reply, not `errors`"
+    );
+    assert_eq!(reply.payload_id, "operative_message");
+    let decoded = OperativeMessageResponse::decode(reply.bytes.as_slice()).expect("decode");
     assert_eq!(decoded.payload, Vec::<u8>::new());
     assert_eq!(decoded.error, "operative does not support handle_message");
 }

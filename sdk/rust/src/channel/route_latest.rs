@@ -263,4 +263,5 @@ where
 }
 
 #[cfg(test)]
+#[path = "route_latest_tests.rs"]
 mod tests;

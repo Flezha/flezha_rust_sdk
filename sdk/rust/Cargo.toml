@@ -93,8 +93,41 @@ name = "dynamic_entity_steady_state"
 harness = false
 required-features = ["bench-internals"]
 
+[[bench]]
+name = "workflow_scaling"
+harness = false
+required-features = ["bench-internals", "testing"]
+
 [[test]]
-name = "operative_dispatch"
+name = "dispatch_ordering"
+required-features = ["bench-internals"]
+
+[[test]]
+name = "overflow_policies"
+required-features = ["bench-internals"]
+
+[[test]]
+name = "entry_edge_backpressure"
+required-features = ["bench-internals"]
+
+[[test]]
+name = "flush_and_containment"
+required-features = ["bench-internals"]
+
+[[test]]
+name = "output_identity"
+required-features = ["bench-internals"]
+
+[[test]]
+name = "effectively_once_tier"
+required-features = ["bench-internals"]
+
+[[test]]
+name = "late_input_correction"
+required-features = ["bench-internals"]
+
+[[test]]
+name = "checkpoint_ack"
 required-features = ["bench-internals"]
 
 [[test]]
@@ -102,7 +135,15 @@ name = "dlq_retry"
 required-features = ["bench-internals"]
 
 [[test]]
-name = "operative_topology"
+name = "topology_entity_modes"
+required-features = ["bench-internals"]
+
+[[test]]
+name = "topology_keyed_and_clock"
+required-features = ["bench-internals"]
+
+[[test]]
+name = "topology_graph_authoring"
 required-features = ["bench-internals"]
 
 [[test]]
@@ -126,7 +167,19 @@ name = "stream_transforms"
 required-features = ["bench-internals"]
 
 [[test]]
-name = "entity_timers"
+name = "timer_surface"
+required-features = ["bench-internals", "testing"]
+
+[[test]]
+name = "timer_firing"
+required-features = ["bench-internals", "testing"]
+
+[[test]]
+name = "timer_durability"
+required-features = ["bench-internals", "testing"]
+
+[[test]]
+name = "timer_lifecycle"
 required-features = ["bench-internals", "testing"]
 
 [[test]]
@@ -146,10 +199,6 @@ name = "simple_procedure"
 required-features = ["bench-internals", "testing"]
 
 [[test]]
-name = "workflow_scaling"
-required-features = ["bench-internals"]
-
-[[test]]
 name = "partition_guard"
 required-features = ["bench-internals"]
 
@@ -158,11 +207,11 @@ name = "runner_lifecycle"
 required-features = ["bench-internals"]
 
 [[test]]
-name = "nonparking_backpressure"
+name = "drop_nothing_holdback"
 required-features = ["bench-internals"]
 
 [[test]]
-name = "nonparking_holdback_bound"
+name = "drop_nothing_holdback_bound"
 required-features = ["bench-internals"]
 
 [lints]

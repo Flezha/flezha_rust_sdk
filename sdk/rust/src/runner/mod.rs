@@ -7,4 +7,5 @@ pub(crate) use flz_core::runner::*;
 #[cfg(test)]
 mod fast_tests;
 #[cfg(test)]
+#[path = "tests/poll_core/mod.rs"]
 pub(crate) mod poll_core_tests;

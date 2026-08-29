@@ -27,10 +27,10 @@ use common::{
     dispatch_input, dispatch_marked, dummy_stream, install_auto_acking_sink, setup, wait_until,
 };
 
-/// Serializes the cases that install the process-global park sink.
-static SINK_LOCK: Mutex<()> = Mutex::new(());
-/// Serializes the two cases sharing `ChainOperative`'s process-global
-/// observation statics.
+/// Serializes every case that drives real dispatch here: they share
+/// `ChainOperative`'s process-global observation statics, and the parking case
+/// holds a poll worker inside `park_blocking` until its ack thread answers —
+/// concurrently with a replay drain, that worker is one the drain never gets.
 static CHAIN_LOCK: Mutex<()> = Mutex::new(());
 
 /// Take a process-global test lock, tolerating a poisoned one — a failed
@@ -300,7 +300,7 @@ impl StreamOperative for PanickingTransformOperative {
 
 #[test]
 fn a_panicking_transform_parks_and_routing_continues() {
-    let _serial = guard(&SINK_LOCK);
+    let _serial = guard(&CHAIN_LOCK);
     AFTER_PARK.lock().unwrap().clear();
     let parked = install_auto_acking_sink();
 

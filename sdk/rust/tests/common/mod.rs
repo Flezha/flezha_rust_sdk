@@ -2,7 +2,13 @@
 //! does `mod common;` + `use common::*;`. Collapses the build/register/
 //! dispatch ritual that was copy-pasted across every dispatch test.
 
-#![allow(dead_code)]
+// Every binary does `mod common; use common::*;` and none of them uses all
+// of it, so an unused item here is the normal case, not a defect.
+#![allow(dead_code, unused_imports)]
+
+mod tier;
+mod timers;
+mod wire;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -16,6 +22,9 @@ use flezha_runner::operative::builder::build_topology_for;
 use flezha_runner::operative::registry::OperativeRegistry;
 use flezha_runner::operative::{StreamInstance, StreamOperative};
 use flz_transport::transport::FlezhaStream;
+pub use tier::*;
+pub use timers::*;
+pub use wire::*;
 
 /// A throwaway secondary stream for dispatch calls that never write back.
 pub fn dummy_stream() -> Arc<FlezhaStream> {
@@ -188,4 +197,43 @@ pub fn decode_park_body(frame: &[u8]) -> Result<ParkBody, String> {
     off += 4;
     let body = &frame[off..off + body_len];
     postcard::from_bytes(body).map_err(|e| format!("park body decode: {e}"))
+}
+
+/// A String -> String no-op. Written out rather than declared through
+/// `test_procedure!` because a shared fixture has to be `pub` and the macro's
+/// associated `type Input` may not leak a private one.
+#[derive(Default)]
+pub struct EchoProcedure;
+impl flezha_runner::procedure::Procedure for EchoProcedure {
+    type Input = String;
+    type Output = String;
+    type State = ();
+    type Change = flezha_runner::state::NoChange;
+    type Clock = flezha_runner::state::WallClock;
+    type Config = ();
+    fn name() -> &'static str {
+        "echo_procedure"
+    }
+    fn init_state(_: Option<&str>, _: Option<flezha_runner::state::RestoreInitPayload<'_>>) {}
+    fn run(
+        &mut self,
+        _input: String,
+        _state: flezha_runner::procedure::StateHandle<'_, Self>,
+        _ctx: &mut flezha_runner::procedure::ProcedureCtx<'_>,
+    ) -> Result<(), flezha_runner::procedure::ProcedureError> {
+        Ok(())
+    }
+}
+
+/// The smallest complete class: one entry channel into one echo procedure,
+/// single-entity. What a topology assertion reaches for when the topology
+/// itself is not the subject.
+pub struct SingleOperative;
+impl StreamOperative for SingleOperative {
+    fn factory_id() -> &'static str {
+        "single_operative"
+    }
+    fn channels(c: &flezha_runner::channel::ChannelBuilder) {
+        c.input::<String>("inp").into::<EchoProcedure>();
+    }
 }

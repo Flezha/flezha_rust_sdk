@@ -1,7 +1,9 @@
-//! The push holdback's bound, and the one park it leaves on an emit path.
+//! The push holdback's bound, and the one park it leaves on an emit path:
+//! past the bound a typed emit parks, and the producer's own earlier pushes
+//! still go first, so the sequence the holdback exists to preserve survives.
 //!
 //! Its own test binary because it needs the opposite host shape from
-//! `nonparking_backpressure`: a pool the starvation supervisor may GROW. That
+//! `drop_nothing_holdback`: a pool the starvation supervisor may GROW. That
 //! is the whole design of the bound — past it a typed emit parks, and the
 //! safety valve is the supervisor, not re-entrancy. An FFI host never reaches
 //! this case at all: its outputs are materialized as bytes before the core
