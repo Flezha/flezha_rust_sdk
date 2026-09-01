@@ -15,8 +15,8 @@ pub(crate) use flezha_runner::state::{
     postcard, Change, CoalesceKey, NoChange, RestoreInitPayload, StateHandle, WallClock,
 };
 pub(crate) use flezha_runner::{
-    ChannelBuilder, Flezha, LoopMode, OverflowPolicy, StreamOperative, WorkflowCtx, WorkflowError,
-    WorkflowOperative,
+    ChannelBuilder, Flezha, FlezhaRunner, IdleObserver, LoopMode, OverflowPolicy, StreamOperative,
+    WorkflowCtx, WorkflowError, WorkflowOperative,
 };
 pub(crate) use serde::{Deserialize, Serialize};
 
@@ -38,7 +38,9 @@ use crate::workflow_loop::*;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     spawn_stdin_eof_exit();
-    Flezha::create_runner(namespace())?
+    let runner = Flezha::create_runner(namespace())?;
+    arm_entry_idle_probe(&runner);
+    runner
         .define_stream::<DoNothingOperative>()?
         .define_stream::<StoreInputOperative>()?
         .define_stream::<CompareFilterOperative>()?
@@ -68,6 +70,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .define_stream::<PoisonProbeOperative>()?
         .define_stream::<WedgeProbeOperative>()?
         .define_stream::<CandleOperative>()?
+        .define_stream::<EntryIdleProbeOperative>()?
         .define_workflow::<EchoWorkflow>()?
         .define_workflow::<CommitBlockWorkflow>()?
         .define_workflow::<SyncDurableWorkflow>()?

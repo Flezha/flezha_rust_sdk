@@ -109,7 +109,9 @@
     "dynamic_entity": [
       "dynamic_entity"
     ],
-    "entry_idle": [],
+    "entry_idle": [
+      "entry_idle_probe"
+    ],
     "partitioned": [
       "partition_relay",
       "dynamic_entity"
