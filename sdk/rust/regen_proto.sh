@@ -24,13 +24,14 @@ if [ ! -f "$PROTO_FILE" ]; then
     exit 1
 fi
 
-# Create generated directory if it doesn't exist
-mkdir -p src/generated
+# The generated module is compiled into the shared kernel (`flz_core/src/lib.rs`
+# `include!`s it), not into this crate — this script only owns the toolchain.
+OUT_DIR="../../flz_core/src/generated"
+mkdir -p "$OUT_DIR"
 
 # Temporary build script to generate the files
 cat > temp_build.rs << 'EOF'
 use std::fs;
-use std::path::Path;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let proto_file = "../../protobufs/runner_commands.proto";
@@ -40,10 +41,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let proto_dir_str = proto_dir.to_string_lossy().to_string();
 
     let mut config = prost_build::Config::new();
-    config.out_dir("src/generated");
+    config.out_dir("../../flz_core/src/generated");
     config.compile_protos(&[proto_file_str.as_str()], &[proto_dir_str.as_str()])?;
 
-    println!("Generated protobuf files in src/generated/");
+    println!("Generated protobuf files in flz_core/src/generated/");
     Ok(())
 }
 EOF
@@ -76,5 +77,5 @@ fi
 mv Cargo.toml.backup Cargo.toml
 
 echo "Successfully regenerated protobuf files!"
-echo "The generated files are in src/generated/"
+echo "The generated files are in flz_core/src/generated/"
 echo "Make sure to commit these files to your repository."
