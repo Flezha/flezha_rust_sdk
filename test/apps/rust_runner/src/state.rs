@@ -239,7 +239,7 @@ impl StreamOperative for CheckpointBatchedOperative {
 //
 // `checkpoint_store` driven by a DECLARED cadence instead of a "commit:" input:
 // the same keyed upsert, acknowledging every `FLEZHA_BENCH_CHECKPOINT_EVERY`
-// inputs (default 500) per Entity. The amortised posture, comparable to Flink's
+// inputs (default 500) per Entity. The amortised posture, comparable to other engines'
 // checkpoint barrier. `FLEZHA_BENCH_CHECKPOINT_OUTPUTS=at_checkpoint` (with
 // `FLEZHA_BENCH_CHECKPOINT_DELAY_MS`) additionally holds the interval's outputs
 // until it closes, which is the part-2 opt-in under measurement.

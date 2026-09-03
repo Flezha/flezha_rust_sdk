@@ -92,7 +92,7 @@ Env vars `FLEZHA_BOUNDED_{DRIVER_STACK_KIB,PARK_IDLE_MS,RETRY_FAILS}` →
 `FLEZHA_WORKFLOW_*`.
 
 No shim, no dual acceptance: the old names are gone. Nothing about execution,
-durability or the wire tag numbers changes. The old words were Flink's terms
+durability or the wire tag numbers changes. The old words were borrowed terms
 for a property of the *data*, while the distinction here is whether one run
 terminates — and `bounded` was false for a durable `PerInput` operative, whose
 input is unbounded and whose *iteration* is the only bounded thing. The channel
