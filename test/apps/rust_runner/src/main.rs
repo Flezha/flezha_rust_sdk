@@ -37,6 +37,12 @@ use crate::workflow::*;
 use crate::workflow_loop::*;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // The SDK installs no subscriber of its own, so without this every
+    // `tracing` event it and the shared kernel emit — the reconnect ring's,
+    // the flood ladder's, the mailbox stall warning — is written to a
+    // subscriber that does not exist, and the drills that capture this
+    // process's output see none of them.
+    flezha_runner::diag::init_default_tracing();
     spawn_stdin_eof_exit();
     let runner = Flezha::create_runner(namespace())?;
     arm_entry_idle_probe(&runner);
