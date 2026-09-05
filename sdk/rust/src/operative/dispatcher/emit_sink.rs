@@ -411,11 +411,5 @@ const ENV_FLUSH_BEFORE_EMIT: &str = "FLEZHA_FLUSH_BEFORE_EMIT";
 /// Defaults to ON (durability over latency); set `FLEZHA_FLUSH_BEFORE_EMIT`
 /// to `0`/`false`/`off`/`no` to revert to the inline-emit fast path.
 pub(super) fn flush_before_emit_enabled() -> bool {
-    match std::env::var(ENV_FLUSH_BEFORE_EMIT) {
-        Ok(v) => !matches!(
-            v.trim().to_ascii_lowercase().as_str(),
-            "0" | "false" | "off" | "no"
-        ),
-        Err(_) => true,
-    }
+    flz_core::util::env_bool(ENV_FLUSH_BEFORE_EMIT, true)
 }

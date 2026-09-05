@@ -356,7 +356,7 @@ pub fn build_topology_for<R: crate::operative::StreamOperative>(
 /// resolved value is what the record carries; the range it must fall in is the
 /// core's to refuse (`MailboxCapacityZero` / `MailboxCapacityTooLarge`).
 fn resolve_capacities(procedures: &[ProcedureEntry]) -> Vec<usize> {
-    let env_capacity = std::env::var(ENV_MAILBOX_CAPACITY).ok();
+    let env_capacity = flz_core::util::env_raw(ENV_MAILBOX_CAPACITY);
     procedures
         .iter()
         .map(|entry| {
