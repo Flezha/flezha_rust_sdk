@@ -70,6 +70,10 @@ pub enum FlezhaError {
     /// The runner thread is gone or replied with an unexpected message.
     #[error("runner unavailable: {0}")]
     RunnerUnavailable(String),
+    /// A local run the core refused: an unregistered class, a declaration
+    /// that needs a controller, or a channel name nothing matches.
+    #[error(transparent)]
+    Local(#[from] flz_core::Error),
 }
 
 /// The one runner slot this process has. `namespace` backs the

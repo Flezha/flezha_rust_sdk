@@ -2,7 +2,38 @@
 
 Rust SDK for the Flezha runner platform.
 
-## Quickstart
+## Local mode: run a graph with no controller
+
+The shortest way to see an operative work. `LocalOperative::start::<R>()` takes
+the class you would deploy, runs its declared `channels()` graph in this
+process, and hands sink output to a callback — no controller, no socket, no
+container:
+
+```rust
+use std::time::Duration;
+use flezha_runner::LocalOperative;
+
+let run = LocalOperative::start::<WordCount>()?;
+run.on_sink("totals", |out| println!("{}", String::from_utf8_lossy(&out.payload)))?;
+run.feed("lines", "the quick brown fox")?;
+run.run_until_idle(Duration::from_secs(5))?;
+```
+
+`on_sink` registers against the sink's **channel** name, which is the producing
+procedure's name unless the declaration `named` it. `feed` takes the wire bytes
+the channel's declared decoder parses, and blocks while the consumer's mailbox
+is full. Worked example: `cargo run -p flezha_runner --example local_word_count`.
+
+**State is held in memory and nothing is durable** — no write-ahead log, no
+snapshots, no dead-letter queue. Every run says so on stderr and it is not
+suppressible. Durability, effectively-once delivery, plugins, placement and
+migration, the dead-letter queue, observability export, authz and multi-runner
+scale need a controller; a declaration asking for one of those is refused at
+startup, naming it. Local mode also ships in the Java and Elixir SDKs; Node,
+Python, Ruby and PHP do not carry it yet. Walk-through:
+`docs/quickstart.md`.
+
+## Quickstart: connect to a controller
 
 ```rust
 use flezha_runner::Flezha;

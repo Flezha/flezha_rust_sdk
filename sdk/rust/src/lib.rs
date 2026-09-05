@@ -19,6 +19,7 @@ pub use flz_core::command;
 pub mod diag;
 pub mod entity;
 pub mod entry_idle;
+pub mod local;
 pub mod operative;
 pub mod procedure;
 mod runner;
@@ -67,6 +68,7 @@ pub use flz_transport::{service, transport};
 /// Re-exported so macro-generated code can `submit!` into the auto-operative
 /// collection without the user adding an `inventory` dependency.
 pub use inventory;
+pub use local::LocalOperative;
 pub use operative::builder::TopologyBuildError;
 pub use operative::StreamOperative;
 pub use procedure::{
