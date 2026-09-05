@@ -429,13 +429,13 @@ fn transform_declarations_are_validated() {
     assert!(
         issues::<DuplicateKeyByOperative>()
             .iter()
-            .any(|e| matches!(e, TopologyIssue::DuplicateKeyBy { channel: "in" })),
+            .any(|e| matches!(e, TopologyIssue::DuplicateKeyBy { channel } if channel == "in")),
         "two key functions on one edge are refused"
     );
     assert!(
         issues::<DanglingOperative>().iter().any(|e| matches!(
             e,
-            TopologyIssue::DanglingTransformChain { channel: "other" }
+            TopologyIssue::DanglingTransformChain { channel } if channel == "other"
         )),
         "a chain no `.into` closed is refused, naming the stream"
     );
@@ -446,9 +446,9 @@ fn transform_declarations_are_validated() {
         "a transform behind a plugin sink is refused"
     );
     assert!(
-        issues::<AfterKeyByOperative>()
-            .iter()
-            .any(|e| matches!(e, TopologyIssue::TransformAfterKeyBy { channel: "in" })),
+        issues::<AfterKeyByOperative>().iter().any(
+            |e| matches!(e, TopologyIssue::TransformAfterKeyBy { channel } if channel == "in")
+        ),
         "a transform after the key is refused — the key reads the final value"
     );
     assert!(
@@ -513,10 +513,8 @@ fn keying_a_static_mode_consumer_is_refused() {
     assert!(
         issues::<KeyByOnStaticOperative>().iter().any(|e| matches!(
             e,
-            TopologyIssue::KeyByOnUnkeyableTarget {
-                procedure: "transform_static_fan",
-                ..
-            }
+            TopologyIssue::KeyByOnUnkeyableTarget { procedure, .. }
+                if procedure == "transform_static_fan"
         )),
         "static keying and edge keying are contradictory, not a precedence question"
     );

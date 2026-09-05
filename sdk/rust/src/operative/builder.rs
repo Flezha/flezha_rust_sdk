@@ -1,36 +1,38 @@
 //! `build_topology` consumes a `ChannelBuilder` (populated by
 //! `StreamOperative::channels`) and produces a frozen `Arc<OperativeTopology>`.
 //!
-//! Build-time validation:
-//! - refuse duplicate channel names (derived, `.named(...)`-overridden, and
-//!   entry names share one per-operative namespace)
-//! - enforce the shared graph-shape rule (`sdk-graph-authoring`): one entry
-//!   channel, every node reachable from it, no cycles — fan-out and fan-in
-//!   are both legal
-//! - refuse an `entities_for` default impl on a procedure with non-empty
-//!   `entity_keys()`, told apart by the `ENTITIES_FOR_OVERRIDDEN` const
-//!   sentinel on the `Procedure` trait
+//! The builder judges nothing. It writes what the author declared into the
+//! shared record ([`flz_core::host::HostClassDecl`]), submits it to
+//! [`flz_core::host::check`] — the one place the topology rules live for every
+//! SDK — and materialises the typed topology from the declaration the core
+//! derived: its channel names, its channel kinds and its consumer edges, with
+//! the closures this builder held aside for each chain attached to the edge
+//! that chain produced.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use flz_core::workflow::spec::{graph_order, GraphSeed};
+use flz_core::host::{
+    check, DerivedChannel, HostAckGranularity, HostBeyondWindow, HostChannelDecl, HostChannelKind,
+    HostCheckpointOutputs, HostClassDecl, HostClock, HostEntityModeDecl, HostLink, HostOverflow,
+    HostProcedureDecl,
+};
 
 use crate::channel::builder::{
-    BuilderState, ChannelBuilder, ChannelEntry, PendingEdge, ProcedureEntry, TopologyIssue,
+    BuilderState, ChannelBuilder, ChannelEntry, ProcedureEntry, TopologyIssue,
 };
-use crate::channel::{ChannelDescriptor, ChannelKind, OverflowPolicy, PluginSink};
-use crate::operative::topology::{EntityMode, OperativeTopology, ProcedureDescriptor};
+use crate::channel::{
+    ChannelDescriptor, ChannelKind, ConsumerEdge, OverflowPolicy, PluginSink, ProcedureId,
+};
+use crate::operative::topology::{
+    AckGranularity, BeyondWindowPolicy, CheckpointOutputs, CheckpointPolicy, EntityMode,
+    OperativeTopology, ProcedureDescriptor,
+};
 
 /// Built-in default per-Entity mailbox capacity used when a Procedure does
 /// not override `mailbox_capacity()` and `FLEZHA_MAILBOX_CAPACITY` is
 /// either unset or unparseable.
 pub const DEFAULT_MAILBOX_CAPACITY: usize = 1024;
-
-/// Hard upper bound on per-Entity mailbox capacity. ~1M items × ~40 B
-/// per slot ≈ 40 MB per Entity is past sanity for any expected
-/// workload; values above this fail registration with a named error.
-pub const MAX_MAILBOX_CAPACITY: usize = 1_048_576;
 
 /// Environment variable consulted when a Procedure does not set
 /// `MAILBOX_CAPACITY_OVERRIDDEN = true`. Parsed as `usize`; empty,
@@ -39,7 +41,7 @@ pub const MAX_MAILBOX_CAPACITY: usize = 1_048_576;
 pub const ENV_MAILBOX_CAPACITY: &str = "FLEZHA_MAILBOX_CAPACITY";
 
 #[derive(Debug, thiserror::Error)]
-#[error("operative topology validation failed: {errors:?}")]
+#[error("{}", flz_core::host::render_issues(errors))]
 pub struct TopologyBuildError {
     pub errors: Vec<TopologyIssue>,
 }
@@ -60,33 +62,42 @@ pub fn build_topology_with_persistence(
     builder: ChannelBuilder,
     persistence_enabled_const: bool,
 ) -> Result<Arc<OperativeTopology>, TopologyBuildError> {
+    let mut state = builder.into_state();
+    // A chain nothing closed is recorded as written; the core answers it.
+    state.record_open_chains();
+    let keyed_consumers = derive_keyed_consumers(&state.channels);
+    let capacities = resolve_capacities(&state.procedures);
+    let derived = check(declaration(
+        factory_id,
+        persistence_enabled_const,
+        &state,
+        &capacities,
+        &keyed_consumers,
+    ))
+    .map_err(|errors| TopologyBuildError { errors })?;
+
     let BuilderState {
         channels,
         procedures,
         procedure_name_to_id,
-        pending,
-        mut errors,
         effectively_once,
         correction,
-        ack_granularity,
-    } = builder.into_state();
+        checkpoint_every,
+        checkpoint_outputs,
+        checkpoint_max_delay_ms,
+        ..
+    } = state;
 
-    refuse_dangling_chains(&channels, &pending, &mut errors);
-    let name_to_id = resolve_channel_names(&channels, &mut errors);
-    refuse_graph_shape(&channels, &procedures, &mut errors);
-    refuse_class_facts(effectively_once, correction, ack_granularity, &mut errors);
-    let keyed_consumers = derive_keyed_consumers(&channels);
-    refuse_edge_keying(&channels, &procedures, &keyed_consumers, &mut errors);
-    refuse_channels(&channels, effectively_once, &mut errors);
-    let capacities = refuse_procedures(&procedures, correction.is_some(), &mut errors);
-
-    if !errors.is_empty() {
-        return Err(TopologyBuildError { errors });
+    let mut descriptors = Vec::with_capacity(channels.len());
+    let mut name_to_id: HashMap<&'static str, u32> = HashMap::new();
+    for (id, (entry, derived_channel)) in channels.into_iter().zip(derived.channels).enumerate() {
+        name_to_id.insert(entry.name, id as u32);
+        descriptors.push(channel_descriptor(entry, derived_channel));
     }
 
     Ok(Arc::new(OperativeTopology {
         sdk_lang: flz_core::header::SDK_LANG_RUST,
-        channels: channels.into_iter().map(build_channel_desc).collect(),
+        channels: descriptors,
         name_to_id,
         procedures: build_procedure_descs(procedures, capacities, &keyed_consumers),
         procedure_name_to_id,
@@ -94,224 +105,185 @@ pub fn build_topology_with_persistence(
         persistence_enabled_const,
         effectively_once,
         correction,
-        ack_granularity,
+        ack_granularity: match derived.ack_granularity {
+            HostAckGranularity::PerInput => AckGranularity::PerInput,
+            HostAckGranularity::Checkpoint => AckGranularity::Checkpoint(CheckpointPolicy {
+                every: checkpoint_every,
+                outputs: checkpoint_outputs,
+                max_delay_ms: checkpoint_max_delay_ms,
+            }),
+        },
     }))
 }
 
-/// A transform chain is stored on the consumer edge it terminates in, so one
-/// that no `.into(...)` ever closed would silently do nothing. Only a chain's
-/// tip can dangle — every earlier link was superseded by the next.
-fn refuse_dangling_chains(
-    channels: &[ChannelEntry],
-    pending: &[PendingEdge],
-    errors: &mut Vec<TopologyIssue>,
-) {
-    for chain in pending {
-        if !chain.superseded && !chain.consumed {
-            errors.push(TopologyIssue::DanglingTransformChain {
-                channel: channels[chain.channel as usize].name,
-            });
-        }
+/// The record the core judges: every fact a rule reads, and nothing derived.
+/// The closures stay behind on the builder, keyed by the chain they close.
+///
+/// A workflow class declares `None` here: its own facts — the loop shape, the
+/// retry ladder, the proc-journal codecs — are `build_spec`'s to refuse, and
+/// this record carries the channel topology they are declared over.
+fn declaration(
+    factory_id: &'static str,
+    persistent: bool,
+    state: &BuilderState,
+    capacities: &[usize],
+    keyed_consumers: &HashSet<ProcedureId>,
+) -> HostClassDecl {
+    HostClassDecl {
+        factory_id: factory_id.to_string(),
+        persistent,
+        sdk_lang: flz_core::header::SDK_LANG_RUST,
+        sdk_version: env!("CARGO_PKG_VERSION").to_string(),
+        change_format_id: flz_core::header::FORMAT_ID_POSTCARD,
+        effectively_once: state.effectively_once,
+        checkpoint_ack: state.checkpoint_ack,
+        checkpoint_every: state.checkpoint_every,
+        checkpoint_outputs: match state.checkpoint_outputs {
+            CheckpointOutputs::AsProduced => HostCheckpointOutputs::AsProduced,
+            CheckpointOutputs::AtCheckpoint => HostCheckpointOutputs::AtCheckpoint,
+        },
+        checkpoint_max_delay_ms: state.checkpoint_max_delay_ms,
+        correction_window_ms: state.correction.map(|c| c.window_ms),
+        beyond_window_policy: match state.correction.map(|c| c.beyond_window) {
+            Some(BeyondWindowPolicy::Drop) => HostBeyondWindow::Drop,
+            _ => HostBeyondWindow::ProcessAsArrival,
+        },
+        compact_after_bytes: None,
+        sync_durability: false,
+        channels: state.channels.iter().map(channel_decl).collect(),
+        procedures: state
+            .procedures
+            .iter()
+            .enumerate()
+            .map(|(id, entry)| procedure_decl(id, entry, capacities[id], keyed_consumers))
+            .collect(),
+        workflow: None,
     }
 }
 
-/// One per-operative channel namespace: derived names (producer node
-/// identity), `.named(...)` overrides, and entry names all collide here.
-fn resolve_channel_names(
-    channels: &[ChannelEntry],
-    errors: &mut Vec<TopologyIssue>,
-) -> HashMap<&'static str, u32> {
-    let mut name_to_id: HashMap<&'static str, u32> = HashMap::new();
-    for (id, entry) in channels.iter().enumerate() {
-        if name_to_id.insert(entry.name, id as u32).is_some() {
-            errors.push(TopologyIssue::DuplicateChannel(entry.name));
-        }
-    }
-    name_to_id
-}
-
-/// Shared graph-shape rule (`sdk-graph-authoring`): one OR MORE entry
-/// channels feed the graph, every node reachable from some entry, no cycles.
-/// Multiple entries let one operative ingest several external sources (e.g. a
-/// market pipeline consuming a trade feed and an order-book feed on distinct
-/// channels); the controller routes each frame to its entry by
-/// `metadata["channel"]`, falling back to the first entry when unset. Fan-out
-/// and fan-in are both legal; at-most-one output channel per node holds by
-/// construction of the stream-handle builder.
-fn refuse_graph_shape(
-    channels: &[ChannelEntry],
-    procedures: &[ProcedureEntry],
-    errors: &mut Vec<TopologyIssue>,
-) {
-    if procedures.is_empty() {
-        return;
-    }
-    let edges: Vec<_> = channels
-        .iter()
-        .filter_map(|c| c.producer.map(|p| (p, c)))
-        .flat_map(|(p, c)| c.consumers.iter().map(move |e| (p, e.procedure)))
-        .collect();
-    let roots: Vec<_> = channels
-        .iter()
-        .filter(|c| c.kind == ChannelKind::Entry)
-        .flat_map(|c| c.consumers.iter().map(|e| e.procedure))
-        .collect();
-    let shape = graph_order(
-        procedures.len(),
-        &edges,
-        &roots,
-        GraphSeed::EveryIndegreeZero,
-    );
-    if let Some(node) = shape.on_cycle {
-        errors.push(TopologyIssue::Cycle {
-            procedure: procedures[node as usize].name,
-        });
-    } else if let Some(node) = shape.unreachable {
-        // Defensive: the stream-handle builder only creates nodes by wiring
-        // from the entry, so an unreachable acyclic node cannot normally
-        // arise. A cycle already explains unreachability.
-        errors.push(TopologyIssue::UnreachableProcedure {
-            procedure: procedures[node as usize].name,
-        });
+fn channel_decl(entry: &ChannelEntry) -> HostChannelDecl {
+    HostChannelDecl {
+        name: entry.name.to_string(),
+        kind: match entry.kind {
+            ChannelKind::Entry => HostChannelKind::Entry,
+            ChannelKind::InterProcedure => HostChannelKind::InterProc,
+            ChannelKind::PluginBound => HostChannelKind::Plugin,
+        },
+        producer: entry.producer,
+        chains: entry.chains.clone(),
+        retry_max: entry.retry.max_attempts,
+        retry_backoff_ms: entry.retry.backoff_base_ms,
+        overflow: match entry.overflow_policy {
+            OverflowPolicy::DropNothing => HostOverflow::DropNothing,
+            OverflowPolicy::DropNewest => HostOverflow::DropNewest,
+            OverflowPolicy::DropOldest => HostOverflow::DropOldest,
+        },
+        keyed: entry.keyed,
     }
 }
 
-/// The class-level declarations that only mean something on the
-/// effectively-once tier. Correction replays the durable input log against a
-/// rewound baseline and the checkpoint is where the tier's consumed-offset
-/// advances; off the tier neither exists, so the declaration is meaningless,
-/// not merely degraded. (Correction's other hard prerequisite — every plugin
-/// channel keyed, so a bumped epoch can overwrite by natural key — is
-/// enforced for the whole tier by `UnkeyedChannelUnderEffectivelyOnce`.)
-fn refuse_class_facts(
-    effectively_once: bool,
-    correction: Option<crate::operative::topology::CorrectionPolicy>,
-    ack_granularity: crate::operative::topology::AckGranularity,
-    errors: &mut Vec<TopologyIssue>,
-) {
-    if correction.is_some() && !effectively_once {
-        errors.push(TopologyIssue::CorrectionWithoutTier);
-    }
-    if correction.is_some_and(|c| c.window_ms == 0) {
-        errors.push(TopologyIssue::CorrectionWindowZero);
-    }
-    if ack_granularity.is_checkpoint() && !effectively_once {
-        errors.push(TopologyIssue::CheckpointAckWithoutTier);
-    }
-    if ack_granularity
-        .checkpoint()
-        .is_some_and(|p| p.every == Some(0))
-    {
-        errors.push(TopologyIssue::CheckpointEveryZero);
+fn procedure_decl(
+    id: usize,
+    entry: &ProcedureEntry,
+    mailbox_capacity: usize,
+    keyed_consumers: &HashSet<ProcedureId>,
+) -> HostProcedureDecl {
+    HostProcedureDecl {
+        name: entry.name.to_string(),
+        entity_mode: match entity_mode(id, entry, keyed_consumers) {
+            EntityMode::Single => HostEntityModeDecl::Single,
+            EntityMode::Static => HostEntityModeDecl::Static,
+            EntityMode::Dynamic => HostEntityModeDecl::Dynamic,
+        },
+        entity_keys: entry.entity_keys.iter().map(|k| k.to_string()).collect(),
+        idle_ttl_ms: entry.idle_ttl.map(|ttl| ttl.as_millis() as u64),
+        max_entities: Some(entry.max_entities),
+        entities_for_overridden: entry.entities_for_overridden,
+        compensate_overridden: entry.compensate_overridden,
+        clock: clock_of(entry),
+        mailbox_capacity,
+        change_is_nochange: entry.change_is_nochange,
+        // No rule reads either: a typed class stamps `S::SCHEMA_VERSION` on the
+        // records it writes, which is not a topology fact.
+        schema_version: 1,
+        min_readable_schema_version: None,
     }
 }
 
-/// Entity mode is read off the WIRING: a procedure reached by an edge carrying
-/// a key function is dynamic. Derived before the descriptors are built because
-/// that pass consumes the consumer edges.
-fn derive_keyed_consumers(channels: &[ChannelEntry]) -> HashSet<crate::channel::ProcedureId> {
-    channels
-        .iter()
-        .flat_map(|entry| entry.consumers.iter())
-        .filter(|edge| edge.key.is_some())
-        .map(|edge| edge.procedure)
-        .collect()
-}
-
-/// What an edge may declare about its consumer's Entity mode.
-fn refuse_edge_keying(
-    channels: &[ChannelEntry],
-    procedures: &[ProcedureEntry],
-    keyed_consumers: &HashSet<crate::channel::ProcedureId>,
-    errors: &mut Vec<TopologyIssue>,
-) {
-    for entry in channels {
-        for edge in &entry.consumers {
-            let procedure = &procedures[edge.procedure as usize];
-            // Static keying routes by `entities_for` and may name several
-            // Entities; edge keying names exactly one. Declaring both is a
-            // contradiction, not a precedence question.
-            if edge.key.is_some() && !procedure.entity_keys.is_empty() {
-                errors.push(TopologyIssue::KeyByOnUnkeyableTarget {
-                    channel: entry.name,
-                    procedure: procedure.name,
-                });
-            }
-            // The key function is total, so a dynamic-mode procedure has no
-            // keyless-drop path — every edge into one must carry a key.
-            if edge.key.is_none() && keyed_consumers.contains(&edge.procedure) {
-                errors.push(TopologyIssue::UnkeyedEdgeIntoDynamicProcedure {
-                    channel: entry.name,
-                    procedure: procedure.name,
-                });
-            }
-        }
-    }
-}
-
-/// What a channel's declarations may claim about its plugin wire.
-fn refuse_channels(
-    channels: &[ChannelEntry],
-    effectively_once: bool,
-    errors: &mut Vec<TopologyIssue>,
-) {
-    for entry in channels {
-        refuse_channel(entry, effectively_once, errors);
-    }
-}
-
-fn refuse_channel(entry: &ChannelEntry, effectively_once: bool, errors: &mut Vec<TopologyIssue>) {
-    // Identity stamps only exist on plugin frames; a keyed channel must have
-    // a plugin wire.
-    if entry.keyed && entry.plugin_sink.is_none() {
-        errors.push(TopologyIssue::KeyedChannelWithoutPluginWire {
-            channel: entry.name,
-        });
-    }
-    // The effectively-once tier deduplicates by output identity, which only
-    // keyed channels carry — an unkeyed plugin wire would silently break the
-    // guarantee.
-    if effectively_once && !entry.keyed && entry.plugin_sink.is_some() {
-        errors.push(TopologyIssue::UnkeyedChannelUnderEffectivelyOnce {
-            channel: entry.name,
-        });
-    }
-    // Promising effectively-once and asking to shed is not a trade-off, it is
-    // a contradiction: a dropped input's offset is advanced past by a later
-    // item's watermark, so the loss is permanent under a contract that says
-    // nothing is lost. A correction window needs the tier
-    // (`CorrectionWithoutTier`), so this one arm covers it too.
-    if effectively_once {
-        let policy = match entry.overflow_policy {
-            OverflowPolicy::DropNothing => None,
-            OverflowPolicy::DropNewest => Some("DropNewest"),
-            OverflowPolicy::DropOldest => Some("DropOldest"),
-        };
-        if let Some(policy) = policy {
-            errors.push(TopologyIssue::DroppingPolicyUnderEffectivelyOnce {
-                channel: entry.name,
-                policy,
-            });
-        }
-    }
-}
-
-/// Terminality is derived from the wiring, not from which method the author
-/// called: a sink with nothing consuming behind it IS the plugin-bound
-/// terminal. Deriving it here is what keeps `.sink(...)` one method and makes
-/// a sink declared alongside consumers hybrid by construction rather than by
-/// ordering.
-fn build_channel_desc(entry: ChannelEntry) -> ChannelDescriptor {
-    let kind = if entry.plugin_sink.is_some() && entry.consumers.is_empty() {
-        ChannelKind::PluginBound
+/// The record names the clock the runtime serves, not the Rust type behind it.
+fn clock_of(entry: &ProcedureEntry) -> HostClock {
+    if entry.clock_is_event_time {
+        HostClock::EventTime
+    } else if entry.clock_type_name == "LogicalClock" {
+        HostClock::Logical
     } else {
-        entry.kind
+        HostClock::Wall
+    }
+}
+
+/// Entity mode is read off the WIRING: a procedure that names its own keys is
+/// static, one reached by a chain that keys its values is dynamic, and a
+/// procedure nothing keys serves one Entity.
+fn entity_mode(
+    id: usize,
+    entry: &ProcedureEntry,
+    keyed_consumers: &HashSet<ProcedureId>,
+) -> EntityMode {
+    if !entry.entity_keys.is_empty() {
+        EntityMode::Static
+    } else if keyed_consumers.contains(&(id as ProcedureId)) {
+        EntityMode::Dynamic
+    } else {
+        EntityMode::Single
+    }
+}
+
+/// The procedures some chain names an Entity for, read off the record's links.
+fn derive_keyed_consumers(channels: &[ChannelEntry]) -> HashSet<ProcedureId> {
+    let mut keyed = HashSet::new();
+    for entry in channels {
+        for links in &entry.chains {
+            let mut key = false;
+            for link in links {
+                match link {
+                    HostLink::Key => key = true,
+                    HostLink::Into { procedure } | HostLink::Merge { procedure, .. } if key => {
+                        keyed.insert(*procedure);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    keyed
+}
+
+/// One channel as the runtime holds it: the ends and the kind the core
+/// derived, and the closures this builder held aside for the chain each edge
+/// was declared by.
+fn channel_descriptor(entry: ChannelEntry, derived: DerivedChannel) -> ChannelDescriptor {
+    let kind = match derived.kind {
+        HostChannelKind::Entry => ChannelKind::Entry,
+        HostChannelKind::InterProc => ChannelKind::InterProcedure,
+        HostChannelKind::Plugin => ChannelKind::PluginBound,
     };
+    let consumers: Vec<ConsumerEdge> = derived
+        .consumers
+        .iter()
+        .map(|edge| {
+            let (transform, key) = entry.chain_edges[edge.chain].clone();
+            ConsumerEdge {
+                procedure: edge.procedure,
+                transform,
+                key,
+            }
+        })
+        .collect();
     ChannelDescriptor {
         name: Arc::from(entry.name),
         kind,
         producer: entry.producer,
-        consumers: entry.consumers,
+        consumers,
         wrap_input: entry.wrap_input,
         entry_parsed: entry.entry_parsed,
         plugin_sink: entry.plugin_sink.map(|sink| PluginSink {
@@ -326,60 +298,10 @@ fn build_channel_desc(entry: ChannelEntry) -> ChannelDescriptor {
     }
 }
 
-/// Every per-procedure refusal, and the mailbox capacity each procedure
-/// resolved to. Resolving before any descriptor exists is what makes the build
-/// below infallible: a refused capacity leaves the vector short of the
-/// procedure list, and a short vector is unreachable past the error return.
-fn refuse_procedures(
-    procedures: &[ProcedureEntry],
-    corrected: bool,
-    errors: &mut Vec<TopologyIssue>,
-) -> Vec<usize> {
-    let env_capacity = std::env::var(ENV_MAILBOX_CAPACITY).ok();
-    let mut capacities = Vec::with_capacity(procedures.len());
-    for entry in procedures {
-        refuse_procedure(entry, corrected, errors);
-        match resolve_mailbox_capacity(
-            entry.name,
-            entry.mailbox_capacity,
-            entry.mailbox_capacity_overridden,
-            env_capacity.as_deref(),
-        ) {
-            Ok(capacity) => capacities.push(capacity),
-            Err(issue) => errors.push(issue),
-        }
-    }
-    capacities
-}
-
-/// What one procedure's declaration may claim about its Entities and its clock.
-fn refuse_procedure(entry: &ProcedureEntry, corrected: bool, errors: &mut Vec<TopologyIssue>) {
-    if !entry.entity_keys.is_empty() && !entry.entities_for_overridden {
-        errors.push(TopologyIssue::EntitiesForMissing { name: entry.name });
-    }
-    // LogicalClock serves the durable change seq, which never advances for a
-    // NoChange Procedure — fail fast instead of serving a clock frozen at 0.
-    if entry.clock_type_name == "LogicalClock" && entry.change_is_nochange {
-        errors.push(TopologyIssue::UnservableClock {
-            procedure: entry.name,
-            clock_type: entry.clock_type_name,
-        });
-    }
-    // Correction orders a replayed slice by event time. A procedure whose
-    // clock is the wall or the change seq has no event time, so the sort key
-    // does not exist and lateness is undefined.
-    if corrected && !entry.clock_is_event_time {
-        errors.push(TopologyIssue::CorrectionWithoutEventTime {
-            procedure: entry.name,
-            clock_type: entry.clock_type_name,
-        });
-    }
-}
-
 fn build_procedure_descs(
     procedures: Vec<ProcedureEntry>,
     capacities: Vec<usize>,
-    keyed_consumers: &HashSet<crate::channel::ProcedureId>,
+    keyed_consumers: &HashSet<ProcedureId>,
 ) -> Vec<ProcedureDescriptor> {
     procedures
         .into_iter()
@@ -393,16 +315,9 @@ fn build_procedure_desc(
     id: usize,
     entry: ProcedureEntry,
     mailbox_capacity: usize,
-    keyed_consumers: &HashSet<crate::channel::ProcedureId>,
+    keyed_consumers: &HashSet<ProcedureId>,
 ) -> ProcedureDescriptor {
-    let mode = match (
-        entry.entity_keys.is_empty(),
-        keyed_consumers.contains(&(id as crate::channel::ProcedureId)),
-    ) {
-        (false, _) => EntityMode::Static,
-        (true, true) => EntityMode::Dynamic,
-        (true, false) => EntityMode::Single,
-    };
+    let mode = entity_mode(id, &entry, keyed_consumers);
     ProcedureDescriptor {
         host_facts: None,
         name: Arc::from(entry.name),
@@ -437,42 +352,38 @@ pub fn build_topology_for<R: crate::operative::StreamOperative>(
     build_topology_with_persistence(R::factory_id(), cb, R::PERSISTENCE_ENABLED)
 }
 
+/// Every procedure's resolved mailbox capacity, in declaration order. The
+/// resolved value is what the record carries; the range it must fall in is the
+/// core's to refuse (`MailboxCapacityZero` / `MailboxCapacityTooLarge`).
+fn resolve_capacities(procedures: &[ProcedureEntry]) -> Vec<usize> {
+    let env_capacity = std::env::var(ENV_MAILBOX_CAPACITY).ok();
+    procedures
+        .iter()
+        .map(|entry| {
+            resolve_mailbox_capacity(
+                entry.mailbox_capacity,
+                entry.mailbox_capacity_overridden,
+                env_capacity.as_deref(),
+            )
+        })
+        .collect()
+}
+
 /// Resolve a Procedure's mailbox capacity: an explicit override on the
-/// Procedure wins over `FLEZHA_MAILBOX_CAPACITY`, which wins
-/// over the built-in default. Out-of-range values fail registration with
-/// the offending Procedure's name; an unparseable env var falls through to
-/// the default rather than failing (runners tolerate typos in env
-/// values during development).
+/// Procedure wins over `FLEZHA_MAILBOX_CAPACITY`, which wins over the built-in
+/// default. An unparseable env var falls through to the default rather than
+/// failing (runners tolerate typos in env values during development).
 pub(crate) fn resolve_mailbox_capacity(
-    procedure_name: &'static str,
     declared: usize,
     overridden: bool,
     env_value: Option<&str>,
-) -> Result<usize, TopologyIssue> {
-    let resolved = if overridden {
-        declared
-    } else {
-        env_value
-            .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(DEFAULT_MAILBOX_CAPACITY)
-    };
-    refuse_capacity(procedure_name, resolved)
-}
-
-/// Refuse a capacity outside the declared range, naming the Procedure.
-fn refuse_capacity(procedure_name: &'static str, value: usize) -> Result<usize, TopologyIssue> {
-    if value == 0 {
-        return Err(TopologyIssue::MailboxCapacityZero {
-            procedure: procedure_name,
-        });
+) -> usize {
+    if overridden {
+        return declared;
     }
-    if value > MAX_MAILBOX_CAPACITY {
-        return Err(TopologyIssue::MailboxCapacityTooLarge {
-            procedure: procedure_name,
-            value,
-        });
-    }
-    Ok(value)
+    env_value
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(DEFAULT_MAILBOX_CAPACITY)
 }
 
 #[cfg(test)]

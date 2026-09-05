@@ -21,6 +21,7 @@ pub(crate) use flezha_runner::{
 pub(crate) use serde::{Deserialize, Serialize};
 
 mod channel;
+mod conformance;
 mod entity;
 mod probe;
 mod state;
@@ -43,9 +44,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // subscriber that does not exist, and the drills that capture this
     // process's output see none of them.
     flezha_runner::diag::init_default_tracing();
+    // The conformance run answers a file and exits; it never connects. The
+    // drill names the path in the environment, which reaches the app whatever
+    // shell the manifest's launch line goes through.
+    if let Some(path) = env::var("FLEZHA_CONFORMANCE_REPORT")
+        .ok()
+        .filter(|path| !path.is_empty())
+        .or_else(|| flag_value("--conformance-report"))
+    {
+        return conformance::write_report(&path);
+    }
     spawn_stdin_eof_exit();
     let runner = Flezha::create_runner(namespace())?;
     arm_entry_idle_probe(&runner);
+    // One row of the refusal table instead of the fixture set: a refused
+    // topology must not reach a connected runner.
+    if let Ok(topology) = env::var("FLEZHA_REFUSAL_FIXTURE") {
+        conformance::register_only(&runner, &topology)?;
+        runner.run()?;
+        return Ok(());
+    }
     runner
         .define_stream::<DoNothingOperative>()?
         .define_stream::<StoreInputOperative>()?
@@ -106,6 +124,14 @@ fn namespace() -> String {
         return args[1].clone();
     }
     "default".to_string()
+}
+
+/// The value of `--flag <value>`, wherever it sits in the argument list — the
+/// namespace is positional and every mode is selected after it.
+fn flag_value(flag: &str) -> Option<String> {
+    let mut args = env::args().skip_while(|arg| arg != flag);
+    args.next()?;
+    args.next()
 }
 
 /// The Elixir e2e suite manages this app as an Erlang Port and terminates it

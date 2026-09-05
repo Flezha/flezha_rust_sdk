@@ -6,10 +6,10 @@ use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use super::issue::TopologyIssue;
+use flz_core::host::HostLink;
+
 use crate::channel::{
-    ChannelId, ChannelKind, ConsumerEdge, EdgeKeyFn, EdgeTransformFn, EdgeYield, OverflowPolicy,
-    ProcedureId,
+    ChannelId, ChannelKind, EdgeKeyFn, EdgeTransformFn, EdgeYield, OverflowPolicy, ProcedureId,
 };
 use crate::procedure::Procedure;
 
@@ -122,7 +122,6 @@ pub(crate) struct ChannelEntry {
     pub name: &'static str,
     pub kind: ChannelKind,
     pub producer: Option<ProcedureId>,
-    pub consumers: Vec<ConsumerEdge>,
     pub wrap_input: Option<crate::channel::EntryWrapFn>,
     /// Entry channels whose `wrap_input` is a real parser (typed JSON or a
     /// custom `input_with` parser). A failing parse rides the channel's
@@ -148,6 +147,15 @@ pub(crate) struct ChannelEntry {
     /// Inter-proc byte codec declared via `.codec()` / `.codec_with(...)`.
     /// Required for durable structured workflow classes (`workflow-proc-journal`).
     pub codec: Option<crate::channel::ChannelCodec>,
+    /// The authoring record: one entry per fluent sequence declared off this
+    /// channel's handle, in the order the author closed them. The consumers,
+    /// the kind and the plugin-sink name are DERIVED from these by
+    /// `flz_core::host::check`, never declared.
+    pub chains: Vec<Vec<HostLink>>,
+    /// The closures each chain ends in, under the chain's own index — the half
+    /// the record never carries. Attached to the edge the core derives from
+    /// that chain.
+    pub chain_edges: Vec<(Option<EdgeTransformFn>, Option<EdgeKeyFn>)>,
 }
 
 /// A transform/key chain declared on a stream handle but not yet closed by
@@ -158,6 +166,9 @@ pub(crate) struct ChannelEntry {
 pub(crate) struct PendingEdge {
     /// The channel the chain is declared on — the diagnostic's subject.
     pub channel: ChannelId,
+    /// The same chain as the record spells it: one link per declaration, in
+    /// the order they were written. Closing it appends the terminator.
+    pub links: Vec<HostLink>,
     /// Every transform declared so far, composed into ONE closure. Composition
     /// is the whole of "fusion": the runtime applies one closure per edge and
     /// never learns that a chain existed.
@@ -179,10 +190,17 @@ pub(crate) struct BuilderState {
     /// Transform/key chains under construction, indexed by the id the stream
     /// handles carry. A chain neither superseded nor consumed is dangling.
     pub pending: Vec<PendingEdge>,
-    pub errors: Vec<TopologyIssue>,
+    /// Merges declared so far; the counter that ties one merge's sources
+    /// together across the channels they are declared on.
+    pub merge_groups: u32,
     pub effectively_once: bool,
     pub correction: Option<crate::operative::topology::CorrectionPolicy>,
-    pub ack_granularity: crate::operative::topology::AckGranularity,
+    /// The checkpoint flags exactly as the author set them. The granularity
+    /// they imply is the core's answer, never the builder's.
+    pub checkpoint_ack: bool,
+    pub checkpoint_every: Option<u32>,
+    pub checkpoint_outputs: crate::operative::topology::CheckpointOutputs,
+    pub checkpoint_max_delay_ms: Option<u64>,
 }
 
 impl BuilderState {
@@ -192,7 +210,6 @@ impl BuilderState {
             name,
             kind,
             producer: None,
-            consumers: Vec::new(),
             wrap_input: None,
             entry_parsed: false,
             plugin_sink: None,
@@ -200,6 +217,8 @@ impl BuilderState {
             overflow_policy: OverflowPolicy::default(),
             retry: crate::channel::RetryPolicy::default(),
             codec: None,
+            chains: Vec::new(),
+            chain_edges: Vec::new(),
         });
         id
     }
@@ -214,10 +233,13 @@ impl BuilderState {
         let named = node_name.is_some();
         if let Some(&id) = self.procedure_name_to_id.get(identity) {
             let existing = &self.procedures[id as usize];
-            if existing.class_id != TypeId::of::<S>() || existing.named != named {
-                self.errors
-                    .push(TopologyIssue::NodeIdentityCollision { name: identity });
+            if existing.class_id == TypeId::of::<S>() && existing.named == named {
+                return id;
             }
+            // Two distinct nodes claiming one identity: the record carries both
+            // under that name, which is what the collision IS.
+            let id = self.procedures.len() as u32;
+            self.procedures.push(procedure_entry::<S>(identity, named));
             return id;
         }
         let id = self.procedures.len() as u32;
@@ -249,7 +271,7 @@ impl BuilderState {
         node_name: Option<&'static str>,
     ) -> u32 {
         let consumer = self.resolve_node::<S>(node_name);
-        self.attach_consumer(channel_id, consumer, pending);
+        self.attach_consumer(channel_id, consumer, pending, None);
         consumer
     }
 
@@ -260,42 +282,78 @@ impl BuilderState {
     /// mode is its own. Closing the chain here is what makes it impossible to
     /// wire an edge and forget its closures.
     ///
-    /// Re-declaring an existing bare edge is the fan-in / repeated `.into`
-    /// case and stays a no-op. Re-declaring one where either side carries a
-    /// transform or a key is refused rather than silently dropped — the edge
-    /// would otherwise keep whichever closure was declared first and deliver
-    /// the wrong value, to the wrong Entity, forever.
-    pub(super) fn attach_consumer(&mut self, channel_id: u32, consumer: u32, pending: Option<u32>) {
-        let (transform, key) = self.close_pending(pending);
-        let entry = &mut self.channels[channel_id as usize];
-        let declares = transform.is_some() || key.is_some();
-        match entry.consumers.iter().find(|e| e.procedure == consumer) {
-            Some(existing)
-                if existing.transform.is_some() || existing.key.is_some() || declares =>
-            {
-                let channel = entry.name;
-                let procedure = self.procedures[consumer as usize].name;
-                self.errors
-                    .push(TopologyIssue::EdgeAlreadyWired { channel, procedure });
-                return;
-            }
-            Some(_) => {}
-            None => entry.consumers.push(ConsumerEdge {
+    /// `merge_group` is the merge this chain closes as one source of, if any;
+    /// the core reads the group to judge the merge's arity and its sources.
+    pub(super) fn attach_consumer(
+        &mut self,
+        channel_id: u32,
+        consumer: u32,
+        pending: Option<u32>,
+        merge_group: Option<u32>,
+    ) {
+        let (mut links, transform, key) = self.close_pending(pending);
+        links.push(match merge_group {
+            Some(group) => HostLink::Merge {
                 procedure: consumer,
-                transform,
-                key,
-            }),
-        }
+                group,
+            },
+            None => HostLink::Into {
+                procedure: consumer,
+            },
+        });
+        self.push_chain(channel_id, links, transform, key);
         let proc = &mut self.procedures[consumer as usize];
         if !proc.input_channel_ids.contains(&channel_id) {
             proc.input_channel_ids.push(channel_id);
         }
     }
 
+    /// Record one link that stands on its own — `.named(...)`, `.sink(...)`,
+    /// the `branch(...)` arity — as its own chain, carrying no closures.
+    pub(super) fn record_link(&mut self, channel: ChannelId, link: HostLink) {
+        self.push_chain(channel, vec![link], None, None);
+    }
+
+    /// Record every chain the author never closed. A chain is stored on the
+    /// edge it terminates in, so an unclosed tip reaches the record as written
+    /// and the core answers `DanglingTransformChain`. Only a tip can dangle —
+    /// every earlier link was superseded by the next.
+    pub(crate) fn record_open_chains(&mut self) {
+        for id in 0..self.pending.len() {
+            let chain = &self.pending[id];
+            if chain.superseded || chain.consumed {
+                continue;
+            }
+            let (channel, links) = (chain.channel, chain.links.clone());
+            self.push_chain(channel, links, None, None);
+        }
+    }
+
+    /// The next merge's group id.
+    pub(super) fn next_merge_group(&mut self) -> u32 {
+        let group = self.merge_groups;
+        self.merge_groups += 1;
+        group
+    }
+
+    fn push_chain(
+        &mut self,
+        channel: ChannelId,
+        links: Vec<HostLink>,
+        transform: Option<EdgeTransformFn>,
+        key: Option<EdgeKeyFn>,
+    ) {
+        let entry = &mut self.channels[channel as usize];
+        entry.chains.push(links);
+        entry.chain_edges.push((transform, key));
+    }
+
     /// Extend the chain at `base` (or open one on `channel`) with one more
     /// link, returning the new chain's id. Composing here — rather than storing
     /// a list the runtime walks — is what makes fusion structural: whatever the
-    /// author chained, the edge ends up with exactly one closure.
+    /// author chained, the edge ends up with exactly one closure. The record
+    /// keeps the links themselves, because a rule reads them and a closure is
+    /// not a fact anything can judge.
     pub(super) fn extend_pending(
         &mut self,
         channel: ChannelId,
@@ -303,38 +361,28 @@ impl BuilderState {
         link: Option<EdgeTransformFn>,
         key: Option<EdgeKeyFn>,
     ) -> u32 {
-        if self.channels[channel as usize].plugin_sink.is_some() {
-            let channel_name = self.channels[channel as usize].name;
-            self.errors.push(TopologyIssue::TransformAfterTerminal {
-                channel: channel_name,
-            });
-        }
-        let (prior_transform, prior_key) = match base {
+        let (mut links, prior_transform, prior_key) = match base {
             Some(id) => {
                 self.pending[id as usize].superseded = true;
                 let prior = &self.pending[id as usize];
-                (prior.transform.clone(), prior.key.clone())
+                (
+                    prior.links.clone(),
+                    prior.transform.clone(),
+                    prior.key.clone(),
+                )
             }
-            None => (None, None),
+            None => (Vec::new(), None, None),
         };
-        // The key is evaluated on the final post-transform value, so a
-        // transform declared after it would hand it a value of a type it was
-        // never written against.
-        if prior_key.is_some() && link.is_some() {
-            let channel_name = self.channels[channel as usize].name;
-            self.errors.push(TopologyIssue::TransformAfterKeyBy {
-                channel: channel_name,
-            });
-        }
-        if prior_key.is_some() && key.is_some() {
-            let channel_name = self.channels[channel as usize].name;
-            self.errors.push(TopologyIssue::DuplicateKeyBy {
-                channel: channel_name,
-            });
-        }
+        // One call, one link: every caller passes a transform or a key.
+        links.push(if key.is_some() {
+            HostLink::Key
+        } else {
+            HostLink::Transform
+        });
         let id = self.pending.len() as u32;
         self.pending.push(PendingEdge {
             channel,
+            links,
             transform: compose(prior_transform, link),
             key: key.or(prior_key),
             superseded: false,
@@ -343,18 +391,22 @@ impl BuilderState {
         id
     }
 
-    /// Take a chain's closures and mark it closed. `None` (a bare handle) is
-    /// the transform-free case every pre-existing topology is.
+    /// Take a chain's links and closures and mark it closed. `None` (a bare
+    /// handle) is the transform-free case every pre-existing topology is.
     fn close_pending(
         &mut self,
         pending: Option<u32>,
-    ) -> (Option<EdgeTransformFn>, Option<EdgeKeyFn>) {
+    ) -> (Vec<HostLink>, Option<EdgeTransformFn>, Option<EdgeKeyFn>) {
         let Some(id) = pending else {
-            return (None, None);
+            return (Vec::new(), None, None);
         };
         let chain = &mut self.pending[id as usize];
         chain.consumed = true;
-        (chain.transform.clone(), chain.key.clone())
+        (
+            chain.links.clone(),
+            chain.transform.clone(),
+            chain.key.clone(),
+        )
     }
 }
 

@@ -188,9 +188,8 @@ fn node_identity_collision_is_refused() {
     };
     assert!(err.errors.iter().any(|e| matches!(
         e,
-        flezha_runner::channel::builder::TopologyIssue::NodeIdentityCollision {
-            name: "graph_stage1"
-        }
+        flezha_runner::channel::builder::TopologyIssue::NodeIdentityCollision { name }
+            if name == "graph_stage1"
     )));
 }
 
@@ -240,7 +239,8 @@ fn channel_names_derive_from_the_producer_identity() {
     };
     assert!(err.errors.iter().any(|e| matches!(
         e,
-        flezha_runner::channel::builder::TopologyIssue::DuplicateChannel("echo_procedure")
+        flezha_runner::channel::builder::TopologyIssue::DuplicateChannel(name)
+            if name == "echo_procedure"
     )));
 }
 

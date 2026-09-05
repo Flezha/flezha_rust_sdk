@@ -5,7 +5,8 @@ use std::any::Any;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use super::issue::TopologyIssue;
+use flz_core::host::HostLink;
+
 use super::state::{erase, erase_transform, BuilderState, PluginSink};
 use super::ChannelBuilder;
 use crate::channel::{Channel, EdgeKeyFn, EdgeTransformFn, EdgeYield, OverflowPolicy};
@@ -255,7 +256,7 @@ impl<'b, T: 'static + Send + Sync, K: StreamTarget> Stream<'b, T, K> {
     /// Override the consumer-side retry budget (total attempts, default 3)
     /// applied before a failing payload is parked to the dead-letter queue.
     pub fn retry_max(self, max_attempts: u32) -> Self {
-        self.with_channel(|st, cid| set_retry_max(st, cid, max_attempts));
+        self.with_channel(|st, cid| st.channels[cid as usize].retry.max_attempts = max_attempts);
         self
     }
 
@@ -275,13 +276,7 @@ impl<'b, T: 'static + Send + Sync> Stream<'b, T, NodeTarget> {
     /// least two arms are required (checked at registration); the two
     /// spellings are freely mixable.
     pub fn branch<const N: usize>(self, arms: [&dyn Fn(Stream<'b, T>); N]) -> Self {
-        if N < 2 {
-            self.builder
-                .state
-                .borrow_mut()
-                .errors
-                .push(TopologyIssue::BranchTooFewArms { arms: N });
-        }
+        self.with_channel(|st, cid| st.record_link(cid, HostLink::Branch { arms: N }));
         for arm in arms {
             arm(self);
         }
@@ -291,7 +286,18 @@ impl<'b, T: 'static + Send + Sync> Stream<'b, T, NodeTarget> {
     /// Override the auto-derived channel name (the producer node's identity)
     /// everywhere the channel name appears: wire metadata, journals, errors.
     pub fn named(self, name: &'static str) -> Self {
-        self.with_channel(|st, cid| st.channels[cid as usize].name = name);
+        self.with_channel(|st, cid| {
+            // The record carries the override as a link, which the core applies
+            // once for every terminator; the entry keeps the `&'static str` the
+            // typed descriptors are built from.
+            st.channels[cid as usize].name = name;
+            st.record_link(
+                cid,
+                HostLink::Named {
+                    name: name.to_string(),
+                },
+            );
+        });
         self
     }
 
@@ -375,33 +381,25 @@ impl<'b, T: 'static + Send + Sync> Stream<'b, T, NodeTarget> {
         serializer: crate::channel::PluginSerializeFn,
     ) -> Self {
         self.with_channel(|st, cid| {
+            st.record_link(
+                cid,
+                HostLink::Sink {
+                    name: plugin_name.to_string(),
+                },
+            );
+            // Both sinks reach the record and the core refuses the class; the
+            // first one stays on the entry so nothing downstream sees a half
+            // -built descriptor.
             let entry = &mut st.channels[cid as usize];
-            if entry.plugin_sink.is_some() {
-                let channel = entry.name;
-                st.errors
-                    .push(TopologyIssue::DuplicatePluginSink { channel });
-                return;
+            if entry.plugin_sink.is_none() {
+                entry.plugin_sink = Some(PluginSink {
+                    name: plugin_name,
+                    serializer,
+                });
             }
-            entry.plugin_sink = Some(PluginSink {
-                name: plugin_name,
-                serializer,
-            });
         });
         self
     }
-}
-
-/// Apply a `.retry_max(...)` declaration, refusing a zero budget at
-/// registration time (surfaced by `build_topology` like every other
-/// declaration error).
-fn set_retry_max(st: &mut BuilderState, channel_id: u32, max_attempts: u32) {
-    let entry = &mut st.channels[channel_id as usize];
-    if max_attempts == 0 {
-        let channel = entry.name;
-        st.errors.push(TopologyIssue::RetryMaxZero { channel });
-        return;
-    }
-    entry.retry.max_attempts = max_attempts;
 }
 
 /// Install the standard inter-proc byte codec for `T` — postcard over the

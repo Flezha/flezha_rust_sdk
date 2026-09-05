@@ -32,6 +32,11 @@
       "FLEZHA_WORKER_POOL_SIZE": "worker threads (default: the host's core count)"
     }
   },
+  "topology_surfaces": [
+    "merge",
+    "branch",
+    "workflow"
+  ],
   "toolchain": "rustc --version",
   "deferred": [],
   "fixtures": {

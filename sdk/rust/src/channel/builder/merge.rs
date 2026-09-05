@@ -3,7 +3,6 @@
 
 use std::marker::PhantomData;
 
-use super::issue::TopologyIssue;
 use super::state::{erase, erase_merge_map};
 use super::stream::{Stream, StreamTarget};
 use super::ChannelBuilder;
@@ -45,16 +44,13 @@ impl<'b, T: Clone + Send + Sync + 'static, K: StreamTarget> MergeSource<'b> for 
 pub struct Merge<'b, I> {
     pub(super) builder: &'b ChannelBuilder,
     /// Per source: its channel and the pending chain that ends in this merge's
-    /// mapping.
+    /// mapping. Every `.from` the author wrote reaches the record, including a
+    /// channel named twice — the core is what answers for it.
     pub(super) sources: Vec<(ChannelId, u32)>,
-    /// Every `.from` the author wrote, including ones already refused. The
-    /// arity check reads this so a duplicated source is reported once, as a
-    /// duplicate — not also as a merge that declared too few.
-    pub(super) declared: usize,
-    /// The one key function a merge declares, applied to the merged value on
-    /// every source's edge.
-    pub(super) key: Option<EdgeKeyFn>,
-    pub(super) duplicate_key: bool,
+    /// The key functions this merge declares, applied to the merged value on
+    /// every source's edge. More than one is the author's error, recorded as
+    /// two key links and refused by the core.
+    pub(super) keys: Vec<EdgeKeyFn>,
     pub(super) _phantom: PhantomData<fn() -> I>,
 }
 
@@ -68,18 +64,7 @@ impl<'b, I: Send + Sync + 'static> Merge<'b, I> {
         F: Fn(S::Payload) -> I + Send + Sync + 'static,
     {
         let (channel_id, source_pending) = source.merge_site();
-        self.declared += 1;
         let mut st = self.builder.state.borrow_mut();
-        if self
-            .sources
-            .iter()
-            .any(|(existing, _)| *existing == channel_id)
-        {
-            let channel = st.channels[channel_id as usize].name;
-            st.errors
-                .push(TopologyIssue::DuplicateMergeSource { channel });
-            return self;
-        }
         let link = erase_merge_map::<S::Payload, I, F>(map);
         let chain = st.extend_pending(channel_id, source_pending, Some(link), None);
         drop(st);
@@ -94,10 +79,7 @@ impl<'b, I: Send + Sync + 'static> Merge<'b, I> {
     where
         F: Fn(&I) -> String + Send + Sync + 'static,
     {
-        if self.key.is_some() {
-            self.duplicate_key = true;
-        }
-        self.key = Some(erase::<I, _, _>("key_by", key));
+        self.keys.push(erase::<I, _, _>("key_by", key));
         self
     }
 
@@ -125,35 +107,28 @@ impl<'b, I: Send + Sync + 'static> Merge<'b, I> {
         self,
         node_name: Option<&'static str>,
     ) -> Stream<'b, S::Output> {
-        let mut st = self.builder.state.borrow_mut();
+        let Merge {
+            builder,
+            sources,
+            keys,
+            ..
+        } = self;
+        let mut st = builder.state.borrow_mut();
         let node = st.resolve_node::<S>(node_name);
-        if self.declared < 2 {
-            let procedure = st.procedures[node as usize].name;
-            st.errors.push(TopologyIssue::MergeTooFewSources {
-                procedure,
-                sources: self.declared,
-            });
-        }
-        if self.duplicate_key {
-            if let Some(&(channel_id, _)) = self.sources.first() {
-                let channel = st.channels[channel_id as usize].name;
-                st.errors.push(TopologyIssue::DuplicateKeyBy { channel });
-            }
-        }
-        for (channel_id, chain) in self.sources {
+        let group = st.next_merge_group();
+        for (channel_id, mut chain) in sources {
             // The key rides each source's chain, so it is evaluated on the
             // mapped value — and a key declared on a *source* handle instead
             // trips the transform-after-key refusal, which is exactly the
             // "declared once, on the merge" rule.
-            let chain = match self.key.clone() {
-                Some(key) => st.extend_pending(channel_id, Some(chain), None, Some(key)),
-                None => chain,
-            };
-            st.attach_consumer(channel_id, node, Some(chain));
+            for key in &keys {
+                chain = st.extend_pending(channel_id, Some(chain), None, Some(key.clone()));
+            }
+            st.attach_consumer(channel_id, node, Some(chain), Some(group));
         }
         drop(st);
         Stream {
-            builder: self.builder,
+            builder,
             target: node,
             pending: None,
             _phantom: PhantomData,

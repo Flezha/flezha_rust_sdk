@@ -31,7 +31,7 @@ use serde::de::DeserializeOwned;
 pub use state::{
     BuildEntityArgs, DeserializeStateFn, EntitiesForFn, EntityBuilder, ErasedFn, SerializeStateFn,
 };
-pub(crate) use state::{BuilderState, ChannelEntry, PendingEdge, ProcedureEntry};
+pub(crate) use state::{BuilderState, ChannelEntry, ProcedureEntry};
 pub use stream::{EntryStream, EntryTarget, NodeTarget, Stream, StreamTarget};
 
 use crate::channel::ChannelKind;
@@ -51,10 +51,13 @@ impl ChannelBuilder {
                 procedures: Vec::new(),
                 procedure_name_to_id: HashMap::new(),
                 pending: Vec::new(),
-                errors: Vec::new(),
+                merge_groups: 0,
                 effectively_once: false,
                 correction: None,
-                ack_granularity: crate::operative::topology::AckGranularity::PerInput,
+                checkpoint_ack: false,
+                checkpoint_every: None,
+                checkpoint_outputs: crate::operative::topology::CheckpointOutputs::AsProduced,
+                checkpoint_max_delay_ms: None,
             }),
         }
     }
@@ -153,7 +156,7 @@ impl ChannelBuilder {
     /// [`ProcedureCtx::checkpoint`]: crate::procedure::ProcedureCtx::checkpoint
     /// [`outputs_at_checkpoint`]: ChannelBuilder::outputs_at_checkpoint
     pub fn checkpoint_ack(&self) {
-        self.checkpoint_policy(|_policy| {});
+        self.state.borrow_mut().checkpoint_ack = true;
     }
 
     /// Close the checkpoint interval once `inputs` inputs have folded into it,
@@ -164,7 +167,7 @@ impl ChannelBuilder {
     ///
     /// [`ProcedureCtx::checkpoint`]: crate::procedure::ProcedureCtx::checkpoint
     pub fn checkpoint_every(&self, inputs: u32) {
-        self.checkpoint_policy(|policy| policy.every = Some(inputs));
+        self.state.borrow_mut().checkpoint_every = Some(inputs);
     }
 
     /// Hold the interval's outputs with its changes and ship them inside its
@@ -184,24 +187,9 @@ impl ChannelBuilder {
     /// record re-drives with identical identity, and the keyed-sink dedup the
     /// tier already requires absorbs both. Implies `checkpoint_ack()`.
     pub fn outputs_at_checkpoint(&self, max_delay_ms: u64) {
-        self.checkpoint_policy(|policy| {
-            policy.outputs = crate::operative::topology::CheckpointOutputs::AtCheckpoint;
-            policy.max_delay_ms = Some(max_delay_ms);
-        });
-    }
-
-    /// Turn the checkpoint granularity on (idempotent) and amend its policy,
-    /// so each option is one call that preserves the others.
-    fn checkpoint_policy(
-        &self,
-        amend: impl FnOnce(&mut crate::operative::topology::CheckpointPolicy),
-    ) {
-        use crate::operative::topology::AckGranularity;
-
         let mut st = self.state.borrow_mut();
-        let mut policy = st.ack_granularity.checkpoint().unwrap_or_default();
-        amend(&mut policy);
-        st.ack_granularity = AckGranularity::Checkpoint(policy);
+        st.checkpoint_outputs = crate::operative::topology::CheckpointOutputs::AtCheckpoint;
+        st.checkpoint_max_delay_ms = Some(max_delay_ms);
     }
 
     /// Declare the entry channel fed by the controller — the operative's
@@ -295,9 +283,7 @@ impl ChannelBuilder {
         Merge {
             builder: self,
             sources: Vec::new(),
-            declared: 0,
-            key: None,
-            duplicate_key: false,
+            keys: Vec::new(),
             _phantom: PhantomData,
         }
     }

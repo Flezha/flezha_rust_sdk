@@ -316,10 +316,8 @@ fn a_second_router_needs_a_node_name() {
             .iter()
             .any(|e| matches!(
                 e,
-                TopologyIssue::EdgeAlreadyWired {
-                    channel: "trades",
-                    procedure: "route_latest"
-                }
+                TopologyIssue::EdgeAlreadyWired { channel, procedure }
+                    if channel == "trades" && procedure == "route_latest"
             )),
         "the shared traffic edge must be refused, not silently re-wired"
     );
@@ -350,9 +348,9 @@ impl StreamOperative for SelfRoutedOperative {
 #[test]
 fn one_channel_cannot_be_both_streams() {
     assert!(
-        issues::<SelfRoutedOperative>()
-            .iter()
-            .any(|e| matches!(e, TopologyIssue::DuplicateMergeSource { channel: "trades" })),
+        issues::<SelfRoutedOperative>().iter().any(
+            |e| matches!(e, TopologyIssue::DuplicateMergeSource { channel } if channel == "trades")
+        ),
         "one channel serving as both streams must be refused"
     );
 }

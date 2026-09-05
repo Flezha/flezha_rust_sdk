@@ -1,5 +1,8 @@
-//! `build_topology`'s own tests: the graph-shape and class-fact refusals, the
-//! entity-mode derivation, and the mailbox-capacity precedence rules.
+//! `build_topology`'s own tests: the declarations the builder records, the
+//! verdict the core answers them with, and the mailbox-capacity precedence
+//! the builder resolves before the record is written. The rules themselves
+//! are `flz_core::host::check`'s, pinned row by row by
+//! `test/fixtures/reference_topologies.txt`.
 
 use super::*;
 use crate::channel::ChannelBuilder;
@@ -58,7 +61,7 @@ fn effectively_once_rejects_unkeyed_plugin_channel() {
     };
     assert!(err.errors.iter().any(|e| matches!(
         e,
-        TopologyIssue::UnkeyedChannelUnderEffectivelyOnce { channel: "out" }
+        TopologyIssue::UnkeyedChannelUnderEffectivelyOnce { channel } if channel == "out"
     )));
 }
 
@@ -76,7 +79,7 @@ fn effectively_once_rejects_unkeyed_hybrid_sink() {
     };
     assert!(err.errors.iter().any(|e| matches!(
         e,
-        TopologyIssue::UnkeyedChannelUnderEffectivelyOnce { channel: "mid" }
+        TopologyIssue::UnkeyedChannelUnderEffectivelyOnce { channel } if channel == "mid"
     )));
 }
 
@@ -103,73 +106,37 @@ fn non_tier_unkeyed_plugin_channel_still_builds() {
 fn override_on_procedure_takes_precedence() {
     // Procedure declared 4096 with MAILBOX_CAPACITY_OVERRIDDEN = true;
     // env var present and parseable. Override wins.
-    let cap = resolve_mailbox_capacity("ohlc", 4096, true, Some("2048")).unwrap();
-    assert_eq!(cap, 4096);
+    assert_eq!(resolve_mailbox_capacity(4096, true, Some("2048")), 4096);
 }
 
 #[test]
 fn env_var_applies_when_no_procedure_override() {
     // No override; env var is parseable. Env wins over the default.
-    let cap = resolve_mailbox_capacity("ohlc", 1024, false, Some("2048")).unwrap();
-    assert_eq!(cap, 2048);
+    assert_eq!(resolve_mailbox_capacity(1024, false, Some("2048")), 2048);
 }
 
 #[test]
 fn env_var_unparseable_falls_through_to_default() {
     // No override; env var present but unparseable. Default kicks in.
-    let cap = resolve_mailbox_capacity("ohlc", 1024, false, Some("banana")).unwrap();
-    assert_eq!(cap, DEFAULT_MAILBOX_CAPACITY);
+    assert_eq!(
+        resolve_mailbox_capacity(1024, false, Some("banana")),
+        DEFAULT_MAILBOX_CAPACITY
+    );
 }
 
 #[test]
 fn env_var_missing_falls_through_to_default() {
-    let cap = resolve_mailbox_capacity("ohlc", 1024, false, None).unwrap();
-    assert_eq!(cap, DEFAULT_MAILBOX_CAPACITY);
+    assert_eq!(
+        resolve_mailbox_capacity(1024, false, None),
+        DEFAULT_MAILBOX_CAPACITY
+    );
 }
 
 #[test]
-fn capacity_zero_is_rejected_with_procedure_name() {
-    // Override path: explicit 0 is refused.
-    let err = resolve_mailbox_capacity("ohlc", 0, true, None).unwrap_err();
-    match err {
-        TopologyIssue::MailboxCapacityZero { procedure } => assert_eq!(procedure, "ohlc"),
-        other => panic!("expected MailboxCapacityZero, got {other:?}"),
-    }
-}
-
-#[test]
-fn capacity_above_maximum_is_rejected_with_procedure_name() {
-    let err = resolve_mailbox_capacity("ohlc", MAX_MAILBOX_CAPACITY + 1, true, None).unwrap_err();
-    match err {
-        TopologyIssue::MailboxCapacityTooLarge { procedure, value } => {
-            assert_eq!(procedure, "ohlc");
-            assert_eq!(value, MAX_MAILBOX_CAPACITY + 1);
-        }
-        other => panic!("expected MailboxCapacityTooLarge, got {other:?}"),
-    }
-}
-
-#[test]
-fn override_zero_overrides_env_var_and_fails() {
-    // Even if env is valid, an explicit-but-invalid override fails
-    // (override-flag-true wins precedence even into validation).
-    let err = resolve_mailbox_capacity("ohlc", 0, true, Some("4096")).unwrap_err();
-    assert!(matches!(
-        err,
-        TopologyIssue::MailboxCapacityZero { procedure: "ohlc" }
-    ));
-}
-
-#[test]
-fn capacity_one_is_accepted() {
-    let cap = resolve_mailbox_capacity("tiny", 1, true, None).unwrap();
-    assert_eq!(cap, 1);
-}
-
-#[test]
-fn maximum_capacity_is_accepted() {
-    let cap = resolve_mailbox_capacity("max_procedure", MAX_MAILBOX_CAPACITY, true, None).unwrap();
-    assert_eq!(cap, MAX_MAILBOX_CAPACITY);
+fn an_overridden_zero_wins_over_the_env_var() {
+    // Precedence runs to the end: an explicit-but-invalid override is what
+    // reaches the record, where the core refuses it by name.
+    assert_eq!(resolve_mailbox_capacity(0, true, Some("4096")), 0);
 }
 
 // ---------- Late-input correction: the declaration's prerequisites ----------
@@ -357,7 +324,8 @@ fn a_dropping_policy_under_the_tier_is_refused_naming_the_channel() {
         assert!(
             err.errors.iter().any(|e| matches!(
                 e,
-                TopologyIssue::DroppingPolicyUnderEffectivelyOnce { channel: "in", .. }
+                TopologyIssue::DroppingPolicyUnderEffectivelyOnce { channel, .. }
+                    if channel == "in"
             )),
             "the refusal names the channel: {:?}",
             err.errors
@@ -429,12 +397,10 @@ fn correction_without_an_event_time_clock_is_refused() {
     .err()
     .expect("correction without an event-time clock must fail");
 
+    // The refusal names the clock the record spells, not the Rust type.
     assert!(err.errors.iter().any(|e| matches!(
         e,
-        TopologyIssue::CorrectionWithoutEventTime {
-            clock_type: "WallClock",
-            ..
-        }
+        TopologyIssue::CorrectionWithoutEventTime { clock_type, .. } if clock_type == "wall"
     )));
 }
 

@@ -88,9 +88,8 @@ fn keyed_channel_without_plugin_wire_is_rejected() {
     };
     assert!(err.errors.iter().any(|e| matches!(
         e,
-        flezha_runner::channel::builder::TopologyIssue::KeyedChannelWithoutPluginWire {
-            channel: "hop"
-        }
+        flezha_runner::channel::builder::TopologyIssue::KeyedChannelWithoutPluginWire { channel }
+            if channel == "hop"
     )));
 }
 
@@ -138,8 +137,8 @@ fn logical_clock_without_persistent_changes_is_rejected_at_build() {
     assert!(err.errors.iter().any(|e| matches!(
         e,
         flezha_runner::channel::builder::TopologyIssue::UnservableClock {
-            procedure: "frozen_logical_procedure",
-            clock_type: "LogicalClock",
-        }
+            procedure,
+            clock_type,
+        } if procedure == "frozen_logical_procedure" && clock_type == "logical"
     )));
 }
