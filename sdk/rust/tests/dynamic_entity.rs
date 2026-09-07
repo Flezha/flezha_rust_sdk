@@ -10,6 +10,9 @@ use std::sync::{Arc, Barrier, Mutex};
 use std::thread;
 
 use flezha_runner::entity::dynamic::DynamicEntityRegistry;
+use flezha_runner::entity::flusher::SendFrameFn;
+use flezha_runner::entity::state_sink::{self, install_global_sink};
+use flz_transport::service::payloader;
 
 mod common;
 use common::prelude::*;
@@ -192,6 +195,64 @@ fn filtered_inputs_reach_no_entity() {
         Duration::from_secs(10)
     ));
     assert_eq!(created(&reg), 6, "the four filtered inputs create nothing");
+}
+
+/// KB-063 / KB-086: the delete an eviction owes is a durable frame. With
+/// nothing bound it must be HELD for the reconnect, and replayed as the exact
+/// bytes the live path would have written: the controller reads the message
+/// as the bare identity (`Flezha.State.Wire.decode_entity_id/1`), so any other
+/// framing would be applied as garbage rather than dropped.
+#[test]
+fn an_eviction_with_no_stream_bound_holds_the_delete_for_the_reconnect() {
+    let _guard = state_sink::test_guard();
+    state_sink::set_secondary_stream(None);
+
+    let (_handle, instance) = setup::<DynOperative>("dyn-delete-1");
+    let reg = registry(&instance);
+    let identity = reg
+        .get_or_create("K")
+        .expect("the key mints an Entity")
+        .entity_identity
+        .to_vec();
+
+    // Backdate the activity stamp so the sweep decides on the TTL, not on the
+    // clock, and evict with no sink and no secondary: the reconnect window.
+    reg.entities
+        .get("K")
+        .expect("live before the sweep")
+        .last_activity_ms
+        .store(-1_000, Ordering::Relaxed);
+    reg.reap_sweep(Duration::ZERO);
+    assert!(reg.entities.is_empty(), "the idle Entity is evicted");
+    assert_eq!(evicted(&reg), 1);
+
+    // The reconnect: the sink an install wires must receive the held delete.
+    let seen: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
+    let seen_c = Arc::clone(&seen);
+    let sink: SendFrameFn = Arc::new(move |payload_id: &str, frame: &[u8]| {
+        seen_c.lock().unwrap().push(payloader::build_from_binary(
+            payload_id,
+            frame,
+            HashMap::new(),
+        ));
+        Ok(())
+    });
+    install_global_sink(sink);
+
+    let expected = payloader::build_from_binary(
+        state_sink::DELETE_ENTITY_STATE_PAYLOAD_ID,
+        &identity,
+        HashMap::new(),
+    );
+    assert!(
+        seen.lock().unwrap().contains(&expected),
+        "an eviction during a reconnect window must hold its delete, framed \
+         exactly as the live path frames it"
+    );
+
+    // The sink is process-global: hand the rest of this binary a no-op rather
+    // than a recorder that keeps every frame they ship.
+    install_global_sink(Arc::new(|_: &str, _: &[u8]| Ok(())));
 }
 
 #[test]
