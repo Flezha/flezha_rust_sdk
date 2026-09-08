@@ -345,6 +345,26 @@ fn dynamic_mode_entities_serialize_under_their_live_keys() {
 }
 
 #[test]
+fn apply_init_values_cannot_seed_a_dynamic_mode_procedure() {
+    let (_handle, instance) = setup::<CandleOperative>("dyn-seed-1");
+
+    apply_init_values(&instance, "{\"candle\":{\"BTCUSD@1m\":{\"ticks\":9}}}").unwrap();
+
+    let registry = instance.dynamic_registries[0]
+        .as_ref()
+        .expect("candle is dynamic");
+    registry.get_or_create("BTCUSD@1m").expect("create");
+
+    let (all, _) = read(&instance, None, None);
+    assert_eq!(
+        all,
+        json!({"candle": {"BTCUSD@1m": {"ticks": 0}}}),
+        "no Entity exists at the bind, so the seed reaches none and the key \
+         minted afterwards is still the class default"
+    );
+}
+
+#[test]
 fn an_entity_key_without_a_procedure_is_refused() {
     let (_handle, instance) = setup::<PairOperative>("sel-3");
     let err = serialize_selected_state(
