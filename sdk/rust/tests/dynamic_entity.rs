@@ -230,20 +230,16 @@ fn an_eviction_with_no_stream_bound_holds_the_delete_for_the_reconnect() {
     let seen: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
     let seen_c = Arc::clone(&seen);
     let sink: SendFrameFn = Arc::new(move |payload_id: &str, frame: &[u8]| {
-        seen_c.lock().unwrap().push(payloader::build_from_binary(
-            payload_id,
-            frame,
-            HashMap::new(),
-        ));
+        seen_c
+            .lock()
+            .unwrap()
+            .push(payloader::build_without_metadata(payload_id, frame));
         Ok(())
     });
     install_global_sink(sink);
 
-    let expected = payloader::build_from_binary(
-        state_sink::DELETE_ENTITY_STATE_PAYLOAD_ID,
-        &identity,
-        HashMap::new(),
-    );
+    let expected =
+        payloader::build_without_metadata(state_sink::DELETE_ENTITY_STATE_PAYLOAD_ID, &identity);
     assert!(
         seen.lock().unwrap().contains(&expected),
         "an eviction during a reconnect window must hold its delete, framed \

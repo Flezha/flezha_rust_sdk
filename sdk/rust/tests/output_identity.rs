@@ -85,7 +85,8 @@ fn non_keyed_frame_is_byte_identical_to_prechange_layout() {
     let frames = read_frames(&mut observer, 1, Duration::from_secs(5));
     let mut expected_meta = HashMap::new();
     expected_meta.insert("channel".to_string(), "out".to_string());
-    let expected = payloader::build_from_binary("plain-plugin-instance", b"payload", expected_meta);
+    let expected =
+        payloader::build_from_binary("plain-plugin-instance", b"payload", expected_meta).unwrap();
     assert_eq!(
         frames[0].raw, expected,
         "non-keyed plugin frame must be byte-identical to the pre-change layout"

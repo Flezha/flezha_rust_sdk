@@ -150,8 +150,8 @@ impl<'a> EntityEmitSink<'a> {
         let mut metadata = channel_metadata(meta, &descriptor.name);
         self.stamp_identity(&mut metadata, key);
 
-        send_plugin_frame(&self.stream, &instance.instance_id, &bytes, &metadata);
-        Ok(())
+        send_plugin_frame(&self.stream, &instance.instance_id, &bytes, &metadata)
+            .map_err(|error| ProcedureError::non_retryable(error.to_string()))
     }
 }
 
