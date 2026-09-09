@@ -13,6 +13,7 @@
 //! with the Java SDK; every environment knob the runner reads is listed in
 //! `docs/configuration.md`.
 
+pub mod admin;
 pub mod channel;
 pub mod workflow;
 pub use flz_core::command;
@@ -53,6 +54,8 @@ pub mod state {
     pub use crate::procedure::state_handle::StateHandle;
 }
 
+/// Administering the namespace a runner's connection proved.
+pub use admin::{Admin, OperativeSpec};
 pub use channel::builder::TopologyIssue;
 pub use channel::{
     Channel, ChannelBuilder, EntryStream, Merge, MergeSource, OverflowPolicy, RetryPolicy, Stream,

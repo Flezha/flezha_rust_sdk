@@ -64,6 +64,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         runner.run()?;
         return Ok(());
     }
+    // The admin drill: the e2e names a JSON array of `{"verb", "args"}` calls
+    // in the environment and reads the answers off stdout, so what it watches
+    // is an application administering its own namespace rather than a test
+    // calling the controller directly.
+    if let Ok(script) = env::var("FLEZHA_ADMIN_SCRIPT") {
+        run_admin_script(&runner, script);
+    }
     runner
         .define_stream::<DoNothingOperative>()?
         .define_stream::<StoreInputOperative>()?
@@ -116,6 +123,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .define_workflow::<BenchLoopWorkflow>()?
         .run()?;
     Ok(())
+}
+
+/// Run the admin drill on its own thread once the control plane is up. The
+/// first calls race the connect, which answers `Unavailable`; retrying on that
+/// one refusal is what synchronises with it, and every other answer is the
+/// controller's and is printed.
+fn run_admin_script(runner: &FlezhaRunner, script: String) {
+    let admin = runner.admin();
+    thread::spawn(move || {
+        let calls: Vec<serde_json::Value> =
+            serde_json::from_str(&script).expect("FLEZHA_ADMIN_SCRIPT is a JSON array of calls");
+        for call in calls {
+            // `after_ms` holds the drill between two calls, which is what lets
+            // a scenario change the role binding mid-session and see the next
+            // call answer differently with no reconnect.
+            if let Some(pause) = call["after_ms"].as_u64() {
+                thread::sleep(Duration::from_millis(pause));
+            }
+            let verb = call["verb"].as_str().unwrap_or_default().to_string();
+            let args: Vec<serde_json::Value> = call["args"].as_array().cloned().unwrap_or_default();
+            println!("admin {verb} {}", admin_answer(&admin, &verb, &args));
+        }
+    });
+}
+
+fn admin_answer(admin: &flezha_runner::Admin, verb: &str, args: &[serde_json::Value]) -> String {
+    for _ in 0..600 {
+        match admin.call(verb, args) {
+            Ok(value) => return format!("ok {value}"),
+            Err(flezha_runner::admin::AdminError::Unavailable) => {
+                thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => return format!("err {e}"),
+        }
+    }
+    "err no control plane within 30s".to_string()
 }
 
 fn namespace() -> String {

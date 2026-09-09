@@ -229,6 +229,18 @@ impl FlezhaRunner {
         &self.core.namespace
     }
 
+    /// Administer this namespace from ordinary application code: start, stop
+    /// and feed operatives, enable and disable plugins, read what is running.
+    ///
+    /// The controller judges every call as the identity this connection
+    /// proved, so no credential is held here and nothing expires. An operator
+    /// grants a namespace's applications the authority once, with
+    /// `flz role bind runner@<namespace> <namespace> app`; until then every
+    /// call is refused. See [`crate::admin`].
+    pub fn admin(&self) -> crate::admin::Admin {
+        crate::admin::Admin
+    }
+
     /// Declare a StreamOperative class the runtime can spawn instances of
     /// later (via the controller's `AddOperative`). Calls `R::channels(...)`
     /// once and records the topology in the global class registry. Legal

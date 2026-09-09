@@ -14,10 +14,9 @@ use std::time::Duration;
 
 use crate::shutdown::AckResult;
 
-/// How long a spawn result is awaited before it is reported as timed out.
-/// Generous: the controller may have to start an instance, which waits for a
-/// runner advertising the factory.
-pub const SPAWN_RESULT_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long a spawn result is awaited before it is reported as timed out: the
+/// deadline every request over [`crate::shutdown::ask`] waits out.
+pub const SPAWN_RESULT_TIMEOUT: Duration = crate::shutdown::REPLY_TIMEOUT;
 
 /// What to do when the requested `instance_id` is already running.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -232,27 +231,17 @@ pub(crate) fn request(
         instance_id,
         crate::util::nonce_suffix()
     );
-    // Register before sending: the reply can then never arrive before its
-    // waiter exists (same ordering rule as the proc-commit barrier).
-    let rx = crate::shutdown::register_pending_ack(reference_id.clone());
+    let command = crate::pb::command_request::Command::SpawnWorkflowRequest(
+        crate::pb::SpawnWorkflowRequest {
+            instance_id: instance_id.clone(),
+            factory_id: factory_id.clone(),
+            payload,
+            if_running: if_running.as_wire().to_string(),
+        },
+    );
 
-    let sent =
-        crate::runner::coordinator_try_send(crate::runner::RunnerMessage::EmitControlRequest {
-            reference_id: reference_id.clone(),
-            command: crate::pb::command_request::Command::SpawnWorkflowRequest(
-                crate::pb::SpawnWorkflowRequest {
-                    instance_id: instance_id.clone(),
-                    factory_id: factory_id.clone(),
-                    payload,
-                    if_running: if_running.as_wire().to_string(),
-                },
-            ),
-        });
-
-    if !sent {
-        crate::shutdown::drop_pending_ack(&reference_id);
-        return SpawnHandle::resolved(instance_id, factory_id, Err(SpawnError::Unavailable));
+    match crate::shutdown::ask(reference_id, command) {
+        Ok(rx) => SpawnHandle::pending(instance_id, factory_id, rx),
+        Err(_) => SpawnHandle::resolved(instance_id, factory_id, Err(SpawnError::Unavailable)),
     }
-
-    SpawnHandle::pending(instance_id, factory_id, rx)
 }
