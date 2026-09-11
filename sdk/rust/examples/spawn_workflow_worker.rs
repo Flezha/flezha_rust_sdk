@@ -16,6 +16,10 @@
 //!         .define_stream::<AlertDetector>()?
 //!         .define_workflow::<Triage>()?
 //!         .run()?;
+//!
+//! With authorization on, the default in a release, bind the namespace's runner
+//! principal to `app` first, or every spawn resolves `Refused`:
+//!     flz role bind runner@default app default
 
 use flezha_runner::procedure::{IfRunning, Procedure, ProcedureCtx, ProcedureError};
 use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};

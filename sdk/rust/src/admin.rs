@@ -9,7 +9,7 @@
 //! grants the authority once per namespace and revokes it the same way:
 //!
 //! ```sh
-//! flz role bind runner@team-orders team-orders app
+//! flz role bind runner@team-orders app team-orders
 //! ```
 //!
 //! Every method is one line over [`flz_core::admin::call`], because the verb

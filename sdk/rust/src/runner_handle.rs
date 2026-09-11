@@ -235,7 +235,7 @@ impl FlezhaRunner {
     /// The controller judges every call as the identity this connection
     /// proved, so no credential is held here and nothing expires. An operator
     /// grants a namespace's applications the authority once, with
-    /// `flz role bind runner@<namespace> <namespace> app`; until then every
+    /// `flz role bind runner@<namespace> app <namespace>`; until then every
     /// call is refused. See [`crate::admin`].
     pub fn admin(&self) -> crate::admin::Admin {
         crate::admin::Admin
