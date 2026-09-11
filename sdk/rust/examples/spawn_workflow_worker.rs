@@ -18,8 +18,10 @@
 //!         .run()?;
 //!
 //! With authorization on, the default in a release, bind the namespace's runner
-//! principal to `app` first, or every spawn resolves `Refused`:
-//!     flz role bind runner@default app default
+//! principal to `spawner` first, or every spawn resolves `Refused`:
+//!     flz role bind runner@default spawner default
+//! The role also lets this runner's `admin()` start and send to operatives in its
+//! namespace, and nothing else.
 
 use flezha_runner::procedure::{IfRunning, Procedure, ProcedureCtx, ProcedureError};
 use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
