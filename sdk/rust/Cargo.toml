@@ -183,10 +183,6 @@ name = "timer_lifecycle"
 required-features = ["bench-internals", "testing"]
 
 [[test]]
-name = "entry_idle"
-required-features = ["bench-internals"]
-
-[[test]]
 name = "sugar_emit"
 required-features = ["testing"]
 

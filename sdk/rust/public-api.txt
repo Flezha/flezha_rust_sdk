@@ -422,12 +422,6 @@ pub use operative::builder::TopologyBuildError;
 #       pub fn run(&self) -> Result<(), FlezhaError>;          # start + await_termination
 #       pub fn operatives(&self) -> Result<HashMap<String, Arc<StreamInstance>>, FlezhaError>;
 #       pub fn await_termination(&self) -> Result<(), FlezhaError>;
-#
-#       ADDED by `expose-entry-input-idle-signal`:
-#       pub fn last_entry_delivery(&self, channel: &str) -> Option<Instant>;
-#       pub fn on_entry_idle(
-#           &self, channel: impl Into<String>, threshold: Duration, observer: impl IdleObserver,
-#       ) -> &Self;                            # legal before AND after start()
 #   }
 #
 #   pub enum FlezhaError {                 # thiserror; the ONE chain error
@@ -502,25 +496,3 @@ pub use operative::builder::TopologyBuildError;
 #       pub fn init_default_tracing();       # RUST_LOG wins when set; a second
 #                                            # install warns and returns, never panics
 #   }
-
-# Entry-input idle signal (`expose-entry-input-idle-signal`). The SDK owns the
-# IO threads, so only it knows when an entry channel last received a frame; the
-# threshold and the action stay with the application. The delivery stamp lives
-# in the shared core (`flz_core::entry_input`), so the Java SDK — a poll host
-# over the same `dispatch` — reads the same fact through the C ABI rather than
-# keeping a mirror.
-#
-#   pub mod entry_idle {
-#       pub trait IdleObserver: Send + Sync + 'static {
-#           fn idle(&self, gap: Duration);
-#           fn resumed(&self, gap: Duration) { }   # defaulted no-op
-#       }
-#       # blanket impl: any `Fn(Duration) + Send + Sync + 'static` is an
-#       # IdleObserver, so a bare closure registers.
-#   }
-#   pub use entry_idle::IdleObserver;
-#
-#   Fires once per idle episode, never before the channel's first frame, and
-#   re-arms on the resume notification. Evaluated on one background tick per
-#   runner (threshold/4, clamped to [250ms, 1s]); a panicking observer is
-#   contained and logged on `flezha::entry_idle`.

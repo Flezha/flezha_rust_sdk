@@ -294,7 +294,6 @@ fn channel_descriptor(entry: ChannelEntry, derived: DerivedChannel) -> ChannelDe
         overflow_policy: entry.overflow_policy,
         retry: entry.retry,
         codec: entry.codec,
-        entry_observation: flz_core::channel::entry_observation_for(kind, entry.name),
     }
 }
 

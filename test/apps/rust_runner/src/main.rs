@@ -15,8 +15,8 @@ pub(crate) use flezha_runner::state::{
     postcard, Change, CoalesceKey, NoChange, RestoreInitPayload, StateHandle, WallClock,
 };
 pub(crate) use flezha_runner::{
-    ChannelBuilder, Flezha, FlezhaRunner, IdleObserver, LoopMode, OverflowPolicy, StreamOperative,
-    WorkflowCtx, WorkflowError, WorkflowOperative,
+    ChannelBuilder, Flezha, FlezhaRunner, LoopMode, OverflowPolicy, StreamOperative, WorkflowCtx,
+    WorkflowError, WorkflowOperative,
 };
 pub(crate) use serde::{Deserialize, Serialize};
 
@@ -56,7 +56,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     spawn_stdin_eof_exit();
     let runner = Flezha::create_runner(namespace())?;
-    arm_entry_idle_probe(&runner);
     // One row of the refusal table instead of the fixture set: a refused
     // topology must not reach a connected runner.
     if let Ok(topology) = env::var("FLEZHA_REFUSAL_FIXTURE") {
@@ -101,7 +100,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .define_stream::<PoisonProbeOperative>()?
         .define_stream::<WedgeProbeOperative>()?
         .define_stream::<CandleOperative>()?
-        .define_stream::<EntryIdleProbeOperative>()?
         .define_workflow::<EchoWorkflow>()?
         .define_workflow::<CommitBlockWorkflow>()?
         .define_workflow::<SyncDurableWorkflow>()?

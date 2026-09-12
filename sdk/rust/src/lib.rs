@@ -19,7 +19,6 @@ pub mod workflow;
 pub use flz_core::command;
 pub mod diag;
 pub mod entity;
-pub mod entry_idle;
 pub mod local;
 pub mod operative;
 pub mod procedure;
@@ -62,7 +61,6 @@ pub use channel::{
 };
 pub use entity::timer::TimerKind;
 pub use entity::{RestoreError, RestoreInitPayload};
-pub use entry_idle::IdleObserver;
 /// Authoring sugar. `#[flezha::procedure]`, `#[derive(flezha::State)]`, and
 /// `flezha::operative!` expand to the trait surface above; see
 /// `docs/sdk/authoring_contract.md`.
