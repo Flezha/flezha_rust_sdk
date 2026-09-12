@@ -1,0 +1,18 @@
+error[E0277]: `Receipt` cannot be written down, so it cannot be a procedure's `Output`
+  --> tests/ui/output_without_byte_form.rs:17:19
+   |
+17 |     type Output = Receipt;
+   |                   ^^^^^^^ this output has no byte form
+   |
+help: the trait `JournalValue` is not implemented for `Receipt`
+  --> tests/ui/output_without_byte_form.rs:11:1
+   |
+11 | struct Receipt;
+   | ^^^^^^^^^^^^^^
+   = note: a procedure's output is the handoff to the next procedure, and a durable workflow journals that handoff at its commit barrier and re-seeds from it on crash-resume
+   = note: add `#[derive(serde::Serialize, serde::Deserialize)]` to `Receipt`
+note: required by a bound in `flezha_runner::Procedure::Output`
+  --> src/procedure/mod.rs
+   |
+   |     type Output: Send + Sync + 'static + JournalValue;
+   |                                          ^^^^^^^^^^^^ required by this bound in `Procedure::Output`

@@ -52,7 +52,7 @@ pub fn build_spec<T: WorkflowOperative>() -> Result<WorkflowSpec, BuildWorkflowE
 
     refuse_chained_loop_shape::<T>(factory_id, &dag)?;
     if T::PERSISTENCE_ENABLED {
-        refuse_missing_codecs::<T>(factory_id, &topology, &dag)?;
+        refuse_loop_terminal_without_handoff::<T>(factory_id, &topology, &dag)?;
     }
 
     Ok(spec_of::<T>(
@@ -107,27 +107,19 @@ fn refuse_chained_loop_shape<T: WorkflowOperative>(
     Ok(())
 }
 
-/// A durable structured class journals the inter-proc handoff at every proc
-/// boundary (`workflow-proc-journal`), which requires every inter-procedure
-/// channel to carry a byte codec — and, for a chained loop, the terminal batch
-/// too, since a crash mid-loop would otherwise silently resume with an empty
-/// seed and read as "converged". Unpublished library: fail registration
-/// instead of shimming.
-fn refuse_missing_codecs<T: WorkflowOperative>(
+/// A durable chained loop seeds iteration N+1 from iteration N's terminal
+/// handoff, so the terminal procedure has to release one the journal carries.
+/// Two shapes do not: a procedure nothing is wired from and that names no sink
+/// owns no output channel at all, and one whose only output is plugin-bound
+/// gets no journal codec, by the rule `channel_descriptor` applies on both the
+/// typed and the byte-passing path. Either way a crash mid-loop would resume
+/// with an empty seed, which the loop reads as "converged" and stops.
+/// Unpublished library: fail registration instead of shimming.
+fn refuse_loop_terminal_without_handoff<T: WorkflowOperative>(
     factory_id: &'static str,
     topology: &OperativeTopology,
     dag: &ProcDag,
 ) -> Result<(), BuildWorkflowError> {
-    if let Some(ch) = topology
-        .channels
-        .iter()
-        .find(|c| c.kind == ChannelKind::InterProcedure && c.codec.is_none())
-    {
-        return Err(BuildWorkflowError::MissingInterProcCodec {
-            factory_id,
-            channel: ch.name.to_string(),
-        });
-    }
     if T::loop_mode() != LoopMode::Chained {
         return Ok(());
     }
@@ -135,12 +127,12 @@ fn refuse_missing_codecs<T: WorkflowOperative>(
         .single_leaf()
         .and_then(|leaf| topology.procedure(dag.order[leaf]))
         .expect("a chained loop has a single leaf (checked above)");
-    let codec_ok = terminal
+    let carries_handoff = terminal
         .output_channel_id
         .and_then(|cid| topology.channel(cid))
-        .is_some_and(|ch| ch.codec.is_some());
-    if !codec_ok {
-        return Err(BuildWorkflowError::LoopTerminalWithoutCodec {
+        .is_some_and(|ch| ch.kind == ChannelKind::InterProcedure);
+    if !carries_handoff {
+        return Err(BuildWorkflowError::LoopTerminalWithoutHandoff {
             factory_id,
             procedure: terminal.name.to_string(),
         });

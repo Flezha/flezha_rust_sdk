@@ -120,10 +120,8 @@ pub(crate) fn retry_chain(c: &ChannelBuilder) {
     c.input::<String>("in")
         .into::<SplitProc>()
         .named("mid")
-        .codec()
         .into::<RetryReserve>()
         .named("mid2")
-        .codec()
         .into::<FlakyFan>()
         .named("out")
         .sink("sink");

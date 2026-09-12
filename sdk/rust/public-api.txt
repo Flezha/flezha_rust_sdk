@@ -252,7 +252,7 @@ pub use entity::timer::TimerKind;                            # ADDED by `entity-
 #     pub fn on_full / retry_max / retry_backoff_ms -> Self;
 #     # --- producer-side only (K = NodeTarget) ---
 #     pub fn branch<const N: usize>(self, arms: [&dyn Fn(Stream<'b, T>); N]) -> Self;  # >= 2 arms
-#     pub fn named / keyed / codec / codec_with -> Self;
+#     pub fn named / keyed -> Self;
 #     # CHANGED by `unify-plugin-sink-api`: `also_output_with` -> `sink_with`,
 #     # `also_output` -> `sink`, and the terminal `output` is REMOVED (no
 #     # coexistence). One egress method, always returning the handle; a channel

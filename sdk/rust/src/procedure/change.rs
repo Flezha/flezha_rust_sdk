@@ -1,5 +1,7 @@
-//! `Change` trait, `NoChange` zero-variant default, and `CoalesceKey`
-//! newtype per `operative-state-persistence/design.md` Decisions 3 and 4.
+//! The named bounds on the values the runtime writes down: `Change` and its
+//! `NoChange` zero-variant default, the `CoalesceKey` newtype (per
+//! `operative-state-persistence/design.md` Decisions 3 and 4), and
+//! `JournalValue`, the bound a Procedure's `Output` carries.
 //!
 //! The `Change` trait is a marker workflow on
 //! `Serialize + DeserializeOwned + Send + Sync + 'static` with one
@@ -53,6 +55,51 @@ impl<'de> serde::Deserialize<'de> for NoChange {
 impl Change for NoChange {
     fn coalesce_key(&self) -> Option<CoalesceKey> {
         match *self {}
+    }
+}
+
+/// A value the runtime can write down and read back: the journal codec of
+/// every inter-procedure channel, carried by the type rather than declared per
+/// channel.
+///
+/// [`Procedure::Output`](crate::procedure::Procedure::Output) carries this
+/// bound because one procedure's output is the handoff to the next, and a
+/// durable structured workflow journals that handoff at its commit barrier so
+/// a resumed run can seed the next procedure instead of re-running the chain
+/// from the top. Whether a class journals is not settled where it is compiled
+/// — an operator overrides persistence per class at deploy time — so the bound
+/// is unconditional, like the one `Procedure::State` already carries.
+///
+/// Nothing implements this by hand. The blanket implementation covers every
+/// `Serialize + DeserializeOwned` type, which is what
+/// `#[derive(serde::Serialize, serde::Deserialize)]` produces, and it leaves
+/// no room for a second implementation. The trait exists under its own name so
+/// that an output which does not qualify is refused in the SDK's own words
+/// instead of in serde's, which names traits the author never wrote.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` cannot be written down, so it cannot be a procedure's `Output`",
+    label = "this output has no byte form",
+    note = "a procedure's output is the handoff to the next procedure, and a durable workflow \
+            journals that handoff at its commit barrier and re-seeds from it on crash-resume",
+    note = "add `#[derive(serde::Serialize, serde::Deserialize)]` to `{Self}`"
+)]
+pub trait JournalValue: Sized {
+    /// The handoff's byte form. Postcard, the same wire format the effect
+    /// records use.
+    fn to_journal_bytes(&self) -> Result<Vec<u8>, String>;
+
+    /// Read back what [`Self::to_journal_bytes`] wrote.
+    fn from_journal_bytes(bytes: &[u8]) -> Result<Self, String>;
+}
+
+#[diagnostic::do_not_recommend]
+impl<T: Serialize + DeserializeOwned> JournalValue for T {
+    fn to_journal_bytes(&self) -> Result<Vec<u8>, String> {
+        postcard::to_allocvec(self).map_err(|e| format!("inter-proc codec encode failed: {e}"))
+    }
+
+    fn from_journal_bytes(bytes: &[u8]) -> Result<Self, String> {
+        postcard::from_bytes(bytes).map_err(|e| format!("inter-proc codec decode failed: {e}"))
     }
 }
 

@@ -106,11 +106,7 @@ impl Procedure for Stage2 {
 /// each branch ending at its own plugin sink. The edge is (channel,
 /// consumer), so both branches read exactly what Stage1 released on `mid`.
 pub(crate) fn tree_chain(c: &ChannelBuilder) {
-    let mid = c
-        .input::<String>("in")
-        .into::<Stage1>()
-        .named("mid")
-        .codec();
+    let mid = c.input::<String>("in").into::<Stage1>().named("mid");
     mid.into::<Stage2>().named("out_b").sink("sink");
     mid.into::<EchoProc>().named("out_c").sink("sink");
 }
@@ -132,7 +128,6 @@ pub(crate) fn two_stage_chain(c: &ChannelBuilder) {
     c.input::<String>("in")
         .into::<Stage1>()
         .named("mid")
-        .codec()
         .into::<Stage2>()
         .named("out")
         .sink("sink");
@@ -324,7 +319,6 @@ pub(crate) fn loop_saga_chain(c: &ChannelBuilder) {
     c.input::<String>("in")
         .into::<LoopReserve>()
         .named("mid")
-        .codec()
         .into::<LoopMaybeFail>()
         .named("out")
         .sink("sink");
@@ -344,12 +338,30 @@ impl WorkflowOperative for LoopWithoutChain {
     }
 }
 
-/// A durable handoff-chained loop whose terminal procedure emits to a plugin
-/// (no codec), so iteration N+1 could not be re-seeded after a crash.
-pub(crate) struct ChainedLoopNoCodec;
-impl WorkflowOperative for ChainedLoopNoCodec {
+/// A durable handoff-chained loop whose terminal procedure releases nothing:
+/// no consumer is wired from it and it names no sink, so it owns no output
+/// channel at all and iteration N+1 has no handoff to be re-seeded from.
+pub(crate) struct ChainedLoopNoTerminalOutput;
+impl WorkflowOperative for ChainedLoopNoTerminalOutput {
     fn factory_id() -> &'static str {
-        "test-chained-loop-no-codec"
+        "test-chained-loop-no-terminal-output"
+    }
+    fn loop_mode() -> LoopMode {
+        LoopMode::Chained
+    }
+    fn procedures(c: &ChannelBuilder) {
+        c.input::<String>("in").into::<Stage1>().into::<Stage2>();
+    }
+}
+
+/// The second shape the same refusal covers: the terminal DOES own a channel,
+/// but its only wiring is a plugin sink, so the channel derives plugin-bound
+/// and carries no journal codec. The iteration commit would ship an empty
+/// handoff and the resume would read the loop as converged.
+pub(crate) struct ChainedLoopPluginTerminal;
+impl WorkflowOperative for ChainedLoopPluginTerminal {
+    fn factory_id() -> &'static str {
+        "test-chained-loop-plugin-terminal"
     }
     fn loop_mode() -> LoopMode {
         LoopMode::Chained
@@ -358,7 +370,6 @@ impl WorkflowOperative for ChainedLoopNoCodec {
         c.input::<String>("in")
             .into::<Stage1>()
             .named("mid")
-            .codec()
             .into::<Stage2>()
             .named("out")
             .sink("sink");
@@ -454,7 +465,6 @@ impl WorkflowOperative for FanWorkflow {
         c.input::<String>("in")
             .into::<SplitProc>()
             .named("mid")
-            .codec()
             .into::<FanProc>()
             .named("out")
             .sink("sink");
@@ -538,7 +548,6 @@ impl WorkflowOperative for HybridWorkflow {
         c.input::<String>("in")
             .into::<HybridStage1>()
             .named("mid")
-            .codec()
             .sink_with("midsink", |s: &String| format!("mid:{s}").into_bytes())
             .into::<HybridStage2>()
             .named("out")

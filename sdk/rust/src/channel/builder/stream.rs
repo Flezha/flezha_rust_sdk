@@ -41,8 +41,8 @@ impl StreamTarget for NodeTarget {
 
 /// The entry channel's handle: wires the graph's root consumer via `.into` and
 /// carries the entry-side channel config. Same surface as [`Stream`] for
-/// everything that is not producer-side (no `codec`, no plugin sink, no
-/// `named` — the entry channel's name is given at `input(...)`).
+/// everything that is not producer-side (no plugin sink, no `named` — the
+/// entry channel's name is given at `input(...)`).
 pub type EntryStream<'b, T> = Stream<'b, T, EntryTarget>;
 
 /// A procedure's output stream handle, returned by `.into::<Proc>()`: a
@@ -57,8 +57,8 @@ pub type EntryStream<'b, T> = Stream<'b, T, EntryTarget>;
 ///   [`branch`](Stream::branch) is equivalent sugar.
 /// - Two different streams wiring the same (unnamed) class fan **in**: the
 ///   consumer node accumulates both producers' contributions.
-/// - Per-channel config (`codec`, `keyed`, `on_full`, `retry_*`, `named`)
-///   chains in any order relative to consumer wiring.
+/// - Per-channel config (`keyed`, `on_full`, `retry_*`, `named`) chains in any
+///   order relative to consumer wiring.
 ///
 /// The handle borrows the builder, so it cannot outlive the declaration —
 /// using one after the topology freezes at registration is a compile error.
@@ -301,29 +301,6 @@ impl<'b, T: 'static + Send + Sync> Stream<'b, T, NodeTarget> {
         self
     }
 
-    /// Declare the standard inter-proc byte codec (postcard over `T`'s serde
-    /// derives) so this channel's handoff batch is journal-able at the
-    /// workflow proc-commit barrier and re-seedable on crash-resume. Required
-    /// on every inter-proc channel of a durable structured workflow class.
-    pub fn codec(self) -> Self
-    where
-        T: serde::Serialize + serde::de::DeserializeOwned,
-    {
-        self.with_channel(|st, cid| set_codec::<T>(st, cid));
-        self
-    }
-
-    /// Declare a custom typed→bytes / bytes→typed codec pair for payload
-    /// types without the standard serde derives.
-    pub fn codec_with<E, D>(self, encode: E, decode: D) -> Self
-    where
-        E: Fn(&T) -> Result<Vec<u8>, String> + Send + Sync + 'static,
-        D: Fn(Vec<u8>) -> Result<T, String> + Send + Sync + 'static,
-    {
-        self.with_channel(|st, cid| set_codec_with::<T, E, D>(st, cid, encode, decode));
-        self
-    }
-
     /// Opt this channel into output identity: every plugin emit must carry
     /// a natural key via `ctx.emit_keyed(key, value)` and the runtime
     /// stamps `flz.entity` / `flz.seq` / `flz.key` on the wire frame.
@@ -400,49 +377,6 @@ impl<'b, T: 'static + Send + Sync> Stream<'b, T, NodeTarget> {
         });
         self
     }
-}
-
-/// Install the standard inter-proc byte codec for `T` — postcard over the
-/// SDK's standard serde derives, the same wire format the effect records
-/// use. The default behind a bare `.codec::<T>()`.
-fn set_codec<T>(st: &mut BuilderState, channel_id: u32)
-where
-    T: serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static,
-{
-    set_codec_with::<T, _, _>(
-        st,
-        channel_id,
-        |typed: &T| {
-            postcard::to_allocvec(typed).map_err(|e| format!("inter-proc codec encode failed: {e}"))
-        },
-        |bytes: Vec<u8>| {
-            postcard::from_bytes::<T>(&bytes)
-                .map_err(|e| format!("inter-proc codec decode failed: {e}"))
-        },
-    );
-}
-
-/// Install a custom typed→bytes / bytes→typed codec pair, type-erasing both
-/// halves onto the channel entry.
-fn set_codec_with<T, E, D>(st: &mut BuilderState, channel_id: u32, encode: E, decode: D)
-where
-    T: Send + Sync + 'static,
-    E: Fn(&T) -> Result<Vec<u8>, String> + Send + Sync + 'static,
-    D: Fn(Vec<u8>) -> Result<T, String> + Send + Sync + 'static,
-{
-    let encode_erased: crate::channel::CodecEncodeFn = Arc::new(move |val: &dyn Any| {
-        let typed = val
-            .downcast_ref::<T>()
-            .ok_or_else(|| "inter-proc codec: type mismatch (build-time invariant)".to_string())?;
-        encode(typed)
-    });
-    let decode_erased: crate::channel::EntryWrapFn = Arc::new(move |bytes: Vec<u8>| {
-        decode(bytes).map(|v| Arc::new(v) as Arc<dyn Any + Send + Sync>)
-    });
-    st.channels[channel_id as usize].codec = Some(crate::channel::ChannelCodec {
-        encode: encode_erased,
-        decode: decode_erased,
-    });
 }
 
 /// The default plugin serialization for `T`: passthrough for `Vec<u8>`, UTF-8

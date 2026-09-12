@@ -34,6 +34,69 @@ impl Procedure for TierProc {
     }
 }
 
+/// The journal codec is derived from the producing procedure's `Output`, so a
+/// produced channel carries one whatever the class kind. The bound is
+/// unconditional because an operator's per-class persistence override, not the
+/// author, decides whether a class journals; nothing in a stream operative's
+/// engine path ever calls it (the only readers are the workflow commit and
+/// resume paths in `flz_core`).
+#[test]
+fn a_produced_channel_carries_a_derived_codec() {
+    let cb = ChannelBuilder::new();
+    cb.input::<String>("in").into::<TierProc>().named("mid");
+    let topology = build_topology("derived_codec", cb).expect("topology");
+    let mid = topology
+        .channels
+        .iter()
+        .find(|c| &*c.name == "mid")
+        .expect("the declared channel exists");
+
+    let codec = mid
+        .codec
+        .as_ref()
+        .expect("a produced channel carries its codec from the moment it exists");
+    let value: std::sync::Arc<dyn std::any::Any + Send + Sync> =
+        std::sync::Arc::new("handoff".to_string());
+    let bytes = (codec.encode)(&*value).expect("the derived codec encodes");
+    // The same postcard bytes the declared codec produced, so a journal
+    // written before this change re-seeds after it.
+    assert_eq!(
+        bytes,
+        postcard::to_allocvec(&"handoff".to_string()).expect("postcard encodes a String")
+    );
+    let back = (codec.decode)(bytes).expect("the derived codec decodes");
+    assert_eq!(
+        back.downcast_ref::<String>()
+            .expect("the same type came back"),
+        "handoff"
+    );
+}
+
+/// The other half of the same rule: a plugin-bound terminal is not a handoff.
+/// Nothing re-seeds from it, and journaling every plugin payload at every proc
+/// barrier would be WAL volume no reader ever asks for — so it carries no
+/// codec, exactly as `flz_core::host::build` decides for a byte-passing host.
+#[test]
+fn a_plugin_bound_terminal_carries_no_codec() {
+    let cb = ChannelBuilder::new();
+    cb.input::<String>("in")
+        .into::<TierProc>()
+        .named("out")
+        .sink("kafka");
+    let topology = build_topology("plugin_terminal_codec", cb).expect("topology");
+    let out = topology
+        .channels
+        .iter()
+        .find(|c| &*c.name == "out")
+        .expect("the declared channel exists");
+
+    assert_eq!(out.kind, crate::channel::ChannelKind::PluginBound);
+    assert!(
+        out.codec.is_none(),
+        "a plugin-bound terminal must ship an empty handoff, not a journaled one"
+    );
+}
+
 #[test]
 fn effectively_once_with_keyed_plugin_channel_builds() {
     let cb = ChannelBuilder::new();

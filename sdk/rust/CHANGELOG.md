@@ -4,6 +4,46 @@ All notable changes to the Rust SDK crate.
 
 ## Unreleased
 
+### Removed — `codec()` and `codec_with(...)` on the stream handle (`derive-the-handoff-codec`)
+
+**Breaking.** Both methods are gone from `Stream`. A chain that calls either no
+longer compiles; delete the call, nothing replaces it. The runtime attaches the
+journal codec itself, where a procedure's output channel is created, derived
+from that procedure's declared `Output`, so there is no declaration left to
+forget.
+
+`Procedure::Output` and `SimpleProcedure::Output` therefore carry a new bound,
+`JournalValue`, satisfied by every `Serialize + DeserializeOwned` type through a
+blanket implementation. A procedure whose output has no serde derives stops
+compiling, and the message names the type and says the output is journaled at a
+workflow's commit barrier rather than naming a serde trait the author never
+wrote. `Input` and `State` are unchanged.
+
+The bound is unconditional on purpose: whether a class journals is an operator's
+per-class persistence setting at deploy time, not a fact available where the
+code is compiled, so a workflow-only bound could not be honest. A stream
+operative pays a compile-time requirement and nothing at runtime.
+
+`BuildWorkflowError::MissingInterProcCodec` is deleted, and
+`LoopTerminalWithoutCodec` becomes `LoopTerminalWithoutHandoff`: a durable
+chained loop seeds each iteration from its terminal procedure's journaled
+handoff, and only an inter-procedure channel carries one.
+
+**Breaking, second:** a durable `Chained` loop whose terminal procedure's only
+output is a plugin sink is refused. The journal codec rides an inter-procedure
+channel and no other kind — the rule `flz_core` has always applied to a host
+that ships bytes — so such a loop shipped an empty handoff and a crash-resumed
+run read the empty seed as convergence and stopped. It worked here only while
+the author declared the codec by hand, and truncated silently in every other
+SDK. Take the sink off the terminal's own channel — a producer with no consumer
+is a legal channel, and is what a retained loop output already is — or declare
+`LoopMode::PerInput`. Wiring another procedure behind the sink does not help on
+its own: it becomes the new terminal and owes the same handoff.
+
+Same postcard bytes as before on every channel that still carries a codec, so a
+journal written by an older build re-seeds under this one.
+
+
 ### Added — `SimpleProcedure` and the multi-emit sugar shape (`add-tiered-procedure-authoring`)
 
 `SimpleProcedure` declares only `Input`, `Output`, `State` plus `name`,

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::fixtures::*;
-use crate::channel::ChannelBuilder;
+use crate::channel::{ChannelBuilder, ChannelKind};
 use crate::entity::restore::RestoreInitPayload;
 use crate::operative::registry::{Operative, OperativeRegistry};
 use crate::procedure::change::NoChange;
@@ -110,7 +110,7 @@ fn external_stop_only_authoring_is_rejected() {
 }
 
 #[test]
-fn durable_structured_without_inter_proc_codec_is_rejected() {
+fn a_durable_handoff_is_journalable_with_nothing_declared() {
     struct NoCodec;
     impl WorkflowOperative for NoCodec {
         fn factory_id() -> &'static str {
@@ -123,35 +123,37 @@ fn durable_structured_without_inter_proc_codec_is_rejected() {
                 .into::<Stage2>();
         }
     }
-    let err = spec::build_spec::<NoCodec>().expect_err("durable class needs the codec");
-    match err {
-        spec::BuildWorkflowError::MissingInterProcCodec { channel, .. } => {
-            assert_eq!(channel, "mid", "the error names the codec-less channel");
-        }
-        other => panic!("expected MissingInterProcCodec, got {other:?}"),
-    }
+    let spec = spec::build_spec::<NoCodec>().expect("the runtime derives the handoff codec");
+    let mid = spec
+        .topology
+        .as_ref()
+        .expect("a structured class has a topology")
+        .channels
+        .iter()
+        .find(|c| &*c.name == "mid")
+        .expect("the declared handoff channel exists");
+    assert_eq!(mid.kind, ChannelKind::InterProcedure);
 
-    // The opted-out shape of the same topology registers fine.
-    struct NoCodecOptOut;
-    impl WorkflowOperative for NoCodecOptOut {
-        fn factory_id() -> &'static str {
-            "test-no-codec-optout-workflow"
-        }
-        const PERSISTENCE_ENABLED: bool = false;
-        fn procedures(c: &ChannelBuilder) {
-            c.input::<String>("in")
-                .into::<Stage1>()
-                .named("mid")
-                .into::<Stage2>();
-        }
-    }
-    spec::build_spec::<NoCodecOptOut>().expect("opted-out classes may omit the codec");
+    // Derived, not declared: the channel round-trips Stage1's Output.
+    let codec = mid
+        .codec
+        .as_ref()
+        .expect("every produced channel has a codec");
+    let value: Arc<dyn std::any::Any + Send + Sync> = Arc::new("handoff".to_string());
+    let bytes = (codec.encode)(&*value).expect("the derived codec encodes");
+    let back = (codec.decode)(bytes).expect("the derived codec decodes");
+    assert_eq!(
+        back.downcast_ref::<String>()
+            .expect("the same type came back"),
+        "handoff"
+    );
 }
 
 /// `workflow-durable-loop` registration validation: a loop needs a chain to
-/// iterate, and a durable handoff-chained loop needs a serializable terminal
-/// batch — otherwise a crash mid-loop would re-seed iteration N+1 with an
-/// empty batch and silently read as "converged".
+/// iterate, and a durable handoff-chained loop needs a terminal procedure whose
+/// output channel the journal carries — otherwise a crash mid-loop would
+/// re-seed iteration N+1 with an empty batch and silently read as "converged".
+/// Two shapes fail it: no output channel, and a plugin-bound one.
 #[test]
 fn loop_authoring_is_validated() {
     match spec::build_spec::<LoopWithoutChain>().expect_err("run-sugar cannot loop a chain") {
@@ -159,16 +161,21 @@ fn loop_authoring_is_validated() {
         other => panic!("expected LoopWithoutChain, got {other:?}"),
     }
 
-    match spec::build_spec::<ChainedLoopNoCodec>()
-        .expect_err("a chained loop must be able to journal its terminal batch")
-    {
-        spec::BuildWorkflowError::LoopTerminalWithoutCodec { procedure, .. } => {
-            assert_eq!(
-                procedure, "workflow_stage2",
-                "the error names the terminal procedure"
-            );
+    for shape in ["no channel at all", "a plugin-bound channel"] {
+        let err = match shape {
+            "no channel at all" => spec::build_spec::<ChainedLoopNoTerminalOutput>(),
+            _ => spec::build_spec::<ChainedLoopPluginTerminal>(),
         }
-        other => panic!("expected LoopTerminalWithoutCodec, got {other:?}"),
+        .expect_err("a chained loop's terminal procedure must release a handoff");
+        match err {
+            spec::BuildWorkflowError::LoopTerminalWithoutHandoff { procedure, .. } => {
+                assert_eq!(
+                    procedure, "workflow_stage2",
+                    "the error names the terminal procedure ({shape})"
+                );
+            }
+            other => panic!("expected LoopTerminalWithoutHandoff for {shape}, got {other:?}"),
+        }
     }
 
     // An inbox-driven loop over the same topology is fine: it re-seeds each
@@ -318,10 +325,8 @@ fn dag_topology_is_validated() {
             c.input::<String>("in")
                 .into::<Stage1>()
                 .named("mid")
-                .codec()
                 .into::<Stage2>()
                 .named("back")
-                .codec()
                 .into::<Stage1>();
         }
     }

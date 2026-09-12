@@ -103,7 +103,6 @@ impl WorkflowOperative for UndoSaga {
         c.input::<String>("in")
             .into::<UndoEmit>()
             .named("mid")
-            .codec()
             .sink_with("undosink", |s: &String| s.clone().into_bytes())
             .into::<FailLast>()
             .named("out")
@@ -121,10 +120,8 @@ impl WorkflowOperative for ResumeSaga {
         c.input::<String>("in")
             .into::<ResumeUndoA>()
             .named("c1")
-            .codec()
             .into::<ResumeUndoB>()
             .named("c2")
-            .codec()
             .into::<SagaShipFails>()
             .named("out")
             .sink("sink");

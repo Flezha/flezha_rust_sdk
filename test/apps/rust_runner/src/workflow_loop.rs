@@ -195,7 +195,6 @@ impl WorkflowOperative for ChatRewindWorkflow {
         c.input::<String>("in")
             .into::<ChatTurn>()
             .named("mid")
-            .codec()
             .into::<ChatReplyUndoable>()
             .named("out")
             .sink("chat_sink");
@@ -222,7 +221,6 @@ impl WorkflowOperative for ChatLoopWorkflow {
         c.input::<String>("in")
             .into::<ChatTurn>()
             .named("mid")
-            .codec()
             .into::<ChatReply>()
             .named("out")
             .sink("chat_sink");
@@ -272,7 +270,6 @@ macro_rules! bench_chain {
                 $(
                     let s = s
                         .named(concat!("edge_", stringify!($rest)))
-                        .codec()
                         .into::<$rest>();
                 )*
                 s.named("out").sink("bench_sink");
@@ -380,7 +377,6 @@ impl WorkflowOperative for BenchLoopWorkflow {
         c.input::<String>("in")
             .into::<BenchTurn>()
             .named("mid")
-            .codec()
             .into::<ChatReply>()
             .named("out")
             .sink("bench_sink");

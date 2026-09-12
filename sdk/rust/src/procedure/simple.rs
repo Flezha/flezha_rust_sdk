@@ -65,8 +65,9 @@ pub trait SimpleProcedure: Send + Sync + 'static + Default {
     /// Per-entity input value. Same bounds as [`Procedure::Input`].
     type Input: Send + Sync + 'static + Clone;
 
-    /// Per-entity output value. Same bounds as [`Procedure::Output`].
-    type Output: Send + Sync + 'static;
+    /// Per-entity output value. Same bounds as [`Procedure::Output`],
+    /// [`JournalValue`](crate::procedure::JournalValue) included.
+    type Output: Send + Sync + 'static + crate::procedure::JournalValue;
 
     /// Per-entity state. Bound on [`DerivedState`] — the change type comes
     /// from it, which is what removes the `type Change` declaration. A

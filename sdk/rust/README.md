@@ -132,8 +132,8 @@ is refused at registration.
 
 One class can sit at several graph positions via named nodes
 (`into_named::<Filter>("spam_filter")`) — each named node keeps its own state
-identity. Graphs must be acyclic; per-channel config (`codec`, `keyed`,
-`on_full`, `retry_max`, `retry_backoff_ms`) chains on the handle; the hybrid
+identity. Graphs must be acyclic; per-channel config (`keyed`, `on_full`,
+`retry_max`, `retry_backoff_ms`) chains on the handle; the hybrid
 tap is the SAME method — `sink(name)` / `sink_with(name, serializer)` returns
 the handle, so a consumer wires after it. A channel is terminal by having none;
 `.sealed()` states that in the type.
@@ -219,7 +219,8 @@ channel you chose to `.named(...)`.
 ### A structured workflow DAG
 
 Workflow operatives author on the same builder. A durable class journals each
-proc barrier, so inter-proc channels declare `.codec()`; a fan-in node runs once,
+proc barrier, and the runtime derives the codec for that from each procedure's
+declared `Output`, so a chain declares nothing about it; a fan-in node runs once,
 after **all** its producers committed, with the accumulated batch — and on an
 abnormal exit the saga unwinds reverse-topologically (the join before either
 producer, the shared root last):
@@ -235,10 +236,9 @@ impl WorkflowOperative for SettleWorkflow {
         let reserved = c
             .input::<SettleJob>("in")
             .into::<Reserve>()
-            .named("reserved")
-            .codec();
-        reserved.into::<Charge>().named("charged").codec().into::<Reconcile>();
-        reserved.into::<Ledger>().named("booked").codec().into::<Reconcile>()
+            .named("reserved");
+        reserved.into::<Charge>().named("charged").into::<Reconcile>();
+        reserved.into::<Ledger>().named("booked").into::<Reconcile>()
             .named("reconciled")
             .sink("settlement_sink");
     }
@@ -249,7 +249,8 @@ A crash between the two producers resumes with the committed producer's
 **journaled** handoff banked and only the uncommitted arm re-run; `Reconcile`
 still runs exactly once. Cycles are refused at registration; a chained loop
 (`LoopMode::Chained`) additionally requires the graph to converge on a single
-codec'd terminal.
+terminal that releases an output channel, since that handoff is what seeds the
+next iteration.
 
 Parameterized procedures use the `Config` associated type: declare
 `type Config = MyConfig` and build the instance from it in `from_config` —

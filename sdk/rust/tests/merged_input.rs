@@ -18,10 +18,10 @@ use common::{dispatch_input, dispatch_marked, dummy_stream, setup, wait_until};
 
 // ----- Payloads -----
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct Ticker(String);
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct Candle(u64);
 
 /// The author-declared sum type a merged procedure consumes.

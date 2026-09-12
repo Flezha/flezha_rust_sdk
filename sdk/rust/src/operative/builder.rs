@@ -293,7 +293,15 @@ fn channel_descriptor(entry: ChannelEntry, derived: DerivedChannel) -> ChannelDe
         keyed: entry.keyed,
         overflow_policy: entry.overflow_policy,
         retry: entry.retry,
-        codec: entry.codec,
+        // One rule, both paths: a channel carries a journal codec exactly when
+        // the journal reads it back, which is when the derived kind is
+        // inter-procedure. `flz_core::host::build::channel_descriptor` says the
+        // same thing for a host that ships bytes. A plugin-bound terminal is
+        // not a handoff: nothing re-seeds from it, and journaling every plugin
+        // payload at every proc barrier would be WAL volume nobody reads.
+        codec: matches!(kind, ChannelKind::InterProcedure)
+            .then_some(entry.codec)
+            .flatten(),
     }
 }
 

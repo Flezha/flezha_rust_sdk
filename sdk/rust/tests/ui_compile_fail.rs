@@ -15,6 +15,7 @@ fn ui_compile_fail() {
     t.compile_fail("tests/ui/sealed_disallows_wiring.rs");
     t.compile_fail("tests/ui/stream_handle_cannot_escape.rs");
     t.compile_fail("tests/ui/entry_stream_has_no_plugin_sink.rs");
+    t.compile_fail("tests/ui/output_without_byte_form.rs");
 
     // Authoring-sugar macros (`simplify-sdk-authoring`).
     t.compile_fail("tests/ui/procedure_zero_inputs.rs");

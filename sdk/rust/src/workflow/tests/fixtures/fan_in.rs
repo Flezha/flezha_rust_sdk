@@ -77,18 +77,10 @@ impl WorkflowOperative for DiamondWorkflow {
         "test-diamond-workflow"
     }
     fn procedures(c: &ChannelBuilder) {
-        let a = c
-            .input::<String>("in")
-            .into::<DiamondA>()
-            .named("d_fan")
-            .codec();
-        a.into::<DiamondB>()
-            .named("d_b")
-            .codec()
-            .into::<DiamondJoin>();
+        let a = c.input::<String>("in").into::<DiamondA>().named("d_fan");
+        a.into::<DiamondB>().named("d_b").into::<DiamondJoin>();
         a.into::<DiamondC>()
             .named("d_c")
-            .codec()
             .into::<DiamondJoin>()
             .named("d_out")
             .sink("sink");
@@ -102,19 +94,9 @@ impl WorkflowOperative for JoinWorkflow {
         "test-join-workflow-shape"
     }
     fn procedures(c: &ChannelBuilder) {
-        let mid = c
-            .input::<String>("in")
-            .into::<Stage1>()
-            .named("mid")
-            .codec();
-        mid.into::<Stage2>()
-            .named("join_b")
-            .codec()
-            .into::<DiamondJoin>();
-        mid.into::<EchoProc>()
-            .named("join_c")
-            .codec()
-            .into::<DiamondJoin>();
+        let mid = c.input::<String>("in").into::<Stage1>().named("mid");
+        mid.into::<Stage2>().named("join_b").into::<DiamondJoin>();
+        mid.into::<EchoProc>().named("join_c").into::<DiamondJoin>();
     }
 }
 
@@ -127,22 +109,13 @@ impl WorkflowOperative for DiamondSaga {
         "test-diamond-saga"
     }
     fn procedures(c: &ChannelBuilder) {
-        let a = c
-            .input::<String>("in")
-            .into::<DiamondA>()
-            .named("d_fan")
-            .codec();
+        let a = c.input::<String>("in").into::<DiamondA>().named("d_fan");
         let join = a
             .into::<DiamondB>()
             .named("d_b")
-            .codec()
             .into::<DiamondJoin>()
-            .named("d_join")
-            .codec();
-        a.into::<DiamondC>()
-            .named("d_c")
-            .codec()
-            .into::<DiamondJoin>();
+            .named("d_join");
+        a.into::<DiamondC>().named("d_c").into::<DiamondJoin>();
         join.into::<SagaShipFails>().named("d_out").sink("sink");
     }
 }
@@ -196,13 +169,9 @@ impl WorkflowOperative for MergeWorkflow {
         "test-merge-workflow"
     }
     fn procedures(c: &ChannelBuilder) {
-        let a = c
-            .input::<String>("in")
-            .into::<DiamondA>()
-            .named("m_fan")
-            .codec();
-        let b = a.into::<DiamondB>().named("m_b").codec();
-        let cc = a.into::<DiamondC>().named("m_c").codec();
+        let a = c.input::<String>("in").into::<DiamondA>().named("m_fan");
+        let b = a.into::<DiamondB>().named("m_b");
+        let cc = a.into::<DiamondC>().named("m_c");
         c.merge::<MergedJoinInput>()
             .from(b, MergedJoinInput::B)
             .from(cc, MergedJoinInput::C)
@@ -222,13 +191,9 @@ impl WorkflowOperative for PanickingMergeWorkflow {
         "test-panic-merge-workflow"
     }
     fn procedures(c: &ChannelBuilder) {
-        let a = c
-            .input::<String>("in")
-            .into::<DiamondA>()
-            .named("pm_fan")
-            .codec();
-        let b = a.into::<DiamondB>().named("pm_b").codec();
-        let cc = a.into::<DiamondC>().named("pm_c").codec();
+        let a = c.input::<String>("in").into::<DiamondA>().named("pm_fan");
+        let b = a.into::<DiamondB>().named("pm_b");
+        let cc = a.into::<DiamondC>().named("pm_c");
         c.merge::<MergedJoinInput>()
             .from(b, |_: String| panic!("merge mapping blew up"))
             .from(cc, MergedJoinInput::C)
@@ -249,7 +214,6 @@ impl WorkflowOperative for PanickingTransformWorkflow {
         c.input::<String>("in")
             .into::<DiamondA>()
             .named("pt_fan")
-            .codec()
             .map(|_: String| -> String { panic!("edge map blew up") })
             .into::<DiamondB>()
             .named("pt_out")

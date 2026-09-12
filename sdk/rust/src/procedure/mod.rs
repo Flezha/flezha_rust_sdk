@@ -12,7 +12,7 @@ pub mod state_handle;
 
 use std::sync::Arc;
 
-pub use change::{Change, CoalesceKey, DerivedState, NoChange};
+pub use change::{Change, CoalesceKey, DerivedState, JournalValue, NoChange};
 pub use clock::{Clock, ClockFor, EventTimeFrom, LogicalClock, TimeExtractor, WallClock};
 #[allow(unused_imports)]
 pub(crate) use ctx::EmitSink;
@@ -97,7 +97,16 @@ pub trait Procedure: Send + Sync + 'static + Default {
     /// `Clone` so the runtime can fall back to a value-clone in the
     /// shared-Arc case (`Arc::unwrap_or_clone`).
     type Input: Send + Sync + 'static + Clone;
-    type Output: Send + Sync + 'static;
+    /// Per-entity output value, handed to every consumer of this node's
+    /// channel. Bound on [`JournalValue`] — a workflow journals the handoff
+    /// between two procedures, so the runtime derives the channel's byte
+    /// codec from this type and no declaration exists to forget.
+    ///
+    /// `Input` carries no such bound: an entry value is parsed by the
+    /// author's own parser, and a consumer's input is some producer's output
+    /// anyway, so the requirement reaches it where it matters. `State` keeps
+    /// its raw serde bounds, which say the same thing for a different reader.
+    type Output: Send + Sync + 'static + JournalValue;
     /// Per-Entity state. Workflow on `Serialize + DeserializeOwned` so
     /// the runtime can serialize state for `EntityState` /
     /// `MigrationSerialization` and seed it from `AddOperative.init_values`

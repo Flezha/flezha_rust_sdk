@@ -160,7 +160,6 @@ impl WorkflowOperative for CommitBlockWorkflow {
         c.input::<String>("in")
             .into::<CommitA>()
             .named("mid")
-            .codec()
             .into::<BlockB>();
     }
 }
@@ -180,7 +179,6 @@ impl WorkflowOperative for SyncDurableWorkflow {
         c.input::<String>("in")
             .into::<CommitA>()
             .named("mid")
-            .codec()
             .into::<BlockB>();
     }
 }
@@ -252,7 +250,6 @@ impl WorkflowOperative for TierCommitBlockWorkflow {
         c.input::<String>("in")
             .into::<TierCommitA>()
             .named("mid")
-            .codec()
             .keyed()
             .sink_with("tier_sink", |s: &String| s.as_bytes().to_vec())
             .into::<BlockB>();
@@ -283,10 +280,8 @@ impl WorkflowOperative for SagaBlockWorkflow {
         c.input::<String>("in")
             .into::<SagaA>()
             .named("s1")
-            .codec()
             .into::<SagaB>()
             .named("s2")
-            .codec()
             .into::<SagaC>();
     }
 }
@@ -306,7 +301,6 @@ impl WorkflowOperative for OutboxBlockWorkflow {
         c.input::<String>("in")
             .into::<CommitA>()
             .named("mid")
-            .codec()
             .sink_with("outbox_sink", |s: &String| {
                 format!("a-out:{s}").into_bytes()
             })
@@ -343,7 +337,6 @@ impl WorkflowOperative for UndoOutboxWorkflow {
         c.input::<String>("in")
             .into::<UndoOutboxA>()
             .named("mid")
-            .codec()
             .sink_with("undo_sink", |s: &String| format!("out:{s}").into_bytes())
             .into::<UndoC>();
     }
@@ -459,11 +452,9 @@ impl WorkflowOperative for BranchWorkflow {
             .input::<String>("in")
             .into::<BranchA>()
             .named("mid")
-            .codec()
             .sink_with("branch_sink", |s: &String| format!("a:{s}").into_bytes());
         mid.into::<BranchB>()
             .named("bmid")
-            .codec()
             .sink_with("branch_sink", |s: &String| format!("b:{s}").into_bytes())
             .into::<BranchD>()
             .named("d_out")
@@ -584,19 +575,15 @@ impl WorkflowOperative for DiamondWorkflow {
             .input::<String>("in")
             .into::<DiamA>()
             .named("dfan")
-            .codec()
             .sink_with("diamond_sink", |s: &String| format!("a:{s}").into_bytes());
         fan.into::<DiamB1>()
             .named("db1")
-            .codec()
             .into::<DiamB2>()
             .named("db2")
-            .codec()
             .sink_with("diamond_sink", |s: &String| s.clone().into_bytes())
             .into::<DiamJoin>();
         fan.into::<DiamC>()
             .named("dc")
-            .codec()
             .sink_with("diamond_sink", |s: &String| s.clone().into_bytes())
             .into::<DiamJoin>()
             .named("j_out")
@@ -664,7 +651,6 @@ impl WorkflowOperative for RetryWorkflow {
         c.input::<String>("in")
             .into::<RetryA>()
             .named("mid")
-            .codec()
             .sink_with("retry_sink", |s: &String| format!("res:{s}").into_bytes())
             .into::<RetryFlaky>()
             .named("out")

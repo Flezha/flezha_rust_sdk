@@ -199,14 +199,9 @@ impl WorkflowOperative for TreeSaga {
         "test-tree-saga"
     }
     fn procedures(c: &ChannelBuilder) {
-        let t1 = c
-            .input::<String>("in")
-            .into::<SagaReserve>()
-            .named("t1")
-            .codec();
+        let t1 = c.input::<String>("in").into::<SagaReserve>().named("t1");
         t1.into::<SagaCharge>()
             .named("t2")
-            .codec()
             .into::<SagaShipFails>()
             .named("t_ship")
             .sink("sink");
@@ -214,7 +209,7 @@ impl WorkflowOperative for TreeSaga {
         // stays a leaf, and its retained output is what its undo reverses
         // (a plugin-bound leaf would stage instead of collect, leaving the
         // hook nothing to name).
-        t1.into::<SagaArchive>().named("t_out").codec();
+        t1.into::<SagaArchive>().named("t_out");
     }
 }
 
@@ -227,10 +222,8 @@ impl WorkflowOperative for SagaWorkflow {
         c.input::<String>("in")
             .into::<SagaReserve>()
             .named("c1")
-            .codec()
             .into::<SagaCharge>()
             .named("c2")
-            .codec()
             .into::<SagaShipFails>()
             .named("out")
             .sink("sink");
@@ -253,10 +246,8 @@ impl WorkflowOperative for KeepProgressSaga {
         c.input::<String>("in")
             .into::<SagaReserve>()
             .named("c1")
-            .codec()
             .into::<SagaCharge>()
             .named("c2")
-            .codec()
             .into::<SagaShipFails>()
             .named("out")
             .sink("sink");
@@ -273,10 +264,8 @@ impl WorkflowOperative for CleanSaga {
         c.input::<String>("in")
             .into::<SagaReserve>()
             .named("c1")
-            .codec()
             .into::<SagaCharge>()
             .named("c2")
-            .codec()
             .into::<EchoProc>()
             .named("out")
             .sink("sink");
@@ -376,10 +365,8 @@ impl WorkflowOperative for FanSaga {
         c.input::<String>("in")
             .into::<SplitProc>()
             .named("mid")
-            .codec()
             .into::<SagaFan>()
             .named("mid2")
-            .codec()
             .into::<FailLast>()
             .named("out")
             .sink("sink");
@@ -439,7 +426,6 @@ impl WorkflowOperative for StopSaga {
         c.input::<String>("in")
             .into::<StopReserve>()
             .named("mid")
-            .codec()
             .into::<EchoProc>()
             .named("out")
             .sink("sink");

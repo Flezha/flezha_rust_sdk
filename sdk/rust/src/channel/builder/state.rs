@@ -97,6 +97,11 @@ pub(crate) struct ProcedureEntry {
     /// (a `Box<EntityState<S>>`). Captures S statically; constructs
     /// a fresh `S` via `Default` since the user's `Procedure` is stateless.
     pub deserialize_state: DeserializeStateFn,
+
+    /// The journal codec of everything this node releases, derived from
+    /// `S::Output` and installed on the node's output channel the moment that
+    /// channel is created. There is no declaration to forget.
+    pub output_codec: crate::channel::ChannelCodec,
 }
 
 /// One author callback erased behind `&dyn Any` — how every typed declaration
@@ -144,8 +149,10 @@ pub(crate) struct ChannelEntry {
     /// Retry-then-park policy for this channel's consumer dispatchers.
     /// `.retry_max(...)` / `.retry_backoff_ms(...)` overwrite the defaults.
     pub retry: crate::channel::RetryPolicy,
-    /// Inter-proc byte codec declared via `.codec()` / `.codec_with(...)`.
-    /// Required for durable structured workflow classes (`workflow-proc-journal`).
+    /// Inter-proc byte codec, derived from the producing procedure's `Output`
+    /// type when the channel is created. `None` only on a channel with no
+    /// producer (an entry channel); a durable structured workflow's proc
+    /// journal reads it at every barrier (`workflow-proc-journal`).
     pub codec: Option<crate::channel::ChannelCodec>,
     /// The authoring record: one entry per fluent sequence declared off this
     /// channel's handle, in the order the author closed them. The consumers,
@@ -256,8 +263,12 @@ impl BuilderState {
             return id;
         }
         let name = self.procedures[node as usize].name;
+        let codec = self.procedures[node as usize].output_codec.clone();
         let id = self.push_channel(name, ChannelKind::InterProcedure);
         self.channels[id as usize].producer = Some(node);
+        // Derived, never declared: a produced channel carries its codec from
+        // the moment it exists, so the handoff is journalable by construction.
+        self.channels[id as usize].codec = Some(codec);
         self.procedures[node as usize].output_channel_id = Some(id);
         id
     }
@@ -449,6 +460,27 @@ fn procedure_entry<S: Procedure>(name: &'static str, named: bool) -> ProcedureEn
         max_entities: S::max_entities(),
         serialize_state,
         deserialize_state,
+        output_codec: journal_codec::<S::Output>(),
+    }
+}
+
+/// The journal codec of a typed procedure output: postcard, through the
+/// [`JournalValue`](crate::procedure::JournalValue) bound `S::Output` carries,
+/// erased onto the channel the way `flz_core` derives one for an erased host's
+/// inter-proc channel.
+fn journal_codec<T: crate::procedure::JournalValue + Send + Sync + 'static>(
+) -> crate::channel::ChannelCodec {
+    crate::channel::ChannelCodec {
+        encode: Arc::new(move |val: &dyn Any| {
+            val.downcast_ref::<T>()
+                .ok_or_else(|| {
+                    "inter-proc codec: type mismatch (build-time invariant)".to_string()
+                })?
+                .to_journal_bytes()
+        }),
+        decode: Arc::new(move |bytes: Vec<u8>| {
+            T::from_journal_bytes(&bytes).map(|v| Arc::new(v) as Arc<dyn Any + Send + Sync>)
+        }),
     }
 }
 

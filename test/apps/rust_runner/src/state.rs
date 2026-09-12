@@ -443,7 +443,7 @@ impl Procedure for TickProcedure {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct TickInput {
     pub interval: u8,
     pub ts: u64,
