@@ -69,8 +69,7 @@ impl StreamOperative for DynamicEntityOperative {
             .filter(|input: &String| input != "drop")
             .key_by(|input: &String| input.split(':').next().unwrap_or(input).to_string())
             .into::<DynamicEntityProcedure>()
-            .named("kafka")
-            .sink("test_kafka");
+            .sink_named("kafka");
     }
 }
 
@@ -142,9 +141,8 @@ impl StreamOperative for PartitionRelayOperative {
         c.input::<String>("in")
             .key_by(|input: &String| input.split(':').next().unwrap_or(input).to_string())
             .into::<PartitionRelayProcedure>()
-            .named("input")
             .keyed()
-            .sink("relay_out");
+            .sink_named("input");
     }
 }
 
@@ -228,8 +226,7 @@ impl StreamOperative for SessionTimeoutOperative {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .into::<SessionTimeoutProcedure>()
-            .named("kafka")
-            .sink("test_kafka");
+            .sink_named("kafka");
     }
 }
 
@@ -269,8 +266,7 @@ impl StreamOperative for DoNothingOperative {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .into::<DoNothingProcedure>()
-            .named("echo")
-            .sink("do_nothing_echo");
+            .sink_named("echo");
     }
 }
 
@@ -330,8 +326,7 @@ impl StreamOperative for StoreInputOperative {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .into::<StoreInputProcedure>()
-            .named("sink")
-            .sink("store_input_sink");
+            .sink_named("sink");
     }
 }
 
@@ -391,8 +386,7 @@ impl StreamOperative for CompareFilterOperative {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .into::<CompareFilterProcedure>()
-            .named("sink")
-            .sink("compare_filter_sink");
+            .sink_named("sink");
     }
 }
 
@@ -488,8 +482,7 @@ impl StreamOperative for StaticEntityOperative {
             .into::<StaticEntryProcedure>()
             .named("hop")
             .into::<StaticDownstreamProcedure>()
-            .named("kafka")
-            .sink("test_kafka");
+            .sink_named("kafka");
     }
 }
 
@@ -631,7 +624,6 @@ impl StreamOperative for EntityStressOperative {
             .into::<StressProcedureC>()
             .named("c_to_d")
             .into::<StressProcedureD>()
-            .named("echo")
-            .sink("entity_stress_echo");
+            .sink_named("echo");
     }
 }

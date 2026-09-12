@@ -311,10 +311,11 @@ impl<'b, T: 'static + Send + Sync> Stream<'b, T, NodeTarget> {
         self
     }
 
-    /// Attach this channel to the named plugin sink: every value emitted on it
-    /// is serialized once and delivered to the controller's output layer
-    /// stamped with the channel name, where the plugins attached to that name
-    /// consume it. Several channels may name one sink.
+    /// Terminate this channel on the plugin layer under the channel's own
+    /// name: every value emitted on it is serialized once and delivered to
+    /// the controller's output layer stamped with that name, where the
+    /// plugins filtering on it consume it. The name is the derived one — the
+    /// producing node's identity, or a [`named`](Stream::named) override.
     ///
     /// The handle is returned, so `.into::<S>()` consumer wiring chains after
     /// it and the value then reaches both the consumer mailboxes (typed) and
@@ -325,23 +326,45 @@ impl<'b, T: 'static + Send + Sync> Stream<'b, T, NodeTarget> {
     /// The serializer runs once per emit regardless of consumer count.
     /// Declaring a second sink on one channel is a registration error
     /// (`TopologyIssue::DuplicatePluginSink`); the first call wins.
-    pub fn sink_with<F>(self, plugin_name: &'static str, serializer: F) -> Self
-    where
-        F: Fn(&T) -> Vec<u8> + Send + Sync + 'static,
-    {
-        let serializer_erased: crate::channel::PluginSerializeFn =
-            erase::<T, _, _>("plugin serializer", serializer);
-        self.attach_plugin_sink(plugin_name, serializer_erased)
-    }
-
-    /// [`sink_with`](Stream::sink_with) with the default serialization rules:
-    /// passthrough for `Vec<u8>`, UTF-8 for `String`, the SDK's default JSON
-    /// codec otherwise.
-    pub fn sink(self, plugin_name: &'static str) -> Self
+    pub fn sink(self) -> Self
     where
         T: serde::Serialize,
     {
-        self.attach_plugin_sink(plugin_name, default_plugin_serializer::<T>())
+        self.attach_plugin_sink(None, default_plugin_serializer::<T>())
+    }
+
+    /// [`sink`](Stream::sink), naming the channel: the string written here is
+    /// the channel's name everywhere one appears — wire metadata, journals,
+    /// diagnostics, and the address a plugin filter and a local-mode callback
+    /// use. Naming the channel here AND with [`named`](Stream::named) is
+    /// refused (`TopologyIssue::ChannelNamedTwice`), as is two channels
+    /// naming one sink (`TopologyIssue::DuplicateSinkName`).
+    pub fn sink_named(self, name: &'static str) -> Self
+    where
+        T: serde::Serialize,
+    {
+        self.attach_plugin_sink(Some(name), default_plugin_serializer::<T>())
+    }
+
+    /// [`sink`](Stream::sink) with a serializer of your own, replacing the
+    /// default rules (passthrough for `Vec<u8>`, UTF-8 for `String`, the
+    /// SDK's default JSON codec otherwise).
+    pub fn sink_with<F>(self, serializer: F) -> Self
+    where
+        F: Fn(&T) -> Vec<u8> + Send + Sync + 'static,
+    {
+        self.attach_plugin_sink(None, erase::<T, _, _>("plugin serializer", serializer))
+    }
+
+    /// [`sink_named`](Stream::sink_named) with a serializer of your own.
+    pub fn sink_named_with<F>(self, name: &'static str, serializer: F) -> Self
+    where
+        F: Fn(&T) -> Vec<u8> + Send + Sync + 'static,
+    {
+        self.attach_plugin_sink(
+            Some(name),
+            erase::<T, _, _>("plugin serializer", serializer),
+        )
     }
 
     /// State that nothing follows this channel: the returned [`Channel`]
@@ -354,25 +377,30 @@ impl<'b, T: 'static + Send + Sync> Stream<'b, T, NodeTarget> {
 
     fn attach_plugin_sink(
         self,
-        plugin_name: &'static str,
+        name: Option<&'static str>,
         serializer: crate::channel::PluginSerializeFn,
     ) -> Self {
         self.with_channel(|st, cid| {
             st.record_link(
                 cid,
                 HostLink::Sink {
-                    name: plugin_name.to_string(),
+                    name: name.map(str::to_string),
                 },
             );
+            // This SDK builds its descriptors from `entry.name` rather than
+            // from the core's derived answer (`operative/builder.rs`), so a
+            // sink that names the channel writes both, exactly as `named`
+            // does. Without it Rust would silently keep the old answer while
+            // the five host SDKs took the new one.
+            let entry = &mut st.channels[cid as usize];
+            if let Some(name) = name {
+                entry.name = name;
+            }
             // Both sinks reach the record and the core refuses the class; the
             // first one stays on the entry so nothing downstream sees a half
             // -built descriptor.
-            let entry = &mut st.channels[cid as usize];
             if entry.plugin_sink.is_none() {
-                entry.plugin_sink = Some(PluginSink {
-                    name: plugin_name,
-                    serializer,
-                });
+                entry.plugin_sink = Some(PluginSink { serializer });
             }
         });
         self

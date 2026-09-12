@@ -48,8 +48,7 @@ impl WorkflowOperative for LeakWorkflow {
     fn procedures(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<EmitThenFail>()
-            .named("out")
-            .sink("sink");
+            .sink_named("out");
     }
 }
 
@@ -102,11 +101,9 @@ impl WorkflowOperative for UndoSaga {
     fn procedures(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<UndoEmit>()
-            .named("mid")
-            .sink_with("undosink", |s: &String| s.clone().into_bytes())
+            .sink_named_with("mid", |s: &String| s.clone().into_bytes())
             .into::<FailLast>()
-            .named("out")
-            .sink("sink");
+            .sink_named("out");
     }
 }
 
@@ -123,7 +120,6 @@ impl WorkflowOperative for ResumeSaga {
             .into::<ResumeUndoB>()
             .named("c2")
             .into::<SagaShipFails>()
-            .named("out")
-            .sink("sink");
+            .sink_named("out");
     }
 }

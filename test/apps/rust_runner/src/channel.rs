@@ -140,8 +140,7 @@ impl StreamOperative for BoundedMailboxDropNothingOperative {
         c.input::<String>("drop_nothing_input")
             .on_full(OverflowPolicy::DropNothing)
             .into::<DropNothingTestProcedure>()
-            .named("drop_nothing_echo")
-            .sink("bounded_mailbox_echo");
+            .sink_named("drop_nothing_echo");
     }
 }
 
@@ -154,8 +153,7 @@ impl StreamOperative for BoundedMailboxDropNewestOperative {
         c.input::<String>("drop_newest_input")
             .on_full(OverflowPolicy::DropNewest)
             .into::<DropNewestTestProcedure>()
-            .named("drop_newest_echo")
-            .sink("bounded_mailbox_echo");
+            .sink_named("drop_newest_echo");
     }
 }
 
@@ -168,8 +166,7 @@ impl StreamOperative for BoundedMailboxDropOldestOperative {
         c.input::<String>("drop_oldest_input")
             .on_full(OverflowPolicy::DropOldest)
             .into::<DropOldestTestProcedure>()
-            .named("drop_oldest_echo")
-            .sink("bounded_mailbox_echo");
+            .sink_named("drop_oldest_echo");
     }
 }
 
@@ -244,8 +241,7 @@ impl StreamOperative for HybridChannelOperative {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .into::<HybridProducerProcedure>()
-            .named("hybrid_indicator")
-            .sink_with("hybrid_indicators", |v: &u32| {
+            .sink_named_with("hybrid_indicator", |v: &u32| {
                 if *v == 0xDEAD_BEEF {
                     panic!("hybrid_indicators: serializer rejected sentinel 0xDEADBEEF");
                 }

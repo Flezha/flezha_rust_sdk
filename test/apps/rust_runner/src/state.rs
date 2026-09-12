@@ -82,9 +82,8 @@ impl StreamOperative for TierStoreOperative {
             .on_full(OverflowPolicy::DropNothing)
             .retry_backoff_ms(300)
             .into::<TierStoreProcedure>()
-            .named("sink")
             .keyed()
-            .sink("tier_sink");
+            .sink_named("sink");
     }
 }
 
@@ -106,8 +105,7 @@ impl StreamOperative for BenchEchoOperative {
         c.input::<String>("input")
             .on_full(OverflowPolicy::DropNothing)
             .into::<DoNothingProcedure>()
-            .named("echo")
-            .sink("bench_echo_sink");
+            .sink_named("echo");
     }
 }
 
@@ -120,9 +118,8 @@ impl StreamOperative for BenchKeyedOperative {
         c.input::<String>("input")
             .on_full(OverflowPolicy::DropNothing)
             .into::<TierStoreProcedure>()
-            .named("sink")
             .keyed()
-            .sink("tier_sink");
+            .sink_named("sink");
     }
 }
 
@@ -142,9 +139,8 @@ impl StreamOperative for BenchKeyedNoPersistOperative {
         c.input::<String>("input")
             .on_full(OverflowPolicy::DropNothing)
             .into::<TierStoreProcedure>()
-            .named("sink")
             .keyed()
-            .sink("tier_sink");
+            .sink_named("sink");
     }
 }
 
@@ -205,9 +201,8 @@ impl StreamOperative for CheckpointStoreOperative {
         c.checkpoint_ack();
         c.input::<String>("input")
             .into::<CheckpointStoreProcedure>()
-            .named("sink")
             .keyed()
-            .sink("tier_sink");
+            .sink_named("sink");
     }
 }
 
@@ -229,9 +224,8 @@ impl StreamOperative for CheckpointBatchedOperative {
         c.outputs_at_checkpoint(1_500);
         c.input::<String>("input")
             .into::<CheckpointStoreProcedure>()
-            .named("sink")
             .keyed()
-            .sink("tier_sink");
+            .sink_named("sink");
     }
 }
 
@@ -299,9 +293,8 @@ impl StreamOperative for BenchCheckpointOperative {
         c.input::<String>("input")
             .on_full(OverflowPolicy::DropNothing)
             .into::<BenchCheckpointProcedure>()
-            .named("sink")
             .keyed()
-            .sink("tier_sink");
+            .sink_named("sink");
     }
 }
 

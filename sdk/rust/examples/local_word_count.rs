@@ -13,9 +13,9 @@
 //! What runs here is the deployed machinery, not an imitation: the entry
 //! channel's decode, the edge's `flat_map` and `key_by`, one Entity per
 //! word with its own mailbox, and the inter-procedure hop from `Split` to
-//! `Tally` performed by the runtime, and `.named("totals")` is what the sink
-//! callback registers against — a sink channel takes the producing
-//! procedure's name unless the declaration names it. `WordCount` is an
+//! `Tally` performed by the runtime, and `.sink_named("totals")` is what the
+//! sink callback registers against — a sink names the channel it terminates,
+//! and the no-name form leaves it the producing procedure's. `WordCount` is an
 //! ordinary operative
 //! class — hand the same type to
 //! `Flezha::create_runner(..).define_stream()` and it deploys unchanged.
@@ -117,9 +117,8 @@ impl StreamOperative for WordCount {
             .into::<Split>()
             .key_by(|word: &String| word.clone())
             .into::<Tally>()
-            .named("totals")
             .keyed()
-            .sink("word_totals");
+            .sink_named("totals");
     }
 }
 

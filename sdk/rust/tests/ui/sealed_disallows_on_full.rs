@@ -29,7 +29,7 @@ impl Procedure for PluginProducer {
 fn declare(c: &ChannelBuilder) {
     c.input::<String>("in")
         .into::<PluginProducer>()
-        .sink("k")
+        .sink()
         .sealed()
         .on_full(OverflowPolicy::DropNothing);
 }

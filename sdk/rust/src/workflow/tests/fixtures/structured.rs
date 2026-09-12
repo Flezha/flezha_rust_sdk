@@ -47,10 +47,7 @@ impl WorkflowOperative for EchoStructured {
         "test-echo-structured"
     }
     fn procedures(c: &ChannelBuilder) {
-        c.input::<String>("in")
-            .into::<EchoProc>()
-            .named("out")
-            .sink("sink");
+        c.input::<String>("in").into::<EchoProc>().sink_named("out");
     }
 }
 
@@ -107,8 +104,8 @@ impl Procedure for Stage2 {
 /// consumer), so both branches read exactly what Stage1 released on `mid`.
 pub(crate) fn tree_chain(c: &ChannelBuilder) {
     let mid = c.input::<String>("in").into::<Stage1>().named("mid");
-    mid.into::<Stage2>().named("out_b").sink("sink");
-    mid.into::<EchoProc>().named("out_c").sink("sink");
+    mid.into::<Stage2>().sink_named("out_b");
+    mid.into::<EchoProc>().sink_named("out_c");
 }
 
 pub(crate) struct TreeWorkflow;
@@ -129,8 +126,7 @@ pub(crate) fn two_stage_chain(c: &ChannelBuilder) {
         .into::<Stage1>()
         .named("mid")
         .into::<Stage2>()
-        .named("out")
-        .sink("sink");
+        .sink_named("out");
 }
 
 pub(crate) struct ChainWorkflow;
@@ -320,8 +316,7 @@ pub(crate) fn loop_saga_chain(c: &ChannelBuilder) {
         .into::<LoopReserve>()
         .named("mid")
         .into::<LoopMaybeFail>()
-        .named("out")
-        .sink("sink");
+        .sink_named("out");
 }
 
 /// A loop declared on a `run`-sugar class: no chain to iterate.
@@ -371,8 +366,7 @@ impl WorkflowOperative for ChainedLoopPluginTerminal {
             .into::<Stage1>()
             .named("mid")
             .into::<Stage2>()
-            .named("out")
-            .sink("sink");
+            .sink_named("out");
     }
 }
 
@@ -466,8 +460,7 @@ impl WorkflowOperative for FanWorkflow {
             .into::<SplitProc>()
             .named("mid")
             .into::<FanProc>()
-            .named("out")
-            .sink("sink");
+            .sink_named("out");
     }
 }
 
@@ -483,8 +476,7 @@ impl WorkflowOperative for FanOptOutWorkflow {
             .into::<SplitProc>()
             .named("mid")
             .into::<FanProc>()
-            .named("out")
-            .sink("sink");
+            .sink_named("out");
     }
     const PERSISTENCE_ENABLED: bool = false;
 }
@@ -547,10 +539,8 @@ impl WorkflowOperative for HybridWorkflow {
     fn procedures(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<HybridStage1>()
-            .named("mid")
-            .sink_with("midsink", |s: &String| format!("mid:{s}").into_bytes())
+            .sink_named_with("mid", |s: &String| format!("mid:{s}").into_bytes())
             .into::<HybridStage2>()
-            .named("out")
-            .sink("out");
+            .sink_named("out");
     }
 }

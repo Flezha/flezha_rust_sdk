@@ -82,8 +82,7 @@ impl WorkflowOperative for DiamondWorkflow {
         a.into::<DiamondC>()
             .named("d_c")
             .into::<DiamondJoin>()
-            .named("d_out")
-            .sink("sink");
+            .sink_named("d_out");
     }
 }
 
@@ -116,7 +115,7 @@ impl WorkflowOperative for DiamondSaga {
             .into::<DiamondJoin>()
             .named("d_join");
         a.into::<DiamondC>().named("d_c").into::<DiamondJoin>();
-        join.into::<SagaShipFails>().named("d_out").sink("sink");
+        join.into::<SagaShipFails>().sink_named("d_out");
     }
 }
 
@@ -176,8 +175,7 @@ impl WorkflowOperative for MergeWorkflow {
             .from(b, MergedJoinInput::B)
             .from(cc, MergedJoinInput::C)
             .into::<MergeJoinProc>()
-            .named("m_out")
-            .sink("sink");
+            .sink_named("m_out");
     }
 }
 
@@ -198,8 +196,7 @@ impl WorkflowOperative for PanickingMergeWorkflow {
             .from(b, |_: String| panic!("merge mapping blew up"))
             .from(cc, MergedJoinInput::C)
             .into::<MergeJoinProc>()
-            .named("pm_out")
-            .sink("sink");
+            .sink_named("pm_out");
     }
 }
 
@@ -216,7 +213,6 @@ impl WorkflowOperative for PanickingTransformWorkflow {
             .named("pt_fan")
             .map(|_: String| -> String { panic!("edge map blew up") })
             .into::<DiamondB>()
-            .named("pt_out")
-            .sink("sink");
+            .sink_named("pt_out");
     }
 }

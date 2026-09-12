@@ -159,7 +159,7 @@ pub(crate) fn auto_operative(wiring: AutoWiring<'_>) -> TokenStream {
                 // Pins the declared sink payload type against the terminal
                 // procedure's `Output`.
                 let stream: ::flezha_runner::Stream<'_, #payload> = stream;
-                stream.named(#sink).sink(#sink);
+                stream.sink_named(#sink);
             }
         }
         ::flezha_runner::inventory::submit! {

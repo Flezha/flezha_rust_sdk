@@ -125,8 +125,7 @@ impl StreamOperative for SessionOperative {
         c.input::<String>("clicks")
             .key_by(|click: &String| click.split(':').next().unwrap_or(click).to_string())
             .into::<SessionWindow>()
-            .named("closed_sessions")
-            .sink("kafka");
+            .sink_named("closed_sessions");
     }
 }
 

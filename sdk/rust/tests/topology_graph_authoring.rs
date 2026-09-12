@@ -404,3 +404,46 @@ fn bytes_and_string_entries_stay_passthrough() {
     let ok = wrap(vec![1, 2, 3]).expect("bytes pass through");
     assert_eq!(ok.downcast_ref::<Vec<u8>>().unwrap(), &vec![1, 2, 3]);
 }
+
+// ---- the sugar and the hand-written spelling name one channel -----------
+
+/// The auto-wire path: `sink = "..."` is the only naming call the author
+/// writes, and it is the channel's name.
+#[flezha_runner::procedure(id = "generated_naming", sink = "items_output")]
+fn generated_naming(input: String) -> Option<String> {
+    Some(input)
+}
+
+/// The same operative spelled by hand.
+struct HandWrittenNaming;
+impl StreamOperative for HandWrittenNaming {
+    fn factory_id() -> &'static str {
+        "hand_written_naming"
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("input")
+            .into::<GeneratedNaming>()
+            .sink_named("items_output");
+    }
+}
+
+/// fails when: the generator and a hand-written declaration disagree about a
+/// channel's name again — the disagreement that made a sugared operative ship
+/// frames under one name and a hand-written one under another.
+#[test]
+fn the_generated_and_hand_written_spellings_name_one_channel() {
+    // The generated class is `#[doc(hidden)]` and named after the procedure;
+    // naming it here is what lets the two spellings be compared at all.
+    let generated =
+        build_topology_for::<__FlezhaAutoOperativeGeneratedNaming>().expect("the sugar builds");
+    let by_hand = build_topology_for::<HandWrittenNaming>().expect("the hand-written twin builds");
+
+    let names = |t: &flezha_runner::operative::OperativeTopology| {
+        t.channels
+            .iter()
+            .map(|c| c.name.to_string())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(names(&generated), vec!["input", "items_output"]);
+    assert_eq!(names(&generated), names(&by_hand));
+}

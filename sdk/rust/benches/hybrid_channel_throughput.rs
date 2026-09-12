@@ -210,8 +210,7 @@ impl StreamOperative for PluginBoundOperative {
         c.input::<Vec<u8>>("input")
             .on_full(OverflowPolicy::DropNothing)
             .into::<PluginBoundProducer>()
-            .named("out")
-            .sink("bench_plugin_bound");
+            .sink_named("out");
     }
 }
 
@@ -273,8 +272,7 @@ impl StreamOperative for Hybrid1Operative {
         c.input::<Vec<u8>>("input")
             .on_full(OverflowPolicy::DropNothing)
             .into::<Hybrid1Producer>()
-            .named("out")
-            .sink_with("bench_hybrid_plugin_1c", |v: &u32| v.to_be_bytes().to_vec())
+            .sink_named_with("out", |v: &u32| v.to_be_bytes().to_vec())
             .into::<Hybrid1Consumer>();
     }
 }
@@ -346,8 +344,7 @@ impl StreamOperative for Hybrid3Operative {
             .input::<Vec<u8>>("input")
             .on_full(OverflowPolicy::DropNothing)
             .into::<Hybrid3Producer>()
-            .named("out")
-            .sink_with("bench_hybrid_plugin_3c", |v: &u32| v.to_be_bytes().to_vec());
+            .sink_named_with("out", |v: &u32| v.to_be_bytes().to_vec());
         out.into::<Hybrid3ConsumerA>();
         out.into::<Hybrid3ConsumerB>();
         out.into::<Hybrid3ConsumerC>();

@@ -203,8 +203,7 @@ impl WorkflowOperative for TreeSaga {
         t1.into::<SagaCharge>()
             .named("t2")
             .into::<SagaShipFails>()
-            .named("t_ship")
-            .sink("sink");
+            .sink_named("t_ship");
         // The archive leaf releases an inter-proc batch nobody consumes: it
         // stays a leaf, and its retained output is what its undo reverses
         // (a plugin-bound leaf would stage instead of collect, leaving the
@@ -225,8 +224,7 @@ impl WorkflowOperative for SagaWorkflow {
             .into::<SagaCharge>()
             .named("c2")
             .into::<SagaShipFails>()
-            .named("out")
-            .sink("sink");
+            .sink_named("out");
     }
 }
 
@@ -249,8 +247,7 @@ impl WorkflowOperative for KeepProgressSaga {
             .into::<SagaCharge>()
             .named("c2")
             .into::<SagaShipFails>()
-            .named("out")
-            .sink("sink");
+            .sink_named("out");
     }
 }
 
@@ -267,8 +264,7 @@ impl WorkflowOperative for CleanSaga {
             .into::<SagaCharge>()
             .named("c2")
             .into::<EchoProc>()
-            .named("out")
-            .sink("sink");
+            .sink_named("out");
     }
 }
 
@@ -368,8 +364,7 @@ impl WorkflowOperative for FanSaga {
             .into::<SagaFan>()
             .named("mid2")
             .into::<FailLast>()
-            .named("out")
-            .sink("sink");
+            .sink_named("out");
     }
 }
 
@@ -427,8 +422,7 @@ impl WorkflowOperative for StopSaga {
             .into::<StopReserve>()
             .named("mid")
             .into::<EchoProc>()
-            .named("out")
-            .sink("sink");
+            .sink_named("out");
     }
 }
 

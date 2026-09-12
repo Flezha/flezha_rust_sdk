@@ -19,8 +19,9 @@ run.feed("lines", "the quick brown fox")?;
 run.run_until_idle(Duration::from_secs(5))?;
 ```
 
-`on_sink` registers against the sink's **channel** name, which is the producing
-procedure's name unless the declaration `named` it. `feed` takes the wire bytes
+`on_sink` registers against the sink's **channel** name — the string the
+declaration's `sink_named(...)` or `named(...)` supplied, else the producing
+procedure's name. `feed` takes the wire bytes
 the channel's declared decoder parses, and blocks while the consumer's mailbox
 is full. Worked example: `cargo run -p flezha_runner --example local_word_count`.
 
@@ -67,8 +68,10 @@ Graphs are declared producer-first (`sdk-graph-authoring`): `.into::<Proc>()`
 wires a consumer and returns **that procedure's** output stream handle, so a
 linear pipeline is one expression. The channel between two procedures carries
 the producer's declared `Output` type — no type token, no channel name unless
-you want one (`.named(...)` overrides the name derived from the producer's
-identity; entry names are explicit, they are the operative's address).
+you want one (`.sink_named(...)` names the channel it terminates and
+`.named(...)` names one that has no sink; either overrides the name derived
+from the producer's identity, and declaring both on one channel is refused.
+Entry names are explicit, they are the operative's address).
 
 ```rust
 struct OrdersOperative;
@@ -134,9 +137,10 @@ One class can sit at several graph positions via named nodes
 (`into_named::<Filter>("spam_filter")`) — each named node keeps its own state
 identity. Graphs must be acyclic; per-channel config (`keyed`, `on_full`,
 `retry_max`, `retry_backoff_ms`) chains on the handle; the hybrid
-tap is the SAME method — `sink(name)` / `sink_with(name, serializer)` returns
-the handle, so a consumer wires after it. A channel is terminal by having none;
-`.sealed()` states that in the type.
+tap is the SAME method — `sink()` / `sink_named(name)` / `sink_with(serializer)`
+/ `sink_named_with(name, serializer)` all return the handle, so a consumer wires
+after it. A channel is terminal by having none; `.sealed()` states that in the
+type.
 
 A procedure that needs **two feeds** — a data stream plus a live config
 stream, a join of two computed streams — subscribes them with `merge`, which
@@ -193,8 +197,8 @@ impl StreamOperative for RiskOperative {
             .retry_max(5)
             .retry_backoff_ms(20)
             .into::<Validate>()
-            .named("orders.validated")           // overrides the derived name
-            .sink("audit");               // tap: default JSON to `audit`
+            // tap: default JSON, on a channel this call names
+            .sink_named("orders.validated");
 
         // One class, two nodes: each keeps its own per-entity state under
         // its node identity (state dirs, journals, diagnostics). Both arms
@@ -206,15 +210,15 @@ impl StreamOperative for RiskOperative {
         // The join's output closes plugin-bound and keyed: every emit calls
         // ctx.emit_keyed(key, value) and frames carry flz.* identity stamps,
         // so a changelog sink upserts instead of appending.
-        verdicts.named("risk.verdicts").keyed().sink("verdict_sink");
+        verdicts.keyed().sink_named("risk.verdicts");
     }
 }
 ```
 
 Reading order is flow order: every statement starts at a handle you already
 hold, and the only names in the graph are the ones something external needs —
-the entry (`orders`), the tap (`audit`), the sink (`verdict_sink`), and any
-channel you chose to `.named(...)`.
+the entry (`orders`), the tap (`orders.validated`), the terminal
+(`risk.verdicts`), and any channel you chose to `.named(...)`.
 
 ### A structured workflow DAG
 
@@ -239,8 +243,7 @@ impl WorkflowOperative for SettleWorkflow {
             .named("reserved");
         reserved.into::<Charge>().named("charged").into::<Reconcile>();
         reserved.into::<Ledger>().named("booked").into::<Reconcile>()
-            .named("reconciled")
-            .sink("settlement_sink");
+            .sink_named("reconciled");
     }
 }
 ```

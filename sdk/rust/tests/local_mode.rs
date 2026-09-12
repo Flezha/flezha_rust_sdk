@@ -92,9 +92,8 @@ impl StreamOperative for WordCount {
             .into::<Split>()
             .key_by(|word: &String| word.clone())
             .into::<Tally>()
-            .named("totals")
             .keyed()
-            .sink("word_totals");
+            .sink_named("totals");
     }
 }
 
@@ -125,6 +124,10 @@ fn a_declared_graph_runs_locally_and_releases_the_recorded_output() {
     let into = Arc::clone(&released);
 
     let run = LocalOperative::start::<WordCount>().expect("the run starts");
+    // `sink_named("totals")` is the declaration's ONLY naming call, and this
+    // registers under that same string: local mode addresses a sink by the
+    // channel name, and a sink names the channel, so `sdk-local-mode`'s "the
+    // sink's declared name" and the implementation are one answer.
     run.on_sink("totals", move |output| {
         into.lock().unwrap_or_else(|p| p.into_inner()).push(output);
     })

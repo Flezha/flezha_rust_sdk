@@ -175,8 +175,7 @@ impl WorkflowOperative for ScaleControlWorkflow {
     fn procedures(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<ShortProc>()
-            .named("out")
-            .sink("sink");
+            .sink_named("out");
     }
 }
 

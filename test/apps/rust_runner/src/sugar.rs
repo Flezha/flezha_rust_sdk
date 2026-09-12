@@ -106,8 +106,7 @@ impl StreamOperative for MixedOperative {
             .into::<MixedMacroEntry>()
             .named("hop")
             .into::<MixedHandDownstream>()
-            .named("kafka")
-            .sink("test_kafka");
+            .sink_named("kafka");
     }
 }
 

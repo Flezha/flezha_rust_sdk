@@ -87,9 +87,8 @@ impl StreamOperative for CandleOperative {
         c.correction_window(600_000);
         c.input::<String>("input")
             .into::<CandleProcedure>()
-            .named("sink")
             .keyed()
-            .sink("tier_sink");
+            .sink_named("sink");
     }
 }
 
@@ -141,8 +140,7 @@ impl StreamOperative for PoisonProbeOperative {
         c.input::<String>("input")
             .retry_backoff_ms(25)
             .into::<PoisonProbeProcedure>()
-            .named("out")
-            .sink("probe_sink");
+            .sink_named("out");
     }
 }
 
@@ -209,8 +207,7 @@ impl StreamOperative for WedgeProbeOperative {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .into::<WedgeProbeProcedure>()
-            .named("out")
-            .sink("wedge_sink");
+            .sink_named("out");
     }
 }
 
@@ -280,8 +277,7 @@ impl StreamOperative for ResumeProbeOperative {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .into::<ResumeProbeProcedure>()
-            .named("total")
-            .sink("resume_probe_out");
+            .sink_named("total");
     }
 }
 
@@ -431,8 +427,7 @@ impl StreamOperative for SchemaEvolutionV1Operative {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .into::<SchemaEvolutionV1Procedure>()
-            .named("total")
-            .sink("schema_evolution_out");
+            .sink_named("total");
     }
 }
 
@@ -444,7 +439,6 @@ impl StreamOperative for SchemaEvolutionV2Operative {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .into::<SchemaEvolutionV2Procedure>()
-            .named("total")
-            .sink("schema_evolution_out");
+            .sink_named("total");
     }
 }

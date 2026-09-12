@@ -41,8 +41,7 @@ impl StreamOperative for AlertDetector {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("events")
             .into::<Detect>()
-            .named("alerts")
-            .sink("alerts_sink");
+            .sink_named("alerts");
     }
 }
 

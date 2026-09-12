@@ -118,7 +118,6 @@ pub use flz_core::channel::{
 /// `build_topology` derives that `ChannelKind` from the wiring rather than
 /// from which method was called.
 pub(crate) struct PluginSink {
-    pub name: &'static str,
     pub serializer: crate::channel::PluginSerializeFn,
 }
 

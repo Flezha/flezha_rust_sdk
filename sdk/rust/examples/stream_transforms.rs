@@ -13,7 +13,7 @@
 //!     .key_by(|s: &Slot| format!("{}@{}", s.symbol, s.tf))
 //!     .into::<Candle>()                         // one Entity per slot
 //!     .keyed()
-//!     .sink("candles");
+//!     .sink_named("candles");
 //! ```
 //!
 //! The whole topology contains exactly ONE Procedure node. The transforms add
@@ -155,7 +155,7 @@ impl StreamOperative for Candles {
             .key_by(|s: &Slot| format!("{}@{}", s.symbol, s.tf))
             .into::<Candle>()
             .keyed()
-            .sink("candles");
+            .sink_named("candles");
     }
 }
 

@@ -89,9 +89,8 @@ impl StreamOperative for KeyedOperative {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<KeyedProc>()
-            .named("out")
             .keyed()
-            .sink("kafka");
+            .sink_named("out");
     }
 }
 

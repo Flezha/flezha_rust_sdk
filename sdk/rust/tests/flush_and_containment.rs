@@ -63,8 +63,7 @@ impl StreamOperative for FlushOrderOperative {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .into::<FlushOrderProcedure>()
-            .named("out")
-            .sink_with("probe", |_v: &String| {
+            .sink_named_with("out", |_v: &String| {
                 FLUSH_ORDER_LOG.lock().unwrap().push("emit");
                 Vec::new()
             })

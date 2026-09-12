@@ -123,8 +123,7 @@ pub(crate) fn retry_chain(c: &ChannelBuilder) {
         .into::<RetryReserve>()
         .named("mid2")
         .into::<FlakyFan>()
-        .named("out")
-        .sink("sink");
+        .sink_named("out");
 }
 
 /// Split → Reserve(compensable) → FlakyFan(even/odd). Default 3-attempt
@@ -260,8 +259,7 @@ impl WorkflowOperative for StepProbeWorkflow {
     fn procedures(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<StepProbe>()
-            .named("probe_out")
-            .sink("sink");
+            .sink_named("probe_out");
     }
 }
 

@@ -155,8 +155,7 @@ impl StreamOperative for SessionOperative {
         c.input::<String>("in")
             .key_by(|s: &String| s.clone())
             .into::<SessionProc>()
-            .named("out")
-            .sink("sink");
+            .sink_named("out");
     }
 }
 
@@ -172,8 +171,7 @@ impl StreamOperative for SaturatedSessionOperative {
             .on_full(OverflowPolicy::DropNothing)
             .key_by(|s: &String| s.clone())
             .into::<SessionProc<2>>()
-            .named("out")
-            .sink("sink");
+            .sink_named("out");
     }
 }
 

@@ -507,7 +507,8 @@ fn producer_link(s: Stream<'_, String, NodeTarget>, link: &str) {
     let (verb, arg) = split_call(link);
     match verb {
         "named" => s.named(leak(arg)),
-        "sink" => s.sink(leak(arg)),
+        "sink" if arg.is_empty() => s.sink(),
+        "sink" => s.sink_named(leak(arg)),
         "keyed" => s.keyed(),
         other => panic!("the fixture spells a link this interpreter does not map: {other}"),
     };
@@ -608,7 +609,7 @@ fn derived(topology: &OperativeTopology) -> Value {
                 "kind": kind_name(channel),
                 "producer": channel.producer,
                 "consumers": channel.consumer_ids().collect::<Vec<_>>(),
-                "sink": channel.plugin_sink.as_ref().map(|sink| sink.name.to_string()),
+                "sink": channel.plugin_sink.as_ref().map(|_| channel.name.to_string()),
             })
         })
         .collect();

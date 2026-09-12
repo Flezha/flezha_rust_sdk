@@ -64,9 +64,8 @@ impl StreamOperative for CheckpointOperative {
         c.checkpoint_ack();
         c.input::<String>("input")
             .into::<CheckpointProcedure>()
-            .named("out")
             .keyed()
-            .sink("kafka");
+            .sink_named("out");
     }
 }
 

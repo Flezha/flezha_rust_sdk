@@ -47,7 +47,7 @@ impl Procedure for Downstream {
 fn declare(c: &ChannelBuilder) {
     c.input::<String>("in")
         .into::<PluginProducer>()
-        .sink("k")
+        .sink()
         .sealed()
         .into::<Downstream>();
 }

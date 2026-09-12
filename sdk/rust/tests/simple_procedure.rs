@@ -91,8 +91,7 @@ impl StreamOperative for SimpleTierOperative {
     fn channels(c: &ChannelBuilder) {
         c.input::<u64>("counts")
             .into::<SimpleCounter>()
-            .named("totals")
-            .sink("totals");
+            .sink_named("totals");
     }
 }
 

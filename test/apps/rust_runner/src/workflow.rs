@@ -197,10 +197,7 @@ impl WorkflowOperative for OptOutCommitBlockWorkflow {
     fn procedures(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<CommitA>()
-            .named("mid")
-            .sink_with("optout_sink", |s: &String| {
-                format!("a-ran:{s}").into_bytes()
-            })
+            .sink_named_with("mid", |s: &String| format!("a-ran:{s}").into_bytes())
             .into::<BlockB>();
     }
 }
@@ -249,9 +246,8 @@ impl WorkflowOperative for TierCommitBlockWorkflow {
         c.effectively_once();
         c.input::<String>("in")
             .into::<TierCommitA>()
-            .named("mid")
             .keyed()
-            .sink_with("tier_sink", |s: &String| s.as_bytes().to_vec())
+            .sink_named_with("mid", |s: &String| s.as_bytes().to_vec())
             .into::<BlockB>();
     }
 }
@@ -300,10 +296,7 @@ impl WorkflowOperative for OutboxBlockWorkflow {
     fn procedures(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<CommitA>()
-            .named("mid")
-            .sink_with("outbox_sink", |s: &String| {
-                format!("a-out:{s}").into_bytes()
-            })
+            .sink_named_with("mid", |s: &String| format!("a-out:{s}").into_bytes())
             .into::<BlockB>();
     }
 }
@@ -336,8 +329,7 @@ impl WorkflowOperative for UndoOutboxWorkflow {
     fn procedures(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<UndoOutboxA>()
-            .named("mid")
-            .sink_with("undo_sink", |s: &String| format!("out:{s}").into_bytes())
+            .sink_named_with("mid", |s: &String| format!("out:{s}").into_bytes())
             .into::<UndoC>();
     }
 }
@@ -451,15 +443,12 @@ impl WorkflowOperative for BranchWorkflow {
         let mid = c
             .input::<String>("in")
             .into::<BranchA>()
-            .named("mid")
-            .sink_with("branch_sink", |s: &String| format!("a:{s}").into_bytes());
+            .sink_named_with("mid", |s: &String| format!("a:{s}").into_bytes());
         mid.into::<BranchB>()
-            .named("bmid")
-            .sink_with("branch_sink", |s: &String| format!("b:{s}").into_bytes())
+            .sink_named_with("bmid", |s: &String| format!("b:{s}").into_bytes())
             .into::<BranchD>()
-            .named("d_out")
-            .sink("branch_sink");
-        mid.into::<BranchC>().named("c_out").sink("branch_sink");
+            .sink_named("d_out");
+        mid.into::<BranchC>().sink_named("c_out");
     }
 }
 
@@ -574,20 +563,16 @@ impl WorkflowOperative for DiamondWorkflow {
         let fan = c
             .input::<String>("in")
             .into::<DiamA>()
-            .named("dfan")
-            .sink_with("diamond_sink", |s: &String| format!("a:{s}").into_bytes());
+            .sink_named_with("dfan", |s: &String| format!("a:{s}").into_bytes());
         fan.into::<DiamB1>()
             .named("db1")
             .into::<DiamB2>()
-            .named("db2")
-            .sink_with("diamond_sink", |s: &String| s.clone().into_bytes())
+            .sink_named_with("db2", |s: &String| s.clone().into_bytes())
             .into::<DiamJoin>();
         fan.into::<DiamC>()
-            .named("dc")
-            .sink_with("diamond_sink", |s: &String| s.clone().into_bytes())
+            .sink_named_with("dc", |s: &String| s.clone().into_bytes())
             .into::<DiamJoin>()
-            .named("j_out")
-            .sink("diamond_sink");
+            .sink_named("j_out");
     }
 }
 
@@ -650,10 +635,8 @@ impl WorkflowOperative for RetryWorkflow {
     fn procedures(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<RetryA>()
-            .named("mid")
-            .sink_with("retry_sink", |s: &String| format!("res:{s}").into_bytes())
+            .sink_named_with("mid", |s: &String| format!("res:{s}").into_bytes())
             .into::<RetryFlaky>()
-            .named("out")
-            .sink("retry_sink");
+            .sink_named("out");
     }
 }

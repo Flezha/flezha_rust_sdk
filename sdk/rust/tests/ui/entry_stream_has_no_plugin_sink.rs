@@ -7,7 +7,7 @@ impl flezha_runner::StreamOperative for Op {
         "entry_no_sink"
     }
     fn channels(c: &flezha_runner::ChannelBuilder) {
-        c.input::<String>("in").sink("plugin");
+        c.input::<String>("in").sink();
     }
 }
 

@@ -1,7 +1,7 @@
 error[E0599]: no method named `sink` found for struct `flezha_runner::Stream<'_, String, EntryTarget>` in the current scope
   --> tests/ui/entry_stream_has_no_plugin_sink.rs:10:33
    |
-10 |         c.input::<String>("in").sink("plugin");
+10 |         c.input::<String>("in").sink();
    |                                 ^^^^ method not found in `flezha_runner::Stream<'_, String, EntryTarget>`
    |
    = note: the method was found for

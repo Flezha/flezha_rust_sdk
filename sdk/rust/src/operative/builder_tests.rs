@@ -81,8 +81,7 @@ fn a_plugin_bound_terminal_carries_no_codec() {
     let cb = ChannelBuilder::new();
     cb.input::<String>("in")
         .into::<TierProc>()
-        .named("out")
-        .sink("kafka");
+        .sink_named("out");
     let topology = build_topology("plugin_terminal_codec", cb).expect("topology");
     let out = topology
         .channels
@@ -103,9 +102,8 @@ fn effectively_once_with_keyed_plugin_channel_builds() {
     cb.effectively_once();
     cb.input::<String>("in")
         .into::<TierProc>()
-        .named("out")
         .keyed()
-        .sink("kafka");
+        .sink_named("out");
     let topology = build_topology("tier_keyed_ok", cb).expect("topology");
     assert!(topology.effectively_once);
 }
@@ -116,8 +114,7 @@ fn effectively_once_rejects_unkeyed_plugin_channel() {
     cb.effectively_once();
     cb.input::<String>("in")
         .into::<TierProc>()
-        .named("out")
-        .sink("kafka");
+        .sink_named("out");
     let err = match build_topology("tier_unkeyed_plugin", cb) {
         Err(e) => e,
         Ok(_) => panic!("unkeyed plugin channel must fail under the tier"),
@@ -134,8 +131,7 @@ fn effectively_once_rejects_unkeyed_hybrid_sink() {
     cb.effectively_once();
     cb.input::<String>("in")
         .into::<TierProc>()
-        .named("mid")
-        .sink_with("kafka", |s: &String| s.as_bytes().to_vec());
+        .sink_named_with("mid", |s: &String| s.as_bytes().to_vec());
     let err = match build_topology("tier_unkeyed_hybrid", cb) {
         Err(e) => e,
         Ok(_) => panic!("unkeyed hybrid sink must fail under the tier"),
@@ -159,8 +155,7 @@ fn non_tier_unkeyed_plugin_channel_still_builds() {
     let cb = ChannelBuilder::new();
     cb.input::<String>("in")
         .into::<TierProc>()
-        .named("out")
-        .sink("kafka");
+        .sink_named("out");
     let topology = build_topology("no_tier_unkeyed_ok", cb).expect("topology");
     assert!(!topology.effectively_once);
 }
@@ -245,9 +240,8 @@ fn correction_builder<S: Procedure<Input = String, Output = String> + Default>(
     cb.correction_window(window_ms);
     cb.input::<String>("in")
         .into::<S>()
-        .named("out")
         .keyed()
-        .sink("kafka");
+        .sink_named("out");
     cb
 }
 
@@ -273,9 +267,8 @@ fn checkpoint_ack_with_the_tier_builds() {
     cb.checkpoint_ack();
     cb.input::<String>("in")
         .into::<TierProc>()
-        .named("out")
         .keyed()
-        .sink("kafka");
+        .sink_named("out");
     let topology = build_topology("checkpoint_ok", cb).expect("topology");
     assert!(topology.ack_granularity.is_checkpoint());
 }
@@ -290,9 +283,8 @@ fn the_interval_options_reach_the_topology_and_imply_the_granularity() {
     cb.outputs_at_checkpoint(50);
     cb.input::<String>("in")
         .into::<TierProc>()
-        .named("out")
         .keyed()
-        .sink("kafka");
+        .sink_named("out");
     let topology = build_topology("checkpoint_options", cb).expect("topology");
 
     let policy = topology
@@ -317,9 +309,8 @@ fn a_bare_checkpoint_ack_holds_no_outputs() {
     cb.checkpoint_ack();
     cb.input::<String>("in")
         .into::<TierProc>()
-        .named("out")
         .keyed()
-        .sink("kafka");
+        .sink_named("out");
     let topology = build_topology("checkpoint_bare", cb).expect("topology");
 
     let policy = topology.ack_granularity.checkpoint().expect("checkpoint");
@@ -338,9 +329,8 @@ fn a_zero_interval_is_refused() {
     cb.checkpoint_every(0);
     cb.input::<String>("in")
         .into::<TierProc>()
-        .named("out")
         .keyed()
-        .sink("kafka");
+        .sink_named("out");
     let err = build_topology("checkpoint_zero", cb)
         .err()
         .expect("an interval that closes every zero inputs is not an interval");
@@ -357,9 +347,8 @@ fn per_input_is_the_default_ack_granularity() {
     cb.effectively_once();
     cb.input::<String>("in")
         .into::<TierProc>()
-        .named("out")
         .keyed()
-        .sink("kafka");
+        .sink_named("out");
     let topology = build_topology("per_input_default", cb).expect("topology");
     assert!(!topology.ack_granularity.is_checkpoint());
 }
@@ -376,9 +365,8 @@ fn a_dropping_policy_under_the_tier_is_refused_naming_the_channel() {
         cb.input::<String>("in")
             .on_full(policy)
             .into::<TierProc>()
-            .named("out")
             .keyed()
-            .sink("kafka");
+            .sink_named("out");
 
         let err = build_topology("tier_sheds", cb)
             .err()
@@ -404,8 +392,7 @@ fn a_dropping_policy_off_the_tier_still_builds() {
     cb.input::<String>("in")
         .on_full(OverflowPolicy::DropNewest)
         .into::<TierProc>()
-        .named("out")
-        .sink("kafka");
+        .sink_named("out");
 
     build_topology("plain_sheds", cb).expect("a shedding class without the tier builds");
 }
@@ -419,8 +406,7 @@ fn checkpoint_ack_without_the_tier_is_refused() {
     cb.checkpoint_ack();
     cb.input::<String>("in")
         .into::<TierProc>()
-        .named("out")
-        .sink("kafka");
+        .sink_named("out");
 
     let err = build_topology("checkpoint_no_tier", cb)
         .err()

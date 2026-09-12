@@ -287,7 +287,6 @@ fn channel_descriptor(entry: ChannelEntry, derived: DerivedChannel) -> ChannelDe
         wrap_input: entry.wrap_input,
         entry_parsed: entry.entry_parsed,
         plugin_sink: entry.plugin_sink.map(|sink| PluginSink {
-            name: Arc::from(sink.name),
             serializer: sink.serializer,
         }),
         keyed: entry.keyed,

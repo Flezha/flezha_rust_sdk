@@ -58,9 +58,8 @@ impl StreamOperative for ReplayOperative {
         c.correction_window(600_000);
         c.input::<String>("input")
             .into::<ReplayProcedure>()
-            .named("out")
             .keyed()
-            .sink("kafka");
+            .sink_named("out");
     }
 }
 
@@ -171,9 +170,8 @@ impl StreamOperative for HighWaterOperative {
         c.correction_window(600_000);
         c.input::<String>("input")
             .into::<HighWaterProcedure>()
-            .named("out")
             .keyed()
-            .sink("kafka");
+            .sink_named("out");
     }
 }
 

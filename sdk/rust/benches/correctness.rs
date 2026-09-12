@@ -304,9 +304,8 @@ impl StreamOperative for TierOffOperative {
         c.input::<Vec<u8>>("input")
             .on_full(OverflowPolicy::DropNothing)
             .into::<TierOffProcedure>()
-            .named("out")
             .keyed()
-            .sink("bench");
+            .sink_named("out");
     }
 }
 
@@ -320,9 +319,8 @@ impl StreamOperative for TierOnOperative {
         c.input::<Vec<u8>>("input")
             .on_full(OverflowPolicy::DropNothing)
             .into::<TierOnProcedure>()
-            .named("out")
             .keyed()
-            .sink("bench");
+            .sink_named("out");
     }
 }
 

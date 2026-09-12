@@ -26,9 +26,8 @@ impl StreamOperative for KeyedPluginOperative {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("inp")
             .into::<KeyedProducerProcedure>()
-            .named("out")
             .keyed()
-            .sink("kafka");
+            .sink_named("out");
     }
 }
 
@@ -49,8 +48,7 @@ impl StreamOperative for KeyedHybridOperative {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("inp")
             .into::<KeyedProducerProcedure>()
-            .named("out")
-            .sink_with("kafka", |v: &String| v.clone().into_bytes())
+            .sink_named_with("out", |v: &String| v.clone().into_bytes())
             .keyed()
             .into::<KeyedConsumerProcedure>();
     }

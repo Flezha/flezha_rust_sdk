@@ -85,8 +85,7 @@ impl StreamOperative for SingleHybridOperative {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .into::<SingleProducer>()
-            .named("hybrid_out")
-            .sink_with("plugin_a", |v: &u32| v.to_be_bytes().to_vec())
+            .sink_named_with("hybrid_out", |v: &u32| v.to_be_bytes().to_vec())
             .into::<SingleConsumer>();
     }
 }
@@ -160,8 +159,7 @@ impl StreamOperative for ThreeHybridOperative {
         let out = c
             .input::<String>("input")
             .into::<ThreeProducer>()
-            .named("three_out")
-            .sink_with("plugin_three", |v: &u32| {
+            .sink_named_with("three_out", |v: &u32| {
                 SERIALIZER_CALLS.fetch_add(1, Ordering::SeqCst);
                 v.to_be_bytes().to_vec()
             });
@@ -236,8 +234,7 @@ impl StreamOperative for PanicHybridOperative {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .into::<PanicProducer>()
-            .named("panic_out")
-            .sink_with("plugin_panic", |v: &u32| {
+            .sink_named_with("panic_out", |v: &u32| {
                 if *v == 13 {
                     panic!("test serializer rejected 13");
                 }
@@ -310,9 +307,8 @@ impl StreamOperative for DupHybridOperative {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .into::<DupProducer>()
-            .named("dup_out")
-            .sink_with("plugin_a", |v: &u32| v.to_be_bytes().to_vec())
-            .sink_with("plugin_b", |v: &u32| v.to_be_bytes().to_vec());
+            .sink_named_with("dup_out", |v: &u32| v.to_be_bytes().to_vec())
+            .sink_with(|v: &u32| v.to_be_bytes().to_vec());
     }
 }
 
@@ -360,8 +356,7 @@ impl StreamOperative for MetaHybridOperative {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .into::<MetaProducer>()
-            .named("meta_out")
-            .sink_with("plugin_meta", |v: &u32| v.to_be_bytes().to_vec())
+            .sink_named_with("meta_out", |v: &u32| v.to_be_bytes().to_vec())
             .into::<MetaConsumer>();
     }
 }
@@ -505,8 +500,7 @@ impl StreamOperative for TerminalSinkOperative {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .into::<UnifiedProducer>()
-            .named("unified_out")
-            .sink("plugin_u");
+            .sink_named("unified_out");
     }
 }
 
@@ -519,8 +513,7 @@ impl StreamOperative for SealedSinkOperative {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .into::<UnifiedProducer>()
-            .named("unified_out")
-            .sink("plugin_u")
+            .sink_named("unified_out")
             .sealed();
     }
 }
@@ -534,8 +527,7 @@ impl StreamOperative for HybridSinkOperative {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .into::<UnifiedProducer>()
-            .named("unified_out")
-            .sink("plugin_u")
+            .sink_named("unified_out")
             .into::<UnifiedConsumer>();
     }
 }
@@ -595,7 +587,10 @@ fn sink_shape<R: StreamOperative>(channel: &str) -> (ChannelKind, usize, Option<
     (
         descriptor.kind,
         descriptor.consumers.len(),
-        descriptor.plugin_sink.as_ref().map(|s| s.name.to_string()),
+        descriptor
+            .plugin_sink
+            .as_ref()
+            .map(|_| descriptor.name.to_string()),
         descriptor.keyed,
     )
 }
@@ -619,7 +614,7 @@ fn terminality_is_derived_from_the_wiring_and_sealed_changes_nothing() {
         (
             ChannelKind::PluginBound,
             0,
-            Some("plugin_u".to_string()),
+            Some("unified_out".to_string()),
             false
         ),
         "a sink with no consumers is the plugin-bound terminal"
@@ -629,7 +624,7 @@ fn terminality_is_derived_from_the_wiring_and_sealed_changes_nothing() {
         (
             ChannelKind::InterProcedure,
             1,
-            Some("plugin_u".to_string()),
+            Some("unified_out".to_string()),
             false
         ),
         "the same sink with a consumer after it stays inter-procedure"
@@ -680,6 +675,75 @@ fn terminal_and_hybrid_sink_frames_match_the_pre_rename_fixture() {
         *unified_consumer_observed().lock().unwrap(),
         vec!["hello".to_string()],
         "the hybrid consumer still receives the typed value"
+    );
+}
+
+// ---------- the sink names the channel ----------
+
+/// `sink("items_output")` with no `.named(...)` anywhere in the declaration.
+/// The channel this produces is the one the frame is stamped with, so the
+/// string an author can read in the source is the string a plugin filters on.
+struct SinkNamesChannelOperative;
+impl StreamOperative for SinkNamesChannelOperative {
+    fn factory_id() -> &'static str {
+        "sink_names_channel"
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("input")
+            .into::<UnifiedProducer>()
+            .sink_named("items_output");
+    }
+}
+
+/// The reproduction: a hand-written operative whose only naming call is its
+/// sink ships frames stamped with the sink's name, not the producing node's.
+#[test]
+fn sink_name_is_the_channel_name_on_the_wire() {
+    let (handle, _instance) = setup::<SinkNamesChannelOperative>("sink-names");
+    let (stream, frames) = duplex_stream_with_reader();
+
+    dispatch_input(&handle, "sink-names", &stream, "hello");
+
+    assert!(
+        wait_until(|| frames.lock().unwrap().len() == 1, Duration::from_secs(5)),
+        "the plugin frame did not arrive"
+    );
+
+    let frames = frames.lock().unwrap();
+    let (_, body, meta) = frames.first().unwrap();
+    assert_eq!(body, b"hello");
+    assert_eq!(
+        meta.get("channel").map(|s| s.as_str()),
+        Some("items_output"),
+        "the sink names the channel"
+    );
+}
+
+/// A channel both `.named(...)` and `.sink_named(...)` name is refused rather
+/// than resolved by precedence, and the refusal names both declarations.
+struct DoubleNamedOperative;
+impl StreamOperative for DoubleNamedOperative {
+    fn factory_id() -> &'static str {
+        "double_named"
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("input")
+            .into::<UnifiedProducer>()
+            .named("a")
+            .sink_named("b");
+    }
+}
+
+#[test]
+fn a_channel_named_twice_is_refused_naming_both() {
+    let err = match build_topology_for::<DoubleNamedOperative>() {
+        Ok(_) => panic!("expected topology error"),
+        Err(e) => e,
+    };
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("ChannelNamedTwice") && msg.contains("\"a\"") && msg.contains("\"b\""),
+        "expected ChannelNamedTwice naming both declarations, got: {msg}"
     );
 }
 

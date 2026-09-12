@@ -279,9 +279,8 @@ impl StreamOperative for TierSessionOperative {
         c.effectively_once();
         c.input::<String>("in")
             .into::<TierSessionProc>()
-            .named("out")
             .keyed()
-            .sink("sink");
+            .sink_named("out");
     }
 }
 

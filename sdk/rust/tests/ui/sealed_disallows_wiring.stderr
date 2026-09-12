@@ -8,7 +8,7 @@ help: consider moving this generic argument to the `Into` trait, which takes up 
    |
 48 ~     Into::<Downstream>::into(c.input::<String>("in")
 49 +         .into::<PluginProducer>()
-50 +         .sink("k")
+50 +         .sink()
 51 ~         .sealed());
    |
 help: remove the unnecessary generics

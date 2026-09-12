@@ -104,8 +104,7 @@ impl WorkflowOperative for StatelessLoopWorkflow {
     fn procedures(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<ChatReply>()
-            .named("out")
-            .sink("chat_sink");
+            .sink_named("out");
     }
 }
 
@@ -196,8 +195,7 @@ impl WorkflowOperative for ChatRewindWorkflow {
             .into::<ChatTurn>()
             .named("mid")
             .into::<ChatReplyUndoable>()
-            .named("out")
-            .sink("chat_sink");
+            .sink_named("out");
     }
 }
 
@@ -222,8 +220,7 @@ impl WorkflowOperative for ChatLoopWorkflow {
             .into::<ChatTurn>()
             .named("mid")
             .into::<ChatReply>()
-            .named("out")
-            .sink("chat_sink");
+            .sink_named("out");
     }
 }
 
@@ -272,7 +269,7 @@ macro_rules! bench_chain {
                         .named(concat!("edge_", stringify!($rest)))
                         .into::<$rest>();
                 )*
-                s.named("out").sink("bench_sink");
+                s.sink_named("out");
             }
         }
     };
@@ -378,7 +375,6 @@ impl WorkflowOperative for BenchLoopWorkflow {
             .into::<BenchTurn>()
             .named("mid")
             .into::<ChatReply>()
-            .named("out")
-            .sink("bench_sink");
+            .sink_named("out");
     }
 }

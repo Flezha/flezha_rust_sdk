@@ -64,9 +64,8 @@ impl StreamOperative for KeyedStampOperative {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .into::<KeyedStampProcedure>()
-            .named("out")
             .keyed()
-            .sink("kafka");
+            .sink_named("out");
     }
 }
 
@@ -128,9 +127,8 @@ impl StreamOperative for TierOperative {
         c.effectively_once();
         c.input::<String>("input")
             .into::<TierStampProcedure>()
-            .named("out")
             .keyed()
-            .sink("kafka");
+            .sink_named("out");
     }
 }
 
