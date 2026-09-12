@@ -9,8 +9,8 @@ use quote::{format_ident, quote};
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::{
-    Expr, ExprLit, FnArg, ItemFn, Lit, MetaNameValue, Pat, PatType, ReturnType, Signature, Token,
-    Type,
+    Expr, ExprLit, FnArg, ItemFn, Lit, LitStr, MetaNameValue, Pat, PatType, ReturnType, Signature,
+    Token, Type,
 };
 
 use crate::operative::{auto_operative, AutoWiring};
@@ -20,6 +20,8 @@ use crate::util::{generic_args, snake_ident_to_pascal};
 struct ProcedureArgs {
     id: Option<String>,
     sink: Option<String>,
+    /// The entry channel name for the auto-wired operative a `sink` generates.
+    input: Option<LitStr>,
     init: Option<syn::Path>,
     key: Option<syn::Path>,
     emits: Option<Type>,
@@ -441,6 +443,46 @@ fn expand_modes(args: &ProcedureArgs) -> TokenStream {
     quote! { #entity_items #capacity_items }
 }
 
+/// Every rule about what a `sink` needs and what needs a `sink`, resolved to
+/// the `(id, sink)` pair the auto-wire emits from. `None` when the class
+/// declares no `sink` and nothing asked for one.
+fn auto_wire_names<'a>(
+    sig: &Signature,
+    args: &'a ProcedureArgs,
+    output: &Output,
+) -> syn::Result<Option<(&'a str, &'a str)>> {
+    let Some(sink) = &args.sink else {
+        // Nothing is auto-wired, so an entry channel name has no channel to
+        // name and would sit in the attribute doing nothing.
+        return match &args.input {
+            Some(name) => Err(syn::Error::new_spanned(
+                name,
+                format!(
+                    "#[flezha::procedure] `input = {:?}` names the entry channel of the operative \
+                     a `sink` auto-wires; this procedure declares no `sink`, so there is no \
+                     channel to name",
+                    name.value()
+                ),
+            )),
+            None => Ok(None),
+        };
+    };
+    let id = args.id.as_deref().ok_or_else(|| {
+        syn::Error::new(
+            sig.span(),
+            "#[flezha::procedure] `sink` (single-procedure auto-wire) requires an `id`",
+        )
+    })?;
+    if !(output.emits() || args.emits.is_some()) {
+        return Err(syn::Error::new(
+            sig.span(),
+            "#[flezha::procedure] `sink` requires an output type to feed the plugin — a non-unit \
+             return, or `emits = Type` on the context-parameter shape",
+        ));
+    }
+    Ok(Some((id, sink)))
+}
+
 /// `sink = "name"` wires this one procedure into its own `StreamOperative` and
 /// submits it to the inventory, so a single-procedure class needs no builder.
 fn expand_auto_wire(
@@ -451,34 +493,22 @@ fn expand_auto_wire(
     output_ty: &TokenStream,
     struct_ident: &syn::Ident,
 ) -> syn::Result<TokenStream> {
-    let Some(sink) = &args.sink else {
+    let Some((id, sink)) = auto_wire_names(&func.sig, args, output)? else {
         return Ok(quote! {});
     };
-    let id = args.id.as_ref().ok_or_else(|| {
-        syn::Error::new(
-            func.sig.span(),
-            "#[flezha::procedure] `sink` (single-procedure auto-wire) requires an `id`",
-        )
-    })?;
-    if !(output.emits() || args.emits.is_some()) {
-        return Err(syn::Error::new(
-            func.sig.span(),
-            "#[flezha::procedure] `sink` requires an output type to feed the plugin — a non-unit \
-             return, or `emits = Type` on the context-parameter shape",
-        ));
-    }
     let vis = &func.vis;
     let operative_ident = format_ident!("__FlezhaAutoOperative{}", struct_ident);
-    Ok(auto_operative(AutoWiring {
+    auto_operative(AutoWiring {
         vis: quote! { #vis },
         ident: &operative_ident,
         id,
         input_ty: params.input_ty,
+        input_name: args.input.as_ref(),
         on_full: on_full_call(&args.on_full)?,
         chain: quote! { .into::<#struct_ident>(); },
         payload: output_ty.clone(),
         sink,
-    }))
+    })
 }
 
 /// What the return type says about the emit, on its two independent axes: the
@@ -586,6 +616,7 @@ fn parse_args(attr: TokenStream) -> syn::Result<ProcedureArgs> {
         match key.as_str() {
             "id" => args.id = Some(try_str(&value)?),
             "sink" => args.sink = Some(try_str(&value)?),
+            "input" => args.input = Some(try_lit_str(&value)?.clone()),
             "init" => args.init = Some(try_path(&value)?),
             "key" => args.key = Some(try_path(&value)?),
             "emits" => args.emits = Some(try_type(&value)?),
@@ -617,10 +648,14 @@ fn parse_args(attr: TokenStream) -> syn::Result<ProcedureArgs> {
 use syn::parse::Parser;
 
 fn try_str(expr: &Expr) -> syn::Result<String> {
+    Ok(try_lit_str(expr)?.value())
+}
+
+fn try_lit_str(expr: &Expr) -> syn::Result<&LitStr> {
     match expr {
         Expr::Lit(ExprLit {
             lit: Lit::Str(s), ..
-        }) => Ok(s.value()),
+        }) => Ok(s),
         _ => Err(syn::Error::new_spanned(expr, "expected a string literal")),
     }
 }

@@ -33,6 +33,9 @@ fn ui_compile_fail() {
     t.compile_fail("tests/ui/state_on_enum.rs");
     t.compile_fail("tests/ui/state_on_tuple_struct.rs");
     t.compile_fail("tests/ui/operative_fan_out.rs");
+    t.compile_fail("tests/ui/operative_empty_entry_name.rs");
+    t.compile_fail("tests/ui/procedure_input_without_sink.rs");
+    t.compile_fail("tests/ui/procedure_empty_entry_name.rs");
 
     // Keyed/collection journaling (`expressive-state-journaling`).
     t.compile_fail("tests/ui/state_map_without_journal.rs");

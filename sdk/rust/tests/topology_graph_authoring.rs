@@ -407,6 +407,12 @@ fn bytes_and_string_entries_stay_passthrough() {
 
 // ---- the sugar and the hand-written spelling name one channel -----------
 
+/// A topology's channel names in declaration order; the entry channel is
+/// first, so a shorthand's whole naming answer is one vector.
+fn channel_names(t: &flezha_runner::operative::OperativeTopology) -> Vec<String> {
+    t.channels.iter().map(|c| c.name.to_string()).collect()
+}
+
 /// The auto-wire path: `sink = "..."` is the only naming call the author
 /// writes, and it is the channel's name.
 #[flezha_runner::procedure(id = "generated_naming", sink = "items_output")]
@@ -438,12 +444,94 @@ fn the_generated_and_hand_written_spellings_name_one_channel() {
         build_topology_for::<__FlezhaAutoOperativeGeneratedNaming>().expect("the sugar builds");
     let by_hand = build_topology_for::<HandWrittenNaming>().expect("the hand-written twin builds");
 
-    let names = |t: &flezha_runner::operative::OperativeTopology| {
-        t.channels
-            .iter()
-            .map(|c| c.name.to_string())
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(names(&generated), vec!["input", "items_output"]);
-    assert_eq!(names(&generated), names(&by_hand));
+    assert_eq!(channel_names(&generated), vec!["input", "items_output"]);
+    assert_eq!(channel_names(&generated), channel_names(&by_hand));
+}
+
+// ---- the shorthand's entry channel takes the name the author writes ------
+
+/// The attribute shorthand, naming its entry channel.
+#[flezha_runner::procedure(id = "named_entry_attribute", sink = "attr_items", input = "prices")]
+fn named_entry_attribute(input: String) -> Vec<u8> {
+    input.into_bytes()
+}
+
+/// The attribute shorthand with no name written: the entry channel keeps the
+/// default address every existing operative already ships under.
+#[flezha_runner::procedure(id = "default_entry_attribute", sink = "default_items")]
+fn default_entry_attribute(input: String) -> Vec<u8> {
+    input.into_bytes()
+}
+
+#[flezha_runner::procedure(id = "pipeline_hop")]
+fn pipeline_hop(input: String) -> Vec<u8> {
+    input.into_bytes()
+}
+
+flezha_runner::operative! {
+    id: "named_entry_pipeline",
+    pipeline: input::<String>("quotes") -> PipelineHop -> plugin::<Vec<u8>>("pipeline_items")
+}
+
+flezha_runner::operative! {
+    id: "default_entry_pipeline",
+    pipeline: input::<String> -> PipelineHop -> plugin::<Vec<u8>>("pipeline_items")
+}
+
+/// fails when: the shorthand stops honouring the entry channel name the author
+/// wrote, so the address an operator injects on is not the one declared.
+#[test]
+fn both_shorthands_name_their_entry_channel() {
+    let attr = build_topology_for::<__FlezhaAutoOperativeNamedEntryAttribute>()
+        .expect("the named attribute shorthand builds");
+    assert_eq!(channel_names(&attr), vec!["prices", "attr_items"]);
+
+    let pipeline = build_topology_for::<__FlezhaOperative_NamedEntryPipeline>()
+        .expect("the named pipeline shorthand builds");
+    assert_eq!(channel_names(&pipeline), vec!["quotes", "pipeline_items"]);
+}
+
+/// fails when: an unnamed shorthand stops naming its entry channel `input` —
+/// the address §6's conformance table and every existing operative ship under.
+#[test]
+fn an_unnamed_shorthand_keeps_the_default_entry_channel_name() {
+    let attr = build_topology_for::<__FlezhaAutoOperativeDefaultEntryAttribute>()
+        .expect("the unnamed attribute shorthand builds");
+    assert_eq!(channel_names(&attr), vec!["input", "default_items"]);
+
+    let pipeline = build_topology_for::<__FlezhaOperative_DefaultEntryPipeline>()
+        .expect("the unnamed pipeline shorthand builds");
+    assert_eq!(channel_names(&pipeline), vec!["input", "pipeline_items"]);
+}
+
+/// fails when: the name the author wrote is not the address a frame travels
+/// to — the declaration would name one channel and the wire another.
+#[test]
+fn a_frame_reaches_a_shorthand_on_the_channel_it_named() {
+    let (handle, _instance) = setup::<__FlezhaAutoOperativeNamedEntryAttribute>("named-entry");
+    let (stream, mut observer) = stream_pair();
+
+    dispatch_input(&handle, "named-entry", "prices", b"hello".to_vec(), &stream);
+
+    let frames = read_frames(&mut observer, 1, Duration::from_secs(5));
+    assert_eq!(frames[0].message, b"hello");
+}
+
+/// fails when: an unnamed shorthand stops accepting a frame addressed to
+/// `input` — every operative in the tree is reached that way.
+#[test]
+fn a_frame_reaches_an_unnamed_shorthand_on_input() {
+    let (handle, _instance) = setup::<__FlezhaAutoOperativeDefaultEntryAttribute>("default-entry");
+    let (stream, mut observer) = stream_pair();
+
+    dispatch_input(
+        &handle,
+        "default-entry",
+        "input",
+        b"hello".to_vec(),
+        &stream,
+    );
+
+    let frames = read_frames(&mut observer, 1, Duration::from_secs(5));
+    assert_eq!(frames[0].message, b"hello");
 }

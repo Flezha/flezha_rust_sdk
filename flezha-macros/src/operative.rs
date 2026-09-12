@@ -14,6 +14,8 @@ use crate::util::snake_to_pascal;
 struct OperativeDef {
     id: String,
     input_ty: Type,
+    /// The entry channel name written after the head's turbofish, if any.
+    input_name: Option<LitStr>,
     procedures: Vec<Path>,
     plugin_ty: Type,
     plugin_name: String,
@@ -39,6 +41,13 @@ fn parse_turbofish_ty(input: ParseStream) -> syn::Result<Type> {
     Ok(ty)
 }
 
+/// The `("name")` an end of the pipeline carries its channel name in.
+fn parse_paren_name(input: ParseStream) -> syn::Result<LitStr> {
+    let content;
+    syn::parenthesized!(content in input);
+    content.parse()
+}
+
 /// A parsed pipeline tail: the procedure hops in order, and the terminal
 /// `plugin::<U>("name")` when one was written.
 type Pipeline = (Vec<Path>, Option<(Type, String)>);
@@ -58,9 +67,7 @@ fn parse_pipeline(input: ParseStream) -> syn::Result<Pipeline> {
         if is_plugin {
             input.parse::<Ident>()?; // plugin
             let ty = parse_turbofish_ty(input)?;
-            let content;
-            syn::parenthesized!(content in input);
-            let name: LitStr = content.parse()?;
+            let name = parse_paren_name(input)?;
             plugin = Some((ty, name.value()));
             break;
         }
@@ -81,6 +88,10 @@ impl Parse for OperativeDef {
 
         let input_kw = keyword(input, "input", "pipeline must start with `input::<T>`")?;
         let input_ty = parse_turbofish_ty(input)?;
+        let input_name = input
+            .peek(syn::token::Paren)
+            .then(|| parse_paren_name(input))
+            .transpose()?;
 
         let (procedures, plugin) = parse_pipeline(input)?;
 
@@ -109,6 +120,7 @@ impl Parse for OperativeDef {
         Ok(OperativeDef {
             id: id.value(),
             input_ty,
+            input_name,
             procedures,
             plugin_ty,
             plugin_name,
@@ -127,6 +139,9 @@ pub(crate) struct AutoWiring<'a> {
     pub ident: &'a Ident,
     pub id: &'a str,
     pub input_ty: &'a Type,
+    /// The entry channel's name as the author wrote it; `None` takes the
+    /// default, which is what every operative that names nothing ships under.
+    pub input_name: Option<&'a LitStr>,
     /// The entry channel's `.on_full(...)`, empty when none was declared.
     pub on_full: TokenStream,
     /// The `.into::<P>()` hops the entry stream is threaded through, including
@@ -138,24 +153,39 @@ pub(crate) struct AutoWiring<'a> {
     pub sink: &'a str,
 }
 
-pub(crate) fn auto_operative(wiring: AutoWiring<'_>) -> TokenStream {
+/// The entry channel's name: the author's where one was written, and `input`
+/// otherwise. An empty one is refused — a channel nothing can address.
+fn entry_channel_name(written: Option<&LitStr>) -> syn::Result<String> {
+    match written {
+        None => Ok("input".to_string()),
+        Some(lit) if lit.value().is_empty() => Err(syn::Error::new_spanned(
+            lit,
+            "an entry channel name may not be empty",
+        )),
+        Some(lit) => Ok(lit.value()),
+    }
+}
+
+pub(crate) fn auto_operative(wiring: AutoWiring<'_>) -> syn::Result<TokenStream> {
     let AutoWiring {
         vis,
         ident,
         id,
         input_ty,
+        input_name,
         on_full,
         chain,
         payload,
         sink,
     } = wiring;
-    quote! {
+    let entry = entry_channel_name(input_name)?;
+    Ok(quote! {
         #[doc(hidden)]
         #vis struct #ident;
         impl ::flezha_runner::StreamOperative for #ident {
             fn factory_id() -> &'static str { #id }
             fn channels(c: &::flezha_runner::ChannelBuilder) {
-                let stream = c.input::<#input_ty>("input") #on_full #chain
+                let stream = c.input::<#input_ty>(#entry) #on_full #chain
                 // Pins the declared sink payload type against the terminal
                 // procedure's `Output`.
                 let stream: ::flezha_runner::Stream<'_, #payload> = stream;
@@ -168,7 +198,7 @@ pub(crate) fn auto_operative(wiring: AutoWiring<'_>) -> TokenStream {
                 || ::flezha_runner::__register_stream::<#ident>(),
             )
         }
-    }
+    })
 }
 
 pub fn expand(item: TokenStream) -> syn::Result<TokenStream> {
@@ -191,16 +221,17 @@ pub fn expand(item: TokenStream) -> syn::Result<TokenStream> {
         })
         .collect();
 
-    Ok(auto_operative(AutoWiring {
+    auto_operative(AutoWiring {
         vis: quote! {},
         ident: &ident,
         id: &def.id,
         input_ty: &def.input_ty,
+        input_name: def.input_name.as_ref(),
         on_full: quote! {},
         chain: quote! { .into::<#first_procedure>(); #hops },
         payload: quote! { #plugin_ty },
         sink: &def.plugin_name,
-    }))
+    })
 }
 
 /// Make a struct-name suffix from a factory id string.

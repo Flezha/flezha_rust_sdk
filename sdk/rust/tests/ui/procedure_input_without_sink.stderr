@@ -1,0 +1,5 @@
+error: #[flezha::procedure] `input = "prices"` names the entry channel of the operative a `sink` auto-wires; this procedure declares no `sink`, so there is no channel to name
+ --> tests/ui/procedure_input_without_sink.rs:1:46
+  |
+1 | #[flezha_runner::procedure(id = "f", input = "prices")]
+  |                                              ^^^^^^^^
