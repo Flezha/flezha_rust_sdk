@@ -1,0 +1,17 @@
+# Standalone on purpose: no workspace, and one dependency on a released
+# version, so this builds the way your own project would rather than the way a
+# crate inside the SDK's workspace does.
+[package]
+name = "echo"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+flezha_runner = "0.1.0"
+# The admin calls commented out in main.rs take their fields as JSON.
+serde_json = "1"
+
+# Its own workspace, so the Flezha repository's workspace around this folder
+# does not claim it. Harmless in a copy of its own.
+[workspace]
