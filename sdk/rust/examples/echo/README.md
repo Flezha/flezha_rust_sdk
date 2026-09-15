@@ -8,8 +8,8 @@ Three files, one for each part the guides describe:
 
 | File | Part | What it does |
 |---|---|---|
-| `src/operative.rs` | the operative | the graph: `in` feeds the procedure, output lands on `out` |
 | `src/procedure.rs` | the procedure | the processing stage: prefixes each message |
+| `src/operative.rs` | the operative | the graph: `in` feeds the procedure, output lands on `out` |
 | `src/main.rs` | the runner | this process: offers the operative and waits |
 
 ## Run it
