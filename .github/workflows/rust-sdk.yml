@@ -1,0 +1,53 @@
+name: Rust SDK
+
+# Three tiers and no controller, then the source-shape check. The SDK compiles
+# the core at the git tag its manifest names; the fake controller and the
+# contract set come from the core release at the same version, checked against
+# its manifest.
+#
+# What this cannot prove is the capability vocabulary the controller owns:
+# persistence, effectively-once, correction, partitioning, workflows, liveness,
+# restarts. Those are end-to-end scenarios and they run in the core's tree,
+# which builds this repository through its submodule and boots the reference
+# runner in every suite. The performance gates run there too.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CORE_VERSION: "0.1.0"
+  CORE_RELEASE: https://github.com/flezha/flezha/releases/download/v0.1.0
+
+jobs:
+  tiers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Run the three tiers
+        run: scripts/ci.sh --core "$CORE_RELEASE" --version "$CORE_VERSION"
+
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-05-07
+          components: rustfmt
+
+      - name: Formatting
+        run: |
+          for manifest in Cargo.toml macros/Cargo.toml test_app/Cargo.toml; do
+            cargo +nightly-2026-05-07 fmt --manifest-path "$manifest" -- --check
+          done

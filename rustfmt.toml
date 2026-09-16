@@ -1,0 +1,21 @@
+# The Rust SDK's style, the same as the core's.
+#
+# Layout: stable-supported options come first. Nightly-only options live
+# below the `# nightly only:` marker. Stable rustfmt ignores those with a
+# warning; the format job in `.github/workflows/rust-sdk.yml` runs nightly
+# rustfmt so they are enforced on every pull request.
+
+edition = "2021"
+max_width = 100
+use_field_init_shorthand = true
+use_try_shorthand = true
+
+# nightly only:
+imports_granularity = "Module"
+group_imports = "StdExternalCrate"
+ignore = [
+    "src/generated",
+    # trybuild compiles these out-of-tree and pins every diagnostic to a line
+    # number in the matching `.stderr`, so formatting one breaks its snapshot.
+    "tests/ui",
+]

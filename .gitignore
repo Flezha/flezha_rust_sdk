@@ -1,0 +1,10 @@
+/target
+# Each crate builds on its own, so each has its own target directory.
+/macros/target
+/test_app/target
+# Fetched from a core release and checked against its manifest: the fake
+# controller, and the contract set the fixture tests resolve against.
+/.core/
+/contract/
+# The tag in Cargo.toml decides the core's commit; a lock would pin it a second time.
+Cargo.lock

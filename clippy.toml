@@ -1,0 +1,3 @@
+# The core's ceiling: cognitive complexity at most 25 (clippy::cognitive_complexity is
+# enabled in each crate's [lints.clippy]).
+cognitive-complexity-threshold = 25

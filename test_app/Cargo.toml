@@ -1,0 +1,25 @@
+[package]
+name = "rust_runner"
+version = "0.1.0"
+edition = "2021"
+license = "MPL-2.0"
+repository = "https://github.com/flezha/flezha_rust_sdk"
+publish = false
+
+[dependencies]
+flezha_runner = { path = ".." }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+bincode = "1.3"
+erased-serde = "0.4.6"
+
+[dev-dependencies]
+# Enables `flezha_runner::testing::ShardTestHarness` for the macro-twin
+# equivalence tests in `src/main.rs`.
+flezha_runner = { path = "..", features = ["testing"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(rust_analyzer)", "cfg(loom)"] }
+
+[lints.clippy]
+cognitive_complexity = "warn"

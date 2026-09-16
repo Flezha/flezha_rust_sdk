@@ -66,6 +66,32 @@ fn default_directives_pass_every_sdk_diagnostic_target() {
     );
 }
 
+/// The `src` directory of a dependency as cargo resolved it: the core's git
+/// checkout at its tag here, or its path crate when the core's tree builds this
+/// crate through its `[patch]`.
+fn dependency_source(name: &str) -> std::path::PathBuf {
+    let output = std::process::Command::new(env!("CARGO"))
+        .args(["metadata", "--format-version", "1", "--manifest-path"])
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"))
+        .output()
+        .expect("cargo metadata runs");
+    assert!(
+        output.status.success(),
+        "cargo metadata failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("cargo metadata prints JSON");
+    let manifest = metadata["packages"]
+        .as_array()
+        .expect("the metadata lists packages")
+        .iter()
+        .find(|package| package["name"] == name)
+        .and_then(|package| package["manifest_path"].as_str())
+        .unwrap_or_else(|| panic!("{name} is not in this crate's dependency graph"));
+    Path::new(manifest).with_file_name("src")
+}
+
 /// Recursively scans the `.rs` sources under `dir`: collects every
 /// `target: "..."` literal into `targets` and reports whether any tracing
 /// emit macro omits `target:` — such events inherit the crate's module
@@ -113,13 +139,13 @@ fn scan_sources(dir: &Path, targets: &mut BTreeSet<String>) -> bool {
 #[test]
 fn every_source_declared_target_is_enabled_by_the_directives() {
     let sdk_root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    // The crates the SDK's diagnostics flow through; a new path
-    // dependency that starts emitting tracing events joins this list
-    // (and DEFAULT_DIRECTIVES) in the same change.
+    // The crates the SDK's diagnostics flow through; a new dependency that
+    // starts emitting tracing events joins this list (and DEFAULT_DIRECTIVES)
+    // in the same change.
     let crates = [
         ("flezha_runner", sdk_root.join("src")),
-        ("flz_core", sdk_root.join("../../flz_core/src")),
-        ("flz_transport", sdk_root.join("../../flz_transport/src")),
+        ("flz_core", dependency_source("flz_core")),
+        ("flz_transport", dependency_source("flz_transport")),
     ];
 
     let mut targets = BTreeSet::new();

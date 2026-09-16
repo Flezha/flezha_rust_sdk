@@ -97,13 +97,40 @@ impl StreamOperative for WordCount {
     }
 }
 
+/// A member of the contract set, resolved in the order every SDK uses:
+/// `$FLEZHA_CONTRACT_DIR`, else `contract/` beside this crate, else the nearest
+/// enclosing tree that carries the set's manifest. None resolving fails naming
+/// all three, never skips.
+fn contract_file(member: &str) -> std::path::PathBuf {
+    const MANIFEST: &str = "test/fixtures/contract.txt";
+    let package = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let configured = std::env::var_os("FLEZHA_CONTRACT_DIR").map(std::path::PathBuf::from);
+    let beside = package.join("contract");
+    let enclosing = package
+        .ancestors()
+        .find(|dir| dir.join(MANIFEST).is_file())
+        .map(std::path::Path::to_path_buf);
+    [configured.clone(), Some(beside.clone()), enclosing]
+        .into_iter()
+        .flatten()
+        .find(|root| root.join(MANIFEST).is_file())
+        .map(|root| root.join(member))
+        .unwrap_or_else(|| {
+            panic!(
+                "the contract set is nowhere this suite looked: $FLEZHA_CONTRACT_DIR ({}), {}, \
+                 and no directory above {} carries {MANIFEST}. Unpack \
+                 flezha-fixtures-<version>.tar.gz at contract/, or set FLEZHA_CONTRACT_DIR.",
+                configured.map_or("unset".to_string(), |dir| dir.display().to_string()),
+                beside.display(),
+                package.display(),
+            )
+        })
+}
+
 /// The scenario every core runs: the lines to feed, and the sink values to
 /// release as a multiset.
 fn scenario() -> (Vec<String>, BTreeMap<String, usize>) {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../test/fixtures/local_mode_word_count.txt"
-    );
+    let path = contract_file("test/fixtures/local_mode_word_count.txt");
     let text = std::fs::read_to_string(path).expect("the shared local-mode scenario");
     let mut lines = Vec::new();
     let mut totals = BTreeMap::new();

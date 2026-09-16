@@ -1,0 +1,9 @@
+# Project default Rust toolchain.
+#
+# The format job in `.github/workflows/rust-sdk.yml` installs
+# nightly-2026-05-07 instead, because the rustfmt options in `rustfmt.toml`
+# (`imports_granularity`, `group_imports`, `ignore`) are nightly-only. Bump that
+# pinned nightly together with rustfmt.toml when style decisions change.
+
+[toolchain]
+channel = "stable"

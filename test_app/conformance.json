@@ -17,7 +17,7 @@
     ]
   },
   "build": {
-    "test": "cargo build --manifest-path=test/apps/rust_runner/Cargo.toml --target-dir=./target",
+    "test": "cargo build --manifest-path=sdk/rust/test_app/Cargo.toml --target-dir=./target",
     "bench": "cargo build -p rust_runner --release"
   },
   "connect_timeout_ms": 120000,
