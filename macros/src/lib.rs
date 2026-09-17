@@ -8,7 +8,8 @@
 //! - `#[derive(flezha::State)]` — generates a field-granular `Change` enum +
 //!   `apply_change` + journaling mutators on the state handle.
 //! - `flezha::operative!` — declarative macro lowering a strictly linear pipeline
-//!   to a `channels()` body + auto-registration.
+//!   to a `channels()` body on the type it declares, which the author
+//!   registers with `runner.register_factory(Name)`.
 //!
 //! Everything expands to the existing trait surface; see
 //! `docs/sdk/authoring_contract.md`.

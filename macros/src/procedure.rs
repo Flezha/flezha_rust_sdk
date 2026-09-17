@@ -23,7 +23,7 @@ struct ProcedureArgs {
     sink: Option<String>,
     /// `stream` or `workflow`: which operative kind a `sink` generates.
     kind: Option<Kind>,
-    /// The entry channel name for the auto-wired operative a `sink` generates.
+    /// The entry channel name for the operative a `sink` generates.
     input: Option<LitStr>,
     init: Option<syn::Path>,
     key: Option<syn::Path>,
