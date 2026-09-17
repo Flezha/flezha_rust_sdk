@@ -58,6 +58,11 @@ impl Procedure for DynamicEntityProcedure {
     }
 }
 
+/// The text before the first `:`, the key every keyed string fixture routes on.
+pub(crate) fn key_prefix(value: &str) -> String {
+    value.split(':').next().unwrap_or_default().to_string()
+}
+
 pub(crate) struct DynamicEntityOperative;
 impl StreamOperative for DynamicEntityOperative {
     fn factory_id() -> &'static str {
@@ -67,7 +72,7 @@ impl StreamOperative for DynamicEntityOperative {
         c.input::<String>("input")
             .on_full(OverflowPolicy::DropNothing)
             .filter(|input: &String| input != "drop")
-            .key_by(|input: &String| input.split(':').next().unwrap_or(input).to_string())
+            .key_by(|input: &String| key_prefix(input))
             .into::<DynamicEntityProcedure>()
             .sink_named("kafka");
     }
@@ -117,11 +122,7 @@ impl Procedure for PartitionRelayProcedure {
         mut state: StateHandle<'_, Self>,
         ctx: &mut ProcedureCtx<'_>,
     ) -> Result<(), ProcedureError> {
-        let key = input
-            .split(':')
-            .next()
-            .unwrap_or(input.as_str())
-            .to_string();
+        let key = key_prefix(&input);
         state.apply(RelayChange::Push(input.clone()));
         ctx.emit_keyed::<String>(key, input)
     }
@@ -139,7 +140,7 @@ impl StreamOperative for PartitionRelayOperative {
         // channel. The entry channel here is `in` so the two names cannot
         // collide inside this class.
         c.input::<String>("in")
-            .key_by(|input: &String| input.split(':').next().unwrap_or(input).to_string())
+            .key_by(|input: &String| key_prefix(input))
             .into::<PartitionRelayProcedure>()
             .keyed()
             .sink_named("input");

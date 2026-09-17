@@ -1,5 +1,6 @@
-//! Channel-declaration fixtures: the three bounded-mailbox overflow policies
-//! and the hybrid plugin/inter-procedure channel.
+//! Channel-declaration fixtures: the three bounded-mailbox overflow policies,
+//! the hybrid plugin/inter-procedure channel, and the two stream-graph shapes
+//! every SDK carries: a merge and a transform chain.
 
 use crate::*;
 
@@ -248,5 +249,112 @@ impl StreamOperative for HybridChannelOperative {
                 v.to_be_bytes().to_vec()
             })
             .into::<HybridConsumerProcedure>();
+    }
+}
+
+// -- MergedInputOperative ---------------------------------------------------------
+//
+// Two entry channels merged into one procedure. Each source's mapping tags the
+// value with the channel it came from, the merge keys on the symbol the mapping
+// read, and the emitted line is `<source>:<payload>`.
+
+#[derive(Clone, Debug)]
+pub(crate) struct MergedInput {
+    source: &'static str,
+    symbol: String,
+    payload: String,
+}
+
+fn tagged(source: &'static str) -> impl Fn(String) -> MergedInput + Send + Sync + 'static {
+    move |payload: String| MergedInput {
+        source,
+        symbol: key_prefix(&payload),
+        payload,
+    }
+}
+
+#[derive(Default)]
+struct MergeLabelProcedure;
+impl Procedure for MergeLabelProcedure {
+    type Input = MergedInput;
+    type Output = String;
+    type State = ();
+    type Change = NoChange;
+    type Clock = WallClock;
+    type Config = ();
+    fn name() -> &'static str {
+        "merge_label_procedure"
+    }
+    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
+    fn run(
+        &mut self,
+        input: MergedInput,
+        _: StateHandle<'_, Self>,
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
+        ctx.emit(format!("{}:{}", input.source, input.payload))
+    }
+}
+
+pub(crate) struct MergedInputOperative;
+impl StreamOperative for MergedInputOperative {
+    fn factory_id() -> &'static str {
+        "merged_input"
+    }
+    fn channels(c: &ChannelBuilder) {
+        let ticks = c.input::<String>("ticks");
+        let quotes = c.input::<String>("quotes");
+        c.merge::<MergedInput>()
+            .from(ticks, tagged("ticks"))
+            .from(quotes, tagged("quotes"))
+            .key_by(|v: &MergedInput| v.symbol.clone())
+            .into::<MergeLabelProcedure>()
+            .keyed()
+            .sink_named("merged");
+    }
+}
+
+// -- TransformChainOperative ------------------------------------------------------
+//
+// Every value transform on one edge: `drop` is filtered out, a comma list fans
+// out into one value per element, each is upper-cased and keyed on its prefix.
+
+#[derive(Default)]
+struct TransformLabelProcedure;
+impl Procedure for TransformLabelProcedure {
+    type Input = String;
+    type Output = String;
+    type State = ();
+    type Change = NoChange;
+    type Clock = WallClock;
+    type Config = ();
+    fn name() -> &'static str {
+        "transform_label_procedure"
+    }
+    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
+    fn run(
+        &mut self,
+        input: String,
+        _: StateHandle<'_, Self>,
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
+        ctx.emit(input)
+    }
+}
+
+pub(crate) struct TransformChainOperative;
+impl StreamOperative for TransformChainOperative {
+    fn factory_id() -> &'static str {
+        "transform_chain"
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("trades")
+            .filter(|t: &String| t != "drop")
+            .flat_map(|t: String| t.split(',').map(str::to_string).collect::<Vec<_>>())
+            .map(|t: String| t.to_uppercase())
+            .key_by(|t: &String| key_prefix(t))
+            .into::<TransformLabelProcedure>()
+            .keyed()
+            .sink_named("transformed");
     }
 }

@@ -55,6 +55,8 @@
       "static_entity",
       "mixed_operative",
       "hybrid_channel",
+      "merged_input",
+      "transform_chain",
       "entity_stress",
       "bench_keyed_nopersist"
     ],

@@ -494,7 +494,9 @@ fn reshape<'b, K: StreamTarget>(
 ) -> Stream<'b, String, K> {
     for link in links {
         s = match *link {
-            "map" | "filter" | "flat_map" => s.map(|v: String| v),
+            "map" => s.map(|v: String| v),
+            "filter" => s.filter(|_: &String| true),
+            "flat_map" => s.flat_map(|v: String| [v]),
             "key" => s.key_by(|v: &String| v.clone()),
             other => panic!("the fixture spells a link this interpreter does not map: {other}"),
         };

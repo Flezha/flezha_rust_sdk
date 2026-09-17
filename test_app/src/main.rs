@@ -83,6 +83,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .define_stream::<CoalescingCounterOperative>()?
         .define_stream::<PersistenceOffOperative>()?
         .define_stream::<HybridChannelOperative>()?
+        .define_stream::<MergedInputOperative>()?
+        .define_stream::<TransformChainOperative>()?
         .define_stream::<ResumeProbeOperative>()?
         .define_stream::<SchemaEvolutionV1Operative>()?
         .define_stream::<SchemaEvolutionV2Operative>()?
