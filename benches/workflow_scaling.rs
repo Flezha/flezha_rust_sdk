@@ -20,7 +20,7 @@
 //! ```
 //!
 //! Classes are declared through the ordinary authoring path
-//! (`Flezha::create_runner(..).define_workflow::<T>()`, which registers without
+//! (`Flezha::create_runner(..).register_factory(T)`, which registers without
 //! connecting to anything) and driven through a `RunnerNode`, so the probe
 //! measures what an operator's runner does rather than a test back door. The
 //! SDK's poll workers spawn themselves on the first instance's entity build,
@@ -408,9 +408,9 @@ fn workflow_instance_scaling_probe() {
     // dials a controller, which is all this probe needs from it.
     let _runner = Flezha::create_runner("scale-ns")
         .and_then(|r| {
-            r.define_workflow::<ScaleStepWorkflow>()?
-                .define_workflow::<ScaleIdleWorkflow>()?
-                .define_workflow::<ScaleControlWorkflow>()?;
+            r.register_factory(ScaleStepWorkflow)?
+                .register_factory(ScaleIdleWorkflow)?
+                .register_factory(ScaleControlWorkflow)?;
             Ok(r)
         })
         .expect("declaring the probe classes");

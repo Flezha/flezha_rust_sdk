@@ -131,7 +131,7 @@ impl StreamOperative for SessionOperative {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     Flezha::create_runner("sessions")?
-        .define_stream::<SessionOperative>()?
+        .register_factory(SessionOperative)?
         .run()?;
     Ok(())
 }

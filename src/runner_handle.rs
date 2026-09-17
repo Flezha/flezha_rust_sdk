@@ -13,14 +13,12 @@ use crossbeam::channel::{Receiver, Sender};
 use crate::operative::instance::StreamInstance;
 use crate::runner::{ClientResponseMessage, RunnerMessage};
 use crate::shutdown::ShutdownBridge;
-use crate::{
-    operative, pb, runner, shutdown, workflow, AutoOperative, BuildWorkflowError, StreamOperative,
-    TopologyBuildError, WorkflowOperative,
-};
+use crate::operative::Operative;
+use crate::{operative, pb, runner, shutdown, workflow, BuildWorkflowError, TopologyBuildError};
 
 /// The ONE public error of the entry-point chain: every fallible call on
 /// [`FlezhaRunner`] returns `Result<_, FlezhaError>`, so
-/// `Flezha::create_runner(ns)?.define_stream::<A>()?.run()?` compiles
+/// `Flezha::create_runner(ns)?.register_factory(A)?.run()?` compiles
 /// under a single `?`. Java throws the identically-named failure classes
 /// (naming rule 6 in `docs/sdk/naming_conventions.md`).
 #[derive(Debug, thiserror::Error)]
@@ -40,22 +38,24 @@ pub enum FlezhaError {
     /// delivering its connection confirmation.
     #[error("controller connection failed: {0}")]
     ConnectFailed(String),
-    /// `define_stream` found an invalid topology (duplicate channel names,
+    /// `register_factory` found an invalid topology (duplicate channel names,
     /// unwired channels, type mismatches, ...) — reported at the declaring
     /// call site, never a panic.
     #[error(transparent)]
     InvalidTopology(#[from] TopologyBuildError),
-    /// `define_workflow` found invalid workflow authoring.
+    /// `register_factory` found invalid workflow authoring.
     #[error(transparent)]
     InvalidWorkflow(#[from] BuildWorkflowError),
-    /// The factory id is already in this runner's declared set.
-    #[error("factory `{factory_id}` is already defined on this runner")]
+    /// The factory id is already in this runner's declared set, whichever kind
+    /// either operative is. The display begins with the refusal's contract name
+    /// (`docs/sdk/authoring_contract.md` §5.2), which is what the author reads.
+    #[error("DuplicateFactoryId: factory `{factory_id}` is already defined on this runner")]
     DuplicateFactoryId { factory_id: String },
-    /// `remove_*` named a factory that is not in this runner's declared set.
+    /// `unregister_factory` named a factory that is not in this runner's declared set.
     #[error("factory `{factory_id}` is not defined on this runner")]
     NotDefined { factory_id: String },
-    /// `remove_*` refused: live operative instances of the factory exist.
-    /// The type remains defined.
+    /// `unregister_factory` refused: live operative instances of the factory
+    /// exist. The type remains defined.
     #[error(
         "factory `{factory_id}` has {live_instances} live operative instance(s); \
          stop them before removing the type"
@@ -98,8 +98,8 @@ pub struct Flezha;
 impl Flezha {
     /// Create this process's runner for `namespace` — one object carries
     /// declaration and lifecycle (Beam's `Pipeline.create()` shape). Declare
-    /// operative classes with [`FlezhaRunner::define_stream`] /
-    /// [`FlezhaRunner::define_workflow`] (legal before AND after start), then
+    /// operative classes of either kind with
+    /// [`FlezhaRunner::register_factory`] (legal before AND after start), then
     /// [`FlezhaRunner::start`] (keep the calling thread) or
     /// [`FlezhaRunner::run`] (block until shutdown). Creating a runner never
     /// connects, claims the process singleton slot, or spawns a thread.
@@ -112,7 +112,7 @@ impl Flezha {
     /// #     fn channels(_c: &flezha_runner::ChannelBuilder) {}
     /// # }
     /// # fn main() -> Result<(), FlezhaError> {
-    /// Flezha::create_runner("my_app")?.define_stream::<MyOperative>()?.run()?;
+    /// Flezha::create_runner("my_app")?.register_factory(MyOperative)?.run()?;
     /// # Ok(())
     /// # }
     /// ```
@@ -204,7 +204,8 @@ impl Started {
     }
 }
 
-/// This process's runner: create → mutate (`define_*` / `remove_*`) → start
+/// This process's runner: create → declare (`register_factory` /
+/// `unregister_factory`) → start
 /// on one object, returned by [`Flezha::create_runner`]. Dropping a started
 /// owning handle runs the graceful-shutdown sequence
 /// (ship-fresh-state-on-sdk-shutdown) and releases the singleton slot, so a
@@ -236,49 +237,46 @@ impl FlezhaRunner {
         crate::admin::Admin
     }
 
-    /// Declare a StreamOperative class the runtime can spawn instances of
-    /// later (via the controller's `AddOperative`). Calls `R::channels(...)`
-    /// once and records the topology in the global class registry. Legal
-    /// before and after `start()` — a post-start define ships the runner's
-    /// full factory set to the controller (`UpdateFactories`). An invalid
-    /// topology (duplicate channel names, unwired channels, missing
-    /// `entities_for` overrides, type mismatches, ...) is reported here, at
-    /// the declaring call site — not a panic.
-    pub fn define_stream<R: StreamOperative>(&self) -> Result<&Self, FlezhaError> {
-        // Build/validate BEFORE touching the declared set: an invalid
-        // topology must leave the runner exactly as it was.
-        let topology = operative::builder::build_topology_for::<R>()?;
-        self.declare(R::factory_id(), || {
-            operative::registry::register_class(R::factory_id(), topology)
-        })?;
+    /// Declare an operative class the runtime can spawn instances of later
+    /// (via the controller's `AddOperative`), of either kind: the kind is read
+    /// from the value's [`Operative`] impl, never named by the call. Builds the
+    /// class once — `R::channels(...)` for a stream, the spec for a workflow —
+    /// and records it in the global class registry of its kind. Legal before
+    /// and after `start()`; a post-start registration ships the runner's full
+    /// factory set to the controller (`UpdateFactories`).
+    ///
+    /// An invalid declaration (duplicate channel names, unwired channels,
+    /// missing `entities_for` overrides, an unterminating workflow, ...) is
+    /// reported here, at the declaring call site — not a panic — and leaves the
+    /// runner exactly as it was.
+    ///
+    /// The operative is passed as a value because a function generic over two
+    /// unrelated traits cannot be called with a type argument alone without
+    /// naming the kind marker; operatives are unit structs, so the value costs
+    /// nothing. A type implementing BOTH kind traits cannot be passed at all —
+    /// `K` is unresolvable — which is Rust's `AmbiguousOperativeKind`.
+    pub fn register_factory<K, O: Operative<K>>(
+        &self,
+        _operative: O,
+    ) -> Result<&Self, FlezhaError> {
+        // Build/validate BEFORE touching the declared set.
+        let class = O::build_class()?;
+        self.declare(O::factory_id(), || O::install_class(class))?;
         Ok(self)
     }
 
-    /// Declare a WorkflowOperative class. Sibling of [`Self::define_stream`];
-    /// builds the class spec (run-sugar body or structured chain) and reports
-    /// invalid authoring here, at the declaring call site.
-    pub fn define_workflow<T: WorkflowOperative>(&self) -> Result<&Self, FlezhaError> {
-        let spec = workflow::spec::build_spec::<T>()?;
-        self.declare(T::factory_id(), || {
-            workflow::registry::register_class(T::factory_id(), spec)
-        })?;
-        Ok(self)
-    }
-
-    /// Remove a StreamOperative class from this runner. Legal before and
-    /// after `start()`. Refuses with
-    /// [`FlezhaError::OperativeTypeInUse`] while live instances of the
-    /// factory exist (the type stays defined) and with
+    /// Remove an operative class from this runner — the inverse of
+    /// [`Self::register_factory`], taking what it took. Legal before and after
+    /// `start()`. Refuses with [`FlezhaError::OperativeTypeInUse`] while live
+    /// instances of the factory exist (the type stays defined) and with
     /// [`FlezhaError::NotDefined`] for a factory this runner never declared.
-    /// A post-start remove ships the remaining full factory set to the
+    /// A post-start removal ships the remaining full factory set to the
     /// controller (`UpdateFactories`).
-    pub fn remove_stream<R: StreamOperative>(&self) -> Result<&Self, FlezhaError> {
-        self.remove(R::factory_id(), false)
-    }
-
-    /// Remove a WorkflowOperative class. Sibling of [`Self::remove_stream`].
-    pub fn remove_workflow<T: WorkflowOperative>(&self) -> Result<&Self, FlezhaError> {
-        self.remove(T::factory_id(), true)
+    pub fn unregister_factory<K, O: Operative<K>>(
+        &self,
+        _operative: O,
+    ) -> Result<&Self, FlezhaError> {
+        self.remove(O::factory_id(), O::IS_WORKFLOW)
     }
 
     /// Connect to the controller. Blocks only for the connect handshake
@@ -288,7 +286,9 @@ impl FlezhaRunner {
     /// per process; the loser fails with [`FlezhaError::AlreadyRunning`]
     /// WITHOUT connecting, mutating shared state, or spawning a thread.
     /// Starting with zero declared operative types is legal (the init frame
-    /// carries an empty factory list; types may be defined later). Bind the
+    /// carries an empty factory list; types may be declared later), whatever
+    /// short-form or `operative!` types the binary happens to contain: nothing
+    /// is harvested here. Bind the
     /// runner when chaining — `let runner = Flezha::create_runner(ns)?.start()?;` —
     /// a chained temporary Drops (and shuts the runner down) at statement end.
     pub fn start(&self) -> Result<&Self, FlezhaError> {
@@ -419,7 +419,7 @@ impl FlezhaRunner {
     }
 
     /// Ship the runner's FULL current factory set to the controller after a
-    /// post-start define/remove. Fire-and-forget (no waiter): full-set
+    /// post-start registration or removal. Fire-and-forget (no waiter): full-set
     /// semantics make redelivery idempotent, and the reconnect init frame —
     /// built from the same `declared` set — remains the resync of record.
     /// A no-op on a never-started runner.
@@ -448,20 +448,6 @@ impl FlezhaRunner {
     }
 
     fn connect(&self) -> Result<Started, FlezhaError> {
-        // Harvest single-procedure auto-wire + `operative!` operatives into the
-        // global registries and merge their ids into THIS runner's declared
-        // set — on every start, so a restarted generation re-declares them.
-        {
-            let mut declared = self.core.declared.write().unwrap();
-            for auto in inventory::iter::<AutoOperative> {
-                (auto.register)();
-                let factory_id = (auto.factory_id)();
-                if !declared.iter().any(|id| id == factory_id) {
-                    declared.push(factory_id.to_string());
-                }
-            }
-        }
-
         let (otx, orx): (Sender<RunnerMessage>, Receiver<RunnerMessage>) =
             crossbeam::channel::unbounded();
         let (ctx, irx): (

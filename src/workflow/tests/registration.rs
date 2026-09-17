@@ -40,7 +40,7 @@ fn register_workflow_makes_factory_resolvable() {
         }
     }
     assert!(registry::get_class("test-getclass-workflow").is_none());
-    crate::register_workflow_class::<RegWorkflow>().unwrap();
+    crate::register_class::<crate::WorkflowKind, RegWorkflow>().unwrap();
     assert!(registry::get_class("test-getclass-workflow").is_some());
     assert!(registry::get_class("test-nonexistent-workflow").is_none());
 }

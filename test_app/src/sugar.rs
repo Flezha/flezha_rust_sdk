@@ -11,24 +11,48 @@ use crate::*;
 // `docs/sdk/authoring_contract.md`.
 // ---------------------------------------------------------------------------
 
-// Single-procedure stateless sugar — twin of `DoNothingProcedure` / `DoNothingOperative`.
-// Auto-wires input -> procedure -> plugin and auto-registers (no `register_stream`).
-#[flezha_runner::procedure(id = "sugar_do_nothing", sink = "sugar_do_nothing_echo")]
-fn sugar_do_nothing(input: String) -> Vec<u8> {
+// Single-procedure stateless short form — twin of `DoNothingProcedure` /
+// `DoNothingOperative`. One declaration is the whole operative: the type it
+// generates implements `StreamOperative`, and `main.rs` registers it.
+#[flezha_runner::procedure(id = "sugar_do_nothing", kind = "stream", sink = "sugar_do_nothing_echo")]
+pub(crate) fn sugar_do_nothing(input: String) -> Vec<u8> {
     input.into_bytes()
 }
 
 // Single-procedure stateful sugar with `#[derive(flezha::State)]` — twin of
 // `StoreInputProcedure` / `StoreInputOperative`.
 #[derive(Serialize, Deserialize, Clone, Default, PartialEq, Debug, flezha_runner::State)]
-struct SugarStoreState {
+pub(crate) struct SugarStoreState {
     text_inputs: Vec<String>,
 }
 
-#[flezha_runner::procedure(id = "sugar_store_input", sink = "sugar_store_sink")]
-fn sugar_store_input(input: String, state: &mut SugarStoreState) -> String {
+#[flezha_runner::procedure(id = "sugar_store_input", kind = "stream", sink = "sugar_store_sink")]
+pub(crate) fn sugar_store_input(input: String, state: &mut SugarStoreState) -> String {
     state.push_text_inputs(input.clone());
     input
+}
+
+// The short form naming its entry channel: `prices`, not the default `input`.
+#[flezha_runner::procedure(
+    id = "sugar_named_input",
+    kind = "stream",
+    sink = "sugar_named_input_sink",
+    input = "prices"
+)]
+pub(crate) fn sugar_named_input(input: String) -> Vec<u8> {
+    input.into_bytes()
+}
+
+// The workflow short form: one declaration is a whole `once` workflow, seeded
+// on `order` from its start values and completing after one run.
+#[flezha_runner::procedure(
+    id = "sugar_workflow",
+    kind = "workflow",
+    sink = "sugar_workflow_placed",
+    input = "order"
+)]
+pub(crate) fn sugar_workflow(order: String) -> Vec<u8> {
+    order.into_bytes()
 }
 
 // `operative!` linear-pipeline twin of `StaticEntityOperative`.
@@ -62,6 +86,7 @@ fn macro_static_downstream(input: String) -> Vec<u8> {
 }
 
 flezha_runner::operative! {
+    pub(crate) struct SugarStaticEntity;
     id: "sugar_static_entity",
     pipeline: input::<String> -> MacroStaticEntry -> MacroStaticDownstream -> plugin::<Vec<u8>>("test_kafka")
 }
@@ -374,25 +399,38 @@ mod macro_twin_tests {
 
     #[test]
     fn sugar_operatives_register() {
-        // Auto-wire + `operative!` operatives are harvested without `.define_stream()`.
-        flezha_runner::register_inventory_operatives();
+        // Nothing is harvested: every short form and `operative!` type is a
+        // named value the author hands to `register_factory`, exactly as a
+        // hand-written operative is.
+        let runner = Flezha::create_runner("sugar_test").unwrap();
+        runner
+            .register_factory(SugarDoNothing)
+            .unwrap()
+            .register_factory(SugarStoreInput)
+            .unwrap()
+            .register_factory(SugarNamedInput)
+            .unwrap()
+            .register_factory(SugarWorkflow)
+            .unwrap()
+            .register_factory(SugarStaticEntity)
+            .unwrap()
+            .register_factory(MixedOperative)
+            .unwrap();
+
         let ids = flezha_runner::operative::registry::class_factory_ids();
         for id in [
             "sugar_do_nothing",
             "sugar_store_input",
+            "sugar_named_input",
             "sugar_static_entity",
+            "mixed_operative",
         ] {
-            assert!(
-                ids.contains(&id),
-                "auto-registered operative `{id}` missing"
-            );
+            assert!(ids.contains(&id), "registered operative `{id}` missing");
         }
-        // The mixed operative is declared explicitly, as before.
-        Flezha::create_runner("sugar_test")
-            .unwrap()
-            .define_stream::<MixedOperative>()
-            .unwrap();
-        assert!(flezha_runner::operative::registry::get_class("mixed_operative").is_some());
+        assert!(
+            flezha_runner::workflow::registry::get_class("sugar_workflow").is_some(),
+            "the workflow short form registers in the workflow registry"
+        );
     }
 
     #[test]

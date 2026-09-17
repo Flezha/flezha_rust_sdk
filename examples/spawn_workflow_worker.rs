@@ -15,8 +15,8 @@
 //!
 //! Run the pair with a runner that defines both:
 //!     Flezha::create_runner("default")?
-//!         .define_stream::<AlertDetector>()?
-//!         .define_workflow::<Triage>()?
+//!         .register_factory(AlertDetector)?
+//!         .register_factory(Triage)?
 //!         .run()?;
 //!
 //! With authorization on, the default in a release, bind the namespace's runner

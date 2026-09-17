@@ -15,7 +15,7 @@
 //!
 //! Run the operative:
 //!     Flezha::create_runner("default")?
-//!         .define_stream::<Market>()?
+//!         .register_factory(Market)?
 //!         .run()?;
 //!
 //! feed it a couple of trades:

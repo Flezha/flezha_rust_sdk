@@ -49,7 +49,7 @@ mod remove_factory_tests {
     #[test]
     fn removal_refuses_while_instances_live_and_unregisters_after() {
         let runner = RunnerNode::new("seam_ns".to_string());
-        crate::register_stream_class::<SeamOperative>().expect("valid topology");
+        crate::register_class::<crate::StreamKind, SeamOperative>().expect("valid topology");
 
         runner
             .start_operative(

@@ -37,7 +37,7 @@
 //!
 //! Run it with:
 //!     Flezha::create_runner("default")?
-//!         .define_stream::<Candles>()?
+//!         .register_factory(Candles)?
 //!         .run()?;
 //!
 //! then feed it:
@@ -161,7 +161,7 @@ impl StreamOperative for Candles {
 
 fn main() {
     // Declaration-only example: `build_topology_for::<Candles>()` is what the
-    // runner does at `define_stream`, and it is what proves the wiring above
+    // runner does at `register_factory`, and it is what proves the wiring above
     // is legal without needing a live controller.
     flezha_runner::operative::builder::build_topology_for::<Candles>()
         .expect("the candle topology builds");

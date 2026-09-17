@@ -43,7 +43,7 @@ use flezha_runner::operative::builder::{build_topology_for, DEFAULT_MAILBOX_CAPA
 use flezha_runner::operative::topology::OperativeTopology;
 use flezha_runner::procedure::LogicalClock;
 use flezha_runner::workflow::spec::build_spec;
-use flezha_runner::FlezhaRunner;
+use flezha_runner::{Flezha, FlezhaRunner};
 use serde_json::{json, Value};
 
 use crate::channel::HybridChannelOperative;
@@ -53,10 +53,17 @@ use crate::*;
 /// The fixture, relative to the repository root the app is launched from.
 const FIXTURE: &str = "test/fixtures/reference_topologies.txt";
 
-/// The authoring surfaces this builder carries — the same three the app's
+/// The authoring surfaces this builder carries — the same set the app's
 /// `conformance.json` declares. A row needing anything else is skipped BY NAME,
 /// which is what makes the skip checkable.
-const SURFACES: [&str; 3] = ["merge", "branch", "workflow"];
+const SURFACES: [&str; 6] = [
+    "merge",
+    "branch",
+    "workflow",
+    "shorthand",
+    "shorthand_typed_output",
+    "shorthand_omittable_sink",
+];
 
 /// A row of the four-column refusal table. The refusal NAME is the fixture's
 /// to state and the seam test's to check; this run reports the outcome it read,
@@ -559,6 +566,123 @@ fn overflow(policy: &str) -> OverflowPolicy {
 }
 
 // ---------------------------------------------------------------------------
+// The §5 short form. Rust refuses a malformed one at COMPILE time, so those
+// rows are answered by citing the compile-fail snapshot that holds the
+// message rather than by driving a builder that never sees them. The one
+// runtime refusal, a duplicate factory id, is driven for real.
+
+/// A `shorthand(<id>|-, <kind>|-, <sink>|-, <input>|-)` step. `-` is a field
+/// the row leaves unwritten; `.noout` marks a procedure declaring no output.
+struct Shorthand {
+    id: Option<String>,
+    kind: Option<String>,
+    sink: Option<String>,
+    noout: bool,
+}
+
+/// The shorthand steps of a row, or `None` when it declares none.
+fn shorthand_steps(row: &Row) -> Option<Vec<Shorthand>> {
+    let parsed: Vec<Shorthand> = row
+        .steps
+        .split(';')
+        .map(str::trim)
+        .filter_map(parse_shorthand)
+        .collect();
+    (!parsed.is_empty()).then_some(parsed)
+}
+
+fn parse_shorthand(step: &str) -> Option<Shorthand> {
+    let (body, noout) = match step.strip_suffix(".noout") {
+        Some(body) => (body, true),
+        None => (step, false),
+    };
+    let (verb, args) = split_call(body);
+    if verb != "shorthand" {
+        return None;
+    }
+    let written = |field: &str| (field != "-").then(|| field.to_string());
+    let fields: Vec<&str> = args.split(',').map(str::trim).collect();
+    assert_eq!(
+        fields.len(),
+        4,
+        "a shorthand step declares id, kind, sink and input: read `{step}`"
+    );
+    Some(Shorthand {
+        id: written(fields[0]),
+        kind: written(fields[1]),
+        sink: written(fields[2]),
+        noout,
+    })
+}
+
+/// The refusal a declaration earns, and the compile-fail snapshot that pins the
+/// message. A `sink` is what makes a short form, so its absence is judged
+/// first; the identity and the kind follow, and an output the compiler can see
+/// is last.
+fn citation(s: &Shorthand) -> (&'static str, &'static str) {
+    if s.sink.is_none() {
+        (
+            "ShorthandKeyWithoutSink",
+            "sdk/rust/tests/ui/procedure_key_without_sink.stderr",
+        )
+    } else if s.id.is_none() {
+        (
+            "SinkWithoutId",
+            "sdk/rust/tests/ui/procedure_sink_without_id.stderr",
+        )
+    } else if s.kind.is_none() {
+        (
+            "SinkWithoutKind",
+            "sdk/rust/tests/ui/procedure_sink_without_kind.stderr",
+        )
+    } else if s.noout {
+        (
+            "SinkWithoutOutput",
+            "sdk/rust/tests/ui/procedure_sink_unit_return.stderr",
+        )
+    } else {
+        panic!("a well-formed shorthand declaration earns no refusal of its own")
+    }
+}
+
+// The duplicate row's pair, declared here rather than beside the app's
+// fixtures because nothing but that row registers them: two short forms, one of
+// each kind, under one factory id.
+#[flezha_runner::procedure(id = "plain", kind = "stream", sink = "out")]
+fn shorthand_dup_stream(input: String) -> Vec<u8> {
+    input.into_bytes()
+}
+
+#[flezha_runner::procedure(id = "plain", kind = "workflow", sink = "twin_sink")]
+fn shorthand_dup_workflow(input: String) -> Vec<u8> {
+    input.into_bytes()
+}
+
+/// Register the duplicate row's pair on `runner` and answer what the second
+/// call was told. `Ok(())` means the runner accepted a second operative under a
+/// factory id it already held, which is the shape the contract refuses.
+fn drive_duplicate(runner: &FlezhaRunner) -> Result<(), String> {
+    runner
+        .register_factory(ShorthandDupStream)
+        .map_err(|e| format!("the first registration must succeed, got: {e}"))?;
+    match runner.register_factory(ShorthandDupWorkflow) {
+        Ok(_) => Ok(()),
+        // The refusal's own name, read off the display the author reads.
+        Err(refusal) => Err(refusal.to_string()),
+    }
+}
+
+/// The leading refusal name of a message the contract requires to begin with one.
+fn refusal_name(message: &str) -> String {
+    message
+        .split(':')
+        .next()
+        .unwrap_or(message)
+        .trim()
+        .to_string()
+}
+
+// ---------------------------------------------------------------------------
 // Driving a row, and the report.
 
 /// What a row's topology answered: the derived declaration, or the refusal
@@ -632,12 +756,35 @@ fn judge(row: &Row) -> Value {
     if row.needs != "-" && !SURFACES.contains(&row.needs.as_str()) {
         return json!({"topology": row.topology, "outcome": "skipped", "needs": row.needs});
     }
+    if let Some(declarations) = shorthand_steps(row) {
+        return judge_shorthand(row, &declarations);
+    }
     match topology_of(row) {
         Ok(topology) => {
             json!({"topology": row.topology, "outcome": "accepted", "derived": derived(&topology)})
         }
         Err(names) => json!({"topology": row.topology, "outcome": "refused", "names": names}),
     }
+}
+
+/// A short-form row's verdict. A row the compiler answers is `cited`: the name
+/// and the snapshot that holds the message, which the drill reads back and
+/// checks. A second declaration under one factory id is a runtime refusal in
+/// every SDK, so that row is driven for real.
+fn judge_shorthand(row: &Row, declarations: &[Shorthand]) -> Value {
+    if declarations.len() > 1 {
+        // Creating a runner never connects, so this cannot fail on a machine
+        // with no controller.
+        let runner = Flezha::create_runner("conformance_shorthand").expect("create a runner");
+        return match drive_duplicate(&runner) {
+            Ok(()) => json!({"topology": row.topology, "outcome": "accepted"}),
+            Err(message) => {
+                json!({"topology": row.topology, "outcome": "refused", "names": [refusal_name(&message)]})
+            }
+        };
+    }
+    let (name, path) = citation(&declarations[0]);
+    json!({"topology": row.topology, "outcome": "cited", "names": [name], "citation": path})
 }
 
 /// Drive the whole table and write the report. Nothing here connects to a
@@ -679,6 +826,29 @@ pub(crate) fn register_only(
         std::process::exit(1);
     }
 
+    // A short form the compiler refuses cannot be booted at all, so the app
+    // answers the row by naming the refusal and the snapshot that pins it; the
+    // drill checks the cited file exists and carries the name.
+    if let Some(declarations) = shorthand_steps(row) {
+        if declarations.len() > 1 {
+            match drive_duplicate(runner) {
+                Ok(()) => {
+                    return Err(format!(
+                        "{topology}: the runner accepted a second operative under one factory id"
+                    )
+                    .into())
+                }
+                Err(message) => {
+                    eprintln!("{topology}: {message}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        let (name, path) = citation(&declarations[0]);
+        eprintln!("{topology}: {name} is a compile error here; pinned by {path}");
+        std::process::exit(1);
+    }
+
     if row.steps == "cited above" {
         cited(&row.topology).map_err(|names| format!("topology rejected {names:?}"))?;
         return Ok(());
@@ -686,9 +856,9 @@ pub(crate) fn register_only(
 
     load(row);
     let defined = if row.steps.contains("class.persistent") {
-        runner.define_stream::<RowClass>()
+        runner.register_factory(RowClass)
     } else {
-        runner.define_stream::<VolatileRowClass>()
+        runner.register_factory(VolatileRowClass)
     };
     if let Err(refusal) = defined {
         eprintln!("{topology}: {refusal}");

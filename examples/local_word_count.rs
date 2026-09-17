@@ -18,7 +18,7 @@
 //! and the no-name form leaves it the producing procedure's. `WordCount` is an
 //! ordinary operative
 //! class — hand the same type to
-//! `Flezha::create_runner(..).define_stream()` and it deploys unchanged.
+//! `Flezha::create_runner(..).register_factory(..)` and it deploys unchanged.
 
 use std::time::Duration;
 

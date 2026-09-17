@@ -34,7 +34,11 @@ fn ui_compile_fail() {
     t.compile_fail("tests/ui/state_on_tuple_struct.rs");
     t.compile_fail("tests/ui/operative_fan_out.rs");
     t.compile_fail("tests/ui/operative_empty_entry_name.rs");
-    t.compile_fail("tests/ui/procedure_input_without_sink.rs");
+    t.compile_fail("tests/ui/procedure_key_without_sink.rs");
+    t.compile_fail("tests/ui/procedure_sink_without_id.rs");
+    t.compile_fail("tests/ui/procedure_sink_without_kind.rs");
+    t.compile_fail("tests/ui/procedure_kind_unknown.rs");
+    t.compile_fail("tests/ui/register_factory_of_both_kinds.rs");
     t.compile_fail("tests/ui/procedure_empty_entry_name.rs");
 
     // Keyed/collection journaling (`expressive-state-journaling`).

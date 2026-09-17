@@ -424,10 +424,8 @@ pub use operative::builder::TopologyBuildError;
 #                                          # Drop of a STARTED owner = graceful shutdown
 #   impl FlezhaRunner {
 #       pub fn namespace(&self) -> &str;
-#       pub fn define_stream<R: StreamOperative>(&self) -> Result<&Self, FlezhaError>;
-#       pub fn define_workflow<T: WorkflowOperative>(&self) -> Result<&Self, FlezhaError>;
-#       pub fn remove_stream<R: StreamOperative>(&self) -> Result<&Self, FlezhaError>;
-#       pub fn remove_workflow<T: WorkflowOperative>(&self) -> Result<&Self, FlezhaError>;
+#       pub fn register_factory<K, O: Operative<K>>(&self, operative: O) -> Result<&Self, FlezhaError>;
+#       pub fn unregister_factory<K, O: Operative<K>>(&self, operative: O) -> Result<&Self, FlezhaError>;
 #       pub fn start(&self) -> Result<&Self, FlezhaError>;     # slot claimed here (CAS)
 #       pub fn run(&self) -> Result<(), FlezhaError>;          # start + await_termination
 #       pub fn operatives(&self) -> Result<HashMap<String, Arc<StreamInstance>>, FlezhaError>;
@@ -447,7 +445,17 @@ pub use operative::builder::TopologyBuildError;
 #       RunnerUnavailable(String),
 #   }
 #
-#   #[doc(hidden)] pub fn __register_stream<R: StreamOperative>();  # macro plumbing only
+#   # The shared base of both kinds: the SDK implements it for every
+#   # StreamOperative and every WorkflowOperative, so one method takes either.
+#   pub struct StreamKind;
+#   pub struct WorkflowKind;
+#   pub trait Operative<K>: sealed::Sealed<K> {   # sealed: only the SDK's two impls
+#       type Class;
+#       const IS_WORKFLOW: bool;
+#       fn factory_id() -> &'static str;
+#       fn build_class() -> Result<Self::Class, FlezhaError>;
+#       fn install_class(class: Self::Class);
+#   }
 
 # Live Entity read (`entity-state-live-query`). The `EntityState` command
 # gained a selector; the serializer that answers it is public because the

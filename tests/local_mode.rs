@@ -191,7 +191,7 @@ fn a_declared_graph_runs_locally_and_releases_the_recorded_output() {
     // declares against a controller.
     Flezha::create_runner("default")
         .expect("a runner is created")
-        .define_stream::<WordCount>()
+        .register_factory(WordCount)
         .expect("the identical declaration registers for deployment");
 }
 

@@ -1,5 +1,5 @@
 error: an entry channel name may not be empty
- --> tests/ui/procedure_empty_entry_name.rs:1:58
+ --> tests/ui/procedure_empty_entry_name.rs:1:75
   |
-1 | #[flezha_runner::procedure(id = "f", sink = "s", input = "")]
-  |                                                          ^^
+1 | #[flezha_runner::procedure(id = "f", kind = "stream", sink = "s", input = "")]
+  |                                                                           ^^

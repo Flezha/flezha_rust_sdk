@@ -1,0 +1,20 @@
+error[E0283]: type annotations needed
+  --> tests/ui/register_factory_of_both_kinds.rs:22:12
+   |
+22 |     runner.register_factory(BothKinds).unwrap();
+   |            ^^^^^^^^^^^^^^^^ cannot infer type of the type parameter `K` declared on the method `register_factory`
+   |
+   = note: multiple `impl`s satisfying `BothKinds: flezha_runner::Operative<_>` found in the `flezha_runner` crate:
+           - impl<R> flezha_runner::Operative<StreamKind> for R
+             where R: StreamOperative;
+           - impl<T> flezha_runner::Operative<WorkflowKind> for T
+             where T: WorkflowOperative;
+note: required by a bound in `FlezhaRunner::register_factory`
+  --> src/runner_handle.rs
+   |
+   |     pub fn register_factory<K, O: Operative<K>>(
+   |                                   ^^^^^^^^^^^^ required by this bound in `FlezhaRunner::register_factory`
+help: consider specifying the generic arguments
+   |
+22 |     runner.register_factory::<K, BothKinds>(BothKinds).unwrap();
+   |                            ++++++++++++++++

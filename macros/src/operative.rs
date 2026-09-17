@@ -1,17 +1,18 @@
-//! `flezha::operative! { id: "...", pipeline: input::<T> -> A -> B -> plugin::<U>("k") }`
-//! — lowers a strictly linear pipeline to a `channels()` body + inventory
-//! auto-registration. Fan-out / multi-input is refused with a message
-//! pointing at an explicit `channels()`. See `docs/sdk/authoring_contract.md`
-//! §5.
+//! `flezha::operative! { pub struct Name; id: "...", pipeline: input::<T> -> A -> B -> plugin::<U>("k") }`
+//! — declares the named type and lowers a strictly linear pipeline to its
+//! `channels()` body. The author registers it with
+//! `runner.register_factory(Name)`; nothing is collected. Fan-out / multi-input
+//! is refused with a message pointing at an explicit `channels()`. See
+//! `docs/sdk/authoring_contract.md` §5.
 
 use proc_macro2::TokenStream;
-use quote::{format_ident, quote};
+use quote::quote;
 use syn::parse::{Parse, ParseStream};
-use syn::{Ident, LitStr, Path, Token, Type};
-
-use crate::util::snake_to_pascal;
+use syn::{Ident, LitStr, Path, Token, Type, Visibility};
 
 struct OperativeDef {
+    vis: Visibility,
+    ident: Ident,
     id: String,
     input_ty: Type,
     /// The entry channel name written after the head's turbofish, if any.
@@ -78,6 +79,18 @@ fn parse_pipeline(input: ParseStream) -> syn::Result<Pipeline> {
 
 impl Parse for OperativeDef {
     fn parse(input: ParseStream) -> syn::Result<Self> {
+        // The macro begins with the type it declares, so the operative is a
+        // nameable value the author hands to `register_factory`.
+        let vis: Visibility = input.parse()?;
+        input.parse::<Token![struct]>().map_err(|_| {
+            syn::Error::new(
+                input.span(),
+                "`flezha::operative!` begins with the type it declares: `pub struct Name;`",
+            )
+        })?;
+        let ident: Ident = input.parse()?;
+        input.parse::<Token![;]>()?;
+
         keyword(input, "id", "expected `id:`")?;
         input.parse::<Token![:]>()?;
         let id: LitStr = input.parse()?;
@@ -118,6 +131,8 @@ impl Parse for OperativeDef {
         }
 
         Ok(OperativeDef {
+            vis,
+            ident,
             id: id.value(),
             input_ty,
             input_name,
@@ -128,15 +143,16 @@ impl Parse for OperativeDef {
     }
 }
 
-/// The hidden `StreamOperative` an auto-wire path emits: one entry channel
-/// threaded through a procedure chain, the terminal payload type pinned, the
-/// stream sunk under `sink`, and an `AutoOperative` submitted so a runner
-/// harvests the class without a `define_stream` call.
-pub(crate) struct AutoWiring<'a> {
-    /// Visibility of the generated struct — the procedure's own on the
-    /// attribute path, private for `operative!`.
-    pub vis: TokenStream,
+/// The short form's operative impl: one entry channel threaded through a
+/// procedure chain, the terminal payload type pinned, and the stream sunk under
+/// `sink`. The impl goes ON a type the author can name, so registration is a
+/// call they write.
+pub(crate) struct Wiring<'a> {
+    /// The type the operative impl is written on: the procedure type on the
+    /// attribute path, the author's named struct for `operative!`.
     pub ident: &'a Ident,
+    /// Which authoring trait the impl states.
+    pub kind: Kind,
     pub id: &'a str,
     pub input_ty: &'a Type,
     /// The entry channel's name as the author wrote it; `None` takes the
@@ -153,6 +169,31 @@ pub(crate) struct AutoWiring<'a> {
     pub sink: &'a str,
 }
 
+/// The two operative kinds a short form can declare. `operative!` is
+/// stream-only; the attribute's `kind` key chooses.
+#[derive(Clone, Copy)]
+pub(crate) enum Kind {
+    Stream,
+    Workflow,
+}
+
+impl Kind {
+    /// The trait the impl states and the declaration method it fills — the one
+    /// place the two kinds differ, since both author on the same builder.
+    fn trait_and_method(self) -> (TokenStream, Ident) {
+        match self {
+            Kind::Stream => (
+                quote! { ::flezha_runner::StreamOperative },
+                Ident::new("channels", proc_macro2::Span::call_site()),
+            ),
+            Kind::Workflow => (
+                quote! { ::flezha_runner::WorkflowOperative },
+                Ident::new("procedures", proc_macro2::Span::call_site()),
+            ),
+        }
+    }
+}
+
 /// The entry channel's name: the author's where one was written, and `input`
 /// otherwise. An empty one is refused — a channel nothing can address.
 fn entry_channel_name(written: Option<&LitStr>) -> syn::Result<String> {
@@ -166,10 +207,10 @@ fn entry_channel_name(written: Option<&LitStr>) -> syn::Result<String> {
     }
 }
 
-pub(crate) fn auto_operative(wiring: AutoWiring<'_>) -> syn::Result<TokenStream> {
-    let AutoWiring {
-        vis,
+pub(crate) fn operative_impl(wiring: Wiring<'_>) -> syn::Result<TokenStream> {
+    let Wiring {
         ident,
+        kind,
         id,
         input_ty,
         input_name,
@@ -179,24 +220,17 @@ pub(crate) fn auto_operative(wiring: AutoWiring<'_>) -> syn::Result<TokenStream>
         sink,
     } = wiring;
     let entry = entry_channel_name(input_name)?;
+    let (operative_trait, method) = kind.trait_and_method();
     Ok(quote! {
-        #[doc(hidden)]
-        #vis struct #ident;
-        impl ::flezha_runner::StreamOperative for #ident {
+        impl #operative_trait for #ident {
             fn factory_id() -> &'static str { #id }
-            fn channels(c: &::flezha_runner::ChannelBuilder) {
+            fn #method(c: &::flezha_runner::ChannelBuilder) {
                 let stream = c.input::<#input_ty>(#entry) #on_full #chain
                 // Pins the declared sink payload type against the terminal
                 // procedure's `Output`.
                 let stream: ::flezha_runner::Stream<'_, #payload> = stream;
                 stream.sink_named(#sink);
             }
-        }
-        ::flezha_runner::inventory::submit! {
-            ::flezha_runner::AutoOperative::new(
-                <#ident as ::flezha_runner::StreamOperative>::factory_id,
-                || ::flezha_runner::__register_stream::<#ident>(),
-            )
         }
     })
 }
@@ -206,7 +240,8 @@ pub fn expand(item: TokenStream) -> syn::Result<TokenStream> {
 
     let first_procedure = &def.procedures[0];
     let plugin_ty = &def.plugin_ty;
-    let ident = format_ident!("__FlezhaOperative_{}", sanitize_ident(&def.id));
+    let vis = &def.vis;
+    let ident = &def.ident;
 
     // Chained hops on the stream handle; each `.into` returns the consumed
     // procedure's output stream.
@@ -221,9 +256,9 @@ pub fn expand(item: TokenStream) -> syn::Result<TokenStream> {
         })
         .collect();
 
-    auto_operative(AutoWiring {
-        vis: quote! {},
-        ident: &ident,
+    let operative = operative_impl(Wiring {
+        ident,
+        kind: Kind::Stream,
         id: &def.id,
         input_ty: &def.input_ty,
         input_name: def.input_name.as_ref(),
@@ -231,14 +266,10 @@ pub fn expand(item: TokenStream) -> syn::Result<TokenStream> {
         chain: quote! { .into::<#first_procedure>(); #hops },
         payload: quote! { #plugin_ty },
         sink: &def.plugin_name,
-    })
-}
+    })?;
 
-/// Make a struct-name suffix from a factory id string.
-fn sanitize_ident(id: &str) -> String {
-    let cleaned: String = id
-        .chars()
-        .map(|c| if c.is_alphanumeric() { c } else { '_' })
-        .collect();
-    snake_to_pascal(&cleaned)
+    Ok(quote! {
+        #vis struct #ident;
+        #operative
+    })
 }

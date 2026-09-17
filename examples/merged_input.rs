@@ -22,7 +22,7 @@
 //!
 //! Run it with:
 //!     Flezha::create_runner("default")?
-//!         .define_stream::<Thermostat>()?
+//!         .register_factory(Thermostat)?
 //!         .run()?;
 //!
 //! then feed the two channels independently:

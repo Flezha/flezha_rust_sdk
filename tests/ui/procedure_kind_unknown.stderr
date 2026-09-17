@@ -1,0 +1,5 @@
+error: #[flezha::procedure] `kind` must be "stream" or "workflow", read "saga"
+ --> tests/ui/procedure_kind_unknown.rs:1:45
+  |
+1 | #[flezha_runner::procedure(id = "f", kind = "saga", sink = "echo")]
+  |                                             ^^^^^^

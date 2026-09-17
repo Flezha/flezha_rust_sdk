@@ -21,7 +21,7 @@ use crate::channel::ChannelBuilder;
 ///   per-Process flusher drains-and-discards Changes for this StreamOperative's
 ///   Entities (no wire I/O, no controller contact).
 ///
-/// The runtime calls `R::channels(...)` once at `define_stream::<R>()`
+/// The runtime calls `R::channels(...)` once at `register_factory(R)`
 /// time and freezes the resulting topology in an `Arc<OperativeTopology>`
 /// shared by every `StreamInstance` of this class.
 pub trait StreamOperative: Send + Sync + 'static {
@@ -42,6 +42,98 @@ pub trait StreamOperative: Send + Sync + 'static {
     /// changes only take effect on the next `stop_operative` + `start_operative`
     /// cycle.
     const PERSISTENCE_ENABLED: bool = true;
+}
+
+/// Sealing for [`Operative`]: only the SDK's two blanket impls satisfy it, so
+/// no downstream type can invent a third operative kind and reach
+/// `register_factory` with it.
+mod sealed {
+    pub trait Sealed<K> {}
+}
+
+/// The kind marker of a [`StreamOperative`]. Never constructed; it exists so
+/// `register_factory` can dispatch on which authoring trait a value implements.
+pub struct StreamKind;
+
+/// The kind marker of a [`WorkflowOperative`](crate::WorkflowOperative).
+pub struct WorkflowKind;
+
+/// The shared base of both operative kinds: what a runner needs to declare one,
+/// whichever kind it is. `K` is the marker of the kind the implementing type
+/// declares, which is what lets one
+/// [`register_factory`](crate::FlezhaRunner::register_factory) take either.
+///
+/// The SDK implements this for every [`StreamOperative`] (as
+/// `Operative<StreamKind>`) and every
+/// [`WorkflowOperative`](crate::WorkflowOperative) (as
+/// `Operative<WorkflowKind>`), so an author implements only the kind trait. A
+/// type implementing BOTH kind traits implements this twice, and `K` is then
+/// unresolvable at the call site — a compile error, which is Rust's spelling of
+/// the contract's `AmbiguousOperativeKind`.
+///
+/// The one member both kinds share is [`factory_id`](Self::factory_id); the
+/// kind-divergent surface stays on the per-kind traits. Adding a further kind
+/// means a third marker and a third blanket impl: neither authoring trait moves
+/// and the runner gains no method.
+pub trait Operative<K>: sealed::Sealed<K> {
+    /// What building this class produces before it is installed: a frozen
+    /// topology for a stream, a frozen spec for a workflow.
+    type Class;
+
+    /// Whether a removal must check the workflow instance registry rather than
+    /// the stream one.
+    const IS_WORKFLOW: bool;
+
+    /// The controller-facing factory id, the one member both kinds share.
+    fn factory_id() -> &'static str;
+
+    /// Build and validate the class WITHOUT touching any registry, so an
+    /// invalid declaration leaves the runner exactly as it was.
+    fn build_class() -> Result<Self::Class, crate::FlezhaError>;
+
+    /// Put the built class in the process-global class registry of its kind.
+    fn install_class(class: Self::Class);
+}
+
+impl<R: StreamOperative> sealed::Sealed<StreamKind> for R {}
+
+impl<R: StreamOperative> Operative<StreamKind> for R {
+    type Class = std::sync::Arc<OperativeTopology>;
+    const IS_WORKFLOW: bool = false;
+
+    fn factory_id() -> &'static str {
+        <R as StreamOperative>::factory_id()
+    }
+
+    fn build_class() -> Result<Self::Class, crate::FlezhaError> {
+        Ok(builder::build_topology_for::<R>()?)
+    }
+
+    fn install_class(class: Self::Class) {
+        registry::register_class(<R as StreamOperative>::factory_id(), class);
+    }
+}
+
+impl<T: crate::WorkflowOperative> sealed::Sealed<WorkflowKind> for T {}
+
+impl<T: crate::WorkflowOperative> Operative<WorkflowKind> for T {
+    type Class = crate::workflow::spec::WorkflowSpec;
+    const IS_WORKFLOW: bool = true;
+
+    fn factory_id() -> &'static str {
+        <T as crate::WorkflowOperative>::factory_id()
+    }
+
+    fn build_class() -> Result<Self::Class, crate::FlezhaError> {
+        Ok(crate::workflow::spec::build_spec::<T>()?)
+    }
+
+    fn install_class(class: Self::Class) {
+        crate::workflow::registry::register_class(
+            <T as crate::WorkflowOperative>::factory_id(),
+            class,
+        );
+    }
 }
 
 #[cfg(test)]

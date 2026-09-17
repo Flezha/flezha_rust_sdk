@@ -1,7 +1,8 @@
 //! `#[flezha::procedure(...)]` — attribute macro on a `run` function. Infers the
 //! six `Procedure` associated types from the signature, generates the PascalCase
-//! procedure type + `Procedure` impl, and (when `sink` is given) a single-procedure
-//! auto-wired `StreamOperative` + inventory registration. See
+//! procedure type + `Procedure` impl, and (when `sink` is given) the §5 short
+//! form: the same type also implements `StreamOperative` or `WorkflowOperative`,
+//! so the author registers it with `runner.register_factory(Name)`. See
 //! `docs/sdk/authoring_contract.md` §2, §4, §5.
 
 use proc_macro2::TokenStream;
@@ -13,13 +14,15 @@ use syn::{
     Token, Type,
 };
 
-use crate::operative::{auto_operative, AutoWiring};
+use crate::operative::{operative_impl, Kind, Wiring};
 use crate::util::{generic_args, snake_ident_to_pascal};
 
 #[derive(Default)]
 struct ProcedureArgs {
     id: Option<String>,
     sink: Option<String>,
+    /// `stream` or `workflow`: which operative kind a `sink` generates.
+    kind: Option<Kind>,
     /// The entry channel name for the auto-wired operative a `sink` generates.
     input: Option<LitStr>,
     init: Option<syn::Path>,
@@ -206,7 +209,7 @@ fn expand_procedure(
     let output_ty = resolve_output_ty(args, output);
     let run_item = expand_run(func, params, output, &args.key, &state);
     let overrides = expand_modes(args);
-    let auto_operative = expand_auto_wire(func, args, params, output, &output_ty, &struct_ident)?;
+    let short_form = expand_short_form(func, args, params, output, &output_ty, &struct_ident)?;
     let input_ty = params.input_ty;
     Ok(quote! {
         #[derive(::core::default::Default)]
@@ -226,7 +229,7 @@ fn expand_procedure(
             #run_item
         }
 
-        #auto_operative
+        #short_form
     })
 }
 
@@ -444,48 +447,65 @@ fn expand_modes(args: &ProcedureArgs) -> TokenStream {
 }
 
 /// Every rule about what a `sink` needs and what needs a `sink`, resolved to
-/// the `(id, sink)` pair the auto-wire emits from. `None` when the class
-/// declares no `sink` and nothing asked for one.
-fn auto_wire_names<'a>(
+/// the `(id, sink, kind)` triple the short form emits from. `None` when the
+/// procedure declares no `sink` and nothing asked for one. Each refusal's
+/// message begins with its contract name (`authoring_contract.md` §5.2).
+fn short_form_names<'a>(
     sig: &Signature,
     args: &'a ProcedureArgs,
     output: &Output,
-) -> syn::Result<Option<(&'a str, &'a str)>> {
+) -> syn::Result<Option<(&'a str, &'a str, Kind)>> {
     let Some(sink) = &args.sink else {
-        // Nothing is auto-wired, so an entry channel name has no channel to
-        // name and would sit in the attribute doing nothing.
-        return match &args.input {
-            Some(name) => Err(syn::Error::new_spanned(
-                name,
-                format!(
-                    "#[flezha::procedure] `input = {:?}` names the entry channel of the operative \
-                     a `sink` auto-wires; this procedure declares no `sink`, so there is no \
-                     channel to name",
-                    name.value()
-                ),
-            )),
-            None => Ok(None),
-        };
+        // Nothing is generated, so these keys describe an operative that does
+        // not exist and would sit in the attribute doing nothing.
+        let mut keys: Vec<&str> = Vec::new();
+        if args.input.is_some() {
+            keys.push("input");
+        }
+        if args.kind.is_some() {
+            keys.push("kind");
+        }
+        if keys.is_empty() {
+            return Ok(None);
+        }
+        return Err(syn::Error::new(
+            sig.span(),
+            format!(
+                "ShorthandKeyWithoutSink: `{}` name(s) of the operative a `sink` generates; this \
+                 procedure declares no `sink`, so there is nothing for them to describe",
+                keys.join("`, `")
+            ),
+        ));
     };
     let id = args.id.as_deref().ok_or_else(|| {
         syn::Error::new(
             sig.span(),
-            "#[flezha::procedure] `sink` (single-procedure auto-wire) requires an `id`",
+            "SinkWithoutId: a `sink` makes this procedure a whole operative, whose factory id is \
+             an address an operator types; write it as `id = \"...\"` rather than deriving it \
+             from the function name",
+        )
+    })?;
+    let kind = args.kind.ok_or_else(|| {
+        syn::Error::new(
+            sig.span(),
+            "SinkWithoutKind: a `sink` makes this procedure a whole operative; write \
+             `kind = \"stream\"` or `kind = \"workflow\"`",
         )
     })?;
     if !(output.emits() || args.emits.is_some()) {
         return Err(syn::Error::new(
             sig.span(),
-            "#[flezha::procedure] `sink` requires an output type to feed the plugin — a non-unit \
+            "SinkWithoutOutput: a `sink` requires an output type to feed the plugin — a non-unit \
              return, or `emits = Type` on the context-parameter shape",
         ));
     }
-    Ok(Some((id, sink)))
+    Ok(Some((id, sink, kind)))
 }
 
-/// `sink = "name"` wires this one procedure into its own `StreamOperative` and
-/// submits it to the inventory, so a single-procedure class needs no builder.
-fn expand_auto_wire(
+/// `sink = "name"` makes this one procedure a whole operative of its `kind`:
+/// the generated procedure type also implements the kind's authoring trait, so
+/// `runner.register_factory(Name)` declares it.
+fn expand_short_form(
     func: &ItemFn,
     args: &ProcedureArgs,
     params: &Params,
@@ -493,14 +513,12 @@ fn expand_auto_wire(
     output_ty: &TokenStream,
     struct_ident: &syn::Ident,
 ) -> syn::Result<TokenStream> {
-    let Some((id, sink)) = auto_wire_names(&func.sig, args, output)? else {
+    let Some((id, sink, kind)) = short_form_names(&func.sig, args, output)? else {
         return Ok(quote! {});
     };
-    let vis = &func.vis;
-    let operative_ident = format_ident!("__FlezhaAutoOperative{}", struct_ident);
-    auto_operative(AutoWiring {
-        vis: quote! { #vis },
-        ident: &operative_ident,
+    operative_impl(Wiring {
+        ident: struct_ident,
+        kind,
         id,
         input_ty: params.input_ty,
         input_name: args.input.as_ref(),
@@ -616,6 +634,7 @@ fn parse_args(attr: TokenStream) -> syn::Result<ProcedureArgs> {
         match key.as_str() {
             "id" => args.id = Some(try_str(&value)?),
             "sink" => args.sink = Some(try_str(&value)?),
+            "kind" => args.kind = Some(try_kind(&value)?),
             "input" => args.input = Some(try_lit_str(&value)?.clone()),
             "init" => args.init = Some(try_path(&value)?),
             "key" => args.key = Some(try_path(&value)?),
@@ -686,6 +705,21 @@ fn try_ident(expr: &Expr) -> syn::Result<syn::Ident> {
         _ => None,
     };
     ident.ok_or_else(|| syn::Error::new_spanned(expr, "expected a bare identifier"))
+}
+
+/// `kind = "stream" | "workflow"`. Anything else names both values, because a
+/// third kind is what the author most likely meant to spell as one of these.
+fn try_kind(expr: &Expr) -> syn::Result<Kind> {
+    match try_str(expr)?.as_str() {
+        "stream" => Ok(Kind::Stream),
+        "workflow" => Ok(Kind::Workflow),
+        other => Err(syn::Error::new_spanned(
+            expr,
+            format!(
+                "#[flezha::procedure] `kind` must be \"stream\" or \"workflow\", read {other:?}"
+            ),
+        )),
+    }
 }
 
 fn try_type(expr: &Expr) -> syn::Result<Type> {

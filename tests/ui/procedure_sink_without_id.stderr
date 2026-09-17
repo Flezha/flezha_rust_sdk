@@ -1,0 +1,5 @@
+error: SinkWithoutId: a `sink` makes this procedure a whole operative, whose factory id is an address an operator types; write it as `id = "..."` rather than deriving it from the function name
+ --> tests/ui/procedure_sink_without_id.rs:2:1
+  |
+2 | fn f(a: String) -> Vec<u8> {
+  | ^^

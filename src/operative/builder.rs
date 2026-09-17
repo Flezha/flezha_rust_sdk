@@ -347,7 +347,7 @@ fn build_procedure_desc(
     }
 }
 
-/// Convenience constructor used by `define_stream::<R>()`. Calls
+/// Convenience constructor used by `register_factory(R)`. Calls
 /// `R::channels(...)` once and returns the resulting topology, capturing
 /// `R::PERSISTENCE_ENABLED` so `StreamInstance::new` can resolve the
 /// final per-instance flag.

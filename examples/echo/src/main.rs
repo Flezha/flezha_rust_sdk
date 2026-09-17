@@ -2,7 +2,7 @@
 //! operatives.
 //!
 //! Declare every operative you want served before `start()`. One runner can
-//! serve several, and `define_workflow` is the same call for the workflow kind.
+//! serve several, and the same call takes a workflow operative.
 
 mod operative;
 mod procedure;
@@ -20,7 +20,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // dropped, and shut down, at the end of the statement.
     let runner = Flezha::create_runner(namespace)?;
     runner
-        .define_stream::<operative::EchoOperative>()?
+        .register_factory(operative::EchoOperative)?
         .start()?;
 
     // Everything `flz operative` and `flz plugin` do is also a method here.

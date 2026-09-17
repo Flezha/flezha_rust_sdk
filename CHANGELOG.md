@@ -4,6 +4,35 @@ All notable changes to the Rust SDK crate.
 
 ## Unreleased
 
+### Changed — one `register_factory`, and the short form covers both kinds
+
+**Breaking.** `define_stream`, `define_workflow`, `remove_stream` and
+`remove_workflow` are deleted with no alias. `runner.register_factory(Echo)`
+takes an operative of either kind, passed as a value, and reads the kind from
+the sealed `Operative<K>` base the SDK implements for every `StreamOperative`
+and every `WorkflowOperative`; `unregister_factory(Echo)` is its inverse. A type
+implementing both kind traits cannot be passed at all — the kind is
+unresolvable, which is the compile-time form of `AmbiguousOperativeKind`.
+
+Registration is explicit. The `inventory` harvest is gone with the `inventory`
+dependency, `AutoOperative` and `register_inventory_operatives()`: `start()` no
+longer merges linked short forms into the runner's declared set, so a duplicate
+factory id is refused at the second `register_factory` instead of being skipped
+in silence. `FlezhaError::DuplicateFactoryId`'s display now begins with the
+refusal's contract name.
+
+`#[flezha::procedure]` gains a required `kind` (`"stream"` or `"workflow"`)
+beside `sink`, and the impl it generates goes on the procedure type itself, so
+`register_factory(Echo)` registers the short form. A workflow short form is a
+`once` workflow wiring its entry channel into the procedure and the procedure to
+the sink. The four declaration refusals are compile errors whose messages begin
+with `SinkWithoutId`, `SinkWithoutKind`, `SinkWithoutOutput` and
+`ShorthandKeyWithoutSink`.
+
+`flezha::operative!` now begins with the type it declares —
+`flezha::operative! { pub struct Name; id: "...", pipeline: ... }` — and that
+type is what the author registers.
+
 ### Changed — a spawn and a start take the factory first and an optional id
 
 **Breaking.** `ProcedureCtx::spawn_workflow(factory_id, payload)` spawns under an id the

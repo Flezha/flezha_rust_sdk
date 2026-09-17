@@ -62,16 +62,13 @@ pub use channel::{
 pub use entity::timer::TimerKind;
 pub use entity::{RestoreError, RestoreInitPayload};
 /// Authoring sugar. `#[flezha::procedure]`, `#[derive(flezha::State)]`, and
-/// `flezha::operative!` expand to the trait surface above; see
-/// `docs/sdk/authoring_contract.md`.
+/// `flezha::operative!` expand to the trait surface above, and each names the
+/// type the author registers; see `docs/sdk/authoring_contract.md`.
 pub use flezha_macros::{operative, procedure, State};
 pub use flz_transport::{service, transport};
-/// Re-exported so macro-generated code can `submit!` into the auto-operative
-/// collection without the user adding an `inventory` dependency.
-pub use inventory;
 pub use local::LocalOperative;
 pub use operative::builder::TopologyBuildError;
-pub use operative::StreamOperative;
+pub use operative::{Operative, StreamKind, StreamOperative, WorkflowKind};
 pub use procedure::{
     Change, Clock, ClockFor, CoalesceKey, DerivedState, EventTimeFrom, LogicalClock, NoChange,
     Procedure, ProcedureCtx, ProcedureError, SimpleProcedure, StableId, StateHandle, TimeExtractor,
@@ -81,68 +78,16 @@ pub use runner_handle::{Flezha, FlezhaError, FlezhaRunner};
 pub use workflow::spec::BuildWorkflowError;
 pub use workflow::{LoopMode, RollbackMode, WorkflowCtx, WorkflowError, WorkflowOperative};
 
-/// An operative using the single-procedure auto-wire path (`#[flezha::procedure(sink = …)]`) or
-/// `flezha::operative!` registers without an explicit `.define_stream::<R>()` call.
-/// Generated code `submit!`s one of these; every [`FlezhaRunner::start`]
-/// harvests the collection into the runner's declared set.
-pub struct AutoOperative {
-    /// The class's controller-facing factory id (for duplicate detection).
-    pub factory_id: fn() -> &'static str,
-    /// Registers the class topology (`__register_stream::<R>()`).
-    pub register: fn(),
-}
-
-impl AutoOperative {
-    pub const fn new(factory_id: fn() -> &'static str, register: fn()) -> Self {
-        Self {
-            factory_id,
-            register,
-        }
-    }
-}
-
-inventory::collect!(AutoOperative);
-
-/// Harvest every auto-registered operative (single-procedure auto-wire +
-/// `flezha::operative!`) into the class registries WITHOUT a runner —
-/// idempotent (the registries overwrite on insert). A started runner does
-/// not need this: [`FlezhaRunner::start`] runs the same harvest and merges
-/// the ids into its own (empty-at-creation) declared set.
-pub fn register_inventory_operatives() {
-    for auto in inventory::iter::<AutoOperative> {
-        (auto.register)();
-    }
-}
-
 pub use flz_core::pb;
 
-/// Register a StreamOperative class topology in the global class registry.
-/// The internal body behind [`FlezhaRunner::define_stream`]; kept separate
-/// so macro-generated auto-wire code can reuse it via [`__register_stream`].
-pub(crate) fn register_stream_class<R: StreamOperative>() -> Result<(), TopologyBuildError> {
-    let topology = operative::builder::build_topology_for::<R>()?;
-    operative::registry::register_class(R::factory_id(), topology);
+/// Build a class of kind `K` and install it in that kind's process-global
+/// registry, with no runner involved — the body
+/// [`FlezhaRunner::register_factory`] runs once it has cleared the runner's own
+/// declared set. Kept callable on its own for the local run and for the driver
+/// scenarios that drive a class without a runner at all.
+pub(crate) fn register_class<K, O: Operative<K>>() -> Result<(), FlezhaError> {
+    O::install_class(O::build_class()?);
     Ok(())
-}
-
-/// Register a workflow class spec in the global class registry — the same
-/// body `FlezhaRunner::define_workflow` runs, kept callable without a runner
-/// for the workflow driver's unit scenarios.
-#[cfg(test)]
-pub(crate) fn register_workflow_class<T: WorkflowOperative>() -> Result<(), BuildWorkflowError> {
-    let spec = workflow::spec::build_spec::<T>()?;
-    workflow::registry::register_class(T::factory_id(), spec);
-    Ok(())
-}
-
-/// Macro plumbing for `#[flezha::procedure(...)]` / `flezha::operative!`
-/// auto-registration. Not part of the public API — declare classes with
-/// [`FlezhaRunner::define_stream`]. Panics on an invalid topology: the
-/// topology is machine-generated, so a failure here is an SDK bug, not an
-/// authoring mistake the user could handle.
-#[doc(hidden)]
-pub fn __register_stream<R: StreamOperative>() {
-    register_stream_class::<R>().expect("flezha: auto-wired operative has an invalid topology");
 }
 
 // ---------------------------------------------------------------------------

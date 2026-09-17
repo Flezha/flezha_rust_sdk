@@ -35,7 +35,7 @@ impl LocalOperative {
     /// Register `R`'s declared graph and start it locally. Refuses a
     /// declaration that needs a controller, naming the capability.
     pub fn start<R: StreamOperative>() -> Result<Self, FlezhaError> {
-        crate::register_stream_class::<R>()?;
+        crate::register_class::<crate::StreamKind, R>()?;
         crate::operative::poll_pool::ensure_poll_workers();
         Ok(LocalOperative {
             run: LocalRun::start(R::factory_id(), &format!("{}-local", R::factory_id()))?,

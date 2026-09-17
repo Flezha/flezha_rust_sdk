@@ -35,7 +35,10 @@
   "topology_surfaces": [
     "merge",
     "branch",
-    "workflow"
+    "workflow",
+    "shorthand",
+    "shorthand_typed_output",
+    "shorthand_omittable_sink"
   ],
   "toolchain": "rustc --version",
   "deferred": [],
@@ -49,8 +52,6 @@
       "do_nothing"
     ],
     "graph_builder": [
-      "sugar_do_nothing",
-      "sugar_store_input",
       "sugar_static_entity",
       "static_entity",
       "mixed_operative",
@@ -59,6 +60,12 @@
       "transform_chain",
       "entity_stress",
       "bench_keyed_nopersist"
+    ],
+    "shorthand": [
+      "sugar_do_nothing",
+      "sugar_store_input",
+      "sugar_named_input",
+      "sugar_workflow"
     ],
     "liveness": [
       "wedge_probe"

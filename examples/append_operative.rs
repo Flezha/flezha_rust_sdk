@@ -14,7 +14,7 @@
 //!
 //! Run it:
 //!     Flezha::create_runner("my_namespace")?
-//!         .define_stream::<AppendOperative>()?
+//!         .register_factory(AppendOperative)?
 //!         .run()?; // `let runner = ...start()?;` to keep the calling thread
 //!
 //! then feed it:

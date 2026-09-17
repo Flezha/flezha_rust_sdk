@@ -1,0 +1,5 @@
+error: ShorthandKeyWithoutSink: `input` name(s) of the operative a `sink` generates; this procedure declares no `sink`, so there is nothing for them to describe
+ --> tests/ui/procedure_key_without_sink.rs:2:1
+  |
+2 | fn f(a: String) -> Vec<u8> {
+  | ^^

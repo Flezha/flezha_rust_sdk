@@ -84,7 +84,7 @@ impl StreamOperative for ProbeOperativeC {
     }
 }
 
-/// Declares a `.keyed()` channel without a plugin wire — `define_stream`
+/// Declares a `.keyed()` channel without a plugin wire — `register_factory`
 /// must report this as `Err(FlezhaError::InvalidTopology)`, not panic.
 struct UnwiredOperative;
 impl StreamOperative for UnwiredOperative {
@@ -217,7 +217,7 @@ fn refuses_before_any_start() {
     // -- an invalid topology is an Err at the define call site --
     let broken = Flezha::create_runner("ns_broken").expect("create");
     let err = broken
-        .define_stream::<UnwiredOperative>()
+        .register_factory(UnwiredOperative)
         .err()
         .expect("keyed channel without a plugin wire must fail declaration");
     assert!(
@@ -230,15 +230,15 @@ fn refuses_before_any_start() {
     );
     // ...and the failed define left nothing declared: removing it is NotDefined.
     assert!(matches!(
-        broken.remove_stream::<UnwiredOperative>(),
+        broken.unregister_factory(UnwiredOperative),
         Err(FlezhaError::NotDefined { .. })
     ));
     drop(broken); // never started ⇒ Drop is a no-op
 
     // -- a duplicate factory id on one runner is refused --
     let dup = Flezha::create_runner("ns_dup").expect("create");
-    dup.define_stream::<ProbeOperativeA>().expect("define A");
-    match dup.define_stream::<ProbeOperativeA>() {
+    dup.register_factory(ProbeOperativeA).expect("define A");
+    match dup.register_factory(ProbeOperativeA) {
         Err(FlezhaError::DuplicateFactoryId { factory_id }) => {
             assert_eq!(factory_id, "lifecycle_probe_a");
         }
@@ -248,7 +248,7 @@ fn refuses_before_any_start() {
 
     // -- removing an undefined factory is NotDefined --
     let fresh = Flezha::create_runner("ns_fresh").expect("create");
-    match fresh.remove_stream::<ProbeOperativeB>() {
+    match fresh.unregister_factory(ProbeOperativeB) {
         Err(FlezhaError::NotDefined { factory_id }) => {
             assert_eq!(factory_id, "lifecycle_probe_b");
         }
@@ -306,7 +306,7 @@ fn serves_the_started_runner(
 
     // -- post-start define ships the FULL factory set as UpdateFactories --
     runner
-        .define_stream::<ProbeOperativeC>()
+        .register_factory(ProbeOperativeC)
         .expect("post-start define is legal");
     let mut expected = vec![winner_factory.to_string(), "lifecycle_probe_c".to_string()];
     expected.sort();
@@ -314,7 +314,7 @@ fn serves_the_started_runner(
 
     // -- post-start remove (no live instances) ships the remaining set --
     runner
-        .remove_stream::<ProbeOperativeC>()
+        .unregister_factory(ProbeOperativeC)
         .expect("post-start remove of an instance-less type is legal");
     assert_eq!(
         update_factories_set(frames, 2),
@@ -372,12 +372,12 @@ fn restart_generations_declare_from_empty(frames: &Arc<Mutex<Vec<CapturedFrame>>
 
     let shaped = Flezha::create_runner("ns_shaped").unwrap();
     shaped
-        .define_stream::<ProbeOperativeA>()
+        .register_factory(ProbeOperativeA)
         .expect("define A")
-        .define_stream::<ProbeOperativeB>()
+        .register_factory(ProbeOperativeB)
         .expect("define B");
     shaped
-        .remove_stream::<ProbeOperativeB>()
+        .unregister_factory(ProbeOperativeB)
         .expect("pre-start remove is legal");
     shaped.start().expect("start");
     assert_eq!(
@@ -411,9 +411,9 @@ fn runner_lifecycle_and_singleton_guard() {
         thread::spawn(move || {
             let runner = Flezha::create_runner(ns).unwrap();
             if define_b {
-                runner.define_stream::<ProbeOperativeB>().unwrap();
+                runner.register_factory(ProbeOperativeB).unwrap();
             } else {
-                runner.define_stream::<ProbeOperativeA>().unwrap();
+                runner.register_factory(ProbeOperativeA).unwrap();
             }
             barrier.wait();
             match runner.start().map(|_| ()) {

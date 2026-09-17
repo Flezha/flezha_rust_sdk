@@ -3,6 +3,7 @@
 
 mod common;
 use common::prelude::*;
+use flezha_runner::Flezha;
 
 // ---- sdk-graph-authoring pins -------------------------------------------
 
@@ -413,9 +414,9 @@ fn channel_names(t: &flezha_runner::operative::OperativeTopology) -> Vec<String>
     t.channels.iter().map(|c| c.name.to_string()).collect()
 }
 
-/// The auto-wire path: `sink = "..."` is the only naming call the author
-/// writes, and it is the channel's name.
-#[flezha_runner::procedure(id = "generated_naming", sink = "items_output")]
+/// The short form: `sink = "..."` is the only naming call the author writes,
+/// and it is the channel's name.
+#[flezha_runner::procedure(id = "generated_naming", kind = "stream", sink = "items_output")]
 fn generated_naming(input: String) -> Option<String> {
     Some(input)
 }
@@ -438,10 +439,9 @@ impl StreamOperative for HandWrittenNaming {
 /// frames under one name and a hand-written one under another.
 #[test]
 fn the_generated_and_hand_written_spellings_name_one_channel() {
-    // The generated class is `#[doc(hidden)]` and named after the procedure;
-    // naming it here is what lets the two spellings be compared at all.
-    let generated =
-        build_topology_for::<__FlezhaAutoOperativeGeneratedNaming>().expect("the sugar builds");
+    // The short form's operative impl sits on the procedure type itself, so
+    // the type the author registers is the one compared here.
+    let generated = build_topology_for::<GeneratedNaming>().expect("the sugar builds");
     let by_hand = build_topology_for::<HandWrittenNaming>().expect("the hand-written twin builds");
 
     assert_eq!(channel_names(&generated), vec!["input", "items_output"]);
@@ -451,14 +451,19 @@ fn the_generated_and_hand_written_spellings_name_one_channel() {
 // ---- the shorthand's entry channel takes the name the author writes ------
 
 /// The attribute shorthand, naming its entry channel.
-#[flezha_runner::procedure(id = "named_entry_attribute", sink = "attr_items", input = "prices")]
+#[flezha_runner::procedure(
+    id = "named_entry_attribute",
+    kind = "stream",
+    sink = "attr_items",
+    input = "prices"
+)]
 fn named_entry_attribute(input: String) -> Vec<u8> {
     input.into_bytes()
 }
 
 /// The attribute shorthand with no name written: the entry channel keeps the
 /// default address every existing operative already ships under.
-#[flezha_runner::procedure(id = "default_entry_attribute", sink = "default_items")]
+#[flezha_runner::procedure(id = "default_entry_attribute", kind = "stream", sink = "default_items")]
 fn default_entry_attribute(input: String) -> Vec<u8> {
     input.into_bytes()
 }
@@ -469,11 +474,13 @@ fn pipeline_hop(input: String) -> Vec<u8> {
 }
 
 flezha_runner::operative! {
+    pub struct NamedEntryPipeline;
     id: "named_entry_pipeline",
     pipeline: input::<String>("quotes") -> PipelineHop -> plugin::<Vec<u8>>("pipeline_items")
 }
 
 flezha_runner::operative! {
+    pub struct DefaultEntryPipeline;
     id: "default_entry_pipeline",
     pipeline: input::<String> -> PipelineHop -> plugin::<Vec<u8>>("pipeline_items")
 }
@@ -482,11 +489,11 @@ flezha_runner::operative! {
 /// wrote, so the address an operator injects on is not the one declared.
 #[test]
 fn both_shorthands_name_their_entry_channel() {
-    let attr = build_topology_for::<__FlezhaAutoOperativeNamedEntryAttribute>()
+    let attr = build_topology_for::<NamedEntryAttribute>()
         .expect("the named attribute shorthand builds");
     assert_eq!(channel_names(&attr), vec!["prices", "attr_items"]);
 
-    let pipeline = build_topology_for::<__FlezhaOperative_NamedEntryPipeline>()
+    let pipeline = build_topology_for::<NamedEntryPipeline>()
         .expect("the named pipeline shorthand builds");
     assert_eq!(channel_names(&pipeline), vec!["quotes", "pipeline_items"]);
 }
@@ -495,11 +502,11 @@ fn both_shorthands_name_their_entry_channel() {
 /// the address §6's conformance table and every existing operative ship under.
 #[test]
 fn an_unnamed_shorthand_keeps_the_default_entry_channel_name() {
-    let attr = build_topology_for::<__FlezhaAutoOperativeDefaultEntryAttribute>()
+    let attr = build_topology_for::<DefaultEntryAttribute>()
         .expect("the unnamed attribute shorthand builds");
     assert_eq!(channel_names(&attr), vec!["input", "default_items"]);
 
-    let pipeline = build_topology_for::<__FlezhaOperative_DefaultEntryPipeline>()
+    let pipeline = build_topology_for::<DefaultEntryPipeline>()
         .expect("the unnamed pipeline shorthand builds");
     assert_eq!(channel_names(&pipeline), vec!["input", "pipeline_items"]);
 }
@@ -508,7 +515,7 @@ fn an_unnamed_shorthand_keeps_the_default_entry_channel_name() {
 /// to — the declaration would name one channel and the wire another.
 #[test]
 fn a_frame_reaches_a_shorthand_on_the_channel_it_named() {
-    let (handle, _instance) = setup::<__FlezhaAutoOperativeNamedEntryAttribute>("named-entry");
+    let (handle, _instance) = setup::<NamedEntryAttribute>("named-entry");
     let (stream, mut observer) = stream_pair();
 
     dispatch_input(&handle, "named-entry", "prices", b"hello".to_vec(), &stream);
@@ -521,7 +528,7 @@ fn a_frame_reaches_a_shorthand_on_the_channel_it_named() {
 /// `input` — every operative in the tree is reached that way.
 #[test]
 fn a_frame_reaches_an_unnamed_shorthand_on_input() {
-    let (handle, _instance) = setup::<__FlezhaAutoOperativeDefaultEntryAttribute>("default-entry");
+    let (handle, _instance) = setup::<DefaultEntryAttribute>("default-entry");
     let (stream, mut observer) = stream_pair();
 
     dispatch_input(
@@ -534,4 +541,39 @@ fn a_frame_reaches_an_unnamed_shorthand_on_input() {
 
     let frames = read_frames(&mut observer, 1, Duration::from_secs(5));
     assert_eq!(frames[0].message, b"hello");
+}
+
+// ---- the workflow short form -------------------------------------------
+
+/// A workflow short form: one procedure declaration is a whole `once` workflow,
+/// with every workflow setting at its default.
+#[flezha_runner::procedure(
+    id = "place_order",
+    kind = "workflow",
+    sink = "placed",
+    input = "order"
+)]
+fn place_order(order: String) -> String {
+    order
+}
+
+/// fails when: `kind = "workflow"` stops producing a workflow operative, or the
+/// entry and sink names the declaration wrote stop reaching the spec — the
+/// short form would then declare a shape the author never wrote.
+#[test]
+fn a_workflow_short_form_is_a_once_workflow_wiring_its_entry_to_its_sink() {
+    let spec =
+        flezha_runner::workflow::spec::build_spec::<PlaceOrder>().expect("the short form builds");
+
+    let topology = spec.topology.as_ref().expect("a structured workflow");
+    assert_eq!(channel_names(topology), vec!["order", "placed"]);
+    assert_eq!(spec.loop_mode, flezha_runner::LoopMode::Once);
+    assert!(spec.persistence_enabled);
+    assert_eq!(spec.max_duration, None);
+
+    // The kind is read from the declaration, never named by the call.
+    let runner = Flezha::create_runner("ns_workflow_short_form").expect("create");
+    runner
+        .register_factory(PlaceOrder)
+        .expect("a workflow short form registers through the one method");
 }

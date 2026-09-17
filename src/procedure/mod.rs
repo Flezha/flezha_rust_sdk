@@ -352,7 +352,7 @@ pub trait Procedure: Send + Sync + 'static + Default {
     /// `MAILBOX_CAPACITY_OVERRIDDEN = true` so the runtime can tell an
     /// explicit-but-equal-to-default override from the inherited default.
     /// Capacity must be in `1..=1_048_576`; out-of-range values fail
-    /// `define_stream::<R>()` with the offending Procedure name.
+    /// `register_factory(R)` with the offending Procedure name.
     fn mailbox_capacity() -> usize {
         Self::DEFAULT_MAILBOX_CAPACITY
     }
