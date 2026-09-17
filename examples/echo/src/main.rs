@@ -28,7 +28,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // terminal:
     //
     // let admin = runner.admin();
-    // admin.start_operative(&flezha_runner::OperativeSpec::new("my_echo", "echo"))?;
+    // admin.start_operative(&flezha_runner::OperativeSpec::new("echo").id("my_echo"))?;
     // admin.enable_plugin(
     //     "writer",
     //     serde_json::json!({

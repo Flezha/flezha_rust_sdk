@@ -7,7 +7,6 @@ pub mod clock;
 pub mod ctx;
 pub mod error;
 pub mod simple;
-pub mod spawn;
 pub mod state_handle;
 
 use std::sync::Arc;
@@ -18,10 +17,12 @@ pub use clock::{Clock, ClockFor, EventTimeFrom, LogicalClock, TimeExtractor, Wal
 pub(crate) use ctx::EmitSink;
 pub use ctx::{ProcedureCtx, StableId};
 pub use error::ProcedureError;
+pub use flz_core::spawn::{
+    IfRunning, SpawnError, SpawnHandle, SpawnOptions, SpawnOutcome, SpawnResult,
+};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 pub use simple::SimpleProcedure;
-pub use spawn::{IfRunning, SpawnError, SpawnHandle, SpawnOutcome};
 pub use state_handle::StateHandle;
 
 use crate::entity::restore::RestoreInitPayload;

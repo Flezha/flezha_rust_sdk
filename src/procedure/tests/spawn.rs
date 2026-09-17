@@ -1,14 +1,14 @@
-//! Procedure-requested spawn (`procedure-requested-spawn`): the request's
-//! result mapping, its isolation from `run`, and the replay contract.
+//! Procedure-requested spawn (`procedure-requested-spawn`) from the procedure's
+//! side: the call shapes, the request they ship, their isolation from `run`,
+//! and the replay contract. The handle itself is `flz_core::spawn`'s.
 
 use std::any::Any;
 use std::collections::HashMap;
-use std::sync::{mpsc, Arc};
+use std::sync::Arc;
 
 use crate::procedure::ctx::{EmitSink, ProcedureCtx};
 use crate::procedure::error::ProcedureError;
-use crate::procedure::spawn::{self, IfRunning, SpawnError, SpawnHandle, SpawnOutcome};
-use crate::shutdown::AckResult;
+use crate::procedure::{IfRunning, SpawnError, SpawnOptions, SpawnOutcome, SpawnResult};
 
 const IDENTITY: &[u8] = b"spawn/test/";
 
@@ -31,139 +31,128 @@ impl EmitSink for NullSink {
     }
 }
 
-/// Resolve a handle against a controller reply without a control plane.
-fn answer(reply: AckResult) -> Result<SpawnOutcome, SpawnError> {
-    let (tx, rx) = mpsc::sync_channel(1);
-    tx.send(reply).unwrap();
-    SpawnHandle::pending("w1".to_string(), "worker".to_string(), rx).wait()
+/// Route control requests to a channel this test reads.
+fn capture_control_requests() -> crossbeam::channel::Receiver<crate::runner::RunnerMessage> {
+    let (tx, rx) = crossbeam::channel::unbounded::<crate::runner::RunnerMessage>();
+    crate::runner::install_reconnect_trigger(tx);
+    rx
 }
 
-#[test]
-fn a_spawn_and_a_delivery_are_distinguishable_outcomes() {
-    assert_eq!(answer(Ok("spawned".to_string())), Ok(SpawnOutcome::Spawned));
-    assert_eq!(
-        answer(Ok("delivered".to_string())),
-        Ok(SpawnOutcome::Delivered)
-    );
-}
-
-#[test]
-fn the_error_policy_and_an_unknown_factory_come_back_as_errors() {
-    assert_eq!(
-        answer(Ok("already_running".to_string())),
-        Err(SpawnError::AlreadyRunning("w1".to_string()))
-    );
-    assert_eq!(
-        answer(Ok("factory_unknown".to_string())),
-        Err(SpawnError::FactoryUnknown("worker".to_string()))
-    );
-}
-
-#[test]
-fn a_refusal_carries_the_controllers_reason() {
-    assert_eq!(
-        answer(Err("quota_exceeded".to_string())),
-        Err(SpawnError::Refused("quota_exceeded".to_string()))
-    );
-}
-
-#[test]
-fn a_reply_that_never_arrives_times_out_rather_than_hanging_forever() {
-    // The sender is dropped, so the wait ends on disconnect rather than
-    // burning the full deadline.
-    let (tx, rx) = mpsc::sync_channel::<AckResult>(1);
-    drop(tx);
-    assert_eq!(
-        SpawnHandle::pending("w1".to_string(), "worker".to_string(), rx).wait(),
-        Err(SpawnError::Timeout)
-    );
-}
-
-#[test]
-fn try_result_leaves_a_pending_handle_pending() {
-    let (tx, rx) = mpsc::sync_channel(1);
-    let mut handle = SpawnHandle::pending("w1".to_string(), "worker".to_string(), rx);
-    assert!(handle.try_result().is_none());
-
-    tx.send(Ok("spawned".to_string())).unwrap();
-    assert_eq!(handle.try_result(), Some(Ok(SpawnOutcome::Spawned)));
+/// The one `SpawnWorkflowRequest` a call shipped, and its reference id.
+fn shipped(
+    rx: &crossbeam::channel::Receiver<crate::runner::RunnerMessage>,
+) -> (String, crate::pb::SpawnWorkflowRequest) {
+    match rx.try_recv().expect("a live invocation ships one request") {
+        crate::runner::RunnerMessage::EmitControlRequest {
+            reference_id,
+            command: crate::pb::command_request::Command::SpawnWorkflowRequest(request),
+        } => (reference_id, request),
+        _ => panic!("expected a SpawnWorkflowRequest on the coordinator channel"),
+    }
 }
 
 #[test]
 fn without_a_control_plane_the_request_resolves_instead_of_blocking_the_procedure() {
     let _guard = crate::runner::env_test_guard();
-    // A trigger whose coordinator is gone — the state a closed runner leaves
+    // A trigger whose coordinator is gone: the state a closed runner leaves
     // behind. The request cannot go out, and must not wait out its deadline
     // inside `run` for a reply that can never come.
-    let (tx, rx) = crossbeam::channel::unbounded::<crate::runner::RunnerMessage>();
-    crate::runner::install_reconnect_trigger(tx);
-    drop(rx);
+    drop(capture_control_requests());
 
-    let handle = spawn::request(
-        "w1".to_string(),
-        "worker".to_string(),
-        b"payload".to_vec(),
-        IfRunning::Deliver,
+    let mut sink = NullSink;
+    let ctx = ProcedureCtx::new(&mut sink, 0, 0, IDENTITY);
+    assert_eq!(
+        ctx.spawn_workflow("worker", b"payload".to_vec()).wait(),
+        Err(SpawnError::Unavailable)
     );
-    assert_eq!(handle.wait(), Err(SpawnError::Unavailable));
 }
 
 #[test]
 fn a_dropped_handle_is_not_an_error_for_the_procedure() {
     let _guard = crate::runner::env_test_guard();
     // Fire-and-forget: dropping the handle must neither panic nor block. The
-    // failure it carries is reported by the reaper, not by the caller.
+    // failure it carries is reported to the log, not to the caller.
     let mut sink = NullSink;
     let ctx = ProcedureCtx::new(&mut sink, 0, 0, IDENTITY);
-    let _ = ctx.spawn_workflow("w1", "worker", b"payload".to_vec(), IfRunning::Deliver);
+    let _ = ctx.spawn_workflow_with("worker", b"payload".to_vec(), SpawnOptions::id("w1"));
 }
 
 #[test]
-fn a_replayed_invocation_issues_no_request() {
+fn a_replayed_invocation_issues_no_request_and_answers_the_id_it_was_given() {
     let _guard = crate::runner::env_test_guard();
-    let (tx, rx) = crossbeam::channel::unbounded::<crate::runner::RunnerMessage>();
-    crate::runner::install_reconnect_trigger(tx);
+    let rx = capture_control_requests();
 
     let mut sink = NullSink;
     let ctx = ProcedureCtx::new(&mut sink, 0, 0, IDENTITY).during_replay(true);
-    let handle = ctx.spawn_workflow("w1", "worker", b"payload".to_vec(), IfRunning::Deliver);
+    let named = ctx.spawn_workflow_with("worker", b"payload".to_vec(), SpawnOptions::id("w1"));
+    let unnamed = ctx.spawn_workflow("worker", b"payload".to_vec());
 
-    assert_eq!(handle.wait(), Ok(SpawnOutcome::SkippedOnReplay));
+    assert_eq!(
+        named.wait(),
+        Ok(SpawnResult {
+            id: "w1".to_string(),
+            outcome: SpawnOutcome::SkippedOnReplay,
+        })
+    );
+    assert_eq!(
+        unnamed.wait(),
+        Ok(SpawnResult {
+            id: String::new(),
+            outcome: SpawnOutcome::SkippedOnReplay,
+        }),
+        "a replay without an id answers an empty id"
+    );
     assert!(rx.try_recv().is_err(), "a replay must reach no coordinator");
 }
 
 #[test]
-fn a_live_invocation_ships_the_request_the_controller_reads() {
+fn a_spawn_with_options_ships_its_id_and_policy() {
     let _guard = crate::runner::env_test_guard();
-    let (tx, rx) = crossbeam::channel::unbounded::<crate::runner::RunnerMessage>();
-    crate::runner::install_reconnect_trigger(tx);
+    let rx = capture_control_requests();
 
     let mut sink = NullSink;
     let ctx = ProcedureCtx::new(&mut sink, 0, 0, IDENTITY);
-    let handle = ctx.spawn_workflow("w1", "worker", b"payload".to_vec(), IfRunning::Error);
+    let handle = ctx.spawn_workflow_with(
+        "worker",
+        b"payload".to_vec(),
+        SpawnOptions::id("w1").if_running(IfRunning::Error),
+    );
 
-    match rx.try_recv().expect("a live invocation ships one request") {
-        crate::runner::RunnerMessage::EmitControlRequest {
-            reference_id,
-            command: crate::pb::command_request::Command::SpawnWorkflowRequest(request),
-        } => {
-            assert!(reference_id.starts_with("spawn-workflow-w1-"));
-            assert_eq!(request.instance_id, "w1");
-            assert_eq!(request.factory_id, "worker");
-            assert_eq!(request.payload, b"payload".to_vec());
-            assert_eq!(request.if_running, "error");
-        }
-        _ => panic!("expected a SpawnWorkflowRequest on the coordinator channel"),
-    }
+    let (reference_id, request) = shipped(&rx);
+    assert!(reference_id.starts_with("spawn-workflow-w1-"));
+    assert_eq!(request.instance_id, "w1");
+    assert_eq!(request.factory_id, "worker");
+    assert_eq!(request.payload, b"payload".to_vec());
+    assert_eq!(request.if_running, "error");
+    assert_eq!(handle.id(), "w1");
 
-    // The reply never arrives (no controller behind the channel), so the
-    // handle is still pending — dropping it hands it to the reaper.
+    // No controller answers, so the handle is still pending: dropping it
+    // hands it to the reaper.
     drop(handle);
 }
 
 #[test]
-fn the_policy_is_carried_on_the_wire_as_the_controller_reads_it() {
-    assert_eq!(IfRunning::default(), IfRunning::Deliver);
-    assert_eq!(IfRunning::Deliver.as_wire(), "deliver");
-    assert_eq!(IfRunning::Error.as_wire(), "error");
+fn an_id_alone_delivers_and_no_id_asks_for_a_generated_one() {
+    let _guard = crate::runner::env_test_guard();
+    let rx = capture_control_requests();
+
+    let mut sink = NullSink;
+    let ctx = ProcedureCtx::new(&mut sink, 0, 0, IDENTITY);
+    let named = ctx.spawn_workflow_with("worker", b"p".to_vec(), SpawnOptions::id("w1"));
+    let unnamed = ctx.spawn_workflow("worker", b"p".to_vec());
+
+    let (_, request) = shipped(&rx);
+    assert_eq!(
+        (request.instance_id.as_str(), request.if_running.as_str()),
+        ("w1", "deliver"),
+        "an id's default policy delivers into a running instance"
+    );
+    let (_, request) = shipped(&rx);
+    assert_eq!(
+        request.instance_id, "",
+        "a spawn without an id leaves the id to the controller"
+    );
+    assert_eq!(unnamed.id(), "");
+
+    drop((named, unnamed));
 }

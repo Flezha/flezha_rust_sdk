@@ -102,6 +102,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .define_stream::<PoisonProbeOperative>()?
         .define_stream::<WedgeProbeOperative>()?
         .define_stream::<CandleOperative>()?
+        .define_stream::<SpawnRequesterOperative>()?
         .define_workflow::<EchoWorkflow>()?
         .define_workflow::<CommitBlockWorkflow>()?
         .define_workflow::<SyncDurableWorkflow>()?

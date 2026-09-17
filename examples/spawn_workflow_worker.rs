@@ -5,11 +5,13 @@
 //! doing real work about, and wants a worker for it — without an external
 //! dispatcher, and without becoming one itself.
 //!
-//! `ctx.spawn_workflow` is spawn-or-deliver on one id: the first alert for
-//! `ACME` starts `triage@ACME`, every later alert for `ACME` is fed to the
+//! `ctx.spawn_workflow_with` under an id is spawn-or-deliver: the first alert
+//! for `ACME` starts `triage@ACME`, every later alert for `ACME` is fed to the
 //! instance already working on it. Concurrent alerts resolve controller-side
-//! to exactly one instance. The call is fire-and-forget — the detector's own
-//! output is unaffected by whether the worker could be started.
+//! to exactly one instance. `ctx.spawn_workflow` without an id starts a new
+//! instance every time under a generated id, which suits a job that runs once
+//! and ends. Either call is fire-and-forget: the detector's own output is
+//! unaffected by whether the worker could be started.
 //!
 //! Run the pair with a runner that defines both:
 //!     Flezha::create_runner("default")?
@@ -23,7 +25,7 @@
 //! The role also lets this runner's `admin()` start and send to operatives in its
 //! namespace, and nothing else.
 
-use flezha_runner::procedure::{IfRunning, Procedure, ProcedureCtx, ProcedureError};
+use flezha_runner::procedure::{IfRunning, Procedure, ProcedureCtx, ProcedureError, SpawnOptions};
 use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
 use flezha_runner::{
     ChannelBuilder, StreamOperative, WorkflowCtx, WorkflowError, WorkflowOperative,
@@ -74,13 +76,12 @@ impl Procedure for Detect {
 
         // One worker per subject: the first alert spawns it with this payload
         // as its first input, later alerts are delivered to the same instance.
-        // The handle is dropped — a failed request logs itself and this
+        // The handle is dropped: a failed request logs itself and this
         // procedure carries on emitting.
-        let _ = ctx.spawn_workflow(
-            format!("triage@{subject}"),
+        let _ = ctx.spawn_workflow_with(
             "triage",
             input.as_bytes().to_vec(),
-            IfRunning::Deliver,
+            SpawnOptions::id(format!("triage@{subject}")).if_running(IfRunning::Deliver),
         );
 
         ctx.emit(format!("detected:{subject}"))

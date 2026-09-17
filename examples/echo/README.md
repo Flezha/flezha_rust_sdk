@@ -24,7 +24,7 @@ cargo run --release
 Then, from another terminal:
 
 ```sh
-flz operative start my_echo echo
+flz operative start echo --id my_echo
 flz operative send my_echo --text 'hello world' --await 2000
 ```
 

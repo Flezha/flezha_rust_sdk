@@ -8,7 +8,7 @@ use flz_core::operative::instance::{fnv1a128, FNV128_OFFSET_BASIS};
 
 use crate::entity::timer::{TimerKind, TimerSession};
 use crate::procedure::error::ProcedureError;
-use crate::procedure::spawn::{self, IfRunning, SpawnHandle, SpawnOutcome};
+use crate::procedure::{SpawnHandle, SpawnOptions};
 
 /// Reserved metadata namespace: runtime identity stamps (`flz.entity`,
 /// `flz.seq`, `flz.key`) live here; user-supplied keys with this prefix
@@ -196,44 +196,59 @@ impl<'a> ProcedureCtx<'a> {
         StableId::derive(self.entity_identity, self.invocation_seq, ordinal)
     }
 
-    /// Ask the controller for a workflow instance: start `factory_id` under
-    /// `instance_id` if that id is free, otherwise apply `if_running`
-    /// ([`IfRunning::Deliver`] feeds the running instance, [`IfRunning::Error`]
-    /// reports [`SpawnError::AlreadyRunning`]). `payload` is the instance's
-    /// first input on a spawn, one more input on a delivery.
+    /// Ask the controller for a new workflow instance of `factory_id`, under an
+    /// id it generates. `payload` is the instance's first input. The handle
+    /// resolves to [`SpawnResult`](crate::procedure::SpawnResult), whose `id` is
+    /// the generated one.
+    ///
+    /// A spawn without an id always starts a new instance and can never deliver
+    /// into a running one. Reissuing it after a lost or timed-out answer starts
+    /// a second instance, and a replay of it answers an empty id, because the
+    /// generated id exists only in the live run's answer. A caller who needs at
+    /// most one instance, or the id on replay, uses [`Self::spawn_workflow_with`].
     ///
     /// Returns immediately. The request cannot fault this procedure: a refusal,
     /// an unreachable controller, or an unknown factory surfaces only through
-    /// the returned [`SpawnHandle`] — or, if the handle is dropped unobserved,
-    /// as one warning line.
+    /// the returned [`SpawnHandle`], or, if the handle is dropped unread, as one
+    /// warning line.
     ///
-    /// Concurrent requests for one `instance_id` race-resolve controller-side:
-    /// exactly one spawns and every other payload is delivered to it.
-    ///
-    /// Spawning is a side effect of **live** processing. Replayed input — a
-    /// crash-resume or a late-input correction re-running this invocation —
-    /// issues no request and answers [`SpawnOutcome::SkippedOnReplay`], so a
-    /// replay never doubles the workers a run created.
+    /// Spawning is a side effect of **live** processing. Replayed input (a
+    /// crash-resume or a late-input correction re-running this invocation)
+    /// issues no request and answers
+    /// [`SpawnOutcome::SkippedOnReplay`](crate::procedure::SpawnOutcome::SkippedOnReplay),
+    /// so a replay never doubles the workers a run created.
     ///
     /// The timer calls on this same context behave the OPPOSITE way and
     /// deliberately so: a timer is internal state, so a replay registers it,
     /// where skipping would rebuild a pending set the live run never had.
     pub fn spawn_workflow(
         &self,
-        instance_id: impl Into<String>,
         factory_id: impl Into<String>,
         payload: impl Into<Vec<u8>>,
-        if_running: IfRunning,
     ) -> SpawnHandle {
-        let (instance_id, factory_id) = (instance_id.into(), factory_id.into());
-        if self.replay {
-            return SpawnHandle::resolved(
-                instance_id,
-                factory_id,
-                Ok(SpawnOutcome::SkippedOnReplay),
-            );
-        }
-        spawn::request(instance_id, factory_id, payload.into(), if_running)
+        flz_core::spawn::request(factory_id.into(), payload.into(), None, self.replay)
+    }
+
+    /// [`Self::spawn_workflow`] under the id `options` names: start
+    /// `factory_id` under that id if it is free, otherwise apply its
+    /// [`IfRunning`](crate::procedure::IfRunning) (`Deliver`, the default, feeds
+    /// the running instance; `Error` reports
+    /// [`SpawnError::AlreadyRunning`](crate::procedure::SpawnError::AlreadyRunning)).
+    /// Concurrent requests for one id race-resolve controller-side: exactly one
+    /// spawns and every other payload is delivered to it. A replay answers the
+    /// id it was given.
+    pub fn spawn_workflow_with(
+        &self,
+        factory_id: impl Into<String>,
+        payload: impl Into<Vec<u8>>,
+        options: SpawnOptions,
+    ) -> SpawnHandle {
+        flz_core::spawn::request(
+            factory_id.into(),
+            payload.into(),
+            Some(options),
+            self.replay,
+        )
     }
 
     /// Register an **event-time** timer at an absolute timestamp, returning

@@ -54,7 +54,7 @@ pub mod state {
 }
 
 /// Administering the namespace a runner's connection proved.
-pub use admin::{Admin, OperativeSpec};
+pub use admin::{Admin, OperativeSpec, StartOutcome, StartResult};
 pub use channel::builder::TopologyIssue;
 pub use channel::{
     Channel, ChannelBuilder, EntryStream, Merge, MergeSource, OverflowPolicy, RetryPolicy, Stream,

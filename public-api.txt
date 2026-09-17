@@ -75,7 +75,9 @@ pub use procedure::ProcedureError;
 pub use procedure::IfRunning;
 pub use procedure::SpawnError;
 pub use procedure::SpawnHandle;
+pub use procedure::SpawnOptions;
 pub use procedure::SpawnOutcome;
+pub use procedure::SpawnResult;
 pub use procedure::SimpleProcedure;                          # ADDED by `tiered-procedure-authoring`
 pub use procedure::StableId;
 pub use procedure::StateHandle;
@@ -152,7 +154,8 @@ pub use entity::timer::TimerKind;                            # ADDED by `entity-
 #
 #   `ProcedureTestHarness::with_entity_key(key)` stands the harness in for
 #   that Entity, so a test observes the defaulted stamp.
-#   pub fn spawn_workflow(&self, instance_id: impl Into<String>, factory_id: impl Into<String>, payload: impl Into<Vec<u8>>, if_running: IfRunning) -> SpawnHandle;
+#   pub fn spawn_workflow(&self, factory_id: impl Into<String>, payload: impl Into<Vec<u8>>) -> SpawnHandle;
+#   pub fn spawn_workflow_with(&self, factory_id: impl Into<String>, payload: impl Into<Vec<u8>>, options: SpawnOptions) -> SpawnHandle;
 #
 # Per-Entity timers (`entity-timers`) — each returns the ABSOLUTE scheduled
 # timestamp, which is the handle a cancellation takes:
@@ -170,11 +173,18 @@ pub use entity::timer::TimerKind;                            # ADDED by `entity-
 # Procedure-requested spawn (`procedure-requested-spawn`):
 #
 #   pub enum IfRunning { Deliver, Error }                     # Deliver is Default
+#   impl SpawnOptions {                                       # built only from an id
+#       pub fn id(id: impl Into<String>) -> Self;
+#       pub fn if_running(self, if_running: IfRunning) -> Self;
+#   }
 #   pub enum SpawnOutcome { Spawned, Delivered, SkippedOnReplay }
+#   pub struct SpawnResult { pub id: String, pub outcome: SpawnOutcome }
 #   pub enum SpawnError { AlreadyRunning(String), FactoryUnknown(String), Refused(String), Timeout, Unavailable }
 #   impl SpawnHandle {
-#       pub fn wait(self) -> Result<SpawnOutcome, SpawnError>;
-#       pub fn try_result(&mut self) -> Option<Result<SpawnOutcome, SpawnError>>;
+#       pub fn id(&self) -> &str;
+#       pub fn wait(self) -> Result<SpawnResult, SpawnError>;
+#       pub fn try_result(&mut self) -> Option<Result<SpawnResult, SpawnError>>;
+#       pub fn wait_timeout(&mut self, timeout: Duration) -> Option<Result<SpawnResult, SpawnError>>;
 #   }
 #
 # Trait surface on `StreamOperative`:

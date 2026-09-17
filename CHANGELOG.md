@@ -4,6 +4,17 @@ All notable changes to the Rust SDK crate.
 
 ## Unreleased
 
+### Changed — a spawn and a start take the factory first and an optional id
+
+**Breaking.** `ProcedureCtx::spawn_workflow(factory_id, payload)` spawns under an id the
+controller generates, and `spawn_workflow_with(factory_id, payload, SpawnOptions::id(id))`
+spawns or delivers under yours, `.if_running(IfRunning::Error)` refusing a running one. A
+`SpawnHandle` resolves to a `SpawnResult { id, outcome }`, so the id a spawn ran under is
+readable whoever chose it. `OperativeSpec::new(factory_id).id(id)` starts from application
+code, the id optional, and `Admin::start_operative` answers a `StartResult { id, outcome }`
+whose outcome is `Started` or `AlreadyRunning`. The handle and its reaper live in `flz_core`,
+re-exported here unchanged in name.
+
 ### Removed — `codec()` and `codec_with(...)` on the stream handle (`derive-the-handoff-codec`)
 
 **Breaking.** Both methods are gone from `Stream`. A chain that calls either no

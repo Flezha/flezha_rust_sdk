@@ -17,28 +17,40 @@
 
 use flz_core::admin;
 pub use flz_core::admin::AdminError;
+use serde::de::DeserializeOwned;
+use serde::Deserialize;
 use serde_json::{json, Value};
 
 /// The specification a start takes, the same one `flz operative start` takes.
 #[derive(Debug, Clone, Default)]
 pub struct OperativeSpec {
-    id: String,
     factory_id: String,
+    id: Option<String>,
     kind: Option<String>,
     init_values: Value,
     opts: Value,
 }
 
 impl OperativeSpec {
-    /// A stream operative `id` served by the factory `factory_id`.
-    pub fn new(id: impl Into<String>, factory_id: impl Into<String>) -> Self {
+    /// A stream operative served by the factory `factory_id`, under an id the
+    /// controller generates unless [`Self::id`] names one.
+    pub fn new(factory_id: impl Into<String>) -> Self {
         Self {
-            id: id.into(),
             factory_id: factory_id.into(),
+            id: None,
             kind: None,
             init_values: Value::Null,
             opts: Value::Null,
         }
+    }
+
+    /// The operative's own id. Without one, every start runs a new operative
+    /// under a generated id, so a start retried after a lost answer starts a
+    /// second one; with one, a second start leaves the running operative
+    /// untouched.
+    pub fn id(mut self, id: impl Into<String>) -> Self {
+        self.id = Some(id.into());
+        self
     }
 
     /// The operative kind: `"stream"` (the default) or `"workflow"`.
@@ -60,10 +72,13 @@ impl OperativeSpec {
     }
 
     fn to_fields(&self) -> Value {
-        let mut fields = json!({ "id": self.id, "factory_id": self.factory_id });
+        let mut fields = json!({ "factory_id": self.factory_id });
         let object = fields
             .as_object_mut()
             .expect("a JSON object was just built");
+        if let Some(id) = &self.id {
+            object.insert("id".into(), json!(id));
+        }
         if let Some(kind) = &self.kind {
             object.insert("kind".into(), json!(kind));
         }
@@ -77,14 +92,30 @@ impl OperativeSpec {
     }
 }
 
+/// What a start answered: the id the operative runs under, the generated one
+/// when the start named none, and what the start did.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct StartResult {
+    pub id: String,
+    pub outcome: StartOutcome,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StartOutcome {
+    Started,
+    /// The named operative was already running and was left untouched.
+    AlreadyRunning,
+}
+
 /// The administration surface for the namespace this runner proved.
 #[derive(Debug, Clone, Copy)]
 pub struct Admin;
 
 impl Admin {
-    /// Start an operative. Answers the controller's own result.
-    pub fn start_operative(&self, spec: &OperativeSpec) -> Result<Value, AdminError> {
-        self.call("Operative.start", &[spec.to_fields()])
+    /// Start an operative.
+    pub fn start_operative(&self, spec: &OperativeSpec) -> Result<StartResult, AdminError> {
+        self.answer("Operative.start", &[spec.to_fields()])
     }
 
     /// Stop an operative, or the whole partition group it names.
@@ -138,9 +169,65 @@ impl Admin {
     /// grown a method for. What succeeds follows from the role the namespace
     /// is bound to, never from a list kept here.
     pub fn call(&self, verb: &str, args: &[Value]) -> Result<Value, AdminError> {
+        self.answer(verb, args)
+    }
+
+    fn answer<T: DeserializeOwned>(&self, verb: &str, args: &[Value]) -> Result<T, AdminError> {
         let args = Value::Array(args.to_vec()).to_string();
-        let answer = admin::call(verb, &args)?;
-        serde_json::from_str(&answer)
-            .map_err(|e| AdminError::Refused(format!("controller answered unreadable JSON: {e}")))
+        read(&admin::call(verb, &args)?)
+    }
+}
+
+/// The controller's answer, read as the shape the call promises.
+fn read<T: DeserializeOwned>(answer: &str) -> Result<T, AdminError> {
+    serde_json::from_str(answer)
+        .map_err(|e| AdminError::Refused(format!("controller answered unreadable JSON: {e}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_start_names_its_id_only_when_given_one() {
+        assert_eq!(
+            OperativeSpec::new("echo").to_fields(),
+            json!({ "factory_id": "echo" }),
+            "no id is sent, so the controller generates one"
+        );
+        assert_eq!(
+            OperativeSpec::new("echo")
+                .id("my_echo")
+                .kind("workflow")
+                .to_fields(),
+            json!({ "factory_id": "echo", "id": "my_echo", "kind": "workflow" })
+        );
+    }
+
+    #[test]
+    fn a_start_answer_reads_as_its_id_and_outcome() {
+        assert_eq!(
+            read::<StartResult>(r#"{"id":"echo-k7m2qzxw4pd3fn2a","outcome":"started"}"#),
+            Ok(StartResult {
+                id: "echo-k7m2qzxw4pd3fn2a".to_string(),
+                outcome: StartOutcome::Started,
+            })
+        );
+        assert_eq!(
+            read::<StartResult>(r#"{"id":"my_echo","outcome":"already_running"}"#),
+            Ok(StartResult {
+                id: "my_echo".to_string(),
+                outcome: StartOutcome::AlreadyRunning,
+            })
+        );
+    }
+
+    #[test]
+    fn a_start_answer_of_another_shape_is_refused_naming_what_is_wrong() {
+        let refused = read::<StartResult>(r#"{"id":"my_echo","outcome":"duplicate"}"#);
+        assert!(
+            matches!(&refused, Err(AdminError::Refused(m)) if m.contains("duplicate")),
+            "{refused:?}"
+        );
     }
 }

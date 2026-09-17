@@ -93,6 +93,7 @@
       "partition_relay"
     ],
     "workflow": [
+      "spawn_requester",
       "echo_workflow",
       "commit_block_workflow",
       "sync_durable_workflow",

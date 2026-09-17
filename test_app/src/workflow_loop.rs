@@ -2,6 +2,8 @@
 //! stateless twin and the rewindable variant — and the chains and loop
 //! `mix bench.workflow` drives.
 
+use flezha_runner::procedure::SpawnOptions;
+
 use crate::workflow::{block_until_released, durable_step, Insert, SeenState};
 use crate::*;
 
@@ -104,6 +106,63 @@ impl WorkflowOperative for StatelessLoopWorkflow {
     fn procedures(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<ChatReply>()
+            .sink_named("out");
+    }
+}
+
+// -- SpawnRequesterOperative -----------------------------------------------------
+//
+// `spawn_requester`: on each input it spawns `stateless_loop_workflow` once with
+// no id and once under the input as its id, and prints both results, because a
+// handle's answer is observable nowhere but in the procedure that read it.
+
+#[derive(Default)]
+struct SpawnRequester;
+impl Procedure for SpawnRequester {
+    type Input = String;
+    type Output = String;
+    type State = ();
+    type Change = NoChange;
+    type Clock = WallClock;
+    type Config = ();
+    fn name() -> &'static str {
+        "spawn_requester"
+    }
+    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
+    fn run(
+        &mut self,
+        input: String,
+        _: StateHandle<'_, Self>,
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
+        let unnamed = ctx.spawn_workflow(StatelessLoopWorkflow::factory_id(), input.clone());
+        let named = ctx.spawn_workflow_with(
+            StatelessLoopWorkflow::factory_id(),
+            input.clone(),
+            SpawnOptions::id(input),
+        );
+        for (label, handle) in [("unnamed", unnamed), ("named", named)] {
+            match handle.wait() {
+                Ok(result) => println!(
+                    "spawn_result {label} {} {}",
+                    result.id,
+                    result.outcome.as_wire()
+                ),
+                Err(e) => println!("spawn_result {label} error {e}"),
+            }
+        }
+        Ok(())
+    }
+}
+
+pub(crate) struct SpawnRequesterOperative;
+impl StreamOperative for SpawnRequesterOperative {
+    fn factory_id() -> &'static str {
+        "spawn_requester"
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("in")
+            .into::<SpawnRequester>()
             .sink_named("out");
     }
 }
