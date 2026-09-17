@@ -53,38 +53,12 @@ step "building the reference runner"
 cargo build --quiet --manifest-path test_app/Cargo.toml
 
 step "smoke"
-# The runner reads the same socket directory the fake controller binds in, and
-# the connect fixture is what pins the variable's name.
-SOCKETS="$(mktemp -d)"
-INPUTS="${SOCKETS}/inputs.txt"
-printf 'alpha\nbeta\n' > "${INPUTS}"
-export FLEZHA_SOCKET_FILES_PATH="${SOCKETS}"
-export FLEZHA_TRANSPORT=uds
-
-# The runner ends at end of stream on its standard input, so it is held open
-# for as long as the tier runs and closed when it is over.
-mkfifo "${SOCKETS}/stdin"
-sleep 120 > "${SOCKETS}/stdin" &
-HOLD=$!
-"${CARGO_TARGET_DIR}/debug/rust_runner" smoke > "${SOCKETS}/runner.log" 2>&1 < "${SOCKETS}/stdin" &
-RUNNER=$!
-
-set +e
-.core/flz-fake-controller \
-  --socket-dir "${SOCKETS}" \
-  --factory do_nothing --operative echo-1 --channel input \
-  --inputs "${INPUTS}" --expect-outputs 2 --timeout-ms 60000
-CODE=$?
-set -e
-
-kill "${HOLD}" "${RUNNER}" 2>/dev/null || true
-if (( CODE != 0 )); then
-  echo "the runner's own log:"
-  sed 's/^/  /' "${SOCKETS}/runner.log"
-fi
-rm -rf "${SOCKETS}"
-
-# The tier's verdict is the binary's, never the runner's: a terminal
+# The fake controller launches the runner against a socket directory of its own,
+# holds its standard input open for the run and prints its output on failure.
+# The tier's verdict is the fake controller's, never the runner's: a terminal
 # disconnect ends the runner non-zero on purpose, so the orchestrator that owns
 # it restarts it.
-exit "${CODE}"
+exec .core/flz-fake-controller \
+  --factory do_nothing --operative echo-1 --channel input \
+  --input alpha --input beta --timeout-ms 60000 \
+  -- "${CARGO_TARGET_DIR}/debug/rust_runner" smoke
