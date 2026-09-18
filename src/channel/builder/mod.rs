@@ -1,6 +1,6 @@
 //! Producer-first fluent graph builder.
 //!
-//! `c.input::<T>("name").into::<A>().into::<B>().sink("plugin")` — `.into`
+//! `c.input::<T>("name").into::<A>().into::<B>().sink_named("plugin")` — `.into`
 //! wires a consumer and returns that procedure's **output stream handle**
 //! ([`Stream`]), so a linear pipeline is one chained expression. Branching is
 //! handle reuse or the equivalent [`Stream::branch`] sugar; fan-in is two
@@ -196,11 +196,11 @@ impl ChannelBuilder {
     /// external input address, so its name is explicit and mandatory.
     ///
     /// Any payload type is accepted. `Vec<u8>` is delivered unchanged and
-    /// `String` UTF-8-decoded (invalid UTF-8 is dropped and logged), exactly
-    /// as before; any other `T` is deserialized at the entry edge from the
-    /// wire bytes with the SDK's default JSON codec (`serde_json`). A failing
-    /// parse is classified like a failing invocation and rides this channel's
-    /// retry→DLQ ladder. For a non-JSON wire format, use
+    /// `String` UTF-8-decoded (invalid UTF-8 is dropped and logged); any other
+    /// `T` is deserialized at the entry edge from the wire bytes with the
+    /// SDK's default JSON codec (`serde_json`). A failing parse is classified
+    /// like a failing invocation and rides this channel's retry→DLQ ladder.
+    /// For a non-JSON wire format, use
     /// [`input_with`](ChannelBuilder::input_with).
     pub fn input<T: DeserializeOwned + Send + Sync + 'static>(
         &self,
@@ -309,9 +309,8 @@ impl ChannelBuilder {
 }
 
 /// The default entry decode for `T`: passthrough for `Vec<u8>`, UTF-8 for
-/// `String` (both byte-identical to the pre-typed-entry contract), the SDK's
-/// default JSON codec otherwise. The bool is the "real parser" flag driving
-/// the retry→DLQ classification of a failing decode.
+/// `String`, the SDK's default JSON codec otherwise. The bool is the "real
+/// parser" flag driving the retry→DLQ classification of a failing decode.
 fn default_entry_wrap<T: DeserializeOwned + Send + Sync + 'static>(
 ) -> (crate::channel::EntryWrapFn, bool) {
     if TypeId::of::<T>() == TypeId::of::<Vec<u8>>() {

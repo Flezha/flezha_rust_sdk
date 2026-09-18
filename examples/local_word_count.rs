@@ -22,87 +22,30 @@
 
 use std::time::Duration;
 
-use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError};
-use flezha_runner::state::{Change, RestoreInitPayload, StateHandle, WallClock};
-use flezha_runner::{ChannelBuilder, LocalOperative, StreamOperative};
+use flezha_runner::{procedure, ChannelBuilder, LocalOperative, ProcedureError, StreamOperative};
 use serde::{Deserialize, Serialize};
 
 /// One line into its words. Stateless: the whole point of the first
 /// procedure is that the hop to the second one is the runtime's job.
-#[derive(Default)]
-struct Split;
-
-impl Procedure for Split {
-    type Input = String;
-    type Output = String;
-    type State = ();
-    type Change = flezha_runner::NoChange;
-    type Clock = WallClock;
-    type Config = ();
-
-    fn name() -> &'static str {
-        "split"
+#[procedure(id = "split", emits = String)]
+fn split(line: String, ctx: &mut flezha_runner::ProcedureCtx<'_>) -> Result<(), ProcedureError> {
+    for word in line.split_whitespace() {
+        ctx.emit(word.to_lowercase())?;
     }
-
-    fn init_state(_key: Option<&str>, _payload: Option<RestoreInitPayload<'_>>) {}
-
-    fn apply_change(_state: &mut (), _change: &flezha_runner::NoChange) {}
-
-    fn run(
-        &mut self,
-        line: String,
-        _state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
-        for word in line.split_whitespace() {
-            ctx.emit(word.to_lowercase())?;
-        }
-        Ok(())
-    }
+    Ok(())
 }
 
-/// One occurrence of the word this Entity is.
-#[derive(Clone, Serialize, Deserialize)]
-struct Seen;
-
-impl Change for Seen {}
-
-#[derive(Default, Serialize, Deserialize)]
-struct Count(u64);
+/// The count of the word this Entity is.
+#[derive(Default, Serialize, Deserialize, flezha_runner::State)]
+struct Count {
+    seen: u64,
+}
 
 /// One Entity per word, minted on first sight of it.
-#[derive(Default)]
-struct Tally;
-
-impl Procedure for Tally {
-    type Input = String;
-    type Output = String;
-    type State = Count;
-    type Change = Seen;
-    type Clock = WallClock;
-    type Config = ();
-
-    fn name() -> &'static str {
-        "tally"
-    }
-
-    fn init_state(_key: Option<&str>, _payload: Option<RestoreInitPayload<'_>>) -> Count {
-        Count(0)
-    }
-
-    fn apply_change(state: &mut Count, _change: &Seen) {
-        state.0 += 1;
-    }
-
-    fn run(
-        &mut self,
-        word: String,
-        mut state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
-        state.apply(Seen);
-        ctx.emit(format!("{word} {}", state.0))
-    }
+#[procedure(id = "tally")]
+fn tally(word: String, count: &mut Count) -> String {
+    count.set_seen(count.seen + 1);
+    format!("{word} {}", count.seen)
 }
 
 struct WordCount;

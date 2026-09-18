@@ -129,8 +129,8 @@ pub(crate) struct ChannelEntry {
     pub wrap_input: Option<crate::channel::EntryWrapFn>,
     /// Entry channels whose `wrap_input` is a real parser (typed JSON or a
     /// custom `input_with` parser). A failing parse rides the channel's
-    /// retry→DLQ ladder; `Vec<u8>`/`String` passthrough entries keep the
-    /// pre-change drop-and-log behaviour on invalid input.
+    /// retry→DLQ ladder; `Vec<u8>`/`String` passthrough entries drop and log
+    /// invalid input instead.
     pub entry_parsed: bool,
     /// The channel's plugin egress, populated by `sink(...)` / `sink_with(...)`.
     pub plugin_sink: Option<PluginSink>,
@@ -402,7 +402,7 @@ impl BuilderState {
     }
 
     /// Take a chain's links and closures and mark it closed. `None` (a bare
-    /// handle) is the transform-free case every pre-existing topology is.
+    /// handle) is the transform-free case.
     fn close_pending(
         &mut self,
         pending: Option<u32>,

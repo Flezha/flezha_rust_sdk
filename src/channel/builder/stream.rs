@@ -301,9 +301,10 @@ impl<'b, T: 'static + Send + Sync> Stream<'b, T, NodeTarget> {
         self
     }
 
-    /// Opt this channel into output identity: every plugin emit must carry
-    /// a natural key via `ctx.emit_keyed(key, value)` and the runtime
-    /// stamps `flz.entity` / `flz.seq` / `flz.key` on the wire frame.
+    /// Opt this channel into output identity: every plugin emit carries a
+    /// natural key (the Entity's own via `ctx.emit(value)`, another via
+    /// `ctx.emit_keyed(key, value)`) and the runtime stamps `flz.entity` /
+    /// `flz.seq` / `flz.key` on the wire frame.
     /// Requires a plugin wire (`sink`); `build_topology` refuses a keyed
     /// channel without one.
     pub fn keyed(self) -> Self {

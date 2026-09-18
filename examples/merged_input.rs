@@ -29,9 +29,7 @@
 //!     flz operative send thermostat --channel readings --text '{"sensor":"kiln","celsius":812.0}'
 //!     flz operative send thermostat --channel config   --text '{"max_celsius":800.0}'
 
-use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError};
-use flezha_runner::state::{Change, RestoreInitPayload, StateHandle, WallClock};
-use flezha_runner::{ChannelBuilder, StreamOperative};
+use flezha_runner::{procedure, ChannelBuilder, StreamOperative};
 use serde::{Deserialize, Serialize};
 
 // -- the two feeds ----------------------------------------------------------
@@ -59,7 +57,7 @@ enum DetectorInput {
 
 // -- the detector -----------------------------------------------------------
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, flezha_runner::State)]
 struct DetectorState {
     max_celsius: f64,
     alerts: u64,
@@ -76,59 +74,21 @@ impl Default for DetectorState {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-enum DetectorChange {
-    ThresholdSet(f64),
-    Alerted,
-}
-impl Change for DetectorChange {}
-
-#[derive(Default)]
-struct Detector;
-
-impl Procedure for Detector {
-    type Input = DetectorInput;
-    type Output = String;
-    type State = DetectorState;
-    type Change = DetectorChange;
-    type Clock = WallClock;
-    type Config = ();
-
-    fn name() -> &'static str {
-        "detector"
-    }
-
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> DetectorState {
-        DetectorState::default()
-    }
-
-    fn apply_change(state: &mut DetectorState, change: &DetectorChange) {
-        match change {
-            DetectorChange::ThresholdSet(v) => state.max_celsius = *v,
-            DetectorChange::Alerted => state.alerts += 1,
+#[procedure(id = "detector")]
+fn detector(input: DetectorInput, state: &mut DetectorState) -> Option<String> {
+    match input {
+        // A config frame is an ordinary input: it lands in the same
+        // durable state as the readings, so a restart resumes with the
+        // threshold that was in force.
+        DetectorInput::Threshold(t) => {
+            state.set_max_celsius(t.max_celsius);
+            None
         }
-    }
-
-    fn run(
-        &mut self,
-        input: DetectorInput,
-        mut state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
-        match input {
-            // A config frame is an ordinary input: it lands in the same
-            // durable state as the readings, so a restart resumes with the
-            // threshold that was in force.
-            DetectorInput::Threshold(t) => {
-                state.apply(DetectorChange::ThresholdSet(t.max_celsius));
-            }
-            DetectorInput::Reading(r) if r.celsius > state.max_celsius => {
-                state.apply(DetectorChange::Alerted);
-                ctx.emit(format!("{} over threshold at {:.1}C", r.sensor, r.celsius))?;
-            }
-            DetectorInput::Reading(_) => {}
+        DetectorInput::Reading(r) if r.celsius > state.max_celsius => {
+            state.set_alerts(state.alerts + 1);
+            Some(format!("{} over threshold at {:.1}C", r.sensor, r.celsius))
         }
-        Ok(())
+        DetectorInput::Reading(_) => None,
     }
 }
 

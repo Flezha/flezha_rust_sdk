@@ -3,13 +3,13 @@
 //!
 //! The pattern this exists for: something outside the pipeline needs the
 //! CURRENT value of one key — a dashboard, an ops question, a health check.
-//! Before `flz state get` the only read was `flz state at`, which serves the
-//! controller's WAL at a point in the PAST, so "what is BTCUSD doing right
-//! now" meant waiting for the value to reach a sink and reading the copy.
+//! `flz state at` serves the controller's WAL at a point in the PAST, so
+//! "what is BTCUSD doing right now" is a question for `flz state get`, which
+//! reads the Entity itself rather than a copy that reached a sink.
 //!
 //! **This example declares nothing special.** That is the point: every Entity
 //! of a running Operative is readable, because the read reuses the
-//! `EntityState` command the SDK has always answered for migration. Declaring
+//! `EntityState` command the SDK answers for migration. Declaring
 //! `type Change` is what makes the value durable; nothing extra makes it
 //! readable.
 //!
@@ -26,7 +26,7 @@
 //!     $ flz state get market/candle/BTCUSD
 //!     state get market/candle/BTCUSD:
 //!       change_seq: 1
-//!       state:      {"candle":{"BTCUSD":{"high":64100.0,"trades":1}}}
+//!       state:      {"candle":{"BTCUSD":{"high":64100.0,"volume":0.5,"trades":1}}}
 //!
 //! The `change_seq` is the version the state was serialized at. It may be
 //! AHEAD of what is durable: the read takes the Entity's state lock and does

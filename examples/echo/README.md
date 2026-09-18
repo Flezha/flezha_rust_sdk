@@ -38,16 +38,24 @@ first argument and defaults to `default`: `cargo run --release -- my_app`.
 
 ## Building from a checkout
 
-`flezha_runner` is not on crates.io yet, so Cargo cannot resolve it. From this
-folder, point Cargo at the checkout once:
+`flezha_runner` is not on crates.io yet, and the core it builds on has no
+release tag yet, so Cargo cannot resolve either. From this folder, point Cargo
+at the checkout once:
 
 ```sh
 mkdir -p .cargo
-printf '[patch.crates-io]\nflezha_runner = { path = "../.." }\n' > .cargo/config.toml
+cat > .cargo/config.toml <<'EOF'
+[patch.crates-io]
+flezha_runner = { path = "../.." }
+
+[patch."https://github.com/flezha/flezha"]
+flz_core = { path = "../../../../flz_core" }
+flz_transport = { path = "../../../../flz_transport" }
+EOF
 ```
 
-A copy of this folder outside the checkout names the checkout's `sdk/rust`
-instead of `../..`. Git ignores the `.cargo` folder, and once the crate is
+A copy of this folder outside the checkout names the checkout's `sdk/rust`,
+`flz_core` and `flz_transport` instead of the relative paths. Git ignores the `.cargo` folder, and once the crate is
 published the step goes away and `cargo run --release` is all you need.
 
 The empty `[workspace]` table in `Cargo.toml` keeps the repository's own

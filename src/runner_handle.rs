@@ -288,9 +288,9 @@ impl FlezhaRunner {
     /// Starting with zero declared operative types is legal (the init frame
     /// carries an empty factory list; types may be declared later), whatever
     /// short-form or `operative!` types the binary happens to contain: nothing
-    /// is harvested here. Bind the
-    /// runner when chaining — `let runner = Flezha::create_runner(ns)?.start()?;` —
-    /// a chained temporary Drops (and shuts the runner down) at statement end.
+    /// is harvested here. Bind the runner before starting it
+    /// (`let runner = Flezha::create_runner(ns)?; runner.start()?;`): a
+    /// chained temporary Drops (and shuts the runner down) at statement end.
     pub fn start(&self) -> Result<&Self, FlezhaError> {
         let mut started = self.core.started.lock().unwrap();
         if started.is_some() {

@@ -1,6 +1,6 @@
 use flezha_runner::{ChannelBuilder, StreamOperative};
 
-use crate::procedure::EchoProcedure;
+use crate::procedure::Echo;
 
 /// The deployable unit. An operative declares the graph a message travels: the
 /// entry channel it arrives on, the steps it passes through, and the channel its
@@ -26,7 +26,7 @@ impl StreamOperative for EchoOperative {
     /// procedure, whose output ends on the plugin layer as the channel `out`.
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
-            .into::<EchoProcedure>()
+            .into::<Echo>()
             .sink_named("out");
     }
 }

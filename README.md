@@ -30,8 +30,7 @@ snapshots, no dead-letter queue. Every run says so on stderr and it is not
 suppressible. Durability, effectively-once delivery, plugins, placement and
 migration, the dead-letter queue, observability export, authz and multi-runner
 scale need a controller; a declaration asking for one of those is refused at
-startup, naming it. Local mode also ships in the Java and Elixir SDKs; Node,
-Python, Ruby and PHP do not carry it yet. Walk-through:
+startup, naming it. Local mode ships in every SDK. Walk-through:
 `docs/quickstart.md`.
 
 ## Quickstart: connect to a controller
@@ -49,10 +48,10 @@ fn main() -> Result<(), flezha_runner::FlezhaError> {
 
 `run()` is `start()` + `await_termination()` — the one-liner for a standalone
 binary. Embedding into a larger app? `start()` keeps your thread — bind the
-runner (`let runner = Flezha::create_runner(ns)?.start()?;`, a chained
-temporary would Drop and shut it down at statement end); dropping it runs the
-graceful-shutdown sequence, and `Flezha::current_runner()` reaches it from
-anywhere. Types are dynamic: one `register_factory` takes an operative of
+runner (`let runner = Flezha::create_runner(ns)?;` then `runner.start()?;`, a
+chained temporary would Drop and shut it down at statement end); dropping it
+runs the graceful-shutdown sequence, and `Flezha::current_runner()` reaches it
+from anywhere. Types are dynamic: one `register_factory` takes an operative of
 either kind — the kind is read from the value, never named by the call — and
 `unregister_factory` is its inverse; both are legal before and after `start()`
 (a post-start change ships `UpdateFactories` to the controller). Starting with
@@ -87,7 +86,7 @@ impl StreamOperative for OrdersOperative {
         c.input::<OrderEvent>("orders")
             .into::<Validate>()
             .into::<Alert>()
-            .sink("alerts"); // plugin egress; terminal — nothing wired after it
+            .sink_named("alerts"); // plugin egress; terminal — nothing wired after it
     }
 }
 ```
@@ -264,12 +263,14 @@ the sanctioned path for one class serving several configurations (see the
 
 ### Declaring less: `SimpleProcedure`
 
-Stable Rust has no associated-type defaults, so a `Procedure` impl spells all
-six even when three of them are the near-universal values. `SimpleProcedure` is
-the shorthand — `Input`, `Output`, `State` plus `name`, `init_state` and `run` —
-lifted to `Procedure` by a blanket impl with `Clock = WallClock`,
-`Config = ()` and the `State` type's derived change (`type State = ()` for a
-stateless procedure). It registers and dispatches exactly like any other
+A procedure is usually a function under `#[flezha::procedure]`
+(`examples/echo/src/procedure.rs`), which generates the `Procedure` impl.
+Stable Rust has no associated-type defaults, so a hand-written `Procedure` impl
+spells all six even when three of them are the near-universal values.
+`SimpleProcedure` is the shorthand — `Input`, `Output`, `State` plus `name`,
+`init_state` and `run` — lifted to `Procedure` by a blanket impl with
+`Clock = WallClock`, `Config = ()` and the `State` type's derived change
+(`type State = ()` for a stateless procedure). It registers and dispatches exactly like any other
 `Procedure`; the wiring cannot tell which tier authored a node.
 
 Implement `Procedure` directly for anything the shorthand does not cover — a

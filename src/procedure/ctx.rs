@@ -95,7 +95,7 @@ pub(crate) trait EmitSink {
     }
 
     /// True iff the output channel is declared `.keyed()` — every plugin
-    /// emit must then carry a natural key via `emit_keyed`.
+    /// emit must then carry a natural key.
     fn is_keyed(&self) -> bool {
         false
     }

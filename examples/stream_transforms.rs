@@ -1,10 +1,10 @@
 //! Reshaping and keying on the wiring (`stream-transforms`).
 //!
 //! One trade feed, four candle timeframes, one candle Entity per
-//! symbol-and-timeframe. Written with Procedures alone that is a filter class,
-//! a fan-out class, and a keying hook buried inside the consumer — three places
-//! to look and none of them the topology. Written on the edge it is four lines
-//! you can read top to bottom:
+//! symbol-and-timeframe. Written with Procedures alone that is a filter class
+//! and a fan-out class in front of the consumer, two more places to look and
+//! neither of them the topology. Written on the edge it is four lines you can
+//! read top to bottom:
 //!
 //! ```ignore
 //! c.input::<Trade>("trades")
@@ -94,7 +94,7 @@ impl Change for Tick {}
 /// The one Procedure in the graph. Note what it does NOT declare: no
 /// `entity_keys()`, no keying member of any kind. It is dynamic-mode because a
 /// keyed edge feeds it — and its Entities are created on first sight of each
-/// key, exactly as the deleted `entity_key` hook produced.
+/// key.
 #[derive(Default)]
 struct Candle;
 

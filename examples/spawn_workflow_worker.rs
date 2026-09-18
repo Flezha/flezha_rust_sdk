@@ -13,7 +13,7 @@
 //! and ends. Either call is fire-and-forget: the detector's own output is
 //! unaffected by whether the worker could be started.
 //!
-//! Run the pair with a runner that defines both:
+//! Run the pair with a runner that registers both:
 //!     Flezha::create_runner("default")?
 //!         .register_factory(AlertDetector)?
 //!         .register_factory(Triage)?
@@ -25,9 +25,8 @@
 //! The role also lets this runner's `admin()` start and send to operatives in its
 //! namespace, and nothing else.
 
-use flezha_runner::procedure::{IfRunning, Procedure, ProcedureCtx, ProcedureError, SpawnOptions};
-use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_runner::{ChannelBuilder, StreamOperative, WorkflowOperative};
+use flezha_runner::procedure::{IfRunning, ProcedureError, SpawnOptions};
+use flezha_runner::{procedure, ChannelBuilder, StreamOperative, WorkflowOperative};
 
 // -- the detector: stream, one instance, runs forever ---------------------
 
@@ -45,45 +44,23 @@ impl StreamOperative for AlertDetector {
     }
 }
 
-#[derive(Default)]
-struct Detect;
+#[procedure(id = "detect", emits = String)]
+fn detect(input: String, ctx: &mut flezha_runner::ProcedureCtx<'_>) -> Result<(), ProcedureError> {
+    let Some(subject) = input.strip_prefix("alert:") else {
+        return Ok(());
+    };
 
-impl Procedure for Detect {
-    type Input = String;
-    type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
+    // One worker per subject: the first alert spawns it with this payload
+    // as its first input, later alerts are delivered to the same instance.
+    // The handle is dropped: a failed request logs itself and this
+    // procedure carries on emitting.
+    let _ = ctx.spawn_workflow_with(
+        "triage",
+        input.as_bytes().to_vec(),
+        SpawnOptions::id(format!("triage@{subject}")).if_running(IfRunning::Deliver),
+    );
 
-    fn name() -> &'static str {
-        "detect"
-    }
-
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-
-    fn run(
-        &mut self,
-        input: String,
-        _state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
-        let Some(subject) = input.strip_prefix("alert:") else {
-            return Ok(());
-        };
-
-        // One worker per subject: the first alert spawns it with this payload
-        // as its first input, later alerts are delivered to the same instance.
-        // The handle is dropped: a failed request logs itself and this
-        // procedure carries on emitting.
-        let _ = ctx.spawn_workflow_with(
-            "triage",
-            input.as_bytes().to_vec(),
-            SpawnOptions::id(format!("triage@{subject}")).if_running(IfRunning::Deliver),
-        );
-
-        ctx.emit(format!("detected:{subject}"))
-    }
+    ctx.emit(format!("detected:{subject}"))
 }
 
 // -- the worker: workflow, one per subject, torn down when its pass ends -----
@@ -102,31 +79,9 @@ impl WorkflowOperative for Triage {
     }
 }
 
-#[derive(Default)]
-struct TriageStep;
-
-impl Procedure for TriageStep {
-    type Input = String;
-    type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-
-    fn name() -> &'static str {
-        "triage_step"
-    }
-
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-
-    fn run(
-        &mut self,
-        input: String,
-        _state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
-        ctx.emit(format!("triaged:{input}"))
-    }
+#[procedure(id = "triage_step")]
+fn triage_step(input: String) -> String {
+    format!("triaged:{input}")
 }
 
 fn main() {
@@ -134,7 +89,7 @@ fn main() {
     // controller to connect to, so the runner wiring is documented above
     // rather than executed here.
     println!(
-        "define {} and {} on one runner",
+        "register {} and {} on one runner",
         AlertDetector::factory_id(),
         Triage::factory_id()
     );
