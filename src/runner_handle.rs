@@ -11,9 +11,9 @@ use std::sync::{Arc, Condvar, Mutex, RwLock, Weak};
 use crossbeam::channel::{Receiver, Sender};
 
 use crate::operative::instance::StreamInstance;
+use crate::operative::Operative;
 use crate::runner::{ClientResponseMessage, RunnerMessage};
 use crate::shutdown::ShutdownBridge;
-use crate::operative::Operative;
 use crate::{operative, pb, runner, shutdown, workflow, BuildWorkflowError, TopologyBuildError};
 
 /// The ONE public error of the entry-point chain: every fallible call on

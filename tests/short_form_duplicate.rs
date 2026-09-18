@@ -90,7 +90,9 @@ fn init_frame_factories(frames: &Arc<Mutex<Vec<(String, Vec<u8>)>>>) -> Vec<Stri
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
         let captured = frames.lock().unwrap();
-        if let Some((_, message)) = captured.iter().find(|(id, _)| id == "connect_control_channel")
+        if let Some((_, message)) = captured
+            .iter()
+            .find(|(id, _)| id == "connect_control_channel")
         {
             let json: serde_json::Value =
                 serde_json::from_slice(message).expect("init frame is JSON");

@@ -14,7 +14,11 @@ use crate::*;
 // Single-procedure stateless short form — twin of `DoNothingProcedure` /
 // `DoNothingOperative`. One declaration is the whole operative: the type it
 // generates implements `StreamOperative`, and `main.rs` registers it.
-#[flezha_runner::procedure(id = "sugar_do_nothing", kind = "stream", sink = "sugar_do_nothing_echo")]
+#[flezha_runner::procedure(
+    id = "sugar_do_nothing",
+    kind = "stream",
+    sink = "sugar_do_nothing_echo"
+)]
 pub(crate) fn sugar_do_nothing(input: String) -> Vec<u8> {
     input.into_bytes()
 }
