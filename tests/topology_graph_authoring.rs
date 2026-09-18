@@ -463,7 +463,11 @@ fn named_entry_attribute(input: String) -> Vec<u8> {
 
 /// The attribute shorthand with no name written: the entry channel keeps the
 /// default address every existing operative already ships under.
-#[flezha_runner::procedure(id = "default_entry_attribute", kind = "stream", sink = "default_items")]
+#[flezha_runner::procedure(
+    id = "default_entry_attribute",
+    kind = "stream",
+    sink = "default_items"
+)]
 fn default_entry_attribute(input: String) -> Vec<u8> {
     input.into_bytes()
 }
@@ -489,12 +493,12 @@ flezha_runner::operative! {
 /// wrote, so the address an operator injects on is not the one declared.
 #[test]
 fn both_shorthands_name_their_entry_channel() {
-    let attr = build_topology_for::<NamedEntryAttribute>()
-        .expect("the named attribute shorthand builds");
+    let attr =
+        build_topology_for::<NamedEntryAttribute>().expect("the named attribute shorthand builds");
     assert_eq!(channel_names(&attr), vec!["prices", "attr_items"]);
 
-    let pipeline = build_topology_for::<NamedEntryPipeline>()
-        .expect("the named pipeline shorthand builds");
+    let pipeline =
+        build_topology_for::<NamedEntryPipeline>().expect("the named pipeline shorthand builds");
     assert_eq!(channel_names(&pipeline), vec!["quotes", "pipeline_items"]);
 }
 
@@ -565,8 +569,7 @@ fn a_workflow_short_form_is_a_once_workflow_wiring_its_entry_to_its_sink() {
     let spec =
         flezha_runner::workflow::spec::build_spec::<PlaceOrder>().expect("the short form builds");
 
-    let topology = spec.topology.as_ref().expect("a structured workflow");
-    assert_eq!(channel_names(topology), vec!["order", "placed"]);
+    assert_eq!(channel_names(&spec.topology), vec!["order", "placed"]);
     assert_eq!(spec.loop_mode, flezha_runner::LoopMode::Once);
     assert!(spec.persistence_enabled);
     assert_eq!(spec.max_duration, None);

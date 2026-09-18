@@ -12,40 +12,22 @@ pub use flz_core::workflow::{compensation, driver, instance, registry};
 
 use crate::channel::ChannelBuilder;
 
-/// One workflow operative class. The bare [`run`](Self::run) form is the
-/// trivial single-Procedure, single-Entity case; override
-/// [`procedures`](Self::procedures) to grow into an explicit DAG of
-/// Procedures/Channels/Entities without rewriting unrelated code. Capabilities
-/// attach to the kind, not here — choosing the workflow kind is sufficient.
-/// A worked example of both forms: `sdk/rust/examples/spawn_workflow_worker.rs`.
+/// One workflow operative class: a static DAG of Procedures/Channels/Entities
+/// declared in [`procedures`](Self::procedures), on the same graph builder a
+/// stream operative uses. A procedure ends its instance with
+/// [`ProcedureCtx::complete`](crate::ProcedureCtx::complete). Capabilities
+/// attach to the kind, not here; choosing the workflow kind is sufficient.
+/// A worked example: `sdk/rust/examples/spawn_workflow_worker.rs`.
 pub trait WorkflowOperative: Send + Sync + 'static {
     /// Stable, controller-facing factory identifier.
     fn factory_id() -> &'static str;
 
-    /// Run-sugar body: the single-Procedure, single-Entity case. Invoked once
-    /// per started instance with `args` from `init_values`. Emit output via
-    /// `ctx`, optionally call [`WorkflowCtx::complete`] with a result, and
-    /// return `Ok(())`; returning `Err` is a terminal failure — the retry
-    /// ladder ([`retry_attempts`](Self::retry_attempts)) scopes to a structured
-    /// procedure's entities, and a `run` body has none.
-    ///
-    /// The default errors — a class must implement either `run` or
-    /// `procedures`. A structured operative (non-empty `procedures`) never has
-    /// `run` invoked.
-    fn run(_ctx: &mut WorkflowCtx, _args: &str) -> Result<(), WorkflowError> {
-        Err(WorkflowError::from(
-            "WorkflowOperative: neither run() nor procedures() was implemented",
-        ))
-    }
-
-    /// Structured form: declare a static **DAG** of Procedures/Channels/
-    /// Entities on the same graph builder a stream operative uses. The
-    /// default is empty, selecting the [`run`](Self::run)-sugar path. The
-    /// workflow driver runs the declaration in topological order: a procedure
+    /// The DAG. The workflow driver runs it in topological order: a procedure
     /// becomes runnable only after **every** producer feeding it has committed
     /// — fan-out branches interleave independently, and a fan-in node is
     /// dispatched once, with the accumulated batch of all its producers.
-    /// Cycles are refused at registration.
+    /// Cycles are refused at registration, and so is a class that declares no
+    /// procedure.
     fn procedures(_c: &ChannelBuilder) {}
 
     /// Optional wall-clock backstop. `None` (the default) means no duration
@@ -56,8 +38,8 @@ pub trait WorkflowOperative: Send + Sync + 'static {
     }
 
     /// Self-termination guarantee, validated at registration. Default `true`:
-    /// the operative ends on its own (a `run`/chain that returns, or a loop
-    /// with a terminal predicate / exhausted input). An operative whose **only**
+    /// the operative ends on its own (a chain that finishes, a procedure's
+    /// `complete`, or a loop that runs out of work). An operative whose **only**
     /// possible exit is an external stop sets this `false`; combined with no
     /// [`max_duration`](Self::max_duration) it is **refused** at registration
     /// with a message directing the author to add a terminal condition.
@@ -69,9 +51,7 @@ pub trait WorkflowOperative: Send + Sync + 'static {
     /// [`LoopMode::Once`] is the single pass. A looping class commits every
     /// iteration durably — journal + boundary snapshot + outbox flush — so a
     /// crash resumes at the iteration after the last committed one, and
-    /// [`RollbackMode::KeepProgress`] keeps every committed iteration. Declaring
-    /// a loop on a `run`-sugar class (no `procedures`) is refused at
-    /// registration: there is no chain to iterate.
+    /// [`RollbackMode::KeepProgress`] keeps every committed iteration.
     fn loop_mode() -> LoopMode {
         LoopMode::Once
     }

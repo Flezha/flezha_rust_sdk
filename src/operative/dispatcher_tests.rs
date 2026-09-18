@@ -103,6 +103,7 @@ impl WorkflowCollectSink for NullCollect {
     fn emit_plugin_bytes(&mut self, _channel: &str, _bytes: Vec<u8>) {
         self.plugin_bytes += 1;
     }
+    fn complete(&mut self, _result: Vec<u8>) {}
 }
 
 /// The workflow plugin wire carries no metadata, so a keyed emit

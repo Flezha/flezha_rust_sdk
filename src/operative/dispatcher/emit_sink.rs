@@ -339,6 +339,11 @@ impl<'a> EmitSink for WorkflowCollectAdapter<'a> {
             .map(|d| d.keyed)
             .unwrap_or(false)
     }
+
+    fn complete(&mut self, result: Vec<u8>) -> Result<(), ProcedureError> {
+        self.sink.complete(result);
+        Ok(())
+    }
 }
 
 /// Build the emit wire metadata: drop any caller-supplied reserved

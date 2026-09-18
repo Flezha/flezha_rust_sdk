@@ -1,6 +1,6 @@
 //! Ctx-level determinism surface: `now()` serves one per-invocation value,
-//! `stable_id()` derivation, keyed-emit enforcement, and the reserved
-//! `flz.` metadata namespace.
+//! `stable_id()` derivation, keyed-emit enforcement, the reserved `flz.`
+//! metadata namespace, and the completion a stream refuses.
 
 use std::any::Any;
 use std::collections::HashMap;
@@ -248,4 +248,13 @@ fn non_reserved_metadata_still_flows() {
         sink.metas_seen[0].as_ref().unwrap().get("user"),
         Some(&"v".to_string())
     );
+}
+
+#[test]
+fn a_stream_context_refuses_to_complete_without_a_retry() {
+    let mut sink = StubSink::default();
+    let mut ctx = ProcedureCtx::new(&mut sink, 0, 7, IDENTITY);
+    let err = ctx.complete("3").expect_err("a stream never completes");
+    assert!(err.is_non_retryable(), "{err:?}");
+    assert!(err.to_string().contains("CompleteOutsideWorkflow"), "{err}");
 }

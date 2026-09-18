@@ -15,8 +15,8 @@ pub(crate) use flezha_runner::state::{
     postcard, Change, CoalesceKey, NoChange, RestoreInitPayload, StateHandle, WallClock,
 };
 pub(crate) use flezha_runner::{
-    ChannelBuilder, Flezha, FlezhaRunner, LoopMode, OverflowPolicy, StreamOperative, WorkflowCtx,
-    WorkflowError, WorkflowOperative,
+    ChannelBuilder, Flezha, FlezhaRunner, LoopMode, OverflowPolicy, StreamOperative,
+    WorkflowOperative,
 };
 pub(crate) use serde::{Deserialize, Serialize};
 

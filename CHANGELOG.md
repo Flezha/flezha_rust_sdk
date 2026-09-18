@@ -4,6 +4,16 @@ All notable changes to the Rust SDK crate.
 
 ## Unreleased
 
+### Removed: the workflow `run` body; added `ProcedureCtx::complete`
+
+**Breaking.** `WorkflowOperative::run` and the `WorkflowCtx` export are deleted
+with no alias. A workflow declares `procedures`; one that declares none is
+refused with `BuildWorkflowError::NoProcedures`, which replaces
+`LoopWithoutChain`. `ProcedureCtx::complete(result)` ends a workflow instance
+once its iteration commits; in a stream operative it fails the input naming
+`CompleteOutsideWorkflow`. The testing harness accepts a completion and records
+nothing.
+
 ### Changed — one `register_factory`, and the short form covers both kinds
 
 **Breaking.** `define_stream`, `define_workflow`, `remove_stream` and

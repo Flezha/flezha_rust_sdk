@@ -65,6 +65,7 @@ pub use entity::{RestoreError, RestoreInitPayload};
 /// `flezha::operative!` expand to the trait surface above, and each names the
 /// type the author registers; see `docs/sdk/authoring_contract.md`.
 pub use flezha_macros::{operative, procedure, State};
+pub use flz_core::pb;
 pub use flz_transport::{service, transport};
 pub use local::LocalOperative;
 pub use operative::builder::TopologyBuildError;
@@ -76,9 +77,7 @@ pub use procedure::{
 };
 pub use runner_handle::{Flezha, FlezhaError, FlezhaRunner};
 pub use workflow::spec::BuildWorkflowError;
-pub use workflow::{LoopMode, RollbackMode, WorkflowCtx, WorkflowError, WorkflowOperative};
-
-pub use flz_core::pb;
+pub use workflow::{LoopMode, RollbackMode, WorkflowError, WorkflowOperative};
 
 /// Build a class of kind `K` and install it in that kind's process-global
 /// registry, with no runner involved — the body

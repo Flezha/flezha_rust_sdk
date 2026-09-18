@@ -39,11 +39,13 @@ fn ab_committed(
                 proc_idx: 0,
                 iter: 0,
                 entities_ran: a_segs,
+                completion: None,
             },
             instance::CommittedProc {
                 proc_idx: 1,
                 iter: 0,
                 entities_ran: b_segs,
+                completion: None,
             },
         ],
         ..Default::default()
@@ -98,7 +100,7 @@ pub(super) fn fan_in_branching(node: &mut RunnerNode, rx: &Receiver<RunnerMessag
     let da_id = crate::entity::flusher::encode_entity_identity("diamond-r", "diamond_a", "");
     let diamond_spec =
         registry::get_class("test-diamond-workflow").expect("diamond class registered");
-    let diamond_topo = diamond_spec.topology.as_ref().expect("structured");
+    let diamond_topo = &diamond_spec.topology;
     let d_fan = diamond_topo.lookup_channel_id("d_fan").unwrap();
     let d_b = diamond_topo.lookup_channel_id("d_b").unwrap();
     assert!(node.start_workflow_resumable(
@@ -182,7 +184,7 @@ pub(super) fn merge_mapping(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>)
     let _ = drain_proc_commits();
     let ma_id = crate::entity::flusher::encode_entity_identity("merge-r", "diamond_a", "");
     let merge_spec = registry::get_class("test-merge-workflow").expect("merge class registered");
-    let merge_topo = merge_spec.topology.as_ref().expect("structured");
+    let merge_topo = &merge_spec.topology;
     let m_fan = merge_topo.lookup_channel_id("m_fan").unwrap();
     let m_b = merge_topo.lookup_channel_id("m_b").unwrap();
     assert!(node.start_workflow_resumable(
@@ -289,7 +291,7 @@ pub(super) fn merge_mapping(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>)
     let pb_id = crate::entity::flusher::encode_entity_identity("merge-panic-r", "diamond_b", "");
     let panic_spec =
         registry::get_class("test-panic-merge-workflow").expect("panic merge class registered");
-    let panic_topo = panic_spec.topology.as_ref().expect("structured");
+    let panic_topo = &panic_spec.topology;
     let pm_fan = panic_topo.lookup_channel_id("pm_fan").unwrap();
     let pm_b = panic_topo.lookup_channel_id("pm_b").unwrap();
     WAL_FRAMES.lock().unwrap().clear();
@@ -393,11 +395,13 @@ pub(super) fn branching_resume(node: &mut RunnerNode, rx: &Receiver<RunnerMessag
                     proc_idx: 0,
                     iter: 0,
                     entities_ran: vec![root_seg.clone()],
+                    completion: None,
                 },
                 instance::CommittedProc {
                     proc_idx: 1,
                     iter: 0,
                     entities_ran: Vec::new(),
+                    completion: None,
                 },
             ],
             ..Default::default()

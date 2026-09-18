@@ -636,4 +636,10 @@ impl<'a> EmitSink for RecordingEmitSink<'a> {
     fn is_keyed(&self) -> bool {
         self.keyed
     }
+
+    /// The harness runs a workflow's procedure as readily as a stream's, so
+    /// it accepts a completion and, like a checkpoint, records nothing.
+    fn complete(&mut self, _result: Vec<u8>) -> Result<(), ProcedureError> {
+        Ok(())
+    }
 }

@@ -713,10 +713,7 @@ fn cited(topology: &str) -> Result<Arc<OperativeTopology>, Vec<String>> {
             .map_err(|e| e.errors.iter().map(|i| i.name().to_string()).collect()),
         "commit_block_chain" => build_spec::<TierCommitBlockWorkflow>()
             .map_err(|e| vec![e.to_string()])
-            .map(|spec| {
-                spec.topology
-                    .expect("a structured workflow declares a topology")
-            }),
+            .map(|spec| spec.topology),
         other => panic!("the fixture cites a topology this app does not declare: {other}"),
     }
 }

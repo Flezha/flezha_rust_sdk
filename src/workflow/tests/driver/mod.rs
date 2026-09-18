@@ -15,9 +15,9 @@ use crate::workflow::*;
 
 mod durable_loop;
 mod fan_in;
+mod lifecycle;
 mod proc_journal;
 mod retry;
-mod run_sugar;
 mod saga;
 
 // ---- single driver-observation test --------------------------------------
@@ -56,7 +56,10 @@ fn workflow_driver_scenarios() {
     crate::register_class::<crate::WorkflowKind, CompleteWorkflow>().unwrap();
     crate::register_class::<crate::WorkflowKind, LoopWorkflow>().unwrap();
     crate::register_class::<crate::WorkflowKind, TimedWorkflow>().unwrap();
-    crate::register_class::<crate::WorkflowKind, EchoStructured>().unwrap();
+    crate::register_class::<crate::WorkflowKind, TwoCompletions>().unwrap();
+    crate::register_class::<crate::WorkflowKind, KeyedCompletions>().unwrap();
+    crate::register_class::<crate::WorkflowKind, CompleteThenFail>().unwrap();
+    crate::register_class::<crate::WorkflowKind, CompletingChat>().unwrap();
     crate::register_class::<crate::WorkflowKind, ChainWorkflow>().unwrap();
     crate::register_class::<crate::WorkflowKind, TreeWorkflow>().unwrap();
     crate::register_class::<crate::WorkflowKind, TreeSaga>().unwrap();
@@ -90,11 +93,11 @@ fn workflow_driver_scenarios() {
 
     // The phases run strictly in this order, each draining its own instances
     // to completion before the next one starts.
-    run_sugar::run_sugar(&mut node, &rx);
-    run_sugar::loop_stop_and_removal(&mut node, &rx);
-    run_sugar::structured_chains(&mut node, &rx);
+    lifecycle::lifecycle(&mut node, &rx);
+    lifecycle::loop_stop_and_removal(&mut node, &rx);
+    lifecycle::structured_chains(&mut node, &rx);
     saga::saga_compensation(&mut node, &rx);
-    run_sugar::add_operative_routing(&mut node, &rx);
+    lifecycle::add_operative_routing(&mut node, &rx);
     proc_journal::durable_wal_and_journal(&mut node, &rx);
     proc_journal::proc_journal_commits(&mut node, &rx);
     proc_journal::transactional_outbox(&mut node, &rx);
@@ -104,6 +107,7 @@ fn workflow_driver_scenarios() {
     fan_in::merge_mapping(&mut node, &rx);
     durable_loop::durable_loop(&mut node, &rx);
     durable_loop::loop_saga_and_rewind(&mut node, &rx);
+    durable_loop::loop_completion(&mut node, &rx);
     retry::entity_retry(&mut node, &rx);
     retry::retry_stop_and_stage(&mut node, &rx);
     fan_in::branching_resume(&mut node, &rx);

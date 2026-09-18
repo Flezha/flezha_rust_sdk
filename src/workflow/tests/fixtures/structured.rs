@@ -16,88 +16,14 @@ use crate::workflow::*;
 
 // ---- structured procedures + operatives ----------------------------------
 
-#[derive(Default)]
-pub(crate) struct EchoProc;
-impl Procedure for EchoProc {
-    type Input = String;
-    type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "workflow_echo_op"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: String,
-        _state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
-        ctx.emit(format!("echo:{input}"))?;
-        Ok(())
-    }
-}
+string_proc!(EchoProc, "workflow_echo_op", |input, ctx| ctx
+    .emit(format!("echo:{input}")));
 
-/// Single-Procedure structured form, equivalent to `EmitWorkflow`-style sugar.
-pub(crate) struct EchoStructured;
-impl WorkflowOperative for EchoStructured {
-    fn factory_id() -> &'static str {
-        "test-echo-structured"
-    }
-    fn procedures(c: &ChannelBuilder) {
-        c.input::<String>("in").into::<EchoProc>().sink_named("out");
-    }
-}
+string_proc!(Stage1, "workflow_stage1", |input, ctx| ctx
+    .emit(format!("{input}-1")));
 
-#[derive(Default)]
-pub(crate) struct Stage1;
-impl Procedure for Stage1 {
-    type Input = String;
-    type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "workflow_stage1"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: String,
-        _state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
-        ctx.emit(format!("{input}-1"))?;
-        Ok(())
-    }
-}
-
-#[derive(Default)]
-pub(crate) struct Stage2;
-impl Procedure for Stage2 {
-    type Input = String;
-    type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "workflow_stage2"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: String,
-        _state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
-        ctx.emit(format!("{input}-2"))?;
-        Ok(())
-    }
-}
+string_proc!(Stage2, "workflow_stage2", |input, ctx| ctx
+    .emit(format!("{input}-2")));
 
 /// `workflow-branching`: Stage1 fans out to Stage2 and EchoProc on one channel,
 /// each branch ending at its own plugin sink. The edge is (channel,
@@ -239,33 +165,13 @@ impl Procedure for LoopReserve {
     }
 }
 
-/// Terminal proc of the loop saga: fails the iteration whose turn says "boom".
-#[derive(Default)]
-pub(crate) struct LoopMaybeFail;
-impl Procedure for LoopMaybeFail {
-    type Input = String;
-    type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "loop_maybe_fail"
+// Terminal proc of the loop saga: fails the iteration whose turn says "boom".
+string_proc!(LoopMaybeFail, "loop_maybe_fail", |input, ctx| {
+    if input.contains("boom") {
+        return Err(ProcedureError::Custom("turn failed".into()));
     }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: String,
-        _state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
-        if input.contains("boom") {
-            return Err(ProcedureError::Custom("turn failed".into()));
-        }
-        ctx.emit(format!("done:{input}"))?;
-        Ok(())
-    }
-}
+    ctx.emit(format!("done:{input}"))
+});
 
 /// Inbox-driven saga loop, all-or-nothing: a failing turn unwinds every
 /// committed turn too.
@@ -319,20 +225,6 @@ pub(crate) fn loop_saga_chain(c: &ChannelBuilder) {
         .sink_named("out");
 }
 
-/// A loop declared on a `run`-sugar class: no chain to iterate.
-pub(crate) struct LoopWithoutChain;
-impl WorkflowOperative for LoopWithoutChain {
-    fn factory_id() -> &'static str {
-        "test-loop-no-chain"
-    }
-    fn loop_mode() -> LoopMode {
-        LoopMode::PerInput
-    }
-    fn run(_ctx: &mut WorkflowCtx, _args: &str) -> Result<(), WorkflowError> {
-        Ok(())
-    }
-}
-
 /// A durable handoff-chained loop whose terminal procedure releases nothing:
 /// no consumer is wired from it and it names no sink, so it owns no output
 /// channel at all and iteration N+1 has no handoff to be re-seeded from.
@@ -370,32 +262,13 @@ impl WorkflowOperative for ChainedLoopPluginTerminal {
     }
 }
 
-/// Splits the comma-separated args into individual items (one entity).
-#[derive(Default)]
-pub(crate) struct SplitProc;
-impl Procedure for SplitProc {
-    type Input = String;
-    type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "workflow_split_op"
+// Splits the comma-separated args into individual items (one entity).
+string_proc!(SplitProc, "workflow_split_op", |input, ctx| {
+    for piece in input.split(',') {
+        ctx.emit(piece.to_string())?;
     }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: String,
-        _state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
-        for piece in input.split(',') {
-            ctx.emit(piece.to_string())?;
-        }
-        Ok(())
-    }
-}
+    Ok(())
+});
 
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub(crate) struct CountState {
@@ -481,53 +354,11 @@ impl WorkflowOperative for FanOptOutWorkflow {
     const PERSISTENCE_ENABLED: bool = false;
 }
 
-#[derive(Default)]
-pub(crate) struct HybridStage1;
-impl Procedure for HybridStage1 {
-    type Input = String;
-    type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "workflow_hybrid_stage1"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: String,
-        _state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
-        ctx.emit(format!("h:{input}"))?;
-        Ok(())
-    }
-}
+string_proc!(HybridStage1, "workflow_hybrid_stage1", |input, ctx| ctx
+    .emit(format!("h:{input}")));
 
-#[derive(Default)]
-pub(crate) struct HybridStage2;
-impl Procedure for HybridStage2 {
-    type Input = String;
-    type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "workflow_hybrid_stage2"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: String,
-        _state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
-        ctx.emit(format!("final:{input}"))?;
-        Ok(())
-    }
-}
+string_proc!(HybridStage2, "workflow_hybrid_stage2", |input, ctx| ctx
+    .emit(format!("final:{input}")));
 
 /// Hybrid inter-procedure channel (`sink_with`): Stage1's output
 /// both feeds Stage2 AND is serialized to a plugin sink.

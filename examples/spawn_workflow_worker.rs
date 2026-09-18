@@ -27,9 +27,7 @@
 
 use flezha_runner::procedure::{IfRunning, Procedure, ProcedureCtx, ProcedureError, SpawnOptions};
 use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_runner::{
-    ChannelBuilder, StreamOperative, WorkflowCtx, WorkflowError, WorkflowOperative,
-};
+use flezha_runner::{ChannelBuilder, StreamOperative, WorkflowOperative};
 
 // -- the detector: stream, one instance, runs forever ---------------------
 
@@ -88,7 +86,7 @@ impl Procedure for Detect {
     }
 }
 
-// -- the worker: workflow, one per subject, torn down when it returns ---------
+// -- the worker: workflow, one per subject, torn down when its pass ends -----
 
 struct Triage;
 
@@ -97,9 +95,37 @@ impl WorkflowOperative for Triage {
         "triage"
     }
 
-    fn run(ctx: &mut WorkflowCtx, args: &str) -> Result<(), WorkflowError> {
-        ctx.emit(format!("triaged:{args}").into_bytes())?;
-        Ok(())
+    fn procedures(c: &ChannelBuilder) {
+        c.input::<String>("alert")
+            .into::<TriageStep>()
+            .sink_named("triaged");
+    }
+}
+
+#[derive(Default)]
+struct TriageStep;
+
+impl Procedure for TriageStep {
+    type Input = String;
+    type Output = String;
+    type State = ();
+    type Change = NoChange;
+    type Clock = WallClock;
+    type Config = ();
+
+    fn name() -> &'static str {
+        "triage_step"
+    }
+
+    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
+
+    fn run(
+        &mut self,
+        input: String,
+        _state: StateHandle<'_, Self>,
+        ctx: &mut ProcedureCtx<'_>,
+    ) -> Result<(), ProcedureError> {
+        ctx.emit(format!("triaged:{input}"))
     }
 }
 

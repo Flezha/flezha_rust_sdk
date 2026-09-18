@@ -35,8 +35,8 @@ fn register_workflow_makes_factory_resolvable() {
         fn factory_id() -> &'static str {
             "test-getclass-workflow"
         }
-        fn run(_c: &mut WorkflowCtx, _a: &str) -> Result<(), WorkflowError> {
-            Ok(())
+        fn procedures(c: &ChannelBuilder) {
+            c.input::<String>("in").into::<EchoProc>();
         }
     }
     assert!(registry::get_class("test-getclass-workflow").is_none());
@@ -74,19 +74,20 @@ fn registry_holds_workflow_as_sealed_variant() {
 }
 
 #[test]
-fn run_sugar_spec_has_no_topology() {
-    let spec = spec::build_spec::<EmitWorkflow>().expect("run-sugar spec builds");
+fn a_workflow_without_procedures_is_refused() {
+    let err =
+        spec::build_spec::<NoProceduresWorkflow>().expect_err("a workflow always runs procedures");
     assert!(
-        spec.topology.is_none(),
-        "bare run() ⇒ run-sugar (no topology)"
+        matches!(err, spec::BuildWorkflowError::NoProcedures { .. }),
+        "expected NoProcedures, got {err:?}"
     );
-    assert!(spec.dag.order.is_empty());
+    assert!(err.to_string().contains("test-no-procedures"), "{err}");
 }
 
 #[test]
 fn structured_spec_resolves_linear_chain() {
     let spec = spec::build_spec::<ChainWorkflow>().expect("structured spec builds");
-    let topology = spec.topology.as_ref().expect("structured ⇒ topology");
+    let topology = &spec.topology;
     // Chain is ordered entry-consumer → terminal: Stage1 then Stage2.
     let names: Vec<&str> = spec
         .dag
@@ -126,8 +127,6 @@ fn a_durable_handoff_is_journalable_with_nothing_declared() {
     let spec = spec::build_spec::<NoCodec>().expect("the runtime derives the handoff codec");
     let mid = spec
         .topology
-        .as_ref()
-        .expect("a structured class has a topology")
         .channels
         .iter()
         .find(|c| &*c.name == "mid")
@@ -149,18 +148,13 @@ fn a_durable_handoff_is_journalable_with_nothing_declared() {
     );
 }
 
-/// `workflow-durable-loop` registration validation: a loop needs a chain to
-/// iterate, and a durable handoff-chained loop needs a terminal procedure whose
-/// output channel the journal carries — otherwise a crash mid-loop would
-/// re-seed iteration N+1 with an empty batch and silently read as "converged".
-/// Two shapes fail it: no output channel, and a plugin-bound one.
+/// `workflow-durable-loop` registration validation: a durable handoff-chained
+/// loop needs a terminal procedure whose output channel the journal carries —
+/// otherwise a crash mid-loop would re-seed iteration N+1 with an empty batch
+/// and silently read as "converged". Two shapes fail it: no output channel,
+/// and a plugin-bound one.
 #[test]
 fn loop_authoring_is_validated() {
-    match spec::build_spec::<LoopWithoutChain>().expect_err("run-sugar cannot loop a chain") {
-        spec::BuildWorkflowError::LoopWithoutChain { .. } => {}
-        other => panic!("expected LoopWithoutChain, got {other:?}"),
-    }
-
     for shape in ["no channel at all", "a plugin-bound channel"] {
         let err = match shape {
             "no channel at all" => spec::build_spec::<ChainedLoopNoTerminalOutput>(),
@@ -250,7 +244,7 @@ fn dag_topology_is_validated() {
     // A→(B,C): one channel, two consumers. The edge is (channel, consumer),
     // so both branches read what Stage1 released on `mid`.
     let spec = spec::build_spec::<TreeWorkflow>().expect("a fan-out tree registers");
-    let topology = spec.topology.as_ref().expect("structured ⇒ topology");
+    let topology = &spec.topology;
     let names: Vec<&str> = spec
         .dag
         .order
@@ -288,7 +282,7 @@ fn dag_topology_is_validated() {
     // first producer).
     match spec::build_spec::<JoinWorkflow>() {
         Ok(spec) => {
-            let topology = spec.topology.as_ref().expect("structured ⇒ topology");
+            let topology = &spec.topology;
             let names: Vec<&str> = spec
                 .dag
                 .order

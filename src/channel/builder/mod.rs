@@ -69,8 +69,8 @@ impl ChannelBuilder {
         self.state.into_inner()
     }
 
-    /// Whether any procedure was declared (`false` selects the workflow
-    /// run-sugar path).
+    /// Whether any procedure was declared (a workflow without one is
+    /// refused).
     pub(crate) fn has_procedures(&self) -> bool {
         !self.state.borrow().procedures.is_empty()
     }

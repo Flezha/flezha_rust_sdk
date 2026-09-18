@@ -126,30 +126,11 @@ impl Procedure for SagaCharge {
     }
 }
 
-/// Terminal step that always fails — triggers reverse-order rollback of the
-/// completed `reserve` + `charge`. Itself uncompleted ⇒ never compensated.
-#[derive(Default)]
-pub(crate) struct SagaShipFails;
-impl Procedure for SagaShipFails {
-    type Input = String;
-    type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "saga_ship_fails"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        _input: String,
-        _state: StateHandle<'_, Self>,
-        _ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
-        Err(ProcedureError::Custom("ship failed".into()))
-    }
-}
+// Terminal step that always fails — triggers reverse-order rollback of the
+// completed `reserve` + `charge`. Itself uncompleted ⇒ never compensated.
+string_proc!(SagaShipFails, "saga_ship_fails", |_input, _ctx| Err(
+    ProcedureError::Custom("ship failed".into())
+));
 
 /// Reserve → Charge → Ship(fails). Default all-or-nothing rollback.
 /// Compensable leaf of the fan-out branch: archives (emits `archived:<input>`);
@@ -325,29 +306,10 @@ impl Procedure for SagaFan {
     }
 }
 
-/// Terminal failing proc for the per-entity rollback chain.
-#[derive(Default)]
-pub(crate) struct FailLast;
-impl Procedure for FailLast {
-    type Input = String;
-    type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "saga_fail_last"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        _input: String,
-        _state: StateHandle<'_, Self>,
-        _ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
-        Err(ProcedureError::Custom("fan ship failed".into()))
-    }
-}
+// Terminal failing proc for the per-entity rollback chain.
+string_proc!(FailLast, "saga_fail_last", |_input, _ctx| Err(
+    ProcedureError::Custom("fan ship failed".into())
+));
 
 /// Split(hookless) → Fan(compensable, even/odd) → FailLast. The hookless
 /// `SplitProc` is skipped during rollback; only `SagaFan` compensates, once

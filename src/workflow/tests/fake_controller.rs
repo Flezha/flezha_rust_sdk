@@ -39,8 +39,8 @@ pub(crate) static LOST_ACKS: Mutex<Vec<(String, usize)>> = Mutex::new(Vec::new()
 
 /// Every `EmitWorkflowOutput` the drain helpers saw — output that went
 /// STRAIGHT to the wire, bypassing any proc boundary. A durable structured
-/// operative must produce none of these (it stages); `run`-sugar and
-/// opted-out classes still do.
+/// operative must produce none of these (it stages); an opted-out class
+/// still does.
 pub(crate) static WIRE_EMITS: Mutex<Vec<(String, Vec<u8>)>> = Mutex::new(Vec::new());
 
 pub(crate) fn drain_proc_commits() -> Vec<crate::pb::ProcCommit> {
@@ -181,9 +181,9 @@ pub(crate) fn control_request_operative(command: &crate::pb::command_request::Co
 
 /// Drain output frames until the `WorkflowCompleted` for `id`, returning the
 /// collected outputs and the `(status, error, result)` completion tuple.
-/// "Output" is what reaches the plugins: a `run`-sugar / opted-out emit
-/// straight off the wire, plus a structured operative's staged outbox once
-/// its proc commits (the fake controller flushes it on ack).
+/// "Output" is what reaches the plugins: an opted-out emit straight off the
+/// wire, plus a durable operative's staged outbox once its proc commits (the
+/// fake controller flushes it on ack).
 pub(crate) fn drain(
     rx: &Receiver<RunnerMessage>,
     id: &str,

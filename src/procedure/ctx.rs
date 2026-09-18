@@ -99,6 +99,13 @@ pub(crate) trait EmitSink {
     fn is_keyed(&self) -> bool {
         false
     }
+
+    /// Ask to end the instance with `result`; only a workflow stage can.
+    fn complete(&mut self, _result: Vec<u8>) -> Result<(), ProcedureError> {
+        Err(ProcedureError::non_retryable(
+            flz_core::workflow::COMPLETE_OUTSIDE_WORKFLOW,
+        ))
+    }
 }
 
 impl<'a> ProcedureCtx<'a> {
@@ -143,6 +150,16 @@ impl<'a> ProcedureCtx<'a> {
     pub(crate) fn during_replay(mut self, replay: bool) -> Self {
         self.replay = replay;
         self
+    }
+
+    /// End this workflow instance with `result` once the current iteration
+    /// commits. The rest of the iteration still runs; the instance then
+    /// completes instead of waiting for its next input. A later call in the
+    /// same invocation replaces the result. A stream operative never
+    /// completes, so there the call fails the input naming
+    /// `CompleteOutsideWorkflow`.
+    pub fn complete(&mut self, result: impl Into<Vec<u8>>) -> Result<(), ProcedureError> {
+        self.emitter.complete(result.into())
     }
 
     /// Close the current checkpoint interval: every input folded in since the

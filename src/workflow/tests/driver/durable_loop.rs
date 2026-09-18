@@ -82,11 +82,13 @@ pub(super) fn durable_loop(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) 
                     proc_idx: 0,
                     iter: 0,
                     entities_ran: vec![s1_id.clone()],
+                    completion: None,
                 },
                 instance::CommittedProc {
                     proc_idx: 1,
                     iter: 0,
                     entities_ran: Vec::new(),
+                    completion: None,
                 },
             ],
             ..Default::default()
@@ -152,11 +154,13 @@ pub(super) fn loop_saga_and_rewind(node: &mut RunnerNode, rx: &Receiver<RunnerMe
                         proc_idx: 0,
                         iter: 0,
                         entities_ran: vec![seg.clone()],
+                        completion: None,
                     },
                     instance::CommittedProc {
                         proc_idx: 1,
                         iter: 0,
                         entities_ran: Vec::new(),
+                        completion: None,
                     },
                 ],
                 ..Default::default()
@@ -193,6 +197,7 @@ pub(super) fn loop_saga_and_rewind(node: &mut RunnerNode, rx: &Receiver<RunnerMe
         proc_idx,
         iter,
         entities_ran,
+        completion: None,
     };
     assert!(node.start_workflow_resumable(
         "test-loop-saga-keep".into(),
@@ -247,6 +252,138 @@ pub(super) fn loop_saga_and_rewind(node: &mut RunnerNode, rx: &Receiver<RunnerMe
          of the next fold's outstanding work"
     );
 
+    std::env::remove_var("FLEZHA_WORKFLOW_PARK_IDLE_MS");
+}
+
+pub(super) fn loop_completion(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
+    // --- workflow-durable-loop: a procedure's complete ends a durable loop at
+    // its commit, journaled on both barriers, and the loop never parks ---
+    std::env::set_var("FLEZHA_WORKFLOW_PARK_IDLE_MS", "300");
+    let _ = drain_proc_commits();
+    let _ = drain_iter_commits();
+    let _ = drain_iter_parks();
+    assert!(node.start_workflow(
+        "test-completing-chat".into(),
+        "bye-1".into(),
+        "ignored".into()
+    ));
+    let chat = node
+        .get_workflow("bye-1")
+        .expect("the loop's instance is registered before its driver runs");
+    assert!(chat.push_inbox(b"hi".to_vec(), 4));
+    assert!(chat.push_inbox(b"bye".to_vec(), 5));
+
+    let (outs, done) = drain(rx, "bye-1");
+    assert_eq!(
+        (done.0.as_str(), done.2.as_slice()),
+        ("ok", &b"farewell"[..]),
+        "the completing turn ends the instance with its result"
+    );
+    assert_eq!(
+        outs,
+        vec![b"hi-2".to_vec(), b"bye-2".to_vec()],
+        "the rest of the completing iteration still runs"
+    );
+    assert!(
+        drain_iter_parks().is_empty(),
+        "a completed loop never parks"
+    );
+    assert_eq!(
+        drain_iter_commits()
+            .iter()
+            .map(|c| (c.iter, c.completes, c.result.clone()))
+            .collect::<Vec<_>>(),
+        vec![(0, false, Vec::new()), (1, true, b"farewell".to_vec())]
+    );
+    assert_eq!(
+        drain_proc_commits()
+            .iter()
+            .map(|c| (c.iter, c.proc_idx, c.completes))
+            .collect::<Vec<_>>(),
+        vec![(0, 0, false), (0, 1, false), (1, 0, true), (1, 1, false)],
+        "the completing procedure's own commit carries it too"
+    );
+
+    // --- resume from a completing iter_committed: ends at once, runs nothing ---
+    let seg = crate::entity::flusher::encode_entity_identity("bye-2", "workflow_chat_turn", "");
+    assert!(node.start_workflow_resumable(
+        "test-completing-chat".into(),
+        "bye-2".into(),
+        "ignored".into(),
+        1,
+        0,
+        Some(instance::JournalResume {
+            iter: 2,
+            consumed_offset: 5,
+            completion: Some(b"farewell".to_vec()),
+            ..Default::default()
+        })
+    ));
+    let (inst, _slot) = node
+        .find_workflow_entity(&seg)
+        .expect("the loop's Entity is reachable by the restore handler");
+    inst.note_restored();
+    let (outs, done) = drain(rx, "bye-2");
+    assert_eq!(
+        (done.0.as_str(), done.2.as_slice()),
+        ("ok", &b"farewell"[..])
+    );
+    assert!(outs.is_empty());
+    assert!(drain_proc_commits().is_empty() && drain_iter_commits().is_empty());
+
+    // --- a crash after the completing procedure committed and before the
+    // iteration did: the skipped procedure's journaled completion still ends
+    // the resumed iteration ---
+    let id = "bye-3";
+    let seg = crate::entity::flusher::encode_entity_identity(id, "workflow_chat_turn", "");
+    // Channel ids follow declaration order: `in` = 0, `mid` = 1.
+    assert!(node.start_workflow_resumable(
+        "test-completing-chat".into(),
+        id.into(),
+        "ignored".into(),
+        1,
+        0,
+        Some(instance::JournalResume {
+            iter: 1,
+            consumed_offset: 4,
+            committed_proc_idxs: vec![0],
+            proc_handoffs: vec![instance::EdgeHandoff {
+                proc_idx: 0,
+                handoff: vec![(1, postcard::to_allocvec(&"bye".to_string()).unwrap())],
+            }],
+            committed_procs: vec![instance::CommittedProc {
+                proc_idx: 0,
+                iter: 1,
+                entities_ran: vec![seg.clone()],
+                completion: Some(b"farewell".to_vec()),
+            }],
+            ..Default::default()
+        })
+    ));
+    let (inst, _slot) = node
+        .find_workflow_entity(&seg)
+        .expect("the loop's Entity is reachable by the restore handler");
+    inst.note_restored();
+    let (outs, done) = drain(rx, id);
+    assert_eq!(
+        (done.0.as_str(), done.2.as_slice()),
+        ("ok", &b"farewell"[..]),
+        "the resumed iteration completes instead of waiting for input"
+    );
+    assert_eq!(
+        outs,
+        vec![b"bye-2".to_vec()],
+        "only the uncommitted stage ran"
+    );
+    assert_eq!(
+        drain_iter_commits()
+            .iter()
+            .map(|c| (c.iter, c.completes, c.result.clone()))
+            .collect::<Vec<_>>(),
+        vec![(1, true, b"farewell".to_vec())]
+    );
+    assert!(drain_iter_parks().is_empty());
+    let _ = drain_proc_commits();
     std::env::remove_var("FLEZHA_WORKFLOW_PARK_IDLE_MS");
 }
 

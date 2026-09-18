@@ -154,6 +154,11 @@ pub use entity::timer::TimerKind;                            # ADDED by `entity-
 #
 #   `ProcedureTestHarness::with_entity_key(key)` stands the harness in for
 #   that Entity, so a test observes the defaulted stamp.
+#   pub fn complete(&mut self, result: impl Into<Vec<u8>>) -> Result<(), ProcedureError>;
+#
+#   `complete` (ADDED by `retire-the-workflow-run-body`) ends a workflow
+#   instance with `result` once the iteration commits; in a stream operative
+#   it fails the input naming `CompleteOutsideWorkflow`.
 #   pub fn spawn_workflow(&self, factory_id: impl Into<String>, payload: impl Into<Vec<u8>>) -> SpawnHandle;
 #   pub fn spawn_workflow_with(&self, factory_id: impl Into<String>, payload: impl Into<Vec<u8>>, options: SpawnOptions) -> SpawnHandle;
 #
@@ -321,6 +326,12 @@ pub use entity::timer::TimerKind;                            # ADDED by `entity-
 #   channel::<T>("name"), .from::<S>(), to_plugin, also_to_plugin_with.
 #   Trait signatures: StreamOperative::channels(c: &ChannelBuilder),
 #   WorkflowOperative::procedures(c: &ChannelBuilder)  (was &mut).
+#
+#   REMOVED by `retire-the-workflow-run-body` (no shim): the one-function body
+#   `WorkflowOperative::run(ctx: &mut WorkflowCtx, args: &str)` and the
+#   `WorkflowCtx` export. A workflow always declares `procedures`; one that
+#   declares none is refused with `BuildWorkflowError::NoProcedures`, which
+#   replaces `LoopWithoutChain`.
 #
 # `TopologyIssue` variants (renamed from BuildTopologyError by
 # `sdk-runner-entrypoint-redesign`):

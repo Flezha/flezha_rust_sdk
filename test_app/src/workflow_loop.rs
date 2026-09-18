@@ -4,7 +4,7 @@
 
 use flezha_runner::procedure::SpawnOptions;
 
-use crate::workflow::{block_until_released, durable_step, Insert, SeenState};
+use crate::workflow::{block_until_released, durable_step, stateless_step, Insert, SeenState};
 use crate::*;
 
 // `chat_loop_workflow`: the durable-loop + suspension shape
@@ -18,8 +18,12 @@ use crate::*;
 // so a SIGKILL lands with the earlier iterations durable and that one in flight.
 // The resumed runner (release env set) runs it through. Keying the block on the
 // payload — rather than an invocation count — keeps it deterministic across the
-// park/rehydrate cycles, which re-run the driver but not the turns.
+// park/rehydrate cycles, which re-run the driver but not the turns. The turn
+// `bye` records nothing, still reaches REPLY, and completes the instance with
+// the number of turns TURN holds, so the session ends once that iteration
+// commits.
 const CRASH_TURN: &str = "mid-crash";
+const BYE_TURN: &str = "bye";
 
 #[derive(Default)]
 struct ChatTurn;
@@ -48,35 +52,20 @@ impl Procedure for ChatTurn {
         if input == CRASH_TURN {
             block_until_released();
         }
-        // Keyed by the turn, so the WAL record count is the number of DISTINCT
-        // turns that ran — a re-run of a committed iteration would show up.
-        state.apply(Insert(input.clone()));
+        if input == BYE_TURN {
+            ctx.complete(state.items.len().to_string())?;
+        } else {
+            // Keyed by the turn, so the WAL record count is the number of
+            // DISTINCT turns that ran — a re-run of a committed iteration
+            // would show up.
+            state.apply(Insert(input.clone()));
+        }
         ctx.emit::<String>(input)
     }
 }
 
-#[derive(Default)]
-pub(crate) struct ChatReply;
-impl Procedure for ChatReply {
-    type Input = String;
-    type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "chat_reply"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: String,
-        _: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
-        ctx.emit::<String>(format!("reply:{input}"))
-    }
-}
+stateless_step!(ChatReply, "chat_reply", |input, ctx| ctx
+    .emit::<String>(format!("reply:{input}")));
 
 // -- StatelessLoopWorkflow -------------------------------------------------------
 //
@@ -266,11 +255,8 @@ impl WorkflowOperative for ChatLoopWorkflow {
     fn loop_mode() -> LoopMode {
         LoopMode::PerInput
     }
-    // A chat session ends on an external stop, not on its own; the duration
-    // backstop keeps a stray e2e instance from outliving the test run.
-    fn self_terminating() -> bool {
-        false
-    }
+    // A chat session ends itself on `bye`; the duration backstop keeps a
+    // stray e2e instance from outliving the test run.
     fn max_duration() -> Option<Duration> {
         Some(Duration::from_secs(600))
     }

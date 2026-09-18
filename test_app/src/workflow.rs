@@ -4,24 +4,6 @@
 
 use crate::*;
 
-// -- EchoWorkflow -----------------------------------------------------------------
-//
-// Run-once workflow operative exercised by the `workflow-kind` e2e: emits its args back as
-// output once, then returns Ok so the SDK ships `TaskCompleted` and the
-// controller deregisters it.
-pub(crate) struct EchoWorkflow;
-
-impl WorkflowOperative for EchoWorkflow {
-    fn factory_id() -> &'static str {
-        "echo_workflow"
-    }
-
-    fn run(ctx: &mut WorkflowCtx, args: &str) -> Result<(), WorkflowError> {
-        ctx.emit(format!("echo:{args}").into_bytes())?;
-        Ok(())
-    }
-}
-
 // -- Durable structured workflow operatives (crash-resume e2e, §7c.3) ------------
 //
 // `commit_block_workflow` and `saga_block_workflow` are durable-by-default,
@@ -112,10 +94,10 @@ macro_rules! durable_step {
 
 pub(crate) use durable_step;
 
-// A stateless terminal `String` step whose whole behaviour is `$run` (ignores
-// input + ctx): either blocks the chain or fails it.
+// A stateless `String -> String` step whose whole behaviour is `$run`, over
+// the input and ctx it names.
 macro_rules! stateless_step {
-    ($ty:ident, $name:literal, $run:expr) => {
+    ($ty:ident, $name:literal, |$input:ident, $ctx:ident| $run:expr) => {
         #[derive(Default)]
         struct $ty;
         impl Procedure for $ty {
@@ -131,9 +113,9 @@ macro_rules! stateless_step {
             fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
             fn run(
                 &mut self,
-                _input: String,
+                $input: String,
                 _: StateHandle<'_, Self>,
-                _ctx: &mut ProcedureCtx<'_>,
+                $ctx: &mut ProcedureCtx<'_>,
             ) -> Result<(), ProcedureError> {
                 $run
             }
@@ -141,12 +123,31 @@ macro_rules! stateless_step {
     };
 }
 
+pub(crate) use stateless_step;
+
+// -- EchoWorkflow -----------------------------------------------------------------
+//
+// One procedure, run once (the `workflow-kind` e2e): emits its start values
+// back, so the pass ends and the controller deregisters the instance.
+stateless_step!(EchoStep, "echo", |input, ctx| ctx
+    .emit::<String>(format!("echo:{input}")));
+
+pub(crate) struct EchoWorkflow;
+impl WorkflowOperative for EchoWorkflow {
+    fn factory_id() -> &'static str {
+        "echo_workflow"
+    }
+    fn procedures(c: &ChannelBuilder) {
+        c.input::<String>("in").into::<EchoStep>().sink_named("out");
+    }
+}
+
 // `commit_block_workflow`: proc A commits durable state, proc B blocks until the
 // resumed runner sets the release env — so a SIGKILL lands with proc A's state
 // already on the WAL and proc B never finished. Completion is observed
 // controller-side via the finished-job record.
 durable_step!(CommitA, "commit_a");
-stateless_step!(BlockB, "block_b", {
+stateless_step!(BlockB, "block_b", |_input, _ctx| {
     block_until_released();
     Ok(())
 });
@@ -261,11 +262,9 @@ durable_step!(SagaA, "saga_a", compensate: |_ctx| {
     Ok(())
 });
 durable_step!(SagaB, "saga_b", compensate: |_ctx| Ok(()));
-stateless_step!(
-    SagaC,
-    "saga_c",
-    Err(ProcedureError::Custom("saga_c always fails".into()))
-);
+stateless_step!(SagaC, "saga_c", |_input, _ctx| Err(ProcedureError::Custom(
+    "saga_c always fails".into()
+)));
 
 pub(crate) struct SagaBlockWorkflow;
 impl WorkflowOperative for SagaBlockWorkflow {
@@ -315,11 +314,9 @@ durable_step!(UndoOutboxA, "undo_outbox_a", compensate: |ctx| {
     ctx.emit::<String>("undone".to_string())
 });
 
-stateless_step!(
-    UndoC,
-    "undo_outbox_c",
-    Err(ProcedureError::Custom("undo_outbox_c always fails".into()))
-);
+stateless_step!(UndoC, "undo_outbox_c", |_input, _ctx| Err(
+    ProcedureError::Custom("undo_outbox_c always fails".into())
+));
 
 pub(crate) struct UndoOutboxWorkflow;
 impl WorkflowOperative for UndoOutboxWorkflow {

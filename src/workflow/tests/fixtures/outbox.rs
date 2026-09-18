@@ -13,31 +13,12 @@ use crate::workflow::*;
 
 // ---- staged-commit / transactional-outbox procs --------------------------
 
-/// Emits plugin-bound output and THEN fails: the procedure never commits,
-/// so its staged output must never reach a plugin (nothing leaked).
-#[derive(Default)]
-pub(crate) struct EmitThenFail;
-impl Procedure for EmitThenFail {
-    type Input = String;
-    type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "workflow_emit_then_fail"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: String,
-        _state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
-        ctx.emit(format!("leak:{input}"))?;
-        Err(ProcedureError::Custom("failed after emitting".into()))
-    }
-}
+// Emits plugin-bound output and THEN fails: the procedure never commits,
+// so its staged output must never reach a plugin (nothing leaked).
+string_proc!(EmitThenFail, "workflow_emit_then_fail", |input, ctx| {
+    ctx.emit(format!("leak:{input}"))?;
+    Err(ProcedureError::Custom("failed after emitting".into()))
+});
 
 /// One procedure that emits then fails, straight to a plugin sink.
 pub(crate) struct LeakWorkflow;

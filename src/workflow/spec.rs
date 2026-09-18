@@ -2,20 +2,16 @@
 //! author's `procedures` against a `ChannelBuilder` and validates the chain.
 //! The spec/DAG data structures live in `flz_core::workflow::spec`.
 
-use std::sync::Arc;
-use std::time::Duration;
-
 use flz_core::operative::topology::{EntityMode, OperativeTopology};
 pub use flz_core::workflow::spec::*;
-use flz_core::workflow::{LoopMode, WorkflowRunFn};
+use flz_core::workflow::LoopMode;
 
 use crate::channel::{ChannelBuilder, ChannelKind, ProcedureId, RetryPolicy};
 use crate::operative::builder::build_topology;
 use crate::workflow::WorkflowOperative;
 
-/// Build and validate the spec for a workflow class. Empty `procedures()`
-/// selects the run-sugar path; a non-empty declaration is validated as a
-/// static DAG.
+/// Build and validate the spec for a workflow class: its `procedures()`
+/// declaration, validated as a static DAG.
 pub fn build_spec<T: WorkflowOperative>() -> Result<WorkflowSpec, BuildWorkflowError> {
     let factory_id = T::factory_id();
 
@@ -30,18 +26,8 @@ pub fn build_spec<T: WorkflowOperative>() -> Result<WorkflowSpec, BuildWorkflowE
     let cb = ChannelBuilder::new();
     T::procedures(&cb);
 
-    // No declared procedures ⇒ run-sugar. A loop needs a chain to iterate.
     if !cb.has_procedures() {
-        if T::loop_mode() != LoopMode::Once {
-            return Err(BuildWorkflowError::LoopWithoutChain { factory_id });
-        }
-        return Ok(spec_of::<T>(
-            None,
-            ProcDag::default(),
-            LoopMode::Once,
-            None,
-            retry,
-        ));
+        return Err(BuildWorkflowError::NoProcedures { factory_id });
     }
 
     let topology = build_topology(factory_id, cb).map_err(|e| BuildWorkflowError::Topology {
@@ -55,40 +41,18 @@ pub fn build_spec<T: WorkflowOperative>() -> Result<WorkflowSpec, BuildWorkflowE
         refuse_loop_terminal_without_handoff::<T>(factory_id, &topology, &dag)?;
     }
 
-    Ok(spec_of::<T>(
-        Some(topology),
-        dag,
-        T::loop_mode(),
-        T::wake_after(),
-        retry,
-    ))
-}
-
-/// The class facts every workflow spec carries whichever shape it took; the
-/// run-sugar arm and the structured arm differ only in the four the caller
-/// hands in.
-fn spec_of<T: WorkflowOperative>(
-    topology: Option<Arc<OperativeTopology>>,
-    dag: ProcDag,
-    loop_mode: LoopMode,
-    wake_after: Option<Duration>,
-    retry: RetryPolicy,
-) -> WorkflowSpec {
-    WorkflowSpec {
-        sdk_lang: flz_core::header::SDK_LANG_RUST,
-        host: false,
-        run: T::run as WorkflowRunFn,
+    Ok(WorkflowSpec {
         topology,
         dag,
         max_duration: T::max_duration(),
         rollback_mode: T::rollback_mode(),
-        loop_mode,
-        wake_after,
+        loop_mode: T::loop_mode(),
+        wake_after: T::wake_after(),
         retry,
         barrier_retry_attempts: T::barrier_retry_attempts(),
         persistence_enabled: T::PERSISTENCE_ENABLED,
         sync_durability: T::SYNC_DURABILITY,
-    }
+    })
 }
 
 /// A handoff-chained loop re-seeds iteration N+1 from iteration N's terminal

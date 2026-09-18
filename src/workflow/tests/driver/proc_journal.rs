@@ -126,14 +126,6 @@ pub(super) fn proc_journal_commits(node: &mut RunnerNode, rx: &Receiver<RunnerMe
     assert!(!commits[1].outbox[0].entity_id.is_empty());
     assert!(commits.iter().all(|c| !c.compensating));
 
-    // The run-sugar path is untouched: no procedures, no barrier to stage
-    // against, so its emit goes straight to the wire (at-least-once).
-    assert_eq!(
-        wire_emits_for("workflow-ok"),
-        vec![b"hello".to_vec()],
-        "run-sugar keeps the direct wire path"
-    );
-
     // Opt-out twin: no journal, no handshake — zero commits, and (having
     // nothing that could ever flush a staged outbox) it still emits direct.
     assert!(node.start_workflow(
