@@ -108,6 +108,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register_factory(SugarNamedInput)?
         .register_factory(SugarStaticEntity)?
         .register_factory(SugarWorkflow)?
+        .register_factory(SugarStateOnly)?
         .register_factory(EchoWorkflow)?
         .register_factory(CommitBlockWorkflow)?
         .register_factory(SyncDurableWorkflow)?

@@ -1,5 +1,0 @@
-error: SinkWithoutKind: a `sink` makes this procedure a whole operative; write `kind = "stream"` or `kind = "workflow"`
- --> tests/ui/procedure_sink_without_kind.rs:2:1
-  |
-2 | fn f(a: String) -> Vec<u8> {
-  | ^^

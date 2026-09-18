@@ -416,12 +416,12 @@ fn channel_names(t: &flezha_runner::operative::OperativeTopology) -> Vec<String>
 
 /// The short form: `sink = "..."` is the only naming call the author writes,
 /// and it is the channel's name.
-#[flezha_runner::procedure(id = "generated_naming", kind = "stream", sink = "items_output")]
+#[flezha_runner::stream_operative(id = "generated_naming", sink = "items_output")]
 fn generated_naming(input: String) -> Option<String> {
     Some(input)
 }
 
-/// The same operative spelled by hand.
+/// The same operative spelled by hand, around the short form's own procedure.
 struct HandWrittenNaming;
 impl StreamOperative for HandWrittenNaming {
     fn factory_id() -> &'static str {
@@ -429,7 +429,7 @@ impl StreamOperative for HandWrittenNaming {
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
-            .into::<GeneratedNaming>()
+            .into::<GeneratedNamingProcedure>()
             .sink_named("items_output");
     }
 }
@@ -439,8 +439,6 @@ impl StreamOperative for HandWrittenNaming {
 /// frames under one name and a hand-written one under another.
 #[test]
 fn the_generated_and_hand_written_spellings_name_one_channel() {
-    // The short form's operative impl sits on the procedure type itself, so
-    // the type the author registers is the one compared here.
     let generated = build_topology_for::<GeneratedNaming>().expect("the sugar builds");
     let by_hand = build_topology_for::<HandWrittenNaming>().expect("the hand-written twin builds");
 
@@ -448,12 +446,104 @@ fn the_generated_and_hand_written_spellings_name_one_channel() {
     assert_eq!(channel_names(&generated), channel_names(&by_hand));
 }
 
+/// Which roles `T` plays, read at compile time: an inherent associated const
+/// shadows the trait's default only when its impl's bound holds.
+struct Roles<T>(std::marker::PhantomData<T>);
+trait NoRole {
+    const PROCEDURE: bool = false;
+    const STREAM: bool = false;
+}
+impl<T> NoRole for Roles<T> {}
+impl<T: flezha_runner::Procedure> Roles<T> {
+    const PROCEDURE: bool = true;
+}
+impl<T: StreamOperative> Roles<T> {
+    const STREAM: bool = true;
+}
+
+/// fails when: the short form makes one type play both roles again, so the
+/// name the author registers is also a procedure.
+#[test]
+fn a_short_form_is_an_operative_beside_its_procedure() {
+    assert!(<Roles<GeneratedNaming>>::STREAM);
+    assert!(!<Roles<GeneratedNaming>>::PROCEDURE);
+    assert!(<Roles<GeneratedNamingProcedure>>::PROCEDURE);
+    assert!(!<Roles<GeneratedNamingProcedure>>::STREAM);
+    // The procedure is named after the factory id, so ejecting to the full
+    // form keeps every entity's state path.
+    assert_eq!(
+        <GeneratedNamingProcedure as flezha_runner::Procedure>::name(),
+        "generated_naming"
+    );
+}
+
+/// The short form's entry channel carries the overflow policy it declares.
+#[flezha_runner::stream_operative(id = "shedding_entry", sink = "shed_items", on_full = drop_oldest)]
+fn shedding_entry(input: String) -> Vec<u8> {
+    input.into_bytes()
+}
+
+/// fails when: `on_full` on a short form stops reaching the entry channel it
+/// describes.
+#[test]
+fn a_short_form_sets_its_entry_channels_overflow_policy() {
+    let t = build_topology_for::<SheddingEntry>().expect("the short form builds");
+    assert_eq!(
+        t.channels[0].overflow_policy,
+        flezha_runner::OverflowPolicy::DropOldest
+    );
+}
+
+// ---- the short form with no sink ------------------------------------------
+
+#[derive(
+    serde::Serialize, serde::Deserialize, Clone, Default, PartialEq, Debug, flezha_runner::State,
+)]
+struct CounterState {
+    seen: Vec<String>,
+}
+
+/// A short form that only keeps state: no `sink`, so no plugin channel.
+#[flezha_runner::stream_operative(id = "sinkless_counter", input = "ticks")]
+fn sinkless_counter(input: String, state: &mut CounterState) {
+    state.push_seen(input);
+}
+
+/// The same operative spelled by hand: a channel ending at a procedure.
+struct HandWrittenCounter;
+impl StreamOperative for HandWrittenCounter {
+    fn factory_id() -> &'static str {
+        "hand_written_counter"
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("ticks")
+            .into::<SinklessCounterProcedure>();
+    }
+}
+
+/// fails when: a short form with no `sink` stops declaring exactly the entry
+/// channel into its procedure, which is what the full form declares.
+#[test]
+fn a_short_form_with_no_sink_declares_only_its_entry_channel() {
+    let generated =
+        build_topology_for::<SinklessCounter>().expect("the sinkless short form builds");
+    let by_hand = build_topology_for::<HandWrittenCounter>().expect("the hand-written twin builds");
+
+    assert_eq!(channel_names(&generated), vec!["ticks"]);
+    assert_eq!(channel_names(&generated), channel_names(&by_hand));
+    assert!(generated.channels.iter().all(|c| c.plugin_sink.is_none()));
+
+    let runner = Flezha::create_runner("ns_sinkless_short_form").expect("create");
+    runner
+        .register_factory(SinklessCounter)
+        .expect("a stream short form registers through the one method");
+}
+
 // ---- the shorthand's entry channel takes the name the author writes ------
 
 /// The attribute shorthand, naming its entry channel.
-#[flezha_runner::procedure(
+#[flezha_runner::stream_operative(
     id = "named_entry_attribute",
-    kind = "stream",
     sink = "attr_items",
     input = "prices"
 )]
@@ -463,11 +553,7 @@ fn named_entry_attribute(input: String) -> Vec<u8> {
 
 /// The attribute shorthand with no name written: the entry channel keeps the
 /// default address every existing operative already ships under.
-#[flezha_runner::procedure(
-    id = "default_entry_attribute",
-    kind = "stream",
-    sink = "default_items"
-)]
+#[flezha_runner::stream_operative(id = "default_entry_attribute", sink = "default_items")]
 fn default_entry_attribute(input: String) -> Vec<u8> {
     input.into_bytes()
 }
@@ -549,19 +635,14 @@ fn a_frame_reaches_an_unnamed_shorthand_on_input() {
 
 // ---- the workflow short form -------------------------------------------
 
-/// A workflow short form: one procedure declaration is a whole `once` workflow,
-/// with every workflow setting at its default.
-#[flezha_runner::procedure(
-    id = "place_order",
-    kind = "workflow",
-    sink = "placed",
-    input = "order"
-)]
+/// A workflow short form: one declaration is a whole `once` workflow, with
+/// every workflow setting at its default.
+#[flezha_runner::workflow_operative(id = "place_order", sink = "placed", input = "order")]
 fn place_order(order: String) -> String {
     order
 }
 
-/// fails when: `kind = "workflow"` stops producing a workflow operative, or the
+/// fails when: the workflow attribute stops producing a workflow operative, or the
 /// entry and sink names the declaration wrote stop reaching the spec — the
 /// short form would then declare a shape the author never wrote.
 #[test]

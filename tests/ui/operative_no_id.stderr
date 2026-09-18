@@ -1,0 +1,5 @@
+error: #[flezha::stream_operative] needs an `id`: an operative's factory id is an address an operator types, so it is written rather than derived from the function name
+ --> tests/ui/operative_no_id.rs:2:1
+  |
+2 | fn f(a: String) -> Vec<u8> {
+  | ^^

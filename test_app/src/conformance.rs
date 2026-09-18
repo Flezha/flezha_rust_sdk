@@ -56,13 +56,12 @@ const FIXTURE: &str = "test/fixtures/reference_topologies.txt";
 /// The authoring surfaces this builder carries — the same set the app's
 /// `conformance.json` declares. A row needing anything else is skipped BY NAME,
 /// which is what makes the skip checkable.
-const SURFACES: [&str; 6] = [
+const SURFACES: [&str; 5] = [
     "merge",
     "branch",
     "workflow",
     "shorthand",
     "shorthand_typed_output",
-    "shorthand_omittable_sink",
 ];
 
 /// A row of the four-column refusal table. The refusal NAME is the fixture's
@@ -571,13 +570,13 @@ fn overflow(policy: &str) -> OverflowPolicy {
 // message rather than by driving a builder that never sees them. The one
 // runtime refusal, a duplicate factory id, is driven for real.
 
-/// A `shorthand(<id>|-, <kind>|-, <sink>|-, <input>|-)` step. `-` is a field
-/// the row leaves unwritten; `.noout` marks a procedure declaring no output.
-struct Shorthand {
-    id: Option<String>,
-    kind: Option<String>,
-    sink: Option<String>,
-    noout: bool,
+/// A `shorthand(<id>|-, <sink>|-, <input>|-)` step, by its modifier: `.noout`
+/// marks a body declaring no output, `.topology` a declaration also carrying a
+/// topology body.
+enum Shorthand {
+    Plain,
+    NoOutput,
+    WithTopology,
 }
 
 /// The shorthand steps of a row, or `None` when it declares none.
@@ -592,68 +591,53 @@ fn shorthand_steps(row: &Row) -> Option<Vec<Shorthand>> {
 }
 
 fn parse_shorthand(step: &str) -> Option<Shorthand> {
-    let (body, noout) = match step.strip_suffix(".noout") {
-        Some(body) => (body, true),
-        None => (step, false),
+    let (body, shorthand) = if let Some(body) = step.strip_suffix(".noout") {
+        (body, Shorthand::NoOutput)
+    } else if let Some(body) = step.strip_suffix(".topology") {
+        (body, Shorthand::WithTopology)
+    } else {
+        (step, Shorthand::Plain)
     };
     let (verb, args) = split_call(body);
     if verb != "shorthand" {
         return None;
     }
-    let written = |field: &str| (field != "-").then(|| field.to_string());
-    let fields: Vec<&str> = args.split(',').map(str::trim).collect();
     assert_eq!(
-        fields.len(),
-        4,
-        "a shorthand step declares id, kind, sink and input: read `{step}`"
+        args.split(',').count(),
+        3,
+        "a shorthand step declares id, sink and input: read `{step}`"
     );
-    Some(Shorthand {
-        id: written(fields[0]),
-        kind: written(fields[1]),
-        sink: written(fields[2]),
-        noout,
-    })
+    Some(shorthand)
 }
 
-/// The refusal a declaration earns, and the compile-fail snapshot that pins the
-/// message. A `sink` is what makes a short form, so its absence is judged
-/// first; the identity and the kind follow, and an output the compiler can see
-/// is last.
+/// The refusal a declaration earns, and the compile-fail fixture that pins it.
+/// A second operative impl is rustc's own conflicting-impl error, which cannot
+/// carry the contract's name, so that row cites the fixture's source.
 fn citation(s: &Shorthand) -> (&'static str, &'static str) {
-    if s.sink.is_none() {
-        (
-            "ShorthandKeyWithoutSink",
-            "sdk/rust/tests/ui/procedure_key_without_sink.stderr",
-        )
-    } else if s.id.is_none() {
-        (
-            "SinkWithoutId",
-            "sdk/rust/tests/ui/procedure_sink_without_id.stderr",
-        )
-    } else if s.kind.is_none() {
-        (
-            "SinkWithoutKind",
-            "sdk/rust/tests/ui/procedure_sink_without_kind.stderr",
-        )
-    } else if s.noout {
-        (
+    match s {
+        Shorthand::WithTopology => (
+            "ShortFormWithTopology",
+            "sdk/rust/tests/ui/operative_with_hand_written_impl.rs",
+        ),
+        Shorthand::NoOutput => (
             "SinkWithoutOutput",
-            "sdk/rust/tests/ui/procedure_sink_unit_return.stderr",
-        )
-    } else {
-        panic!("a well-formed shorthand declaration earns no refusal of its own")
+            "sdk/rust/tests/ui/operative_sink_without_output.stderr",
+        ),
+        Shorthand::Plain => {
+            panic!("a well-formed shorthand declaration earns no refusal of its own")
+        }
     }
 }
 
 // The duplicate row's pair, declared here rather than beside the app's
 // fixtures because nothing but that row registers them: two short forms, one of
 // each kind, under one factory id.
-#[flezha_runner::procedure(id = "plain", kind = "stream", sink = "out")]
+#[flezha_runner::stream_operative(id = "plain", sink = "out")]
 fn shorthand_dup_stream(input: String) -> Vec<u8> {
     input.into_bytes()
 }
 
-#[flezha_runner::procedure(id = "plain", kind = "workflow", sink = "twin_sink")]
+#[flezha_runner::workflow_operative(id = "plain", sink = "twin_sink")]
 fn shorthand_dup_workflow(input: String) -> Vec<u8> {
     input.into_bytes()
 }

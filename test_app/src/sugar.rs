@@ -11,35 +11,31 @@ use crate::*;
 // `docs/sdk/authoring_contract.md`.
 // ---------------------------------------------------------------------------
 
-// Single-procedure stateless short form — twin of `DoNothingProcedure` /
-// `DoNothingOperative`. One declaration is the whole operative: the type it
-// generates implements `StreamOperative`, and `main.rs` registers it.
-#[flezha_runner::procedure(
-    id = "sugar_do_nothing",
-    kind = "stream",
-    sink = "sugar_do_nothing_echo"
-)]
+// Single-procedure stateless short form, twin of `DoNothingProcedure` /
+// `DoNothingOperative`. One declaration is the whole operative: it generates
+// the operative `SugarDoNothing`, which `main.rs` registers, and the procedure
+// `SugarDoNothingProcedure` beside it.
+#[flezha_runner::stream_operative(id = "sugar_do_nothing", sink = "sugar_do_nothing_echo")]
 pub(crate) fn sugar_do_nothing(input: String) -> Vec<u8> {
     input.into_bytes()
 }
 
-// Single-procedure stateful sugar with `#[derive(flezha::State)]` — twin of
+// Single-procedure stateful sugar with `#[derive(flezha::State)]`, twin of
 // `StoreInputProcedure` / `StoreInputOperative`.
 #[derive(Serialize, Deserialize, Clone, Default, PartialEq, Debug, flezha_runner::State)]
 pub(crate) struct SugarStoreState {
     text_inputs: Vec<String>,
 }
 
-#[flezha_runner::procedure(id = "sugar_store_input", kind = "stream", sink = "sugar_store_sink")]
+#[flezha_runner::stream_operative(id = "sugar_store_input", sink = "sugar_store_sink")]
 pub(crate) fn sugar_store_input(input: String, state: &mut SugarStoreState) -> String {
     state.push_text_inputs(input.clone());
     input
 }
 
 // The short form naming its entry channel: `prices`, not the default `input`.
-#[flezha_runner::procedure(
+#[flezha_runner::stream_operative(
     id = "sugar_named_input",
-    kind = "stream",
     sink = "sugar_named_input_sink",
     input = "prices"
 )]
@@ -49,14 +45,24 @@ pub(crate) fn sugar_named_input(input: String) -> Vec<u8> {
 
 // The workflow short form: one declaration is a whole `once` workflow, seeded
 // on `order` from its start values and completing after one run.
-#[flezha_runner::procedure(
+#[flezha_runner::workflow_operative(
     id = "sugar_workflow",
-    kind = "workflow",
     sink = "sugar_workflow_placed",
     input = "order"
 )]
 pub(crate) fn sugar_workflow(order: String) -> Vec<u8> {
     order.into_bytes()
+}
+
+// The short form with no sink: `ticks` feeds a procedure that only keeps state.
+#[derive(Serialize, Deserialize, Clone, Default, PartialEq, Debug, flezha_runner::State)]
+pub(crate) struct SugarStateOnlyState {
+    seen: Vec<String>,
+}
+
+#[flezha_runner::stream_operative(id = "sugar_state_only", input = "ticks")]
+pub(crate) fn sugar_state_only(input: String, state: &mut SugarStateOnlyState) {
+    state.push_seen(input);
 }
 
 // `operative!` linear-pipeline twin of `StaticEntityOperative`.
@@ -346,7 +352,7 @@ mod macro_twin_tests {
         let inputs = vec!["alpha".to_string(), "beta".to_string()];
         let expected: Vec<Vec<u8>> = vec![b"alpha".to_vec(), b"beta".to_vec()];
 
-        let mut sugar = ProcedureTestHarness::<SugarDoNothing>::new();
+        let mut sugar = ProcedureTestHarness::<SugarDoNothingProcedure>::new();
         sugar.apply_inputs(inputs.clone());
         sugar.expect_emits(&expected);
 
@@ -359,13 +365,29 @@ mod macro_twin_tests {
     fn sugar_store_input_journals_and_emits() {
         let inputs = vec!["one".to_string(), "two".to_string()];
 
-        let mut sugar = ProcedureTestHarness::<SugarStoreInput>::new();
+        let mut sugar = ProcedureTestHarness::<SugarStoreInputProcedure>::new();
         sugar.apply_inputs(inputs.clone());
         assert_eq!(sugar.state().text_inputs, inputs);
         sugar
             .replay_equals()
             .expect("derived change replay diverged");
         sugar.expect_emits(&inputs);
+    }
+
+    #[test]
+    fn sugar_state_only_journals_and_emits_nothing() {
+        let inputs = vec!["one".to_string(), "two".to_string()];
+
+        let mut sugar = ProcedureTestHarness::<SugarStateOnlyProcedure>::new();
+        sugar.apply_inputs(inputs.clone());
+        assert_eq!(sugar.state().seen, inputs);
+        sugar
+            .replay_equals()
+            .expect("derived change replay diverged");
+        assert!(
+            sugar.emitted_meta().is_empty(),
+            "a body with no output emits nothing"
+        );
     }
 
     #[test]
@@ -416,6 +438,8 @@ mod macro_twin_tests {
             .unwrap()
             .register_factory(SugarWorkflow)
             .unwrap()
+            .register_factory(SugarStateOnly)
+            .unwrap()
             .register_factory(SugarStaticEntity)
             .unwrap()
             .register_factory(MixedOperative)
@@ -426,6 +450,7 @@ mod macro_twin_tests {
             "sugar_do_nothing",
             "sugar_store_input",
             "sugar_named_input",
+            "sugar_state_only",
             "sugar_static_entity",
             "mixed_operative",
         ] {

@@ -18,7 +18,7 @@ use flezha_runner::{
 };
 
 /// The workflow short form under `plain`: one procedure, one sink, nothing else.
-#[flezha_runner::procedure(id = "plain", kind = "workflow", sink = "plain_sink")]
+#[flezha_runner::workflow_operative(id = "plain", sink = "plain_sink")]
 fn plain(input: String) -> String {
     input
 }

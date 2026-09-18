@@ -61,10 +61,11 @@ pub use channel::{
 };
 pub use entity::timer::TimerKind;
 pub use entity::{RestoreError, RestoreInitPayload};
-/// Authoring sugar. `#[flezha::procedure]`, `#[derive(flezha::State)]`, and
-/// `flezha::operative!` expand to the trait surface above, and each names the
-/// type the author registers; see `docs/sdk/authoring_contract.md`.
-pub use flezha_macros::{operative, procedure, State};
+/// Authoring sugar. `#[flezha::procedure]`, the short-form
+/// `#[flezha::stream_operative]` / `#[flezha::workflow_operative]`,
+/// `#[derive(flezha::State)]` and `flezha::operative!` expand to the trait
+/// surface above; see `docs/sdk/authoring_contract.md`.
+pub use flezha_macros::{operative, procedure, stream_operative, workflow_operative, State};
 pub use flz_core::pb;
 pub use flz_transport::{service, transport};
 pub use local::LocalOperative;

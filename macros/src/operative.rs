@@ -143,13 +143,13 @@ impl Parse for OperativeDef {
     }
 }
 
-/// The short form's operative impl: one entry channel threaded through a
-/// procedure chain, the terminal payload type pinned, and the stream sunk under
-/// `sink`. The impl goes ON a type the author can name, so registration is a
-/// call they write.
+/// A generated operative: one entry channel threaded through a procedure
+/// chain, and, when a `sink` is written, the terminal payload type pinned and
+/// the stream sunk under it. The operative is a type the author can name, so
+/// registration is a call they write.
 pub(crate) struct Wiring<'a> {
-    /// The type the operative impl is written on: the procedure type on the
-    /// attribute path, the author's named struct for `operative!`.
+    pub vis: &'a Visibility,
+    /// The operative type, the one the author registers.
     pub ident: &'a Ident,
     /// Which authoring trait the impl states.
     pub kind: Kind,
@@ -165,12 +165,13 @@ pub(crate) struct Wiring<'a> {
     pub chain: TokenStream,
     /// The type the terminal stream's payload is pinned against.
     pub payload: TokenStream,
-    /// The plugin sink's name; the producing channel is named after it.
-    pub sink: &'a str,
+    /// The plugin sink's name, the producing channel named after it; `None`
+    /// declares no plugin channel.
+    pub sink: Option<&'a str>,
 }
 
 /// The two operative kinds a short form can declare. `operative!` is
-/// stream-only; the attribute's `kind` key chooses.
+/// stream-only; the short-form attribute's name chooses.
 #[derive(Clone, Copy)]
 pub(crate) enum Kind {
     Stream,
@@ -207,8 +208,10 @@ fn entry_channel_name(written: Option<&LitStr>) -> syn::Result<String> {
     }
 }
 
-pub(crate) fn operative_impl(wiring: Wiring<'_>) -> syn::Result<TokenStream> {
+/// The operative type and its impl of the kind's authoring trait.
+pub(crate) fn operative_item(wiring: Wiring<'_>) -> syn::Result<TokenStream> {
     let Wiring {
+        vis,
         ident,
         kind,
         id,
@@ -221,15 +224,23 @@ pub(crate) fn operative_impl(wiring: Wiring<'_>) -> syn::Result<TokenStream> {
     } = wiring;
     let entry = entry_channel_name(input_name)?;
     let (operative_trait, method) = kind.trait_and_method();
+    // Pins the declared sink payload type against the terminal procedure's
+    // `Output`; with no sink the procedure's output is left unconsumed, as a
+    // hand-written channel ending at a procedure leaves it.
+    let sunk = match sink {
+        Some(sink) => quote! {
+            let stream: ::flezha_runner::Stream<'_, #payload> = stream;
+            stream.sink_named(#sink);
+        },
+        None => quote! { let _ = stream; },
+    };
     Ok(quote! {
+        #vis struct #ident;
         impl #operative_trait for #ident {
             fn factory_id() -> &'static str { #id }
             fn #method(c: &::flezha_runner::ChannelBuilder) {
                 let stream = c.input::<#input_ty>(#entry) #on_full #chain
-                // Pins the declared sink payload type against the terminal
-                // procedure's `Output`.
-                let stream: ::flezha_runner::Stream<'_, #payload> = stream;
-                stream.sink_named(#sink);
+                #sunk
             }
         }
     })
@@ -240,8 +251,6 @@ pub fn expand(item: TokenStream) -> syn::Result<TokenStream> {
 
     let first_procedure = &def.procedures[0];
     let plugin_ty = &def.plugin_ty;
-    let vis = &def.vis;
-    let ident = &def.ident;
 
     // Chained hops on the stream handle; each `.into` returns the consumed
     // procedure's output stream.
@@ -256,8 +265,9 @@ pub fn expand(item: TokenStream) -> syn::Result<TokenStream> {
         })
         .collect();
 
-    let operative = operative_impl(Wiring {
-        ident,
+    operative_item(Wiring {
+        vis: &def.vis,
+        ident: &def.ident,
         kind: Kind::Stream,
         id: &def.id,
         input_ty: &def.input_ty,
@@ -265,11 +275,6 @@ pub fn expand(item: TokenStream) -> syn::Result<TokenStream> {
         on_full: quote! {},
         chain: quote! { .into::<#first_procedure>(); #hops },
         payload: quote! { #plugin_ty },
-        sink: &def.plugin_name,
-    })?;
-
-    Ok(quote! {
-        #vis struct #ident;
-        #operative
+        sink: Some(&def.plugin_name),
     })
 }

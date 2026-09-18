@@ -1,0 +1,5 @@
+error: an entry channel name may not be empty
+ --> tests/ui/operative_empty_input.rs:1:65
+  |
+1 | #[flezha_runner::stream_operative(id = "f", sink = "s", input = "")]
+  |                                                                 ^^

@@ -1,8 +1,9 @@
-//! `#[flezha::procedure(...)]` — attribute macro on a `run` function. Infers the
-//! six `Procedure` associated types from the signature, generates the PascalCase
-//! procedure type + `Procedure` impl, and (when `sink` is given) the §5 short
-//! form: the same type also implements `StreamOperative` or `WorkflowOperative`,
-//! so the author registers it with `runner.register_factory(Name)`. See
+//! `#[flezha::procedure(...)]` and the two short-form attributes, all on a `run`
+//! function. Each infers the six `Procedure` associated types from the
+//! signature and generates a procedure type + `Procedure` impl; the short-form
+//! attributes (`#[flezha::stream_operative]` / `#[flezha::workflow_operative]`)
+//! name it `<Name>Procedure` and also emit the operative type `<Name>` the
+//! author registers with `runner.register_factory(Name)`. See
 //! `docs/sdk/authoring_contract.md` §2, §4, §5.
 
 use proc_macro2::TokenStream;
@@ -14,17 +15,35 @@ use syn::{
     Token, Type,
 };
 
-use crate::operative::{operative_impl, Kind, Wiring};
+use crate::operative::{operative_item, Kind, Wiring};
 use crate::util::{generic_args, snake_ident_to_pascal};
+
+/// What the attribute declares: a procedure, or a whole operative of a kind.
+#[derive(Clone, Copy)]
+pub(crate) enum Declares {
+    Procedure,
+    Operative(Kind),
+}
+
+impl Declares {
+    fn attribute(self) -> &'static str {
+        match self {
+            Declares::Procedure => "#[flezha::procedure]",
+            Declares::Operative(Kind::Stream) => "#[flezha::stream_operative]",
+            Declares::Operative(Kind::Workflow) => "#[flezha::workflow_operative]",
+        }
+    }
+}
 
 #[derive(Default)]
 struct ProcedureArgs {
     id: Option<String>,
+    /// The short form's plugin sink; `None` declares no plugin channel.
     sink: Option<String>,
-    /// `stream` or `workflow`: which operative kind a `sink` generates.
-    kind: Option<Kind>,
-    /// The entry channel name for the operative a `sink` generates.
+    /// The short form's entry channel name.
     input: Option<LitStr>,
+    /// The short form's entry channel overflow policy.
+    on_full: Option<syn::Ident>,
     init: Option<syn::Path>,
     key: Option<syn::Path>,
     emits: Option<Type>,
@@ -33,17 +52,41 @@ struct ProcedureArgs {
     idle_ttl_ms: Option<Expr>,
     max_entities: Option<Expr>,
     capacity: Option<Expr>,
-    on_full: Option<syn::Ident>,
     clock: Option<Type>,
 }
 
-pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> {
-    let args = parse_args(attr)?;
+pub(crate) fn expand(
+    declares: Declares,
+    attr: TokenStream,
+    item: TokenStream,
+) -> syn::Result<TokenStream> {
+    let args = parse_args(declares, attr)?;
     let func: ItemFn = syn::parse2(item)?;
-    let params = classify_params(&func.sig)?;
+    let attr = declares.attribute();
+    let params = classify_params(&func.sig, attr)?;
     let output = resolve_output(&func.sig.output)?;
-    refuse_shape(&func.sig, &args, &output, &params)?;
-    expand_procedure(&func, &args, &params, &output)
+    refuse_shape(attr, &func.sig, &args, &output, &params)?;
+    let author_ident = snake_ident_to_pascal(&func.sig.ident);
+    let Declares::Operative(kind) = declares else {
+        return expand_procedure(&func, &args, &params, &output, &author_ident);
+    };
+    // The short form: the procedure beside the operative, which takes the
+    // author's name because it is what the attribute declares.
+    let procedure_ident = format_ident!("{}Procedure", author_ident);
+    let procedure = expand_procedure(&func, &args, &params, &output, &procedure_ident)?;
+    let operative = expand_short_form(
+        &func,
+        &args,
+        &params,
+        &output,
+        kind,
+        &author_ident,
+        &procedure_ident,
+    )?;
+    Ok(quote! {
+        #procedure
+        #operative
+    })
 }
 
 /// The three roles a `run` parameter can take: one by-value input, an optional
@@ -61,7 +104,7 @@ enum Role<'a> {
     Ctx(&'a Pat),
 }
 
-fn classify_params(sig: &Signature) -> syn::Result<Params<'_>> {
+fn classify_params<'a>(sig: &'a Signature, attr: &str) -> syn::Result<Params<'a>> {
     let mut input: Option<(&Pat, &Type)> = None;
     let mut state: Option<(&Pat, &Type)> = None;
     let mut ctx: Option<&Pat> = None;
@@ -69,36 +112,38 @@ fn classify_params(sig: &Signature) -> syn::Result<Params<'_>> {
         let FnArg::Typed(pt) = arg else {
             return Err(syn::Error::new_spanned(
                 arg,
-                "#[flezha::procedure] `run` functions are free functions; `self` is not allowed",
+                format!("{attr} `run` functions are free functions; `self` is not allowed"),
             ));
         };
         if ctx.is_some() {
             return Err(syn::Error::new_spanned(
                 arg,
-                "#[flezha::procedure] the `&mut ProcedureCtx` parameter must come last",
+                format!("{attr} the `&mut ProcedureCtx` parameter must come last"),
             ));
         }
-        match classify_arg(pt)? {
+        match classify_arg(pt, attr)? {
             Role::Ctx(pat) => ctx = Some(pat),
             Role::State(pat, ty) => claim_once(
                 &mut state,
                 (pat, ty),
                 arg,
-                "#[flezha::procedure] expects at most one `&mut State` parameter",
+                format!("{attr} expects at most one `&mut State` parameter"),
             )?,
             Role::Input(pat, ty) => claim_once(
                 &mut input,
                 (pat, ty),
                 arg,
-                "#[flezha::procedure] expects exactly one by-value input parameter before the \
-                 optional `&mut State`",
+                format!(
+                    "{attr} expects exactly one by-value input parameter before the \
+                 optional `&mut State`"
+                ),
             )?,
         }
     }
     let (input_pat, input_ty) = input.ok_or_else(|| {
         syn::Error::new(
             sig.span(),
-            "#[flezha::procedure] expects exactly one by-value input parameter",
+            format!("{attr} expects exactly one by-value input parameter"),
         )
     })?;
     Ok(Params {
@@ -114,7 +159,7 @@ fn claim_once<'a>(
     slot: &mut Option<(&'a Pat, &'a Type)>,
     param: (&'a Pat, &'a Type),
     arg: &FnArg,
-    refusal: &str,
+    refusal: String,
 ) -> syn::Result<()> {
     if slot.is_some() {
         return Err(syn::Error::new_spanned(arg, refusal));
@@ -123,7 +168,7 @@ fn claim_once<'a>(
     Ok(())
 }
 
-fn classify_arg(pt: &PatType) -> syn::Result<Role<'_>> {
+fn classify_arg<'a>(pt: &'a PatType, attr: &str) -> syn::Result<Role<'a>> {
     Ok(match &*pt.ty {
         Type::Reference(r) if r.mutability.is_some() && is_procedure_ctx(&r.elem) => {
             Role::Ctx(&pt.pat)
@@ -132,7 +177,7 @@ fn classify_arg(pt: &PatType) -> syn::Result<Role<'_>> {
         Type::Reference(_) => {
             return Err(syn::Error::new_spanned(
                 pt,
-                "#[flezha::procedure] state parameter must be `&mut State`, not a shared reference",
+                format!("{attr} state parameter must be `&mut State`, not a shared reference"),
             ))
         }
         other => Role::Input(&pt.pat, other),
@@ -143,6 +188,7 @@ fn classify_arg(pt: &PatType) -> syn::Result<Role<'_>> {
 /// value or keys its emit, `emits` without that parameter, a half-declared
 /// static entity, and `init` or `key` with nothing to apply them to.
 fn refuse_shape(
+    attr: &str,
     sig: &Signature,
     args: &ProcedureArgs,
     output: &Output,
@@ -152,42 +198,48 @@ fn refuse_shape(
         if output.emits() {
             return Err(syn::Error::new(
                 sig.span(),
-                "#[flezha::procedure] a `&mut ProcedureCtx` parameter makes the body responsible for every \
+                format!("{attr} a `&mut ProcedureCtx` parameter makes the body responsible for every \
                  emit; `run` must then return `()` or `Result<(), _>`, and `emits = Type` declares the \
-                 output type",
+                 output type"),
             ));
         }
         if args.key.is_some() {
             return Err(syn::Error::new(
                 sig.span(),
-                "#[flezha::procedure] `key` conflicts with a `&mut ProcedureCtx` parameter; the body keys \
-                 its own emits with `ctx.emit_keyed(..)`",
+                format!(
+                    "{attr} `key` conflicts with a `&mut ProcedureCtx` parameter; the body keys \
+                 its own emits with `ctx.emit_keyed(..)`"
+                ),
             ));
         }
     } else if args.emits.is_some() {
         return Err(syn::Error::new(
             sig.span(),
-            "#[flezha::procedure] `emits` declares the output type of a `&mut ProcedureCtx` `run`; without \
-             that parameter the return type declares it",
+            format!(
+                "{attr} `emits` declares the output type of a `&mut ProcedureCtx` `run`; without \
+             that parameter the return type declares it"
+            ),
         ));
     }
     if args.keys.is_some() != args.entities_for.is_some() {
         return Err(syn::Error::new(
             sig.span(),
-            "#[flezha::procedure] static entity requires both `keys = [..]` and `entities_for = fn`",
+            format!("{attr} static entity requires both `keys = [..]` and `entities_for = fn`"),
         ));
     }
     if args.init.is_some() && params.state.is_none() {
         return Err(syn::Error::new(
             sig.span(),
-            "#[flezha::procedure] `init` requires a `&mut State` parameter; a stateless procedure has no \
-             state to initialize",
+            format!(
+                "{attr} `init` requires a `&mut State` parameter; a stateless procedure has no \
+             state to initialize"
+            ),
         ));
     }
     if args.key.is_some() && !output.emits() {
         return Err(syn::Error::new(
             sig.span(),
-            "#[flezha::procedure] `key` requires a non-unit return type; there is no emit to key",
+            format!("{attr} `key` requires a non-unit return type; there is no emit to key"),
         ));
     }
     Ok(())
@@ -198,10 +250,10 @@ fn expand_procedure(
     args: &ProcedureArgs,
     params: &Params,
     output: &Output,
+    struct_ident: &syn::Ident,
 ) -> syn::Result<TokenStream> {
     let sig = &func.sig;
     let vis = &func.vis;
-    let struct_ident = snake_ident_to_pascal(&sig.ident);
     let procedure_name = args.id.clone().unwrap_or_else(|| sig.ident.to_string());
     let state = expand_state(params.state, &args.init);
     let (state_types, state_fns) = (&state.types, &state.fns);
@@ -209,7 +261,6 @@ fn expand_procedure(
     let output_ty = resolve_output_ty(args, output);
     let run_item = expand_run(func, params, output, &args.key, &state);
     let overrides = expand_modes(args);
-    let short_form = expand_short_form(func, args, params, output, &output_ty, &struct_ident)?;
     let input_ty = params.input_ty;
     Ok(quote! {
         #[derive(::core::default::Default)]
@@ -228,8 +279,6 @@ fn expand_procedure(
             #overrides
             #run_item
         }
-
-        #short_form
     })
 }
 
@@ -446,86 +495,49 @@ fn expand_modes(args: &ProcedureArgs) -> TokenStream {
     quote! { #entity_items #capacity_items }
 }
 
-/// Every rule about what a `sink` needs and what needs a `sink`, resolved to
-/// the `(id, sink, kind)` triple the short form emits from. `None` when the
-/// procedure declares no `sink` and nothing asked for one. Each refusal's
-/// message begins with its contract name (`authoring_contract.md` §5.2).
-fn short_form_names<'a>(
-    sig: &Signature,
-    args: &'a ProcedureArgs,
-    output: &Output,
-) -> syn::Result<Option<(&'a str, &'a str, Kind)>> {
-    let Some(sink) = &args.sink else {
-        // Nothing is generated, so these keys describe an operative that does
-        // not exist and would sit in the attribute doing nothing.
-        let mut keys: Vec<&str> = Vec::new();
-        if args.input.is_some() {
-            keys.push("input");
-        }
-        if args.kind.is_some() {
-            keys.push("kind");
-        }
-        if keys.is_empty() {
-            return Ok(None);
-        }
-        return Err(syn::Error::new(
-            sig.span(),
-            format!(
-                "ShorthandKeyWithoutSink: `{}` name(s) of the operative a `sink` generates; this \
-                 procedure declares no `sink`, so there is nothing for them to describe",
-                keys.join("`, `")
-            ),
-        ));
-    };
-    let id = args.id.as_deref().ok_or_else(|| {
-        syn::Error::new(
-            sig.span(),
-            "SinkWithoutId: a `sink` makes this procedure a whole operative, whose factory id is \
-             an address an operator types; write it as `id = \"...\"` rather than deriving it \
-             from the function name",
-        )
-    })?;
-    let kind = args.kind.ok_or_else(|| {
-        syn::Error::new(
-            sig.span(),
-            "SinkWithoutKind: a `sink` makes this procedure a whole operative; write \
-             `kind = \"stream\"` or `kind = \"workflow\"`",
-        )
-    })?;
-    if !(output.emits() || args.emits.is_some()) {
-        return Err(syn::Error::new(
-            sig.span(),
-            "SinkWithoutOutput: a `sink` requires an output type to feed the plugin — a non-unit \
-             return, or `emits = Type` on the context-parameter shape",
-        ));
-    }
-    Ok(Some((id, sink, kind)))
-}
-
-/// `sink = "name"` makes this one procedure a whole operative of its `kind`:
-/// the generated procedure type also implements the kind's authoring trait, so
-/// `runner.register_factory(Name)` declares it.
+/// The short form's operative: `<Name>` implementing the kind's authoring
+/// trait, wiring the entry channel into `<Name>Procedure` and, with a `sink`,
+/// that procedure to the plugin sink. The `id` is required, as every
+/// operative's factory id is; a `sink` on a body with no output is refused by
+/// its contract name (`authoring_contract.md` §5.2).
 fn expand_short_form(
     func: &ItemFn,
     args: &ProcedureArgs,
     params: &Params,
     output: &Output,
-    output_ty: &TokenStream,
-    struct_ident: &syn::Ident,
+    kind: Kind,
+    operative: &syn::Ident,
+    procedure: &syn::Ident,
 ) -> syn::Result<TokenStream> {
-    let Some((id, sink, kind)) = short_form_names(&func.sig, args, output)? else {
-        return Ok(quote! {});
-    };
-    operative_impl(Wiring {
-        ident: struct_ident,
+    let sig = &func.sig;
+    let id = args.id.as_deref().ok_or_else(|| {
+        syn::Error::new(
+            sig.span(),
+            format!(
+                "{} needs an `id`: an operative's factory id is an address an operator types, \
+                 so it is written rather than derived from the function name",
+                Declares::Operative(kind).attribute()
+            ),
+        )
+    })?;
+    if args.sink.is_some() && !(output.emits() || args.emits.is_some()) {
+        return Err(syn::Error::new(
+            sig.span(),
+            "SinkWithoutOutput: a `sink` requires an output type to feed the plugin: a non-unit \
+             return, or `emits = Type` on the context-parameter shape",
+        ));
+    }
+    operative_item(Wiring {
+        vis: &func.vis,
+        ident: operative,
         kind,
         id,
         input_ty: params.input_ty,
         input_name: args.input.as_ref(),
-        on_full: on_full_call(&args.on_full)?,
-        chain: quote! { .into::<#struct_ident>(); },
-        payload: output_ty.clone(),
-        sink,
+        on_full: on_full_call(Declares::Operative(kind).attribute(), &args.on_full)?,
+        chain: quote! { .into::<#procedure>(); },
+        payload: resolve_output_ty(args, output),
+        sink: args.sink.as_deref(),
     })
 }
 
@@ -602,7 +614,7 @@ fn mut_trait_use(state_ty: &Type) -> TokenStream {
     quote! { use #path as _; }
 }
 
-fn on_full_call(on_full: &Option<syn::Ident>) -> syn::Result<TokenStream> {
+fn on_full_call(attr: &str, on_full: &Option<syn::Ident>) -> syn::Result<TokenStream> {
     let Some(id) = on_full else {
         return Ok(quote! {});
     };
@@ -610,19 +622,22 @@ fn on_full_call(on_full: &Option<syn::Ident>) -> syn::Result<TokenStream> {
         "drop_nothing" => quote! { DropNothing },
         "drop_newest" => quote! { DropNewest },
         "drop_oldest" => quote! { DropOldest },
-        _ => return Err(syn::Error::new_spanned(
-            id,
-            "#[flezha::procedure] `on_full` must be one of: drop_nothing, drop_newest, drop_oldest",
-        )),
+        _ => {
+            return Err(syn::Error::new_spanned(
+                id,
+                format!("{attr} `on_full` must be one of: drop_nothing, drop_newest, drop_oldest"),
+            ))
+        }
     };
     Ok(quote! { .on_full(::flezha_runner::OverflowPolicy::#variant) })
 }
 
-fn parse_args(attr: TokenStream) -> syn::Result<ProcedureArgs> {
+fn parse_args(declares: Declares, attr: TokenStream) -> syn::Result<ProcedureArgs> {
     let mut args = ProcedureArgs::default();
     if attr.is_empty() {
         return Ok(args);
     }
+    let attribute = declares.attribute();
     let metas = Punctuated::<MetaNameValue, Token![,]>::parse_terminated.parse2(attr)?;
     for meta in metas {
         let key = meta
@@ -633,8 +648,17 @@ fn parse_args(attr: TokenStream) -> syn::Result<ProcedureArgs> {
         let value = meta.value;
         match key.as_str() {
             "id" => args.id = Some(try_str(&value)?),
+            "sink" | "input" | "kind" | "on_full" if matches!(declares, Declares::Procedure) => {
+                return Err(syn::Error::new_spanned(
+                    &meta.path,
+                    format!(
+                        "#[flezha::procedure] declares a procedure; `{key}` belongs to an operative \
+                         declaration: write the short form as `#[flezha::stream_operative(..)]` or \
+                         `#[flezha::workflow_operative(..)]`, or wire it in a full form's topology"
+                    ),
+                ))
+            }
             "sink" => args.sink = Some(try_str(&value)?),
-            "kind" => args.kind = Some(try_kind(&value)?),
             "input" => args.input = Some(try_lit_str(&value)?.clone()),
             "init" => args.init = Some(try_path(&value)?),
             "key" => args.key = Some(try_path(&value)?),
@@ -644,8 +668,8 @@ fn parse_args(attr: TokenStream) -> syn::Result<ProcedureArgs> {
             "entity_key" => {
                 return Err(syn::Error::new_spanned(
                     &meta.path,
-                    "#[flezha::procedure]: `entity_key` no longer exists; declare the Entity key \
-                     on the wiring instead — `.key_by(f)` on the stream that feeds this procedure",
+                    format!("{attribute}: `entity_key` no longer exists; declare the Entity key \
+                     on the wiring instead: `.key_by(f)` on the stream that feeds this procedure"),
                 ))
             }
             "idle_ttl" => args.idle_ttl_ms = Some(value),
@@ -656,7 +680,7 @@ fn parse_args(attr: TokenStream) -> syn::Result<ProcedureArgs> {
             other => {
                 return Err(syn::Error::new_spanned(
                     &meta.path,
-                    format!("#[flezha::procedure]: unknown attribute `{other}`"),
+                    format!("{attribute}: unknown attribute `{other}`"),
                 ))
             }
         }
@@ -705,21 +729,6 @@ fn try_ident(expr: &Expr) -> syn::Result<syn::Ident> {
         _ => None,
     };
     ident.ok_or_else(|| syn::Error::new_spanned(expr, "expected a bare identifier"))
-}
-
-/// `kind = "stream" | "workflow"`. Anything else names both values, because a
-/// third kind is what the author most likely meant to spell as one of these.
-fn try_kind(expr: &Expr) -> syn::Result<Kind> {
-    match try_str(expr)?.as_str() {
-        "stream" => Ok(Kind::Stream),
-        "workflow" => Ok(Kind::Workflow),
-        other => Err(syn::Error::new_spanned(
-            expr,
-            format!(
-                "#[flezha::procedure] `kind` must be \"stream\" or \"workflow\", read {other:?}"
-            ),
-        )),
-    }
 }
 
 fn try_type(expr: &Expr) -> syn::Result<Type> {

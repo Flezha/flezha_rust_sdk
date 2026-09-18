@@ -4,6 +4,22 @@ All notable changes to the Rust SDK crate.
 
 ## Unreleased
 
+### Changed: the short form is an operative declaration
+
+**Breaking.** The single-procedure short form moves from `#[flezha::procedure]`
+to two new attributes, `#[flezha::stream_operative]` and
+`#[flezha::workflow_operative]`, whose name is the kind. Each takes a required
+`id` (the factory id), an optional `sink` and an optional `input`, and emits two
+types: the operative under the function's PascalCase name, which
+`register_factory(Echo)` registers, and the procedure `EchoProcedure` beside it,
+named after the `id`, so it can be wired into another operative's topology and
+ejecting to the full form keeps every entity's state path. `sink` is optional:
+with none, the entry channel feeds the procedure and no plugin channel is
+declared. `#[flezha::procedure]` declares a procedure only and refuses `kind`,
+`sink`, `input` and `on_full`, which describe the operative's entry channel. The refusals are `SinkWithoutOutput` (a `sink` on a body
+with no output) and rustc's conflicting-impl error for a short form given a
+hand-written topology body (`ShortFormWithTopology` in the contract).
+
 ### Removed: the workflow `run` body; added `ProcedureCtx::complete`
 
 **Breaking.** `WorkflowOperative::run` and the `WorkflowCtx` export are deleted
@@ -31,13 +47,8 @@ factory id is refused at the second `register_factory` instead of being skipped
 in silence. `FlezhaError::DuplicateFactoryId`'s display now begins with the
 refusal's contract name.
 
-`#[flezha::procedure]` gains a required `kind` (`"stream"` or `"workflow"`)
-beside `sink`, and the impl it generates goes on the procedure type itself, so
-`register_factory(Echo)` registers the short form. A workflow short form is a
-`once` workflow wiring its entry channel into the procedure and the procedure to
-the sink. The four declaration refusals are compile errors whose messages begin
-with `SinkWithoutId`, `SinkWithoutKind`, `SinkWithoutOutput` and
-`ShorthandKeyWithoutSink`.
+A workflow short form is a `once` workflow wiring its entry channel into the
+procedure and the procedure to the sink.
 
 `flezha::operative!` now begins with the type it declares —
 `flezha::operative! { pub struct Name; id: "...", pipeline: ... }` — and that

@@ -37,8 +37,7 @@
     "branch",
     "workflow",
     "shorthand",
-    "shorthand_typed_output",
-    "shorthand_omittable_sink"
+    "shorthand_typed_output"
   ],
   "toolchain": "rustc --version",
   "deferred": [],
@@ -65,7 +64,8 @@
       "sugar_do_nothing",
       "sugar_store_input",
       "sugar_named_input",
-      "sugar_workflow"
+      "sugar_workflow",
+      "sugar_state_only"
     ],
     "liveness": [
       "wedge_probe"

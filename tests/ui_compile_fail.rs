@@ -21,7 +21,6 @@ fn ui_compile_fail() {
     t.compile_fail("tests/ui/procedure_zero_inputs.rs");
     t.compile_fail("tests/ui/procedure_many_inputs.rs");
     t.compile_fail("tests/ui/procedure_shared_ref_state.rs");
-    t.compile_fail("tests/ui/procedure_sink_unit_return.rs");
     t.compile_fail("tests/ui/procedure_entity_key_removed.rs");
     t.compile_fail("tests/ui/procedure_key_unit_return.rs");
     t.compile_fail("tests/ui/procedure_ctx_with_key.rs");
@@ -34,12 +33,16 @@ fn ui_compile_fail() {
     t.compile_fail("tests/ui/state_on_tuple_struct.rs");
     t.compile_fail("tests/ui/operative_fan_out.rs");
     t.compile_fail("tests/ui/operative_empty_entry_name.rs");
-    t.compile_fail("tests/ui/procedure_key_without_sink.rs");
-    t.compile_fail("tests/ui/procedure_sink_without_id.rs");
-    t.compile_fail("tests/ui/procedure_sink_without_kind.rs");
-    t.compile_fail("tests/ui/procedure_kind_unknown.rs");
     t.compile_fail("tests/ui/register_factory_of_both_kinds.rs");
-    t.compile_fail("tests/ui/procedure_empty_entry_name.rs");
+    t.compile_fail("tests/ui/procedure_operative_keys.rs");
+
+    // The short-form attributes (`#[flezha::stream_operative]` /
+    // `#[flezha::workflow_operative]`).
+    t.compile_fail("tests/ui/operative_sink_without_output.rs");
+    t.compile_fail("tests/ui/operative_no_id.rs");
+    t.compile_fail("tests/ui/operative_empty_input.rs");
+    t.compile_fail("tests/ui/operative_with_hand_written_impl.rs");
+    t.compile_fail("tests/ui/operative_shared_ref_state.rs");
 
     // Keyed/collection journaling (`expressive-state-journaling`).
     t.compile_fail("tests/ui/state_map_without_journal.rs");

@@ -525,3 +525,9 @@ pub use operative::builder::TopologyBuildError;
 #       pub fn init_default_tracing();       # RUST_LOG wins when set; a second
 #                                            # install warns and returns, never panics
 #   }
+
+# Authoring macros. `stream_operative` and `workflow_operative` are the §5 short
+# form: on a `run` function each emits the operative type under the function's
+# PascalCase name and the procedure type beside it, suffixed `Procedure`.
+
+pub use flezha_macros::{operative, procedure, stream_operative, workflow_operative, State};

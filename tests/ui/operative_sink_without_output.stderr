@@ -1,0 +1,5 @@
+error: SinkWithoutOutput: a `sink` requires an output type to feed the plugin: a non-unit return, or `emits = Type` on the context-parameter shape
+ --> tests/ui/operative_sink_without_output.rs:2:1
+  |
+2 | fn f(a: String) {
+  | ^^
