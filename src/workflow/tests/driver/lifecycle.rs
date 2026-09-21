@@ -1,5 +1,5 @@
 //! Lifecycle and structured-chain scenarios: a single pass, a failure, a
-//! completion and its tie-break, an inbox loop a procedure ends, a stop, and
+//! completion and its tie-break, an inbox loop a tasklet ends, a stop, and
 //! the `AddOperative` kind routing.
 
 use std::sync::atomic::Ordering;
@@ -25,7 +25,7 @@ pub(super) fn lifecycle(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
     assert_eq!(
         EMIT_RUNS.load(Ordering::SeqCst),
         1,
-        "the procedure runs exactly once"
+        "the tasklet runs exactly once"
     );
     assert_eq!(outs, vec![b"hello".to_vec()], "args echoed as output");
     assert_eq!((done.0.as_str(), done.1.as_str()), ("ok", ""));
@@ -72,9 +72,11 @@ pub(super) fn lifecycle(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
     let (_o, done) = drain(rx, "workflow-panic");
     assert_eq!(done.0, "error");
     assert!(done.1.contains("kaboom"));
+}
 
-    // --- a procedure's complete carries the result, journaled on its commit ---
-    let _ = drain_proc_commits();
+pub(super) fn completions(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
+    // --- a tasklet's complete carries the result, journaled on its commit ---
+    let _ = drain_task_commits();
     assert!(node.start_workflow(
         "test-complete-workflow".into(),
         "workflow-c".into(),
@@ -88,12 +90,12 @@ pub(super) fn lifecycle(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
         "complete() result reaches WorkflowCompleted"
     );
     assert_eq!(
-        completions_of(drain_proc_commits(), "workflow-c"),
+        completions_of(drain_task_commits(), "workflow-c"),
         vec![Some(b"result:z".to_vec())],
-        "the completing procedure's commit carries its result"
+        "the completing tasklet's commit carries its result"
     );
 
-    // --- two completing procedures: the later one in commit order wins ---
+    // --- two completing tasklets: the later one in commit order wins ---
     assert!(node.start_workflow(
         "test-two-completions".into(),
         "workflow-two".into(),
@@ -102,12 +104,12 @@ pub(super) fn lifecycle(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
     let (_o, done) = drain(rx, "workflow-two");
     assert_eq!((done.0.as_str(), done.2.as_slice()), ("ok", &b"second"[..]));
     assert_eq!(
-        completions_of(drain_proc_commits(), "workflow-two"),
+        completions_of(drain_task_commits(), "workflow-two"),
         vec![Some(b"first".to_vec()), Some(b"second".to_vec())],
-        "each procedure journals its own completion"
+        "each tasklet journals its own completion"
     );
 
-    // --- two entities of one procedure: the greatest entity key wins ---
+    // --- two cells of one tasklet: the greatest cell key wins ---
     assert!(node.start_workflow(
         "test-keyed-completions".into(),
         "workflow-keyed".into(),
@@ -116,9 +118,9 @@ pub(super) fn lifecycle(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
     let (_o, done) = drain(rx, "workflow-keyed");
     assert_eq!((done.0.as_str(), done.2.as_slice()), ("ok", &b"b"[..]));
     assert_eq!(
-        completions_of(drain_proc_commits(), "workflow-keyed"),
+        completions_of(drain_task_commits(), "workflow-keyed"),
         vec![Some(b"b".to_vec())],
-        "the procedure's commit carries the one its greatest key asked for"
+        "the tasklet's commit carries the one its greatest key asked for"
     );
 
     // --- a failure later in the iteration discards the completion ---
@@ -131,11 +133,11 @@ pub(super) fn lifecycle(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
     assert_eq!(done.0, "error");
     assert!(done.1.contains("boom after complete"), "{}", done.1);
     assert!(done.2.is_empty(), "a failed iteration completes nothing");
-    let _ = drain_proc_commits();
+    let _ = drain_task_commits();
 }
 
-/// The completion each of `id`'s forward proc commits carried, in order.
-fn completions_of(commits: Vec<crate::pb::ProcCommit>, id: &str) -> Vec<Option<Vec<u8>>> {
+/// The completion each of `id`'s forward task commits carried, in order.
+fn completions_of(commits: Vec<crate::pb::TaskCommit>, id: &str) -> Vec<Option<Vec<u8>>> {
     commits
         .into_iter()
         .filter(|c| c.operative_id == id && !c.compensating)
@@ -144,7 +146,7 @@ fn completions_of(commits: Vec<crate::pb::ProcCommit>, id: &str) -> Vec<Option<V
 }
 
 pub(super) fn loop_stop_and_removal(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
-    // --- inbox loop: one iteration per input until a procedure completes it ---
+    // --- inbox loop: one iteration per input until a tasklet completes it ---
     assert!(node.start_workflow("test-loop-workflow".into(), "loop-1".into(), "".into()));
     for turn in [&b"alpha"[..], b"beta", b"quit"] {
         assert!(
@@ -158,7 +160,7 @@ pub(super) fn loop_stop_and_removal(node: &mut RunnerNode, rx: &Receiver<RunnerM
     assert_eq!(
         (done.0.as_str(), done.2.as_slice()),
         ("ok", &b""[..]),
-        "a procedure's complete ends the loop"
+        "a tasklet's complete ends the loop"
     );
 
     // --- external stop (WorkflowStop handler) → cancelled ---
@@ -201,7 +203,7 @@ pub(super) fn loop_stop_and_removal(node: &mut RunnerNode, rx: &Receiver<RunnerM
 }
 
 pub(super) fn structured_chains(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
-    // --- structured multi-proc chain runs in order with a barrier ---
+    // --- structured multi-task chain runs in order with a barrier ---
     assert!(node.start_workflow("test-chain-workflow".into(), "chain-1".into(), "x".into()));
     let (chain_outs, done) = drain(rx, "chain-1");
     assert_eq!(done.0, "ok");
@@ -211,7 +213,7 @@ pub(super) fn structured_chains(node: &mut RunnerNode, rx: &Receiver<RunnerMessa
         "Stage1 then Stage2, in order"
     );
 
-    // --- structured parallel static entities + barrier + per-entity state ---
+    // --- structured parallel static cells + barrier + per-cell state ---
     assert!(node.start_workflow(
         "test-fan-workflow".into(),
         "fan-1".into(),
@@ -220,8 +222,8 @@ pub(super) fn structured_chains(node: &mut RunnerNode, rx: &Receiver<RunnerMessa
     let (mut fan_outs, done) = drain(rx, "fan-1");
     assert_eq!(done.0, "ok");
     fan_outs.sort();
-    // odd entity: "a"(1) then "ccc"(2); even entity: "bb"(1) then "dddd"(2).
-    // Independent per-entity counters; the barrier collected all four.
+    // odd cell: "a"(1) then "ccc"(2); even cell: "bb"(1) then "dddd"(2).
+    // Independent per-cell counters; the barrier collected all four.
     let mut expected: Vec<Vec<u8>> = vec![
         b"1:a".to_vec(),
         b"2:ccc".to_vec(),
@@ -231,7 +233,7 @@ pub(super) fn structured_chains(node: &mut RunnerNode, rx: &Receiver<RunnerMessa
     expected.sort();
     assert_eq!(fan_outs, expected);
 
-    // --- hybrid channel: inter-proc output also routed to a plugin sink ---
+    // --- hybrid channel: inter-task output also routed to a plugin sink ---
     assert!(node.start_workflow("test-hybrid-workflow".into(), "hybrid-1".into(), "z".into()));
     let (mut hybrid_outs, done) = drain(rx, "hybrid-1");
     assert_eq!(done.0, "ok");
@@ -250,8 +252,8 @@ pub(super) fn add_operative_routing(node: &mut RunnerNode, rx: &Receiver<RunnerM
         factory_id: "test-emit-workflow".into(),
         init_values: "argz".into(),
         kind: "workflow".into(),
-        resume_entity_count: 0,
-        proc_journal: None,
+        resume_cell_count: 0,
+        task_journal: None,
         ..Default::default()
     };
     let mut errors = Vec::new();
@@ -270,8 +272,8 @@ pub(super) fn add_operative_routing(node: &mut RunnerNode, rx: &Receiver<RunnerM
         factory_id: "test-unregistered".into(),
         init_values: "".into(),
         kind: "workflow".into(),
-        resume_entity_count: 0,
-        proc_journal: None,
+        resume_cell_count: 0,
+        task_journal: None,
         ..Default::default()
     };
     let mut errors_bad = Vec::new();
@@ -285,8 +287,8 @@ pub(super) fn add_operative_routing(node: &mut RunnerNode, rx: &Receiver<RunnerM
         factory_id: "test-emit-workflow".into(),
         init_values: "".into(),
         kind: "continuous".into(),
-        resume_entity_count: 0,
-        proc_journal: None,
+        resume_cell_count: 0,
+        task_journal: None,
         ..Default::default()
     };
     let mut errors_unknown = Vec::new();

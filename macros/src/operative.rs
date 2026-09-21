@@ -17,7 +17,7 @@ struct OperativeDef {
     input_ty: Type,
     /// The entry channel name written after the head's turbofish, if any.
     input_name: Option<LitStr>,
-    procedures: Vec<Path>,
+    tasklets: Vec<Path>,
     plugin_ty: Type,
     plugin_name: String,
 }
@@ -49,14 +49,14 @@ fn parse_paren_name(input: ParseStream) -> syn::Result<LitStr> {
     content.parse()
 }
 
-/// A parsed pipeline tail: the procedure hops in order, and the terminal
+/// A parsed pipeline tail: the tasklet hops in order, and the terminal
 /// `plugin::<U>("name")` when one was written.
 type Pipeline = (Vec<Path>, Option<(Type, String)>);
 
-/// The `-> procedure -> ... -> plugin::<U>("name")` tail. Stops at the plugin
+/// The `-> tasklet -> ... -> plugin::<U>("name")` tail. Stops at the plugin
 /// hop; whatever follows it is left for `parse`'s fan-out refusal to name.
 fn parse_pipeline(input: ParseStream) -> syn::Result<Pipeline> {
-    let mut procedures: Vec<Path> = Vec::new();
+    let mut tasklets: Vec<Path> = Vec::new();
     let mut plugin: Option<(Type, String)> = None;
     while input.peek(Token![->]) {
         input.parse::<Token![->]>()?;
@@ -72,9 +72,9 @@ fn parse_pipeline(input: ParseStream) -> syn::Result<Pipeline> {
             plugin = Some((ty, name.value()));
             break;
         }
-        procedures.push(input.parse::<Path>()?);
+        tasklets.push(input.parse::<Path>()?);
     }
-    Ok((procedures, plugin))
+    Ok((tasklets, plugin))
 }
 
 impl Parse for OperativeDef {
@@ -106,7 +106,7 @@ impl Parse for OperativeDef {
             .then(|| parse_paren_name(input))
             .transpose()?;
 
-        let (procedures, plugin) = parse_pipeline(input)?;
+        let (tasklets, plugin) = parse_pipeline(input)?;
 
         if !input.is_empty() {
             return Err(syn::Error::new(
@@ -123,10 +123,10 @@ impl Parse for OperativeDef {
             )
         })?;
 
-        if procedures.is_empty() {
+        if tasklets.is_empty() {
             return Err(syn::Error::new(
                 input_kw.span(),
-                "pipeline must contain at least one procedure between `input` and `plugin`",
+                "pipeline must contain at least one tasklet between `input` and `plugin`",
             ));
         }
 
@@ -136,14 +136,14 @@ impl Parse for OperativeDef {
             id: id.value(),
             input_ty,
             input_name,
-            procedures,
+            tasklets,
             plugin_ty,
             plugin_name,
         })
     }
 }
 
-/// A generated operative: one entry channel threaded through a procedure
+/// A generated operative: one entry channel threaded through a tasklet
 /// chain, and, when a `sink` is written, the terminal payload type pinned and
 /// the stream sunk under it. The operative is a type the author can name, so
 /// registration is a call they write.
@@ -189,7 +189,7 @@ impl Kind {
             ),
             Kind::Workflow => (
                 quote! { ::flezha_runner::WorkflowOperative },
-                Ident::new("procedures", proc_macro2::Span::call_site()),
+                Ident::new("tasklets", proc_macro2::Span::call_site()),
             ),
         }
     }
@@ -224,9 +224,9 @@ pub(crate) fn operative_item(wiring: Wiring<'_>) -> syn::Result<TokenStream> {
     } = wiring;
     let entry = entry_channel_name(input_name)?;
     let (operative_trait, method) = kind.trait_and_method();
-    // Pins the declared sink payload type against the terminal procedure's
-    // `Output`; with no sink the procedure's output is left unconsumed, as a
-    // hand-written channel ending at a procedure leaves it.
+    // Pins the declared sink payload type against the terminal tasklet's
+    // `Output`; with no sink the tasklet's output is left unconsumed, as a
+    // hand-written channel ending at a tasklet leaves it.
     let sunk = match sink {
         Some(sink) => quote! {
             let stream: ::flezha_runner::Stream<'_, #payload> = stream;
@@ -249,13 +249,13 @@ pub(crate) fn operative_item(wiring: Wiring<'_>) -> syn::Result<TokenStream> {
 pub fn expand(item: TokenStream) -> syn::Result<TokenStream> {
     let def: OperativeDef = syn::parse2(item)?;
 
-    let first_procedure = &def.procedures[0];
+    let first_tasklet = &def.tasklets[0];
     let plugin_ty = &def.plugin_ty;
 
     // Chained hops on the stream handle; each `.into` returns the consumed
-    // procedure's output stream.
+    // tasklet's output stream.
     let hops: TokenStream = def
-        .procedures
+        .tasklets
         .iter()
         .skip(1)
         .map(|cons| {
@@ -273,7 +273,7 @@ pub fn expand(item: TokenStream) -> syn::Result<TokenStream> {
         input_ty: &def.input_ty,
         input_name: def.input_name.as_ref(),
         on_full: quote! {},
-        chain: quote! { .into::<#first_procedure>(); #hops },
+        chain: quote! { .into::<#first_tasklet>(); #hops },
         payload: quote! { #plugin_ty },
         sink: Some(&def.plugin_name),
     })

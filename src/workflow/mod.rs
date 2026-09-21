@@ -12,23 +12,23 @@ pub use flz_core::workflow::{compensation, driver, instance, registry};
 
 use crate::channel::ChannelBuilder;
 
-/// One workflow operative class: a static DAG of Procedures/Channels/Entities
-/// declared in [`procedures`](Self::procedures), on the same graph builder a
-/// stream operative uses. A procedure ends its instance with
-/// [`ProcedureCtx::complete`](crate::ProcedureCtx::complete). Capabilities
+/// One workflow operative class: a static DAG of Tasklets/Channels/Cells
+/// declared in [`tasklets`](Self::tasklets), on the same graph builder a
+/// stream operative uses. A tasklet ends its instance with
+/// [`TaskletCtx::complete`](crate::TaskletCtx::complete). Capabilities
 /// attach to the kind, not here; choosing the workflow kind is sufficient.
 /// A worked example: `sdk/rust/examples/spawn_workflow_worker.rs`.
 pub trait WorkflowOperative: Send + Sync + 'static {
     /// Stable, controller-facing factory identifier.
     fn factory_id() -> &'static str;
 
-    /// The DAG. The workflow driver runs it in topological order: a procedure
+    /// The DAG. The workflow driver runs it in topological order: a tasklet
     /// becomes runnable only after **every** producer feeding it has committed
     /// — fan-out branches interleave independently, and a fan-in node is
     /// dispatched once, with the accumulated batch of all its producers.
     /// Cycles are refused at registration, and so is a class that declares no
-    /// procedure.
-    fn procedures(_c: &ChannelBuilder) {}
+    /// tasklet.
+    fn tasklets(_c: &ChannelBuilder) {}
 
     /// Optional wall-clock backstop. `None` (the default) means no duration
     /// bound; when `Some`, the SDK cooperatively cancels in-flight work once
@@ -38,7 +38,7 @@ pub trait WorkflowOperative: Send + Sync + 'static {
     }
 
     /// Self-termination guarantee, validated at registration. Default `true`:
-    /// the operative ends on its own (a chain that finishes, a procedure's
+    /// the operative ends on its own (a chain that finishes, a tasklet's
     /// `complete`, or a loop that runs out of work). An operative whose **only**
     /// possible exit is an external stop sets this `false`; combined with no
     /// [`max_duration`](Self::max_duration) it is **refused** at registration
@@ -66,18 +66,18 @@ pub trait WorkflowOperative: Send + Sync + 'static {
         None
     }
 
-    /// Total attempts a **structured** procedure's entity gets before its
-    /// error fails the procedure (`workflow-entity-retry`): the first run plus
+    /// Total attempts a **structured** tasklet's cell gets before its
+    /// error fails the tasklet (`workflow-cell-retry`): the first run plus
     /// the retries. Default 3; `0` or `1` restores fail-fast. Only the failed
-    /// entity re-runs — siblings that completed stay buffered at the barrier —
-    /// and the retry always happens **before** the procedure commits, so a
-    /// committed procedure is never retried.
+    /// cell re-runs — siblings that completed stay buffered at the barrier —
+    /// and the retry always happens **before** the tasklet commits, so a
+    /// committed tasklet is never retried.
     ///
-    /// A retried entity re-runs its whole batch for that procedure, under the
+    /// A retried cell re-runs its whole batch for that tasklet, under the
     /// same at-least-once idempotency contract crash-resume imposes: a failed
-    /// attempt's state changes are already applied, so `Procedure::run` must
+    /// attempt's state changes are already applied, so `Tasklet::run` must
     /// tolerate re-running over them. Classify a permanent failure with
-    /// [`ProcedureError::non_retryable`](crate::procedure::ProcedureError::non_retryable)
+    /// [`TaskletError::non_retryable`](crate::tasklet::TaskletError::non_retryable)
     /// to skip the ladder.
     fn retry_attempts() -> u32 {
         3
@@ -91,7 +91,7 @@ pub trait WorkflowOperative: Send + Sync + 'static {
         Duration::from_millis(500)
     }
 
-    /// Sends of one commit barrier (`ProcCommit` / `IterCommit`, first send
+    /// Sends of one commit barrier (`TaskCommit` / `IterCommit`, first send
     /// included) before an ack that never arrives fails the run. Default 3;
     /// `0` or `1` is the single wait. A re-send carries the same
     /// `reference_id`, and the controller journals a barrier once by its
@@ -104,7 +104,7 @@ pub trait WorkflowOperative: Send + Sync + 'static {
 
     /// Saga rollback scope, applied when the operative terminates abnormally
     /// after partial progress. Default [`RollbackMode::AllOrNothing`] undoes
-    /// every completed procedure in reverse, back to the start;
+    /// every completed tasklet in reverse, back to the start;
     /// [`RollbackMode::KeepProgress`] keeps each finished loop iteration and
     /// undoes only the in-flight one. The mode is irrelevant for a single-pass
     /// chain (where both behave all-or-nothing) and for an operative with no
@@ -115,9 +115,9 @@ pub trait WorkflowOperative: Send + Sync + 'static {
 
     /// Class-level persistence toggle (durable by default, mirroring
     /// [`StreamOperative::PERSISTENCE_ENABLED`](crate::operative::StreamOperative::PERSISTENCE_ENABLED)).
-    /// When `true`, a structured workflow operative's per-Entity Changes are
+    /// When `true`, a structured workflow operative's per-Cell Changes are
     /// written to the WAL as they apply, so a crash resumes from persisted
-    /// state. When `false`, the per-Entity flush drains and discards Changes
+    /// state. When `false`, the per-Cell flush drains and discards Changes
     /// with no serialization or wire I/O — the operative is in-memory only
     /// (a crash re-runs from the top). The controller resolves this
     /// durable-by-default with a per-class operator opt-out.
@@ -125,7 +125,7 @@ pub trait WorkflowOperative: Send + Sync + 'static {
 
     /// Synchronous remote durability (`remote-durability-tier`): the
     /// controller completes the remote ship of each commit barrier — the
-    /// proc-journal suffix and the inbox the barrier consumed — before it
+    /// task-journal suffix and the inbox the barrier consumed — before it
     /// acknowledges the barrier. The acknowledgement this driver blocks on
     /// therefore implies the commit survives losing the controller's disk
     /// (RPO 0), at the cost of one remote round trip per barrier.

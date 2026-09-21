@@ -11,8 +11,8 @@ use flz_transport::transport::FlezhaStream;
 
 use super::fixtures::{build_slot_of, hold_for, payload, unix_stream, wait_until};
 use super::support::*;
-use crate::entity::timer::{TimerKind, TimerOp};
-use crate::entity::EntitySlot;
+use crate::cell::timer::{TimerKind, TimerOp};
+use crate::cell::CellSlot;
 
 // ------------------------------------- the jobs-underway cap and its signal
 
@@ -38,7 +38,7 @@ fn starvation_waiter(core: &Arc<PollCore>) -> std::thread::JoinHandle<Starvation
 
 /// Hand out one activation per slot, each occupying a job, and return the
 /// tokens still outstanding.
-fn occupy(core: &PollCore, slots: &[Arc<EntitySlot>], stream: &Arc<FlezhaStream>) -> Vec<u64> {
+fn occupy(core: &PollCore, slots: &[Arc<CellSlot>], stream: &Arc<FlezhaStream>) -> Vec<u64> {
     slots
         .iter()
         .map(|slot| queue_and_hand_out(core, slot, stream, 1).token)
@@ -46,20 +46,20 @@ fn occupy(core: &PollCore, slots: &[Arc<EntitySlot>], stream: &Arc<FlezhaStream>
 }
 
 /// The cap is the core's own limit on jobs underway, independent of how
-/// many threads a host runs: at it, queued entity work stays queued —
+/// many threads a host runs: at it, queued cell work stays queued —
 /// pollers wait as if `ready` were empty — and one completion is enough
 /// to release exactly one more.
 #[test]
 fn handout_stops_at_the_cap_and_resumes_on_completion() {
     let core = PollCore::with_max_inflight(2);
-    let slots: Vec<Arc<EntitySlot>> = (0..3)
+    let slots: Vec<Arc<CellSlot>> = (0..3)
         .map(|i| build_slot(&format!("poll-cap-{i}")).1)
         .collect();
     let stream = unix_stream();
 
     let held = occupy(&core, &slots[..2], &stream);
 
-    // The third entity's round is queued and runnable; the cap holds it.
+    // The third cell's round is queued and runnable; the cap holds it.
     assert!(slots[2].mailbox.try_push(payload(0, &stream)).is_ok());
     assert!(slots[2].mailbox.claim_inflight());
     core.schedule(&slots[2]);
@@ -80,7 +80,7 @@ fn handout_stops_at_the_cap_and_resumes_on_completion() {
 
 /// Command activations are barrier-bounded by the drivers that enqueue
 /// them and answer a caller blocked on a rendezvous — holding one behind
-/// capped entity work would deadlock that caller, so the cap never gates
+/// capped cell work would deadlock that caller, so the cap never gates
 /// them.
 #[test]
 fn a_command_activation_is_served_at_the_cap() {
@@ -96,7 +96,7 @@ fn a_command_activation_is_served_at_the_cap() {
 
     let (reply, _rx) = crossbeam::channel::bounded(1);
     core.submit_direct(flz_core::poll_core::EnginePayload::Command {
-        target: flz_core::host::entity_ref_of(&other),
+        target: flz_core::host::cell_ref_of(&other),
         change_seq: 0,
         factory: "poll_core_exclusivity_op".into(),
         kind: flz_core::schema::ActivationKind::SnapshotRequest,
@@ -141,7 +141,7 @@ fn starvation_wakes_when_work_is_queued_with_no_poller() {
 }
 
 /// A direct activation queued with nobody to take it is starvation too,
-/// and unlike entity work the cap does not gate it: a workflow driver is
+/// and unlike cell work the cap does not gate it: a workflow driver is
 /// blocked on its step, so "every worker is inside user code" must buy a
 /// thread rather than wedge the stage.
 #[test]
@@ -156,7 +156,7 @@ fn starvation_wakes_at_a_queued_direct_activation() {
 
     let (reply, _rx) = crossbeam::channel::bounded(1);
     core.submit_direct(flz_core::poll_core::EnginePayload::Command {
-        target: flz_core::host::entity_ref_of(&slot),
+        target: flz_core::host::cell_ref_of(&slot),
         change_seq: 0,
         factory: "poll_core_exclusivity_op".into(),
         kind: flz_core::schema::ActivationKind::SnapshotRequest,
@@ -241,12 +241,12 @@ fn no_starvation_while_a_poller_is_waiting() {
 #[test]
 fn a_saturated_runner_does_not_read_as_starved() {
     let core = Arc::new(PollCore::new());
-    let slots: Vec<Arc<EntitySlot>> = (0..4)
+    let slots: Vec<Arc<CellSlot>> = (0..4)
         .map(|i| build_slot(&format!("poll-saturated-{i}")).1)
         .collect();
     let stop = Arc::new(AtomicBool::new(false));
 
-    // Keeps every entity's queue non-empty for the whole run.
+    // Keeps every cell's queue non-empty for the whole run.
     let feeder = {
         let (core, slots, stop) = (Arc::clone(&core), slots.clone(), Arc::clone(&stop));
         std::thread::spawn(move || {

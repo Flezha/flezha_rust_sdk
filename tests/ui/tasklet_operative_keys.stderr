@@ -1,0 +1,29 @@
+error: #[flezha::tasklet] declares a tasklet; `sink` belongs to an operative declaration: write the short form as `#[flezha::stream_operative(..)]` or `#[flezha::workflow_operative(..)]`, or wire it in a full form's topology
+ --> tests/ui/tasklet_operative_keys.rs:3:36
+  |
+3 | #[flezha_runner::tasklet(id = "a", sink = "echo")]
+  |                                    ^^^^
+
+error: #[flezha::tasklet] declares a tasklet; `input` belongs to an operative declaration: write the short form as `#[flezha::stream_operative(..)]` or `#[flezha::workflow_operative(..)]`, or wire it in a full form's topology
+ --> tests/ui/tasklet_operative_keys.rs:8:36
+  |
+8 | #[flezha_runner::tasklet(id = "b", input = "prices")]
+  |                                    ^^^^^
+
+error: #[flezha::tasklet] declares a tasklet; `kind` belongs to an operative declaration: write the short form as `#[flezha::stream_operative(..)]` or `#[flezha::workflow_operative(..)]`, or wire it in a full form's topology
+  --> tests/ui/tasklet_operative_keys.rs:13:36
+   |
+13 | #[flezha_runner::tasklet(id = "c", kind = "stream")]
+   |                                    ^^^^
+
+error: #[flezha::tasklet] declares a tasklet; `on_full` belongs to an operative declaration: write the short form as `#[flezha::stream_operative(..)]` or `#[flezha::workflow_operative(..)]`, or wire it in a full form's topology
+  --> tests/ui/tasklet_operative_keys.rs:18:36
+   |
+18 | #[flezha_runner::tasklet(id = "e", on_full = drop_oldest)]
+   |                                    ^^^^^^^
+
+error: #[flezha::stream_operative]: unknown attribute `kind`
+  --> tests/ui/tasklet_operative_keys.rs:23:45
+   |
+23 | #[flezha_runner::stream_operative(id = "d", kind = "stream", sink = "echo")]
+   |                                             ^^^^

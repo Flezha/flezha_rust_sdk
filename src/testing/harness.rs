@@ -1,8 +1,8 @@
-//! `ProcedureTestHarness::<S>` — replay-equality test harness.
+//! `TaskletTestHarness::<S>` — replay-equality test harness.
 //!
 //! Tests construct the harness with `new()` (requires `S: Default` and
 //! a `Self::State` derivable from `init_state(None, None)`),
-//! `with_initial_state(state)`, or `with_payload(entity_key, payload)`
+//! `with_initial_state(state)`, or `with_payload(cell_key, payload)`
 //! (replicates the runtime's snapshot + change-log restoration flow).
 //! The harness owns its state, drives `S::run` for each input via
 //! `apply_inputs`, and records emitted values + Changes for inspection.
@@ -10,7 +10,7 @@
 //! The determinism gate is `replay_equals(&self) -> Result<(), ReplayMismatch>`:
 //! it folds the recorded change log against a fresh re-constructed initial
 //! state and asserts byte-equality with the harness's terminal state (via
-//! `serde::Serialize` round-trip). Panics from `Procedure::apply_change`
+//! `serde::Serialize` round-trip). Panics from `Tasklet::apply_change`
 //! surface as test failures; non-determinism surfaces as a `ReplayMismatch`
 //! carrying serialized expected and actual states for hex-diff inspection.
 
@@ -21,17 +21,17 @@ use std::sync::Arc;
 
 use flz_core::header::RestoreError;
 
-use crate::entity::restore::{init_entity_with_payload, RestoreInitPayload};
-use crate::entity::timer::{PendingTimers, TimerKind, TimerOp, TimerSession};
+use crate::cell::restore::{init_cell_with_payload, RestoreInitPayload};
+use crate::cell::timer::{PendingTimers, TimerKind, TimerOp, TimerSession};
 use crate::operative::dispatcher::emit_sink::apply_identity_stamps;
-use crate::procedure::clock::{wall_now_ms, ClockFor};
-use crate::procedure::ctx::EmitSink;
-use crate::procedure::{Procedure, ProcedureCtx, ProcedureError, StateHandle};
+use crate::tasklet::clock::{wall_now_ms, ClockFor};
+use crate::tasklet::ctx::EmitSink;
+use crate::tasklet::{StateHandle, Tasklet, TaskletCtx, TaskletError};
 
-/// Entity identity the harness stands in for the runtime's per-slot
-/// identity: feeds `ctx.stable_id()` derivation and the `flz.entity`
+/// Cell identity the harness stands in for the runtime's per-slot
+/// identity: feeds `ctx.stable_id()` derivation and the `flz.cell`
 /// stamp in keyed mode.
-const HARNESS_ENTITY_IDENTITY: &[u8] = b"<harness>";
+const HARNESS_CELL_IDENTITY: &[u8] = b"<harness>";
 
 /// Recorded emit: type-erased value + optional plugin metadata.
 struct Emit {
@@ -49,7 +49,7 @@ pub struct ReplayMismatch {
 
 impl std::fmt::Display for ReplayMismatch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "ProcedureTestHarness::replay_equals: state divergence")?;
+        writeln!(f, "TaskletTestHarness::replay_equals: state divergence")?;
         writeln!(f, "  expected ({} bytes):", self.expected_serialized.len())?;
         write_hex(&self.expected_serialized, f)?;
         writeln!(f, "  actual   ({} bytes):", self.actual_serialized.len())?;
@@ -71,8 +71,8 @@ fn write_hex(bytes: &[u8], f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result 
     Ok(())
 }
 
-pub struct ProcedureTestHarness<S: Procedure> {
-    procedure: S,
+pub struct TaskletTestHarness<S: Tasklet> {
+    tasklet: S,
     state: S::State,
     /// Snapshot of the initial state captured at construction time.
     /// Replayed against `recorded_changes` by [`Self::replay_equals`];
@@ -84,17 +84,17 @@ pub struct ProcedureTestHarness<S: Procedure> {
     /// and recorded emits carry `flz.*` identity stamps like the runtime's
     /// plugin frames.
     keyed: bool,
-    /// The key the Entity under test was routed by, served to `ctx` exactly
-    /// as the runtime serves a keyed Entity's own key. `None` stands for a
-    /// single-entity Procedure, where a keyed channel still refuses a
+    /// The key the Cell under test was routed by, served to `ctx` exactly
+    /// as the runtime serves a keyed Cell's own key. `None` stands for a
+    /// single-cell Tasklet, where a keyed channel still refuses a
     /// key-less emit.
-    entity_key: Option<String>,
+    cell_key: Option<String>,
     /// Injected wall-clock values served to `WallClock` evaluation in
     /// order (last value repeats). `None` = real `SystemTime`.
     wall_script: Option<Vec<u64>>,
     wall_pos: Cell<usize>,
     /// Pending timers, folded exactly as the runtime folds them. Compared by
-    /// [`ProcedureTestHarness::replay_equals`] alongside the state: a timer is
+    /// [`TaskletTestHarness::replay_equals`] alongside the state: a timer is
     /// folded state, so a replay that rebuilds a different set is the same
     /// class of divergence as one that rebuilds a different balance.
     timers: PendingTimers,
@@ -106,7 +106,7 @@ pub struct ProcedureTestHarness<S: Procedure> {
     recorded_timer_ops: Vec<TimerOp>,
 }
 
-impl<S: Procedure> ProcedureTestHarness<S>
+impl<S: Tasklet> TaskletTestHarness<S>
 where
     S::State: serde::Serialize + serde::de::DeserializeOwned,
 {
@@ -118,7 +118,7 @@ where
     }
 }
 
-impl<S: Procedure> Default for ProcedureTestHarness<S>
+impl<S: Tasklet> Default for TaskletTestHarness<S>
 where
     S::State: serde::Serialize + serde::de::DeserializeOwned,
 {
@@ -127,16 +127,16 @@ where
     }
 }
 
-impl<S: Procedure> ProcedureTestHarness<S> {
+impl<S: Tasklet> TaskletTestHarness<S> {
     fn from_state(state: S::State, initial_state_bytes: Vec<u8>) -> Self {
         Self {
-            procedure: S::default(),
+            tasklet: S::default(),
             state,
             initial_state_bytes,
             recorded_changes: Vec::new(),
             recorded_emits: Vec::new(),
             keyed: false,
-            entity_key: None,
+            cell_key: None,
             wall_script: None,
             wall_pos: Cell::new(0),
             timers: PendingTimers::default(),
@@ -158,16 +158,16 @@ impl<S: Procedure> ProcedureTestHarness<S> {
     /// `RestoreInitPayload`, replicating the runtime's snapshot +
     /// change-log restoration flow.
     pub fn with_payload(
-        entity_key: Option<&str>,
+        cell_key: Option<&str>,
         payload: RestoreInitPayload<'_>,
     ) -> Result<Self, RestoreError>
     where
         S::State: serde::de::DeserializeOwned + serde::Serialize,
     {
-        let (state, timers, _migrated) = init_entity_with_payload::<S>(entity_key, Some(&payload))?;
+        let (state, timers, _migrated) = init_cell_with_payload::<S>(cell_key, Some(&payload))?;
         let initial_state_bytes = serialize_snapshot(&state);
         let mut harness = Self::from_state(state, initial_state_bytes);
-        harness.entity_key = entity_key.map(str::to_string);
+        harness.cell_key = cell_key.map(str::to_string);
         harness.initial_timers = timers.clone();
         harness.timers = timers;
         Ok(harness)
@@ -180,12 +180,12 @@ impl<S: Procedure> ProcedureTestHarness<S> {
         self
     }
 
-    /// Stand in for the Entity routed by `key`: `ctx.entity_key()` serves it,
+    /// Stand in for the Cell routed by `key`: `ctx.cell_key()` serves it,
     /// and a keyed-channel emit that supplies no key of its own is stamped
-    /// with it. Without this the harness is a single-entity Procedure, where
+    /// with it. Without this the harness is a single-cell Tasklet, where
     /// that emit is refused.
-    pub fn with_entity_key(mut self, key: impl Into<String>) -> Self {
-        self.entity_key = Some(key.into());
+    pub fn with_cell_key(mut self, key: impl Into<String>) -> Self {
+        self.cell_key = Some(key.into());
         self
     }
 
@@ -246,16 +246,15 @@ impl<S: Procedure> ProcedureTestHarness<S> {
                 seq: invocation_seq,
                 ordinal: 0,
             };
-            let mut ctx =
-                ProcedureCtx::new(&mut sink, now, invocation_seq, HARNESS_ENTITY_IDENTITY)
-                    .with_entity_key(self.entity_key.as_deref())
-                    .with_timers(&session);
+            let mut ctx = TaskletCtx::new(&mut sink, now, invocation_seq, HARNESS_CELL_IDENTITY)
+                .with_cell_key(self.cell_key.as_deref())
+                .with_timers(&session);
             let handle = StateHandle::<S>::new(&mut self.state, &recorded);
             // Errors are surfaced as panics in the harness; tests that
             // want to exercise the error path should drive `S::run`
             // directly.
-            if let Err(e) = self.procedure.run(input, handle, &mut ctx) {
-                panic!("ProcedureTestHarness: Procedure::run returned Err: {e}");
+            if let Err(e) = self.tasklet.run(input, handle, &mut ctx) {
+                panic!("TaskletTestHarness: Tasklet::run returned Err: {e}");
             }
             self.recorded_timer_ops
                 .extend(session.into_inner().commit(&mut self.timers));
@@ -272,7 +271,7 @@ impl<S: Procedure> ProcedureTestHarness<S> {
     pub fn fire_timer(&mut self, kind: TimerKind, scheduled_at: u64) -> &mut Self {
         assert!(
             self.timers.contains(kind, scheduled_at),
-            "ProcedureTestHarness::fire_timer: no {} timer pending at {scheduled_at}",
+            "TaskletTestHarness::fire_timer: no {} timer pending at {scheduled_at}",
             kind.as_str(),
         );
         let recorded = RefCell::new(std::mem::take(&mut self.recorded_changes));
@@ -285,20 +284,17 @@ impl<S: Procedure> ProcedureTestHarness<S> {
             seq: invocation_seq,
             ordinal: 0,
         };
-        let mut ctx = ProcedureCtx::new(
+        let mut ctx = TaskletCtx::new(
             &mut sink,
             scheduled_at,
             invocation_seq,
-            HARNESS_ENTITY_IDENTITY,
+            HARNESS_CELL_IDENTITY,
         )
-        .with_entity_key(self.entity_key.as_deref())
+        .with_cell_key(self.cell_key.as_deref())
         .with_timers(&session);
         let handle = StateHandle::<S>::new(&mut self.state, &recorded);
-        if let Err(e) = self
-            .procedure
-            .on_timer(scheduled_at, kind, handle, &mut ctx)
-        {
-            panic!("ProcedureTestHarness: Procedure::on_timer returned Err: {e}");
+        if let Err(e) = self.tasklet.on_timer(scheduled_at, kind, handle, &mut ctx) {
+            panic!("TaskletTestHarness: Tasklet::on_timer returned Err: {e}");
         }
         self.recorded_timer_ops
             .extend(session.into_inner().commit(&mut self.timers));
@@ -315,7 +311,7 @@ impl<S: Procedure> ProcedureTestHarness<S> {
         self
     }
 
-    /// The Entity's pending timers of one kind, ascending.
+    /// The Cell's pending timers of one kind, ascending.
     pub fn pending_timers(&self, kind: TimerKind) -> Vec<u64> {
         self.timers.all(kind)
     }
@@ -330,7 +326,7 @@ impl<S: Procedure> ProcedureTestHarness<S> {
         now: u64,
         firing: Option<(TimerKind, u64)>,
     ) -> RefCell<TimerSession> {
-        crate::entity::timer::timer_policy_for::<S>().session(&self.timers, now, firing)
+        crate::cell::timer::timer_policy_for::<S>().session(&self.timers, now, firing)
     }
 
     /// Borrow the recorded Change log.
@@ -346,7 +342,7 @@ impl<S: Procedure> ProcedureTestHarness<S> {
         assert_eq!(
             self.recorded_changes.as_slice(),
             expected,
-            "ProcedureTestHarness::expect_changes: recorded changes diverge",
+            "TaskletTestHarness::expect_changes: recorded changes diverge",
         );
         self
     }
@@ -368,7 +364,7 @@ impl<S: Procedure> ProcedureTestHarness<S> {
         assert_eq!(
             observed.len(),
             expected.len(),
-            "ProcedureTestHarness::expect_emits: emits of type {} count diverges \
+            "TaskletTestHarness::expect_emits: emits of type {} count diverges \
              (observed {}, expected {})",
             std::any::type_name::<C>(),
             observed.len(),
@@ -377,7 +373,7 @@ impl<S: Procedure> ProcedureTestHarness<S> {
         for (i, (o, e)) in observed.iter().zip(expected.iter()).enumerate() {
             assert_eq!(
                 *o, e,
-                "ProcedureTestHarness::expect_emits: divergence at index {i}",
+                "TaskletTestHarness::expect_emits: divergence at index {i}",
             );
         }
         self
@@ -390,7 +386,7 @@ impl<S: Procedure> ProcedureTestHarness<S> {
     {
         assert_eq!(
             &self.state, expected,
-            "ProcedureTestHarness::expect_state: state diverges",
+            "TaskletTestHarness::expect_state: state diverges",
         );
         self
     }
@@ -420,7 +416,7 @@ impl<S: Procedure> ProcedureTestHarness<S> {
         S::State: serde::Serialize + serde::de::DeserializeOwned,
     {
         let initial: S::State = deserialize_snapshot::<S>(&self.initial_state_bytes);
-        let replayed = <ProcedureTestHarness<S>>::replay(initial, &self.recorded_changes);
+        let replayed = <TaskletTestHarness<S>>::replay(initial, &self.recorded_changes);
         // The pending-timer set is folded state too, and its fold is the same
         // op replay a restore runs — so it belongs in the same gate.
         let mut replayed_timers = self.initial_timers.clone();
@@ -452,7 +448,7 @@ impl<S: Procedure> ProcedureTestHarness<S> {
     /// and assert the two serialized emit streams — output bytes plus
     /// metadata including any `flz.*` identity stamps — are identical.
     /// The harness's keyed / wall-clock configuration applies to both
-    /// passes; a scripted wall clock restarts per pass. A Procedure that
+    /// passes; a scripted wall clock restarts per pass. A Tasklet that
     /// reads ambient time, randomness, or external mutable state fails
     /// here because the passes emit different bytes.
     pub fn replay_emits_equal(&self, inputs: &[S::Input]) -> Result<(), EmitStreamMismatch>
@@ -509,7 +505,7 @@ impl<S: Procedure> ProcedureTestHarness<S> {
                 .ok_or_else(|| EmitStreamMismatch {
                     index: i,
                     detail: format!(
-                        "emit {i} is not the Procedure's Output type and cannot be \
+                        "emit {i} is not the Tasklet's Output type and cannot be \
                          serialized for comparison"
                     ),
                 })?;
@@ -557,11 +553,7 @@ pub struct EmitStreamMismatch {
 
 impl std::fmt::Display for EmitStreamMismatch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "ProcedureTestHarness::replay_emits_equal: {}",
-            self.detail
-        )
+        write!(f, "TaskletTestHarness::replay_emits_equal: {}", self.detail)
     }
 }
 
@@ -579,7 +571,7 @@ fn canonical_json<T: serde::Serialize>(value: &T) -> String {
     v.to_string()
 }
 
-fn deserialize_snapshot<S: Procedure>(bytes: &[u8]) -> S::State
+fn deserialize_snapshot<S: Tasklet>(bytes: &[u8]) -> S::State
 where
     S::State: serde::de::DeserializeOwned,
 {
@@ -605,12 +597,12 @@ impl<'a> EmitSink for RecordingEmitSink<'a> {
         value: Arc<dyn Any + Send + Sync>,
         meta: Option<HashMap<String, String>>,
         key: Option<String>,
-    ) -> Result<(), ProcedureError> {
+    ) -> Result<(), TaskletError> {
         let meta = if self.keyed {
             let mut metadata = meta.unwrap_or_default();
             apply_identity_stamps(
                 &mut metadata,
-                std::str::from_utf8(HARNESS_ENTITY_IDENTITY).expect("ascii"),
+                std::str::from_utf8(HARNESS_CELL_IDENTITY).expect("ascii"),
                 self.seq,
                 &mut self.ordinal,
                 key,
@@ -637,9 +629,9 @@ impl<'a> EmitSink for RecordingEmitSink<'a> {
         self.keyed
     }
 
-    /// The harness runs a workflow's procedure as readily as a stream's, so
+    /// The harness runs a workflow's tasklet as readily as a stream's, so
     /// it accepts a completion and, like a checkpoint, records nothing.
-    fn complete(&mut self, _result: Vec<u8>) -> Result<(), ProcedureError> {
+    fn complete(&mut self, _result: Vec<u8>) -> Result<(), TaskletError> {
         Ok(())
     }
 }

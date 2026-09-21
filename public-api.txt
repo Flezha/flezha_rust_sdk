@@ -10,7 +10,7 @@
 # in a follow-up change; until then this file is informational and a
 # pointer for code reviewers.
 #
-# `extract-sdk-poll-core`: the SDK's kernel (entity slots, mailbox/drain
+# `extract-sdk-poll-core`: the SDK's kernel (cell slots, mailbox/drain
 # gates, flusher, credit, DLQ park, timers, workflow driver, commands,
 # transport loop) moved into the `flz_core` workspace crate; every path
 # listed below is unchanged and now resolves through internal re-exports
@@ -36,7 +36,7 @@
 #   define_bounded          -> define_workflow        (FlezhaRunner)
 #   remove_unbounded        -> remove_stream          (FlezhaRunner)
 #   remove_bounded          -> remove_workflow        (FlezhaRunner)
-#   ProcedureCtx::spawn_bounded -> spawn_workflow
+#   TaskletCtx::spawn_bounded -> spawn_workflow
 #   __register_unbounded    -> __register_stream      (macro plumbing)
 #   module `bounded`        -> module `workflow`
 # kind-naming-record:end
@@ -45,45 +45,45 @@
 # operative is the kind that consumes streams.
 
 pub mod state {
-    pub use crate::entity::restore::RestoreError;
-    pub use crate::entity::restore::RestoreInitPayload;
-    pub use crate::procedure::change::Change;
-    pub use crate::procedure::change::CoalesceKey;
-    pub use crate::procedure::change::NoChange;
-    pub use crate::procedure::clock::Clock;
-    pub use crate::procedure::clock::ClockFor;
-    pub use crate::procedure::clock::EventTimeFrom;
-    pub use crate::procedure::clock::LogicalClock;
-    pub use crate::procedure::clock::TimeExtractor;
-    pub use crate::procedure::clock::WallClock;
-    pub use crate::procedure::state_handle::StateHandle;
-    pub use crate::entity::timer::TimerKind;                 # ADDED by `entity-timers`
+    pub use crate::cell::restore::RestoreError;
+    pub use crate::cell::restore::RestoreInitPayload;
+    pub use crate::tasklet::change::Change;
+    pub use crate::tasklet::change::CoalesceKey;
+    pub use crate::tasklet::change::NoChange;
+    pub use crate::tasklet::clock::Clock;
+    pub use crate::tasklet::clock::ClockFor;
+    pub use crate::tasklet::clock::EventTimeFrom;
+    pub use crate::tasklet::clock::LogicalClock;
+    pub use crate::tasklet::clock::TimeExtractor;
+    pub use crate::tasklet::clock::WallClock;
+    pub use crate::tasklet::state_handle::StateHandle;
+    pub use crate::cell::timer::TimerKind;                 # ADDED by `cell-timers`
 }
 
-pub use entity::RestoreError;
-pub use entity::RestoreInitPayload;
-pub use procedure::Change;
-pub use procedure::Clock;
-pub use procedure::ClockFor;
-pub use procedure::CoalesceKey;
-pub use procedure::EventTimeFrom;
-pub use procedure::LogicalClock;
-pub use procedure::NoChange;
-pub use procedure::Procedure;
-pub use procedure::ProcedureCtx;
-pub use procedure::ProcedureError;
-pub use procedure::IfRunning;
-pub use procedure::SpawnError;
-pub use procedure::SpawnHandle;
-pub use procedure::SpawnOptions;
-pub use procedure::SpawnOutcome;
-pub use procedure::SpawnResult;
-pub use procedure::SimpleProcedure;                          # ADDED by `tiered-procedure-authoring`
-pub use procedure::StableId;
-pub use procedure::StateHandle;
-pub use procedure::TimeExtractor;
-pub use procedure::WallClock;
-pub use entity::timer::TimerKind;                            # ADDED by `entity-timers`
+pub use cell::RestoreError;
+pub use cell::RestoreInitPayload;
+pub use tasklet::Change;
+pub use tasklet::Clock;
+pub use tasklet::ClockFor;
+pub use tasklet::CoalesceKey;
+pub use tasklet::EventTimeFrom;
+pub use tasklet::LogicalClock;
+pub use tasklet::NoChange;
+pub use tasklet::Tasklet;
+pub use tasklet::TaskletCtx;
+pub use tasklet::TaskletError;
+pub use tasklet::IfRunning;
+pub use tasklet::SpawnError;
+pub use tasklet::SpawnHandle;
+pub use tasklet::SpawnOptions;
+pub use tasklet::SpawnOutcome;
+pub use tasklet::SpawnResult;
+pub use tasklet::SimpleTasklet;                          # ADDED by `tiered-tasklet-authoring`
+pub use tasklet::StableId;
+pub use tasklet::StateHandle;
+pub use tasklet::TimeExtractor;
+pub use tasklet::WallClock;
+pub use cell::timer::TimerKind;                            # ADDED by `cell-timers`
 
 # Clock surface (runtime-evaluated; no static `Clock::now()`):
 #
@@ -91,70 +91,70 @@ pub use entity::timer::TimerKind;                            # ADDED by `entity-
 #   pub trait ClockFor<Input>: Clock { /* runtime seam */ } # sealed via Clock
 #   pub trait TimeExtractor<Input> { fn extract(input: &Input) -> u64; }
 #
-# Trait surface on `Procedure`:
+# Trait surface on `Tasklet`:
 #
 #   type Change: Change;
 #   type Clock: ClockFor<Self::Input>;
 #   type Config: DeserializeOwned + Send + Sync + 'static;
 #   const SCHEMA_VERSION: u32 = 1;
-#   fn init_state(entity_key: Option<&str>, init_payload: Option<RestoreInitPayload<'_>>) -> Self::State;
+#   fn init_state(cell_key: Option<&str>, init_payload: Option<RestoreInitPayload<'_>>) -> Self::State;
 #   fn apply_change(state: &mut Self::State, change: &Self::Change);
 #   fn compact_after_bytes() -> usize;
 #   fn from_config(cfg: Self::Config) -> Self;
-#   fn run(&mut self, input, state: StateHandle<'_, Self>, ctx: &mut ProcedureCtx<'_>) -> Result<(), ProcedureError>;
+#   fn run(&mut self, input, state: StateHandle<'_, Self>, ctx: &mut TaskletCtx<'_>) -> Result<(), TaskletError>;
 #
-#   ADDED by `entity-timers`:
-#     fn on_timer(&mut self, fired_at: u64, kind: TimerKind, state: StateHandle<'_, Self>, ctx: &mut ProcedureCtx<'_>) -> Result<(), ProcedureError>;
-#       Default PANICS naming the Procedure (registration is a runtime call, so
+#   ADDED by `cell-timers`:
+#     fn on_timer(&mut self, fired_at: u64, kind: TimerKind, state: StateHandle<'_, Self>, ctx: &mut TaskletCtx<'_>) -> Result<(), TaskletError>;
+#       Default PANICS naming the Tasklet (registration is a runtime call, so
 #       an unhandled timer cannot be refused at build time).
-#     fn max_timers_per_entity() -> usize;                    # default 10_000
+#     fn max_timers_per_cell() -> usize;                    # default 10_000
 #
 #   REMOVED by `stream-dsl-keyby-and-transforms`:
-#     fn entity_key(input: &Self::Input) -> Option<String>;
-#     const ENTITY_KEY_OVERRIDDEN: bool;
+#     fn cell_key(input: &Self::Input) -> Option<String>;
+#     const CELL_KEY_OVERRIDDEN: bool;
 #   Dynamic keying is declared on the wiring (`.key_by(f)`) instead. The static
-#   pair (`entity_keys` / `entities_for` / `ENTITIES_FOR_OVERRIDDEN`) and the
-#   dynamic knobs (`entity_idle_ttl`, `max_entities`) stay on the Procedure.
+#   pair (`cell_keys` / `cells_for` / `CELLS_FOR_OVERRIDDEN`) and the
+#   dynamic knobs (`cell_idle_ttl`, `max_cells`) stay on the Tasklet.
 #
-# `SimpleProcedure` — the simplified tier (`tiered-procedure-authoring`).
+# `SimpleTasklet` — the simplified tier (`tiered-tasklet-authoring`).
 # Stable Rust has no associated-type defaults, so the defaults are a trait
-# lifted to `Procedure` by a blanket impl; a type implementing both is a
+# lifted to `Tasklet` by a blanket impl; a type implementing both is a
 # coherence error, which is what makes "explicit wins" unambiguous.
 #
-#   pub trait SimpleProcedure: Send + Sync + 'static + Default {
+#   pub trait SimpleTasklet: Send + Sync + 'static + Default {
 #       type Input: Send + Sync + 'static + Clone;
 #       type Output: Send + Sync + 'static;
 #       type State: Send + Sync + 'static + Serialize + DeserializeOwned + DerivedState;
 #       fn name() -> &'static str;
-#       fn init_state(entity_key: Option<&str>) -> Self::State;
-#       fn run(&mut self, input, state: StateHandle<'_, Self>, ctx: &mut ProcedureCtx<'_>) -> Result<(), ProcedureError>
-#           where Self: Procedure;
+#       fn init_state(cell_key: Option<&str>) -> Self::State;
+#       fn run(&mut self, input, state: StateHandle<'_, Self>, ctx: &mut TaskletCtx<'_>) -> Result<(), TaskletError>
+#           where Self: Tasklet;
 #   }
-#   impl<T: SimpleProcedure> Procedure for T   # Clock = WallClock, Config = (),
+#   impl<T: SimpleTasklet> Tasklet for T   # Clock = WallClock, Config = (),
 #                                              # Change = <T::State as DerivedState>::Change
 #
-#   CHANGED by `tiered-procedure-authoring`: `impl DerivedState for ()` —
+#   CHANGED by `tiered-tasklet-authoring`: `impl DerivedState for ()` —
 #   the stateless binding (Change = NoChange), so `type State = ()` is
 #   expressible in the simplified tier.
 #
-# `ProcedureCtx` surface (per-invocation, determinism contract):
+# `TaskletCtx` surface (per-invocation, determinism contract):
 #
 #   pub fn now(&self) -> u64;
 #   pub fn stable_id(&self) -> StableId;
-#   pub fn entity_key(&self) -> Option<&str>;
-#   pub fn emit<C>(&mut self, value: C) -> Result<(), ProcedureError>;
-#   pub fn emit_with_meta<C>(&mut self, value: C, meta: HashMap<String, String>) -> Result<(), ProcedureError>;
-#   pub fn emit_keyed<C>(&mut self, key: impl Into<String>, value: C) -> Result<(), ProcedureError>;
-#   pub fn emit_keyed_with_meta<C>(&mut self, key: impl Into<String>, value: C, meta: HashMap<String, String>) -> Result<(), ProcedureError>;
+#   pub fn cell_key(&self) -> Option<&str>;
+#   pub fn emit<C>(&mut self, value: C) -> Result<(), TaskletError>;
+#   pub fn emit_with_meta<C>(&mut self, value: C, meta: HashMap<String, String>) -> Result<(), TaskletError>;
+#   pub fn emit_keyed<C>(&mut self, key: impl Into<String>, value: C) -> Result<(), TaskletError>;
+#   pub fn emit_keyed_with_meta<C>(&mut self, key: impl Into<String>, value: C, meta: HashMap<String, String>) -> Result<(), TaskletError>;
 #
-#   On a `.keyed()` channel `emit` / `emit_with_meta` carry `entity_key()` —
+#   On a `.keyed()` channel `emit` / `emit_with_meta` carry `cell_key()` —
 #   the routing key, by construction — and still fail
-#   `KeyRequiredOnKeyedChannel` where there is none (single-entity mode).
-#   `emit_keyed` is for the output whose key differs from its Entity's.
+#   `KeyRequiredOnKeyedChannel` where there is none (single-cell mode).
+#   `emit_keyed` is for the output whose key differs from its Cell's.
 #
-#   `ProcedureTestHarness::with_entity_key(key)` stands the harness in for
-#   that Entity, so a test observes the defaulted stamp.
-#   pub fn complete(&mut self, result: impl Into<Vec<u8>>) -> Result<(), ProcedureError>;
+#   `TaskletTestHarness::with_cell_key(key)` stands the harness in for
+#   that Cell, so a test observes the defaulted stamp.
+#   pub fn complete(&mut self, result: impl Into<Vec<u8>>) -> Result<(), TaskletError>;
 #
 #   `complete` (ADDED by `retire-the-workflow-run-body`) ends a workflow
 #   instance with `result` once the iteration commits; in a stream operative
@@ -162,20 +162,20 @@ pub use entity::timer::TimerKind;                            # ADDED by `entity-
 #   pub fn spawn_workflow(&self, factory_id: impl Into<String>, payload: impl Into<Vec<u8>>) -> SpawnHandle;
 #   pub fn spawn_workflow_with(&self, factory_id: impl Into<String>, payload: impl Into<Vec<u8>>, options: SpawnOptions) -> SpawnHandle;
 #
-# Per-Entity timers (`entity-timers`) — each returns the ABSOLUTE scheduled
+# Per-Cell timers (`cell-timers`) — each returns the ABSOLUTE scheduled
 # timestamp, which is the handle a cancellation takes:
 #
-#   pub fn timer_at_event_time(&self, scheduled_at: u64) -> Result<u64, ProcedureError>;
-#   pub fn timer_after(&self, delay: Duration) -> Result<u64, ProcedureError>;
-#   pub fn cancel_event_time_timer(&self, scheduled_at: u64) -> Result<bool, ProcedureError>;
-#   pub fn cancel_processing_time_timer(&self, scheduled_at: u64) -> Result<bool, ProcedureError>;
+#   pub fn timer_at_event_time(&self, scheduled_at: u64) -> Result<u64, TaskletError>;
+#   pub fn timer_after(&self, delay: Duration) -> Result<u64, TaskletError>;
+#   pub fn cancel_event_time_timer(&self, scheduled_at: u64) -> Result<bool, TaskletError>;
+#   pub fn cancel_processing_time_timer(&self, scheduled_at: u64) -> Result<bool, TaskletError>;
 #
 #   pub enum TimerKind { EventTime, ProcessingTime }
 #
-#   New `ProcedureError` variants: EventTimeTimerWithoutEventTimeClock,
+#   New `TaskletError` variants: EventTimeTimerWithoutEventTimeClock,
 #   TimerCapExceeded, TimersUnavailable.
 #
-# Procedure-requested spawn (`procedure-requested-spawn`):
+# Tasklet-requested spawn (`tasklet-requested-spawn`):
 #
 #   pub enum IfRunning { Deliver, Error }                     # Deliver is Default
 #   impl SpawnOptions {                                       # built only from an id
@@ -209,11 +209,11 @@ pub use entity::timer::TimerKind;                            # ADDED by `entity-
 # Test harness (gated behind `cfg(any(test, feature = "testing"))`):
 #
 #   pub mod testing {
-#       pub use harness::ProcedureTestHarness;
+#       pub use harness::TaskletTestHarness;
 #       pub use harness::ReplayMismatch;
 #   }
 #
-#   ProcedureTestHarness additions:
+#   TaskletTestHarness additions:
 #     pub fn with_keyed_channel(self) -> Self;
 #     pub fn with_wall_clock(self, ms: u64) -> Self;
 #     pub fn with_wall_clock_script(self, script: Vec<u64>) -> Self;
@@ -247,14 +247,14 @@ pub use entity::timer::TimerKind;                            # ADDED by `entity-
 #
 #   pub trait StreamTarget: Copy + 'static { const IS_ENTRY: bool; }
 #   pub struct EntryTarget;          # `target` IS the entry channel id
-#   pub struct NodeTarget;           # `target` is the producing procedure
+#   pub struct NodeTarget;           # `target` is the producing tasklet
 #
 #   pub type EntryStream<'b, T> = Stream<'b, T, EntryTarget>;
 #
 #   pub struct Stream<'b, T, K = NodeTarget>;   # Copy; borrows the builder
 #     # --- shared surface (both handles) ---
-#     pub fn into<S: Procedure<Input = T>>(self) -> Stream<'b, S::Output>;
-#     pub fn into_named<S: Procedure<Input = T>>(self, node_name: &'static str) -> Stream<'b, S::Output>;
+#     pub fn into<S: Tasklet<Input = T>>(self) -> Stream<'b, S::Output>;
+#     pub fn into_named<S: Tasklet<Input = T>>(self, node_name: &'static str) -> Stream<'b, S::Output>;
 #     pub fn map<U, F>(self, f: F) -> Stream<'b, U, K>
 #       where T: Clone, U: Send + Sync + 'static, F: Fn(T) -> U + Send + Sync + 'static;
 #     pub fn flat_map<U, I, F>(self, f: F) -> Stream<'b, U, K>
@@ -284,7 +284,7 @@ pub use entity::timer::TimerKind;                            # ADDED by `entity-
 #     # "sealing records nothing" true by construction — a `sealed()` able to
 #     # reach the builder would materialize a leaf node's absent output channel.
 #
-#   Multi-input procedures (`add-multi-input-procedures`):
+#   Multi-input tasklets (`add-multi-input-tasklets`):
 #
 #   pub trait MergeSource<'b> {                 # ONE impl over Stream<'b, T, K>
 #       type Payload: Clone + Send + Sync + 'static;
@@ -301,8 +301,8 @@ pub use entity::timer::TimerKind;                            # ADDED by `entity-
 #       where S: MergeSource<'b>, F: Fn(S::Payload) -> I + Send + Sync + 'static;
 #     pub fn key_by<F>(self, key: F) -> Self          # once, on the merge
 #       where F: Fn(&I) -> String + Send + Sync + 'static;
-#     pub fn into<S: Procedure<Input = I>>(self) -> Stream<'b, S::Output>;
-#     pub fn into_named<S: Procedure<Input = I>>(self, node_name: &'static str) -> Stream<'b, S::Output>;
+#     pub fn into<S: Tasklet<Input = I>>(self) -> Stream<'b, S::Output>;
+#     pub fn into_named<S: Tasklet<Input = I>>(self, node_name: &'static str) -> Stream<'b, S::Output>;
 #
 #   Latest-document router (`add-route-latest-building-block`), on
 #   `ChannelBuilder` (implemented in `channel/route_latest.rs`):
@@ -315,9 +315,9 @@ pub use entity::timer::TimerKind;                            # ADDED by `entity-
 #             F: Fn(&T) -> String + Send + Sync + 'static;
 #     pub fn route_latest_named<..same..>(.., node_name: &'static str) -> Stream<'b, (String, D)>;
 #     # Sugar, not a runtime feature: expands to `merge` into ONE packaged
-#     # single-entity procedure (node identity `route_latest`) whose journaled
+#     # single-cell tasklet (node identity `route_latest`) whose journaled
 #     # `{document, version, delivered}` state delivers each distinct document
-#     # to a key on that key's OWN next traffic item. The packaged procedure and
+#     # to a key on that key's OWN next traffic item. The packaged tasklet and
 #     # its state/change/input types are deliberately NOT public — the two
 #     # methods are the whole surface, which is what keeps the
 #     # deliver-on-own-traffic guarantee un-bypassable.
@@ -325,12 +325,12 @@ pub use entity::timer::TimerKind;                            # ADDED by `entity-
 #   Removed: ChannelDecl, ChannelDeclWithProducer, EntryChannel, EntryChannelType,
 #   channel::<T>("name"), .from::<S>(), to_plugin, also_to_plugin_with.
 #   Trait signatures: StreamOperative::channels(c: &ChannelBuilder),
-#   WorkflowOperative::procedures(c: &ChannelBuilder)  (was &mut).
+#   WorkflowOperative::tasklets(c: &ChannelBuilder)  (was &mut).
 #
 #   REMOVED by `retire-the-workflow-run-body` (no shim): the one-function body
 #   `WorkflowOperative::run(ctx: &mut WorkflowCtx, args: &str)` and the
-#   `WorkflowCtx` export. A workflow always declares `procedures`; one that
-#   declares none is refused with `BuildWorkflowError::NoProcedures`, which
+#   `WorkflowCtx` export. A workflow always declares `tasklets`; one that
+#   declares none is refused with `BuildWorkflowError::NoTasklets`, which
 #   replaces `LoopWithoutChain`.
 #
 # `TopologyIssue` variants (renamed from BuildTopologyError by
@@ -340,36 +340,36 @@ pub use entity::timer::TimerKind;                            # ADDED by `entity-
 #       /* existing variants unchanged; UnwiredChannel + MultiProducer removed */
 #       DuplicatePluginSink { channel: &'static str },
 #       KeyedChannelWithoutPluginWire { channel: &'static str },
-#       UnservableClock { procedure: &'static str, clock_type: &'static str },
+#       UnservableClock { tasklet: &'static str, clock_type: &'static str },
 #       NodeIdentityCollision { name: &'static str },
 #       BranchTooFewArms { arms: usize },
-#       Cycle { procedure: &'static str },
-#       UnreachableProcedure { procedure: &'static str },
-#       MergeTooFewSources { procedure: &'static str, sources: usize },
+#       Cycle { tasklet: &'static str },
+#       UnreachableTasklet { tasklet: &'static str },
+#       MergeTooFewSources { tasklet: &'static str, sources: usize },
 #       DuplicateMergeSource { channel: &'static str },
-#       EdgeAlreadyWired { channel: &'static str, procedure: &'static str },
+#       EdgeAlreadyWired { channel: &'static str, tasklet: &'static str },
 #         # renamed from MergeSourceAlreadyWired: it guards ANY re-declaration
 #         # where either side carries a transform or a key, not just a merge
 #       /* added by `stream-dsl-keyby-and-transforms`; StaticAndDynamic REMOVED
 #          (the contradiction it named is now KeyByOnUnkeyableTarget) */
-#       KeyByOnUnkeyableTarget { channel: &'static str, procedure: &'static str },
+#       KeyByOnUnkeyableTarget { channel: &'static str, tasklet: &'static str },
 #       DuplicateKeyBy { channel: &'static str },
 #       TransformAfterTerminal { channel: &'static str },
 #       TransformAfterKeyBy { channel: &'static str },
 #       DanglingTransformChain { channel: &'static str },
-#       UnkeyedEdgeIntoDynamicProcedure { channel: &'static str, procedure: &'static str },
+#       UnkeyedEdgeIntoDynamicTasklet { channel: &'static str, tasklet: &'static str },
 #   }
 #
 # `BuildWorkflowError` variants (`workflow::spec`):
 #
 #   pub enum BuildWorkflowError {
 #       /* existing variants unchanged */
-#       MergeFromEntryChannel { factory_id: &'static str, channel: String, procedure: String },
+#       MergeFromEntryChannel { factory_id: &'static str, channel: String, tasklet: String },
 #   }
 #
-# `ProcedureError` variants:
+# `TaskletError` variants:
 #
-#   pub enum ProcedureError {
+#   pub enum TaskletError {
 #       /* existing variants unchanged */
 #       PluginSerializerPanic { channel: String, message: String },
 #       KeyRequiredOnKeyedChannel { channel: String },
@@ -389,14 +389,14 @@ pub use entity::timer::TimerKind;                            # ADDED by `entity-
 #       pub keyed: bool,
 #       pub consumers: Vec<ConsumerEdge>,
 #   }
-#     pub fn consumer_ids(&self) -> impl Iterator<Item = ProcedureId> + '_;
+#     pub fn consumer_ids(&self) -> impl Iterator<Item = TaskletId> + '_;
 #
 #   CHANGED by `stream-dsl-keyby-and-transforms`: `.map` renamed to
 #   `.transform` and joined by `.key`; `MergeMapFn` renamed to
 #   `EdgeTransformFn` and re-signatured (it is no longer merge-specific).
 #
 #   pub struct ConsumerEdge {
-#       pub procedure: ProcedureId,
+#       pub tasklet: TaskletId,
 #       pub transform: Option<EdgeTransformFn>,
 #       pub key: Option<EdgeKeyFn>,
 #   }
@@ -468,20 +468,20 @@ pub use operative::builder::TopologyBuildError;
 #       fn install_class(class: Self::Class);
 #   }
 
-# Live Entity read (`entity-state-live-query`). The `EntityState` command
+# Live Cell read (`cell-state-live-query`). The `CellState` command
 # gained a selector; the serializer that answers it is public because the
 # migration/handover path and the integration tests both call it.
 #
-#   pub mod command::entity_state {
+#   pub mod command::cell_state {
 #       pub const CHANGE_SEQ_META_KEY: &str;          # "flz.change_seq"
-#       pub const ENTITY_KEY_WITHOUT_PROCEDURE: &str; # refusal tokens
-#       pub const PROCEDURE_NOT_FOUND: &str;
-#       pub const ENTITY_NOT_FOUND: &str;
-#       pub const ENTITY_EVICTED: &str;
+#       pub const CELL_KEY_WITHOUT_TASKLET: &str; # refusal tokens
+#       pub const TASKLET_NOT_FOUND: &str;
+#       pub const CELL_NOT_FOUND: &str;
+#       pub const CELL_EVICTED: &str;
 #
 #       pub struct StateSelector<'a> {
-#           pub procedure: Option<&'a str>,
-#           pub entity_key: Option<&'a str>,
+#           pub tasklet: Option<&'a str>,
+#           pub cell_key: Option<&'a str>,
 #       }
 #
 #       pub enum StatePurpose { LiveRead, Migration }
@@ -489,27 +489,27 @@ pub use operative::builder::TopologyBuildError;
 #       pub fn serialize_operative_state(&Arc<StreamInstance>) -> Vec<u8>;
 #       pub fn serialize_selected_state(
 #           &Arc<StreamInstance>, StateSelector<'_>, StatePurpose,
-#       ) -> Result<(Vec<u8>, Option<u64>), String>;   # (json, seq of a single Entity)
+#       ) -> Result<(Vec<u8>, Option<u64>), String>;   # (json, seq of a single Cell)
 #   }
 #
 #   CHANGED (rehost-java-sdk-on-poll-core): `serialize_selected_state` takes a
-#   `StatePurpose` — a host-run (C-ABI) Entity is asked with the matching
-#   activation kind (LiveStateRead vs MigrationSerialize); typed Entities
+#   `StatePurpose` — a host-run (C-ABI) Cell is asked with the matching
+#   activation kind (LiveStateRead vs MigrationSerialize); typed Cells
 #   serve both from the same fn pointer as before.
 #
 #   CHANGED (rehost-java-sdk-on-poll-core): `runner::poll_core::EngineActivation`
 #   is `{ token, payload: EnginePayload }` — `EnginePayload::Work { slot, items }`
 #   | `Command { target, change_seq, factory, kind, reply }` | `Prepare(..)`;
-#   work accessors `slot()` / `items()` / `into_work()`. `ProcedureDescriptor`
-#   gained `host_facts: Option<Arc<HostProcedureFacts>>` (`None` for typed
+#   work accessors `slot()` / `items()` / `into_work()`. `TaskletDescriptor`
+#   gained `host_facts: Option<Arc<HostTaskletFacts>>` (`None` for typed
 #   classes). Both are re-exported kernel internals, not authoring surface.
 #
 #   CHANGED: `CommandAction` gained a defaulted `reply` returning
 #   `(payload_id, raw_data, HashMap<String, String>)` — the frame metadata a
-#   command's answer stamps. Every handler but `EntityState` inherits the
+#   command's answer stamps. Every handler but `CellState` inherits the
 #   default, which forwards to `handle` with no metadata.
 #
-#   ADDED: `DynamicEntityRegistry::recently_evicted(&self, key: &str) -> bool`
+#   ADDED: `DynamicCellRegistry::recently_evicted(&self, key: &str) -> bool`
 #   — the workflow eviction trace that lets a live read say "idle-evicted"
 #   rather than "never existed".
 
@@ -528,6 +528,6 @@ pub use operative::builder::TopologyBuildError;
 
 # Authoring macros. `stream_operative` and `workflow_operative` are the §5 short
 # form: on a `run` function each emits the operative type under the function's
-# PascalCase name and the procedure type beside it, suffixed `Procedure`.
+# PascalCase name and the tasklet type beside it, suffixed `Tasklet`.
 
-pub use flezha_macros::{operative, procedure, stream_operative, workflow_operative, State};
+pub use flezha_macros::{operative, tasklet, stream_operative, workflow_operative, State};

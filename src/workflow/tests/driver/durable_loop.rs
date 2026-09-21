@@ -13,7 +13,7 @@ pub(super) fn durable_loop(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) 
     // --- workflow-durable-loop: one iteration per inbox item, each ending in
     // a durable iteration commit; an idle inbox parks the instance ---
     std::env::set_var("FLEZHA_WORKFLOW_PARK_IDLE_MS", "300");
-    let _ = drain_proc_commits();
+    let _ = drain_task_commits();
     assert!(node.start_workflow("test-chat-loop".into(), "chat-1".into(), "ignored".into()));
     let chat = node
         .get_workflow("chat-1")
@@ -46,12 +46,12 @@ pub(super) fn durable_loop(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) 
         "each commit records the inbox offset its iteration consumed"
     );
     assert_eq!(
-        drain_proc_commits()
+        drain_task_commits()
             .iter()
-            .map(|c| (c.iter, c.proc_idx))
+            .map(|c| (c.iter, c.task_idx))
             .collect::<Vec<_>>(),
         vec![(0, 0), (0, 1), (1, 0), (1, 1)],
-        "every proc commit is stamped with its enclosing iteration"
+        "every task commit is stamped with its enclosing iteration"
     );
 
     let parks = drain_iter_parks();
@@ -67,7 +67,7 @@ pub(super) fn durable_loop(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) 
 
     // --- resume-at-iteration: a journal recording iterations 0-1 committed
     // enters iteration 2 — the committed turns never re-run ---
-    let s1_id = crate::entity::flusher::encode_entity_identity("chat-2", "workflow_stage1", "");
+    let s1_id = crate::cell::flusher::encode_cell_identity("chat-2", "workflow_stage1", "");
     assert!(node.start_workflow_resumable(
         "test-chat-loop".into(),
         "chat-2".into(),
@@ -77,17 +77,17 @@ pub(super) fn durable_loop(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) 
         Some(instance::JournalResume {
             iter: 2,
             consumed_offset: 7,
-            committed_procs: vec![
-                instance::CommittedProc {
-                    proc_idx: 0,
+            committed_tasks: vec![
+                instance::CommittedTask {
+                    task_idx: 0,
                     iter: 0,
-                    entities_ran: vec![s1_id.clone()],
+                    cells_ran: vec![s1_id.clone()],
                     completion: None,
                 },
-                instance::CommittedProc {
-                    proc_idx: 1,
+                instance::CommittedTask {
+                    task_idx: 1,
                     iter: 0,
-                    entities_ran: Vec::new(),
+                    cells_ran: Vec::new(),
                     completion: None,
                 },
             ],
@@ -95,8 +95,8 @@ pub(super) fn durable_loop(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) 
         })
     ));
     let (chat2, _slot) = node
-        .find_workflow_entity(&s1_id)
-        .expect("the loop's Entity is reachable by the restore handler");
+        .find_workflow_cell(&s1_id)
+        .expect("the loop's Cell is reachable by the restore handler");
     chat2.note_restored();
     assert!(chat2.push_inbox(b"third".to_vec(), 9));
 
@@ -138,8 +138,8 @@ pub(super) fn loop_saga_and_rewind(node: &mut RunnerNode, rx: &Receiver<RunnerMe
         ),
     ] {
         let _ = drain_comp_log();
-        let seg = crate::entity::flusher::encode_entity_identity(id, "loop_reserve", "");
-        // Journal: iteration 0 committed both of its procedures.
+        let seg = crate::cell::flusher::encode_cell_identity(id, "loop_reserve", "");
+        // Journal: iteration 0 committed both of its tasklets.
         assert!(node.start_workflow_resumable(
             factory.into(),
             id.into(),
@@ -149,17 +149,17 @@ pub(super) fn loop_saga_and_rewind(node: &mut RunnerNode, rx: &Receiver<RunnerMe
             Some(instance::JournalResume {
                 iter: 1,
                 consumed_offset: 2,
-                committed_procs: vec![
-                    instance::CommittedProc {
-                        proc_idx: 0,
+                committed_tasks: vec![
+                    instance::CommittedTask {
+                        task_idx: 0,
                         iter: 0,
-                        entities_ran: vec![seg.clone()],
+                        cells_ran: vec![seg.clone()],
                         completion: None,
                     },
-                    instance::CommittedProc {
-                        proc_idx: 1,
+                    instance::CommittedTask {
+                        task_idx: 1,
                         iter: 0,
-                        entities_ran: Vec::new(),
+                        cells_ran: Vec::new(),
                         completion: None,
                     },
                 ],
@@ -167,8 +167,8 @@ pub(super) fn loop_saga_and_rewind(node: &mut RunnerNode, rx: &Receiver<RunnerMe
             })
         ));
         let (inst, _slot) = node
-            .find_workflow_entity(&seg)
-            .expect("the loop saga's Entity is reachable by the restore handler");
+            .find_workflow_cell(&seg)
+            .expect("the loop saga's Cell is reachable by the restore handler");
         inst.note_restored();
         assert!(inst.push_inbox(b"boom".to_vec(), 5));
 
@@ -185,18 +185,18 @@ pub(super) fn loop_saga_and_rewind(node: &mut RunnerNode, rx: &Receiver<RunnerMe
     // iterations — reverse iteration, reverse stage — BEFORE the loop resumes
     // forward at the rewound-to iteration ---
     let _ = drain_comp_log();
-    let _ = drain_proc_commits();
+    let _ = drain_task_commits();
     // Keep-progress deliberately: a rewind unwinds committed iterations by
     // definition, so the undo must be forced all-or-nothing whatever the
     // class's crash rollback mode says.
     let id = "loop-rewind";
-    let seg = crate::entity::flusher::encode_entity_identity(id, "loop_reserve", "");
+    let seg = crate::cell::flusher::encode_cell_identity(id, "loop_reserve", "");
     // Rewound to iteration 0: iteration 0 stays committed, iterations 1 and 2
     // are outstanding undo, and the loop resumes at 1.
-    let undo_op = |proc_idx: u32, iter: u32, entities_ran: Vec<Vec<u8>>| instance::CommittedProc {
-        proc_idx,
+    let undo_op = |task_idx: u32, iter: u32, cells_ran: Vec<Vec<u8>>| instance::CommittedTask {
+        task_idx,
         iter,
-        entities_ran,
+        cells_ran,
         completion: None,
     };
     assert!(node.start_workflow_resumable(
@@ -208,7 +208,7 @@ pub(super) fn loop_saga_and_rewind(node: &mut RunnerNode, rx: &Receiver<RunnerMe
         Some(instance::JournalResume {
             iter: 1,
             consumed_offset: 1,
-            committed_procs: vec![undo_op(0, 0, vec![seg.clone()]), undo_op(1, 0, Vec::new())],
+            committed_tasks: vec![undo_op(0, 0, vec![seg.clone()]), undo_op(1, 0, Vec::new())],
             rewind_undo: vec![
                 undo_op(0, 1, vec![seg.clone()]),
                 undo_op(1, 1, Vec::new()),
@@ -219,8 +219,8 @@ pub(super) fn loop_saga_and_rewind(node: &mut RunnerNode, rx: &Receiver<RunnerMe
         })
     ));
     let (inst, _slot) = node
-        .find_workflow_entity(&seg)
-        .expect("the loop saga's Entity is reachable by the restore handler");
+        .find_workflow_cell(&seg)
+        .expect("the loop saga's Cell is reachable by the restore handler");
     inst.note_restored();
     // The resumed turn fails, so the run reaches a terminal state (the fake
     // controller must stay in `drain` to ack the undo commits).
@@ -239,15 +239,15 @@ pub(super) fn loop_saga_and_rewind(node: &mut RunnerNode, rx: &Receiver<RunnerMe
          outputs), and only then does the resumed turn run and roll itself back \
          (in-flight ⇒ 1 retained output)"
     );
-    let undo: Vec<(u32, u32)> = drain_proc_commits()
+    let undo: Vec<(u32, u32)> = drain_task_commits()
         .iter()
         .filter(|c| c.compensating)
-        .map(|c| (c.proc_idx, c.iter))
+        .map(|c| (c.task_idx, c.iter))
         .collect();
     assert_eq!(
         undo,
         vec![(1, 2), (0, 2), (1, 1), (0, 1)],
-        "reverse iteration, reverse stage — and the hookless terminal proc still \
+        "reverse iteration, reverse stage — and the hookless terminal task still \
          journals its (empty) `compensated` record, which is what drains it out \
          of the next fold's outstanding work"
     );
@@ -256,10 +256,10 @@ pub(super) fn loop_saga_and_rewind(node: &mut RunnerNode, rx: &Receiver<RunnerMe
 }
 
 pub(super) fn loop_completion(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
-    // --- workflow-durable-loop: a procedure's complete ends a durable loop at
+    // --- workflow-durable-loop: a tasklet's complete ends a durable loop at
     // its commit, journaled on both barriers, and the loop never parks ---
     std::env::set_var("FLEZHA_WORKFLOW_PARK_IDLE_MS", "300");
-    let _ = drain_proc_commits();
+    let _ = drain_task_commits();
     let _ = drain_iter_commits();
     let _ = drain_iter_parks();
     assert!(node.start_workflow(
@@ -296,16 +296,16 @@ pub(super) fn loop_completion(node: &mut RunnerNode, rx: &Receiver<RunnerMessage
         vec![(0, false, Vec::new()), (1, true, b"farewell".to_vec())]
     );
     assert_eq!(
-        drain_proc_commits()
+        drain_task_commits()
             .iter()
-            .map(|c| (c.iter, c.proc_idx, c.completes))
+            .map(|c| (c.iter, c.task_idx, c.completes))
             .collect::<Vec<_>>(),
         vec![(0, 0, false), (0, 1, false), (1, 0, true), (1, 1, false)],
-        "the completing procedure's own commit carries it too"
+        "the completing tasklet's own commit carries it too"
     );
 
     // --- resume from a completing iter_committed: ends at once, runs nothing ---
-    let seg = crate::entity::flusher::encode_entity_identity("bye-2", "workflow_chat_turn", "");
+    let seg = crate::cell::flusher::encode_cell_identity("bye-2", "workflow_chat_turn", "");
     assert!(node.start_workflow_resumable(
         "test-completing-chat".into(),
         "bye-2".into(),
@@ -320,8 +320,8 @@ pub(super) fn loop_completion(node: &mut RunnerNode, rx: &Receiver<RunnerMessage
         })
     ));
     let (inst, _slot) = node
-        .find_workflow_entity(&seg)
-        .expect("the loop's Entity is reachable by the restore handler");
+        .find_workflow_cell(&seg)
+        .expect("the loop's Cell is reachable by the restore handler");
     inst.note_restored();
     let (outs, done) = drain(rx, "bye-2");
     assert_eq!(
@@ -329,13 +329,13 @@ pub(super) fn loop_completion(node: &mut RunnerNode, rx: &Receiver<RunnerMessage
         ("ok", &b"farewell"[..])
     );
     assert!(outs.is_empty());
-    assert!(drain_proc_commits().is_empty() && drain_iter_commits().is_empty());
+    assert!(drain_task_commits().is_empty() && drain_iter_commits().is_empty());
 
-    // --- a crash after the completing procedure committed and before the
-    // iteration did: the skipped procedure's journaled completion still ends
+    // --- a crash after the completing tasklet committed and before the
+    // iteration did: the skipped tasklet's journaled completion still ends
     // the resumed iteration ---
     let id = "bye-3";
-    let seg = crate::entity::flusher::encode_entity_identity(id, "workflow_chat_turn", "");
+    let seg = crate::cell::flusher::encode_cell_identity(id, "workflow_chat_turn", "");
     // Channel ids follow declaration order: `in` = 0, `mid` = 1.
     assert!(node.start_workflow_resumable(
         "test-completing-chat".into(),
@@ -346,23 +346,23 @@ pub(super) fn loop_completion(node: &mut RunnerNode, rx: &Receiver<RunnerMessage
         Some(instance::JournalResume {
             iter: 1,
             consumed_offset: 4,
-            committed_proc_idxs: vec![0],
-            proc_handoffs: vec![instance::EdgeHandoff {
-                proc_idx: 0,
+            committed_task_idxs: vec![0],
+            task_handoffs: vec![instance::EdgeHandoff {
+                task_idx: 0,
                 handoff: vec![(1, postcard::to_allocvec(&"bye".to_string()).unwrap())],
             }],
-            committed_procs: vec![instance::CommittedProc {
-                proc_idx: 0,
+            committed_tasks: vec![instance::CommittedTask {
+                task_idx: 0,
                 iter: 1,
-                entities_ran: vec![seg.clone()],
+                cells_ran: vec![seg.clone()],
                 completion: Some(b"farewell".to_vec()),
             }],
             ..Default::default()
         })
     ));
     let (inst, _slot) = node
-        .find_workflow_entity(&seg)
-        .expect("the loop's Entity is reachable by the restore handler");
+        .find_workflow_cell(&seg)
+        .expect("the loop's Cell is reachable by the restore handler");
     inst.note_restored();
     let (outs, done) = drain(rx, id);
     assert_eq!(
@@ -383,7 +383,7 @@ pub(super) fn loop_completion(node: &mut RunnerNode, rx: &Receiver<RunnerMessage
         vec![(1, true, b"farewell".to_vec())]
     );
     assert!(drain_iter_parks().is_empty());
-    let _ = drain_proc_commits();
+    let _ = drain_task_commits();
     std::env::remove_var("FLEZHA_WORKFLOW_PARK_IDLE_MS");
 }
 
@@ -391,10 +391,10 @@ pub(super) fn barrier_resend(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>
     // --- workflow-durable-path-throughput: an unacked barrier is re-sent
     // under the same reference_id, and the controller journals it once ---
     std::env::set_var("FLEZHA_WORKFLOW_ACK_TIMEOUT_MS", "300");
-    let _ = drain_proc_commits();
+    let _ = drain_task_commits();
     let _ = drain_barrier_sends();
 
-    // The first ProcCommit's ack is lost: the re-send continues the chain.
+    // The first TaskCommit's ack is lost: the re-send continues the chain.
     lose_acks("resend-1", 1);
     assert!(node.start_workflow("test-resend-chain".into(), "resend-1".into(), "x".into()));
     let (outs, done) = drain(rx, "resend-1");
@@ -416,9 +416,9 @@ pub(super) fn barrier_resend(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>
     );
     assert_ne!(sends[1], sends[2]);
     assert_eq!(
-        drain_proc_commits()
+        drain_task_commits()
             .iter()
-            .map(|c| c.proc_idx)
+            .map(|c| c.task_idx)
             .collect::<Vec<_>>(),
         vec![0, 1],
         "each barrier is journaled once"
@@ -437,7 +437,7 @@ pub(super) fn barrier_resend(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>
     let sends = barrier_sends_of("resend-2");
     assert_eq!(sends.len(), 3, "the default ladder sends three times");
     assert!(sends.iter().all(|r| r == &sends[0]));
-    let _ = drain_proc_commits();
+    let _ = drain_task_commits();
 
     // A re-sent IterCommit is idempotent on the controller: the turn's
     // barriers each lose their first ack, and each is journaled once.
@@ -466,9 +466,9 @@ pub(super) fn barrier_resend(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>
         "one iter_committed for two sends"
     );
     assert_eq!(
-        drain_proc_commits()
+        drain_task_commits()
             .iter()
-            .map(|c| (c.iter, c.proc_idx))
+            .map(|c| (c.iter, c.task_idx))
             .collect::<Vec<_>>(),
         vec![(0, 0), (0, 1)]
     );

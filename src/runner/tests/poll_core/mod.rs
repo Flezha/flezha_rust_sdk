@@ -1,7 +1,7 @@
 //! Relocated engine tests: handout exclusivity, ordering, the ladder.
 
 /// Slot scaffolding shared by the engine's own tests and the poll pool's
-/// (`operative::poll_pool`) — one definition of how a test builds an Entity
+/// (`operative::poll_pool`) — one definition of how a test builds a Cell
 /// and hands it an input.
 pub(crate) mod fixtures {
     use std::any::Any;
@@ -9,23 +9,23 @@ pub(crate) mod fixtures {
 
     use flz_transport::transport::FlezhaStream;
 
+    use crate::cell::{CellItem, CellPayload, CellSlot};
     use crate::channel::ChannelBuilder;
-    use crate::entity::{EntityItem, EntityPayload, EntitySlot};
     use crate::operative::builder::build_topology_with_persistence;
     use crate::operative::instance::StreamInstance;
     use crate::operative::StreamOperative;
     use crate::runner::poll_core::PollCore;
 
-    /// One instance of `O` and its first Entity.
+    /// One instance of `O` and its first Cell.
     pub(crate) fn build_slot_of<O: StreamOperative>(
         instance_id: &str,
-    ) -> (Arc<StreamInstance>, Arc<EntitySlot>) {
+    ) -> (Arc<StreamInstance>, Arc<CellSlot>) {
         let cb = ChannelBuilder::new();
         O::channels(&cb);
         let topology = build_topology_with_persistence(O::factory_id(), cb, O::PERSISTENCE_ENABLED)
             .expect("topology");
         let instance = StreamInstance::new(topology, Arc::from(instance_id));
-        let slot = Arc::clone(&instance.entities[0][0]);
+        let slot = Arc::clone(&instance.cells[0][0]);
         (instance, slot)
     }
 
@@ -36,8 +36,8 @@ pub(crate) mod fixtures {
         Arc::new(FlezhaStream::Unix(sock))
     }
 
-    pub(crate) fn payload(ordinal: usize, stream: &Arc<FlezhaStream>) -> EntityItem {
-        EntityItem::Input(EntityPayload {
+    pub(crate) fn payload(ordinal: usize, stream: &Arc<FlezhaStream>) -> CellItem {
+        CellItem::Input(CellPayload {
             value: Arc::new(ordinal) as Arc<dyn Any + Send + Sync>,
             stream: Arc::clone(stream),
             consumed_offset: None,
@@ -70,7 +70,7 @@ pub(crate) mod fixtures {
     }
 
     /// Queue one input and claim its round — the producer protocol.
-    pub(crate) fn push_input(core: &PollCore, slot: &Arc<EntitySlot>, value: usize) {
+    pub(crate) fn push_input(core: &PollCore, slot: &Arc<CellSlot>, value: usize) {
         assert!(slot
             .mailbox
             .try_push(payload(value, &unix_stream()))
@@ -81,7 +81,7 @@ pub(crate) mod fixtures {
     }
 }
 
-/// The procedures, operatives and slot builders the three test modules
+/// The tasklets, operatives and slot builders the three test modules
 /// below are written against.
 mod support {
 
@@ -93,21 +93,21 @@ mod support {
     use flz_transport::transport::FlezhaStream;
 
     use super::fixtures::{build_slot_of, payload, unix_stream};
+    use crate::cell::timer::{TimerKind, TimerOp};
+    use crate::cell::{CellItem, CellSlot};
     use crate::channel::ChannelBuilder;
-    use crate::entity::timer::{TimerKind, TimerOp};
-    use crate::entity::{EntityItem, EntitySlot};
     use crate::operative::instance::StreamInstance;
     use crate::operative::StreamOperative;
-    use crate::procedure::change::NoChange;
-    use crate::procedure::clock::WallClock;
-    use crate::procedure::ctx::ProcedureCtx;
-    use crate::procedure::error::ProcedureError;
-    use crate::procedure::state_handle::StateHandle;
-    use crate::procedure::Procedure;
+    use crate::tasklet::change::NoChange;
+    use crate::tasklet::clock::WallClock;
+    use crate::tasklet::ctx::TaskletCtx;
+    use crate::tasklet::error::TaskletError;
+    use crate::tasklet::state_handle::StateHandle;
+    use crate::tasklet::Tasklet;
 
     #[derive(Default)]
-    pub(super) struct PollProc;
-    impl Procedure for PollProc {
+    pub(super) struct PollTask;
+    impl Tasklet for PollTask {
         type Input = usize;
         type Output = ();
         type State = ();
@@ -115,15 +115,15 @@ mod support {
         type Clock = WallClock;
         type Config = ();
         fn name() -> &'static str {
-            "poll_core_exclusivity_proc"
+            "poll_core_exclusivity_task"
         }
         fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
         fn run(
             &mut self,
             _: usize,
             _: StateHandle<'_, Self>,
-            _: &mut ProcedureCtx<'_>,
-        ) -> Result<(), ProcedureError> {
+            _: &mut TaskletCtx<'_>,
+        ) -> Result<(), TaskletError> {
             Ok(())
         }
     }
@@ -134,15 +134,15 @@ mod support {
             "poll_core_exclusivity_op"
         }
         fn channels(c: &ChannelBuilder) {
-            c.input::<usize>("input").into::<PollProc>();
+            c.input::<usize>("input").into::<PollTask>();
         }
     }
 
     /// A one-slot mailbox: the smallest thing that can be full, so a wake
     /// promoted against it always meets the no-room path.
     #[derive(Default)]
-    pub(super) struct TinyProc;
-    impl Procedure for TinyProc {
+    pub(super) struct TinyTask;
+    impl Tasklet for TinyTask {
         type Input = usize;
         type Output = ();
         type State = ();
@@ -150,7 +150,7 @@ mod support {
         type Clock = WallClock;
         type Config = ();
         fn name() -> &'static str {
-            "poll_core_tiny_mailbox_proc"
+            "poll_core_tiny_mailbox_task"
         }
         fn mailbox_capacity() -> usize {
             1
@@ -161,8 +161,8 @@ mod support {
             &mut self,
             _: usize,
             _: StateHandle<'_, Self>,
-            _: &mut ProcedureCtx<'_>,
-        ) -> Result<(), ProcedureError> {
+            _: &mut TaskletCtx<'_>,
+        ) -> Result<(), TaskletError> {
             Ok(())
         }
     }
@@ -173,13 +173,13 @@ mod support {
             "poll_core_tiny_mailbox_op"
         }
         fn channels(c: &ChannelBuilder) {
-            c.input::<usize>("input").into::<TinyProc>();
+            c.input::<usize>("input").into::<TinyTask>();
         }
     }
 
     /// A slot whose one mailbox slot is taken and whose round is claimed by
     /// nobody: every wake promoted against it meets a full mailbox.
-    pub(super) fn full_slot(instance_id: &str) -> (Arc<StreamInstance>, Arc<EntitySlot>) {
+    pub(super) fn full_slot(instance_id: &str) -> (Arc<StreamInstance>, Arc<CellSlot>) {
         let (instance, slot) = build_slot_of::<TinyOp>(instance_id);
         assert!(slot.mailbox.try_push(payload(0, &unix_stream())).is_ok());
         assert!(slot.mailbox.is_full());
@@ -199,18 +199,18 @@ mod support {
         fn channels(c: &ChannelBuilder) {
             c.input::<usize>("input")
                 .retry_backoff_ms(2_000)
-                .into::<PollProc>();
+                .into::<PollTask>();
         }
     }
 
-    pub(super) fn build_slot(instance_id: &str) -> (Arc<StreamInstance>, Arc<EntitySlot>) {
+    pub(super) fn build_slot(instance_id: &str) -> (Arc<StreamInstance>, Arc<CellSlot>) {
         build_slot_of::<PollOp>(instance_id)
     }
 
     /// Arm one already-due processing-time timer and keep its firing on this
     /// core: `admission::admit_from_reader` only schedules a round when it wins the
     /// inflight CAS, and the caller has already taken it.
-    pub(super) fn arm_due_timer(core: &PollCore, slot: &Arc<EntitySlot>, at: u64) {
+    pub(super) fn arm_due_timer(core: &PollCore, slot: &Arc<CellSlot>, at: u64) {
         slot.timers
             .lock()
             .unwrap()
@@ -220,10 +220,10 @@ mod support {
     }
 
     /// The one timer item a promotion left on the slot's mailbox.
-    pub(super) fn assemble_timer(core: &PollCore, slot: &Arc<EntitySlot>) -> (u64, u64) {
+    pub(super) fn assemble_timer(core: &PollCore, slot: &Arc<CellSlot>) -> (u64, u64) {
         let act = core.try_assemble(slot).expect("a firing to assemble");
         assert_eq!(act.items().len(), 1);
-        assert!(matches!(act.items()[0].item, EntityItem::Timer(_)));
+        assert!(matches!(act.items()[0].item, CellItem::Timer(_)));
         let now = act.items()[0]
             .now
             .expect("a firing carries its scheduled at");
@@ -235,7 +235,7 @@ mod support {
     /// activation it earns.
     pub(super) fn queue_and_hand_out(
         core: &PollCore,
-        slot: &Arc<EntitySlot>,
+        slot: &Arc<CellSlot>,
         stream: &Arc<FlezhaStream>,
         count: usize,
     ) -> EngineActivation {
@@ -255,7 +255,7 @@ mod support {
         act.items()
             .iter()
             .map(|w| {
-                let EntityItem::Input(p) = &w.item else {
+                let CellItem::Input(p) = &w.item else {
                     panic!("unexpected timer item")
                 };
                 *p.value.downcast_ref::<usize>().unwrap()

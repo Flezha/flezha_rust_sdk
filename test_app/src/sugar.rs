@@ -1,27 +1,27 @@
 //! Authoring-sugar twins. Each mirrors a hand-written operative to prove the
 //! macros expand to the same trait surface and interoperate with raw
-//! procedures.
+//! tasklets.
 
 use crate::*;
 
 // ---------------------------------------------------------------------------
 // Authoring-sugar twins (`simplify-sdk-authoring`). Each mirrors a
 // hand-written operative above to prove the macros expand to the same trait
-// surface and interoperate with raw procedures. See
+// surface and interoperate with raw tasklets. See
 // `docs/sdk/authoring_contract.md`.
 // ---------------------------------------------------------------------------
 
-// Single-procedure stateless short form, twin of `DoNothingProcedure` /
+// Single-tasklet stateless short form, twin of `DoNothingTasklet` /
 // `DoNothingOperative`. One declaration is the whole operative: it generates
-// the operative `SugarDoNothing`, which `main.rs` registers, and the procedure
-// `SugarDoNothingProcedure` beside it.
+// the operative `SugarDoNothing`, which `main.rs` registers, and the tasklet
+// `SugarDoNothingTasklet` beside it.
 #[flezha_runner::stream_operative(id = "sugar_do_nothing", sink = "sugar_do_nothing_echo")]
 pub(crate) fn sugar_do_nothing(input: String) -> Vec<u8> {
     input.into_bytes()
 }
 
-// Single-procedure stateful sugar with `#[derive(flezha::State)]`, twin of
-// `StoreInputProcedure` / `StoreInputOperative`.
+// Single-tasklet stateful sugar with `#[derive(flezha::State)]`, twin of
+// `StoreInputTasklet` / `StoreInputOperative`.
 #[derive(Serialize, Deserialize, Clone, Default, PartialEq, Debug, flezha_runner::State)]
 pub(crate) struct SugarStoreState {
     text_inputs: Vec<String>,
@@ -54,7 +54,7 @@ pub(crate) fn sugar_workflow(order: String) -> Vec<u8> {
     order.into_bytes()
 }
 
-// The short form with no sink: `ticks` feeds a procedure that only keeps state.
+// The short form with no sink: `ticks` feeds a tasklet that only keeps state.
 #[derive(Serialize, Deserialize, Clone, Default, PartialEq, Debug, flezha_runner::State)]
 pub(crate) struct SugarStateOnlyState {
     seen: Vec<String>,
@@ -65,7 +65,7 @@ pub(crate) fn sugar_state_only(input: String, state: &mut SugarStateOnlyState) {
     state.push_seen(input);
 }
 
-// `operative!` linear-pipeline twin of `StaticEntityOperative`.
+// `operative!` linear-pipeline twin of `StaticCellOperative`.
 #[derive(Serialize, Deserialize, Clone, Default, PartialEq, Debug, flezha_runner::State)]
 struct MacroStaticEntryState {
     seen: Vec<String>,
@@ -80,37 +80,37 @@ fn macro_static_part(input: &str) -> Vec<&'static str> {
     }
 }
 
-#[flezha_runner::procedure(
-    id = "macro_static_entry_procedure",
+#[flezha_runner::tasklet(
+    id = "macro_static_entry_tasklet",
     keys = ["a", "b", "c", "d"],
-    entities_for = macro_static_part
+    cells_for = macro_static_part
 )]
 fn macro_static_entry(input: String, state: &mut MacroStaticEntryState) -> String {
     state.push_seen(input.clone());
     input
 }
 
-#[flezha_runner::procedure(id = "macro_static_downstream_procedure")]
+#[flezha_runner::tasklet(id = "macro_static_downstream_tasklet")]
 fn macro_static_downstream(input: String) -> Vec<u8> {
     input.into_bytes()
 }
 
 flezha_runner::operative! {
-    pub(crate) struct SugarStaticEntity;
-    id: "sugar_static_entity",
+    pub(crate) struct SugarStaticCell;
+    id: "sugar_static_cell",
     pipeline: input::<String> -> MacroStaticEntry -> MacroStaticDownstream -> plugin::<Vec<u8>>("test_kafka")
 }
 
-// Mixed operative: one `#[flezha::procedure]` procedure wired to one hand-written
-// `impl Procedure` procedure in an explicit `channels()` body.
-#[flezha_runner::procedure(id = "mixed_macro_entry_procedure")]
+// Mixed operative: one `#[flezha::tasklet]` tasklet wired to one hand-written
+// `impl Tasklet` tasklet in an explicit `channels()` body.
+#[flezha_runner::tasklet(id = "mixed_macro_entry_tasklet")]
 fn mixed_macro_entry(input: String) -> String {
     input
 }
 
 #[derive(Default)]
 struct MixedHandDownstream;
-impl Procedure for MixedHandDownstream {
+impl Tasklet for MixedHandDownstream {
     type Input = String;
     type Output = Vec<u8>;
     type State = ();
@@ -125,8 +125,8 @@ impl Procedure for MixedHandDownstream {
         &mut self,
         input: String,
         _: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         ctx.emit::<Vec<u8>>(input.into_bytes())
     }
 }
@@ -149,16 +149,16 @@ impl StreamOperative for MixedOperative {
 mod macro_twin_tests {
     use std::collections::{HashMap, VecDeque};
 
-    use flezha_runner::testing::ProcedureTestHarness;
+    use flezha_runner::testing::TaskletTestHarness;
 
     use super::*;
-    use crate::entity::DoNothingProcedure;
+    use crate::cell::DoNothingTasklet;
 
     // -----------------------------------------------------------------------
-    // Canonical keyed-collection reference procedure (`expressive-state-journaling`,
+    // Canonical keyed-collection reference tasklet (`expressive-state-journaling`,
     // authoring-contract §3 / §6): a rolling per-key window. The sugared form
     // uses `#[journal(map_deque)]` + an `Option<Output>` warmup gate;
-    // `RollingWindowTwin` is the equivalent hand-written `Procedure`/`Change`. The
+    // `RollingWindowTwin` is the equivalent hand-written `Tasklet`/`Change`. The
     // tests below assert the two are behaviourally identical and that the
     // sugared form survives `replay_equals`.
     // -----------------------------------------------------------------------
@@ -171,7 +171,7 @@ mod macro_twin_tests {
         window: HashMap<String, VecDeque<f64>>,
     }
 
-    #[flezha_runner::procedure(id = "rolling_window")]
+    #[flezha_runner::tasklet(id = "rolling_window")]
     fn rolling_window(input: (String, f64), state: &mut RollingWindowState) -> Option<f64> {
         let (key, value) = input;
         state.push_back_window(key.clone(), value);
@@ -186,7 +186,7 @@ mod macro_twin_tests {
         Some(w.iter().sum::<f64>() / ROLLING_WINDOW_N as f64)
     }
 
-    // Hand-written twin: the exact `Procedure` / `Change` impl the sugar expands to
+    // Hand-written twin: the exact `Tasklet` / `Change` impl the sugar expands to
     // (variant names differ; behaviour does not).
     #[derive(Serialize, Deserialize, Clone, Default, PartialEq, Debug)]
     struct RollingWindowTwinState {
@@ -202,7 +202,7 @@ mod macro_twin_tests {
 
     #[derive(Default)]
     struct RollingWindowTwin;
-    impl Procedure for RollingWindowTwin {
+    impl Tasklet for RollingWindowTwin {
         type Input = (String, f64);
         type Output = f64;
         type State = RollingWindowTwinState;
@@ -235,8 +235,8 @@ mod macro_twin_tests {
             &mut self,
             input: (String, f64),
             mut state: StateHandle<'_, Self>,
-            ctx: &mut ProcedureCtx<'_>,
-        ) -> Result<(), ProcedureError> {
+            ctx: &mut TaskletCtx<'_>,
+        ) -> Result<(), TaskletError> {
             let (key, value) = input;
             state.apply(RollingWindowTwinChange::PushBack(key.clone(), value));
             let len = state.window.get(&key).map(|w| w.len()).unwrap_or(0);
@@ -268,7 +268,7 @@ mod macro_twin_tests {
         ticks: u64,
     }
 
-    #[flezha_runner::procedure(id = "keyed_collections")]
+    #[flezha_runner::tasklet(id = "keyed_collections")]
     fn keyed_collections(input: (String, f64), state: &mut KeyedCollectionsState) {
         let (key, value) = input;
         state.set_last(key.clone(), value);
@@ -281,9 +281,9 @@ mod macro_twin_tests {
         state.set_ticks(state.ticks + 1);
     }
 
-    // `init = fn` maps the static entity key to per-entity config the
+    // `init = fn` maps the static cell key to per-cell config the
     // macro's default (`Default::default()`) cannot supply. Mirrors the market
-    // `sma`/`ohlc` procedures whose window / bucket come from the procedure key.
+    // `sma`/`ohlc` tasklets whose window / bucket come from the cell key.
     #[derive(Serialize, Deserialize, Clone, Default, PartialEq, Debug, flezha_runner::State)]
     struct WindowedState {
         window: usize,
@@ -291,9 +291,9 @@ mod macro_twin_tests {
         closes: HashMap<String, Vec<f64>>,
     }
 
-    fn windowed_init(entity_key: Option<&str>) -> WindowedState {
+    fn windowed_init(cell_key: Option<&str>) -> WindowedState {
         WindowedState {
-            window: if entity_key == Some("win_2") { 2 } else { 3 },
+            window: if cell_key == Some("win_2") { 2 } else { 3 },
             closes: HashMap::new(),
         }
     }
@@ -302,11 +302,11 @@ mod macro_twin_tests {
         vec!["win_2", "win_3"]
     }
 
-    #[flezha_runner::procedure(
+    #[flezha_runner::tasklet(
         id = "windowed",
         init = windowed_init,
         keys = ["win_2", "win_3"],
-        entities_for = windowed_part
+        cells_for = windowed_part
     )]
     fn windowed(input: (String, f64), state: &mut WindowedState) -> Option<f64> {
         let (key, value) = input;
@@ -324,19 +324,19 @@ mod macro_twin_tests {
     }
 
     // Cross-SDK conformance (`docs/sdk/authoring_contract.md` §6): the reference
-    // operative's procedures expand to this exact associated-type mapping. A divergence
+    // operative's tasklets expand to this exact associated-type mapping. A divergence
     // is a compile error, not a silent drift. The Java SugarTwinTest asserts the
     // same mapping at runtime.
     fn _reference_operative_conformance()
     where
-        MacroStaticEntry: Procedure<
+        MacroStaticEntry: Tasklet<
             Input = String,
             Output = String,
             State = MacroStaticEntryState,
             Clock = WallClock,
             Config = (),
         >,
-        MacroStaticDownstream: Procedure<
+        MacroStaticDownstream: Tasklet<
             Input = String,
             Output = Vec<u8>,
             State = (),
@@ -352,11 +352,11 @@ mod macro_twin_tests {
         let inputs = vec!["alpha".to_string(), "beta".to_string()];
         let expected: Vec<Vec<u8>> = vec![b"alpha".to_vec(), b"beta".to_vec()];
 
-        let mut sugar = ProcedureTestHarness::<SugarDoNothingProcedure>::new();
+        let mut sugar = TaskletTestHarness::<SugarDoNothingTasklet>::new();
         sugar.apply_inputs(inputs.clone());
         sugar.expect_emits(&expected);
 
-        let mut hand = ProcedureTestHarness::<DoNothingProcedure>::new();
+        let mut hand = TaskletTestHarness::<DoNothingTasklet>::new();
         hand.apply_inputs(inputs);
         hand.expect_emits(&expected);
     }
@@ -365,7 +365,7 @@ mod macro_twin_tests {
     fn sugar_store_input_journals_and_emits() {
         let inputs = vec!["one".to_string(), "two".to_string()];
 
-        let mut sugar = ProcedureTestHarness::<SugarStoreInputProcedure>::new();
+        let mut sugar = TaskletTestHarness::<SugarStoreInputTasklet>::new();
         sugar.apply_inputs(inputs.clone());
         assert_eq!(sugar.state().text_inputs, inputs);
         sugar
@@ -378,7 +378,7 @@ mod macro_twin_tests {
     fn sugar_state_only_journals_and_emits_nothing() {
         let inputs = vec!["one".to_string(), "two".to_string()];
 
-        let mut sugar = ProcedureTestHarness::<SugarStateOnlyProcedure>::new();
+        let mut sugar = TaskletTestHarness::<SugarStateOnlyTasklet>::new();
         sugar.apply_inputs(inputs.clone());
         assert_eq!(sugar.state().seen, inputs);
         sugar
@@ -391,20 +391,14 @@ mod macro_twin_tests {
     }
 
     #[test]
-    fn macro_static_entry_entities_and_journals() {
-        // `entities_for` routes by first char; the procedure journals every input.
-        assert_eq!(
-            MacroStaticEntry::entities_for(&"apple".to_string()),
-            vec!["a"]
-        );
-        assert_eq!(
-            MacroStaticEntry::entities_for(&"zebra".to_string()),
-            vec!["d"]
-        );
-        assert_eq!(MacroStaticEntry::entity_keys(), vec!["a", "b", "c", "d"]);
+    fn macro_static_entry_cells_and_journals() {
+        // `cells_for` routes by first char; the tasklet journals every input.
+        assert_eq!(MacroStaticEntry::cells_for(&"apple".to_string()), vec!["a"]);
+        assert_eq!(MacroStaticEntry::cells_for(&"zebra".to_string()), vec!["d"]);
+        assert_eq!(MacroStaticEntry::cell_keys(), vec!["a", "b", "c", "d"]);
 
         let inputs = vec!["apple".to_string(), "avocado".to_string()];
-        let mut h = ProcedureTestHarness::<MacroStaticEntry>::new();
+        let mut h = TaskletTestHarness::<MacroStaticEntry>::new();
         h.apply_inputs(inputs.clone());
         assert_eq!(h.state().seen, inputs);
         h.replay_equals().expect("derived change replay diverged");
@@ -412,13 +406,13 @@ mod macro_twin_tests {
     }
 
     #[test]
-    fn mixed_macro_and_hand_procedures_run() {
-        // The macro entry procedure passes through; the hand procedure turns it to bytes.
-        let mut entry = ProcedureTestHarness::<MixedMacroEntry>::new();
+    fn mixed_macro_and_hand_tasklets_run() {
+        // The macro entry tasklet passes through; the hand tasklet turns it to bytes.
+        let mut entry = TaskletTestHarness::<MixedMacroEntry>::new();
         entry.apply_inputs(vec!["hi".to_string()]);
         entry.expect_emits(&["hi".to_string()]);
 
-        let mut down = ProcedureTestHarness::<MixedHandDownstream>::new();
+        let mut down = TaskletTestHarness::<MixedHandDownstream>::new();
         down.apply_inputs(vec!["hi".to_string()]);
         down.expect_emits(&[b"hi".to_vec()]);
     }
@@ -440,7 +434,7 @@ mod macro_twin_tests {
             .unwrap()
             .register_factory(SugarStateOnly)
             .unwrap()
-            .register_factory(SugarStaticEntity)
+            .register_factory(SugarStaticCell)
             .unwrap()
             .register_factory(MixedOperative)
             .unwrap();
@@ -451,7 +445,7 @@ mod macro_twin_tests {
             "sugar_store_input",
             "sugar_named_input",
             "sugar_state_only",
-            "sugar_static_entity",
+            "sugar_static_cell",
             "mixed_operative",
         ] {
             assert!(ids.contains(&id), "registered operative `{id}` missing");
@@ -474,10 +468,10 @@ mod macro_twin_tests {
             ("b".to_string(), 30.0),
         ];
 
-        let mut sugar = ProcedureTestHarness::<RollingWindow>::new();
+        let mut sugar = TaskletTestHarness::<RollingWindow>::new();
         sugar.apply_inputs(inputs.clone());
 
-        let mut twin = ProcedureTestHarness::<RollingWindowTwin>::new();
+        let mut twin = TaskletTestHarness::<RollingWindowTwin>::new();
         twin.apply_inputs(inputs);
 
         // The generated journaling replays deterministically (4.3).
@@ -501,7 +495,7 @@ mod macro_twin_tests {
             ("x".to_string(), 4.0),
             ("y".to_string(), 9.0),
         ];
-        let mut h = ProcedureTestHarness::<KeyedCollections>::new();
+        let mut h = TaskletTestHarness::<KeyedCollections>::new();
         h.apply_inputs(inputs);
 
         // map_set keeps the latest per key.
@@ -518,15 +512,15 @@ mod macro_twin_tests {
     }
 
     #[test]
-    fn procedure_init_maps_entity_key_to_state() {
-        // The `init = fn` hook receives the static entity key, so each
-        // entity starts from key-derived config the macro default can't give.
+    fn tasklet_init_maps_cell_key_to_state() {
+        // The `init = fn` hook receives the static cell key, so each
+        // cell starts from key-derived config the macro default can't give.
         assert_eq!(Windowed::init_state(Some("win_2"), None).window, 2);
         assert_eq!(Windowed::init_state(Some("win_3"), None).window, 3);
         // Cold-start / harness default (key absent) falls through to the else arm.
         assert_eq!(Windowed::init_state(None, None).window, 3);
 
-        // Behaviour differs per entity: window 2 emits one bar earlier than
+        // Behaviour differs per cell: window 2 emits one bar earlier than
         // window 3 for the same input stream, and replay stays deterministic.
         let inputs = vec![
             ("a".to_string(), 2.0),
@@ -535,13 +529,13 @@ mod macro_twin_tests {
         ];
 
         let mut w2 =
-            ProcedureTestHarness::<Windowed>::with_initial_state(windowed_init(Some("win_2")));
+            TaskletTestHarness::<Windowed>::with_initial_state(windowed_init(Some("win_2")));
         w2.apply_inputs(inputs.clone());
         w2.replay_equals().expect("windowed(win_2) replay diverged");
         w2.expect_emits(&[3.0_f64, 5.0]); // means of [2,4] then [4,6]
 
         let mut w3 =
-            ProcedureTestHarness::<Windowed>::with_initial_state(windowed_init(Some("win_3")));
+            TaskletTestHarness::<Windowed>::with_initial_state(windowed_init(Some("win_3")));
         w3.apply_inputs(inputs);
         w3.replay_equals().expect("windowed(win_3) replay diverged");
         w3.expect_emits(&[4.0_f64]); // single mean of [2,4,6]

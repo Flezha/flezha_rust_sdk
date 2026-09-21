@@ -1,0 +1,5 @@
+error: #[flezha::tasklet] `key` requires a non-unit return type; there is no emit to key
+ --> tests/ui/tasklet_key_unit_return.rs:8:1
+  |
+8 | fn p(_input: u64) {}
+  | ^^

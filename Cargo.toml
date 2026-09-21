@@ -25,7 +25,7 @@ default = []
 # scaffolding in `flz_core::bench_support`. NOT a stable public API.
 # Only enabled by the `[[bench]]` and `[[test]]` targets via `required-features`.
 bench-internals = ["flz_core/bench-internals"]
-# Exposes `flezha_runner::testing::ProcedureTestHarness` for downstream
+# Exposes `flezha_runner::testing::TaskletTestHarness` for downstream
 # crates that want to write replay-equality tests. Test code in this crate
 # also compiles the surface under `cfg(test)` regardless of the feature.
 testing = []
@@ -88,7 +88,7 @@ harness = false
 required-features = ["bench-internals"]
 
 [[bench]]
-name = "dynamic_entity_steady_state"
+name = "dynamic_cell_steady_state"
 harness = false
 required-features = ["bench-internals"]
 
@@ -134,7 +134,7 @@ name = "dlq_retry"
 required-features = ["bench-internals"]
 
 [[test]]
-name = "topology_entity_modes"
+name = "topology_cell_modes"
 required-features = ["bench-internals"]
 
 [[test]]
@@ -154,7 +154,7 @@ name = "hybrid_channel"
 required-features = ["bench-internals"]
 
 [[test]]
-name = "dynamic_entity"
+name = "dynamic_cell"
 required-features = ["bench-internals"]
 
 [[test]]
@@ -190,7 +190,7 @@ name = "state_evolution"
 required-features = ["testing"]
 
 [[test]]
-name = "simple_procedure"
+name = "simple_tasklet"
 required-features = ["bench-internals", "testing"]
 
 [[test]]

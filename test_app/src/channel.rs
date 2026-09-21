@@ -1,5 +1,5 @@
 //! Channel-declaration fixtures: the three bounded-mailbox overflow policies,
-//! the hybrid plugin/inter-procedure channel, and the two stream-graph shapes
+//! the hybrid plugin/inter-tasklet channel, and the two stream-graph shapes
 //! every SDK carries: a merge and a transform chain.
 
 use crate::*;
@@ -7,7 +7,7 @@ use crate::*;
 // -- BoundedMailboxOperative ------------------------------------------------------
 
 #[derive(Serialize, Deserialize, Clone, Default)]
-struct WorkflowProcedureState {
+struct WorkflowTaskletState {
     pub processed: u64,
 }
 
@@ -17,29 +17,29 @@ enum WorkflowChange {
 }
 impl Change for WorkflowChange {}
 
-fn apply_inc(state: &mut WorkflowProcedureState, _: &WorkflowChange) {
+fn apply_inc(state: &mut WorkflowTaskletState, _: &WorkflowChange) {
     state.processed += 1;
 }
 
 #[derive(Default)]
-struct DropNothingTestProcedure;
-impl Procedure for DropNothingTestProcedure {
+struct DropNothingTestTasklet;
+impl Tasklet for DropNothingTestTasklet {
     type Input = String;
     type Output = Vec<u8>;
-    type State = WorkflowProcedureState;
+    type State = WorkflowTaskletState;
     type Change = WorkflowChange;
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "drop_nothing_test_procedure"
+        "drop_nothing_test_tasklet"
     }
     fn init_state(
         _: Option<&str>,
         _init_payload: Option<RestoreInitPayload<'_>>,
-    ) -> WorkflowProcedureState {
-        WorkflowProcedureState::default()
+    ) -> WorkflowTaskletState {
+        WorkflowTaskletState::default()
     }
-    fn apply_change(state: &mut WorkflowProcedureState, change: &WorkflowChange) {
+    fn apply_change(state: &mut WorkflowTaskletState, change: &WorkflowChange) {
         apply_inc(state, change);
     }
     fn mailbox_capacity() -> usize {
@@ -50,32 +50,32 @@ impl Procedure for DropNothingTestProcedure {
         &mut self,
         input: String,
         mut state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         state.apply(WorkflowChange::Inc);
         ctx.emit::<Vec<u8>>(input.into_bytes())
     }
 }
 
 #[derive(Default)]
-struct DropNewestTestProcedure;
-impl Procedure for DropNewestTestProcedure {
+struct DropNewestTestTasklet;
+impl Tasklet for DropNewestTestTasklet {
     type Input = String;
     type Output = Vec<u8>;
-    type State = WorkflowProcedureState;
+    type State = WorkflowTaskletState;
     type Change = WorkflowChange;
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "drop_newest_test_procedure"
+        "drop_newest_test_tasklet"
     }
     fn init_state(
         _: Option<&str>,
         _init_payload: Option<RestoreInitPayload<'_>>,
-    ) -> WorkflowProcedureState {
-        WorkflowProcedureState::default()
+    ) -> WorkflowTaskletState {
+        WorkflowTaskletState::default()
     }
-    fn apply_change(state: &mut WorkflowProcedureState, change: &WorkflowChange) {
+    fn apply_change(state: &mut WorkflowTaskletState, change: &WorkflowChange) {
         apply_inc(state, change);
     }
     fn mailbox_capacity() -> usize {
@@ -86,32 +86,32 @@ impl Procedure for DropNewestTestProcedure {
         &mut self,
         input: String,
         mut state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         state.apply(WorkflowChange::Inc);
         ctx.emit::<Vec<u8>>(input.into_bytes())
     }
 }
 
 #[derive(Default)]
-struct DropOldestTestProcedure;
-impl Procedure for DropOldestTestProcedure {
+struct DropOldestTestTasklet;
+impl Tasklet for DropOldestTestTasklet {
     type Input = String;
     type Output = Vec<u8>;
-    type State = WorkflowProcedureState;
+    type State = WorkflowTaskletState;
     type Change = WorkflowChange;
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "drop_oldest_test_procedure"
+        "drop_oldest_test_tasklet"
     }
     fn init_state(
         _: Option<&str>,
         _init_payload: Option<RestoreInitPayload<'_>>,
-    ) -> WorkflowProcedureState {
-        WorkflowProcedureState::default()
+    ) -> WorkflowTaskletState {
+        WorkflowTaskletState::default()
     }
-    fn apply_change(state: &mut WorkflowProcedureState, change: &WorkflowChange) {
+    fn apply_change(state: &mut WorkflowTaskletState, change: &WorkflowChange) {
         apply_inc(state, change);
     }
     fn mailbox_capacity() -> usize {
@@ -122,8 +122,8 @@ impl Procedure for DropOldestTestProcedure {
         &mut self,
         input: String,
         mut state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         state.apply(WorkflowChange::Inc);
         ctx.emit::<Vec<u8>>(input.into_bytes())
     }
@@ -140,7 +140,7 @@ impl StreamOperative for BoundedMailboxDropNothingOperative {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("drop_nothing_input")
             .on_full(OverflowPolicy::DropNothing)
-            .into::<DropNothingTestProcedure>()
+            .into::<DropNothingTestTasklet>()
             .sink_named("drop_nothing_echo");
     }
 }
@@ -153,7 +153,7 @@ impl StreamOperative for BoundedMailboxDropNewestOperative {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("drop_newest_input")
             .on_full(OverflowPolicy::DropNewest)
-            .into::<DropNewestTestProcedure>()
+            .into::<DropNewestTestTasklet>()
             .sink_named("drop_newest_echo");
     }
 }
@@ -166,22 +166,22 @@ impl StreamOperative for BoundedMailboxDropOldestOperative {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("drop_oldest_input")
             .on_full(OverflowPolicy::DropOldest)
-            .into::<DropOldestTestProcedure>()
+            .into::<DropOldestTestTasklet>()
             .sink_named("drop_oldest_echo");
     }
 }
 
 // -- HybridChannelOperative -------------------------------------------------------
 //
-// Demonstrates `sink_with(...)`: the producer Procedure emits a
-// `u32` value that fans out to an inter-procedure consumer and is also
+// Demonstrates `sink_with(...)`: the producer Tasklet emits a
+// `u32` value that fans out to an inter-tasklet consumer and is also
 // serialized to bytes for the `hybrid_indicators` plugin. The
 // serializer panics on the sentinel `0xDEADBEEF` so an operator can
 // observe the panic-isolation guarantee end-to-end.
 
 #[derive(Default)]
-struct HybridProducerProcedure;
-impl Procedure for HybridProducerProcedure {
+struct HybridProducerTasklet;
+impl Tasklet for HybridProducerTasklet {
     type Input = String;
     type Output = u32;
     type State = ();
@@ -189,20 +189,20 @@ impl Procedure for HybridProducerProcedure {
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "hybrid_producer_procedure"
+        "hybrid_producer_tasklet"
     }
     fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
     fn run(
         &mut self,
         input: String,
         _: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         let n: u32 = input.parse().unwrap_or(0);
         match ctx.emit::<u32>(n) {
             Ok(()) => Ok(()),
-            Err(ProcedureError::PluginSerializerPanic { channel, message }) => {
-                eprintln!("hybrid_producer_procedure: serializer panic on `{channel}`: {message}");
+            Err(TaskletError::PluginSerializerPanic { channel, message }) => {
+                eprintln!("hybrid_producer_tasklet: serializer panic on `{channel}`: {message}");
                 Ok(())
             }
             Err(other) => Err(other),
@@ -211,8 +211,8 @@ impl Procedure for HybridProducerProcedure {
 }
 
 #[derive(Default)]
-struct HybridConsumerProcedure;
-impl Procedure for HybridConsumerProcedure {
+struct HybridConsumerTasklet;
+impl Tasklet for HybridConsumerTasklet {
     type Input = u32;
     type Output = ();
     type State = ();
@@ -220,16 +220,16 @@ impl Procedure for HybridConsumerProcedure {
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "hybrid_consumer_procedure"
+        "hybrid_consumer_tasklet"
     }
     fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
     fn run(
         &mut self,
         input: u32,
         _: StateHandle<'_, Self>,
-        _: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
-        println!("hybrid_consumer_procedure: received {input}");
+        _: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
+        println!("hybrid_consumer_tasklet: received {input}");
         Ok(())
     }
 }
@@ -241,20 +241,20 @@ impl StreamOperative for HybridChannelOperative {
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
-            .into::<HybridProducerProcedure>()
+            .into::<HybridProducerTasklet>()
             .sink_named_with("hybrid_indicator", |v: &u32| {
                 if *v == 0xDEAD_BEEF {
                     panic!("hybrid_indicators: serializer rejected sentinel 0xDEADBEEF");
                 }
                 v.to_be_bytes().to_vec()
             })
-            .into::<HybridConsumerProcedure>();
+            .into::<HybridConsumerTasklet>();
     }
 }
 
 // -- MergedInputOperative ---------------------------------------------------------
 //
-// Two entry channels merged into one procedure. Each source's mapping tags the
+// Two entry channels merged into one tasklet. Each source's mapping tags the
 // value with the channel it came from, the merge keys on the symbol the mapping
 // read, and the emitted line is `<source>:<payload>`.
 
@@ -274,8 +274,8 @@ fn tagged(source: &'static str) -> impl Fn(String) -> MergedInput + Send + Sync 
 }
 
 #[derive(Default)]
-struct MergeLabelProcedure;
-impl Procedure for MergeLabelProcedure {
+struct MergeLabelTasklet;
+impl Tasklet for MergeLabelTasklet {
     type Input = MergedInput;
     type Output = String;
     type State = ();
@@ -283,15 +283,15 @@ impl Procedure for MergeLabelProcedure {
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "merge_label_procedure"
+        "merge_label_tasklet"
     }
     fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
     fn run(
         &mut self,
         input: MergedInput,
         _: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         ctx.emit(format!("{}:{}", input.source, input.payload))
     }
 }
@@ -308,7 +308,7 @@ impl StreamOperative for MergedInputOperative {
             .from(ticks, tagged("ticks"))
             .from(quotes, tagged("quotes"))
             .key_by(|v: &MergedInput| v.symbol.clone())
-            .into::<MergeLabelProcedure>()
+            .into::<MergeLabelTasklet>()
             .keyed()
             .sink_named("merged");
     }
@@ -320,8 +320,8 @@ impl StreamOperative for MergedInputOperative {
 // out into one value per element, each is upper-cased and keyed on its prefix.
 
 #[derive(Default)]
-struct TransformLabelProcedure;
-impl Procedure for TransformLabelProcedure {
+struct TransformLabelTasklet;
+impl Tasklet for TransformLabelTasklet {
     type Input = String;
     type Output = String;
     type State = ();
@@ -329,15 +329,15 @@ impl Procedure for TransformLabelProcedure {
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "transform_label_procedure"
+        "transform_label_tasklet"
     }
     fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
     fn run(
         &mut self,
         input: String,
         _: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         ctx.emit(input)
     }
 }
@@ -353,7 +353,7 @@ impl StreamOperative for TransformChainOperative {
             .flat_map(|t: String| t.split(',').map(str::to_string).collect::<Vec<_>>())
             .map(|t: String| t.to_uppercase())
             .key_by(|t: &String| key_prefix(t))
-            .into::<TransformLabelProcedure>()
+            .into::<TransformLabelTasklet>()
             .keyed()
             .sink_named("transformed");
     }

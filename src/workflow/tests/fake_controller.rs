@@ -9,10 +9,10 @@ use crossbeam::channel::Receiver;
 
 use crate::runner::RunnerMessage;
 
-/// Proc-commits observed by the fake controller (`workflow-proc-journal`
-/// barrier): every `ProcCommit` the drain helpers ack is recorded here
+/// Task-commits observed by the fake controller (`workflow-task-journal`
+/// barrier): every `TaskCommit` the drain helpers ack is recorded here
 /// so the gating/handoff assertions can inspect what would be journaled.
-pub(crate) static PROC_COMMITS: Mutex<Vec<crate::pb::ProcCommit>> = Mutex::new(Vec::new());
+pub(crate) static TASK_COMMITS: Mutex<Vec<crate::pb::TaskCommit>> = Mutex::new(Vec::new());
 
 /// Iteration commits observed by the fake controller (`workflow-durable-loop`
 /// boundary) — what the journal would record as `iter_committed`.
@@ -38,13 +38,13 @@ pub(crate) static JOURNALED_REFS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 pub(crate) static LOST_ACKS: Mutex<Vec<(String, usize)>> = Mutex::new(Vec::new());
 
 /// Every `EmitWorkflowOutput` the drain helpers saw — output that went
-/// STRAIGHT to the wire, bypassing any proc boundary. A durable structured
+/// STRAIGHT to the wire, bypassing any task boundary. A durable structured
 /// operative must produce none of these (it stages); an opted-out class
 /// still does.
 pub(crate) static WIRE_EMITS: Mutex<Vec<(String, Vec<u8>)>> = Mutex::new(Vec::new());
 
-pub(crate) fn drain_proc_commits() -> Vec<crate::pb::ProcCommit> {
-    std::mem::take(&mut *PROC_COMMITS.lock().unwrap())
+pub(crate) fn drain_task_commits() -> Vec<crate::pb::TaskCommit> {
+    std::mem::take(&mut *TASK_COMMITS.lock().unwrap())
 }
 
 pub(crate) fn drain_iter_commits() -> Vec<crate::pb::IterCommit> {
@@ -147,11 +147,11 @@ pub(crate) fn ack_control_request(
 ) -> Vec<Vec<u8>> {
     use crate::pb::command_request::Command;
     match command {
-        Command::ProcCommit(commit) => {
+        Command::TaskCommit(commit) => {
             let flushed: Vec<Vec<u8>> = commit.outbox.iter().map(|o| o.payload.clone()).collect();
             let operative_id = commit.operative_id.clone();
             journal_barrier(&operative_id, &reference_id, flushed, || {
-                PROC_COMMITS.lock().unwrap().push(commit)
+                TASK_COMMITS.lock().unwrap().push(commit)
             })
         }
         Command::IterCommit(commit) => {
@@ -172,7 +172,7 @@ pub(crate) fn ack_control_request(
 pub(crate) fn control_request_operative(command: &crate::pb::command_request::Command) -> String {
     use crate::pb::command_request::Command;
     match command {
-        Command::ProcCommit(c) => c.operative_id.clone(),
+        Command::TaskCommit(c) => c.operative_id.clone(),
         Command::IterCommit(c) => c.operative_id.clone(),
         Command::IterPark(p) => p.operative_id.clone(),
         _ => String::new(),
@@ -182,7 +182,7 @@ pub(crate) fn control_request_operative(command: &crate::pb::command_request::Co
 /// Drain output frames until the `WorkflowCompleted` for `id`, returning the
 /// collected outputs and the `(status, error, result)` completion tuple.
 /// "Output" is what reaches the plugins: an opted-out emit straight off the
-/// wire, plus a durable operative's staged outbox once its proc commits (the
+/// wire, plus a durable operative's staged outbox once its task commits (the
 /// fake controller flushes it on ack).
 pub(crate) fn drain(
     rx: &Receiver<RunnerMessage>,
@@ -220,8 +220,8 @@ pub(crate) fn drain(
                 // A park tears the run down WITHOUT a completion, so the
                 // drain would otherwise wait out its deadline: report it as
                 // the terminal outcome of this run instead.
-                let parked = matches!(command, crate::pb::command_request::Command::IterPark(_));
-                let flushed = ack_control_request(reference_id, command);
+                let parked = matches!(*command, crate::pb::command_request::Command::IterPark(_));
+                let flushed = ack_control_request(reference_id, *command);
                 if for_id {
                     outs.extend(flushed);
                     if parked {
@@ -249,7 +249,7 @@ pub(crate) fn wait_for_output(rx: &Receiver<RunnerMessage>, id: &str, payload: &
                 command,
             } => {
                 let for_id = control_request_operative(&command) == id;
-                let flushed = ack_control_request(reference_id, command);
+                let flushed = ack_control_request(reference_id, *command);
                 if for_id && flushed.iter().any(|p| p == payload) {
                     return;
                 }

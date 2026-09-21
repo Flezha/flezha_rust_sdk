@@ -1,23 +1,23 @@
 //! Reshaping and keying on the wiring (`stream-transforms`).
 //!
-//! One trade feed, four candle timeframes, one candle Entity per
-//! symbol-and-timeframe. Written with Procedures alone that is a filter class
+//! One trade feed, four candle timeframes, one candle Cell per
+//! symbol-and-timeframe. Written with Tasklets alone that is a filter class
 //! and a fan-out class in front of the consumer, two more places to look and
 //! neither of them the topology. Written on the edge it is four lines you can
 //! read top to bottom:
 //!
 //! ```ignore
 //! c.input::<Trade>("trades")
-//!     .filter(|t: &Trade| t.qty > 0.0)          // no Procedure
+//!     .filter(|t: &Trade| t.qty > 0.0)          // no Tasklet
 //!     .flat_map(explode)                        // one trade → four slots
 //!     .key_by(|s: &Slot| format!("{}@{}", s.symbol, s.tf))
-//!     .into::<Candle>()                         // one Entity per slot
+//!     .into::<Candle>()                         // one Cell per slot
 //!     .keyed()
 //!     .sink_named("candles");
 //! ```
 //!
-//! The whole topology contains exactly ONE Procedure node. The transforms add
-//! no Entity, no mailbox and no dispatch hop: everything declared before
+//! The whole topology contains exactly ONE Tasklet node. The transforms add
+//! no Cell, no mailbox and no dispatch hop: everything declared before
 //! `.into` composes into a single closure stored on that one consumer edge.
 //! Fusion is structural — `.into` IS the boundary — so there is no optimizer to
 //! second-guess and nothing to disable.
@@ -29,10 +29,10 @@
 //!   delivery and WAL replay both travel. A closure that read the clock would
 //!   rebuild a state the live run never had.
 //! - **Cheap.** They run on the routing thread. Real work belongs in the
-//!   Procedure behind `key_by`, which is where per-Entity parallelism comes
+//!   Tasklet behind `key_by`, which is where per-Cell parallelism comes
 //!   from. Reshaping a value is cheap; parsing a megabyte is not.
 //!
-//! `key_by` is **total**: it names an Entity, it never declines. Discarding an
+//! `key_by` is **total**: it names a Cell, it never declines. Discarding an
 //! input is `filter`'s job — which is why the qty check comes first.
 //!
 //! Run it with:
@@ -43,8 +43,8 @@
 //! then feed it:
 //!     flz operative send candles --channel trades --text '{"symbol":"AAPL","price":190.2,"qty":3.0}'
 
-use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError};
 use flezha_runner::state::{Change, RestoreInitPayload, StateHandle, WallClock};
+use flezha_runner::tasklet::{Tasklet, TaskletCtx, TaskletError};
 use flezha_runner::{ChannelBuilder, StreamOperative};
 use serde::{Deserialize, Serialize};
 
@@ -91,14 +91,14 @@ struct Tick(f64);
 
 impl Change for Tick {}
 
-/// The one Procedure in the graph. Note what it does NOT declare: no
-/// `entity_keys()`, no keying member of any kind. It is dynamic-mode because a
-/// keyed edge feeds it — and its Entities are created on first sight of each
+/// The one Tasklet in the graph. Note what it does NOT declare: no
+/// `cell_keys()`, no keying member of any kind. It is dynamic-mode because a
+/// keyed edge feeds it — and its Cells are created on first sight of each
 /// key.
 #[derive(Default)]
 struct Candle;
 
-impl Procedure for Candle {
+impl Tasklet for Candle {
     type Input = Slot;
     type Output = String;
     type State = CandleState;
@@ -128,11 +128,11 @@ impl Procedure for Candle {
         &mut self,
         input: Slot,
         mut state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         state.apply(Tick(input.price));
-        // The Entity IS the candle, so the plain emit already carries the
-        // Entity's own key — `key_by`'s value — and cannot drift from it.
+        // The Cell IS the candle, so the plain emit already carries the
+        // Cell's own key — `key_by`'s value — and cannot drift from it.
         // `emit_keyed` is for the output whose key is a different one.
         ctx.emit(format!(
             "{} {} h={} l={}",
@@ -165,5 +165,5 @@ fn main() {
     // is legal without needing a live controller.
     flezha_runner::operative::builder::build_topology_for::<Candles>()
         .expect("the candle topology builds");
-    println!("candles topology builds: 1 procedure, 4 Entities per symbol");
+    println!("candles topology builds: 1 tasklet, 4 Cells per symbol");
 }

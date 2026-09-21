@@ -1,15 +1,15 @@
-//! Reading an Entity's live state with `flz state get`
-//! (`entity-state-live-query`).
+//! Reading a Cell's live state with `flz state get`
+//! (`cell-state-live-query`).
 //!
 //! The pattern this exists for: something outside the pipeline needs the
 //! CURRENT value of one key — a dashboard, an ops question, a health check.
 //! `flz state at` serves the controller's WAL at a point in the PAST, so
 //! "what is BTCUSD doing right now" is a question for `flz state get`, which
-//! reads the Entity itself rather than a copy that reached a sink.
+//! reads the Cell itself rather than a copy that reached a sink.
 //!
-//! **This example declares nothing special.** That is the point: every Entity
+//! **This example declares nothing special.** That is the point: every Cell
 //! of a running Operative is readable, because the read reuses the
-//! `EntityState` command the SDK answers for migration. Declaring
+//! `CellState` command the SDK answers for migration. Declaring
 //! `type Change` is what makes the value durable; nothing extra makes it
 //! readable.
 //!
@@ -22,44 +22,44 @@
 //!     flz operative send market --channel trades --text '{"symbol":"BTCUSD","price":64100.0,"qty":0.5}'
 //!     flz operative send market --channel trades --text '{"symbol":"ETHUSD","price":3120.0,"qty":4.0}'
 //!
-//! then read ONE Entity by name:
+//! then read ONE Cell by name:
 //!     $ flz state get market/candle/BTCUSD
 //!     state get market/candle/BTCUSD:
 //!       change_seq: 1
 //!       state:      {"candle":{"BTCUSD":{"high":64100.0,"volume":0.5,"trades":1}}}
 //!
 //! The `change_seq` is the version the state was serialized at. It may be
-//! AHEAD of what is durable: the read takes the Entity's state lock and does
+//! AHEAD of what is durable: the read takes the Cell's state lock and does
 //! not drain pending changes, so a change `run` applied a millisecond ago is in
 //! the answer whether or not the flusher has shipped it yet. That is the
 //! contract — freshest value, version reported — and it is why a read triggers
 //! no compaction, no snapshot and no WAL truncation.
 //!
-//! Narrowing costs what it asks for. Drop the key to read the whole Procedure
+//! Narrowing costs what it asks for. Drop the key to read the whole Tasklet
 //! (no single version, so no seq):
 //!     $ flz state get market/candle --output json
 //!     {"change_seq":null,"path":"market/candle","state":{"candle":{"BTCUSD":{...},"ETHUSD":{...}}}}
 //!
-//! An Entity nothing holds is REFUSED, naming which case and pointing at the
+//! A Cell nothing holds is REFUSED, naming which case and pointing at the
 //! durable path — it is never quietly served from disk:
 //!     $ flz state get market/candle/DOGEUSD
-//!     state get: entity_not_found: procedure `candle` holds no Entity keyed
+//!     state get: cell_not_found: tasklet `candle` holds no Cell keyed
 //!     `DOGEUSD` — read its durable state with `flz state at`
 //!
 //! and, once this operative's 10-minute idle TTL has evicted a quiet symbol:
 //!     $ flz state get market/candle/ETHUSD
-//!     state get: entity_evicted: Entity `ETHUSD` of procedure `candle` was
+//!     state get: cell_evicted: Cell `ETHUSD` of tasklet `candle` was
 //!     idle-evicted; eviction is destructive, so there is no durable value to
 //!     serve — read its durable state with `flz state at`
 //!
-//! Both exit non-zero. `entity_evicted` and `entity_not_found` are different
-//! diagnoses on purpose: eviction unlinks the Entity's files, so after the fact
+//! Both exit non-zero. `cell_evicted` and `cell_not_found` are different
+//! diagnoses on purpose: eviction unlinks the Cell's files, so after the fact
 //! only the SDK's workflow eviction trace can tell you the key ever existed.
 
 use std::time::Duration;
 
-use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError};
 use flezha_runner::state::{Change, RestoreInitPayload, StateHandle, WallClock};
+use flezha_runner::tasklet::{Tasklet, TaskletCtx, TaskletError};
 use flezha_runner::{ChannelBuilder, StreamOperative};
 use serde::{Deserialize, Serialize};
 
@@ -87,9 +87,9 @@ struct Traded {
 impl Change for Traded {}
 
 #[derive(Default)]
-struct CandleProcedure;
+struct CandleTasklet;
 
-impl Procedure for CandleProcedure {
+impl Tasklet for CandleTasklet {
     type Input = Trade;
     type Output = ();
     type State = Candle;
@@ -98,7 +98,7 @@ impl Procedure for CandleProcedure {
     type Config = ();
 
     fn name() -> &'static str {
-        // The middle path segment of `flz state get <operative>/<procedure>/<key>`.
+        // The middle path segment of `flz state get <operative>/<tasklet>/<key>`.
         "candle"
     }
 
@@ -114,8 +114,8 @@ impl Procedure for CandleProcedure {
 
     /// A quiet symbol is evicted after ten idle minutes. Eviction is
     /// destructive, so a later read of that key is refused with
-    /// `entity_evicted` rather than served a stale value.
-    fn entity_idle_ttl() -> Option<Duration> {
+    /// `cell_evicted` rather than served a stale value.
+    fn cell_idle_ttl() -> Option<Duration> {
         Some(Duration::from_secs(600))
     }
 
@@ -123,8 +123,8 @@ impl Procedure for CandleProcedure {
         &mut self,
         trade: Trade,
         mut state: StateHandle<'_, Self>,
-        _ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        _ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         // Applied here, visible to a read immediately — before the flusher has
         // shipped it, and before any sink has seen it.
         state.apply(Traded {
@@ -144,11 +144,11 @@ impl StreamOperative for Market {
     }
 
     fn channels(c: &ChannelBuilder) {
-        // `.key_by` is what makes the Entity keys addressable by name: one
-        // Entity per symbol, and `BTCUSD` is exactly what you type.
+        // `.key_by` is what makes the Cell keys addressable by name: one
+        // Cell per symbol, and `BTCUSD` is exactly what you type.
         c.input::<Trade>("trades")
             .key_by(|t: &Trade| t.symbol.clone())
-            .into::<CandleProcedure>();
+            .into::<CandleTasklet>();
     }
 }
 
@@ -159,12 +159,12 @@ fn main() {
     match flezha_runner::operative::builder::build_topology_for::<Market>() {
         Ok(topology) => {
             println!("operative `{}`", topology.factory_id);
-            for procedure in &topology.procedures {
+            for tasklet in &topology.tasklets {
                 println!(
                     "  flz state get {}/{}/<key>   ({} mode)",
                     topology.factory_id,
-                    procedure.name,
-                    if procedure.entity_keys.is_empty() {
+                    tasklet.name,
+                    if tasklet.cell_keys.is_empty() {
                         "single or dynamic"
                     } else {
                         "static"

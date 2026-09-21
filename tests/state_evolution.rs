@@ -2,10 +2,10 @@
 //! `SCHEMA_VERSION`, declares how far back they read, and proves the
 //! migration against bytes the previous version wrote — without a controller.
 
-use flezha_runner::entity::header::header_template_for;
-use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError};
+use flezha_runner::cell::header::header_template_for;
 use flezha_runner::state::{Change, RestoreInitPayload, StateHandle, WallClock};
-use flezha_runner::testing::ProcedureTestHarness;
+use flezha_runner::tasklet::{Tasklet, TaskletCtx, TaskletError};
+use flezha_runner::testing::TaskletTestHarness;
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug, Default, PartialEq)]
@@ -26,8 +26,8 @@ impl Change for AddItems {}
 /// The deployed v1, kept only to write the fixture bytes this test restores
 /// from — in a real repo those bytes are already on disk.
 #[derive(Default)]
-struct BasketV1Procedure;
-impl Procedure for BasketV1Procedure {
+struct BasketV1Tasklet;
+impl Tasklet for BasketV1Tasklet {
     type Input = String;
     type Output = String;
     type State = BasketV1;
@@ -47,8 +47,8 @@ impl Procedure for BasketV1Procedure {
         &mut self,
         _: String,
         _: StateHandle<'_, Self>,
-        _: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        _: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         Ok(())
     }
 }
@@ -56,8 +56,8 @@ impl Procedure for BasketV1Procedure {
 /// v2: one field added, the version bumped, and the floor lowered to 1 with a
 /// migration to back the claim.
 #[derive(Default)]
-struct BasketProcedure;
-impl Procedure for BasketProcedure {
+struct BasketTasklet;
+impl Tasklet for BasketTasklet {
     type Input = String;
     type Output = String;
     type State = Basket;
@@ -91,8 +91,8 @@ impl Procedure for BasketProcedure {
         &mut self,
         _: String,
         _: StateHandle<'_, Self>,
-        _: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        _: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         Ok(())
     }
 }
@@ -102,9 +102,9 @@ impl Procedure for BasketProcedure {
 #[test]
 fn a_migration_is_provable_at_the_authoring_seam() {
     let body = postcard::to_allocvec(&BasketV1 { items: 3 }).expect("encode v1 state");
-    let header = header_template_for::<BasketV1Procedure>().stamp(&body);
+    let header = header_template_for::<BasketV1Tasklet>().stamp(&body);
 
-    let harness = ProcedureTestHarness::<BasketProcedure>::with_payload(
+    let harness = TaskletTestHarness::<BasketTasklet>::with_payload(
         None,
         RestoreInitPayload {
             snapshot_header: &header,

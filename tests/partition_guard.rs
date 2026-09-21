@@ -24,7 +24,7 @@ static KEYED_LOCK: Mutex<()> = Mutex::new(());
 static SEEN: Mutex<Vec<String>> = Mutex::new(Vec::new());
 static RUNS: AtomicUsize = AtomicUsize::new(0);
 
-test_procedure!(KeyedProcedure, "keyed_procedure", String => String, (), |input, _state, _ctx| {
+test_tasklet!(KeyedTasklet, "keyed_tasklet", String => String, (), |input, _state, _ctx| {
     RUNS.fetch_add(1, Ordering::SeqCst);
     SEEN.lock().unwrap().push(input);
     Ok(())
@@ -39,7 +39,7 @@ impl StreamOperative for KeyedOperative {
         c.input::<String>("input")
             .retry_max(1)
             .key_by(|s: &String| s.clone())
-            .into::<KeyedProcedure>();
+            .into::<KeyedTasklet>();
     }
 }
 
@@ -47,7 +47,7 @@ impl StreamOperative for KeyedOperative {
 // outside its range simply never receive input.
 static STATIC_SEEN: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-test_procedure!(StaticProcedure, "static_procedure", String => String, (), |input, _state, _ctx| {
+test_tasklet!(StaticTasklet, "static_tasklet", String => String, (), |input, _state, _ctx| {
     STATIC_SEEN.lock().unwrap().push(input);
     Ok(())
 });
@@ -58,7 +58,7 @@ impl StreamOperative for StaticOperative {
         "partition_static_operative"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<String>("input").into::<StaticProcedure>();
+        c.input::<String>("input").into::<StaticTasklet>();
     }
 }
 
@@ -88,7 +88,7 @@ fn payload(value: &str) -> Vec<u8> {
 }
 
 #[test]
-fn a_mis_routed_key_parks_naming_the_contract_and_creates_no_entity() {
+fn a_mis_routed_key_parks_naming_the_contract_and_creates_no_cell() {
     let _guard = KEYED_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     reset();
     let parked = install_auto_acking_sink();
@@ -120,15 +120,15 @@ fn a_mis_routed_key_parks_naming_the_contract_and_creates_no_entity() {
         "the park must state the contract that was violated: {error}"
     );
 
-    assert_eq!(RUNS.load(Ordering::SeqCst), 0, "the procedure never ran");
+    assert_eq!(RUNS.load(Ordering::SeqCst), 0, "the tasklet never ran");
 
     let registry = instance.dynamic_registries[0]
         .as_ref()
         .expect("dynamic registry");
     assert_eq!(
-        registry.entities.len(),
+        registry.cells.len(),
         0,
-        "no Entity may be created for a key this member does not own"
+        "no Cell may be created for a key this member does not own"
     );
 }
 
@@ -211,9 +211,9 @@ fn a_static_class_serves_only_its_own_declared_keys() {
     STATIC_SEEN.lock().unwrap().clear();
     let stream = dummy_stream();
 
-    // The single-entity class has no keys at all, so a partitioned member
+    // The single-cell class has no keys at all, so a partitioned member
     // still serves it: partitioning subtracts declared keys, it does not
-    // silence a procedure that has none.
+    // silence a tasklet that has none.
     let (handle, _) = setup_partitioned::<StaticOperative>("guard-static", member(1, 3));
     dispatch_input(
         &handle,

@@ -1,16 +1,16 @@
 //! A detector fed by both its data feed and a live config channel
-//! (`multi-input-procedures`).
+//! (`multi-input-tasklets`).
 //!
-//! The pattern this exists for: a procedure whose behaviour must change while
+//! The pattern this exists for: a tasklet whose behaviour must change while
 //! it runs. Without a merge the only ways to reconfigure are to restart the
 //! operative with new env, or to bolt the config onto every data payload —
 //! the first loses the state you were accumulating, the second couples the
 //! producer to the consumer's knobs.
 //!
-//! `c.merge::<I>()` declares the procedure's `Input` as one sum type and gives
+//! `c.merge::<I>()` declares the tasklet's `Input` as one sum type and gives
 //! each source channel a mapping into it. Everything downstream — `run`,
-//! `entities_for`, state, emit — sees exactly one type, so nothing else about
-//! the procedure changes.
+//! `cells_for`, state, emit — sees exactly one type, so nothing else about
+//! the tasklet changes.
 //!
 //! Two things worth knowing before you reach for it:
 //!
@@ -29,7 +29,7 @@
 //!     flz operative send thermostat --channel readings --text '{"sensor":"kiln","celsius":812.0}'
 //!     flz operative send thermostat --channel config   --text '{"max_celsius":800.0}'
 
-use flezha_runner::{procedure, ChannelBuilder, StreamOperative};
+use flezha_runner::{tasklet, ChannelBuilder, StreamOperative};
 use serde::{Deserialize, Serialize};
 
 // -- the two feeds ----------------------------------------------------------
@@ -74,7 +74,7 @@ impl Default for DetectorState {
     }
 }
 
-#[procedure(id = "detector")]
+#[tasklet(id = "detector")]
 fn detector(input: DetectorInput, state: &mut DetectorState) -> Option<String> {
     match input {
         // A config frame is an ordinary input: it lands in the same
@@ -103,7 +103,7 @@ impl StreamOperative for Thermostat {
 
     fn channels(c: &ChannelBuilder) {
         // Two entry channels, one consumer. Either source may equally be
-        // another procedure's output stream — `.from` takes both.
+        // another tasklet's output stream — `.from` takes both.
         c.merge::<DetectorInput>()
             .from(c.input::<Reading>("readings"), DetectorInput::Reading)
             .from(c.input::<Threshold>("config"), DetectorInput::Threshold)

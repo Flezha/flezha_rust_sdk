@@ -16,9 +16,9 @@ use crate::workflow::*;
 mod durable_loop;
 mod fan_in;
 mod lifecycle;
-mod proc_journal;
 mod retry;
 mod saga;
+mod task_journal;
 
 // ---- single driver-observation test --------------------------------------
 //
@@ -36,11 +36,11 @@ fn workflow_driver_scenarios() {
 
     // Durable workflow operatives in this test ship WAL frames through the
     // process-global sink; hold the shared sink lock for the whole test so
-    // it never races the entity-state sink tests, and install a capturing
+    // it never races the cell-state sink tests, and install a capturing
     // sink to observe the frames.
-    let _sink_guard = crate::entity::state_sink::SINK_TEST_LOCK.lock().unwrap();
-    let wal_sink: crate::entity::flusher::SendFrameFn = Arc::new(
-        |payload_id: &str, frame: &[u8]| -> Result<(), crate::entity::flusher::SendError> {
+    let _sink_guard = crate::cell::state_sink::SINK_TEST_LOCK.lock().unwrap();
+    let wal_sink: crate::cell::flusher::SendFrameFn = Arc::new(
+        |payload_id: &str, frame: &[u8]| -> Result<(), crate::cell::flusher::SendError> {
             WAL_FRAMES
                 .lock()
                 .unwrap()
@@ -48,7 +48,7 @@ fn workflow_driver_scenarios() {
             Ok(())
         },
     );
-    crate::entity::state_sink::install_global_sink(wal_sink);
+    crate::cell::state_sink::install_global_sink(wal_sink);
 
     crate::register_class::<crate::WorkflowKind, EmitWorkflow>().unwrap();
     crate::register_class::<crate::WorkflowKind, FailWorkflow>().unwrap();
@@ -94,21 +94,22 @@ fn workflow_driver_scenarios() {
     // The phases run strictly in this order, each draining its own instances
     // to completion before the next one starts.
     lifecycle::lifecycle(&mut node, &rx);
+    lifecycle::completions(&mut node, &rx);
     lifecycle::loop_stop_and_removal(&mut node, &rx);
     lifecycle::structured_chains(&mut node, &rx);
     saga::saga_compensation(&mut node, &rx);
     lifecycle::add_operative_routing(&mut node, &rx);
-    proc_journal::durable_wal_and_journal(&mut node, &rx);
-    proc_journal::proc_journal_commits(&mut node, &rx);
-    proc_journal::transactional_outbox(&mut node, &rx);
-    proc_journal::resume_skip(&mut node, &rx);
+    task_journal::durable_wal_and_journal(&mut node, &rx);
+    task_journal::task_journal_commits(&mut node, &rx);
+    task_journal::transactional_outbox(&mut node, &rx);
+    task_journal::resume_skip(&mut node, &rx);
     saga::saga_crash_resume(&mut node, &rx);
     fan_in::fan_in_branching(&mut node, &rx);
     fan_in::merge_mapping(&mut node, &rx);
     durable_loop::durable_loop(&mut node, &rx);
     durable_loop::loop_saga_and_rewind(&mut node, &rx);
     durable_loop::loop_completion(&mut node, &rx);
-    retry::entity_retry(&mut node, &rx);
+    retry::cell_retry(&mut node, &rx);
     retry::retry_stop_and_stage(&mut node, &rx);
     fan_in::branching_resume(&mut node, &rx);
     durable_loop::barrier_resend(&mut node, &rx);
@@ -131,10 +132,10 @@ pub(super) fn resume_chain_with_journal(
         0,
         Some(journal)
     ));
-    let s1_id = crate::entity::flusher::encode_entity_identity(id, "workflow_stage1", "");
+    let s1_id = crate::cell::flusher::encode_cell_identity(id, "workflow_stage1", "");
     let (inst, _slot) = node
-        .find_workflow_entity(&s1_id)
-        .expect("chain entity reachable by the restore handler");
+        .find_workflow_cell(&s1_id)
+        .expect("chain cell reachable by the restore handler");
     inst.note_restored();
     drain(rx, id)
 }

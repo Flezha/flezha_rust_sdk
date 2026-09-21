@@ -15,9 +15,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use flezha_runner::__dispatch_internals::OperativeDispatchHandle;
-use flezha_runner::entity::flusher::{SendError, SendFrameFn};
-use flezha_runner::entity::park::{self, ParkBody};
-use flezha_runner::entity::state_sink::{install_global_sink, PARK_PAYLOAD_PAYLOAD_ID};
+use flezha_runner::cell::flusher::{SendError, SendFrameFn};
+use flezha_runner::cell::park::{self, ParkBody};
+use flezha_runner::cell::state_sink::{install_global_sink, PARK_PAYLOAD_PAYLOAD_ID};
 use flezha_runner::operative::builder::build_topology_for;
 use flezha_runner::operative::registry::OperativeRegistry;
 use flezha_runner::operative::{StreamInstance, StreamOperative};
@@ -40,8 +40,8 @@ pub mod prelude {
     pub use flezha_runner::operative::builder::build_topology_for;
     pub use flezha_runner::operative::registry::OperativeRegistry;
     pub use flezha_runner::operative::{StreamInstance, StreamOperative};
-    pub use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError};
     pub use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
+    pub use flezha_runner::tasklet::{Tasklet, TaskletCtx, TaskletError};
 
     pub use super::*;
 }
@@ -91,16 +91,16 @@ pub fn setup_partitioned<R: StreamOperative>(
     (OperativeDispatchHandle { registry }, instance)
 }
 
-/// Declare a trivial test Procedure: `State` built via `Default`, no entity
+/// Declare a trivial test Tasklet: `State` built via `Default`, no cell
 /// keys / change type. The run body sees `(input, state, ctx)`. Use the
 /// `cap N` form to set a non-default mailbox capacity.
 #[macro_export]
-macro_rules! test_procedure {
-    ($procedure:ident, $name:literal, $input:ty => $output:ty, $state:ty,
+macro_rules! test_tasklet {
+    ($tasklet:ident, $name:literal, $input:ty => $output:ty, $state:ty,
      |$inp:tt, $st:tt, $ctx:tt| $body:block) => {
         #[derive(Default)]
-        struct $procedure;
-        impl flezha_runner::procedure::Procedure for $procedure {
+        struct $tasklet;
+        impl flezha_runner::tasklet::Tasklet for $tasklet {
             type Input = $input;
             type Output = $output;
             type State = $state;
@@ -117,16 +117,16 @@ macro_rules! test_procedure {
             fn run(
                 &mut self,
                 $inp: $input,
-                $st: flezha_runner::procedure::StateHandle<'_, Self>,
-                $ctx: &mut flezha_runner::procedure::ProcedureCtx<'_>,
-            ) -> ::std::result::Result<(), flezha_runner::procedure::ProcedureError> $body
+                $st: flezha_runner::tasklet::StateHandle<'_, Self>,
+                $ctx: &mut flezha_runner::tasklet::TaskletCtx<'_>,
+            ) -> ::std::result::Result<(), flezha_runner::tasklet::TaskletError> $body
         }
     };
-    ($procedure:ident, $name:literal, $input:ty => $output:ty, $state:ty, cap $cap:literal,
+    ($tasklet:ident, $name:literal, $input:ty => $output:ty, $state:ty, cap $cap:literal,
      |$inp:tt, $st:tt, $ctx:tt| $body:block) => {
         #[derive(Default)]
-        struct $procedure;
-        impl flezha_runner::procedure::Procedure for $procedure {
+        struct $tasklet;
+        impl flezha_runner::tasklet::Tasklet for $tasklet {
             type Input = $input;
             type Output = $output;
             type State = $state;
@@ -145,9 +145,9 @@ macro_rules! test_procedure {
             fn run(
                 &mut self,
                 $inp: $input,
-                $st: flezha_runner::procedure::StateHandle<'_, Self>,
-                $ctx: &mut flezha_runner::procedure::ProcedureCtx<'_>,
-            ) -> ::std::result::Result<(), flezha_runner::procedure::ProcedureError> $body
+                $st: flezha_runner::tasklet::StateHandle<'_, Self>,
+                $ctx: &mut flezha_runner::tasklet::TaskletCtx<'_>,
+            ) -> ::std::result::Result<(), flezha_runner::tasklet::TaskletError> $body
         }
     };
 }
@@ -207,7 +207,7 @@ pub fn install_auto_acking_sink() -> Arc<Mutex<Vec<ParkBody>>> {
     parked
 }
 
-/// Parse the outer entity frame and postcard-decode the `ParkBody`.
+/// Parse the outer cell frame and postcard-decode the `ParkBody`.
 /// Layout: `[pid_len:u16][pid][seq:u64][header:16][body_len:u32][body][crc:u32]`.
 pub fn decode_park_body(frame: &[u8]) -> Result<ParkBody, String> {
     let pid_len = u16::from_be_bytes([frame[0], frame[1]]) as usize;
@@ -220,11 +220,11 @@ pub fn decode_park_body(frame: &[u8]) -> Result<ParkBody, String> {
 }
 
 /// A String -> String no-op. Written out rather than declared through
-/// `test_procedure!` because a shared fixture has to be `pub` and the macro's
+/// `test_tasklet!` because a shared fixture has to be `pub` and the macro's
 /// associated `type Input` may not leak a private one.
 #[derive(Default)]
-pub struct EchoProcedure;
-impl flezha_runner::procedure::Procedure for EchoProcedure {
+pub struct EchoTasklet;
+impl flezha_runner::tasklet::Tasklet for EchoTasklet {
     type Input = String;
     type Output = String;
     type State = ();
@@ -232,21 +232,21 @@ impl flezha_runner::procedure::Procedure for EchoProcedure {
     type Clock = flezha_runner::state::WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "echo_procedure"
+        "echo_tasklet"
     }
     fn init_state(_: Option<&str>, _: Option<flezha_runner::state::RestoreInitPayload<'_>>) {}
     fn run(
         &mut self,
         _input: String,
-        _state: flezha_runner::procedure::StateHandle<'_, Self>,
-        _ctx: &mut flezha_runner::procedure::ProcedureCtx<'_>,
-    ) -> Result<(), flezha_runner::procedure::ProcedureError> {
+        _state: flezha_runner::tasklet::StateHandle<'_, Self>,
+        _ctx: &mut flezha_runner::tasklet::TaskletCtx<'_>,
+    ) -> Result<(), flezha_runner::tasklet::TaskletError> {
         Ok(())
     }
 }
 
-/// The smallest complete class: one entry channel into one echo procedure,
-/// single-entity. What a topology assertion reaches for when the topology
+/// The smallest complete class: one entry channel into one echo tasklet,
+/// single-cell. What a topology assertion reaches for when the topology
 /// itself is not the subject.
 pub struct SingleOperative;
 impl StreamOperative for SingleOperative {
@@ -254,6 +254,6 @@ impl StreamOperative for SingleOperative {
         "single_operative"
     }
     fn channels(c: &flezha_runner::channel::ChannelBuilder) {
-        c.input::<String>("inp").into::<EchoProcedure>();
+        c.input::<String>("inp").into::<EchoTasklet>();
     }
 }

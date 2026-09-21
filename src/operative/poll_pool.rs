@@ -219,41 +219,41 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize};
 
     use super::*;
+    use crate::cell::restore::RestoreInitPayload;
     use crate::channel::ChannelBuilder;
-    use crate::entity::restore::RestoreInitPayload;
     use crate::operative::StreamOperative;
-    use crate::procedure::state_handle::StateHandle;
-    use crate::procedure::{Procedure, ProcedureCtx, ProcedureError};
     use crate::runner::poll_core_tests::fixtures::{build_slot_of, push_input, wait_until};
+    use crate::tasklet::state_handle::StateHandle;
+    use crate::tasklet::{Tasklet, TaskletCtx, TaskletError};
 
     /// Blocks on a process-wide gate for input `0`, returns immediately for
-    /// anything else: the two halves of "one entity stuck in user code must
-    /// not stop another entity's work".
+    /// anything else: the two halves of "one cell stuck in user code must
+    /// not stop another cell's work".
     #[derive(Default)]
-    struct GatedProc;
+    struct GatedTask;
 
     static GATE_HELD: AtomicBool = AtomicBool::new(false);
     static SERVED: AtomicUsize = AtomicUsize::new(0);
     /// The gate and the counter are process-global, so the cases take turns.
     static POOL_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    impl Procedure for GatedProc {
+    impl Tasklet for GatedTask {
         type Input = usize;
         type Output = ();
         type State = ();
-        type Change = crate::procedure::NoChange;
-        type Clock = crate::procedure::WallClock;
+        type Change = crate::tasklet::NoChange;
+        type Clock = crate::tasklet::WallClock;
         type Config = ();
         fn name() -> &'static str {
-            "poll_pool_gated_proc"
+            "poll_pool_gated_task"
         }
         fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
         fn run(
             &mut self,
             input: usize,
             _: StateHandle<'_, Self>,
-            _: &mut ProcedureCtx<'_>,
-        ) -> Result<(), ProcedureError> {
+            _: &mut TaskletCtx<'_>,
+        ) -> Result<(), TaskletError> {
             while input == 0 && GATE_HELD.load(Ordering::Acquire) {
                 std::thread::yield_now();
             }
@@ -268,7 +268,7 @@ mod tests {
             "poll_pool_gated_operative"
         }
         fn channels(c: &ChannelBuilder) {
-            c.input::<usize>("in").into::<GatedProc>();
+            c.input::<usize>("in").into::<GatedTask>();
         }
     }
 
@@ -292,7 +292,7 @@ mod tests {
     }
 
     /// The whole point of the adaptive pool: with every base worker blocked
-    /// in user code, queued work for another entity is still served — the
+    /// in user code, queued work for another cell is still served — the
     /// core reports starvation, the supervisor answers with a thread — and
     /// the grown thread retires once the burst is over.
     #[test]
@@ -315,7 +315,7 @@ mod tests {
         });
         assert!(
             GATE_HELD.load(Ordering::Acquire),
-            "the healthy entity was served only after the blocked one finished"
+            "the healthy cell was served only after the blocked one finished"
         );
         assert!(
             pool.live.load(Ordering::Acquire) > pool.base,

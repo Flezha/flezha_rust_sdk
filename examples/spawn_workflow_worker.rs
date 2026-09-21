@@ -1,5 +1,5 @@
 //! A stream detector that hands each interesting event to a short-lived
-//! workflow worker (`procedure-requested-spawn`).
+//! workflow worker (`tasklet-requested-spawn`).
 //!
 //! The pattern this exists for: a stream operative notices something worth
 //! doing real work about, and wants a worker for it — without an external
@@ -25,8 +25,8 @@
 //! The role also lets this runner's `admin()` start and send to operatives in its
 //! namespace, and nothing else.
 
-use flezha_runner::procedure::{IfRunning, ProcedureError, SpawnOptions};
-use flezha_runner::{procedure, ChannelBuilder, StreamOperative, WorkflowOperative};
+use flezha_runner::tasklet::{IfRunning, SpawnOptions, TaskletError};
+use flezha_runner::{tasklet, ChannelBuilder, StreamOperative, WorkflowOperative};
 
 // -- the detector: stream, one instance, runs forever ---------------------
 
@@ -44,8 +44,8 @@ impl StreamOperative for AlertDetector {
     }
 }
 
-#[procedure(id = "detect", emits = String)]
-fn detect(input: String, ctx: &mut flezha_runner::ProcedureCtx<'_>) -> Result<(), ProcedureError> {
+#[tasklet(id = "detect", emits = String)]
+fn detect(input: String, ctx: &mut flezha_runner::TaskletCtx<'_>) -> Result<(), TaskletError> {
     let Some(subject) = input.strip_prefix("alert:") else {
         return Ok(());
     };
@@ -53,7 +53,7 @@ fn detect(input: String, ctx: &mut flezha_runner::ProcedureCtx<'_>) -> Result<()
     // One worker per subject: the first alert spawns it with this payload
     // as its first input, later alerts are delivered to the same instance.
     // The handle is dropped: a failed request logs itself and this
-    // procedure carries on emitting.
+    // tasklet carries on emitting.
     let _ = ctx.spawn_workflow_with(
         "triage",
         input.as_bytes().to_vec(),
@@ -72,14 +72,14 @@ impl WorkflowOperative for Triage {
         "triage"
     }
 
-    fn procedures(c: &ChannelBuilder) {
+    fn tasklets(c: &ChannelBuilder) {
         c.input::<String>("alert")
             .into::<TriageStep>()
             .sink_named("triaged");
     }
 }
 
-#[procedure(id = "triage_step")]
+#[tasklet(id = "triage_step")]
 fn triage_step(input: String) -> String {
     format!("triaged:{input}")
 }

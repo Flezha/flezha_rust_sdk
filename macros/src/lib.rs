@@ -1,13 +1,13 @@
 //! Proc-macros realizing the Flezha SDK authoring contract for Rust.
 //!
-//! - `#[flezha::procedure]` — attribute macro on a `run` function; infers the six
-//!   `Procedure` associated types from the signature and generates the impl and
-//!   the PascalCase procedure type.
+//! - `#[flezha::tasklet]` — attribute macro on a `run` function; infers the six
+//!   `Tasklet` associated types from the signature and generates the impl and
+//!   the PascalCase tasklet type.
 //! - `#[flezha::stream_operative]` / `#[flezha::workflow_operative]`: the §5
 //!   short form on a `run` function, emitting the operative type under the
 //!   author's PascalCase name, which the author registers with
-//!   `runner.register_factory(Name)`, and the procedure type beside it, suffixed
-//!   `Procedure`.
+//!   `runner.register_factory(Name)`, and the tasklet type beside it, suffixed
+//!   `Tasklet`.
 //! - `#[derive(flezha::State)]` — generates a field-granular `Change` enum +
 //!   `apply_change` + journaling mutators on the state handle.
 //! - `flezha::operative!` — declarative macro lowering a strictly linear pipeline
@@ -20,16 +20,16 @@
 use proc_macro::TokenStream;
 
 mod operative;
-mod procedure;
 mod state;
+mod tasklet;
 mod util;
 
-use procedure::Declares;
+use tasklet::Declares;
 
-/// `#[flezha::procedure(...)]` attribute macro. See module docs.
+/// `#[flezha::tasklet(...)]` attribute macro. See module docs.
 #[proc_macro_attribute]
-pub fn procedure(attr: TokenStream, item: TokenStream) -> TokenStream {
-    on_run_fn(Declares::Procedure, attr, item)
+pub fn tasklet(attr: TokenStream, item: TokenStream) -> TokenStream {
+    on_run_fn(Declares::Tasklet, attr, item)
 }
 
 /// `#[flezha::stream_operative(...)]` short-form attribute. See module docs.
@@ -46,7 +46,7 @@ pub fn workflow_operative(attr: TokenStream, item: TokenStream) -> TokenStream {
 
 /// The three attributes on a `run` function share one expansion.
 fn on_run_fn(declares: Declares, attr: TokenStream, item: TokenStream) -> TokenStream {
-    procedure::expand(declares, attr.into(), item.into())
+    tasklet::expand(declares, attr.into(), item.into())
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
 }

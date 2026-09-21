@@ -23,7 +23,7 @@
 //! (`Flezha::create_runner(..).register_factory(T)`, which registers without
 //! connecting to anything) and driven through a `RunnerNode`, so the probe
 //! measures what an operator's runner does rather than a test back door. The
-//! SDK's poll workers spawn themselves on the first instance's entity build,
+//! SDK's poll workers spawn themselves on the first instance's cell build,
 //! which is why `FLEZHA_WORKER_POOL_SIZE` is set before the first start.
 //!
 //! Two population shapes, because a blocked instance does not always cost the
@@ -49,8 +49,8 @@ use std::time::{Duration, Instant};
 use common::wait_until;
 use crossbeam::channel::Receiver;
 use flezha_runner::channel::ChannelBuilder;
-use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError, StateHandle};
 use flezha_runner::state::{NoChange, RestoreInitPayload, WallClock};
+use flezha_runner::tasklet::{StateHandle, Tasklet, TaskletCtx, TaskletError};
 use flezha_runner::{Flezha, LoopMode, WorkflowOperative};
 use flz_core::runner::{install_reconnect_trigger, RunnerMessage, RunnerNode};
 use flz_core::util::env_parse;
@@ -64,11 +64,11 @@ static GATE: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
 /// actually blocked rather than still starting.
 static AT_GATE: AtomicUsize = AtomicUsize::new(0);
 
-/// The blocked population's procedure: parks on the gate for as long as the
+/// The blocked population's tasklet: parks on the gate for as long as the
 /// probe holds it, the way an agent turn parks on a model call.
 #[derive(Default)]
-struct GateProc;
-impl Procedure for GateProc {
+struct GateTask;
+impl Tasklet for GateTask {
     type Input = String;
     type Output = String;
     type State = ();
@@ -83,8 +83,8 @@ impl Procedure for GateProc {
         &mut self,
         _input: String,
         _state: StateHandle<'_, Self>,
-        _ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        _ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         let (lock, opened) = &GATE;
         let mut open = lock.lock().unwrap_or_else(|p| p.into_inner());
         AT_GATE.fetch_add(1, Ordering::SeqCst);
@@ -96,12 +96,12 @@ impl Procedure for GateProc {
     }
 }
 
-/// The control instance's procedure, and the idle population's: as short as a
+/// The control instance's tasklet, and the idle population's: as short as a
 /// step gets, so what the control's completion latency measures is the path —
 /// driver spawn, step handout, barrier, teardown — and not the body.
 #[derive(Default)]
-struct ShortProc;
-impl Procedure for ShortProc {
+struct ShortTask;
+impl Tasklet for ShortTask {
     type Input = String;
     type Output = String;
     type State = ();
@@ -116,8 +116,8 @@ impl Procedure for ShortProc {
         &mut self,
         input: String,
         _state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         ctx.emit(input)?;
         Ok(())
     }
@@ -141,8 +141,8 @@ impl WorkflowOperative for ScaleStepWorkflow {
             ms => Some(Duration::from_millis(ms)),
         }
     }
-    fn procedures(c: &ChannelBuilder) {
-        c.input::<String>("in").into::<GateProc>().named("out");
+    fn tasklets(c: &ChannelBuilder) {
+        c.input::<String>("in").into::<GateTask>().named("out");
     }
 }
 
@@ -160,8 +160,8 @@ impl WorkflowOperative for ScaleIdleWorkflow {
     fn loop_mode() -> LoopMode {
         LoopMode::PerInput
     }
-    fn procedures(c: &ChannelBuilder) {
-        c.input::<String>("in").into::<ShortProc>().named("out");
+    fn tasklets(c: &ChannelBuilder) {
+        c.input::<String>("in").into::<ShortTask>().named("out");
     }
 }
 
@@ -172,9 +172,9 @@ impl WorkflowOperative for ScaleControlWorkflow {
         "scale-control-workflow"
     }
     const PERSISTENCE_ENABLED: bool = false;
-    fn procedures(c: &ChannelBuilder) {
+    fn tasklets(c: &ChannelBuilder) {
         c.input::<String>("in")
-            .into::<ShortProc>()
+            .into::<ShortTask>()
             .sink_named("out");
     }
 }
@@ -393,7 +393,7 @@ fn workflow_instance_scaling_probe() {
     // an `idle` one holds none, and needs only enough to serve the control
     // instance. Pinned in both shapes rather than left to the host's core count
     // so the two are comparable and the reported number is the applied one. The
-    // workers spawn on the first instance's entity build, so this has to be set
+    // workers spawn on the first instance's cell build, so this has to be set
     // before the first start. `FLEZHA_SCALE_POOL` decouples pool size from N,
     // which is how the probe tells a cost of the blocked population apart from
     // a cost of the pool sized for it.

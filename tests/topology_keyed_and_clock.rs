@@ -8,12 +8,12 @@ use common::prelude::*;
 
 // ----- Keyed channel declaration + build-time clock validation -----
 
-test_procedure!(KeyedProducerProcedure, "keyed_producer_procedure", String => String, (), |input, _state, ctx| {
+test_tasklet!(KeyedProducerTasklet, "keyed_producer_tasklet", String => String, (), |input, _state, ctx| {
     ctx.emit_keyed::<String>(input.clone(), input)?;
     Ok(())
 });
 
-test_procedure!(KeyedConsumerProcedure, "keyed_consumer_procedure", String => (), (), |_input, _state, _ctx| {
+test_tasklet!(KeyedConsumerTasklet, "keyed_consumer_tasklet", String => (), (), |_input, _state, _ctx| {
     Ok(())
 });
 
@@ -25,7 +25,7 @@ impl StreamOperative for KeyedPluginOperative {
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("inp")
-            .into::<KeyedProducerProcedure>()
+            .into::<KeyedProducerTasklet>()
             .keyed()
             .sink_named("out");
     }
@@ -47,10 +47,10 @@ impl StreamOperative for KeyedHybridOperative {
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("inp")
-            .into::<KeyedProducerProcedure>()
+            .into::<KeyedProducerTasklet>()
             .sink_named_with("out", |v: &String| v.clone().into_bytes())
             .keyed()
-            .into::<KeyedConsumerProcedure>();
+            .into::<KeyedConsumerTasklet>();
     }
 }
 
@@ -64,24 +64,24 @@ fn keyed_hybrid_channel_is_accepted_and_marked() {
 
 /// `.keyed()` on a channel with no plugin wire fails the build with a
 /// typed error naming the channel.
-struct KeyedInterProcedureOperative;
-impl StreamOperative for KeyedInterProcedureOperative {
+struct KeyedInterTaskletOperative;
+impl StreamOperative for KeyedInterTaskletOperative {
     fn factory_id() -> &'static str {
-        "keyed_inter_procedure_operative"
+        "keyed_inter_tasklet_operative"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("inp")
-            .into::<KeyedProducerProcedure>()
+            .into::<KeyedProducerTasklet>()
             .named("hop")
             .keyed()
-            .into::<KeyedConsumerProcedure>();
+            .into::<KeyedConsumerTasklet>();
     }
 }
 
 #[test]
 fn keyed_channel_without_plugin_wire_is_rejected() {
-    let err = match build_topology_for::<KeyedInterProcedureOperative>() {
-        Ok(_) => panic!("keyed inter-procedure channel must fail the build"),
+    let err = match build_topology_for::<KeyedInterTaskletOperative>() {
+        Ok(_) => panic!("keyed inter-tasklet channel must fail the build"),
         Err(e) => e,
     };
     assert!(err.errors.iter().any(|e| matches!(
@@ -94,8 +94,8 @@ fn keyed_channel_without_plugin_wire_is_rejected() {
 /// LogicalClock with `Change = NoChange` cannot be served (the durable
 /// change seq never advances) and fails the build naming the clock.
 #[derive(Default)]
-struct FrozenLogicalProcedure;
-impl Procedure for FrozenLogicalProcedure {
+struct FrozenLogicalTasklet;
+impl Tasklet for FrozenLogicalTasklet {
     type Input = String;
     type Output = String;
     type State = ();
@@ -103,15 +103,15 @@ impl Procedure for FrozenLogicalProcedure {
     type Clock = flezha_runner::state::LogicalClock;
     type Config = ();
     fn name() -> &'static str {
-        "frozen_logical_procedure"
+        "frozen_logical_tasklet"
     }
     fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
     fn run(
         &mut self,
         _: String,
         _state: StateHandle<'_, Self>,
-        _: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        _: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         Ok(())
     }
 }
@@ -122,7 +122,7 @@ impl StreamOperative for FrozenLogicalOperative {
         "frozen_logical_operative"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<String>("inp").into::<FrozenLogicalProcedure>();
+        c.input::<String>("inp").into::<FrozenLogicalTasklet>();
     }
 }
 
@@ -135,8 +135,8 @@ fn logical_clock_without_persistent_changes_is_rejected_at_build() {
     assert!(err.errors.iter().any(|e| matches!(
         e,
         flezha_runner::channel::builder::TopologyIssue::UnservableClock {
-            procedure,
+            tasklet,
             clock_type,
-        } if procedure == "frozen_logical_procedure" && clock_type == "logical"
+        } if tasklet == "frozen_logical_tasklet" && clock_type == "logical"
     )));
 }

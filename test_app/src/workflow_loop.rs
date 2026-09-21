@@ -2,15 +2,15 @@
 //! stateless twin and the rewindable variant — and the chains and loop
 //! `mix bench.workflow` drives.
 
-use flezha_runner::procedure::SpawnOptions;
+use flezha_runner::tasklet::SpawnOptions;
 
 use crate::workflow::{block_until_released, durable_step, stateless_step, Insert, SeenState};
 use crate::*;
 
 // `chat_loop_workflow`: the durable-loop + suspension shape
-// (`workflow-durable-loop-and-suspension`). One iteration per inbox item: proc
-// TURN commits the turn to Entity state (so a resumed iteration is visible in
-// the WAL) and emits it; proc REPLY emits the answer to the sink. Between turns
+// (`workflow-durable-loop-and-suspension`). One iteration per inbox item: task
+// TURN commits the turn to Cell state (so a resumed iteration is visible in
+// the WAL) and emits it; task REPLY emits the answer to the sink. Between turns
 // the loop finds an empty inbox at a committed boundary and PARKS — the
 // instance is evicted from the runner and rehydrated by the next message.
 //
@@ -27,7 +27,7 @@ const BYE_TURN: &str = "bye";
 
 #[derive(Default)]
 struct ChatTurn;
-impl Procedure for ChatTurn {
+impl Tasklet for ChatTurn {
     type Input = String;
     type Output = String;
     type State = SeenState;
@@ -47,8 +47,8 @@ impl Procedure for ChatTurn {
         &mut self,
         input: String,
         mut state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         if input == CRASH_TURN {
             block_until_released();
         }
@@ -70,9 +70,9 @@ stateless_step!(ChatReply, "chat_reply", |input, ctx| ctx
 // -- StatelessLoopWorkflow -------------------------------------------------------
 //
 // The same durable PER_INPUT loop as `ChatLoopWorkflow`, minus its stateful
-// first procedure: `ChatReply` alone holds NO per-Entity state, so nothing
-// writes an Entity WAL, the controller has nothing to restore, and it ships no
-// `RestoreInitState` on a rehydrating bind. The instance's proc-journal therefore
+// first tasklet: `ChatReply` alone holds NO per-Cell state, so nothing
+// writes a Cell WAL, the controller has nothing to restore, and it ships no
+// `RestoreInitState` on a rehydrating bind. The instance's task-journal therefore
 // reaches the driver only if it rides the bind itself — deliver it on the
 // restore frame and every turn after the first commits at iteration 0 again,
 // collides with iteration 0's `outbox_flushed` marker, and has its staged
@@ -92,7 +92,7 @@ impl WorkflowOperative for StatelessLoopWorkflow {
     fn max_duration() -> Option<Duration> {
         Some(Duration::from_secs(600))
     }
-    fn procedures(c: &ChannelBuilder) {
+    fn tasklets(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<ChatReply>()
             .sink_named("out");
@@ -103,11 +103,11 @@ impl WorkflowOperative for StatelessLoopWorkflow {
 //
 // `spawn_requester`: on each input it spawns `stateless_loop_workflow` once with
 // no id and once under the input as its id, and prints both results, because a
-// handle's answer is observable nowhere but in the procedure that read it.
+// handle's answer is observable nowhere but in the tasklet that read it.
 
 #[derive(Default)]
 struct SpawnRequester;
-impl Procedure for SpawnRequester {
+impl Tasklet for SpawnRequester {
     type Input = String;
     type Output = String;
     type State = ();
@@ -122,8 +122,8 @@ impl Procedure for SpawnRequester {
         &mut self,
         input: String,
         _: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         let unnamed = ctx.spawn_workflow(StatelessLoopWorkflow::factory_id(), input.clone());
         let named = ctx.spawn_workflow_with(
             StatelessLoopWorkflow::factory_id(),
@@ -158,8 +158,8 @@ impl StreamOperative for SpawnRequesterOperative {
 
 // -- ChatRewindWorkflow ----------------------------------------------------------
 //
-// `workflow-loop-rewind`: the same chat loop, but its replying procedure can be
-// undone. The undo handle lives in Entity State — a rewind's compensation is
+// `workflow-loop-rewind`: the same chat loop, but its replying tasklet can be
+// undone. The undo handle lives in Cell State — a rewind's compensation is
 // rebuilt from the journal and is handed NO retained outputs (the at-least-once
 // author contract) — so the hook reads the last thing it said, retracts it, and
 // pops it. Unwinding in reverse iteration order therefore retracts the turns in
@@ -179,7 +179,7 @@ impl Change for ReplyChange {}
 
 #[derive(Default)]
 struct ChatReplyUndoable;
-impl Procedure for ChatReplyUndoable {
+impl Tasklet for ChatReplyUndoable {
     type Input = String;
     type Output = String;
     type State = ReplyLog;
@@ -204,8 +204,8 @@ impl Procedure for ChatReplyUndoable {
         &mut self,
         input: String,
         mut state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         state.apply(ReplyChange::Said(input.clone()));
         ctx.emit::<String>(format!("reply:{input}"))
     }
@@ -214,8 +214,8 @@ impl Procedure for ChatReplyUndoable {
         &mut self,
         _completed_output: Vec<std::sync::Arc<String>>,
         mut state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         let Some(turn) = state.said.last().cloned() else {
             return Ok(());
         };
@@ -238,7 +238,7 @@ impl WorkflowOperative for ChatRewindWorkflow {
     fn max_duration() -> Option<Duration> {
         Some(Duration::from_secs(600))
     }
-    fn procedures(c: &ChannelBuilder) {
+    fn tasklets(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<ChatTurn>()
             .named("mid")
@@ -260,7 +260,7 @@ impl WorkflowOperative for ChatLoopWorkflow {
     fn max_duration() -> Option<Duration> {
         Some(Duration::from_secs(600))
     }
-    fn procedures(c: &ChannelBuilder) {
+    fn tasklets(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<ChatTurn>()
             .named("mid")
@@ -271,9 +271,9 @@ impl WorkflowOperative for ChatLoopWorkflow {
 
 // -- Bench workflow fixtures (`mix bench.workflow`) -------------------------------
 //
-// Durable K-procedure chains and a long-lived chat loop for the workflow
+// Durable K-tasklet chains and a long-lived chat loop for the workflow
 // operative bench. Every chain step is the `durable_step!` shape — one
-// idempotent Change per proc, the payload passed through unchanged — so the
+// idempotent Change per task, the payload passed through unchanged — so the
 // sink receives the seed input and the bench reads its own seq + send
 // timestamp back. The loop is the `chat_loop_workflow` shape with a bounded
 // per-turn state, a day-long duration backstop (soaks outlive 600 s) and a
@@ -297,7 +297,7 @@ durable_step!(BenchS13, "bench_s13");
 durable_step!(BenchS14, "bench_s14");
 durable_step!(BenchS15, "bench_s15");
 
-// A linear chain `in → $first → $rest… → bench_sink`, every inter-proc edge
+// A linear chain `in → $first → $rest… → bench_sink`, every inter-task edge
 // codec'd (required for a durable structured class).
 macro_rules! bench_chain {
     ($ty:ident, $factory:literal, persist: $persist:expr, $first:ident $(, $rest:ident)*) => {
@@ -307,7 +307,7 @@ macro_rules! bench_chain {
             fn factory_id() -> &'static str {
                 $factory
             }
-            fn procedures(c: &ChannelBuilder) {
+            fn tasklets(c: &ChannelBuilder) {
                 let s = c.input::<String>("in").into::<$first>();
                 $(
                     let s = s
@@ -367,7 +367,7 @@ impl Change for BenchTurnSeen {}
 
 #[derive(Default)]
 struct BenchTurn;
-impl Procedure for BenchTurn {
+impl Tasklet for BenchTurn {
     type Input = String;
     type Output = String;
     type State = BenchTurnState;
@@ -388,8 +388,8 @@ impl Procedure for BenchTurn {
         &mut self,
         input: String,
         mut state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         state.apply(BenchTurnSeen(input.clone()));
         ctx.emit::<String>(input)
     }
@@ -415,7 +415,7 @@ impl WorkflowOperative for BenchLoopWorkflow {
             .and_then(|v| v.parse::<u64>().ok())
             .map(Duration::from_millis)
     }
-    fn procedures(c: &ChannelBuilder) {
+    fn tasklets(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<BenchTurn>()
             .named("mid")

@@ -1,4 +1,4 @@
-//! Per-Entity timers: a session that closes itself when it goes quiet.
+//! Per-Cell timers: a session that closes itself when it goes quiet.
 //!
 //! Run with `cargo run --example session_timeout` (needs a controller to
 //! connect to; the point of the file is the authoring shape).
@@ -11,8 +11,8 @@ use std::time::Duration;
 
 use flezha_runner::channel::ChannelBuilder;
 use flezha_runner::operative::StreamOperative;
-use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError, StateHandle};
 use flezha_runner::state::{Change, RestoreInitPayload, TimerKind, WallClock};
+use flezha_runner::tasklet::{StateHandle, Tasklet, TaskletCtx, TaskletError};
 use flezha_runner::Flezha;
 use serde::{Deserialize, Serialize};
 
@@ -42,17 +42,17 @@ struct ClosedSession {
 #[derive(Default)]
 struct SessionWindow {
     /// The deadline currently pending, so each click can retract the last one.
-    /// Per-Entity scratch: the runtime holds one Procedure instance per Entity.
+    /// Per-Cell scratch: the runtime holds one Tasklet instance per Cell.
     deadline: Option<u64>,
 }
 
-impl Procedure for SessionWindow {
+impl Tasklet for SessionWindow {
     type Input = String;
     type Output = ClosedSession;
     type State = SessionState;
     type Change = SessionChange;
     // A WALL clock, deliberately. `timer_after` is anchored on `ctx.now()`, and
-    // the deadline this Procedure wants is "30s of real silence".
+    // the deadline this Tasklet wants is "30s of real silence".
     type Clock = WallClock;
     type Config = ();
 
@@ -75,8 +75,8 @@ impl Procedure for SessionWindow {
         &mut self,
         input: String,
         mut state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         state.apply(SessionChange::Clicked(input));
 
         // Retract the deadline this click supersedes, then set the new one.
@@ -94,8 +94,8 @@ impl Procedure for SessionWindow {
         fired_at: u64,
         _kind: TimerKind,
         mut state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         self.deadline = None;
         let clicks = state.clicks.len();
         // `fired_at` is the SCHEDULED instant, not the wall clock at firing —
@@ -120,8 +120,8 @@ impl StreamOperative for SessionOperative {
     }
 
     fn channels(c: &ChannelBuilder) {
-        // One Entity per user: the key is declared on the WIRING, and each
-        // Entity owns its own idle deadline.
+        // One Cell per user: the key is declared on the WIRING, and each
+        // Cell owns its own idle deadline.
         c.input::<String>("clicks")
             .key_by(|click: &String| click.split(':').next().unwrap_or(click).to_string())
             .into::<SessionWindow>()

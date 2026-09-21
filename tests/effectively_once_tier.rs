@@ -4,7 +4,7 @@
 
 use std::io::Read;
 
-use flezha_runner::entity::header::header_template_for;
+use flezha_runner::cell::header::header_template_for;
 
 mod common;
 use common::prelude::*;
@@ -22,12 +22,12 @@ fn pinned_pool() {
 
 /// Spec "Emits leave the primary stream in tier mode" + "Offset
 /// round-trips": an effectively-once invocation's keyed emit travels inside
-/// an `entity_effect_record` on the reliable state sink — carrying the
+/// a `cell_effect_record` on the reliable state sink — carrying the
 /// change, the output (channel/key/payload), and the `flz.offset` the
 /// input arrived with — and no output frame appears on the primary stream.
 #[test]
 fn tier_emits_ride_the_state_sink_as_one_effect_record() {
-    use flezha_runner::entity::flusher::EffectRecordBody;
+    use flezha_runner::cell::flusher::EffectRecordBody;
 
     pinned_pool();
     let _serial = WAL_TEST_LOCK.lock().unwrap();
@@ -54,18 +54,18 @@ fn tier_emits_ride_the_state_sink_as_one_effect_record() {
                     .lock()
                     .unwrap()
                     .iter()
-                    .any(|(pid, _)| pid == "entity_effect_record")
+                    .any(|(pid, _)| pid == "cell_effect_record")
             },
             Duration::from_secs(5)
         ),
-        "no entity_effect_record reached the state sink"
+        "no cell_effect_record reached the state sink"
     );
 
     // Outer frame layout is the state-change layout; header format_id = 2.
     let frames = TIER_SINK_FRAMES.lock().unwrap().clone();
     let (_, frame) = frames
         .iter()
-        .find(|(pid, _)| pid == "entity_effect_record")
+        .find(|(pid, _)| pid == "cell_effect_record")
         .unwrap()
         .clone();
     let pid_len = u16::from_be_bytes([frame[0], frame[1]]) as usize;
@@ -115,7 +115,7 @@ fn tier_emits_ride_the_state_sink_as_one_effect_record() {
 }
 
 /// Spec "Replay after crash" (SDK half): the restored consumed-floor makes
-/// the Entity skip re-forwarded inputs it already durably consumed, and
+/// the Cell skip re-forwarded inputs it already durably consumed, and
 /// process everything above — never double-applied, never lost.
 #[test]
 fn tier_replay_skips_inputs_at_or_below_the_consumed_floor() {
@@ -125,8 +125,8 @@ fn tier_replay_skips_inputs_at_or_below_the_consumed_floor() {
 
     let (handle, instance) = setup::<TierOperative>("tier-replay-instance");
 
-    // Restore left this Entity durably consumed through offset 4711.
-    instance.entities[0][0]
+    // Restore left this Cell durably consumed through offset 4711.
+    instance.cells[0][0]
         .consumed_floor
         .store(4711, std::sync::atomic::Ordering::Release);
 
@@ -142,7 +142,7 @@ fn tier_replay_skips_inputs_at_or_below_the_consumed_floor() {
                     .lock()
                     .unwrap()
                     .iter()
-                    .filter(|(pid, _)| pid == "entity_effect_record")
+                    .filter(|(pid, _)| pid == "cell_effect_record")
                     .count()
                     >= 1
             },
@@ -159,7 +159,7 @@ fn tier_replay_skips_inputs_at_or_below_the_consumed_floor() {
             .lock()
             .unwrap()
             .iter()
-            .filter(|(pid, _)| pid == "entity_effect_record")
+            .filter(|(pid, _)| pid == "cell_effect_record")
             .count()
     };
     let seen = effect_records();
@@ -171,7 +171,7 @@ fn tier_replay_skips_inputs_at_or_below_the_consumed_floor() {
         .lock()
         .unwrap()
         .iter()
-        .filter(|(pid, _)| pid == "entity_effect_record")
+        .filter(|(pid, _)| pid == "cell_effect_record")
         .count();
     assert_eq!(effect_count, 1, "skipped offsets must not re-apply");
 }
@@ -181,8 +181,8 @@ fn tier_replay_skips_inputs_at_or_below_the_consumed_floor() {
 static LOGICAL_OBSERVED: Mutex<Vec<u64>> = Mutex::new(Vec::new());
 
 #[derive(Default)]
-struct LogicalNowProcedure;
-impl Procedure for LogicalNowProcedure {
+struct LogicalNowTasklet;
+impl Tasklet for LogicalNowTasklet {
     type Input = String;
     type Output = String;
     type State = i64;
@@ -190,7 +190,7 @@ impl Procedure for LogicalNowProcedure {
     type Clock = flezha_runner::state::LogicalClock;
     type Config = ();
     fn name() -> &'static str {
-        "logical_now_procedure"
+        "logical_now_tasklet"
     }
     fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> i64 {
         0
@@ -202,8 +202,8 @@ impl Procedure for LogicalNowProcedure {
         &mut self,
         input: String,
         mut state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         LOGICAL_OBSERVED.lock().unwrap().push(ctx.now());
         state.apply(TickChange);
         // Emit so flush-before-emit ships the change deterministically
@@ -213,7 +213,7 @@ impl Procedure for LogicalNowProcedure {
     }
 }
 
-test_procedure!(LogicalNowSinkProcedure, "logical_now_sink_procedure", String => (), (), |_input, _state, _ctx| {
+test_tasklet!(LogicalNowSinkTasklet, "logical_now_sink_tasklet", String => (), (), |_input, _state, _ctx| {
     Ok(())
 });
 
@@ -224,9 +224,9 @@ impl StreamOperative for LogicalNowOperative {
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
-            .into::<LogicalNowProcedure>()
+            .into::<LogicalNowTasklet>()
             .named("hop")
-            .into::<LogicalNowSinkProcedure>();
+            .into::<LogicalNowSinkTasklet>();
     }
 }
 
@@ -250,33 +250,26 @@ fn logical_clock_serves_change_seq_and_survives_restore_rearm() {
         Duration::from_secs(5)
     ));
     assert_eq!(*LOGICAL_OBSERVED.lock().unwrap(), vec![0, 1]);
-    assert_eq!(
-        instance.entities[0][0].change_seq.load(Ordering::Acquire),
-        2
-    );
+    assert_eq!(instance.cells[0][0].change_seq.load(Ordering::Acquire), 2);
 
     // Crash-restore: fresh instance, restore both changes (seqs 0, 1) and
     // re-arm; the next invocation's logical time continues at 2.
     LOGICAL_OBSERVED.lock().unwrap().clear();
     let (handle_b, instance_b) = setup::<LogicalNowOperative>("logical-now-instance");
-    let slot = Arc::clone(&instance_b.entities[0][0]);
+    let slot = Arc::clone(&instance_b.cells[0][0]);
     let change_bytes = postcard::to_allocvec(&TickChange).expect("encode change");
-    let mut change_log = wal_record(
-        0,
-        &change_bytes,
-        header_template_for::<LogicalNowProcedure>(),
-    );
+    let mut change_log = wal_record(0, &change_bytes, header_template_for::<LogicalNowTasklet>());
     change_log.extend_from_slice(&wal_record(
         1,
         &change_bytes,
-        header_template_for::<LogicalNowProcedure>(),
+        header_template_for::<LogicalNowTasklet>(),
     ));
     let terminal = {
         let mut guard = slot.state.lock().unwrap();
         slot.dispatcher
             .restore_state(
                 &mut guard,
-                &mut flezha_runner::entity::timer::PendingTimers::default(),
+                &mut flezha_runner::cell::timer::PendingTimers::default(),
                 &[],
                 &[],
                 &change_log,

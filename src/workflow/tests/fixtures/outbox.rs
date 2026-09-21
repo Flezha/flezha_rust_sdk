@@ -1,44 +1,44 @@
-//! Staged-commit and transactional-outbox procedures: emission that must
+//! Staged-commit and transactional-outbox tasklets: emission that must
 //! not leak, and the undo that carries its own.
 
 use std::sync::Arc;
 
 use super::*;
+use crate::cell::restore::RestoreInitPayload;
 use crate::channel::ChannelBuilder;
-use crate::entity::restore::RestoreInitPayload;
-use crate::procedure::change::NoChange;
-use crate::procedure::clock::WallClock;
-use crate::procedure::{Procedure, ProcedureCtx, ProcedureError, StateHandle};
+use crate::tasklet::change::NoChange;
+use crate::tasklet::clock::WallClock;
+use crate::tasklet::{StateHandle, Tasklet, TaskletCtx, TaskletError};
 use crate::workflow::*;
 
-// ---- staged-commit / transactional-outbox procs --------------------------
+// ---- staged-commit / transactional-outbox tasks --------------------------
 
-// Emits plugin-bound output and THEN fails: the procedure never commits,
+// Emits plugin-bound output and THEN fails: the tasklet never commits,
 // so its staged output must never reach a plugin (nothing leaked).
-string_proc!(EmitThenFail, "workflow_emit_then_fail", |input, ctx| {
+string_task!(EmitThenFail, "workflow_emit_then_fail", |input, ctx| {
     ctx.emit(format!("leak:{input}"))?;
-    Err(ProcedureError::Custom("failed after emitting".into()))
+    Err(TaskletError::Custom("failed after emitting".into()))
 });
 
-/// One procedure that emits then fails, straight to a plugin sink.
+/// One tasklet that emits then fails, straight to a plugin sink.
 pub(crate) struct LeakWorkflow;
 impl WorkflowOperative for LeakWorkflow {
     fn factory_id() -> &'static str {
         "test-leak-workflow"
     }
-    fn procedures(c: &ChannelBuilder) {
+    fn tasklets(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<EmitThenFail>()
             .sink_named("out");
     }
 }
 
-/// Compensable proc on a hybrid channel: its forward output feeds the next
-/// procedure AND a plugin sink, so its `compensate` hook's `ctx.emit`
+/// Compensable task on a hybrid channel: its forward output feeds the next
+/// tasklet AND a plugin sink, so its `compensate` hook's `ctx.emit`
 /// produces plugin-bound undo output (staged for the `compensated` entry).
 #[derive(Default)]
 pub(crate) struct UndoEmit;
-impl Procedure for UndoEmit {
+impl Tasklet for UndoEmit {
     type Input = String;
     type Output = String;
     type State = ();
@@ -53,8 +53,8 @@ impl Procedure for UndoEmit {
         &mut self,
         input: String,
         _state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         ctx.emit(format!("did:{input}"))?;
         Ok(())
     }
@@ -63,8 +63,8 @@ impl Procedure for UndoEmit {
         &mut self,
         completed_output: Vec<Arc<String>>,
         _state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         for out in &completed_output {
             ctx.emit(format!("undo:{out}"))?;
         }
@@ -79,7 +79,7 @@ impl WorkflowOperative for UndoSaga {
     fn factory_id() -> &'static str {
         "test-undo-saga"
     }
-    fn procedures(c: &ChannelBuilder) {
+    fn tasklets(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<UndoEmit>()
             .sink_named_with("mid", |s: &String| s.clone().into_bytes())
@@ -94,7 +94,7 @@ impl WorkflowOperative for ResumeSaga {
     fn factory_id() -> &'static str {
         "test-resume-saga"
     }
-    fn procedures(c: &ChannelBuilder) {
+    fn tasklets(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<ResumeUndoA>()
             .named("c1")

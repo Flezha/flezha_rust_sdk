@@ -12,37 +12,37 @@ use common::prelude::*;
 // The load-bearing behaviour of `stream-late-input-correction`. Re-forwarding
 // a replayed slice in ARRIVAL order would put the late trade back after the
 // trades that overtook it and recompute exactly the wrong answer the correction
-// exists to repair. So the Entity holds the slice until the controller closes
+// exists to repair. So the Cell holds the slice until the controller closes
 // it, orders it by extracted event time, and only then dispatches.
 
 static REPLAY_OBSERVED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 struct TradeTime;
-impl flezha_runner::procedure::TimeExtractor<String> for TradeTime {
+impl flezha_runner::tasklet::TimeExtractor<String> for TradeTime {
     fn extract(input: &String) -> u64 {
         input.parse().unwrap_or(0)
     }
 }
 
 #[derive(Default)]
-struct ReplayProcedure;
-impl Procedure for ReplayProcedure {
+struct ReplayTasklet;
+impl Tasklet for ReplayTasklet {
     type Input = String;
     type Output = String;
     type State = ();
     type Change = NoChange;
-    type Clock = flezha_runner::procedure::EventTimeFrom<TradeTime>;
+    type Clock = flezha_runner::tasklet::EventTimeFrom<TradeTime>;
     type Config = ();
     fn name() -> &'static str {
-        "replay_procedure"
+        "replay_tasklet"
     }
     fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
     fn run(
         &mut self,
         input: String,
         _state: StateHandle<'_, Self>,
-        _ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        _ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         REPLAY_OBSERVED.lock().unwrap().push(input);
         Ok(())
     }
@@ -57,7 +57,7 @@ impl StreamOperative for ReplayOperative {
         c.effectively_once();
         c.correction_window(600_000);
         c.input::<String>("input")
-            .into::<ReplayProcedure>()
+            .into::<ReplayTasklet>()
             .keyed()
             .sink_named("out");
     }
@@ -94,8 +94,8 @@ fn a_replayed_slice_dispatches_in_event_time_order() {
     );
 
     // The controller closes the slice. A broadcast, not a mark on the last
-    // input — an input reaches one Entity by key, so a mark would strand every
-    // other Entity's buffered slice.
+    // input — an input reaches one Cell by key, so a mark would strand every
+    // other Cell's buffered slice.
     dispatch_marked(
         &handle,
         "replay-instance",
@@ -137,24 +137,24 @@ fn a_replayed_slice_dispatches_in_event_time_order() {
 static HIGHWATER_OBSERVED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 #[derive(Default)]
-struct HighWaterProcedure;
-impl Procedure for HighWaterProcedure {
+struct HighWaterTasklet;
+impl Tasklet for HighWaterTasklet {
     type Input = String;
     type Output = String;
     type State = ();
     type Change = NoChange;
-    type Clock = flezha_runner::procedure::EventTimeFrom<TradeTime>;
+    type Clock = flezha_runner::tasklet::EventTimeFrom<TradeTime>;
     type Config = ();
     fn name() -> &'static str {
-        "high_water_procedure"
+        "high_water_tasklet"
     }
     fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
     fn run(
         &mut self,
         input: String,
         _state: StateHandle<'_, Self>,
-        _ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        _ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         HIGHWATER_OBSERVED.lock().unwrap().push(input);
         Ok(())
     }
@@ -169,7 +169,7 @@ impl StreamOperative for HighWaterOperative {
         c.effectively_once();
         c.correction_window(600_000);
         c.input::<String>("input")
-            .into::<HighWaterProcedure>()
+            .into::<HighWaterTasklet>()
             .keyed()
             .sink_named("out");
     }
@@ -219,7 +219,7 @@ fn a_replay_does_not_lower_the_event_time_high_water() {
         Duration::from_secs(5)
     ));
 
-    let slot = Arc::clone(&instance.entities[0][0]);
+    let slot = Arc::clone(&instance.cells[0][0]);
     assert_eq!(slot.event_time_high_water.load(Ordering::Acquire), 900);
 
     // A replayed slice whose newest event time (800) is BEHIND the high-water.

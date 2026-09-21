@@ -3,10 +3,10 @@
 //! Two shapes (per `operative-mvp-rust/design.md` Decision 6 +
 //! `operative-bench-harness/design.md` Decisions 1-12):
 //! - `regression_100x1x1x10k` — apples-to-apples regression check
-//!   (100 operatives × 1 procedure × 1 entity × 10K msg).
-//! - `entity_stress_8x4x8x20k/<workers>` — entity-stress
-//!   check (8 operatives × 4 procedures × 8 entities × 20K msg/operative,
-//!   fan-out factor 8 on the entry procedure), labelled with the SDK's base
+//!   (100 operatives × 1 tasklet × 1 cell × 10K msg).
+//! - `cell_stress_8x4x8x20k/<workers>` — cell-stress
+//!   check (8 operatives × 4 tasklets × 8 cells × 20K msg/operative,
+//!   fan-out factor 8 on the entry tasklet), labelled with the SDK's base
 //!   worker count (`FLEZHA_WORKER_POOL_SIZE`, default: host parallelism).
 //!
 //! Both rely on the `bench-internals` feature for access to the
@@ -20,8 +20,8 @@ use flezha_runner::channel::ChannelBuilder;
 use flezha_runner::operative::builder::build_topology_for;
 use flezha_runner::operative::registry::OperativeRegistry;
 use flezha_runner::operative::StreamInstance;
-use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError};
 use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
+use flezha_runner::tasklet::{Tasklet, TaskletCtx, TaskletError};
 use flezha_runner::{__dispatch_internals as bi, OverflowPolicy, StreamOperative};
 use flz_core::bench_support::{
     allocations, fan_in, measurement_secs_default, report, stream_pair, Counting, Settle,
@@ -32,7 +32,7 @@ use flz_core::bench_support::{
 #[global_allocator]
 static GLOBAL: Counting = Counting;
 
-/// The SDK's base worker count for this run — what the entity-stress
+/// The SDK's base worker count for this run — what the cell-stress
 /// benchmark id is labelled with. The pool is process-global and sized at
 /// first use, so a run measures one size; sweep by re-running under different
 /// `FLEZHA_WORKER_POOL_SIZE` values.
@@ -47,13 +47,13 @@ fn worker_count_from_env_or_cpus() -> usize {
         })
 }
 
-// ----- Regression bench: 100 operatives × 1 procedure × 1 entity × 10K msg -----
+// ----- Regression bench: 100 operatives × 1 tasklet × 1 cell × 10K msg -----
 
 static REG_COUNTER: Settle = Settle::new();
 
 #[derive(Default)]
-struct RegressionProcedure;
-impl Procedure for RegressionProcedure {
+struct RegressionTasklet;
+impl Tasklet for RegressionTasklet {
     type Input = Vec<u8>;
     type Output = Vec<u8>;
     type State = ();
@@ -61,15 +61,15 @@ impl Procedure for RegressionProcedure {
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "regression_procedure"
+        "regression_tasklet"
     }
     fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
     fn run(
         &mut self,
         _: Vec<u8>,
-        _: StateHandle<'_, RegressionProcedure>,
-        _: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        _: StateHandle<'_, RegressionTasklet>,
+        _: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         REG_COUNTER.add(1);
         Ok(())
     }
@@ -88,7 +88,7 @@ impl StreamOperative for RegressionOperative {
         // dispatch hot path.
         c.input::<Vec<u8>>("input")
             .on_full(OverflowPolicy::DropNothing)
-            .into::<RegressionProcedure>();
+            .into::<RegressionTasklet>();
     }
 }
 
@@ -153,30 +153,30 @@ fn regression_bench(c: &mut Criterion) {
     group.finish();
 }
 
-// ----- Entity-stress bench: 4 procedures × 8 entities, fan-out 8 -----
+// ----- Cell-stress bench: 4 tasklets × 8 cells, fan-out 8 -----
 
 static PART_COUNTER: Settle = Settle::new();
 
 const STRESS_KEYS: &[&str] = &["p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7"];
 
-// Entry-procedure routing: fan out every input to all 8 entities per
+// Entry-tasklet routing: fan out every input to all 8 cells per
 // `operative-bench-harness/design.md` Decision 7 / workflow §1.1.
-fn entry_entities_for(_: &Vec<u8>) -> Vec<&'static str> {
+fn entry_cells_for(_: &Vec<u8>) -> Vec<&'static str> {
     STRESS_KEYS.to_vec()
 }
 
-// Downstream-procedure routing: pin each emit to a single entity so the
+// Downstream-tasklet routing: pin each emit to a single cell so the
 // fan-out factor stays bounded at 8 (entry) and each pipeline stage runs
-// once per upstream emit. Per workflow §1.1 ("entities_for returning all 8
-// keys for the entry procedure") only the entry procedure fans out N-wide; B/C/D
-// have 8 entities each (Decision 7) but route to one.
-fn pipeline_entities_for(_: &Vec<u8>) -> Vec<&'static str> {
+// once per upstream emit. Per workflow §1.1 ("cells_for returning all 8
+// keys for the entry tasklet") only the entry tasklet fans out N-wide; B/C/D
+// have 8 cells each (Decision 7) but route to one.
+fn pipeline_cells_for(_: &Vec<u8>) -> Vec<&'static str> {
     vec!["p0"]
 }
 
 #[derive(Default)]
-struct StressBenchProcedureA;
-impl Procedure for StressBenchProcedureA {
+struct StressBenchTaskletA;
+impl Tasklet for StressBenchTaskletA {
     type Input = Vec<u8>;
     type Output = Vec<u8>;
     type State = ();
@@ -187,27 +187,27 @@ impl Procedure for StressBenchProcedureA {
         "stress_bench_a"
     }
     fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
-    fn entity_keys() -> Vec<&'static str> {
+    fn cell_keys() -> Vec<&'static str> {
         STRESS_KEYS.to_vec()
     }
-    const ENTITIES_FOR_OVERRIDDEN: bool = true;
-    fn entities_for(input: &Vec<u8>) -> Vec<&'static str> {
-        entry_entities_for(input)
+    const CELLS_FOR_OVERRIDDEN: bool = true;
+    fn cells_for(input: &Vec<u8>) -> Vec<&'static str> {
+        entry_cells_for(input)
     }
     fn run(
         &mut self,
         input: Vec<u8>,
-        _: StateHandle<'_, StressBenchProcedureA>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        _: StateHandle<'_, StressBenchTaskletA>,
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         PART_COUNTER.add(1);
         ctx.emit::<Vec<u8>>(input)
     }
 }
 
 #[derive(Default)]
-struct StressBenchProcedureB;
-impl Procedure for StressBenchProcedureB {
+struct StressBenchTaskletB;
+impl Tasklet for StressBenchTaskletB {
     type Input = Vec<u8>;
     type Output = Vec<u8>;
     type State = ();
@@ -218,27 +218,27 @@ impl Procedure for StressBenchProcedureB {
         "stress_bench_b"
     }
     fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
-    fn entity_keys() -> Vec<&'static str> {
+    fn cell_keys() -> Vec<&'static str> {
         STRESS_KEYS.to_vec()
     }
-    const ENTITIES_FOR_OVERRIDDEN: bool = true;
-    fn entities_for(input: &Vec<u8>) -> Vec<&'static str> {
-        pipeline_entities_for(input)
+    const CELLS_FOR_OVERRIDDEN: bool = true;
+    fn cells_for(input: &Vec<u8>) -> Vec<&'static str> {
+        pipeline_cells_for(input)
     }
     fn run(
         &mut self,
         input: Vec<u8>,
-        _: StateHandle<'_, StressBenchProcedureB>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        _: StateHandle<'_, StressBenchTaskletB>,
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         PART_COUNTER.add(1);
         ctx.emit::<Vec<u8>>(input)
     }
 }
 
 #[derive(Default)]
-struct StressBenchProcedureC;
-impl Procedure for StressBenchProcedureC {
+struct StressBenchTaskletC;
+impl Tasklet for StressBenchTaskletC {
     type Input = Vec<u8>;
     type Output = Vec<u8>;
     type State = ();
@@ -249,27 +249,27 @@ impl Procedure for StressBenchProcedureC {
         "stress_bench_c"
     }
     fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
-    fn entity_keys() -> Vec<&'static str> {
+    fn cell_keys() -> Vec<&'static str> {
         STRESS_KEYS.to_vec()
     }
-    const ENTITIES_FOR_OVERRIDDEN: bool = true;
-    fn entities_for(input: &Vec<u8>) -> Vec<&'static str> {
-        pipeline_entities_for(input)
+    const CELLS_FOR_OVERRIDDEN: bool = true;
+    fn cells_for(input: &Vec<u8>) -> Vec<&'static str> {
+        pipeline_cells_for(input)
     }
     fn run(
         &mut self,
         input: Vec<u8>,
-        _: StateHandle<'_, StressBenchProcedureC>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        _: StateHandle<'_, StressBenchTaskletC>,
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         PART_COUNTER.add(1);
         ctx.emit::<Vec<u8>>(input)
     }
 }
 
 #[derive(Default)]
-struct StressBenchProcedureD;
-impl Procedure for StressBenchProcedureD {
+struct StressBenchTaskletD;
+impl Tasklet for StressBenchTaskletD {
     type Input = Vec<u8>;
     type Output = Vec<u8>;
     type State = ();
@@ -280,47 +280,47 @@ impl Procedure for StressBenchProcedureD {
         "stress_bench_d"
     }
     fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
-    fn entity_keys() -> Vec<&'static str> {
+    fn cell_keys() -> Vec<&'static str> {
         STRESS_KEYS.to_vec()
     }
-    const ENTITIES_FOR_OVERRIDDEN: bool = true;
-    fn entities_for(input: &Vec<u8>) -> Vec<&'static str> {
-        pipeline_entities_for(input)
+    const CELLS_FOR_OVERRIDDEN: bool = true;
+    fn cells_for(input: &Vec<u8>) -> Vec<&'static str> {
+        pipeline_cells_for(input)
     }
     fn run(
         &mut self,
         _: Vec<u8>,
-        _: StateHandle<'_, StressBenchProcedureD>,
-        _: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        _: StateHandle<'_, StressBenchTaskletD>,
+        _: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         PART_COUNTER.add(1);
         Ok(())
     }
 }
 
-struct EntityStressBenchOperative;
-impl StreamOperative for EntityStressBenchOperative {
+struct CellStressBenchOperative;
+impl StreamOperative for CellStressBenchOperative {
     fn factory_id() -> &'static str {
-        "entity_stress_bench_operative"
+        "cell_stress_bench_operative"
     }
     fn channels(c: &ChannelBuilder) {
         // Opt the entry channel into Block to avoid DropNewest losses
         // during the 20K-msg-per-operative burst against the cap-1024
-        // mailbox. Inter-procedure channels keep their default Block
+        // mailbox. Inter-tasklet channels keep their default Block
         // policy, which preserves ordering through the pipeline.
         c.input::<Vec<u8>>("input")
             .on_full(OverflowPolicy::DropNothing)
-            .into::<StressBenchProcedureA>()
+            .into::<StressBenchTaskletA>()
             .named("a_to_b")
-            .into::<StressBenchProcedureB>()
+            .into::<StressBenchTaskletB>()
             .named("b_to_c")
-            .into::<StressBenchProcedureC>()
+            .into::<StressBenchTaskletC>()
             .named("c_to_d")
-            .into::<StressBenchProcedureD>();
+            .into::<StressBenchTaskletD>();
     }
 }
 
-fn entity_stress_bench(c: &mut Criterion) {
+fn cell_stress_bench(c: &mut Criterion) {
     let n_operatives = 8usize;
     let msgs_per_operative = std::env::var("FLEZHA_BENCH_MSGS_PER_OPERATIVE")
         .ok()
@@ -329,17 +329,17 @@ fn entity_stress_bench(c: &mut Criterion) {
     let measurement_secs = measurement_secs_default(30);
     let inputs_total = n_operatives * msgs_per_operative;
     let fan_out = STRESS_KEYS.len();
-    let procedures = 4usize;
-    // Each input fans out to all 8 entities of the entry procedure, and each
-    // emit to a downstream procedure fans out the same way → total Procedure::run
-    // invocations = inputs × fan_out × procedures.
-    let expected_runs = inputs_total * fan_out * procedures;
+    let tasklets = 4usize;
+    // Each input fans out to all 8 cells of the entry tasklet, and each
+    // emit to a downstream tasklet fans out the same way → total Tasklet::run
+    // invocations = inputs × fan_out × tasklets.
+    let expected_runs = inputs_total * fan_out * tasklets;
 
-    let topology = build_topology_for::<EntityStressBenchOperative>().expect("topology");
+    let topology = build_topology_for::<CellStressBenchOperative>().expect("topology");
     let payload: Vec<u8> = b"x".repeat(64);
     let stream = stream_pair().0;
 
-    let mut group = c.benchmark_group("entity_stress_8x4x8x20k");
+    let mut group = c.benchmark_group("cell_stress_8x4x8x20k");
     group.measurement_time(Duration::from_secs(measurement_secs));
     group.sample_size(10);
     group.throughput(criterion::Throughput::Elements(expected_runs as u64));
@@ -348,7 +348,7 @@ fn entity_stress_bench(c: &mut Criterion) {
         let workers = worker_count_from_env_or_cpus();
         let registry = Arc::new(OperativeRegistry::new());
         let instance_ids: Vec<String> = (0..n_operatives)
-            .map(|i| format!("entity-stress-{}", i))
+            .map(|i| format!("cell-stress-{}", i))
             .collect();
         for id in &instance_ids {
             let inst = StreamInstance::new(Arc::clone(&topology), Arc::from(id.as_str()));
@@ -377,13 +377,13 @@ fn entity_stress_bench(c: &mut Criterion) {
                     elapsed += start.elapsed();
                     assert!(
                         drained,
-                        "entity stress drain timed out: {} of {}",
+                        "cell stress drain timed out: {} of {}",
                         PART_COUNTER.current(),
                         expected_runs
                     );
                 }
                 report(
-                    "entity_stress_8x4x8x20k",
+                    "cell_stress_8x4x8x20k",
                     allocs_before,
                     (iters as usize * expected_runs) as u64,
                 );
@@ -394,5 +394,5 @@ fn entity_stress_bench(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, regression_bench, entity_stress_bench);
+criterion_group!(benches, regression_bench, cell_stress_bench);
 criterion_main!(benches);

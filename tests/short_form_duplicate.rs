@@ -13,19 +13,19 @@ use std::thread;
 use flezha_runner::state::{NoChange, RestoreInitPayload, WallClock};
 use flezha_runner::transport::FlezhaStream;
 use flezha_runner::{
-    ChannelBuilder, Flezha, FlezhaError, Procedure, ProcedureCtx, ProcedureError, StateHandle,
-    StreamOperative,
+    ChannelBuilder, Flezha, FlezhaError, StateHandle, StreamOperative, Tasklet, TaskletCtx,
+    TaskletError,
 };
 
-/// The workflow short form under `plain`: one procedure, one sink, nothing else.
+/// The workflow short form under `plain`: one tasklet, one sink, nothing else.
 #[flezha_runner::workflow_operative(id = "plain", sink = "plain_sink")]
 fn plain(input: String) -> String {
     input
 }
 
 #[derive(Default)]
-struct HandWrittenProc;
-impl Procedure for HandWrittenProc {
+struct HandWrittenTask;
+impl Tasklet for HandWrittenTask {
     type Input = String;
     type Output = String;
     type State = ();
@@ -40,8 +40,8 @@ impl Procedure for HandWrittenProc {
         &mut self,
         input: String,
         _state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         let _ = ctx.emit(input);
         Ok(())
     }
@@ -55,15 +55,18 @@ impl StreamOperative for HandWrittenPlain {
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
-            .into::<HandWrittenProc>()
+            .into::<HandWrittenTask>()
             .sink_named("hand_written_sink");
     }
 }
 
+/// Every frame the fake controller captured, as `(payload_id, message)`.
+type Frames = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
+
 /// Accepts control connections and captures every frame the SDK writes, as
 /// `runner_lifecycle.rs`'s fake controller does: `start()` waits for the local
 /// connect and the init write, never for a controller frame.
-fn start_fake_controller(dir: &Path) -> Arc<Mutex<Vec<(String, Vec<u8>)>>> {
+fn start_fake_controller(dir: &Path) -> Frames {
     let listener =
         UnixListener::bind(dir.join("runner_control_channel.sock")).expect("bind control socket");
     let frames = Arc::new(Mutex::new(Vec::new()));
@@ -86,7 +89,7 @@ fn start_fake_controller(dir: &Path) -> Arc<Mutex<Vec<(String, Vec<u8>)>>> {
 }
 
 /// The `factory_ids` of the first connect init frame, polled until it arrives.
-fn init_frame_factories(frames: &Arc<Mutex<Vec<(String, Vec<u8>)>>>) -> Vec<String> {
+fn init_frame_factories(frames: &Frames) -> Vec<String> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
         let captured = frames.lock().unwrap();

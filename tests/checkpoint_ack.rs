@@ -11,8 +11,8 @@ use common::prelude::*;
 
 /// Folds every input into state; `commit` closes the interval, `poison` parks.
 #[derive(Default)]
-struct CheckpointProcedure;
-impl Procedure for CheckpointProcedure {
+struct CheckpointTasklet;
+impl Tasklet for CheckpointTasklet {
     type Input = String;
     type Output = String;
     type State = i64;
@@ -20,7 +20,7 @@ impl Procedure for CheckpointProcedure {
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "checkpoint_procedure"
+        "checkpoint_tasklet"
     }
     fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> i64 {
         0
@@ -32,10 +32,10 @@ impl Procedure for CheckpointProcedure {
         &mut self,
         input: String,
         mut state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         match input.as_str() {
-            "poison" => Err(ProcedureError::non_retryable("poison")),
+            "poison" => Err(TaskletError::non_retryable("poison")),
             "commit" => {
                 state.apply(TickChange);
                 ctx.checkpoint();
@@ -63,7 +63,7 @@ impl StreamOperative for CheckpointOperative {
         c.effectively_once();
         c.checkpoint_ack();
         c.input::<String>("input")
-            .into::<CheckpointProcedure>()
+            .into::<CheckpointTasklet>()
             .keyed()
             .sink_named("out");
     }
@@ -167,9 +167,9 @@ fn a_park_closes_the_checkpoint_interval() {
 /// controller re-forwards the inputs that produced them.
 #[test]
 fn a_restore_discards_the_open_interval() {
-    use flezha_runner::entity::flusher::{FlushableBuffer, TypedBuffer};
+    use flezha_runner::cell::flusher::{FlushableBuffer, TypedBuffer};
 
-    let mut buf: TypedBuffer<CheckpointProcedure> = TypedBuffer::default();
+    let mut buf: TypedBuffer<CheckpointTasklet> = TypedBuffer::default();
     buf.staged.changes.push(TickChange);
     buf.staged.changes.push(TickChange);
 
@@ -194,7 +194,7 @@ fn a_restore_discards_the_open_interval() {
 /// stateful class's queue is the only copy its input has.
 #[test]
 fn a_restore_discards_queued_input_only_where_the_controller_re_forwards_it() {
-    use flezha_runner::entity::{make_entity_payload, restore_discarded_inputs};
+    use flezha_runner::cell::{make_cell_payload, restore_discarded_inputs};
 
     let (_tier_handle, tier) = setup::<TierOperative>("restore-mailbox-tier");
     let (_plain_handle, plain) = setup::<KeyedStampOperative>("restore-mailbox-plain");
@@ -203,19 +203,19 @@ fn a_restore_discards_queued_input_only_where_the_controller_re_forwards_it() {
     for instance in [&tier, &plain] {
         let value: Arc<dyn std::any::Any + Send + Sync> = Arc::new("queued".to_string());
         assert!(
-            instance.entities[0][0]
+            instance.cells[0][0]
                 .mailbox
-                .try_push(flezha_runner::entity::EntityItem::Input(
-                    make_entity_payload(&value, &stream, None, false),
-                ))
+                .try_push(flezha_runner::cell::CellItem::Input(make_cell_payload(
+                    &value, &stream, None, false
+                ),))
                 .is_ok(),
             "mailbox has room"
         );
     }
 
     let before = restore_discarded_inputs();
-    let tier_discarded = tier.entities[0][0].discard_queued_input_on_restore();
-    let plain_discarded = plain.entities[0][0].discard_queued_input_on_restore();
+    let tier_discarded = tier.cells[0][0].discard_queued_input_on_restore();
+    let plain_discarded = plain.cells[0][0].discard_queued_input_on_restore();
 
     assert_eq!(
         tier_discarded, 1,
@@ -223,7 +223,7 @@ fn a_restore_discards_queued_input_only_where_the_controller_re_forwards_it() {
          keeping it would double-apply it"
     );
     assert!(
-        tier.entities[0][0].mailbox.is_empty(),
+        tier.cells[0][0].mailbox.is_empty(),
         "the tier mailbox must be drained"
     );
     assert_eq!(
@@ -231,7 +231,7 @@ fn a_restore_discards_queued_input_only_where_the_controller_re_forwards_it() {
         "a journal-less class's queued input exists nowhere else — dropping it is data loss"
     );
     assert!(
-        !plain.entities[0][0].mailbox.is_empty(),
+        !plain.cells[0][0].mailbox.is_empty(),
         "the journal-less mailbox must survive the restore"
     );
     assert_eq!(

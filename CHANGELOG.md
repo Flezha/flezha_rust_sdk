@@ -6,26 +6,26 @@ All notable changes to the Rust SDK crate.
 
 ### Changed: the short form is an operative declaration
 
-**Breaking.** The single-procedure short form moves from `#[flezha::procedure]`
+**Breaking.** The single-tasklet short form moves from `#[flezha::tasklet]`
 to two new attributes, `#[flezha::stream_operative]` and
 `#[flezha::workflow_operative]`, whose name is the kind. Each takes a required
 `id` (the factory id), an optional `sink` and an optional `input`, and emits two
 types: the operative under the function's PascalCase name, which
-`register_factory(Echo)` registers, and the procedure `EchoProcedure` beside it,
+`register_factory(Echo)` registers, and the tasklet `EchoTasklet` beside it,
 named after the `id`, so it can be wired into another operative's topology and
-ejecting to the full form keeps every entity's state path. `sink` is optional:
-with none, the entry channel feeds the procedure and no plugin channel is
-declared. `#[flezha::procedure]` declares a procedure only and refuses `kind`,
+ejecting to the full form keeps every cell's state path. `sink` is optional:
+with none, the entry channel feeds the tasklet and no plugin channel is
+declared. `#[flezha::tasklet]` declares a tasklet only and refuses `kind`,
 `sink`, `input` and `on_full`, which describe the operative's entry channel. The refusals are `SinkWithoutOutput` (a `sink` on a body
 with no output) and rustc's conflicting-impl error for a short form given a
 hand-written topology body (`ShortFormWithTopology` in the contract).
 
-### Removed: the workflow `run` body; added `ProcedureCtx::complete`
+### Removed: the workflow `run` body; added `TaskletCtx::complete`
 
 **Breaking.** `WorkflowOperative::run` and the `WorkflowCtx` export are deleted
-with no alias. A workflow declares `procedures`; one that declares none is
-refused with `BuildWorkflowError::NoProcedures`, which replaces
-`LoopWithoutChain`. `ProcedureCtx::complete(result)` ends a workflow instance
+with no alias. A workflow declares `tasklets`; one that declares none is
+refused with `BuildWorkflowError::NoTasklets`, which replaces
+`LoopWithoutChain`. `TaskletCtx::complete(result)` ends a workflow instance
 once its iteration commits; in a stream operative it fails the input naming
 `CompleteOutsideWorkflow`. The testing harness accepts a completion and records
 nothing.
@@ -48,7 +48,7 @@ in silence. `FlezhaError::DuplicateFactoryId`'s display now begins with the
 refusal's contract name.
 
 A workflow short form is a `once` workflow wiring its entry channel into the
-procedure and the procedure to the sink.
+tasklet and the tasklet to the sink.
 
 `flezha::operative!` now begins with the type it declares —
 `flezha::operative! { pub struct Name; id: "...", pipeline: ... }` — and that
@@ -56,7 +56,7 @@ type is what the author registers.
 
 ### Changed — a spawn and a start take the factory first and an optional id
 
-**Breaking.** `ProcedureCtx::spawn_workflow(factory_id, payload)` spawns under an id the
+**Breaking.** `TaskletCtx::spawn_workflow(factory_id, payload)` spawns under an id the
 controller generates, and `spawn_workflow_with(factory_id, payload, SpawnOptions::id(id))`
 spawns or delivers under yours, `.if_running(IfRunning::Error)` refusing a running one. A
 `SpawnHandle` resolves to a `SpawnResult { id, outcome }`, so the id a spawn ran under is
@@ -69,13 +69,13 @@ re-exported here unchanged in name.
 
 **Breaking.** Both methods are gone from `Stream`. A chain that calls either no
 longer compiles; delete the call, nothing replaces it. The runtime attaches the
-journal codec itself, where a procedure's output channel is created, derived
-from that procedure's declared `Output`, so there is no declaration left to
+journal codec itself, where a tasklet's output channel is created, derived
+from that tasklet's declared `Output`, so there is no declaration left to
 forget.
 
-`Procedure::Output` and `SimpleProcedure::Output` therefore carry a new bound,
+`Tasklet::Output` and `SimpleTasklet::Output` therefore carry a new bound,
 `JournalValue`, satisfied by every `Serialize + DeserializeOwned` type through a
-blanket implementation. A procedure whose output has no serde derives stops
+blanket implementation. A tasklet whose output has no serde derives stops
 compiling, and the message names the type and says the output is journaled at a
 workflow's commit barrier rather than naming a serde trait the author never
 wrote. `Input` and `State` are unchanged.
@@ -85,40 +85,40 @@ per-class persistence setting at deploy time, not a fact available where the
 code is compiled, so a workflow-only bound could not be honest. A stream
 operative pays a compile-time requirement and nothing at runtime.
 
-`BuildWorkflowError::MissingInterProcCodec` is deleted, and
+`BuildWorkflowError::MissingInterTaskCodec` is deleted, and
 `LoopTerminalWithoutCodec` becomes `LoopTerminalWithoutHandoff`: a durable
-chained loop seeds each iteration from its terminal procedure's journaled
-handoff, and only an inter-procedure channel carries one.
+chained loop seeds each iteration from its terminal tasklet's journaled
+handoff, and only an inter-tasklet channel carries one.
 
-**Breaking, second:** a durable `Chained` loop whose terminal procedure's only
-output is a plugin sink is refused. The journal codec rides an inter-procedure
+**Breaking, second:** a durable `Chained` loop whose terminal tasklet's only
+output is a plugin sink is refused. The journal codec rides an inter-tasklet
 channel and no other kind — the rule `flz_core` has always applied to a host
 that ships bytes — so such a loop shipped an empty handoff and a crash-resumed
 run read the empty seed as convergence and stopped. It worked here only while
 the author declared the codec by hand, and truncated silently in every other
 SDK. Take the sink off the terminal's own channel — a producer with no consumer
 is a legal channel, and is what a retained loop output already is — or declare
-`LoopMode::PerInput`. Wiring another procedure behind the sink does not help on
+`LoopMode::PerInput`. Wiring another tasklet behind the sink does not help on
 its own: it becomes the new terminal and owes the same handoff.
 
 Same postcard bytes as before on every channel that still carries a codec, so a
 journal written by an older build re-seeds under this one.
 
 
-### Added — `SimpleProcedure` and the multi-emit sugar shape (`add-tiered-procedure-authoring`)
+### Added — `SimpleTasklet` and the multi-emit sugar shape (`add-tiered-tasklet-authoring`)
 
-`SimpleProcedure` declares only `Input`, `Output`, `State` plus `name`,
-`init_state` and `run`; `impl<T: SimpleProcedure> Procedure for T` supplies
+`SimpleTasklet` declares only `Input`, `Output`, `State` plus `name`,
+`init_state` and `run`; `impl<T: SimpleTasklet> Tasklet for T` supplies
 `Clock = WallClock`, `Config = ()` and `<T::State as DerivedState>::Change`.
 Stable Rust has no associated-type defaults, hence a tier rather than defaults
 on the trait itself — and the blanket impl means everything downstream still
-sees one runtime-facing trait. Implementing `Procedure` directly stays fully
+sees one runtime-facing trait. Implementing `Tasklet` directly stays fully
 supported; a type doing both is a coherence error, which is what makes
 "explicit wins" a fact rather than a precedence rule to remember.
 `impl DerivedState for ()` is new so `type State = ()` is the stateless
 spelling in that tier.
 
-`#[flezha::procedure]` accepts a trailing `ctx: &mut ProcedureCtx` parameter
+`#[flezha::tasklet]` accepts a trailing `ctx: &mut TaskletCtx` parameter
 with a unit / `Result<(), _>` return: the body then owns every emit, and
 `emits = Type` declares the output type the return value no longer can.
 `key = …` alongside it, a value return alongside it, and `emits` without it are
@@ -135,7 +135,7 @@ type instead of being left uninferrable.
 seen on `traffic` receives each distinct document exactly once, on that key's own
 next traffic item.
 
-A keyed procedure cannot receive a broadcast — every keying declaration is
+A keyed tasklet cannot receive a broadcast — every keying declaration is
 total, and inside a partitioned member the computed key is admitted against that
 member's key-group range. The block is the bridge, with the safety property that
 is easy to get wrong encoded once: it delivers on the key's **own traffic**,
@@ -144,9 +144,9 @@ ownership and would park later deliveries against the partition guard). Cost:
 one tick of latency per key, and a key whose traffic has stopped is never
 delivered to.
 
-It is sugar — a merge into one packaged single-entity procedure whose
+It is sugar — a merge into one packaged single-cell tasklet whose
 `{document, version, delivered}` state rides the standard change journal. The
-packaged procedure is deliberately not public: the two methods are the whole
+packaged tasklet is deliberately not public: the two methods are the whole
 surface, which is what keeps the guarantee un-bypassable. A document equal to the
 retained one is inert; a differing one bumps the version. The document is
 retained and compared with `Eq`, never parsed.
@@ -201,26 +201,26 @@ handle `Stream<'b, T, K>` is unrelated and unchanged; a stream operative is
 precisely the kind that consumes streams.
 <!-- kind-naming-record:end -->
 
-### A keyed channel's plain emit carries the Entity's own key (`default-emit-to-entity-key`)
+### A keyed channel's plain emit carries the Cell's own key (`default-emit-to-cell-key`)
 
-In a keyed Entity the natural key of essentially every output *is* the key its
-input routed by, and the SDK already holds it — it created the Entity from it.
+In a keyed Cell the natural key of essentially every output *is* the key its
+input routed by, and the SDK already holds it — it created the Cell from it.
 `ctx.emit(value)` / `ctx.emit_with_meta(value, meta)` on a `.keyed()` channel
 now emit under that key instead of failing with `KeyRequiredOnKeyedChannel`, so
-`flz.key` equals the routing key by construction — the procedure never
+`flz.key` equals the routing key by construction — the tasklet never
 re-derives it, and the two cannot drift apart. Both spellings share one
 stamping path, so a defaulted emit and `ctx.emit_keyed(key, value)` with the
 same key are byte-identical.
 
-- `ctx.entity_key() -> Option<&str>` — the key this Entity was routed by, the
-  one `init_state` was handed. `None` for a single-entity Procedure.
+- `ctx.cell_key() -> Option<&str>` — the key this Cell was routed by, the
+  one `init_state` was handed. `None` for a single-cell Tasklet.
 - `ctx.emit_keyed` is unchanged: it is now for the output whose natural key
-  differs from its Entity's.
-- `ProcedureTestHarness::with_entity_key(key)` stands the harness in for that
-  Entity, so a test observes the defaulted stamp.
+  differs from its Cell's.
+- `TaskletTestHarness::with_cell_key(key)` stands the harness in for that
+  Cell, so a test observes the defaulted stamp.
 
-Unchanged refusals: a single-entity Procedure's key-less emit on a keyed
-channel (there is no Entity key to default to) and `emit_keyed` on a channel
+Unchanged refusals: a single-cell Tasklet's key-less emit on a keyed
+channel (there is no Cell key to default to) and `emit_keyed` on a channel
 not declared `.keyed()`. Every currently-legal call keeps its behaviour.
 
 ### A dead secondary stream can no longer stall a runner permanently and silently
@@ -254,7 +254,7 @@ support on `state_sink`: `reset_for_test`, `reconnect_requested_for_test`.
 ### The kernel moved into `flz_core` (`extract-sdk-poll-core`)
 
 - **Public API unchanged** (`public-api.txt`: internal-re-export note). The
-  type-erased kernel — entity slots, mailbox/drain gates, flusher, credit,
+  type-erased kernel — cell slots, mailbox/drain gates, flusher, credit,
   DLQ park/ladder, timers, routing, commands, workflow driver, transport
   loop — now lives in the `flz_core` crate; this crate's typed layer
   consumes it as the first poll host. Dispatch runs on dedicated poll
@@ -263,37 +263,37 @@ support on `state_sink`: `reset_for_test`, `reconnect_requested_for_test`.
   validation and the retry→park ladder are engine-side. Event-time-clocked
   classes are handed one admitted input per activation (chained due-timer
   determinism); wall/logical classes batch freely.
-- **Renamed (internal surfaces)**: `HeaderTemplate::for_procedure::<S>()` →
-  `entity::header::header_template_for::<S>()`; `TimerPolicy::
-  for_procedure::<S>()` → `entity::timer::timer_policy_for::<S>()`
-  (inherent impls cannot span crates). `ProcedureDispatcher::dispatch` →
+- **Renamed (internal surfaces)**: `HeaderTemplate::for_tasklet::<S>()` →
+  `cell::header::header_template_for::<S>()`; `TimerPolicy::
+  for_tasklet::<S>()` → `cell::timer::timer_policy_for::<S>()`
+  (inherent impls cannot span crates). `TaskletDispatcher::dispatch` →
   `dispatch_item` (single attempt, disposition-driven).
 
-### Live Entity read (`entity-state-live-query`)
+### Live Cell read (`cell-state-live-query`)
 
-- **The `EntityState` command gained a selector**, so the state an operator asks
-  for is the only state serialized: `EntityState { operative_id, procedure,
-  entity_key }`, where an empty string means absent. No selector is the
+- **The `CellState` command gained a selector**, so the state an operator asks
+  for is the only state serialized: `CellState { operative_id, tasklet,
+  cell_key }`, where an empty string means absent. No selector is the
   whole-Operative migration/handover shape and encodes byte-identically to
-  before. `entity_key` without `procedure` is refused — an Entity key is unique
-  only within its Procedure.
-- **Dynamic-mode Entities are serialized**, keyed by whatever the live registry
+  before. `cell_key` without `tasklet` is refused — a Cell key is unique
+  only within its Tasklet.
+- **Dynamic-mode Cells are serialized**, keyed by whatever the live registry
   holds. The whole-Operative shape previously omitted them entirely.
-- **`command::entity_state::serialize_selected_state`** is the public entry
+- **`command::cell_state::serialize_selected_state`** is the public entry
   point: it returns `(json, Option<seq>)`, the seq present only when the selector
-  named exactly one Entity. `serialize_operative_state` keeps its signature and
+  named exactly one Cell. `serialize_operative_state` keeps its signature and
   is now that call with an empty selector. Refusal strings lead with a canonical
-  token (`entity_key_without_procedure`, `procedure_not_found`,
-  `entity_not_found`, `entity_evicted`).
-- **Serialization takes the Entity's state lock and does NOT drain pending
+  token (`cell_key_without_tasklet`, `tasklet_not_found`,
+  `cell_not_found`, `cell_evicted`).
+- **Serialization takes the Cell's state lock and does NOT drain pending
   changes**, so the value returned includes changes not yet flushed to the WAL —
   the read reports `flz.change_seq` on the reply frame's metadata rather than
   hiding that. It triggers no compaction, snapshot or truncation.
 - **`CommandAction` gained a defaulted `reply`** returning
   `(payload_id, raw_data, HashMap<String, String>)` — the frame metadata a
-  command's answer stamps. Every handler but `EntityState` inherits the default,
+  command's answer stamps. Every handler but `CellState` inherits the default,
   which forwards to `handle` with no metadata, so their frames are unchanged.
-- **`DynamicEntityRegistry::recently_evicted`** exposes a bounded (1024-key)
+- **`DynamicCellRegistry::recently_evicted`** exposes a bounded (1024-key)
   trace of what the reaper evicted, so a read can answer "idle-evicted" rather
   than "never existed". Beyond the cap it degrades to the latter, which is the
   safe direction.
@@ -302,17 +302,17 @@ support on `state_sink`: `reset_for_test`, `reconnect_requested_for_test`.
 
 ### Stream transforms and edge keying (`stream-dsl-keyby-and-transforms`)
 
-- **BREAKING — `Procedure::entity_key` and `const ENTITY_KEY_OVERRIDDEN` are
-  removed.** Dynamic Entity keying is declared on the wiring instead:
-  `.key_by(|v: &T| ..)` on the stream that feeds the procedure. There is no
-  shim, so every dynamic-mode Procedure is a compile error until its key moves
+- **BREAKING — `Tasklet::cell_key` and `const CELL_KEY_OVERRIDDEN` are
+  removed.** Dynamic Cell keying is declared on the wiring instead:
+  `.key_by(|v: &T| ..)` on the stream that feeds the tasklet. There is no
+  shim, so every dynamic-mode Tasklet is a compile error until its key moves
   to the edge — which is how the compiler enumerates the migration sites. The
-  static pair (`entity_keys` / `entities_for`) and the dynamic knobs
-  (`entity_idle_ttl`, `max_entities`) are unchanged. A former `None` return
+  static pair (`cell_keys` / `cells_for`) and the dynamic knobs
+  (`cell_idle_ttl`, `max_cells`) are unchanged. A former `None` return
   becomes a `.filter(..)` declared before the keying; the
   `inputs_dropped_no_key_total` counter is retired with the path it measured.
 - **`map` / `filter` / `flat_map` / `key_by` on both stream handles.** They add
-  no Procedure, Entity, mailbox or dispatch hop: every transform declared
+  no Tasklet, Cell, mailbox or dispatch hop: every transform declared
   before the closing `.into` composes into ONE closure stored on that consumer
   edge and evaluated at the routing seam — the same seam a merge mapping has
   always used, which is why replay determinism cost no new code. Fusion is
@@ -333,26 +333,26 @@ support on `state_sink`: `reset_for_test`, `reconnect_requested_for_test`.
   compensates, so the instance still reports.
 - New `TopologyIssue` variants `KeyByOnUnkeyableTarget`, `DuplicateKeyBy`,
   `TransformAfterTerminal`, `TransformAfterKeyBy`, `DanglingTransformChain`,
-  `UnkeyedEdgeIntoDynamicProcedure`; `StaticAndDynamic` is removed (the
+  `UnkeyedEdgeIntoDynamicTasklet`; `StaticAndDynamic` is removed (the
   contradiction it named is now `KeyByOnUnkeyableTarget`) and
   `MergeSourceAlreadyWired` is renamed `EdgeAlreadyWired` — it now guards any
   re-declaration where either side carries a transform or a key.
 
-### Multi-input procedures (`add-multi-input-procedures`)
+### Multi-input tasklets (`add-multi-input-tasklets`)
 
 - **`ChannelBuilder::merge::<I>()`** — subscribe two or more source channels to
-  ONE procedure whose `Input` is an author-declared sum type, each `.from(source,
+  ONE tasklet whose `Input` is an author-declared sum type, each `.from(source,
   map)` supplying the mapping from that channel's payload into it:
   `c.merge::<SignalInput>().from(ticker, SignalInput::Ticker).from(config,
-  SignalInput::Config).into::<Detector>()`. Entry streams and inter-procedure
+  SignalInput::Config).into::<Detector>()`. Entry streams and inter-tasklet
   streams are both valid sources on a stream operative (`MergeSource`,
   implemented for `EntryStream` and `Stream`), freely mixed; see the workflow
   restriction below. Single-input `.into` is unchanged.
-- **Purely a subscription-time construct**: `Procedure` is untouched, so
-  dispatch, state, `entities_for`, retry/DLQ and the emit APIs all see one type.
-  `entities_for` / `entity_key` are evaluated on the **mapped** value.
+- **Purely a subscription-time construct**: `Tasklet` is untouched, so
+  dispatch, state, `cells_for`, retry/DLQ and the emit APIs all see one type.
+  `cells_for` / `cell_key` are evaluated on the **mapped** value.
 - **A merge mapping is contained on the workflow driver thread.** It is the only
-  author closure on a workflow chain running outside an entity invocation, so
+  author closure on a workflow chain running outside a cell invocation, so
   `extend_mapped` catches its unwind and reports it as a terminal chain error, and
   the instance still reports. An unguarded one would skip
   `emit_workflow_completed` and strand it. At the **forward** accumulate site the
@@ -363,7 +363,7 @@ support on `state_sink`: `reset_for_test`, `reconnect_requested_for_test`.
   **crash-resume re-seed** site Rust also unwinds the journaled stages (the
   resumed iteration's completed list is seeded from the journal); the Java arm
   does not, a pre-existing gap in its resumed chains recorded under "Known
-  limitation" in `docs/sdk/multi_input_procedures.md`. `Merge` is `#[must_use]`: a merge left unclosed by
+  limitation" in `docs/sdk/multi_input_tasklets.md`. `Merge` is `#[must_use]`: a merge left unclosed by
   `.into` declares no edges at all.
 - **Per-source FIFO is preserved; nothing is ordered across sources** — the
   guarantee two independent consumers already had. Mappings MUST be pure: they
@@ -372,33 +372,33 @@ support on `state_sink`: `reset_for_test`, `reconnect_requested_for_test`.
 - New `TopologyIssue` variants `MergeTooFewSources`, `DuplicateMergeSource` and
   `EdgeAlreadyWired` (a source may not re-wire an edge `.into` or another
   merge already declared — the mapping would otherwise be silently dropped); a
-  mapped type that is not the procedure's `Input` is a compile error at
-  `.into::<Proc>()`.
-- **Workflow merges consume inter-procedure channels only.** The workflow seed is
+  mapped type that is not the tasklet's `Input` is a compile error at
+  `.into::<Task>()`.
+- **Workflow merges consume inter-tasklet channels only.** The workflow seed is
   a bare payload naming no channel, so an entry channel as one merge source
   among several is refused at registration with
   `BuildWorkflowError::MergeFromEntryChannel` rather than accepted and failing
   every invocation. Stream merges accept entry channels.
-- `ChannelDescriptor::consumers` is now `Vec<ConsumerEdge>` (procedure id plus
+- `ChannelDescriptor::consumers` is now `Vec<ConsumerEdge>` (tasklet id plus
   the optional mapping); `consumer_ids()` is the id-only view.
 - No wire change and no controller change. Example: `examples/merged_input.rs`.
 
-### Procedure-requested spawn (`procedure-requested-spawn`)
+### Tasklet-requested spawn (`tasklet-requested-spawn`)
 
-- **`ProcedureCtx::spawn_workflow(instance_id, factory_id, payload, if_running)`**
-  — spawn-or-deliver a workflow instance from inside any procedure. A free id
+- **`TaskletCtx::spawn_workflow(instance_id, factory_id, payload, if_running)`**
+  — spawn-or-deliver a workflow instance from inside any tasklet. A free id
   starts `factory_id` with `payload` as its first input; a taken id receives it
   as one more input (`IfRunning::Deliver`) or reports
   `SpawnError::AlreadyRunning` (`IfRunning::Error`). Always in the requester's
   own namespace.
 - **Fire-and-forget with a result**: returns a `SpawnHandle` immediately. Every
-  failure resolves that handle rather than the procedure's `run` — `wait()` /
+  failure resolves that handle rather than the tasklet's `run` — `wait()` /
   `try_result()` read it, and a handle dropped unobserved reports a failure to
   the log via one process-wide reaper thread.
 - **Live processing only**: a replayed invocation (crash resume, late-input
   correction) issues no request and answers `SpawnOutcome::SkippedOnReplay`.
 - New public items: `IfRunning`, `SpawnOutcome`, `SpawnError`, `SpawnHandle`,
-  re-exported from `flezha_runner::procedure`. Example:
+  re-exported from `flezha_runner::tasklet`. Example:
   `examples/spawn_workflow_worker.rs`.
 - **Wire**: additive `SpawnWorkflowRequest` (tag 34) / `SpawnWorkflowResponse`
   (tag 35). Requires a controller of the same release.
@@ -406,19 +406,19 @@ support on `state_sink`: `reset_for_test`, `reconnect_requested_for_test`.
 ### Determinism contract + output identity (`deterministic-effects-and-output-identity`)
 
 - **BREAKING: `Clock::now()` removed.** The runtime evaluates the declared
-  Clock once per `run` invocation and serves it via `ProcedureCtx::now()`
+  Clock once per `run` invocation and serves it via `TaskletCtx::now()`
   (`u64`: epoch ms for `WallClock`, extracted input timestamp for
   `EventTimeFrom<F>` — now fully wired via the new `TimeExtractor<Input>`
-  trait — and the durable change seq for `LogicalClock`). The `Procedure`
+  trait — and the durable change seq for `LogicalClock`). The `Tasklet`
   trait bound tightened to `type Clock: ClockFor<Self::Input>`, making an
   unservable extractor a compile error; `LogicalClock` with
   `Change = NoChange` fails registration with
   `BuildTopologyError::UnservableClock`.
-- **`ProcedureCtx::stable_id()`** — replay-stable 128-bit identifiers
-  (frozen FNV-1a-128 over entity identity ‖ change seq ‖ call ordinal);
+- **`TaskletCtx::stable_id()`** — replay-stable 128-bit identifiers
+  (frozen FNV-1a-128 over cell identity ‖ change seq ‖ call ordinal);
   the determinism-contract replacement for `Uuid::new_v4()`.
 - **Keyed channels**: `.keyed()` on plugin-wired channels +
-  `ctx.emit_keyed(key, value)` stamp `flz.entity` / `flz.seq` / `flz.key`
+  `ctx.emit_keyed(key, value)` stamp `flz.cell` / `flz.seq` / `flz.key`
   on every plugin frame; the `flz.` metadata namespace is reserved
   (`ReservedMetadataKey`). Non-keyed channels are byte-identical to before
   (criterion dispatch regression bench: no change detected).
@@ -455,7 +455,7 @@ support on `state_sink`: `reset_for_test`, `reconnect_requested_for_test`.
 - Reconnect semantics: exponential backoff (200 ms → 30 s cap), state
   reset on unexpected drop, no reconnect on `RunnerDisconnect`.
 - Command dispatch (`AssignRunnerId`, `ConnectSocket`,
-  `AddOperative`, `RemOperative`, `EntityState`,
+  `AddOperative`, `RemOperative`, `CellState`,
   `MigrationSerialization`, `MigrationDeserialization`,
   `RunnerDisconnect`) produces byte-identical `CommandResponse`
   bytes.

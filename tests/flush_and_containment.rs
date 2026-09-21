@@ -1,13 +1,13 @@
 //! Flush-before-emit ordering and failure containment: a durable change
 //! reaches the sink before the output it justifies, and a panicking
-//! procedure takes nothing else down.
+//! tasklet takes nothing else down.
 
 mod common;
 use common::prelude::*;
 
 // ----- Flush-before-emit ordering (durability fix) -----
 //
-// A persistence-enabled Procedure applies a Change then emits. The change's
+// A persistence-enabled Tasklet applies a Change then emits. The change's
 // WAL frame must reach the durable sink BEFORE the output frame is
 // written, so a hard kill can never lose a change whose output already
 // shipped. Both signals are recorded on this single ordered log; the WAL
@@ -21,8 +21,8 @@ struct AddChange(i64);
 impl flezha_runner::state::Change for AddChange {}
 
 #[derive(Default)]
-struct FlushOrderProcedure;
-impl Procedure for FlushOrderProcedure {
+struct FlushOrderTasklet;
+impl Tasklet for FlushOrderTasklet {
     type Input = String;
     type Output = String;
     type State = i64;
@@ -30,7 +30,7 @@ impl Procedure for FlushOrderProcedure {
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "flush_order_procedure"
+        "flush_order_tasklet"
     }
     fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> i64 {
         0
@@ -41,9 +41,9 @@ impl Procedure for FlushOrderProcedure {
     fn run(
         &mut self,
         _: String,
-        mut state: StateHandle<'_, FlushOrderProcedure>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        mut state: StateHandle<'_, FlushOrderTasklet>,
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         state.apply(AddChange(1));
         let total = *state;
         ctx.emit::<String>(format!("{total}"))?;
@@ -51,7 +51,7 @@ impl Procedure for FlushOrderProcedure {
     }
 }
 
-test_procedure!(FlushOrderSinkProcedure, "flush_order_sink_procedure", String => (), (), |_input, _state, _ctx| {
+test_tasklet!(FlushOrderSinkTasklet, "flush_order_sink_tasklet", String => (), (), |_input, _state, _ctx| {
     Ok(())
 });
 
@@ -62,19 +62,19 @@ impl StreamOperative for FlushOrderOperative {
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
-            .into::<FlushOrderProcedure>()
+            .into::<FlushOrderTasklet>()
             .sink_named_with("out", |_v: &String| {
                 FLUSH_ORDER_LOG.lock().unwrap().push("emit");
                 Vec::new()
             })
-            .into::<FlushOrderSinkProcedure>();
+            .into::<FlushOrderSinkTasklet>();
     }
 }
 
 #[test]
 fn change_is_flushed_before_output_is_emitted() {
-    use flezha_runner::entity::flusher::{SendError, SendFrameFn};
-    use flezha_runner::entity::state_sink;
+    use flezha_runner::cell::flusher::{SendError, SendFrameFn};
+    use flezha_runner::cell::state_sink;
 
     let _serial = WAL_TEST_LOCK.lock().unwrap();
     FLUSH_ORDER_LOG.lock().unwrap().clear();
@@ -120,9 +120,9 @@ fn change_is_flushed_before_output_is_emitted() {
 
 static PANIC_AFTER: AtomicUsize = AtomicUsize::new(0);
 
-test_procedure!(PanicProcedure, "panic_procedure", String => (), (), |input, _state, _ctx| {
+test_tasklet!(PanicTasklet, "panic_tasklet", String => (), (), |input, _state, _ctx| {
     if input == "boom" {
-        panic!("induced procedure panic");
+        panic!("induced tasklet panic");
     }
     PANIC_AFTER.fetch_add(1, Ordering::Relaxed);
     Ok(())
@@ -134,24 +134,24 @@ impl StreamOperative for PanicOperative {
         "panic_operative"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<String>("input").into::<PanicProcedure>();
+        c.input::<String>("input").into::<PanicTasklet>();
     }
 }
 
 #[test]
-fn procedure_panic_does_not_wedge_the_entity() {
+fn tasklet_panic_does_not_wedge_the_cell() {
     PANIC_AFTER.store(0, Ordering::Release);
     // The exhausted retry budget parks the poison payload. With no global
     // sink the park drops immediately (transport-less fallback), but a
     // concurrently-running sink test may have installed a non-acking sink
-    // — then the park (correctly) holds the entity until acked. Ack it
-    // out-of-band: park ids are `<entity_label>#<process nonce>`, and
+    // — then the park (correctly) holds the cell until acked. Ack it
+    // out-of-band: park ids are `<cell_label>#<process nonce>`, and
     // this binary parks only here, so a small nonce sweep always hits.
     let _acker = std::thread::spawn(|| {
         for _ in 0..200 {
             for nonce in 0..32 {
-                flezha_runner::entity::park::complete_ack(&format!(
-                    "panic-instance/panic_procedure/#{nonce}"
+                flezha_runner::cell::park::complete_ack(&format!(
+                    "panic-instance/panic_tasklet/#{nonce}"
                 ));
             }
             if wait_until(
@@ -185,12 +185,12 @@ fn procedure_panic_does_not_wedge_the_entity() {
             || PANIC_AFTER.load(Ordering::Acquire) == 1,
             Duration::from_secs(5)
         ),
-        "entity wedged after a procedure panic: 'after' was never processed"
+        "cell wedged after a tasklet panic: 'after' was never processed"
     );
 
     assert!(
-        instance.entities[0][0].state.lock().is_ok(),
-        "entity state mutex was poisoned by the procedure panic"
+        instance.cells[0][0].state.lock().is_ok(),
+        "cell state mutex was poisoned by the tasklet panic"
     );
 }
 
@@ -203,14 +203,14 @@ fn procedure_panic_does_not_wedge_the_entity() {
 
 static BLOCKED_CONSUMED: AtomicUsize = AtomicUsize::new(0);
 
-test_procedure!(BlockProducerProcedure, "block_producer_procedure", String => String, (), |_input, _state, ctx| {
+test_tasklet!(BlockProducerTasklet, "block_producer_tasklet", String => String, (), |_input, _state, ctx| {
     for i in 0..8 {
         ctx.emit(format!("v{}", i))?;
     }
     Ok(())
 });
 
-test_procedure!(BlockedConsumerProcedure, "blocked_consumer_procedure", String => String, (), cap 1, |_input, _state, _ctx| {
+test_tasklet!(BlockedConsumerTasklet, "blocked_consumer_tasklet", String => String, (), cap 1, |_input, _state, _ctx| {
     BLOCKED_CONSUMED.fetch_add(1, Ordering::AcqRel);
     Ok(())
 });
@@ -221,11 +221,11 @@ impl StreamOperative for BlockDeadlockOperative {
         "block_deadlock_operative"
     }
     fn channels(c: &ChannelBuilder) {
-        // Inter-procedure channel: OverflowPolicy defaults to Block.
+        // Inter-tasklet channel: OverflowPolicy defaults to Block.
         c.input::<String>("input")
-            .into::<BlockProducerProcedure>()
+            .into::<BlockProducerTasklet>()
             .named("blocked_out")
-            .into::<BlockedConsumerProcedure>();
+            .into::<BlockedConsumerTasklet>();
     }
 }
 

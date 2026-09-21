@@ -5,12 +5,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::fixtures::*;
+use crate::cell::restore::RestoreInitPayload;
 use crate::channel::{ChannelBuilder, ChannelKind};
-use crate::entity::restore::RestoreInitPayload;
 use crate::operative::registry::{Operative, OperativeRegistry};
-use crate::procedure::change::NoChange;
-use crate::procedure::clock::WallClock;
-use crate::procedure::{Procedure, ProcedureCtx, ProcedureError, StateHandle};
+use crate::tasklet::change::NoChange;
+use crate::tasklet::clock::WallClock;
+use crate::tasklet::{StateHandle, Tasklet, TaskletCtx, TaskletError};
 use crate::workflow::*;
 
 #[test]
@@ -35,8 +35,8 @@ fn register_workflow_makes_factory_resolvable() {
         fn factory_id() -> &'static str {
             "test-getclass-workflow"
         }
-        fn procedures(c: &ChannelBuilder) {
-            c.input::<String>("in").into::<EchoProc>();
+        fn tasklets(c: &ChannelBuilder) {
+            c.input::<String>("in").into::<EchoTask>();
         }
     }
     assert!(registry::get_class("test-getclass-workflow").is_none());
@@ -74,14 +74,14 @@ fn registry_holds_workflow_as_sealed_variant() {
 }
 
 #[test]
-fn a_workflow_without_procedures_is_refused() {
+fn a_workflow_without_tasklets_is_refused() {
     let err =
-        spec::build_spec::<NoProceduresWorkflow>().expect_err("a workflow always runs procedures");
+        spec::build_spec::<NoTaskletsWorkflow>().expect_err("a workflow always runs tasklets");
     assert!(
-        matches!(err, spec::BuildWorkflowError::NoProcedures { .. }),
-        "expected NoProcedures, got {err:?}"
+        matches!(err, spec::BuildWorkflowError::NoTasklets { .. }),
+        "expected NoTasklets, got {err:?}"
     );
-    assert!(err.to_string().contains("test-no-procedures"), "{err}");
+    assert!(err.to_string().contains("test-no-tasklets"), "{err}");
 }
 
 #[test]
@@ -93,7 +93,7 @@ fn structured_spec_resolves_linear_chain() {
         .dag
         .order
         .iter()
-        .map(|&id| topology.procedure(id).unwrap().name.as_ref())
+        .map(|&id| topology.tasklet(id).unwrap().name.as_ref())
         .collect();
     assert_eq!(names, vec!["workflow_stage1", "workflow_stage2"]);
 }
@@ -117,7 +117,7 @@ fn a_durable_handoff_is_journalable_with_nothing_declared() {
         fn factory_id() -> &'static str {
             "test-no-codec-workflow"
         }
-        fn procedures(c: &ChannelBuilder) {
+        fn tasklets(c: &ChannelBuilder) {
             c.input::<String>("in")
                 .into::<Stage1>()
                 .named("mid")
@@ -131,7 +131,7 @@ fn a_durable_handoff_is_journalable_with_nothing_declared() {
         .iter()
         .find(|c| &*c.name == "mid")
         .expect("the declared handoff channel exists");
-    assert_eq!(mid.kind, ChannelKind::InterProcedure);
+    assert_eq!(mid.kind, ChannelKind::InterTasklet);
 
     // Derived, not declared: the channel round-trips Stage1's Output.
     let codec = mid
@@ -149,7 +149,7 @@ fn a_durable_handoff_is_journalable_with_nothing_declared() {
 }
 
 /// `workflow-durable-loop` registration validation: a durable handoff-chained
-/// loop needs a terminal procedure whose output channel the journal carries —
+/// loop needs a terminal tasklet whose output channel the journal carries —
 /// otherwise a crash mid-loop would re-seed iteration N+1 with an empty batch
 /// and silently read as "converged". Two shapes fail it: no output channel,
 /// and a plugin-bound one.
@@ -160,12 +160,12 @@ fn loop_authoring_is_validated() {
             "no channel at all" => spec::build_spec::<ChainedLoopNoTerminalOutput>(),
             _ => spec::build_spec::<ChainedLoopPluginTerminal>(),
         }
-        .expect_err("a chained loop's terminal procedure must release a handoff");
+        .expect_err("a chained loop's terminal tasklet must release a handoff");
         match err {
-            spec::BuildWorkflowError::LoopTerminalWithoutHandoff { procedure, .. } => {
+            spec::BuildWorkflowError::LoopTerminalWithoutHandoff { tasklet, .. } => {
                 assert_eq!(
-                    procedure, "workflow_stage2",
-                    "the error names the terminal procedure ({shape})"
+                    tasklet, "workflow_stage2",
+                    "the error names the terminal tasklet ({shape})"
                 );
             }
             other => panic!("expected LoopTerminalWithoutHandoff for {shape}, got {other:?}"),
@@ -179,7 +179,7 @@ fn loop_authoring_is_validated() {
     assert_eq!(spec.dag.len(), 2);
 }
 
-/// `workflow-entity-retry` policy surface: the defaults land on the shared
+/// `workflow-cell-retry` policy surface: the defaults land on the shared
 /// `RetryPolicy`, `retry_attempts() = 0` collapses to the one-attempt
 /// fail-fast, and a ladder without a backoff is refused at registration.
 #[test]
@@ -202,7 +202,7 @@ fn retry_policy_is_resolved_and_validated() {
         fn retry_backoff() -> Duration {
             Duration::ZERO
         }
-        fn procedures(c: &ChannelBuilder) {
+        fn tasklets(c: &ChannelBuilder) {
             retry_chain(c);
         }
     }
@@ -226,7 +226,7 @@ fn sync_durability_is_declared_per_class_and_off_by_default() {
         fn factory_id() -> &'static str {
             "test-sync-durable"
         }
-        fn procedures(c: &ChannelBuilder) {
+        fn tasklets(c: &ChannelBuilder) {
             retry_chain(c);
         }
     }
@@ -249,7 +249,7 @@ fn dag_topology_is_validated() {
         .dag
         .order
         .iter()
-        .map(|&id| topology.procedure(id).unwrap().name.as_ref())
+        .map(|&id| topology.tasklet(id).unwrap().name.as_ref())
         .collect();
     assert_eq!(
         names,
@@ -261,7 +261,7 @@ fn dag_topology_is_validated() {
     assert_eq!(spec.dag.leaves().collect::<Vec<_>>(), vec![1, 2]);
     assert!(
         spec.dag.single_leaf().is_none(),
-        "two leaves ⇒ no single terminal procedure"
+        "two leaves ⇒ no single terminal tasklet"
     );
     for (node, parents) in spec.dag.parents.iter().enumerate() {
         for p in parents {
@@ -287,7 +287,7 @@ fn dag_topology_is_validated() {
                 .dag
                 .order
                 .iter()
-                .map(|&id| topology.procedure(id).unwrap().name.as_ref())
+                .map(|&id| topology.tasklet(id).unwrap().name.as_ref())
                 .collect();
             assert_eq!(
                 names,
@@ -315,7 +315,7 @@ fn dag_topology_is_validated() {
         fn factory_id() -> &'static str {
             "test-cyclic-workflow"
         }
-        fn procedures(c: &ChannelBuilder) {
+        fn tasklets(c: &ChannelBuilder) {
             c.input::<String>("in")
                 .into::<Stage1>()
                 .named("mid")
@@ -334,7 +334,7 @@ fn dag_topology_is_validated() {
         other => panic!("expected the shared cycle refusal, got {other:?}"),
     }
 
-    // `multi-input-procedures`: a workflow seed is a bare payload naming no
+    // `multi-input-tasklets`: a workflow seed is a bare payload naming no
     // channel, so an entry channel cannot be one merge source among
     // several — the mapping could not be selected and every entry channel
     // past the first would be unreadable. Refused by name, at definition
@@ -345,28 +345,28 @@ fn dag_topology_is_validated() {
         fn factory_id() -> &'static str {
             "test-entry-merge-workflow"
         }
-        fn procedures(c: &ChannelBuilder) {
+        fn tasklets(c: &ChannelBuilder) {
             c.merge::<MergedJoinInput>()
                 .from(c.input::<String>("in"), MergedJoinInput::B)
                 .from(c.input::<String>("also"), MergedJoinInput::C)
-                .into::<MergeJoinProc>();
+                .into::<MergeJoinTask>();
         }
     }
     match spec::build_spec::<EntryMergeWorkflow>()
         .expect_err("a workflow merge over an entry channel is refused")
     {
         spec::BuildWorkflowError::MergeFromEntryChannel {
-            channel, procedure, ..
+            channel, tasklet, ..
         } => {
             assert_eq!(channel, "in");
-            assert_eq!(procedure, "workflow_merge_join_op");
+            assert_eq!(tasklet, "workflow_merge_join_op");
         }
         other => panic!("expected MergeFromEntryChannel, got {other:?}"),
     }
 
-    // The inter-proc form of the same merge is the supported one and still
+    // The inter-task form of the same merge is the supported one and still
     // registers, with the merged node as a two-parent inner node.
-    let merged = spec::build_spec::<MergeWorkflow>().expect("an inter-proc merge registers");
+    let merged = spec::build_spec::<MergeWorkflow>().expect("an inter-task merge registers");
     assert_eq!(
         merged.dag.parents[3],
         vec![1, 2],
@@ -383,12 +383,12 @@ fn dag_topology_is_validated() {
         fn loop_mode() -> LoopMode {
             LoopMode::Chained
         }
-        fn procedures(c: &ChannelBuilder) {
+        fn tasklets(c: &ChannelBuilder) {
             tree_chain(c);
         }
     }
     match spec::build_spec::<BranchingChained>()
-        .expect_err("a chained loop needs one terminal procedure")
+        .expect_err("a chained loop needs one terminal tasklet")
     {
         spec::BuildWorkflowError::BranchingChainedLoop { leaves, .. } => {
             assert_eq!(leaves, 2);
@@ -398,10 +398,10 @@ fn dag_topology_is_validated() {
 }
 
 #[test]
-fn dynamic_entity_procedure_is_rejected() {
+fn dynamic_cell_tasklet_is_rejected() {
     #[derive(Default)]
-    struct DynProc;
-    impl Procedure for DynProc {
+    struct DynTask;
+    impl Tasklet for DynTask {
         type Input = String;
         type Output = String;
         type State = ();
@@ -416,8 +416,8 @@ fn dynamic_entity_procedure_is_rejected() {
             &mut self,
             _input: String,
             _state: StateHandle<'_, Self>,
-            _ctx: &mut ProcedureCtx<'_>,
-        ) -> Result<(), ProcedureError> {
+            _ctx: &mut TaskletCtx<'_>,
+        ) -> Result<(), TaskletError> {
             Ok(())
         }
     }
@@ -426,18 +426,18 @@ fn dynamic_entity_procedure_is_rejected() {
         fn factory_id() -> &'static str {
             "test-dyn-workflow"
         }
-        fn procedures(c: &ChannelBuilder) {
-            // The key rides an inter-procedure edge: a keyed ENTRY edge is
+        fn tasklets(c: &ChannelBuilder) {
+            // The key rides an inter-tasklet edge: a keyed ENTRY edge is
             // refused earlier, by the workflow seed's own rule.
             c.input::<String>("in")
-                .into::<EchoProc>()
+                .into::<EchoTask>()
                 .key_by(|s: &String| s.clone())
-                .into::<DynProc>();
+                .into::<DynTask>();
         }
     }
-    let err = spec::build_spec::<DynWorkflow>().expect_err("dynamic entities must be refused");
+    let err = spec::build_spec::<DynWorkflow>().expect_err("dynamic cells must be refused");
     assert!(
-        matches!(err, spec::BuildWorkflowError::DynamicEntities { .. }),
-        "expected DynamicEntities, got {err:?}"
+        matches!(err, spec::BuildWorkflowError::DynamicCells { .. }),
+        "expected DynamicCells, got {err:?}"
     );
 }

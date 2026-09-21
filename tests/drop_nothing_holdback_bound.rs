@@ -17,14 +17,14 @@ const BOUND: usize = 2;
 
 static SEEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
-test_procedure!(BoundHead, "holdback_bound_head", String => String, (), |_input, _state, ctx| {
+test_tasklet!(BoundHead, "holdback_bound_head", String => String, (), |_input, _state, ctx| {
     for i in 0..EMITS {
         ctx.emit(format!("b{i}"))?;
     }
     Ok(())
 });
 
-test_procedure!(BoundTail, "holdback_bound_tail", String => (), (), cap 1, |input, _state, _ctx| {
+test_tasklet!(BoundTail, "holdback_bound_tail", String => (), (), cap 1, |input, _state, _ctx| {
     SEEN.lock().unwrap().push(input);
     Ok(())
 });
@@ -55,7 +55,7 @@ fn emitting_past_the_bound_delivers_everything_in_order() {
     flz_core::admission::set_holdback_max_for_tests(BOUND);
     SEEN.lock().unwrap().clear();
     BLOCKED_BEFORE.store(
-        flz_core::entity::pushes_blocked_total() as usize,
+        flz_core::cell::pushes_blocked_total() as usize,
         Ordering::Release,
     );
 
@@ -80,7 +80,7 @@ fn emitting_past_the_bound_delivers_everything_in_order() {
 
     // Nothing was discarded, and the backpressure was actually observed —
     // otherwise the test proves only that a fast consumer keeps up.
-    let tail = &instance.entities[1][0];
+    let tail = &instance.cells[1][0];
     assert_eq!(
         tail.counters().drops_newest_total.load(Ordering::Relaxed),
         0
@@ -90,10 +90,10 @@ fn emitting_past_the_bound_delivers_everything_in_order() {
         0
     );
     assert!(
-        flz_core::entity::pushes_blocked_total() as usize > BLOCKED_BEFORE.load(Ordering::Acquire),
+        flz_core::cell::pushes_blocked_total() as usize > BLOCKED_BEFORE.load(Ordering::Acquire),
         "no push was ever blocked; the bound was never exercised"
     );
-    assert!(instance.entities[0][0]
+    assert!(instance.cells[0][0]
         .push_holdback
         .lock()
         .unwrap()
@@ -110,13 +110,13 @@ const PER_FEEDER: usize = 6_000;
 const LOAD_TOTAL: usize = FEEDERS * PER_FEEDER;
 
 // Capacity 1 on the hop: every emit past the one in flight has to be held, so
-// the Entity gates and un-gates once per message rather than once per burst.
-test_procedure!(LoadHead, "holdback_load_head", String => String, (), cap 1, |input, _state, ctx| {
+// the Cell gates and un-gates once per message rather than once per burst.
+test_tasklet!(LoadHead, "holdback_load_head", String => String, (), cap 1, |input, _state, ctx| {
     ctx.emit(input)?;
     Ok(())
 });
 
-test_procedure!(LoadTail, "holdback_load_tail", String => (), (), cap 1, |_input, _state, _ctx| {
+test_tasklet!(LoadTail, "holdback_load_tail", String => (), (), cap 1, |_input, _state, _ctx| {
     LOAD_SEEN.fetch_add(1, Ordering::AcqRel);
     Ok(())
 });
@@ -135,14 +135,14 @@ impl StreamOperative for LoadOperative {
     }
 }
 
-/// Concurrent feeders against a saturated inter-procedure hop with a live
+/// Concurrent feeders against a saturated inter-tasklet hop with a live
 /// drain — the shape that finds a LEAKED GATE.
 ///
 /// The completing worker and the consumer's drain both observe the producer's
-/// holdback emptying, and exactly one of them may hand the Entity's gates
+/// holdback emptying, and exactly one of them may hand the Cell's gates
 /// back. Get the claim's publication order wrong and both decide the other is
 /// releasing: `drain_active` stays true with no handout outstanding, the
-/// holdback is empty, `pending_pushes` reads 0, and that Entity is stopped for
+/// holdback is empty, `pending_pushes` reads 0, and that Cell is stopped for
 /// the life of the process. Every feeder then parks on its mailbox forever.
 ///
 /// A failure here is a HANG, not a slow pass, and it is invisible to any
@@ -179,7 +179,7 @@ fn concurrent_feeders_against_a_live_drain_never_leak_a_gate() {
             || LOAD_SEEN.load(Ordering::Acquire) == LOAD_TOTAL,
             Duration::from_secs(60)
         ),
-        "only {} of {LOAD_TOTAL} arrived after {:?} — a producing Entity is holding a round \
+        "only {} of {LOAD_TOTAL} arrived after {:?} — a producing Cell is holding a round \
          nobody will ever run",
         LOAD_SEEN.load(Ordering::Acquire),
         started.elapsed()
@@ -189,12 +189,12 @@ fn concurrent_feeders_against_a_live_drain_never_leak_a_gate() {
     }
 
     // Nothing left gated once the last push landed: the gates went back.
-    let head = &instance.entities[0][0];
+    let head = &instance.cells[0][0];
     assert!(!head.push_deferred.load(Ordering::Acquire));
     assert!(!head.push_gated.load(Ordering::Acquire));
     assert!(
         !head.drain_active.load(Ordering::Acquire),
-        "the producing Entity is still holding its round after every push landed"
+        "the producing Cell is still holding its round after every push landed"
     );
     assert_eq!(flz_core::poll_core::global().pending_push_count(), 0);
 }

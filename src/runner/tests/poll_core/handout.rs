@@ -1,4 +1,4 @@
-//! Handout exclusivity and ordering, and the retry ladder: one Entity is
+//! Handout exclusivity and ordering, and the retry ladder: one Cell is
 //! outstanding at most once, its items keep their order across a re-hand,
 //! and a backoff defers the re-hand without holding a thread.
 
@@ -10,15 +10,15 @@ use flz_core::poll_core::{Answered, PollCore, Polled};
 
 use super::fixtures::{build_slot_of, payload, unix_stream, wait_until};
 use super::support::*;
-use crate::entity::{EntityItem, EntitySlot};
+use crate::cell::{CellItem, CellSlot};
 use crate::operative::instance::StreamInstance;
 
-/// The spec pin: two workers polling concurrently while two entities each
-/// have 100 queued inputs never both hold the same entity, and each
-/// entity's inputs arrive in enqueue order across successive activations.
+/// The spec pin: two workers polling concurrently while two cells each
+/// have 100 queued inputs never both hold the same cell, and each
+/// cell's inputs arrive in enqueue order across successive activations.
 #[test]
-fn same_entity_never_outstanding_twice_and_order_holds() {
-    const PER_ENTITY: usize = 100;
+fn same_cell_never_outstanding_twice_and_order_holds() {
+    const PER_CELL: usize = 100;
     let core = Arc::new(PollCore::new());
     let (_ia, slot_a) = build_slot("poll-excl-a");
     let (_ib, slot_b) = build_slot("poll-excl-b");
@@ -48,11 +48,11 @@ fn same_entity_never_outstanding_twice_and_order_holds() {
                     let flag = &held.iter().find(|(k, _)| *k == key).unwrap().1;
                     assert!(
                         !flag.swap(true, Ordering::AcqRel),
-                        "entity handed out while already outstanding"
+                        "cell handed out while already outstanding"
                     );
                     let log = &seen.iter().find(|(k, _)| *k == key).unwrap().1;
                     for work in act.items() {
-                        let EntityItem::Input(p) = &work.item else {
+                        let CellItem::Input(p) = &work.item else {
                             panic!("unexpected timer item")
                         };
                         let ordinal = *p.value.downcast_ref::<usize>().unwrap();
@@ -68,9 +68,9 @@ fn same_entity_never_outstanding_twice_and_order_holds() {
         }));
     }
 
-    // Interleave pushes across the two entities, scheduling a round on
+    // Interleave pushes across the two cells, scheduling a round on
     // every winning inflight CAS — the producer protocol verbatim.
-    for i in 0..PER_ENTITY {
+    for i in 0..PER_CELL {
         for slot in [&slot_a, &slot_b] {
             assert!(slot.mailbox.try_push(payload(i, &stream)).is_ok());
             if slot.mailbox.claim_inflight() {
@@ -80,23 +80,23 @@ fn same_entity_never_outstanding_twice_and_order_holds() {
     }
 
     wait_until("every activation to arrive", || {
-        total.load(Ordering::Relaxed) >= PER_ENTITY * 2
+        total.load(Ordering::Relaxed) >= PER_CELL * 2
     });
     core.shutdown();
     for w in workers {
         w.join().unwrap();
     }
 
-    let expected: Vec<usize> = (0..PER_ENTITY).collect();
+    let expected: Vec<usize> = (0..PER_CELL).collect();
     for (_, log) in seen.iter() {
-        assert_eq!(*log.lock().unwrap(), expected, "per-entity order violated");
+        assert_eq!(*log.lock().unwrap(), expected, "per-cell order violated");
     }
 }
 
-/// Completion releases the entity: a batch queued behind an outstanding
+/// Completion releases the cell: a batch queued behind an outstanding
 /// activation is handed out only after `complete`.
 #[test]
-fn completion_releases_the_entity() {
+fn completion_releases_the_cell() {
     let core = PollCore::new();
     let (_i, slot) = build_slot("poll-release");
     let stream = unix_stream();
@@ -104,12 +104,12 @@ fn completion_releases_the_entity() {
     let first = queue_and_hand_out(&core, &slot, &stream, 1);
 
     // Arrives mid-flight: the producer's CAS fails (round still held),
-    // so nothing is scheduled — and poll must NOT hand the entity out.
+    // so nothing is scheduled — and poll must NOT hand the cell out.
     assert!(slot.mailbox.try_push(payload(1, &stream)).is_ok());
     assert!(!slot.mailbox.claim_inflight());
     match core.poll(Duration::from_millis(50)) {
         Polled::Timeout => {}
-        _ => panic!("entity handed out while outstanding"),
+        _ => panic!("cell handed out while outstanding"),
     }
 
     core.complete(first.token);
@@ -197,7 +197,7 @@ fn abandon_returns_the_tail_untouched() {
     assert_eq!(act.items()[1].attempt, 1);
     core.complete(act.token);
 
-    // An empty tail is a plain completion: the entity is released.
+    // An empty tail is a plain completion: the cell is released.
     assert!(slot.mailbox.try_push(payload(9, &stream)).is_ok());
     assert!(slot.mailbox.claim_inflight());
     core.schedule(&slot);
@@ -213,16 +213,16 @@ fn abandon_returns_the_tail_untouched() {
         Polled::Activation(a) => {
             core.complete(a.token);
         }
-        _ => panic!("entity not released after an empty re-hand"),
+        _ => panic!("cell not released after an empty re-hand"),
     }
 }
 
 /// The third answer, on the path it exists for: a host that took a batch
-/// and could not finish it re-hands EVERYTHING untouched. Per-entity
-/// exclusivity is the handout, so without this the entity would never
+/// and could not finish it re-hands EVERYTHING untouched. Per-cell
+/// exclusivity is the handout, so without this the cell would never
 /// appear in another poll result for the life of the process.
 #[test]
-fn abandon_rehands_the_whole_batch_and_releases_the_entity() {
+fn abandon_rehands_the_whole_batch_and_releases_the_cell() {
     let core = PollCore::new();
     let (_i, slot) = build_slot("poll-abandon");
     let stream = unix_stream();
@@ -235,7 +235,7 @@ fn abandon_rehands_the_whole_batch_and_releases_the_entity() {
 
     let act = match core.poll(Duration::from_millis(500)) {
         Polled::Activation(a) => a,
-        _ => panic!("an abandoned entity must be pollable again"),
+        _ => panic!("an abandoned cell must be pollable again"),
     };
     assert_eq!(
         ordinals(&act),
@@ -251,7 +251,7 @@ fn abandon_rehands_the_whole_batch_and_releases_the_entity() {
 
 /// A token the core does not hold is a host defect — a double answer, or
 /// one from a context that never held it. Reporting it is what turns a
-/// silent second release (which would re-arm an entity another worker is
+/// silent second release (which would re-arm a cell another worker is
 /// already draining) into a caught bug.
 #[test]
 fn a_second_answer_is_rejected_not_silently_ignored() {
@@ -278,7 +278,7 @@ fn a_second_answer_is_rejected_not_silently_ignored() {
 }
 
 /// Handout liveness, the two values the heartbeat carries: one wedged
-/// Entity is invisible to the runner-wide dispatch counter, and these are
+/// Cell is invisible to the runner-wide dispatch counter, and these are
 /// what make it visible. Reporting only — nothing here reclaims.
 #[test]
 fn handout_liveness_reports_the_count_and_the_oldest_age() {
@@ -321,7 +321,7 @@ fn handout_liveness_reports_the_count_and_the_oldest_age() {
 // ------------------------------------------------ backoff without a sleep
 
 /// The retry backoff holds no thread: the completing call returns at once,
-/// the entity stays handed out until its due time — a producer enqueueing
+/// the cell stays handed out until its due time — a producer enqueueing
 /// meanwhile cannot claim a round — and the re-hand then leads with the
 /// held-back items, ahead of what arrived during the window.
 #[test]
@@ -340,7 +340,7 @@ fn a_backoff_defers_the_re_hand_without_holding_a_thread() {
         "the completing thread was held for the backoff"
     );
 
-    // A producer during the window: it enqueues, but the entity is still
+    // A producer during the window: it enqueues, but the cell is still
     // handed out, so no round can be claimed and no poller may serve it.
     assert!(slot.mailbox.try_push(payload(9, &stream)).is_ok());
     assert!(!slot.mailbox.claim_inflight());
@@ -362,17 +362,17 @@ fn a_backoff_defers_the_re_hand_without_holding_a_thread() {
     core.complete(act.token);
 }
 
-/// Correlated failure — every entity failing at once — leaves pollers free
-/// to serve the entities whose work would succeed. This is the whole point
+/// Correlated failure — every cell failing at once — leaves pollers free
+/// to serve the cells whose work would succeed. This is the whole point
 /// of not sleeping a worker: with the pool sized to the CPU count, N
-/// deferred entities would otherwise be N workers doing nothing.
+/// deferred cells would otherwise be N workers doing nothing.
 #[test]
-fn correlated_failure_leaves_pollers_serving_healthy_entities() {
+fn correlated_failure_leaves_pollers_serving_healthy_cells() {
     let core = PollCore::new();
     let (_ih, healthy) = build_slot("poll-correlated-healthy");
     let stream = unix_stream();
 
-    let failing: Vec<(Arc<StreamInstance>, Arc<EntitySlot>)> = (0..4)
+    let failing: Vec<(Arc<StreamInstance>, Arc<CellSlot>)> = (0..4)
         .map(|i| build_slot_of::<SlowRetryOp>(&format!("poll-correlated-{i}")))
         .collect();
     for (_instance, slot) in &failing {
@@ -384,7 +384,7 @@ fn correlated_failure_leaves_pollers_serving_healthy_entities() {
     let act = queue_and_hand_out(&core, &healthy, &stream, 1);
     assert!(
         Arc::ptr_eq(act.slot(), &healthy),
-        "a healthy entity was starved by the deferred ones"
+        "a healthy cell was starved by the deferred ones"
     );
     core.complete(act.token);
 }

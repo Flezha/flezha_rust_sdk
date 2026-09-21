@@ -3,25 +3,25 @@
 //! `rust-sdk-dispatch` Requirement "Per-Message Dispatch-Overhead Budget".
 //!
 //! Two functions:
-//! - `throughput_single_entity` — single operative × single procedure ×
-//!   single entity. Measures the per-message dispatch budget on a
+//! - `throughput_single_cell` — single operative × single tasklet ×
+//!   single cell. Measures the per-message dispatch budget on a
 //!   pinned producer thread.
 //! - `throughput_static_fanout` — single operative × single static-mode
-//!   procedure with 4 entity keys, `entities_for` returning all 4
+//!   tasklet with 4 cell keys, `cells_for` returning all 4
 //!   keys per input. Characterizes the fan-out cost.
 //!
-//! The sync-op invariant ("≤ 4 sync procs per message" on the
-//! single-entity path; "4 + N × 3" for fan-out width N) is an
+//! The sync-op invariant ("≤ 4 sync ops per message" on the
+//! single-cell path; "4 + N × 3" for fan-out width N) is an
 //! analytical bound enforced by code review, per
 //! `operative-bench-harness/design.md` Decision 8 / risk note 4 and
 //! `operative-bounded-mailbox/design.md` Decision 7. The 4-op budget
 //! covers: (1) registry/topology lookup, (2) ArrayQueue try_push,
 //! (3) `pushes_total` Relaxed counter, (4) inflight CAS. The fan-out
-//! per-target cost is 3 procs (try_push + counter + inflight CAS), so
+//! per-target cost is 3 ops (try_push + counter + inflight CAS), so
 //! width N adds `N × 3` on top of the shared registry lookup.
 //!
 //! These benches report raw msg/s; CI compares against
-//! `SINGLE_ENTITY_FLOOR_MSG_PER_SEC` in `docs/operations/benchmarking.md` as a
+//! `SINGLE_CELL_FLOOR_MSG_PER_SEC` in `docs/operations/benchmarking.md` as a
 //! diagnostic, not a hard gate.
 
 use std::sync::Arc;
@@ -32,8 +32,8 @@ use flezha_runner::channel::ChannelBuilder;
 use flezha_runner::operative::builder::build_topology_for;
 use flezha_runner::operative::registry::OperativeRegistry;
 use flezha_runner::operative::StreamInstance;
-use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError};
 use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
+use flezha_runner::tasklet::{Tasklet, TaskletCtx, TaskletError};
 use flezha_runner::{__dispatch_internals as bi, OverflowPolicy, StreamOperative};
 use flz_core::bench_support::{
     allocations, drained_pair, fan_in, report, stream_pair, Counting, Settle,
@@ -44,13 +44,13 @@ use flz_core::bench_support::{
 #[global_allocator]
 static GLOBAL: Counting = Counting;
 
-// ----- Single-entity microbench -----
+// ----- Single-cell microbench -----
 
 static SINGLE_COUNTER: Settle = Settle::new();
 
 #[derive(Default)]
-struct SingleEntityProcedure;
-impl Procedure for SingleEntityProcedure {
+struct SingleCellTasklet;
+impl Tasklet for SingleCellTasklet {
     type Input = Vec<u8>;
     type Output = Vec<u8>;
     type State = ();
@@ -58,24 +58,24 @@ impl Procedure for SingleEntityProcedure {
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "single_entity_procedure"
+        "single_cell_tasklet"
     }
     fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
     fn run(
         &mut self,
         _: Vec<u8>,
-        _: StateHandle<'_, SingleEntityProcedure>,
-        _: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        _: StateHandle<'_, SingleCellTasklet>,
+        _: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         SINGLE_COUNTER.add(1);
         Ok(())
     }
 }
 
-struct SingleEntityOperative;
-impl StreamOperative for SingleEntityOperative {
+struct SingleCellOperative;
+impl StreamOperative for SingleCellOperative {
     fn factory_id() -> &'static str {
-        "single_entity_operative"
+        "single_cell_operative"
     }
     fn channels(c: &ChannelBuilder) {
         // Opt the entry channel into Block so the bench measures the
@@ -86,16 +86,16 @@ impl StreamOperative for SingleEntityOperative {
         // measurement under sustained back-pressure.
         c.input::<Vec<u8>>("input")
             .on_full(OverflowPolicy::DropNothing)
-            .into::<SingleEntityProcedure>();
+            .into::<SingleCellTasklet>();
     }
 }
 
-fn throughput_single_entity(c: &mut Criterion) {
+fn throughput_single_cell(c: &mut Criterion) {
     let msgs_per_iter = 100_000usize;
 
-    let topology = build_topology_for::<SingleEntityOperative>().expect("topology");
+    let topology = build_topology_for::<SingleCellOperative>().expect("topology");
     let registry = Arc::new(OperativeRegistry::new());
-    let instance = StreamInstance::new(Arc::clone(&topology), Arc::from("single-entity-bench"));
+    let instance = StreamInstance::new(Arc::clone(&topology), Arc::from("single-cell-bench"));
     registry.register_stream(instance);
 
     let handle = bi::OperativeDispatchHandle {
@@ -104,13 +104,13 @@ fn throughput_single_entity(c: &mut Criterion) {
     let stream = stream_pair().0;
     let payload: Vec<u8> = b"x".repeat(64);
 
-    let ids = ["single-entity-bench".to_string()];
+    let ids = ["single-cell-bench".to_string()];
 
-    let mut group = c.benchmark_group("throughput_single_entity");
+    let mut group = c.benchmark_group("throughput_single_cell");
     group.measurement_time(Duration::from_secs(20));
     group.sample_size(10);
     group.throughput(criterion::Throughput::Elements(msgs_per_iter as u64));
-    group.bench_function("throughput_single_entity", |b| {
+    group.bench_function("throughput_single_cell", |b| {
         b.iter_custom(|iters| {
             let mut elapsed = Duration::ZERO;
             for _ in 0..iters {
@@ -128,7 +128,7 @@ fn throughput_single_entity(c: &mut Criterion) {
                 elapsed += start.elapsed();
                 assert!(
                     drained,
-                    "single-entity microbench drain timed out: {} of {}",
+                    "single-cell microbench drain timed out: {} of {}",
                     SINGLE_COUNTER.current(),
                     msgs_per_iter
                 );
@@ -139,15 +139,15 @@ fn throughput_single_entity(c: &mut Criterion) {
     group.finish();
 }
 
-// ----- Static-mode entity fan-out microbench (fan-out width 4) -----
+// ----- Static-mode cell fan-out microbench (fan-out width 4) -----
 
 static FANOUT_COUNTER: Settle = Settle::new();
 
 const FANOUT_KEYS: &[&str] = &["k0", "k1", "k2", "k3"];
 
 #[derive(Default)]
-struct FanoutProcedure;
-impl Procedure for FanoutProcedure {
+struct FanoutTasklet;
+impl Tasklet for FanoutTasklet {
     type Input = Vec<u8>;
     type Output = Vec<u8>;
     type State = ();
@@ -155,22 +155,22 @@ impl Procedure for FanoutProcedure {
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "fanout_procedure"
+        "fanout_tasklet"
     }
     fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
-    fn entity_keys() -> Vec<&'static str> {
+    fn cell_keys() -> Vec<&'static str> {
         FANOUT_KEYS.to_vec()
     }
-    const ENTITIES_FOR_OVERRIDDEN: bool = true;
-    fn entities_for(_: &Vec<u8>) -> Vec<&'static str> {
+    const CELLS_FOR_OVERRIDDEN: bool = true;
+    fn cells_for(_: &Vec<u8>) -> Vec<&'static str> {
         FANOUT_KEYS.to_vec()
     }
     fn run(
         &mut self,
         _: Vec<u8>,
-        _: StateHandle<'_, FanoutProcedure>,
-        _: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        _: StateHandle<'_, FanoutTasklet>,
+        _: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         FANOUT_COUNTER.add(1);
         Ok(())
     }
@@ -184,7 +184,7 @@ impl StreamOperative for StaticFanoutOperative {
     fn channels(c: &ChannelBuilder) {
         c.input::<Vec<u8>>("input")
             .on_full(OverflowPolicy::DropNothing)
-            .into::<FanoutProcedure>();
+            .into::<FanoutTasklet>();
     }
 }
 
@@ -246,8 +246,8 @@ fn throughput_static_fanout(c: &mut Criterion) {
 // (`effectively-once-output` §6.3); the tier-off number doubles as the
 // zero-delta guard for the default path.
 
-use flezha_runner::entity::flusher::{SendError, SendFrameFn};
-use flezha_runner::entity::state_sink;
+use flezha_runner::cell::flusher::{SendError, SendFrameFn};
+use flezha_runner::cell::state_sink;
 use serde::{Deserialize, Serialize};
 
 static TIER_OFF_COUNTER: Settle = Settle::new();
@@ -257,11 +257,11 @@ static TIER_ON_COUNTER: Settle = Settle::new();
 struct BumpChange;
 impl flezha_runner::state::Change for BumpChange {}
 
-macro_rules! tier_bench_procedure {
-    ($proc:ident, $name:literal, $counter:ident) => {
+macro_rules! tier_bench_tasklet {
+    ($task:ident, $name:literal, $counter:ident) => {
         #[derive(Default)]
-        struct $proc;
-        impl Procedure for $proc {
+        struct $task;
+        impl Tasklet for $task {
             type Input = Vec<u8>;
             type Output = Vec<u8>;
             type State = i64;
@@ -281,8 +281,8 @@ macro_rules! tier_bench_procedure {
                 &mut self,
                 input: Vec<u8>,
                 mut state: StateHandle<'_, Self>,
-                ctx: &mut ProcedureCtx<'_>,
-            ) -> Result<(), ProcedureError> {
+                ctx: &mut TaskletCtx<'_>,
+            ) -> Result<(), TaskletError> {
                 state.apply(BumpChange);
                 ctx.emit_keyed::<Vec<u8>>("k".to_string(), input)?;
                 $counter.add(1);
@@ -292,8 +292,8 @@ macro_rules! tier_bench_procedure {
     };
 }
 
-tier_bench_procedure!(TierOffProcedure, "tier_off_procedure", TIER_OFF_COUNTER);
-tier_bench_procedure!(TierOnProcedure, "tier_on_procedure", TIER_ON_COUNTER);
+tier_bench_tasklet!(TierOffTasklet, "tier_off_tasklet", TIER_OFF_COUNTER);
+tier_bench_tasklet!(TierOnTasklet, "tier_on_tasklet", TIER_ON_COUNTER);
 
 struct TierOffOperative;
 impl StreamOperative for TierOffOperative {
@@ -303,7 +303,7 @@ impl StreamOperative for TierOffOperative {
     fn channels(c: &ChannelBuilder) {
         c.input::<Vec<u8>>("input")
             .on_full(OverflowPolicy::DropNothing)
-            .into::<TierOffProcedure>()
+            .into::<TierOffTasklet>()
             .keyed()
             .sink_named("out");
     }
@@ -318,7 +318,7 @@ impl StreamOperative for TierOnOperative {
         c.effectively_once();
         c.input::<Vec<u8>>("input")
             .on_full(OverflowPolicy::DropNothing)
-            .into::<TierOnProcedure>()
+            .into::<TierOnTasklet>()
             .keyed()
             .sink_named("out");
     }
@@ -403,7 +403,7 @@ fn throughput_effectively_once_tiers(c: &mut Criterion) {
 
 criterion_group!(
     benches,
-    throughput_single_entity,
+    throughput_single_cell,
     throughput_static_fanout,
     throughput_effectively_once_tiers
 );

@@ -1,5 +1,5 @@
 //! An entry stream carries the shared surface, not the producer-side one:
-//! `sink` / `sealed` / `named` / `codec` / `keyed` stay on a procedure's
+//! `sink` / `sealed` / `named` / `codec` / `keyed` stay on a tasklet's
 //! output stream.
 struct Op;
 impl flezha_runner::StreamOperative for Op {

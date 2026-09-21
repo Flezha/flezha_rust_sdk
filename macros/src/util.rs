@@ -24,7 +24,7 @@ pub fn generic_args<'a>(ty: &'a Type, name: &str) -> impl Iterator<Item = &'a Ty
     })
 }
 
-/// `do_nothing` → `DoNothing`. Used for the generated procedure type name and for
+/// `do_nothing` → `DoNothing`. Used for the generated tasklet type name and for
 /// `Set<Field>` / `Push<Field>` change-variant names.
 pub fn snake_ident_to_pascal(ident: &Ident) -> Ident {
     let pascal = snake_to_pascal(&ident.to_string());

@@ -9,13 +9,13 @@ use flz_core::poll_core::{PollCore, Polled, Starvation};
 
 use super::fixtures::{unix_stream, wait_until};
 use super::support::*;
-use crate::entity::timer::{TimerKind, TimerOp};
-use crate::entity::EntityItem;
+use crate::cell::timer::{TimerKind, TimerOp};
+use crate::cell::CellItem;
 
 // ------------------------------------------------ the deferred-wake list
 
 /// Entering `poll` promotes whatever came due: timers armed in the past
-/// are on the Entity's mailbox by the time that call returns, in ascending
+/// are on the Cell's mailbox by the time that call returns, in ascending
 /// scheduled order however they were armed (what a restore's overdue set
 /// relies on), each carrying its scheduled timestamp as the invocation's
 /// `now`.
@@ -147,10 +147,7 @@ fn a_due_interval_close_into_a_full_mailbox_defers_instead_of_parking() {
             slot.mailbox.len() == 1
         },
     );
-    assert!(matches!(
-        slot.mailbox.pop(),
-        Some(EntityItem::CloseInterval)
-    ));
+    assert!(matches!(slot.mailbox.pop(), Some(CellItem::CloseInterval)));
 }
 
 /// An entry armed while a poller is already blocked shortens that
@@ -182,7 +179,7 @@ fn a_wake_armed_during_a_wait_shortens_it() {
     assert!(matches!(poller.join().unwrap(), Polled::ShuttingDown));
 }
 
-/// Two Operative instances arming the same procedure id, entity key and
+/// Two Operative instances arming the same tasklet id, cell key and
 /// scheduled time hold two entries, and one instance's cancellation
 /// leaves the other's firing alone — the identity in the list key carries
 /// the instance.
@@ -197,10 +194,10 @@ fn timers_are_scoped_to_the_arming_instance() {
     assert_eq!(
         core.timers_armed(),
         2,
-        "same procedure and key, different instances: two entries"
+        "same tasklet and key, different instances: two entries"
     );
 
-    core.disarm_timer(&a.entity_identity, at);
+    core.disarm_timer(&a.cell_identity, at);
     assert_eq!(core.timers_armed(), 1);
     assert!(matches!(
         core.poll(Duration::from_millis(0)),
@@ -217,10 +214,10 @@ fn timers_are_scoped_to_the_arming_instance() {
 }
 
 /// The list's bookkeeping: arming is an idempotent replace, a disarm takes
-/// exactly one entry, and discarding an Entity takes every entry it owns
+/// exactly one entry, and discarding a Cell takes every entry it owns
 /// and no other's — what the dynamic-mode reaper relies on.
 #[test]
-fn the_wake_list_arms_disarms_and_discards_by_entity() {
+fn the_wake_list_arms_disarms_and_discards_by_cell() {
     let core = PollCore::new();
     let (_ia, a) = build_slot("poll-armed-a");
     let (_ib, b) = build_slot("poll-armed-b");
@@ -235,17 +232,17 @@ fn the_wake_list_arms_disarms_and_discards_by_entity() {
     core.arm_timer(&a, base + 10, unix_stream());
     assert_eq!(core.timers_armed(), 3, "re-arming replaces, it never adds");
 
-    core.disarm_timer(&a.entity_identity, base + 10);
+    core.disarm_timer(&a.cell_identity, base + 10);
     assert_eq!(core.timers_armed(), 2, "a disarm removes exactly one entry");
-    core.disarm_timer(&a.entity_identity, base + 10);
+    core.disarm_timer(&a.cell_identity, base + 10);
     assert_eq!(core.timers_armed(), 2, "and is idempotent");
 
-    core.discard_entity_timers(&a.entity_identity);
+    core.discard_cell_timers(&a.cell_identity);
     assert_eq!(
         core.timers_armed(),
         1,
-        "discarding an Entity takes every entry it owns and no other's"
+        "discarding a Cell takes every entry it owns and no other's"
     );
-    core.discard_entity_timers(&b.entity_identity);
+    core.discard_cell_timers(&b.cell_identity);
     assert_eq!(core.timers_armed(), 0);
 }

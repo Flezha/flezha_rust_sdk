@@ -3,7 +3,7 @@
 //! The retry ladder, the emit sink, the effect record and the DLQ park are the
 //! same machinery for an input and for a timer firing; only [`Call`] differs,
 //! which is why both reach `invoke_once`. The collecting entry points a
-//! workflow proc uses share that containment and the WAL flush through
+//! workflow task uses share that containment and the WAL flush through
 //! `collect_invoke`.
 
 use std::any::Any;
@@ -13,25 +13,25 @@ use std::sync::{Arc, Weak};
 
 use flz_transport::transport::FlezhaStream;
 
+use super::cell_slot::flusher_registered;
 use super::emit_sink::{
-    flush_before_emit_enabled, EntityEmitSink, FlushBeforeEmit, WorkflowCollectAdapter,
+    flush_before_emit_enabled, CellEmitSink, FlushBeforeEmit, WorkflowCollectAdapter,
 };
-use super::entity_slot::flusher_registered;
-use super::{EntityState, ProcedureDispatcherImpl};
-use crate::entity::flusher::{FlushableBuffer, TypedBodies, TypedBuffer};
-use crate::entity::timer::{PendingTimers, TimerKind, TimerOp};
-use crate::entity::EntitySlot;
+use super::{CellState, TaskletDispatcherImpl};
+use crate::cell::flusher::{FlushableBuffer, TypedBodies, TypedBuffer};
+use crate::cell::timer::{PendingTimers, TimerKind, TimerOp};
+use crate::cell::CellSlot;
 use crate::operative::instance::StreamInstance;
 use crate::operative::topology::OperativeTopology;
-use crate::procedure::state_handle::StateHandle;
-use crate::procedure::{Procedure, ProcedureCtx, ProcedureError};
+use crate::tasklet::state_handle::StateHandle;
+use crate::tasklet::{Tasklet, TaskletCtx, TaskletError};
 use crate::workflow::{WorkflowCollectSink, WorkflowError};
 
-impl<S: Procedure> ProcedureDispatcherImpl<S> {
-    /// Fresh per-invocation output-capture cell — `Some` only under the
+impl<S: Tasklet> TaskletDispatcherImpl<S> {
+    /// Fresh per-invocation output capture — `Some` only under the
     /// effectively-once tier (plugin emits then form the atomic effect
     /// record instead of leaving on a wire path).
-    fn effect_capture(&self) -> Option<RefCell<Vec<crate::entity::flusher::OutputRecord>>> {
+    fn effect_capture(&self) -> Option<RefCell<Vec<crate::cell::flusher::OutputRecord>>> {
         self.flush
             .effectively_once
             .then(|| RefCell::new(Vec::new()))
@@ -44,21 +44,21 @@ impl<S: Procedure> ProcedureDispatcherImpl<S> {
     /// `SystemTime::now()`.
     pub(super) fn invocation_inputs(&self, input: Option<&S::Input>) -> (u64, u64) {
         let seq = self.flush.change_seq.load(Ordering::Relaxed);
-        let now = <S::Clock as crate::procedure::ClockFor<S::Input>>::evaluate(
+        let now = <S::Clock as crate::tasklet::ClockFor<S::Input>>::evaluate(
             input,
-            crate::procedure::clock::wall_now_ms,
+            crate::tasklet::clock::wall_now_ms,
             || seq,
         );
         (now, seq)
     }
 
-    /// Ship whatever the buffer holds now, on this Entity's identity, seq and
+    /// Ship whatever the buffer holds now, on this Cell's identity, seq and
     /// header — the inline half of the drain the background flusher otherwise
     /// performs.
     pub(super) fn flush_now(&self, buffer: &mut dyn FlushableBuffer) {
-        crate::entity::flusher::flush_one(
+        crate::cell::flusher::flush_one(
             buffer,
-            &self.flush.entity_identity,
+            &self.flush.cell_identity,
             &self.flush.change_seq,
             &self.flush.header,
             self.flush.persistence_enabled,
@@ -66,13 +66,13 @@ impl<S: Procedure> ProcedureDispatcherImpl<S> {
     }
 
     /// Ship the Changes (and, under the effectively-once tier, the captured
-    /// outputs as one atomic effect entry) a collecting-path proc applied — or
+    /// outputs as one atomic effect entry) a collecting-path task applied — or
     /// drain and discard when the class opted out. The workflow analog of the
     /// stream `dispatch` flush hook; both feed `flusher::flush_one`.
     fn flush_collected(
         &self,
         buffer: RefCell<Vec<S::Change>>,
-        outputs: Vec<crate::entity::flusher::OutputRecord>,
+        outputs: Vec<crate::cell::flusher::OutputRecord>,
         event_time: u64,
     ) {
         let changes = buffer.into_inner();
@@ -83,7 +83,7 @@ impl<S: Procedure> ProcedureDispatcherImpl<S> {
             // Workflow inputs arrive via args/inbox, not the input-log —
             // no consumed-offset to carry.
             TypedBuffer::<S> {
-                effects: vec![crate::entity::flusher::EffectEntry {
+                effects: vec![crate::cell::flusher::EffectEntry {
                     changes,
                     outputs,
                     consumed_offset: None,
@@ -104,7 +104,7 @@ impl<S: Procedure> ProcedureDispatcherImpl<S> {
 
     /// The changes one invocation applies into, seeded with a previous failed
     /// attempt's: those state mutations stayed applied (at-least-once), so
-    /// durable state must not diverge from memory. The cell built over them is
+    /// durable state must not diverge from memory. The `RefCell` built over them is
     /// shared with the flush-before-emit hook — both run on this one dispatch
     /// thread inside one invocation, so the `RefCell` borrows never overlap.
     fn carry_over(&self, buffer: &mut TypedBuffer<S>) -> Vec<S::Change> {
@@ -113,7 +113,7 @@ impl<S: Procedure> ProcedureDispatcherImpl<S> {
         carried
     }
 
-    /// Drain this entity's pending changes to the durable WAL path before the
+    /// Drain this cell's pending changes to the durable WAL path before the
     /// sink writes the matching output frame, so change N reaches the
     /// controller's WAL before N's output reaches Kafka. `None` when there is
     /// nothing to order against: a `NoChange` / non-persistent operative keeps
@@ -121,7 +121,7 @@ impl<S: Procedure> ProcedureDispatcherImpl<S> {
     /// outputs ship in ONE effect record.
     fn flush_before_emit<'a>(
         &self,
-        cell: &'a RefCell<Vec<S::Change>>,
+        changes: &'a RefCell<Vec<S::Change>>,
     ) -> Option<FlushBeforeEmit<'a>> {
         if self.flush.effectively_once
             || !self.flush.persistence_enabled
@@ -129,38 +129,38 @@ impl<S: Procedure> ProcedureDispatcherImpl<S> {
         {
             return None;
         }
-        let identity = Arc::clone(&self.flush.entity_identity);
+        let identity = Arc::clone(&self.flush.cell_identity);
         let seq = Arc::clone(&self.flush.change_seq);
         let header = self.flush.header;
         Some(Box::new(move || {
             let mut buf = TypedBuffer::<S> {
-                changes: std::mem::take(&mut *cell.borrow_mut()),
+                changes: std::mem::take(&mut *changes.borrow_mut()),
                 ..Default::default()
             };
-            crate::entity::flusher::flush_one(&mut buf, &identity, &seq, &header, true);
+            crate::cell::flusher::flush_one(&mut buf, &identity, &seq, &header, true);
         }))
     }
 
-    /// The emit sink one invocation writes through, on this Entity's producer
+    /// The emit sink one invocation writes through, on this Cell's producer
     /// edge and the connection its item rode in on.
     fn emit_sink<'a>(
         &'a self,
-        scope: &EntityScope<'a, S>,
+        scope: &CellScope<'a, S>,
         consumed_offset: Option<u64>,
-        effect_outputs: Option<&'a RefCell<Vec<crate::entity::flusher::OutputRecord>>>,
-        cell: &'a RefCell<Vec<S::Change>>,
-    ) -> EntityEmitSink<'a> {
-        EntityEmitSink {
+        effect_outputs: Option<&'a RefCell<Vec<crate::cell::flusher::OutputRecord>>>,
+        changes: &'a RefCell<Vec<S::Change>>,
+    ) -> CellEmitSink<'a> {
+        CellEmitSink {
             producer: scope.slot,
             output_channel_id: self.edges.output_channel_id,
             output_channel_name: self.edges.output_channel_name.as_deref(),
             keyed: self.edges.output_channel_keyed,
-            entity_label: &self.entity_label,
+            cell_label: &self.cell_label,
             change_seq: &self.flush.change_seq,
             emit_ordinal: 0,
             instance: scope.instance.upgrade(),
             stream: Arc::clone(scope.stream),
-            flush_before_emit: self.flush_before_emit(cell),
+            flush_before_emit: self.flush_before_emit(changes),
             consumed_offset,
             effect_outputs,
         }
@@ -176,30 +176,29 @@ impl<S: Procedure> ProcedureDispatcherImpl<S> {
         &self,
         call: Call<S>,
         now: u64,
-        scope: &mut EntityScope<'_, S>,
-        cell: &RefCell<Vec<S::Change>>,
-        captured: Option<&RefCell<Vec<crate::entity::flusher::OutputRecord>>>,
+        scope: &mut CellScope<'_, S>,
+        changes: &RefCell<Vec<S::Change>>,
+        captured: Option<&RefCell<Vec<crate::cell::flusher::OutputRecord>>>,
     ) -> Result<(Vec<TimerOp>, bool), (String, bool)> {
         let invocation_seq = self.flush.change_seq.load(Ordering::Relaxed);
         let replay = call.replay();
         // The removal is op 0 for a firing, so it rides the same durable
         // record as whatever `on_timer` goes on to apply and emit.
         let firing = call.firing();
-        let mut sink = self.emit_sink(scope, call.consumed_offset(), captured, cell);
+        let mut sink = self.emit_sink(scope, call.consumed_offset(), captured, changes);
         let state = &mut *scope.state;
         let live_timers = &mut *scope.timers;
         let session = self.timers.session(live_timers, now, firing);
-        let mut ctx =
-            ProcedureCtx::new(&mut sink, now, invocation_seq, &self.flush.entity_identity)
-                .with_entity_key(self.entity_key.as_deref())
-                .during_replay(replay)
-                .with_timers(&session);
-        let handle = StateHandle::<S>::new(&mut state.state, cell);
+        let mut ctx = TaskletCtx::new(&mut sink, now, invocation_seq, &self.flush.cell_identity)
+            .with_cell_key(self.cell_key.as_deref())
+            .during_replay(replay)
+            .with_timers(&session);
+        let handle = StateHandle::<S>::new(&mut state.state, changes);
 
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match call {
-            Call::Input { input, .. } => state.procedure.run(input, handle, &mut ctx),
+            Call::Input { input, .. } => state.tasklet.run(input, handle, &mut ctx),
             Call::Timer { fired_at, kind } => {
-                state.procedure.on_timer(fired_at, kind, handle, &mut ctx)
+                state.tasklet.on_timer(fired_at, kind, handle, &mut ctx)
             }
         }));
         match outcome {
@@ -221,8 +220,8 @@ impl<S: Procedure> ProcedureDispatcherImpl<S> {
         firing: Option<(TimerKind, u64)>,
         now: u64,
         is_final: bool,
-        scope: &mut EntityScope<'_, S>,
-        captured: Option<RefCell<Vec<crate::entity::flusher::OutputRecord>>>,
+        scope: &mut CellScope<'_, S>,
+        captured: Option<RefCell<Vec<crate::cell::flusher::OutputRecord>>>,
     ) -> Result<Settled, String> {
         let (error, retryable) = match outcome {
             Ok((timers, checkpointed)) => {
@@ -267,15 +266,15 @@ impl<S: Procedure> ProcedureDispatcherImpl<S> {
         attempt: u32,
         parked_payload_bytes: Option<Vec<u8>>,
         retained_input: Option<&Arc<S::Input>>,
-    ) -> crate::entity::flusher::DlqEntryBody {
-        crate::entity::park::PARKED_TOTAL.fetch_add(1, Ordering::Relaxed);
+    ) -> crate::cell::flusher::DlqEntryBody {
+        crate::cell::park::PARKED_TOTAL.fetch_add(1, Ordering::Relaxed);
         eprintln!(
-            "[flezha] procedure {} parking poison payload to DLQ after {} attempt(s): {}",
+            "[flezha] tasklet {} parking poison payload to DLQ after {} attempt(s): {}",
             S::name(),
             attempt,
             error
         );
-        crate::entity::flusher::DlqEntryBody {
+        crate::cell::flusher::DlqEntryBody {
             channel: self
                 .edges
                 .input_channel_name
@@ -285,26 +284,26 @@ impl<S: Procedure> ProcedureDispatcherImpl<S> {
             error,
             attempts: attempt,
             payload: parked_payload_bytes.or_else(|| {
-                retained_input.and_then(|arc| crate::entity::park::extract_payload_bytes(&**arc))
+                retained_input.and_then(|arc| crate::cell::park::extract_payload_bytes(&**arc))
             }),
         }
     }
 
-    /// Settle one attempt into this Entity's buffer through the one settlement
+    /// Settle one attempt into this Cell's buffer through the one settlement
     /// rule the erased host also calls, then act on what it hands back: a
     /// class with no flusher entry has nothing that would ever drain its timer
-    /// ops, so it drains them here, and a tier-off park holds the Entity until
+    /// ops, so it drains them here, and a tier-off park holds the Cell until
     /// the controller acks the dead-letter append.
     fn settle(
         &self,
         buffer: &mut TypedBuffer<S>,
-        effects: crate::entity::flusher::InvocationEffects<S::Change>,
-        dlq: Option<crate::entity::flusher::DlqEntryBody>,
+        effects: crate::cell::flusher::InvocationEffects<S::Change>,
+        dlq: Option<crate::cell::flusher::DlqEntryBody>,
     ) {
         let consumed_offset = effects.offset;
-        let tier_off_dlq = crate::entity::flusher::settle_effects::<TypedBodies<S>>(
+        let tier_off_dlq = crate::cell::flusher::settle_effects::<TypedBodies<S>>(
             buffer,
-            crate::entity::flusher::SettlePolicy {
+            crate::cell::flusher::SettlePolicy {
                 effectively_once: self.flush.effectively_once,
                 checkpoint: self.flush.checkpoint,
                 buffered: true,
@@ -317,11 +316,11 @@ impl<S: Procedure> ProcedureDispatcherImpl<S> {
         }
         if let Some(entry) = tier_off_dlq {
             // Park-then-advance, never a drop: ship the park frame and hold
-            // this entity (the drain thread) until the controller acks the
+            // this cell (the drain thread) until the controller acks the
             // dead-letter append as durable.
-            crate::entity::park::park_tier_off(
-                &self.flush.entity_identity,
-                &self.entity_label,
+            crate::cell::park::park_tier_off(
+                &self.flush.cell_identity,
+                &self.cell_label,
                 consumed_offset,
                 entry,
             );
@@ -337,12 +336,12 @@ impl<S: Procedure> ProcedureDispatcherImpl<S> {
     /// The retry ladder's counting, backoff and re-hand live in the engine
     /// (`runner::poll_core`): a retryable non-final failure returns
     /// `Err(error)` and leaves nothing shipped; a non-retryable or final
-    /// failure parks here (the park rides this entity's buffer) and returns
+    /// failure parks here (the park rides this cell's buffer) and returns
     /// the timer ops the attempt committed, consuming the item.
     pub(super) fn invoke_once(
         &self,
         invocation: Invocation<'_, S>,
-        mut scope: EntityScope<'_, S>,
+        mut scope: CellScope<'_, S>,
     ) -> Result<Vec<TimerOp>, String> {
         let Invocation {
             call,
@@ -354,17 +353,17 @@ impl<S: Procedure> ProcedureDispatcherImpl<S> {
         } = invocation;
         let offset = call.consumed_offset();
         let firing = call.firing();
-        let cell = RefCell::new(self.carry_over(scope.buffer));
+        let changes = RefCell::new(self.carry_over(scope.buffer));
         let captured = self.effect_capture();
 
-        let outcome = self.call_contained(call, now, &mut scope, &cell, captured.as_ref());
+        let outcome = self.call_contained(call, now, &mut scope, &changes, captured.as_ref());
         let mut settled =
             match self.resolve_attempt(outcome, firing, now, is_final, &mut scope, captured) {
                 Ok(settled) => settled,
                 // Keep the attempt's changes out of the flusher's reach until
                 // the item resolves — the next attempt re-takes them.
                 Err(error) => {
-                    scope.buffer.pending_attempt = cell.into_inner();
+                    scope.buffer.pending_attempt = changes.into_inner();
                     return Err(error);
                 }
             };
@@ -374,7 +373,7 @@ impl<S: Procedure> ProcedureDispatcherImpl<S> {
             .take()
             .map(|error| self.park_entry(error, attempt, parked_payload_bytes, retained_input));
         let committed = settled.timers.clone();
-        let effects = settled.into_effects(cell.into_inner(), offset, now);
+        let effects = settled.into_effects(changes.into_inner(), offset, now);
         self.settle(scope.buffer, effects, dlq);
         Ok(committed)
     }
@@ -383,7 +382,7 @@ impl<S: Procedure> ProcedureDispatcherImpl<S> {
 /// The call into the author's code one invocation makes. The retry ladder, the
 /// emit sink, the effect record and the DLQ park are the same machinery either
 /// way — only this differs, which is why they share one code path.
-pub(super) enum Call<S: Procedure> {
+pub(super) enum Call<S: Tasklet> {
     Input {
         input: S::Input,
         /// Durable input-log offset this invocation acknowledges. A firing
@@ -398,7 +397,7 @@ pub(super) enum Call<S: Procedure> {
     },
 }
 
-impl<S: Procedure> Call<S> {
+impl<S: Tasklet> Call<S> {
     fn consumed_offset(&self) -> Option<u64> {
         match self {
             Call::Input {
@@ -424,7 +423,7 @@ impl<S: Procedure> Call<S> {
 
 /// One attempt of one invocation: the call, and the ladder facts that decide
 /// whether a failure re-hands the item or parks it.
-pub(super) struct Invocation<'a, S: Procedure> {
+pub(super) struct Invocation<'a, S: Tasklet> {
     pub(super) call: Call<S>,
     /// The invocation's `ctx.now()`: the declared Clock's value for an input,
     /// the scheduled timestamp for a firing.
@@ -435,7 +434,7 @@ pub(super) struct Invocation<'a, S: Procedure> {
     pub(super) retained_input: Option<&'a Arc<S::Input>>,
 }
 
-impl<'a, S: Procedure> Invocation<'a, S> {
+impl<'a, S: Tasklet> Invocation<'a, S> {
     /// A due firing. It consumes no input, so it acknowledges no offset and
     /// has no payload a park could record.
     pub(super) fn firing(
@@ -459,7 +458,7 @@ impl<'a, S: Procedure> Invocation<'a, S> {
     /// The last attempt on an input: the value moves into `run` — zero-copy
     /// when the Arc is uniquely held, a value clone when fan-out kept it
     /// shared — so its park bytes are captured first, because a park still has
-    /// to record what poisoned the Entity.
+    /// to record what poisoned the Cell.
     pub(super) fn last_input(
         input: Arc<S::Input>,
         consumed_offset: Option<u64>,
@@ -468,7 +467,7 @@ impl<'a, S: Procedure> Invocation<'a, S> {
         attempt: u32,
     ) -> Self {
         Self {
-            parked_payload_bytes: crate::entity::park::extract_payload_bytes(&*input),
+            parked_payload_bytes: crate::cell::park::extract_payload_bytes(&*input),
             call: Call::Input {
                 input: Arc::unwrap_or_clone(input),
                 consumed_offset,
@@ -506,11 +505,11 @@ impl<'a, S: Procedure> Invocation<'a, S> {
     }
 }
 
-/// The Entity's live state for one dispatch, behind the slot locks the engine
+/// The Cell's live state for one dispatch, behind the slot locks the engine
 /// already holds.
-pub(super) struct EntityScope<'a, S: Procedure> {
-    pub(super) slot: &'a Arc<EntitySlot>,
-    pub(super) state: &'a mut EntityState<S>,
+pub(super) struct CellScope<'a, S: Tasklet> {
+    pub(super) slot: &'a Arc<CellSlot>,
+    pub(super) state: &'a mut CellState<S>,
     pub(super) buffer: &'a mut TypedBuffer<S>,
     pub(super) timers: &'a mut PendingTimers,
     /// The connection this invocation's emits ride — the one its item came in
@@ -524,7 +523,7 @@ pub(super) struct EntityScope<'a, S: Procedure> {
 /// acknowledges.
 struct Settled {
     timers: Vec<TimerOp>,
-    outputs: Vec<crate::entity::flusher::OutputRecord>,
+    outputs: Vec<crate::cell::flusher::OutputRecord>,
     checkpointed: bool,
     park_error: Option<String>,
 }
@@ -538,8 +537,8 @@ impl Settled {
         changes: Vec<C>,
         offset: Option<u64>,
         event_time: u64,
-    ) -> crate::entity::flusher::InvocationEffects<C> {
-        crate::entity::flusher::InvocationEffects {
+    ) -> crate::cell::flusher::InvocationEffects<C> {
+        crate::cell::flusher::InvocationEffects {
             changes,
             timers: self.timers,
             outputs: self.outputs,
@@ -562,7 +561,7 @@ pub(super) struct CollectShape {
     pub(super) captures_effects: bool,
 }
 
-/// The workflow error a failed collecting call reports: `{prefix} {procedure}
+/// The workflow error a failed collecting call reports: `{prefix} {tasklet}
 /// failed: {cause}` for a returned error, `panicked` for an unwind. The
 /// author's own classification rides through only where the entry point has a
 /// retry ladder of its own — a compensation has none, and a panic never
@@ -570,7 +569,7 @@ pub(super) struct CollectShape {
 pub(super) fn collect_failure(
     shape: CollectShape,
     name: &str,
-    failed: Result<Result<(), ProcedureError>, Box<dyn Any + Send>>,
+    failed: Result<Result<(), TaskletError>, Box<dyn Any + Send>>,
 ) -> WorkflowError {
     match failed {
         Ok(Err(err)) => WorkflowError::new(
@@ -582,7 +581,7 @@ pub(super) fn collect_failure(
                 "{} {} panicked: {}",
                 shape.prefix,
                 name,
-                crate::procedure::error::format_panic(panic)
+                crate::tasklet::error::format_panic(panic)
             ),
             false,
         ),
@@ -593,26 +592,26 @@ pub(super) fn collect_failure(
 /// The error text of a failed attempt and whether the ladder may retry it. A
 /// panic is retryable by default — the author never got to classify it.
 fn classify_failure(
-    failed: Result<Result<(), ProcedureError>, Box<dyn Any + Send>>,
+    failed: Result<Result<(), TaskletError>, Box<dyn Any + Send>>,
 ) -> (String, bool) {
     match failed {
         Ok(Err(err)) => {
             let retryable = !err.is_non_retryable();
             (err.to_string(), retryable)
         }
-        Err(panic) => (crate::procedure::error::format_panic(panic), true),
+        Err(panic) => (crate::tasklet::error::format_panic(panic), true),
         Ok(Ok(())) => unreachable!("handled above"),
     }
 }
 
-impl<S: Procedure> ProcedureDispatcherImpl<S> {
+impl<S: Tasklet> TaskletDispatcherImpl<S> {
     /// One collecting-path invocation — a workflow `run` or its `compensate`
     /// — through the collect sink, the change buffer and the WAL flush all of
     /// them owe. `body` is the call into the author's code; `shape` carries
     /// the only three things the two entry points disagree about.
     pub(super) fn collect_invoke<F>(
         &self,
-        typed_state: &mut EntityState<S>,
+        typed_state: &mut CellState<S>,
         topology: &OperativeTopology,
         sink: &mut dyn WorkflowCollectSink,
         inputs: (u64, u64),
@@ -620,7 +619,7 @@ impl<S: Procedure> ProcedureDispatcherImpl<S> {
         body: F,
     ) -> Result<(), WorkflowError>
     where
-        F: FnOnce(&mut S, StateHandle<'_, S>, &mut ProcedureCtx<'_>) -> Result<(), ProcedureError>,
+        F: FnOnce(&mut S, StateHandle<'_, S>, &mut TaskletCtx<'_>) -> Result<(), TaskletError>,
     {
         let (now, invocation_seq) = inputs;
         // Per-run change buffer: `StateHandle::apply` records Changes here; the
@@ -634,17 +633,17 @@ impl<S: Procedure> ProcedureDispatcherImpl<S> {
             .flatten();
 
         let mut collect_sink = self.collect_sink(sink, topology, effect_outputs.as_ref());
-        let mut ctx = ProcedureCtx::new(
+        let mut ctx = TaskletCtx::new(
             &mut collect_sink,
             now,
             invocation_seq,
-            &self.flush.entity_identity,
+            &self.flush.cell_identity,
         )
-        .with_entity_key(self.entity_key.as_deref());
+        .with_cell_key(self.cell_key.as_deref());
         let handle = StateHandle::<S>::new(&mut typed_state.state, &buffer);
 
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            body(&mut typed_state.procedure, handle, &mut ctx)
+            body(&mut typed_state.tasklet, handle, &mut ctx)
         }));
 
         // Ship the applied Changes to the WAL regardless of outcome, so the WAL
@@ -660,12 +659,12 @@ impl<S: Procedure> ProcedureDispatcherImpl<S> {
     }
 
     /// The collect sink one workflow invocation writes through, on this
-    /// Entity's producer edge.
+    /// Cell's producer edge.
     fn collect_sink<'a>(
         &'a self,
         sink: &'a mut dyn WorkflowCollectSink,
         topology: &'a OperativeTopology,
-        effect_outputs: Option<&'a RefCell<Vec<crate::entity::flusher::OutputRecord>>>,
+        effect_outputs: Option<&'a RefCell<Vec<crate::cell::flusher::OutputRecord>>>,
     ) -> WorkflowCollectAdapter<'a> {
         WorkflowCollectAdapter {
             sink,

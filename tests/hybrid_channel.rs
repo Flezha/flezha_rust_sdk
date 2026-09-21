@@ -3,10 +3,10 @@
 //! with none), and the equivalence of the two declarations on the wire.
 //!
 //! Each test uses the live dispatcher: an entry channel feeds bytes
-//! into a producer Procedure, which calls `ctx.emit(typed_value)` on a
-//! channel wired to one or more inter-procedure consumers and a plugin
+//! into a producer Tasklet, which calls `ctx.emit(typed_value)` on a
+//! channel wired to one or more inter-tasklet consumers and a plugin
 //! sink. The consumer-side delivery is observed via static state in
-//! the consumer Procedure; the plugin-side delivery is observed by reading
+//! the consumer Tasklet; the plugin-side delivery is observed by reading
 //! the receiving end of the unix socket pair and parsing wire frames.
 
 use std::io::Read;
@@ -63,16 +63,16 @@ fn dispatch_input(
 // ---------- 2.5: 1 consumer + plugin sink ----------
 
 fn single_consumer_observed() -> &'static Mutex<Vec<u32>> {
-    static CELL: OnceLock<Mutex<Vec<u32>>> = OnceLock::new();
-    CELL.get_or_init(|| Mutex::new(Vec::new()))
+    static OBSERVED: OnceLock<Mutex<Vec<u32>>> = OnceLock::new();
+    OBSERVED.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-test_procedure!(SingleProducer, "hybrid_single_producer", String => u32, (), |input, _state, ctx| {
+test_tasklet!(SingleProducer, "hybrid_single_producer", String => u32, (), |input, _state, ctx| {
     let n: u32 = input.parse().unwrap_or(0);
     ctx.emit::<u32>(n)
 });
 
-test_procedure!(SingleConsumer, "hybrid_single_consumer", u32 => (), (), |input, _state, _ctx| {
+test_tasklet!(SingleConsumer, "hybrid_single_consumer", u32 => (), (), |input, _state, _ctx| {
     single_consumer_observed().lock().unwrap().push(input);
     Ok(())
 });
@@ -132,20 +132,20 @@ fn three_consumer_observed_c() -> &'static Mutex<Vec<u32>> {
     C.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-test_procedure!(ThreeProducer, "hybrid_three_producer", String => u32, (), |input, _state, ctx| {
+test_tasklet!(ThreeProducer, "hybrid_three_producer", String => u32, (), |input, _state, ctx| {
     let n: u32 = input.parse().unwrap_or(0);
     ctx.emit::<u32>(n)
 });
 
-test_procedure!(ThreeConsumerA, "hybrid_three_a", u32 => (), (), |input, _state, _ctx| {
+test_tasklet!(ThreeConsumerA, "hybrid_three_a", u32 => (), (), |input, _state, _ctx| {
     three_consumer_observed_a().lock().unwrap().push(input);
     Ok(())
 });
-test_procedure!(ThreeConsumerB, "hybrid_three_b", u32 => (), (), |input, _state, _ctx| {
+test_tasklet!(ThreeConsumerB, "hybrid_three_b", u32 => (), (), |input, _state, _ctx| {
     three_consumer_observed_b().lock().unwrap().push(input);
     Ok(())
 });
-test_procedure!(ThreeConsumerC, "hybrid_three_c", u32 => (), (), |input, _state, _ctx| {
+test_tasklet!(ThreeConsumerC, "hybrid_three_c", u32 => (), (), |input, _state, _ctx| {
     three_consumer_observed_c().lock().unwrap().push(input);
     Ok(())
 });
@@ -214,14 +214,14 @@ fn panic_emit_results() -> &'static Mutex<Vec<Result<(), String>>> {
     C.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-test_procedure!(PanicProducer, "hybrid_panic_producer", String => u32, (), |input, _state, ctx| {
+test_tasklet!(PanicProducer, "hybrid_panic_producer", String => u32, (), |input, _state, ctx| {
     let n: u32 = input.parse().unwrap_or(0);
     let outcome = ctx.emit::<u32>(n).map_err(|e| format!("{e}"));
     panic_emit_results().lock().unwrap().push(outcome);
     Ok(())
 });
 
-test_procedure!(PanicConsumer, "hybrid_panic_consumer", u32 => (), (), |input, _state, _ctx| {
+test_tasklet!(PanicConsumer, "hybrid_panic_consumer", u32 => (), (), |input, _state, _ctx| {
     panic_consumer_observed().lock().unwrap().push(input);
     Ok(())
 });
@@ -295,7 +295,7 @@ fn hybrid_serializer_panic_is_caught() {
 
 // ---------- 2.8: duplicate sink_with rejected at registration ----------
 
-test_procedure!(DupProducer, "hybrid_dup_producer", String => u32, (), |_input, _state, _ctx| {
+test_tasklet!(DupProducer, "hybrid_dup_producer", String => u32, (), |_input, _state, _ctx| {
     Ok(())
 });
 
@@ -333,7 +333,7 @@ fn meta_consumer_observed() -> &'static Mutex<Vec<u32>> {
     C.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-test_procedure!(MetaProducer, "hybrid_meta_producer", String => u32, (), |input, _state, ctx| {
+test_tasklet!(MetaProducer, "hybrid_meta_producer", String => u32, (), |input, _state, ctx| {
     let n: u32 = input.parse().unwrap_or(0);
     let mut meta = HashMap::new();
     meta.insert("trace_id".to_string(), "abc123".to_string());
@@ -343,7 +343,7 @@ test_procedure!(MetaProducer, "hybrid_meta_producer", String => u32, (), |input,
     ctx.emit_with_meta::<u32>(n, meta)
 });
 
-test_procedure!(MetaConsumer, "hybrid_meta_consumer", u32 => (), (), |input, _state, _ctx| {
+test_tasklet!(MetaConsumer, "hybrid_meta_consumer", u32 => (), (), |input, _state, _ctx| {
     meta_consumer_observed().lock().unwrap().push(input);
     Ok(())
 });
@@ -394,7 +394,7 @@ fn emit_with_meta_on_hybrid_channel_forwards_meta_to_plugin_only() {
     );
 }
 
-// ---------- 3.4: emit_with_meta on a pure inter-procedure channel ----------
+// ---------- 3.4: emit_with_meta on a pure inter-tasklet channel ----------
 
 fn pure_consumer_observed() -> &'static Mutex<Vec<u32>> {
     static C: OnceLock<Mutex<Vec<u32>>> = OnceLock::new();
@@ -406,7 +406,7 @@ fn pure_emit_results() -> &'static Mutex<Vec<Result<(), String>>> {
     C.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-test_procedure!(PureProducer, "hybrid_pure_producer", String => u32, (), |input, _state, ctx| {
+test_tasklet!(PureProducer, "hybrid_pure_producer", String => u32, (), |input, _state, ctx| {
     let n: u32 = input.parse().unwrap_or(0);
     let mut meta = HashMap::new();
     meta.insert("trace_id".to_string(), "abc123".to_string());
@@ -417,7 +417,7 @@ test_procedure!(PureProducer, "hybrid_pure_producer", String => u32, (), |input,
     Ok(())
 });
 
-test_procedure!(PureConsumer, "hybrid_pure_consumer", u32 => (), (), |input, _state, _ctx| {
+test_tasklet!(PureConsumer, "hybrid_pure_consumer", u32 => (), (), |input, _state, _ctx| {
     pure_consumer_observed().lock().unwrap().push(input);
     Ok(())
 });
@@ -436,7 +436,7 @@ impl StreamOperative for PureOperative {
 }
 
 #[test]
-fn emit_with_meta_on_pure_inter_procedure_channel_is_rejected() {
+fn emit_with_meta_on_pure_inter_tasklet_channel_is_rejected() {
     pure_consumer_observed().lock().unwrap().clear();
     pure_emit_results().lock().unwrap().clear();
 
@@ -450,14 +450,14 @@ fn emit_with_meta_on_pure_inter_procedure_channel_is_rejected() {
             || pure_emit_results().lock().unwrap().len() == 1,
             Duration::from_secs(5)
         ),
-        "producer Procedure::run did not finish"
+        "producer Tasklet::run did not finish"
     );
 
     let outcomes = pure_emit_results().lock().unwrap().clone();
     let msg = outcomes[0].as_ref().expect_err("emit_with_meta must error");
     assert!(
         msg.contains("metadata is only valid") && msg.contains("pure_out"),
-        "expected MetadataNotAllowedOnInterProcedureChannel; got: {msg}"
+        "expected MetadataNotAllowedOnInterTaskletChannel; got: {msg}"
     );
 
     // No frame on the wire, no consumer delivery (producer returned the
@@ -482,11 +482,11 @@ fn unified_consumer_observed() -> &'static Mutex<Vec<String>> {
     C.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-test_procedure!(UnifiedProducer, "unified_producer", String => String, (), |input, _state, ctx| {
+test_tasklet!(UnifiedProducer, "unified_producer", String => String, (), |input, _state, ctx| {
     ctx.emit::<String>(input)
 });
 
-test_procedure!(UnifiedConsumer, "unified_consumer", String => (), (), |input, _state, _ctx| {
+test_tasklet!(UnifiedConsumer, "unified_consumer", String => (), (), |input, _state, _ctx| {
     unified_consumer_observed().lock().unwrap().push(input);
     Ok(())
 });
@@ -622,12 +622,12 @@ fn terminality_is_derived_from_the_wiring_and_sealed_changes_nothing() {
     assert_eq!(
         hybrid,
         (
-            ChannelKind::InterProcedure,
+            ChannelKind::InterTasklet,
             1,
             Some("unified_out".to_string()),
             false
         ),
-        "the same sink with a consumer after it stays inter-procedure"
+        "the same sink with a consumer after it stays inter-tasklet"
     );
 }
 

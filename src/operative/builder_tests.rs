@@ -5,15 +5,15 @@
 //! `test/fixtures/reference_topologies.txt`.
 
 use super::*;
+use crate::cell::restore::RestoreInitPayload;
 use crate::channel::ChannelBuilder;
-use crate::entity::restore::RestoreInitPayload;
 use crate::operative::topology::BeyondWindowPolicy;
-use crate::procedure::state_handle::StateHandle;
-use crate::procedure::{NoChange, Procedure, ProcedureCtx, ProcedureError, WallClock};
+use crate::tasklet::state_handle::StateHandle;
+use crate::tasklet::{NoChange, Tasklet, TaskletCtx, TaskletError, WallClock};
 
 #[derive(Default)]
-struct TierProc;
-impl Procedure for TierProc {
+struct TierTask;
+impl Tasklet for TierTask {
     type Input = String;
     type Output = String;
     type State = ();
@@ -28,13 +28,13 @@ impl Procedure for TierProc {
         &mut self,
         _: String,
         _: StateHandle<'_, Self>,
-        _: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        _: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         Ok(())
     }
 }
 
-/// The journal codec is derived from the producing procedure's `Output`, so a
+/// The journal codec is derived from the producing tasklet's `Output`, so a
 /// produced channel carries one whatever the class kind. The bound is
 /// unconditional because an operator's per-class persistence override, not the
 /// author, decides whether a class journals; nothing in a stream operative's
@@ -43,7 +43,7 @@ impl Procedure for TierProc {
 #[test]
 fn a_produced_channel_carries_a_derived_codec() {
     let cb = ChannelBuilder::new();
-    cb.input::<String>("in").into::<TierProc>().named("mid");
+    cb.input::<String>("in").into::<TierTask>().named("mid");
     let topology = build_topology("derived_codec", cb).expect("topology");
     let mid = topology
         .channels
@@ -73,14 +73,14 @@ fn a_produced_channel_carries_a_derived_codec() {
 }
 
 /// The other half of the same rule: a plugin-bound terminal is not a handoff.
-/// Nothing re-seeds from it, and journaling every plugin payload at every proc
+/// Nothing re-seeds from it, and journaling every plugin payload at every task
 /// barrier would be WAL volume no reader ever asks for — so it carries no
 /// codec, exactly as `flz_core::host::build` decides for a byte-passing host.
 #[test]
 fn a_plugin_bound_terminal_carries_no_codec() {
     let cb = ChannelBuilder::new();
     cb.input::<String>("in")
-        .into::<TierProc>()
+        .into::<TierTask>()
         .sink_named("out");
     let topology = build_topology("plugin_terminal_codec", cb).expect("topology");
     let out = topology
@@ -101,7 +101,7 @@ fn effectively_once_with_keyed_plugin_channel_builds() {
     let cb = ChannelBuilder::new();
     cb.effectively_once();
     cb.input::<String>("in")
-        .into::<TierProc>()
+        .into::<TierTask>()
         .keyed()
         .sink_named("out");
     let topology = build_topology("tier_keyed_ok", cb).expect("topology");
@@ -113,7 +113,7 @@ fn effectively_once_rejects_unkeyed_plugin_channel() {
     let cb = ChannelBuilder::new();
     cb.effectively_once();
     cb.input::<String>("in")
-        .into::<TierProc>()
+        .into::<TierTask>()
         .sink_named("out");
     let err = match build_topology("tier_unkeyed_plugin", cb) {
         Err(e) => e,
@@ -130,7 +130,7 @@ fn effectively_once_rejects_unkeyed_hybrid_sink() {
     let cb = ChannelBuilder::new();
     cb.effectively_once();
     cb.input::<String>("in")
-        .into::<TierProc>()
+        .into::<TierTask>()
         .sink_named_with("mid", |s: &String| s.as_bytes().to_vec());
     let err = match build_topology("tier_unkeyed_hybrid", cb) {
         Err(e) => e,
@@ -145,7 +145,7 @@ fn effectively_once_rejects_unkeyed_hybrid_sink() {
 #[test]
 fn default_topology_is_not_effectively_once() {
     let cb = ChannelBuilder::new();
-    cb.input::<String>("in").into::<TierProc>();
+    cb.input::<String>("in").into::<TierTask>();
     let topology = build_topology("tier_default_off", cb).expect("topology");
     assert!(!topology.effectively_once);
 }
@@ -154,21 +154,21 @@ fn default_topology_is_not_effectively_once() {
 fn non_tier_unkeyed_plugin_channel_still_builds() {
     let cb = ChannelBuilder::new();
     cb.input::<String>("in")
-        .into::<TierProc>()
+        .into::<TierTask>()
         .sink_named("out");
     let topology = build_topology("no_tier_unkeyed_ok", cb).expect("topology");
     assert!(!topology.effectively_once);
 }
 
 #[test]
-fn override_on_procedure_takes_precedence() {
-    // Procedure declared 4096 with MAILBOX_CAPACITY_OVERRIDDEN = true;
+fn override_on_tasklet_takes_precedence() {
+    // Tasklet declared 4096 with MAILBOX_CAPACITY_OVERRIDDEN = true;
     // env var present and parseable. Override wins.
     assert_eq!(resolve_mailbox_capacity(4096, true, Some("2048")), 4096);
 }
 
 #[test]
-fn env_var_applies_when_no_procedure_override() {
+fn env_var_applies_when_no_tasklet_override() {
     // No override; env var is parseable. Env wins over the default.
     assert_eq!(resolve_mailbox_capacity(1024, false, Some("2048")), 2048);
 }
@@ -200,20 +200,20 @@ fn an_overridden_zero_wins_over_the_env_var() {
 // ---------- Late-input correction: the declaration's prerequisites ----------
 
 struct TradeTime;
-impl crate::procedure::TimeExtractor<String> for TradeTime {
+impl crate::tasklet::TimeExtractor<String> for TradeTime {
     fn extract(input: &String) -> u64 {
         input.parse().unwrap_or(0)
     }
 }
 
 #[derive(Default)]
-struct EventTimeProc;
-impl Procedure for EventTimeProc {
+struct EventTimeTask;
+impl Tasklet for EventTimeTask {
     type Input = String;
     type Output = String;
     type State = ();
     type Change = NoChange;
-    type Clock = crate::procedure::EventTimeFrom<TradeTime>;
+    type Clock = crate::tasklet::EventTimeFrom<TradeTime>;
     type Config = ();
     fn name() -> &'static str {
         "correction_builder_test_op"
@@ -223,13 +223,13 @@ impl Procedure for EventTimeProc {
         &mut self,
         _: String,
         _: StateHandle<'_, Self>,
-        _: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        _: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         Ok(())
     }
 }
 
-fn correction_builder<S: Procedure<Input = String, Output = String> + Default>(
+fn correction_builder<S: Tasklet<Input = String, Output = String> + Default>(
     window_ms: u64,
     tier: bool,
 ) -> ChannelBuilder {
@@ -249,7 +249,7 @@ fn correction_builder<S: Procedure<Input = String, Output = String> + Default>(
 fn correction_with_tier_and_event_time_builds() {
     let topology = build_topology(
         "correction_ok",
-        correction_builder::<EventTimeProc>(600_000, true),
+        correction_builder::<EventTimeTask>(600_000, true),
     )
     .expect("topology");
 
@@ -266,7 +266,7 @@ fn checkpoint_ack_with_the_tier_builds() {
     cb.effectively_once();
     cb.checkpoint_ack();
     cb.input::<String>("in")
-        .into::<TierProc>()
+        .into::<TierTask>()
         .keyed()
         .sink_named("out");
     let topology = build_topology("checkpoint_ok", cb).expect("topology");
@@ -282,7 +282,7 @@ fn the_interval_options_reach_the_topology_and_imply_the_granularity() {
     cb.checkpoint_every(500);
     cb.outputs_at_checkpoint(50);
     cb.input::<String>("in")
-        .into::<TierProc>()
+        .into::<TierTask>()
         .keyed()
         .sink_named("out");
     let topology = build_topology("checkpoint_options", cb).expect("topology");
@@ -308,7 +308,7 @@ fn a_bare_checkpoint_ack_holds_no_outputs() {
     cb.effectively_once();
     cb.checkpoint_ack();
     cb.input::<String>("in")
-        .into::<TierProc>()
+        .into::<TierTask>()
         .keyed()
         .sink_named("out");
     let topology = build_topology("checkpoint_bare", cb).expect("topology");
@@ -328,7 +328,7 @@ fn a_zero_interval_is_refused() {
     cb.effectively_once();
     cb.checkpoint_every(0);
     cb.input::<String>("in")
-        .into::<TierProc>()
+        .into::<TierTask>()
         .keyed()
         .sink_named("out");
     let err = build_topology("checkpoint_zero", cb)
@@ -346,7 +346,7 @@ fn per_input_is_the_default_ack_granularity() {
     let cb = ChannelBuilder::new();
     cb.effectively_once();
     cb.input::<String>("in")
-        .into::<TierProc>()
+        .into::<TierTask>()
         .keyed()
         .sink_named("out");
     let topology = build_topology("per_input_default", cb).expect("topology");
@@ -364,7 +364,7 @@ fn a_dropping_policy_under_the_tier_is_refused_naming_the_channel() {
         cb.effectively_once();
         cb.input::<String>("in")
             .on_full(policy)
-            .into::<TierProc>()
+            .into::<TierTask>()
             .keyed()
             .sink_named("out");
 
@@ -391,7 +391,7 @@ fn a_dropping_policy_off_the_tier_still_builds() {
     let cb = ChannelBuilder::new();
     cb.input::<String>("in")
         .on_full(OverflowPolicy::DropNewest)
-        .into::<TierProc>()
+        .into::<TierTask>()
         .sink_named("out");
 
     build_topology("plain_sheds", cb).expect("a shedding class without the tier builds");
@@ -405,7 +405,7 @@ fn checkpoint_ack_without_the_tier_is_refused() {
     let cb = ChannelBuilder::new();
     cb.checkpoint_ack();
     cb.input::<String>("in")
-        .into::<TierProc>()
+        .into::<TierTask>()
         .sink_named("out");
 
     let err = build_topology("checkpoint_no_tier", cb)
@@ -424,7 +424,7 @@ fn correction_without_the_tier_is_refused() {
     // replay — the declaration is meaningless, not merely degraded.
     let err = build_topology(
         "correction_no_tier",
-        correction_builder::<EventTimeProc>(600_000, false),
+        correction_builder::<EventTimeTask>(600_000, false),
     )
     .err()
     .expect("correction without the tier must fail");
@@ -437,11 +437,11 @@ fn correction_without_the_tier_is_refused() {
 
 #[test]
 fn correction_without_an_event_time_clock_is_refused() {
-    // TierProc declares WallClock: there is no event time to order a replayed
+    // TierTask declares WallClock: there is no event time to order a replayed
     // slice by, so lateness is not even definable.
     let err = build_topology(
         "correction_wall_clock",
-        correction_builder::<TierProc>(600_000, true),
+        correction_builder::<TierTask>(600_000, true),
     )
     .err()
     .expect("correction without an event-time clock must fail");
@@ -457,7 +457,7 @@ fn correction_without_an_event_time_clock_is_refused() {
 fn a_zero_correction_window_is_refused() {
     let err = build_topology(
         "correction_zero",
-        correction_builder::<EventTimeProc>(0, true),
+        correction_builder::<EventTimeTask>(0, true),
     )
     .err()
     .expect("a zero window must fail");
@@ -470,7 +470,7 @@ fn a_zero_correction_window_is_refused() {
 
 #[test]
 fn the_beyond_window_policy_is_declarable() {
-    let cb = correction_builder::<EventTimeProc>(600_000, true);
+    let cb = correction_builder::<EventTimeTask>(600_000, true);
     cb.beyond_window_policy(BeyondWindowPolicy::Drop);
     let topology = build_topology("correction_drop", cb).expect("topology");
 

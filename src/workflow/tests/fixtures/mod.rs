@@ -1,32 +1,32 @@
 //! The workflow classes the registration tests and the driver scenarios
 //! are written against, by owner.
 
-/// A stateless `String -> String` procedure whose `run` is the given body.
-macro_rules! string_proc {
+/// A stateless `String -> String` tasklet whose `run` is the given body.
+macro_rules! string_task {
     ($ty:ident, $name:literal, |$input:ident, $ctx:ident| $body:expr) => {
         #[derive(Default)]
         pub(crate) struct $ty;
-        impl crate::procedure::Procedure for $ty {
+        impl crate::tasklet::Tasklet for $ty {
             type Input = String;
             type Output = String;
             type State = ();
-            type Change = crate::procedure::change::NoChange;
-            type Clock = crate::procedure::clock::WallClock;
+            type Change = crate::tasklet::change::NoChange;
+            type Clock = crate::tasklet::clock::WallClock;
             type Config = ();
             fn name() -> &'static str {
                 $name
             }
             fn init_state(
                 _: Option<&str>,
-                _: Option<crate::entity::restore::RestoreInitPayload<'_>>,
+                _: Option<crate::cell::restore::RestoreInitPayload<'_>>,
             ) {
             }
             fn run(
                 &mut self,
                 $input: String,
-                _state: crate::procedure::StateHandle<'_, Self>,
-                $ctx: &mut crate::procedure::ProcedureCtx<'_>,
-            ) -> Result<(), crate::procedure::ProcedureError> {
+                _state: crate::tasklet::StateHandle<'_, Self>,
+                $ctx: &mut crate::tasklet::TaskletCtx<'_>,
+            ) -> Result<(), crate::tasklet::TaskletError> {
                 $body
             }
         }

@@ -246,7 +246,7 @@ impl FlezhaRunner {
     /// factory set to the controller (`UpdateFactories`).
     ///
     /// An invalid declaration (duplicate channel names, unwired channels,
-    /// missing `entities_for` overrides, an unterminating workflow, ...) is
+    /// missing `cells_for` overrides, an unterminating workflow, ...) is
     /// reported here, at the declaring call site — not a panic — and leaves the
     /// runner exactly as it was.
     ///
@@ -438,12 +438,10 @@ impl FlezhaRunner {
                     sdk_lang: flz_core::operative::registry::sdk_lang_for_factory(id) as u32,
                 })
                 .collect();
-            let _ = live.runner_tx.send(RunnerMessage::EmitControlRequest {
-                reference_id: format!("update-factories-{}", crate::util::nonce_suffix()),
-                command: pb::command_request::Command::UpdateFactories(pb::UpdateFactories {
-                    factories,
-                }),
-            });
+            let _ = live.runner_tx.send(RunnerMessage::control_request(
+                format!("update-factories-{}", crate::util::nonce_suffix()),
+                pb::command_request::Command::UpdateFactories(pb::UpdateFactories { factories }),
+            ));
         }
     }
 

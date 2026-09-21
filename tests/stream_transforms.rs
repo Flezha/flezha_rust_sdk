@@ -1,10 +1,10 @@
 //! `stream-transforms`: edge-closure value transforms (`map`, `filter`,
-//! `flat_map`) and edge-side Entity keying (`key_by`) on the graph-authoring
+//! `flat_map`) and edge-side Cell keying (`key_by`) on the graph-authoring
 //! surface.
 //!
 //! Covers the capability's contract end to end:
 //! - a chain of transforms is ONE closure on ONE edge, traversed once
-//! - `flat_map` fans one input out across distinct Entities, each keyed
+//! - `flat_map` fans one input out across distinct Cells, each keyed
 //!   independently
 //! - `key_by` sees the post-transform value
 //! - a replayed slice runs the same closures the live delivery ran
@@ -57,14 +57,14 @@ fn parse_trade(raw: &str) -> Trade {
 
 // ----- 1: a chain of transforms is one closure on one edge -----
 
-/// Every value the keyed consumer observed. The Entity each reached is read
+/// Every value the keyed consumer observed. The Cell each reached is read
 /// off the dynamic registry, which is the runtime's own record of the keys.
 static OBSERVED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 /// Bumped once per traversal of the composed closure, proving the chain did
 /// not become three edges the runtime walks in turn.
 static TRAVERSALS: AtomicUsize = AtomicUsize::new(0);
 
-test_procedure!(Recorder, "transform_recorder", String => (), (), |input, _state, _ctx| {
+test_tasklet!(Recorder, "transform_recorder", String => (), (), |input, _state, _ctx| {
     OBSERVED.lock().unwrap().push(input);
     Ok(())
 });
@@ -93,9 +93,9 @@ fn a_transform_chain_is_one_closure_on_one_edge() {
     let _serial = guard(&CHAIN_LOCK);
     let topology = build_topology_for::<ChainOperative>().expect("topology");
     assert_eq!(
-        topology.procedures.len(),
+        topology.tasklets.len(),
         1,
-        "four transforms added no Procedure node"
+        "four transforms added no Tasklet node"
     );
     let edges = &topology.channels[0].consumers;
     assert_eq!(edges.len(), 1);
@@ -128,7 +128,7 @@ fn a_transform_chain_is_one_closure_on_one_edge() {
         "the consumer observed the value the two maps produced"
     );
     assert_eq!(
-        entity_keys(&instance),
+        cell_keys(&instance),
         vec!["AAPL".to_string(), "MSFT".to_string()],
         "the key ran on the MAPPED value — it split `AAPLx3`, not `AAPL:3`"
     );
@@ -139,11 +139,11 @@ fn a_transform_chain_is_one_closure_on_one_edge() {
     );
 }
 
-// ----- 2: flat_map fans one input out across distinct Entities -----
+// ----- 2: flat_map fans one input out across distinct Cells -----
 
 static FANNED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-test_procedure!(FanRecorder, "transform_fan_recorder", Slot => (), (), |input, _state, _ctx| {
+test_tasklet!(FanRecorder, "transform_fan_recorder", Slot => (), (), |input, _state, _ctx| {
     FANNED.lock().unwrap().push(input.timeframe.to_string());
     Ok(())
 });
@@ -180,9 +180,9 @@ fn a_fan_out_keys_every_yielded_value_independently() {
         FANNED.lock().unwrap()
     );
     assert_eq!(
-        entity_keys(&instance),
+        cell_keys(&instance),
         vec!["AAPL@1d", "AAPL@1h", "AAPL@1m", "AAPL@5m"],
-        "four yielded values reached four distinct Entities, each keyed on its own"
+        "four yielded values reached four distinct Cells, each keyed on its own"
     );
 }
 
@@ -215,7 +215,7 @@ fn a_replayed_slice_transforms_exactly_as_the_live_run_did() {
 
     // The same frames re-forwarded as a replayed slice. The closures live on
     // the channel's edge, not on the delivery, so a warm restart folds the
-    // identical values into the identical Entities.
+    // identical values into the identical Cells.
     for (offset, raw) in feed.iter().enumerate() {
         dispatch_marked(
             &handle,
@@ -246,8 +246,8 @@ fn a_replayed_slice_transforms_exactly_as_the_live_run_did() {
         "replayed slice did not drain: {:?}",
         OBSERVED.lock().unwrap()
     );
-    // Two Entities drain concurrently, so only the per-Entity content is
-    // promised — the set of values, and the set of Entities they built.
+    // Two Cells drain concurrently, so only the per-Cell content is
+    // promised — the set of values, and the set of Cells they built.
     let mut replayed = OBSERVED.lock().unwrap()[2..].to_vec();
     replayed.sort();
     assert_eq!(
@@ -255,9 +255,9 @@ fn a_replayed_slice_transforms_exactly_as_the_live_run_did() {
         "replay must fold the same values the live run folded"
     );
     assert_eq!(
-        entity_keys(&instance),
+        cell_keys(&instance),
         vec!["AAPL".to_string(), "MSFT".to_string()],
-        "replay must reach the same Entities, creating no others"
+        "replay must reach the same Cells, creating no others"
     );
 }
 
@@ -265,7 +265,7 @@ fn a_replayed_slice_transforms_exactly_as_the_live_run_did() {
 
 static AFTER_PARK: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-test_procedure!(PoisonRecorder, "transform_poison_recorder", String => (), (), |input, _state, _ctx| {
+test_tasklet!(PoisonRecorder, "transform_poison_recorder", String => (), (), |input, _state, _ctx| {
     AFTER_PARK.lock().unwrap().push(input);
     Ok(())
 });
@@ -330,7 +330,7 @@ fn a_panicking_transform_parks_and_routing_continues() {
 
 // ----- 5: definition-time refusals -----
 
-test_procedure!(PlainTarget, "transform_plain_target", String => Vec<u8>, (), |input, _s, ctx| {
+test_tasklet!(PlainTarget, "transform_plain_target", String => Vec<u8>, (), |input, _s, ctx| {
     ctx.emit(input.into_bytes())
 });
 
@@ -368,7 +368,7 @@ refusal!(AfterTerminalOperative, "refuse_after_terminal", |c| {
         .into::<Recorder2>();
 });
 
-test_procedure!(Recorder2, "transform_recorder_2", Vec<u8> => (), (), |_i, _s, _c| { Ok(()) });
+test_tasklet!(Recorder2, "transform_recorder_2", Vec<u8> => (), (), |_i, _s, _c| { Ok(()) });
 
 refusal!(AfterKeyByOperative, "refuse_after_key", |c| {
     c.input::<String>("in")
@@ -406,13 +406,13 @@ refusal!(
     }
 );
 
-/// The live Entity keys of the operative's one dynamic Procedure, sorted —
+/// The live Cell keys of the operative's one dynamic Tasklet, sorted —
 /// the runtime's own record of what the edge key produced.
-fn entity_keys(instance: &Arc<flezha_runner::operative::StreamInstance>) -> Vec<String> {
+fn cell_keys(instance: &Arc<flezha_runner::operative::StreamInstance>) -> Vec<String> {
     let registry = instance.dynamic_registries[0]
         .as_ref()
         .expect("the keyed edge made the consumer dynamic");
-    let mut keys: Vec<String> = registry.entities.iter().map(|e| e.key().clone()).collect();
+    let mut keys: Vec<String> = registry.cells.iter().map(|e| e.key().clone()).collect();
     keys.sort();
     keys
 }
@@ -460,7 +460,7 @@ fn transform_declarations_are_validated() {
     assert!(
         issues::<MixedKeyingOperative>()
             .iter()
-            .any(|e| matches!(e, TopologyIssue::UnkeyedEdgeIntoDynamicProcedure { .. })),
+            .any(|e| matches!(e, TopologyIssue::UnkeyedEdgeIntoDynamicTasklet { .. })),
         "a dynamic consumer has no keyless path, so every edge into it must key"
     );
 
@@ -474,7 +474,7 @@ fn transform_declarations_are_validated() {
 
 #[derive(Default)]
 struct StaticFan;
-impl Procedure for StaticFan {
+impl Tasklet for StaticFan {
     type Input = String;
     type Output = ();
     type State = ();
@@ -484,11 +484,11 @@ impl Procedure for StaticFan {
     fn name() -> &'static str {
         "transform_static_fan"
     }
-    fn entity_keys() -> Vec<&'static str> {
+    fn cell_keys() -> Vec<&'static str> {
         vec!["a", "b"]
     }
-    const ENTITIES_FOR_OVERRIDDEN: bool = true;
-    fn entities_for(_input: &String) -> Vec<&'static str> {
+    const CELLS_FOR_OVERRIDDEN: bool = true;
+    fn cells_for(_input: &String) -> Vec<&'static str> {
         vec!["a", "b"]
     }
     fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
@@ -496,8 +496,8 @@ impl Procedure for StaticFan {
         &mut self,
         _: String,
         _: StateHandle<'_, Self>,
-        _: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        _: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         Ok(())
     }
 }
@@ -513,8 +513,8 @@ fn keying_a_static_mode_consumer_is_refused() {
     assert!(
         issues::<KeyByOnStaticOperative>().iter().any(|e| matches!(
             e,
-            TopologyIssue::KeyByOnUnkeyableTarget { procedure, .. }
-                if procedure == "transform_static_fan"
+            TopologyIssue::KeyByOnUnkeyableTarget { tasklet, .. }
+                if tasklet == "transform_static_fan"
         )),
         "static keying and edge keying are contradictory, not a precedence question"
     );

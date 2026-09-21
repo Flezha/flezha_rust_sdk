@@ -21,8 +21,8 @@ use common::{stays_quiet, wait_until};
 use flezha_runner::state::{NoChange, RestoreInitPayload, WallClock};
 use flezha_runner::transport::FlezhaStream;
 use flezha_runner::{
-    ChannelBuilder, Flezha, FlezhaError, Procedure, ProcedureCtx, ProcedureError, StateHandle,
-    StreamOperative,
+    ChannelBuilder, Flezha, FlezhaError, StateHandle, StreamOperative, Tasklet, TaskletCtx,
+    TaskletError,
 };
 use prost::Message;
 
@@ -30,8 +30,8 @@ use prost::Message;
 struct EmptyState;
 
 #[derive(Default)]
-struct PassProc;
-impl Procedure for PassProc {
+struct PassTask;
+impl Tasklet for PassTask {
     type Input = String;
     type Output = String;
     type State = EmptyState;
@@ -48,8 +48,8 @@ impl Procedure for PassProc {
         &mut self,
         _input: String,
         _state: StateHandle<'_, Self>,
-        _ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        _ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         Ok(())
     }
 }
@@ -60,7 +60,7 @@ impl StreamOperative for ProbeOperativeA {
         "lifecycle_probe_a"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<String>("in").into::<PassProc>();
+        c.input::<String>("in").into::<PassTask>();
     }
 }
 
@@ -70,7 +70,7 @@ impl StreamOperative for ProbeOperativeB {
         "lifecycle_probe_b"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<String>("in").into::<PassProc>();
+        c.input::<String>("in").into::<PassTask>();
     }
 }
 
@@ -80,7 +80,7 @@ impl StreamOperative for ProbeOperativeC {
         "lifecycle_probe_c"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<String>("in").into::<PassProc>();
+        c.input::<String>("in").into::<PassTask>();
     }
 }
 
@@ -93,7 +93,7 @@ impl StreamOperative for UnwiredOperative {
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
-            .into::<PassProc>()
+            .into::<PassTask>()
             .named("dangling")
             .keyed();
     }

@@ -1,10 +1,9 @@
 //! Round-trip tests for `serialize_operative_state` + `apply_init_values`
-//! per `entity_state.rs` Section 4 / Decision 10.
+//! per `cell_state.rs` Section 4 / Decision 10.
 
-use flezha_runner::command::entity_state::{
+use flezha_runner::command::cell_state::{
     apply_init_values, serialize_operative_state, serialize_selected_state, StatePurpose,
-    StateSelector, ENTITY_EVICTED, ENTITY_KEY_WITHOUT_PROCEDURE, ENTITY_NOT_FOUND,
-    PROCEDURE_NOT_FOUND,
+    StateSelector, CELL_EVICTED, CELL_KEY_WITHOUT_TASKLET, CELL_NOT_FOUND, TASKLET_NOT_FOUND,
 };
 use flezha_runner::state::{Change, NoChange, RestoreInitPayload, StateHandle, WallClock};
 use serde::{Deserialize, Serialize};
@@ -14,7 +13,7 @@ mod common;
 use common::prelude::*;
 use common::{dispatch_input, dummy_stream, setup, wait_until};
 
-// ----- Single-mode Procedure -----
+// ----- Single-mode Tasklet -----
 
 #[derive(Default, Serialize, Deserialize, PartialEq, Eq, Debug)]
 struct CounterState {
@@ -28,8 +27,8 @@ struct CounterChange {
 impl Change for CounterChange {}
 
 #[derive(Default)]
-struct CounterProcedure;
-impl Procedure for CounterProcedure {
+struct CounterTasklet;
+impl Tasklet for CounterTasklet {
     type Input = String;
     type Output = ();
     type State = CounterState;
@@ -49,8 +48,8 @@ impl Procedure for CounterProcedure {
         &mut self,
         input: String,
         mut state: StateHandle<'_, Self>,
-        _: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        _: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         state.apply(CounterChange {
             delta: input.trim().parse().unwrap_or(0),
         });
@@ -64,12 +63,12 @@ impl StreamOperative for CounterOperative {
         "counter_operative"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<String>("input").into::<CounterProcedure>();
+        c.input::<String>("input").into::<CounterTasklet>();
     }
 }
 
 #[test]
-fn single_mode_procedure_serializes_under_procedure_name_key() {
+fn single_mode_tasklet_serializes_under_tasklet_name_key() {
     let topology = build_topology_for::<CounterOperative>().expect("topology");
     let instance = StreamInstance::new(topology, Arc::from("inst-1"));
 
@@ -80,7 +79,7 @@ fn single_mode_procedure_serializes_under_procedure_name_key() {
 }
 
 #[test]
-fn apply_init_values_seeds_single_mode_procedure() {
+fn apply_init_values_seeds_single_mode_tasklet() {
     let topology = build_topology_for::<CounterOperative>().expect("topology");
     let instance = StreamInstance::new(topology, Arc::from("inst-2"));
 
@@ -91,7 +90,7 @@ fn apply_init_values_seeds_single_mode_procedure() {
     assert_eq!(v, json!({"counter": {"value": 42}}));
 }
 
-// ----- Static-mode Procedure -----
+// ----- Static-mode Tasklet -----
 
 #[derive(Default, Serialize, Deserialize, PartialEq, Eq, Debug)]
 struct OhlcState {
@@ -99,8 +98,8 @@ struct OhlcState {
 }
 
 #[derive(Default)]
-struct OhlcProcedure;
-impl Procedure for OhlcProcedure {
+struct OhlcTasklet;
+impl Tasklet for OhlcTasklet {
     type Input = String;
     type Output = ();
     type State = OhlcState;
@@ -113,19 +112,19 @@ impl Procedure for OhlcProcedure {
     fn init_state(_: Option<&str>, _p: Option<RestoreInitPayload<'_>>) -> OhlcState {
         OhlcState::default()
     }
-    fn entity_keys() -> Vec<&'static str> {
+    fn cell_keys() -> Vec<&'static str> {
         vec!["1m", "1h"]
     }
-    const ENTITIES_FOR_OVERRIDDEN: bool = true;
-    fn entities_for(_: &String) -> Vec<&'static str> {
+    const CELLS_FOR_OVERRIDDEN: bool = true;
+    fn cells_for(_: &String) -> Vec<&'static str> {
         vec!["1m"]
     }
     fn run(
         &mut self,
         _: String,
         _: StateHandle<'_, Self>,
-        _: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        _: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         Ok(())
     }
 }
@@ -136,12 +135,12 @@ impl StreamOperative for OhlcOperative {
         "ohlc_operative"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<String>("input").into::<OhlcProcedure>();
+        c.input::<String>("input").into::<OhlcTasklet>();
     }
 }
 
 #[test]
-fn static_mode_procedure_serializes_under_keyed_object() {
+fn static_mode_tasklet_serializes_under_keyed_object() {
     let topology = build_topology_for::<OhlcOperative>().expect("topology");
     let instance = StreamInstance::new(topology, Arc::from("inst-3"));
 
@@ -151,7 +150,7 @@ fn static_mode_procedure_serializes_under_keyed_object() {
 }
 
 #[test]
-fn apply_init_values_seeds_static_mode_procedure_per_key() {
+fn apply_init_values_seeds_static_mode_tasklet_per_key() {
     let topology = build_topology_for::<OhlcOperative>().expect("topology");
     let instance = StreamInstance::new(topology, Arc::from("inst-4"));
 
@@ -178,13 +177,13 @@ fn apply_init_values_empty_string_is_noop() {
 }
 
 #[test]
-fn apply_init_values_unknown_procedure_is_ignored() {
+fn apply_init_values_unknown_tasklet_is_ignored() {
     let topology = build_topology_for::<CounterOperative>().expect("topology");
     let instance = StreamInstance::new(topology, Arc::from("inst-6"));
 
     apply_init_values(
         &instance,
-        "{\"counter\":{\"value\":7},\"bogus_procedure\":{\"x\":1}}",
+        "{\"counter\":{\"value\":7},\"bogus_tasklet\":{\"x\":1}}",
     )
     .unwrap();
     let bytes = serialize_operative_state(&instance);
@@ -214,7 +213,7 @@ fn round_trip_static_mode_through_serialize_then_apply() {
 
 // ----- Live read: selector, dynamic coverage, seq, refusals -----
 
-/// Two Procedures on one Operative, so a `procedure` selector has something to
+/// Two Tasklets on one Operative, so a `tasklet` selector has something to
 /// exclude.
 struct PairOperative;
 impl StreamOperative for PairOperative {
@@ -222,20 +221,20 @@ impl StreamOperative for PairOperative {
         "pair_operative"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<String>("counter_in").into::<CounterProcedure>();
-        c.input::<String>("ohlc_in").into::<OhlcProcedure>();
+        c.input::<String>("counter_in").into::<CounterTasklet>();
+        c.input::<String>("ohlc_in").into::<OhlcTasklet>();
     }
 }
 
-/// Dynamic-mode: Entities exist only once a key has been seen.
+/// Dynamic-mode: Cells exist only once a key has been seen.
 #[derive(Default, Serialize, Deserialize, PartialEq, Eq, Debug)]
 struct CandleState {
     ticks: i64,
 }
 
 #[derive(Default)]
-struct CandleProcedure;
-impl Procedure for CandleProcedure {
+struct CandleTasklet;
+impl Tasklet for CandleTasklet {
     type Input = String;
     type Output = ();
     type State = CandleState;
@@ -248,15 +247,15 @@ impl Procedure for CandleProcedure {
     fn init_state(_: Option<&str>, _p: Option<RestoreInitPayload<'_>>) -> CandleState {
         CandleState::default()
     }
-    fn entity_idle_ttl() -> Option<std::time::Duration> {
+    fn cell_idle_ttl() -> Option<std::time::Duration> {
         Some(std::time::Duration::from_millis(50))
     }
     fn run(
         &mut self,
         _: String,
         _: StateHandle<'_, Self>,
-        _: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        _: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         Ok(())
     }
 }
@@ -269,20 +268,20 @@ impl StreamOperative for CandleOperative {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .key_by(|s: &String| s.clone())
-            .into::<CandleProcedure>();
+            .into::<CandleTasklet>();
     }
 }
 
 fn read(
     instance: &Arc<StreamInstance>,
-    procedure: Option<&str>,
+    tasklet: Option<&str>,
     key: Option<&str>,
 ) -> (Value, Option<u64>) {
     let (bytes, seq) = serialize_selected_state(
         instance,
         StateSelector {
-            procedure,
-            entity_key: key,
+            tasklet,
+            cell_key: key,
         },
         StatePurpose::LiveRead,
     )
@@ -291,31 +290,31 @@ fn read(
 }
 
 #[test]
-fn a_selector_narrows_to_one_entity_of_many_and_carries_its_seq() {
+fn a_selector_narrows_to_one_cell_of_many_and_carries_its_seq() {
     let (_handle, instance) = setup::<PairOperative>("sel-1");
 
     let (all, all_seq) = read(&instance, None, None);
     assert_eq!(
         all,
         json!({"counter": {"value": 0}, "ohlc": {"1m": {"high": 0}, "1h": {"high": 0}}}),
-        "no selector covers every Procedure"
+        "no selector covers every Tasklet"
     );
-    assert_eq!(all_seq, None, "a multi-Entity read names no single version");
+    assert_eq!(all_seq, None, "a multi-Cell read names no single version");
 
-    let (procedure_only, _) = read(&instance, Some("ohlc"), None);
+    let (tasklet_only, _) = read(&instance, Some("ohlc"), None);
     assert_eq!(
-        procedure_only,
+        tasklet_only,
         json!({"ohlc": {"1m": {"high": 0}, "1h": {"high": 0}}}),
-        "a procedure selector excludes the other Procedure entirely"
+        "a tasklet selector excludes the other Tasklet entirely"
     );
 
     let (one, seq) = read(&instance, Some("ohlc"), Some("1m"));
     assert_eq!(one, json!({"ohlc": {"1m": {"high": 0}}}));
-    assert_eq!(seq, Some(0), "one Entity ⇒ its change_seq is reported");
+    assert_eq!(seq, Some(0), "one Cell ⇒ its change_seq is reported");
 }
 
 #[test]
-fn a_single_mode_procedure_selector_names_exactly_one_entity() {
+fn a_single_mode_tasklet_selector_names_exactly_one_cell() {
     let (_handle, instance) = setup::<PairOperative>("sel-2");
     let (value, seq) = read(&instance, Some("counter"), None);
 
@@ -324,7 +323,7 @@ fn a_single_mode_procedure_selector_names_exactly_one_entity() {
 }
 
 #[test]
-fn dynamic_mode_entities_serialize_under_their_live_keys() {
+fn dynamic_mode_cells_serialize_under_their_live_keys() {
     let (_handle, instance) = setup::<CandleOperative>("dyn-read-1");
     let registry = instance.dynamic_registries[0]
         .as_ref()
@@ -336,7 +335,7 @@ fn dynamic_mode_entities_serialize_under_their_live_keys() {
     assert_eq!(
         all,
         json!({"candle": {"BTCUSD@1m": {"ticks": 0}, "ETHUSD@1m": {"ticks": 0}}}),
-        "a dynamic Procedure reports the keys its registry holds"
+        "a dynamic Tasklet reports the keys its registry holds"
     );
 
     let (one, seq) = read(&instance, Some("candle"), Some("BTCUSD@1m"));
@@ -345,7 +344,7 @@ fn dynamic_mode_entities_serialize_under_their_live_keys() {
 }
 
 #[test]
-fn apply_init_values_cannot_seed_a_dynamic_mode_procedure() {
+fn apply_init_values_cannot_seed_a_dynamic_mode_tasklet() {
     let (_handle, instance) = setup::<CandleOperative>("dyn-seed-1");
 
     apply_init_values(&instance, "{\"candle\":{\"BTCUSD@1m\":{\"ticks\":9}}}").unwrap();
@@ -359,46 +358,46 @@ fn apply_init_values_cannot_seed_a_dynamic_mode_procedure() {
     assert_eq!(
         all,
         json!({"candle": {"BTCUSD@1m": {"ticks": 0}}}),
-        "no Entity exists at the bind, so the seed reaches none and the key \
+        "no Cell exists at the bind, so the seed reaches none and the key \
          minted afterwards is still the class default"
     );
 }
 
 #[test]
-fn an_entity_key_without_a_procedure_is_refused() {
+fn a_cell_key_without_a_tasklet_is_refused() {
     let (_handle, instance) = setup::<PairOperative>("sel-3");
     let err = serialize_selected_state(
         &instance,
         StateSelector {
-            procedure: None,
-            entity_key: Some("1m"),
+            tasklet: None,
+            cell_key: Some("1m"),
         },
         StatePurpose::LiveRead,
     )
-    .expect_err("an Entity key is unique only within its Procedure")
+    .expect_err("a Cell key is unique only within its Tasklet")
     .to_string();
 
     assert!(
-        err.starts_with(ENTITY_KEY_WITHOUT_PROCEDURE),
+        err.starts_with(CELL_KEY_WITHOUT_TASKLET),
         "refusal leads with its canonical token, got: {err}"
     );
 }
 
 #[test]
-fn an_unknown_procedure_is_refused() {
+fn an_unknown_tasklet_is_refused() {
     let (_handle, instance) = setup::<PairOperative>("sel-4");
     let err = serialize_selected_state(
         &instance,
         StateSelector {
-            procedure: Some("nope"),
-            entity_key: None,
+            tasklet: Some("nope"),
+            cell_key: None,
         },
         StatePurpose::LiveRead,
     )
-    .expect_err("no such Procedure")
+    .expect_err("no such Tasklet")
     .to_string();
 
-    assert!(err.starts_with(PROCEDURE_NOT_FOUND), "got: {err}");
+    assert!(err.starts_with(TASKLET_NOT_FOUND), "got: {err}");
 }
 
 #[test]
@@ -412,38 +411,38 @@ fn an_unknown_key_is_refused_distinctly_from_an_evicted_one() {
     let never = serialize_selected_state(
         &instance,
         StateSelector {
-            procedure: Some("candle"),
-            entity_key: Some("NEVER"),
+            tasklet: Some("candle"),
+            cell_key: Some("NEVER"),
         },
         StatePurpose::LiveRead,
     )
-    .expect_err("no Entity by that key")
+    .expect_err("no Cell by that key")
     .to_string();
-    assert!(never.starts_with(ENTITY_NOT_FOUND), "got: {never}");
+    assert!(never.starts_with(CELL_NOT_FOUND), "got: {never}");
 
     // Evict destructively, then read the same key back. Backdating the
     // activity stamp makes the sweep decide on the TTL, not on the clock.
     registry
-        .entities
+        .cells
         .get("BTCUSD@1m")
         .expect("live before the sweep")
         .last_activity_ms
         .store(-1_000, std::sync::atomic::Ordering::Relaxed);
     registry.reap_sweep(std::time::Duration::ZERO);
-    assert!(registry.entities.is_empty(), "the idle Entity is evicted");
+    assert!(registry.cells.is_empty(), "the idle Cell is evicted");
 
     let evicted = serialize_selected_state(
         &instance,
         StateSelector {
-            procedure: Some("candle"),
-            entity_key: Some("BTCUSD@1m"),
+            tasklet: Some("candle"),
+            cell_key: Some("BTCUSD@1m"),
         },
         StatePurpose::LiveRead,
     )
-    .expect_err("an evicted Entity is refused, not resurrected")
+    .expect_err("an evicted Cell is refused, not resurrected")
     .to_string();
     assert!(
-        evicted.starts_with(ENTITY_EVICTED),
+        evicted.starts_with(CELL_EVICTED),
         "eviction is a distinct diagnosis, got: {evicted}"
     );
 
@@ -456,18 +455,18 @@ fn an_unknown_key_is_refused_distinctly_from_an_evicted_one() {
 }
 
 /// A read must see what `run` applied, whether or not the flusher has shipped
-/// it. The Entity is deregistered from the flusher so "not yet flushed" is a
+/// it. The Cell is deregistered from the flusher so "not yet flushed" is a
 /// fact of the test rather than a race against the linger window, and its
 /// `change_seq` is armed at 7 to stand for "records 0..6 are durable".
 #[test]
 fn a_read_reflects_an_applied_but_unflushed_change_and_reports_a_seq_above_the_persisted_one() {
     let (handle, instance) = setup::<CounterOperative>("unflushed-1");
 
-    let slot = Arc::clone(&instance.entities[0][0]);
+    let slot = Arc::clone(&instance.cells[0][0]);
     let entry_id = slot
         .flusher_entry_id
-        .expect("a changeful Entity is registered");
-    flezha_runner::entity::flusher::EntityFlusher::instance().deregister(entry_id);
+        .expect("a changeful Cell is registered");
+    flezha_runner::cell::flusher::CellFlusher::instance().deregister(entry_id);
     slot.change_seq
         .store(7, std::sync::atomic::Ordering::Relaxed);
 
@@ -491,7 +490,7 @@ fn a_read_reflects_an_applied_but_unflushed_change_and_reports_a_seq_above_the_p
     assert_eq!(
         seq,
         Some(7),
-        "the reported seq is the Entity's next WAL seq — above every persisted one"
+        "the reported seq is the Cell's next WAL seq — above every persisted one"
     );
     assert!(
         !slot.flush_buffer.lock().unwrap().is_empty(),
@@ -502,14 +501,14 @@ fn a_read_reflects_an_applied_but_unflushed_change_and_reports_a_seq_above_the_p
 /// A read is not a compaction: it drains nothing, ships no snapshot, and moves
 /// no seq. Those three are exactly what compaction does before it truncates.
 #[test]
-fn a_read_leaves_the_entity_undrained_and_its_seq_unchanged() {
+fn a_read_leaves_the_cell_undrained_and_its_seq_unchanged() {
     let (handle, instance) = setup::<CounterOperative>("noside-1");
 
-    let slot = Arc::clone(&instance.entities[0][0]);
+    let slot = Arc::clone(&instance.cells[0][0]);
     let entry_id = slot
         .flusher_entry_id
-        .expect("a changeful Entity is registered");
-    flezha_runner::entity::flusher::EntityFlusher::instance().deregister(entry_id);
+        .expect("a changeful Cell is registered");
+    flezha_runner::cell::flusher::CellFlusher::instance().deregister(entry_id);
     slot.change_seq
         .store(3, std::sync::atomic::Ordering::Relaxed);
 
@@ -541,13 +540,13 @@ fn a_read_leaves_the_entity_undrained_and_its_seq_unchanged() {
 /// to nothing — the migration/handover caller's frame is byte-identical to the
 /// pre-selector one.
 #[test]
-fn a_selector_less_entity_state_command_encodes_exactly_as_before() {
+fn a_selector_less_cell_state_command_encodes_exactly_as_before() {
     use prost::Message;
 
-    let selectorless = flezha_runner::pb::EntityState {
+    let selectorless = flezha_runner::pb::CellState {
         operative_id: "op-1".to_string(),
-        procedure: String::new(),
-        entity_key: String::new(),
+        tasklet: String::new(),
+        cell_key: String::new(),
     };
 
     // Field 1 (`operative_id`), length-delimited, four bytes of "op-1".
@@ -556,10 +555,10 @@ fn a_selector_less_entity_state_command_encodes_exactly_as_before() {
         vec![0x0a, 0x04, b'o', b'p', b'-', b'1'],
     );
 
-    let selected = flezha_runner::pb::EntityState {
+    let selected = flezha_runner::pb::CellState {
         operative_id: "op-1".to_string(),
-        procedure: "candle".to_string(),
-        entity_key: "BTCUSD@1m".to_string(),
+        tasklet: "candle".to_string(),
+        cell_key: "BTCUSD@1m".to_string(),
     };
     assert!(selected.encode_to_vec().len() > selectorless.encode_to_vec().len());
 }

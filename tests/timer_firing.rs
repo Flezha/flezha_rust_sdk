@@ -1,9 +1,9 @@
 //! Both trigger paths: an event-time firing rides the watermark, a
 //! processing-time one rides the wall clock, and each arrives through the
-//! Entity mailbox rather than a direct `on_timer` call.
+//! Cell mailbox rather than a direct `on_timer` call.
 
-use flezha_runner::entity::state_sink;
-use flezha_runner::entity::timer::{TimerKind, TimerOp};
+use flezha_runner::cell::state_sink;
+use flezha_runner::cell::timer::{TimerKind, TimerOp};
 
 mod common;
 use common::prelude::*;
@@ -41,16 +41,16 @@ fn crossing_the_high_water_fires_in_order_before_the_input() {
         ]
     );
     assert_eq!(
-        pending(&instance.entities[0][0], TimerKind::EventTime),
+        pending(&instance.cells[0][0], TimerKind::EventTime),
         vec![300],
         "300 is beyond the new high-water and stays pending"
     );
 }
 
-/// Spec: "A quiet Entity does not fire" — event time is a property of the
-/// input, so an Entity nothing arrives at has no clock to cross.
+/// Spec: "A quiet Cell does not fire" — event time is a property of the
+/// input, so a Cell nothing arrives at has no clock to cross.
 #[test]
-fn a_quiet_entity_never_fires_its_event_time_timer() {
+fn a_quiet_cell_never_fires_its_event_time_timer() {
     let _guard = timer_test_guard();
     take_order();
 
@@ -58,7 +58,7 @@ fn a_quiet_entity_never_fires_its_event_time_timer() {
     let stream = dummy_stream();
     dispatch_input(&handle, "timers-window-quiet", "in", tick(50), &stream);
     assert!(wait_until(
-        || pending(&instance.entities[0][0], TimerKind::EventTime).len() == 3,
+        || pending(&instance.cells[0][0], TimerKind::EventTime).len() == 3,
         Duration::from_secs(5)
     ));
 
@@ -80,7 +80,7 @@ fn a_quiet_entity_never_fires_its_event_time_timer() {
 /// The processing-time path end to end: an input arms a deadline, nothing
 /// else arrives, and `on_timer` runs with the SCHEDULED timestamp — not the
 /// wall clock at which a poller got round to promoting it. Also spec "Timers
-/// are per Entity": only the key that registered fires.
+/// are per Cell": only the key that registered fires.
 #[test]
 fn a_processing_time_timer_fires_from_the_wake_list_with_its_scheduled_time() {
     let _guard = timer_test_guard();
@@ -102,15 +102,15 @@ fn a_processing_time_timer_fires_from_the_wake_list_with_its_scheduled_time() {
         "the deadline must fire"
     );
     // A stray second firing gets its chance to appear and does not — a
-    // per-Entity timer must not fan out.
+    // per-Cell timer must not fan out.
     assert!(stays_quiet(
         || firings_snapshot().len() > 1,
         Duration::from_millis(100)
     ));
     let fired = take_firings();
-    assert_eq!(fired.len(), 1, "one Entity, one timer, one firing");
+    assert_eq!(fired.len(), 1, "one Cell, one timer, one firing");
     let (key, kind, fired_at) = &fired[0];
-    assert_eq!(key, "alice", "the firing carries the registering Entity");
+    assert_eq!(key, "alice", "the firing carries the registering Cell");
     assert_eq!(*kind, "processing_time");
     let after = wall_now_ms();
     assert!(
@@ -135,7 +135,7 @@ fn a_firing_into_a_saturated_consumer_waits_for_room_without_holding_a_poller() 
 
     let (handle, instance) = setup::<SaturatedSessionOperative>("timers-saturated");
     let registry = Arc::clone(instance.dynamic_registries[0].as_ref().expect("dynamic"));
-    let slot = registry.get_or_create("alice").expect("entity");
+    let slot = registry.get_or_create("alice").expect("cell");
     let stream = dummy_stream();
 
     // Inflight held with no drainer, then both slots filled: nothing pops
@@ -157,7 +157,7 @@ fn a_firing_into_a_saturated_consumer_waits_for_room_without_holding_a_poller() 
         .lock()
         .unwrap()
         .apply(&TimerOp::register(TimerKind::ProcessingTime, 1));
-    flezha_runner::entity::timer::rearm_restored(&slot);
+    flezha_runner::cell::timer::rearm_restored(&slot);
 
     // Held, not delivered and not lost: with no room the promotion pass keeps
     // re-recording the entry. (The retired behaviour ran the round inline here

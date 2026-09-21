@@ -1,4 +1,4 @@
-//! Per-Entity timer fixtures: the classes the timer suites arm deadlines on,
+//! Per-Cell timer fixtures: the classes the timer suites arm deadlines on,
 //! the process-global sink guard they share, and the readers that turn a
 //! pending set, a WAL record and a captured frame back into assertions.
 
@@ -6,15 +6,15 @@ use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
+use flezha_runner::cell::flusher::{EffectRecordBody, SendError, SendFrameFn};
+use flezha_runner::cell::header::{HeaderTemplate, FORMAT_ID_EFFECT_RECORD, FORMAT_ID_TIMER_OPS};
+use flezha_runner::cell::state_sink;
+use flezha_runner::cell::timer::{PendingTimers, TimerKind, TimerOp};
 use flezha_runner::channel::ChannelBuilder;
-use flezha_runner::entity::flusher::{EffectRecordBody, SendError, SendFrameFn};
-use flezha_runner::entity::header::{HeaderTemplate, FORMAT_ID_EFFECT_RECORD, FORMAT_ID_TIMER_OPS};
-use flezha_runner::entity::state_sink;
-use flezha_runner::entity::timer::{PendingTimers, TimerKind, TimerOp};
 use flezha_runner::operative::StreamOperative;
-use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError, StateHandle};
 use flezha_runner::state::{NoChange, RestoreInitPayload};
-use flezha_runner::testing::ProcedureTestHarness;
+use flezha_runner::tasklet::{StateHandle, Tasklet, TaskletCtx, TaskletError};
+use flezha_runner::testing::TaskletTestHarness;
 use flezha_runner::OverflowPolicy;
 
 use super::*;
@@ -61,7 +61,7 @@ pub struct SessionState {
     pub closed_at: Vec<u64>,
 }
 
-/// One `on_timer` this suite's fixtures ran: `(entity key, kind, fired_at)`.
+/// One `on_timer` this suite's fixtures ran: `(cell key, kind, fired_at)`.
 pub type Firing = (String, &'static str, u64);
 
 pub static FIRINGS: OnceLock<Mutex<Vec<Firing>>> = OnceLock::new();
@@ -89,12 +89,12 @@ pub fn note_firing(key: &str, kind: TimerKind, fired_at: u64) {
 /// The worked session-timeout shape: each input pushes the idle deadline out,
 /// and the firing closes the session. Wall clock, so `timer_after` anchors on
 /// real time and a due promotion is what fires it. `CAP` overrides the
-/// mailbox capacity; `0` keeps the Procedure default.
+/// mailbox capacity; `0` keeps the Tasklet default.
 #[derive(Default)]
-pub struct SessionProc<const CAP: usize = 0> {
+pub struct SessionTask<const CAP: usize = 0> {
     key: String,
 }
-impl<const CAP: usize> Procedure for SessionProc<CAP> {
+impl<const CAP: usize> Tasklet for SessionTask<CAP> {
     type Input = String;
     type Output = String;
     type State = SessionState;
@@ -102,7 +102,7 @@ impl<const CAP: usize> Procedure for SessionProc<CAP> {
     type Clock = flezha_runner::state::WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "timers_session_procedure"
+        "timers_session_tasklet"
     }
     fn mailbox_capacity() -> usize {
         if CAP == 0 {
@@ -125,8 +125,8 @@ impl<const CAP: usize> Procedure for SessionProc<CAP> {
         &mut self,
         input: String,
         mut state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         self.key = input.clone();
         state.apply(SessionChange::Touched(ctx.now()));
         ctx.timer_after(Duration::from_millis(TIMEOUT_MS))?;
@@ -137,8 +137,8 @@ impl<const CAP: usize> Procedure for SessionProc<CAP> {
         fired_at: u64,
         kind: TimerKind,
         mut state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         note_firing(&self.key, kind, fired_at);
         state.apply(SessionChange::Closed(fired_at));
         ctx.emit::<String>(format!("closed@{fired_at}"))?;
@@ -154,7 +154,7 @@ impl StreamOperative for SessionOperative {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .key_by(|s: &String| s.clone())
-            .into::<SessionProc>()
+            .into::<SessionTask>()
             .sink_named("out");
     }
 }
@@ -170,7 +170,7 @@ impl StreamOperative for SaturatedSessionOperative {
         c.input::<String>("in")
             .on_full(OverflowPolicy::DropNothing)
             .key_by(|s: &String| s.clone())
-            .into::<SessionProc<2>>()
+            .into::<SessionTask<2>>()
             .sink_named("out");
     }
 }
@@ -213,8 +213,8 @@ pub fn note_order(entry: String) {
 /// Event-time fixture: the first input arms three timers ahead of itself; a
 /// later input crosses two of them.
 #[derive(Default)]
-pub struct WindowProc;
-impl Procedure for WindowProc {
+pub struct WindowTask;
+impl Tasklet for WindowTask {
     type Input = Tick;
     type Output = u64;
     type State = Vec<u64>;
@@ -222,7 +222,7 @@ impl Procedure for WindowProc {
     type Clock = flezha_runner::state::EventTimeFrom<TickTime>;
     type Config = ();
     fn name() -> &'static str {
-        "timers_window_procedure"
+        "timers_window_tasklet"
     }
     fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> Vec<u64> {
         Vec::new()
@@ -231,8 +231,8 @@ impl Procedure for WindowProc {
         &mut self,
         input: Tick,
         _state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         note_order(format!("run@{}", input.at));
         if input.at == 50 {
             for at in [300u64, 100, 200] {
@@ -246,8 +246,8 @@ impl Procedure for WindowProc {
         fired_at: u64,
         _kind: TimerKind,
         _state: StateHandle<'_, Self>,
-        _ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        _ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         note_order(format!("timer@{fired_at}"));
         Ok(())
     }
@@ -259,7 +259,7 @@ impl StreamOperative for WindowOperative {
         "timers_window_operative"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<Tick>("in").into::<WindowProc>();
+        c.input::<Tick>("in").into::<WindowTask>();
     }
 }
 
@@ -272,8 +272,8 @@ pub enum SurfaceCmd {
 }
 
 #[derive(Default)]
-pub struct SurfaceProc;
-impl Procedure for SurfaceProc {
+pub struct SurfaceTask;
+impl Tasklet for SurfaceTask {
     type Input = SurfaceCmd;
     type Output = ();
     type State = ();
@@ -281,18 +281,18 @@ impl Procedure for SurfaceProc {
     type Clock = flezha_runner::state::WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "timers_surface_procedure"
+        "timers_surface_tasklet"
     }
     fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn max_timers_per_entity() -> usize {
+    fn max_timers_per_cell() -> usize {
         3
     }
     fn run(
         &mut self,
         input: SurfaceCmd,
         _state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         match input {
             SurfaceCmd::Register => {
                 let at = ctx.timer_after(Duration::from_secs(30))?;
@@ -317,8 +317,8 @@ impl Procedure for SurfaceProc {
         _fired_at: u64,
         _kind: TimerKind,
         _state: StateHandle<'_, Self>,
-        _ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        _ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         Ok(())
     }
 }
@@ -327,7 +327,7 @@ pub fn tick(at: u64) -> Vec<u8> {
     serde_json::to_vec(&Tick { at }).expect("encode tick")
 }
 
-pub fn pending(slot: &Arc<flezha_runner::entity::EntitySlot>, kind: TimerKind) -> Vec<u64> {
+pub fn pending(slot: &Arc<flezha_runner::cell::CellSlot>, kind: TimerKind) -> Vec<u64> {
     slot.timers
         .lock()
         .unwrap_or_else(|p| p.into_inner())
@@ -335,26 +335,22 @@ pub fn pending(slot: &Arc<flezha_runner::entity::EntitySlot>, kind: TimerKind) -
 }
 
 /// Build one controller-framed WAL record carrying timer ops
-/// (`format_id = 3`), the shape `init_entity_with_payload` folds.
-pub fn timer_ops_record<S: Procedure>(seq: u64, ops: &[TimerOp]) -> Vec<u8> {
+/// (`format_id = 3`), the shape `init_cell_with_payload` folds.
+pub fn timer_ops_record<S: Tasklet>(seq: u64, ops: &[TimerOp]) -> Vec<u8> {
     let body = postcard::to_allocvec(ops).expect("encode ops");
     wal_record(
         seq,
         &body,
         HeaderTemplate {
             format_id: FORMAT_ID_TIMER_OPS,
-            ..flezha_runner::entity::header::header_template_for::<S>()
+            ..flezha_runner::cell::header::header_template_for::<S>()
         },
     )
 }
 
 /// Build one controller-framed effect record carrying both Changes and timer
 /// ops — the atomic shape a tier firing produces.
-pub fn effect_record<S: Procedure>(
-    seq: u64,
-    changes: Vec<Vec<u8>>,
-    timers: Vec<TimerOp>,
-) -> Vec<u8> {
+pub fn effect_record<S: Tasklet>(seq: u64, changes: Vec<Vec<u8>>, timers: Vec<TimerOp>) -> Vec<u8> {
     let body = postcard::to_allocvec(&EffectRecordBody {
         changes,
         outputs: Vec::new(),
@@ -369,16 +365,16 @@ pub fn effect_record<S: Procedure>(
         &body,
         HeaderTemplate {
             format_id: FORMAT_ID_EFFECT_RECORD,
-            ..flezha_runner::entity::header::header_template_for::<S>()
+            ..flezha_runner::cell::header::header_template_for::<S>()
         },
     )
 }
 
-pub fn restore<S: Procedure>(change_log: &[u8]) -> (S::State, PendingTimers)
+pub fn restore<S: Tasklet>(change_log: &[u8]) -> (S::State, PendingTimers)
 where
     S::State: serde::de::DeserializeOwned,
 {
-    let (state, timers, _migrated) = flezha_runner::entity::restore::init_entity_with_payload::<S>(
+    let (state, timers, _migrated) = flezha_runner::cell::restore::init_cell_with_payload::<S>(
         None,
         Some(&RestoreInitPayload {
             snapshot_header: &[],

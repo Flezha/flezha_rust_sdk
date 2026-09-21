@@ -1,6 +1,6 @@
 //! `route_latest`: the latest-document router building block.
 //!
-//! A dynamically-keyed procedure cannot receive a broadcast — every merge key
+//! A dynamically-keyed tasklet cannot receive a broadcast — every merge key
 //! is total, and inside a partitioned member a computed key is admitted against
 //! that member's key-group range. So an operative-wide document (a threshold
 //! table, a feature flag) needs a bridge, and the obvious one is unsafe:
@@ -10,7 +10,7 @@
 //! This block delivers on the key's **own next traffic item** instead, so the
 //! only keys emitted are keys whose traffic just proved this member owns them.
 //! The price is one tick of latency per key. The expansion is a merge into one
-//! single-entity procedure with journaled state — existing primitives only, so
+//! single-cell tasklet with journaled state — existing primitives only, so
 //! no new runtime semantics, wire change or replay path.
 
 use std::collections::HashMap;
@@ -19,9 +19,9 @@ use std::marker::PhantomData;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+use crate::cell::restore::RestoreInitPayload;
 use crate::channel::builder::{ChannelBuilder, Stream, StreamTarget};
-use crate::entity::restore::RestoreInitPayload;
-use crate::procedure::{Change, Procedure, ProcedureCtx, ProcedureError, StateHandle, WallClock};
+use crate::tasklet::{Change, StateHandle, Tasklet, TaskletCtx, TaskletError, WallClock};
 
 impl ChannelBuilder {
     /// Turn an operative-wide document stream into per-key deliveries: every
@@ -60,15 +60,15 @@ impl ChannelBuilder {
     /// and never parsed, so parsing (and its failure mode) stays with the
     /// consumer exactly as when the consumer read the document stream directly.
     ///
-    /// The block expands to a merge into one SDK-packaged single-entity
-    /// procedure whose `{document, version, delivered}` state rides the
+    /// The block expands to a merge into one SDK-packaged single-cell
+    /// tasklet whose `{document, version, delivered}` state rides the
     /// standard change journal — it is authoring sugar, not a runtime feature.
-    /// The node is named `route_latest` like any procedure node, so a second
+    /// The node is named `route_latest` like any tasklet node, so a second
     /// router in one operative needs [`route_latest_named`] to name it. The
-    /// returned stream is an ordinary inter-procedure stream whose value
-    /// carries its own key; `.keyed()` on it has no Entity key to stamp (the
-    /// router is single-entity), so output identity belongs downstream, where
-    /// the key is the consuming Entity's own.
+    /// returned stream is an ordinary inter-tasklet stream whose value
+    /// carries its own key; `.keyed()` on it has no Cell key to stamp (the
+    /// router is single-cell), so output identity belongs downstream, where
+    /// the key is the consuming Cell's own.
     ///
     /// [`route_latest_named`]: ChannelBuilder::route_latest_named
     pub fn route_latest<'b, D, T, K1, K2, F>(
@@ -111,7 +111,7 @@ impl ChannelBuilder {
     /// The expansion both spellings share: the key function is an edge
     /// transform on the traffic stream (so the traffic payload is replaced by
     /// its key and never reaches the router), and the two streams are one merge
-    /// into the packaged procedure.
+    /// into the packaged tasklet.
     fn wire_route_latest<'b, D, T, K1, K2, F>(
         &'b self,
         documents: Stream<'b, D, K1>,
@@ -135,7 +135,7 @@ impl ChannelBuilder {
 }
 
 /// The packaged router's merged input: a document off the document stream, or
-/// the Entity key one traffic item proved this member owns. The traffic
+/// the Cell key one traffic item proved this member owns. The traffic
 /// payload itself is dropped by the edge transform that computed the key —
 /// the router has no use for it and holding it would put application values
 /// in SDK-owned state.
@@ -148,7 +148,7 @@ pub(crate) enum RouteLatestInput<D> {
 /// The router's journaled state: the retained document, the version that
 /// identifies it, and the version each key has already received.
 ///
-/// `delivered` grows with the keys this member sees, which is the Entity count
+/// `delivered` grows with the keys this member sees, which is the Cell count
 /// it already pays for — not a new unbounded-growth class.
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct RouterState<D> {
@@ -169,7 +169,7 @@ pub(crate) enum RouterChange<D> {
 
 impl<D: Serialize + DeserializeOwned + Send + Sync + 'static> Change for RouterChange<D> {}
 
-/// The single-entity procedure [`ChannelBuilder::route_latest`] expands to.
+/// The single-cell tasklet [`ChannelBuilder::route_latest`] expands to.
 /// Not public: the block is the whole authoring surface, and the guarantee it
 /// carries (deliver only on the key's own traffic) holds because nothing else
 /// can wire this node.
@@ -185,7 +185,7 @@ impl<D> Default for LatestRouter<D> {
     }
 }
 
-impl<D> Procedure for LatestRouter<D>
+impl<D> Tasklet for LatestRouter<D>
 where
     D: Clone + Eq + Serialize + DeserializeOwned + Send + Sync + 'static,
 {
@@ -224,8 +224,8 @@ where
         &mut self,
         input: Self::Input,
         mut state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         match input {
             RouteLatestInput::Document(document) => {
                 // Version 0 means "nothing retained", so the first document

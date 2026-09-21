@@ -1,0 +1,5 @@
+error: #[flezha::tasklet]: `cell_key` no longer exists; declare the Cell key on the wiring instead: `.key_by(f)` on the stream that feeds this tasklet
+ --> tests/ui/tasklet_cell_key_removed.rs:3:36
+  |
+3 | #[flezha_runner::tasklet(id = "p", cell_key = sk)]
+  |                                    ^^^^^^^^

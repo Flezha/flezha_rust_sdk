@@ -1,9 +1,9 @@
-//! Fixtures whose subject is persisted Entity state: the effectively-once tier
+//! Fixtures whose subject is persisted Cell state: the effectively-once tier
 //! store, checkpoint granularity and batched confirmation, the counter
 //! reference operatives and the persistence-off class, plus the
 //! `mix bench.roundtrip` classes built on them.
 
-use crate::entity::DoNothingProcedure;
+use crate::cell::DoNothingTasklet;
 use crate::*;
 
 // -- TierStoreOperative (effectively-once) ----------------------------------------
@@ -26,8 +26,8 @@ enum TierStoreChange {
 impl Change for TierStoreChange {}
 
 #[derive(Default)]
-struct TierStoreProcedure;
-impl Procedure for TierStoreProcedure {
+struct TierStoreTasklet;
+impl Tasklet for TierStoreTasklet {
     type Input = String;
     type Output = String;
     type State = TierStoreState;
@@ -35,7 +35,7 @@ impl Procedure for TierStoreProcedure {
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "tier_store_procedure"
+        "tier_store_tasklet"
     }
     fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> TierStoreState {
         TierStoreState::default()
@@ -51,15 +51,15 @@ impl Procedure for TierStoreProcedure {
         &mut self,
         input: String,
         mut state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         let (key, value) = input.split_once(':').unwrap_or((input.as_str(), ""));
         let (key, value) = (key.to_string(), value.to_string());
         // Dead-letter e2e: a "poison" value fails every attempt, exhausting
-        // the retry budget so the tier-on atomic park advances the entity
+        // the retry budget so the tier-on atomic park advances the cell
         // past it (and the min-watermark with it).
         if value == "poison" {
-            return Err(ProcedureError::Custom("poison value".into()));
+            return Err(TaskletError::Custom("poison value".into()));
         }
         state.apply(TierStoreChange::Set(key.clone(), value.clone()));
         ctx.emit_keyed::<String>(key.clone(), format!("{key}={value}"))
@@ -81,7 +81,7 @@ impl StreamOperative for TierStoreOperative {
         c.input::<String>("input")
             .on_full(OverflowPolicy::DropNothing)
             .retry_backoff_ms(300)
-            .into::<TierStoreProcedure>()
+            .into::<TierStoreTasklet>()
             .keyed()
             .sink_named("sink");
     }
@@ -104,7 +104,7 @@ impl StreamOperative for BenchEchoOperative {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .on_full(OverflowPolicy::DropNothing)
-            .into::<DoNothingProcedure>()
+            .into::<DoNothingTasklet>()
             .sink_named("echo");
     }
 }
@@ -117,14 +117,14 @@ impl StreamOperative for BenchKeyedOperative {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .on_full(OverflowPolicy::DropNothing)
-            .into::<TierStoreProcedure>()
+            .into::<TierStoreTasklet>()
             .keyed()
             .sink_named("sink");
     }
 }
 
 // Same again with local state persistence off. `bench_keyed` still writes a WAL
-// record per input even with the durability tier off, because per-Entity
+// record per input even with the durability tier off, because per-Cell
 // persistence is a separate, default-on class property — so it is not a
 // like-for-like against an engine whose keyed state is pure heap. This variant
 // isolates that cost.
@@ -138,7 +138,7 @@ impl StreamOperative for BenchKeyedNoPersistOperative {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .on_full(OverflowPolicy::DropNothing)
-            .into::<TierStoreProcedure>()
+            .into::<TierStoreTasklet>()
             .keyed()
             .sink_named("sink");
     }
@@ -153,8 +153,8 @@ impl StreamOperative for BenchKeyedNoPersistOperative {
 // e2e crashes in the middle of.
 
 #[derive(Default)]
-struct CheckpointStoreProcedure;
-impl Procedure for CheckpointStoreProcedure {
+struct CheckpointStoreTasklet;
+impl Tasklet for CheckpointStoreTasklet {
     type Input = String;
     type Output = String;
     type State = TierStoreState;
@@ -162,7 +162,7 @@ impl Procedure for CheckpointStoreProcedure {
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "checkpoint_store_procedure"
+        "checkpoint_store_tasklet"
     }
     fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> TierStoreState {
         TierStoreState::default()
@@ -178,8 +178,8 @@ impl Procedure for CheckpointStoreProcedure {
         &mut self,
         input: String,
         mut state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         let (key, value) = input.split_once(':').unwrap_or((input.as_str(), ""));
         let (key, value) = (key.to_string(), value.to_string());
         if key == "commit" {
@@ -200,7 +200,7 @@ impl StreamOperative for CheckpointStoreOperative {
         c.effectively_once();
         c.checkpoint_ack();
         c.input::<String>("input")
-            .into::<CheckpointStoreProcedure>()
+            .into::<CheckpointStoreTasklet>()
             .keyed()
             .sink_named("sink");
     }
@@ -208,11 +208,11 @@ impl StreamOperative for CheckpointStoreOperative {
 
 // -- CheckpointBatchedOperative (amortise-effectively-once-output-confirmation) --
 //
-// The same procedure as `checkpoint_store`, declared `outputs_at_checkpoint`:
+// The same tasklet as `checkpoint_store`, declared `outputs_at_checkpoint`:
 // the interval's outputs are held with its changes and ship inside its
 // checkpoint record. `checkpoint_every` is deliberately absent so the test
 // drives the close itself — with `commit:` for the batch case, and with the
-// delay alone for the quiet-Entity case.
+// delay alone for the quiet-Cell case.
 pub(crate) struct CheckpointBatchedOperative;
 impl StreamOperative for CheckpointBatchedOperative {
     fn factory_id() -> &'static str {
@@ -223,7 +223,7 @@ impl StreamOperative for CheckpointBatchedOperative {
         c.checkpoint_ack();
         c.outputs_at_checkpoint(1_500);
         c.input::<String>("input")
-            .into::<CheckpointStoreProcedure>()
+            .into::<CheckpointStoreTasklet>()
             .keyed()
             .sink_named("sink");
     }
@@ -233,13 +233,13 @@ impl StreamOperative for CheckpointBatchedOperative {
 //
 // `checkpoint_store` driven by a DECLARED cadence instead of a "commit:" input:
 // the same keyed upsert, acknowledging every `FLEZHA_BENCH_CHECKPOINT_EVERY`
-// inputs (default 500) per Entity. The amortised posture, comparable to other engines'
+// inputs (default 500) per Cell. The amortised posture, comparable to other engines'
 // checkpoint barrier. `FLEZHA_BENCH_CHECKPOINT_OUTPUTS=at_checkpoint` (with
 // `FLEZHA_BENCH_CHECKPOINT_DELAY_MS`) additionally holds the interval's outputs
 // until it closes, which is the part-2 opt-in under measurement.
 #[derive(Default)]
-struct BenchCheckpointProcedure;
-impl Procedure for BenchCheckpointProcedure {
+struct BenchCheckpointTasklet;
+impl Tasklet for BenchCheckpointTasklet {
     type Input = String;
     type Output = String;
     type State = TierStoreState;
@@ -247,7 +247,7 @@ impl Procedure for BenchCheckpointProcedure {
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "bench_checkpoint_procedure"
+        "bench_checkpoint_tasklet"
     }
     fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> TierStoreState {
         TierStoreState::default()
@@ -263,8 +263,8 @@ impl Procedure for BenchCheckpointProcedure {
         &mut self,
         input: String,
         mut state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         let (key, value) = input.split_once(':').unwrap_or((input.as_str(), ""));
         let (key, value) = (key.to_string(), value.to_string());
         state.apply(TierStoreChange::Set(key.clone(), value.clone()));
@@ -292,7 +292,7 @@ impl StreamOperative for BenchCheckpointOperative {
         }
         c.input::<String>("input")
             .on_full(OverflowPolicy::DropNothing)
-            .into::<BenchCheckpointProcedure>()
+            .into::<BenchCheckpointTasklet>()
             .keyed()
             .sink_named("sink");
     }
@@ -300,7 +300,7 @@ impl StreamOperative for BenchCheckpointOperative {
 
 // -- StatefulCounterOperative (Section 6.1) --------------------------------------
 //
-// One Procedure `CounterProcedure` with `Change = CounterChange { delta: i64 }`,
+// One Tasklet `CounterTasklet` with `Change = CounterChange { delta: i64 }`,
 // `apply_change` mutating `state.value += change.delta`, `coalesce_key()`
 // returning `None` (verbatim retention).
 
@@ -316,8 +316,8 @@ pub struct CounterChange {
 impl Change for CounterChange {}
 
 #[derive(Default)]
-struct CounterProcedure;
-impl Procedure for CounterProcedure {
+struct CounterTasklet;
+impl Tasklet for CounterTasklet {
     type Input = i64;
     type Output = ();
     type State = CounterState;
@@ -325,7 +325,7 @@ impl Procedure for CounterProcedure {
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "counter_procedure"
+        "counter_tasklet"
     }
     fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) -> CounterState {
         CounterState::default()
@@ -337,8 +337,8 @@ impl Procedure for CounterProcedure {
         &mut self,
         input: i64,
         mut state: StateHandle<'_, Self>,
-        _: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        _: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         state.apply(CounterChange { delta: input });
         Ok(())
     }
@@ -351,15 +351,15 @@ impl StreamOperative for StatefulCounterOperative {
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
-            .into::<CounterEntryProcedure>()
+            .into::<CounterEntryTasklet>()
             .named("ticks")
-            .into::<CounterProcedure>();
+            .into::<CounterTasklet>();
     }
 }
 
 #[derive(Default)]
-struct CounterEntryProcedure;
-impl Procedure for CounterEntryProcedure {
+struct CounterEntryTasklet;
+impl Tasklet for CounterEntryTasklet {
     type Input = String;
     type Output = i64;
     type State = ();
@@ -367,15 +367,15 @@ impl Procedure for CounterEntryProcedure {
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "counter_entry_procedure"
+        "counter_entry_tasklet"
     }
     fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
     fn run(
         &mut self,
         input: String,
         _: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         let delta: i64 = input.parse().unwrap_or(0);
         ctx.emit::<i64>(delta)
     }
@@ -404,8 +404,8 @@ impl Change for TickChange {
 }
 
 #[derive(Default)]
-struct TickProcedure;
-impl Procedure for TickProcedure {
+struct TickTasklet;
+impl Tasklet for TickTasklet {
     type Input = TickInput;
     type Output = ();
     type State = TickState;
@@ -413,7 +413,7 @@ impl Procedure for TickProcedure {
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "tick_procedure"
+        "tick_tasklet"
     }
     fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) -> TickState {
         TickState::default()
@@ -425,8 +425,8 @@ impl Procedure for TickProcedure {
         &mut self,
         input: TickInput,
         mut state: StateHandle<'_, Self>,
-        _: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        _: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         state.apply(TickChange {
             interval: input.interval,
             ts: input.ts,
@@ -444,8 +444,8 @@ pub struct TickInput {
 }
 
 #[derive(Default)]
-struct TickEntryProcedure;
-impl Procedure for TickEntryProcedure {
+struct TickEntryTasklet;
+impl Tasklet for TickEntryTasklet {
     type Input = String;
     type Output = TickInput;
     type State = ();
@@ -453,15 +453,15 @@ impl Procedure for TickEntryProcedure {
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "tick_entry_procedure"
+        "tick_entry_tasklet"
     }
     fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
     fn run(
         &mut self,
         input: String,
         _: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         // Wire format: `<interval>:<ts>:<delta>`.
         let mut parts = input.splitn(3, ':');
         let interval = parts.next().and_then(|s| s.parse::<u8>().ok()).unwrap_or(0);
@@ -488,15 +488,15 @@ impl StreamOperative for CoalescingCounterOperative {
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
-            .into::<TickEntryProcedure>()
+            .into::<TickEntryTasklet>()
             .named("ticks")
-            .into::<TickProcedure>();
+            .into::<TickTasklet>();
     }
 }
 
 // -- PersistenceOffOperative (Section 6.3) ---------------------------------------
 //
-// Same Procedure topology as `StatefulCounterOperative` but `PERSISTENCE_ENABLED`
+// Same Tasklet topology as `StatefulCounterOperative` but `PERSISTENCE_ENABLED`
 // is `false`. Used by integration tests to verify the toggle-off drain
 // path discards frames without invoking the wire stub.
 
@@ -507,16 +507,16 @@ impl StreamOperative for PersistenceOffOperative {
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
-            .into::<PersistenceOffEntryProcedure>()
+            .into::<PersistenceOffEntryTasklet>()
             .named("ticks")
-            .into::<PersistenceOffCounterProcedure>();
+            .into::<PersistenceOffCounterTasklet>();
     }
     const PERSISTENCE_ENABLED: bool = false;
 }
 
 #[derive(Default)]
-struct PersistenceOffEntryProcedure;
-impl Procedure for PersistenceOffEntryProcedure {
+struct PersistenceOffEntryTasklet;
+impl Tasklet for PersistenceOffEntryTasklet {
     type Input = String;
     type Output = i64;
     type State = ();
@@ -524,23 +524,23 @@ impl Procedure for PersistenceOffEntryProcedure {
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "persistence_off_entry_procedure"
+        "persistence_off_entry_tasklet"
     }
     fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
     fn run(
         &mut self,
         input: String,
         _: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         let delta: i64 = input.parse().unwrap_or(0);
         ctx.emit::<i64>(delta)
     }
 }
 
 #[derive(Default)]
-struct PersistenceOffCounterProcedure;
-impl Procedure for PersistenceOffCounterProcedure {
+struct PersistenceOffCounterTasklet;
+impl Tasklet for PersistenceOffCounterTasklet {
     type Input = i64;
     type Output = ();
     type State = CounterState;
@@ -548,7 +548,7 @@ impl Procedure for PersistenceOffCounterProcedure {
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "persistence_off_counter_procedure"
+        "persistence_off_counter_tasklet"
     }
     fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) -> CounterState {
         CounterState::default()
@@ -560,8 +560,8 @@ impl Procedure for PersistenceOffCounterProcedure {
         &mut self,
         input: i64,
         mut state: StateHandle<'_, Self>,
-        _: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        _: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         state.apply(CounterChange { delta: input });
         Ok(())
     }

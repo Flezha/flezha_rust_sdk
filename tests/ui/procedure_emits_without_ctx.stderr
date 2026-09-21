@@ -1,5 +1,0 @@
-error: #[flezha::procedure] `emits` declares the output type of a `&mut ProcedureCtx` `run`; without that parameter the return type declares it
- --> tests/ui/procedure_emits_without_ctx.rs:4:1
-  |
-4 | fn p(input: u64) -> u64 {
-  | ^^

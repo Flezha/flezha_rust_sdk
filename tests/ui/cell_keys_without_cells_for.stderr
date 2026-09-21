@@ -1,0 +1,5 @@
+error: #[flezha::tasklet] static cell requires both `keys = [..]` and `cells_for = fn`
+ --> tests/ui/cell_keys_without_cells_for.rs:2:1
+  |
+2 | fn f(a: String) -> Vec<u8> {
+  | ^^

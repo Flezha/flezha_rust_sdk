@@ -7,22 +7,22 @@ use std::cell::RefCell;
 use super::emit_sink::WorkflowCollectAdapter;
 use super::invocation::collect_failure;
 use super::*;
+use crate::cell::restore::RestoreInitPayload;
 use crate::channel::ChannelBuilder;
-use crate::entity::restore::RestoreInitPayload;
 use crate::operative::StreamOperative;
-use crate::procedure::ctx::EmitSink;
-use crate::procedure::state_handle::StateHandle;
-use crate::procedure::{Procedure, ProcedureCtx, ProcedureError};
+use crate::tasklet::ctx::EmitSink;
+use crate::tasklet::state_handle::StateHandle;
+use crate::tasklet::{Tasklet, TaskletCtx, TaskletError};
 use crate::workflow::WorkflowCollectSink;
 
-/// The worker's guard, on exactly the path it exists for. Per-entity
+/// The worker's guard, on exactly the path it exists for. Per-cell
 /// exclusivity IS the handout, so a worker that leaves without answering —
 /// a panic past the dispatcher's own `catch_unwind`s, or an early return
 /// like the `CloseInterval` arm with no secondary stream — would retire its
-/// entity for the life of the process. The guard turns both into an
+/// cell for the life of the process. The guard turns both into an
 /// abandon: the items come back untouched and the next worker serves them.
 #[test]
-fn an_unwinding_worker_re_hands_its_activation_instead_of_retiring_the_entity() {
+fn an_unwinding_worker_re_hands_its_activation_instead_of_retiring_the_cell() {
     use crate::runner::poll_core::{PollCore, Polled};
     use crate::runner::poll_core_tests::fixtures::{build_slot_of, push_input};
 
@@ -54,18 +54,18 @@ fn an_unwinding_worker_re_hands_its_activation_instead_of_retiring_the_entity() 
             );
             core.complete(again.token);
         }
-        _ => panic!("the entity was retired by the unwound worker"),
+        _ => panic!("the cell was retired by the unwound worker"),
     }
 }
 
 #[derive(Default)]
-struct KeyedProc;
-impl Procedure for KeyedProc {
+struct KeyedTask;
+impl Tasklet for KeyedTask {
     type Input = String;
     type Output = String;
     type State = ();
-    type Change = crate::procedure::NoChange;
-    type Clock = crate::procedure::WallClock;
+    type Change = crate::tasklet::NoChange;
+    type Clock = crate::tasklet::WallClock;
     type Config = ();
     fn name() -> &'static str {
         "workflow_keyed_op"
@@ -75,8 +75,8 @@ impl Procedure for KeyedProc {
         &mut self,
         _: String,
         _state: StateHandle<'_, Self>,
-        _: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        _: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         Ok(())
     }
 }
@@ -88,7 +88,7 @@ impl StreamOperative for KeyedOperative {
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
-            .into::<KeyedProc>()
+            .into::<KeyedTask>()
             .keyed()
             .sink_named("out");
     }
@@ -124,7 +124,7 @@ fn workflow_adapter_rejects_keyed_emits() {
         effect_outputs: None,
     };
     assert!(adapter.is_keyed(), "descriptor keyed flag must surface");
-    let mut ctx = ProcedureCtx::new(&mut adapter, 0, 0, b"workflow/keyed/");
+    let mut ctx = TaskletCtx::new(&mut adapter, 0, 0, b"workflow/keyed/");
     let err = ctx
         .emit_keyed::<String>("k", "v".into())
         .expect_err("keyed emit on the workflow wire must fail");
@@ -150,7 +150,7 @@ fn workflow_adapter_captures_keyed_emits_under_the_tier() {
         topology: &topology,
         effect_outputs: Some(&effect_outputs),
     };
-    let mut ctx = ProcedureCtx::new(&mut adapter, 0, 0, b"workflow/keyed/");
+    let mut ctx = TaskletCtx::new(&mut adapter, 0, 0, b"workflow/keyed/");
     ctx.emit_keyed::<String>("BTC/1m", "v".into())
         .expect("keyed emit must succeed under the tier");
 
@@ -179,7 +179,7 @@ fn a_context_without_a_timer_session_refuses_rather_than_dropping() {
         topology: &topology,
         effect_outputs: None,
     };
-    let ctx = ProcedureCtx::new(&mut adapter, 0, 0, b"workflow/keyed/");
+    let ctx = TaskletCtx::new(&mut adapter, 0, 0, b"workflow/keyed/");
     let err = ctx
         .timer_after(std::time::Duration::from_secs(1))
         .expect_err("a session-less context must refuse");
@@ -191,16 +191,16 @@ fn a_context_without_a_timer_session_refuses_rather_than_dropping() {
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct AddChange(i64);
-impl crate::procedure::change::Change for AddChange {}
+impl crate::tasklet::change::Change for AddChange {}
 
 #[derive(Default)]
-struct CounterProc;
-impl Procedure for CounterProc {
+struct CounterTask;
+impl Tasklet for CounterTask {
     type Input = String;
     type Output = String;
     type State = i64;
     type Change = AddChange;
-    type Clock = crate::procedure::WallClock;
+    type Clock = crate::tasklet::WallClock;
     type Config = ();
     fn name() -> &'static str {
         "snapshot_counter_op"
@@ -215,39 +215,37 @@ impl Procedure for CounterProc {
         &mut self,
         _: String,
         _: StateHandle<'_, Self>,
-        _: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        _: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         Ok(())
     }
 }
 
 /// A snapshot produced by `snapshot_frame` here decodes, through the exact
-/// restore path, back to the state the Entity held (task 2.6). Stamps the
+/// restore path, back to the state the Cell held (task 2.6). Stamps the
 /// highest seq the snapshot already contains (`change_seq - 1`), so the
 /// controller's `truncate_up_to` — which keeps records strictly above it —
 /// drops exactly what the snapshot folds.
 #[test]
 fn snapshot_frame_round_trips_through_restore() {
-    use crate::entity::restore::init_entity_with_payload;
+    use crate::cell::restore::init_cell_with_payload;
 
-    let dispatcher = ProcedureDispatcherImpl::<CounterProc>::new(
+    let dispatcher = TaskletDispatcherImpl::<CounterTask>::new(
         0,
         EdgeFacts {
             output_channel_id: None,
-            output_channel_kind: ChannelKind::InterProcedure,
+            output_channel_kind: ChannelKind::InterTasklet,
             output_channel_name: None,
             output_channel_keyed: false,
             input_channel_name: None,
             retry: RetryPolicy::default(),
         },
-        Arc::from("inst/proc/"),
+        Arc::from("inst/task/"),
         None,
         FlushWiring {
-            entity_identity: Arc::new(flz_core::flusher::encode_entity_identity(
-                "inst", "proc", "",
-            )),
+            cell_identity: Arc::new(flz_core::flusher::encode_cell_identity("inst", "task", "")),
             change_seq: Arc::new(AtomicU64::new(3)),
-            header: crate::entity::header::header_template_for::<CounterProc>(),
+            header: crate::cell::header::header_template_for::<CounterTask>(),
             persistence_enabled: false,
             effectively_once: false,
             checkpoint: None,
@@ -255,11 +253,11 @@ fn snapshot_frame_round_trips_through_restore() {
         },
     );
 
-    let mut state: Box<dyn Any + Send> = Box::new(EntityState::<CounterProc> {
-        procedure: CounterProc,
+    let mut state: Box<dyn Any + Send> = Box::new(CellState::<CounterTask> {
+        tasklet: CounterTask,
         state: 115i64,
     });
-    let mut buffer: Box<dyn FlushableBuffer> = Box::new(TypedBuffer::<CounterProc>::default());
+    let mut buffer: Box<dyn FlushableBuffer> = Box::new(TypedBuffer::<CounterTask>::default());
 
     let (frame, seq, size) = dispatcher
         .snapshot_frame(&mut state, &mut buffer, &PendingTimers::default())
@@ -286,9 +284,8 @@ fn snapshot_frame_round_trips_through_restore() {
         snapshot_bytes: body,
         change_log_bytes: &[],
     };
-    let (restored, _timers, migrated) =
-        init_entity_with_payload::<CounterProc>(None, Some(&payload))
-            .expect("the snapshot body must decode through the restore path");
+    let (restored, _timers, migrated) = init_cell_with_payload::<CounterTask>(None, Some(&payload))
+        .expect("the snapshot body must decode through the restore path");
     assert!(!migrated, "same version restores without a migration");
     assert_eq!(
         restored, 115,
@@ -303,38 +300,38 @@ fn snapshot_frame_round_trips_through_restore() {
 #[test]
 fn a_collecting_failure_reports_the_four_texts_it_always_has() {
     let run = CollectShape {
-        prefix: "procedure",
+        prefix: "tasklet",
         author_classifies: true,
         captures_effects: true,
     };
     let compensate = CollectShape {
-        prefix: "compensation for procedure",
+        prefix: "compensation for tasklet",
         author_classifies: false,
         captures_effects: false,
     };
-    let failure = || Ok(Err(ProcedureError::NonRetryable("boom".into())));
+    let failure = || Ok(Err(TaskletError::NonRetryable("boom".into())));
     let panic = || Err(Box::new("blew up") as Box<dyn Any + Send>);
 
     let e = collect_failure(run, "op", failure());
-    let boom = "non-retryable procedure error: boom";
-    assert_eq!(e.to_string(), format!("procedure op failed: {boom}"));
+    let boom = "non-retryable tasklet error: boom";
+    assert_eq!(e.to_string(), format!("tasklet op failed: {boom}"));
     assert!(
         e.non_retryable,
         "the author's classification survives `run`"
     );
     assert_eq!(
         collect_failure(run, "op", panic()).to_string(),
-        "procedure op panicked: blew up"
+        "tasklet op panicked: blew up"
     );
 
     let e = collect_failure(compensate, "op", failure());
     assert_eq!(
         e.to_string(),
-        format!("compensation for procedure op failed: {boom}")
+        format!("compensation for tasklet op failed: {boom}")
     );
     assert!(!e.non_retryable, "a compensation has no ladder of its own");
     assert_eq!(
         collect_failure(compensate, "op", panic()).to_string(),
-        "compensation for procedure op panicked: blew up"
+        "compensation for tasklet op panicked: blew up"
     );
 }

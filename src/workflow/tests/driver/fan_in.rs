@@ -6,15 +6,15 @@ use flz_core::runner::RunnerNode;
 
 use super::super::fake_controller::*;
 use super::super::fixtures::*;
-use crate::entity::state_sink::COMPENSATION_DONE_PAYLOAD_ID as DONE;
+use crate::cell::state_sink::COMPENSATION_DONE_PAYLOAD_ID as DONE;
 use crate::runner::RunnerMessage;
 use crate::workflow::*;
 
 /// The journal a diamond-shaped chain leaves when A (the fan) and B (one
 /// branch) committed before the crash: each producer's edge handoff, plus
-/// the entities each of them ran. Shared by the branching resume and by both
-/// merge resumes — the shape is the same, only the channels and the entities
-/// each proc ran differ.
+/// the cells each of them ran. Shared by the branching resume and by both
+/// merge resumes — the shape is the same, only the channels and the cells
+/// each task ran differ.
 fn ab_committed(
     fan: u32,
     b: u32,
@@ -23,28 +23,28 @@ fn ab_committed(
 ) -> instance::JournalResume {
     let enc = |s: &str| postcard::to_allocvec(&s.to_string()).unwrap();
     instance::JournalResume {
-        committed_proc_idxs: vec![0, 1],
-        proc_handoffs: vec![
+        committed_task_idxs: vec![0, 1],
+        task_handoffs: vec![
             instance::EdgeHandoff {
-                proc_idx: 0,
+                task_idx: 0,
                 handoff: vec![(fan, enc("a:x"))],
             },
             instance::EdgeHandoff {
-                proc_idx: 1,
+                task_idx: 1,
                 handoff: vec![(b, enc("b:a:x"))],
             },
         ],
-        committed_procs: vec![
-            instance::CommittedProc {
-                proc_idx: 0,
+        committed_tasks: vec![
+            instance::CommittedTask {
+                task_idx: 0,
                 iter: 0,
-                entities_ran: a_segs,
+                cells_ran: a_segs,
                 completion: None,
             },
-            instance::CommittedProc {
-                proc_idx: 1,
+            instance::CommittedTask {
+                task_idx: 1,
                 iter: 0,
-                entities_ran: b_segs,
+                cells_ran: b_segs,
                 completion: None,
             },
         ],
@@ -56,7 +56,7 @@ pub(super) fn fan_in_branching(node: &mut RunnerNode, rx: &Receiver<RunnerMessag
     // --- workflow-branching fan-in: the join runs once, after BOTH
     // producers committed, with the accumulated batch ---
     let _ = drain_diamond_log();
-    let _ = drain_proc_commits();
+    let _ = drain_task_commits();
     assert!(node.start_workflow(
         "test-diamond-workflow".into(),
         "diamond-1".into(),
@@ -70,9 +70,9 @@ pub(super) fn fan_in_branching(node: &mut RunnerNode, rx: &Receiver<RunnerMessag
         "the join's input batch accumulates BOTH producers' outputs (B's first: sibling order)"
     );
     assert_eq!(
-        drain_proc_commits()
+        drain_task_commits()
             .iter()
-            .map(|c| c.proc_idx)
+            .map(|c| c.task_idx)
             .collect::<Vec<_>>(),
         vec![0, 1, 2, 3],
         "one commit per node — the join commits exactly once, after both producers"
@@ -97,7 +97,7 @@ pub(super) fn fan_in_branching(node: &mut RunnerNode, rx: &Receiver<RunnerMessag
     // fresh producer — the committed branch never re-runs, and the join
     // accumulates B's JOURNALED handoff with C's fresh output ---
     let _ = drain_diamond_log();
-    let da_id = crate::entity::flusher::encode_entity_identity("diamond-r", "diamond_a", "");
+    let da_id = crate::cell::flusher::encode_cell_identity("diamond-r", "diamond_a", "");
     let diamond_spec =
         registry::get_class("test-diamond-workflow").expect("diamond class registered");
     let diamond_topo = &diamond_spec.topology;
@@ -112,8 +112,8 @@ pub(super) fn fan_in_branching(node: &mut RunnerNode, rx: &Receiver<RunnerMessag
         Some(ab_committed(d_fan, d_b, vec![da_id.clone()], Vec::new()))
     ));
     let (diamond_inst, _slot) = node
-        .find_workflow_entity(&da_id)
-        .expect("a durable diamond Entity is reachable by the restore handler");
+        .find_workflow_cell(&da_id)
+        .expect("a durable diamond Cell is reachable by the restore handler");
     diamond_inst.note_restored();
     let (outs, done) = drain(rx, "diamond-r");
     assert_eq!(done.0, "ok");
@@ -134,9 +134,9 @@ pub(super) fn fan_in_branching(node: &mut RunnerNode, rx: &Receiver<RunnerMessag
         "the join runs once, with B's journaled handoff banked and C's fresh output appended"
     );
     assert_eq!(
-        drain_proc_commits()
+        drain_task_commits()
             .iter()
-            .map(|c| c.proc_idx)
+            .map(|c| c.task_idx)
             .collect::<Vec<_>>(),
         vec![2, 3],
         "the resume commits only C and the join"
@@ -146,7 +146,7 @@ pub(super) fn fan_in_branching(node: &mut RunnerNode, rx: &Receiver<RunnerMessag
     // before either producer, the shared root last ---
     let _ = drain_comp_log();
     let _ = drain_diamond_log();
-    let _ = drain_proc_commits();
+    let _ = drain_task_commits();
     assert!(node.start_workflow("test-diamond-saga".into(), "diamond-s".into(), "x".into()));
     let (_o, done) = drain(rx, "diamond-s");
     assert_eq!(done.0, "error");
@@ -162,11 +162,11 @@ pub(super) fn fan_in_branching(node: &mut RunnerNode, rx: &Receiver<RunnerMessag
         "reverse-topological over the DAG: join first, shared root last"
     );
 
-    // --- multi-input-procedures: the same fan-in wired as a merge. Each
+    // --- multi-input-tasklets: the same fan-in wired as a merge. Each
     // producer's contribution reaches the join through ITS edge's mapping,
     // so a node whose Input is neither producer's Output still dispatches ---
     let _ = drain_diamond_log();
-    let _ = drain_proc_commits();
+    let _ = drain_task_commits();
     assert!(node.start_workflow("test-merge-workflow".into(), "merge-1".into(), "x".into()));
     let (outs, done) = drain(rx, "merge-1");
     assert_eq!(done.0, "ok");
@@ -181,8 +181,8 @@ pub(super) fn merge_mapping(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>)
     // --- and the journal re-seed maps too: B's handoff is decoded with the
     // channel's codec, then lifted by the same mapping the live run used ---
     let _ = drain_diamond_log();
-    let _ = drain_proc_commits();
-    let ma_id = crate::entity::flusher::encode_entity_identity("merge-r", "diamond_a", "");
+    let _ = drain_task_commits();
+    let ma_id = crate::cell::flusher::encode_cell_identity("merge-r", "diamond_a", "");
     let merge_spec = registry::get_class("test-merge-workflow").expect("merge class registered");
     let merge_topo = &merge_spec.topology;
     let m_fan = merge_topo.lookup_channel_id("m_fan").unwrap();
@@ -196,8 +196,8 @@ pub(super) fn merge_mapping(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>)
         Some(ab_committed(m_fan, m_b, vec![ma_id.clone()], Vec::new()))
     ));
     let (merge_inst, _slot) = node
-        .find_workflow_entity(&ma_id)
-        .expect("a durable merge Entity is reachable by the restore handler");
+        .find_workflow_cell(&ma_id)
+        .expect("a durable merge Cell is reachable by the restore handler");
     merge_inst.note_restored();
     let (outs, done) = drain(rx, "merge-r");
     assert_eq!(done.0, "ok");
@@ -208,11 +208,11 @@ pub(super) fn merge_mapping(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>)
     );
 
     // --- a panicking mapping is CONTAINED. It runs on the driver thread,
-    // outside any entity invocation, so an unguarded unwind would kill the
+    // outside any cell invocation, so an unguarded unwind would kill the
     // thread before `emit_workflow_completed` and strand the instance ---
     let _ = drain_comp_log();
     let _ = drain_diamond_log();
-    let _ = drain_proc_commits();
+    let _ = drain_task_commits();
     assert!(node.start_workflow(
         "test-panic-merge-workflow".into(),
         "merge-panic".into(),
@@ -233,7 +233,7 @@ pub(super) fn merge_mapping(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>)
     // abort began: the producer whose edge blew up (B) and its parent (A),
     // reverse-topologically. C ran in the same level but the abort returns
     // before its stage record is pushed, so it is not undone — the same
-    // mid-level shape a failing proc commit has always had. Asserted as an
+    // mid-level shape a failing task commit has always had. Asserted as an
     // exact list so the Java arm is pinned to it, not merely compatible.
     let comp = drain_comp_log();
     assert_eq!(
@@ -249,11 +249,11 @@ pub(super) fn merge_mapping(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>)
     );
 
     // --- the same containment reached WITHOUT a merge: a plain `.map` on
-    // an inter-procedure edge is the same composed closure on the same
+    // an inter-tasklet edge is the same composed closure on the same
     // driver-thread seam ---
     let _ = drain_comp_log();
     let _ = drain_diamond_log();
-    let _ = drain_proc_commits();
+    let _ = drain_task_commits();
     assert!(node.start_workflow(
         "test-panic-transform-workflow".into(),
         "map-panic".into(),
@@ -286,9 +286,9 @@ pub(super) fn merge_mapping(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>)
     // is the journal's own stages ---
     let _ = drain_comp_log();
     let _ = drain_diamond_log();
-    let _ = drain_proc_commits();
-    let pa_id = crate::entity::flusher::encode_entity_identity("merge-panic-r", "diamond_a", "");
-    let pb_id = crate::entity::flusher::encode_entity_identity("merge-panic-r", "diamond_b", "");
+    let _ = drain_task_commits();
+    let pa_id = crate::cell::flusher::encode_cell_identity("merge-panic-r", "diamond_a", "");
+    let pb_id = crate::cell::flusher::encode_cell_identity("merge-panic-r", "diamond_b", "");
     let panic_spec =
         registry::get_class("test-panic-merge-workflow").expect("panic merge class registered");
     let panic_topo = &panic_spec.topology;
@@ -309,8 +309,8 @@ pub(super) fn merge_mapping(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>)
         ))
     ));
     let (panic_inst, _slot) = node
-        .find_workflow_entity(&pa_id)
-        .expect("a durable resumed Entity is reachable by the restore handler");
+        .find_workflow_cell(&pa_id)
+        .expect("a durable resumed Cell is reachable by the restore handler");
     panic_inst.note_restored();
     let (outs, done) = drain(rx, "merge-panic-r");
     assert_eq!(
@@ -326,9 +326,9 @@ pub(super) fn merge_mapping(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>)
     // The journaled stages ARE the undo scope here — `drive_chain` seeds the
     // resumed iteration's completed list from the journal. The comp log is
     // NOT the signal to read: `diamond_op!` logs once per completed output
-    // and a journal-rebuilt EntityRun carries none, so a real compensation
+    // and a journal-rebuilt CellRun carries none, so a real compensation
     // leaves it empty. The compensation-done markers the sink already
-    // captures are, and they carry the entity they undid.
+    // captures are, and they carry the cell they undid.
     let done_frames: Vec<Vec<u8>> = WAL_FRAMES
         .lock()
         .unwrap()
@@ -344,7 +344,7 @@ pub(super) fn merge_mapping(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>)
     );
     assert!(
         carries(&done_frames[0], &pb_id) && carries(&done_frames[1], &pa_id),
-        "reverse-topological: B's entity is undone before A's"
+        "reverse-topological: B's cell is undone before A's"
     );
 }
 
@@ -352,7 +352,7 @@ pub(super) fn branching_resume(node: &mut RunnerNode, rx: &Receiver<RunnerMessag
     // --- workflow-branching: A→(B,C) runs to DONE — both branches receive
     // what A released on the channel they consume, and the operative is `ok`
     // exactly when every leaf has committed ---
-    let _ = drain_proc_commits();
+    let _ = drain_task_commits();
     assert!(node.start_workflow("test-tree-workflow".into(), "tree-1".into(), "x".into()));
     let (mut tree_outs, done) = drain(rx, "tree-1");
     assert_eq!(
@@ -365,7 +365,7 @@ pub(super) fn branching_resume(node: &mut RunnerNode, rx: &Receiver<RunnerMessag
         vec![b"echo:x-1".to_vec(), b"x-1-2".to_vec()],
         "each branch consumed Stage1's `mid` batch and emitted on its own sink"
     );
-    let committed: Vec<u32> = drain_proc_commits().iter().map(|c| c.proc_idx).collect();
+    let committed: Vec<u32> = drain_task_commits().iter().map(|c| c.task_idx).collect();
     assert_eq!(
         committed,
         vec![0, 1, 2],
@@ -374,9 +374,9 @@ pub(super) fn branching_resume(node: &mut RunnerNode, rx: &Receiver<RunnerMessag
 
     // --- workflow-branching resume: the journal records A and B committed, so
     // only C re-runs — seeded from A's journaled edge, not from B's ---
-    let _ = drain_proc_commits();
+    let _ = drain_task_commits();
     let id = "tree-resume";
-    let root_seg = crate::entity::flusher::encode_entity_identity(id, "workflow_stage1", "");
+    let root_seg = crate::cell::flusher::encode_cell_identity(id, "workflow_stage1", "");
     // Channel ids follow declaration order: `in` = 0, `mid` = 1.
     assert!(node.start_workflow_resumable(
         "test-tree-workflow".into(),
@@ -385,22 +385,22 @@ pub(super) fn branching_resume(node: &mut RunnerNode, rx: &Receiver<RunnerMessag
         1,
         0,
         Some(instance::JournalResume {
-            committed_proc_idxs: vec![0, 1],
-            proc_handoffs: vec![instance::EdgeHandoff {
-                proc_idx: 0,
+            committed_task_idxs: vec![0, 1],
+            task_handoffs: vec![instance::EdgeHandoff {
+                task_idx: 0,
                 handoff: vec![(1, postcard::to_allocvec(&"resumed-1".to_string()).unwrap())],
             }],
-            committed_procs: vec![
-                instance::CommittedProc {
-                    proc_idx: 0,
+            committed_tasks: vec![
+                instance::CommittedTask {
+                    task_idx: 0,
                     iter: 0,
-                    entities_ran: vec![root_seg.clone()],
+                    cells_ran: vec![root_seg.clone()],
                     completion: None,
                 },
-                instance::CommittedProc {
-                    proc_idx: 1,
+                instance::CommittedTask {
+                    task_idx: 1,
                     iter: 0,
-                    entities_ran: Vec::new(),
+                    cells_ran: Vec::new(),
                     completion: None,
                 },
             ],
@@ -408,8 +408,8 @@ pub(super) fn branching_resume(node: &mut RunnerNode, rx: &Receiver<RunnerMessag
         })
     ));
     let (inst, _slot) = node
-        .find_workflow_entity(&root_seg)
-        .expect("the tree's root Entity is reachable by the restore handler");
+        .find_workflow_cell(&root_seg)
+        .expect("the tree's root Cell is reachable by the restore handler");
     inst.note_restored();
     let (outs, done) = drain(rx, id);
     assert_eq!(done.0, "ok");
@@ -419,9 +419,9 @@ pub(super) fn branching_resume(node: &mut RunnerNode, rx: &Receiver<RunnerMessag
         "only the uncommitted branch re-ran, seeded from its parent's edge"
     );
     assert_eq!(
-        drain_proc_commits()
+        drain_task_commits()
             .iter()
-            .map(|c| c.proc_idx)
+            .map(|c| c.task_idx)
             .collect::<Vec<_>>(),
         vec![2],
         "the committed root and its committed sibling did NOT re-run"
@@ -441,6 +441,6 @@ pub(super) fn branching_resume(node: &mut RunnerNode, rx: &Receiver<RunnerMessag
             "undo-reserve:reserved:o1".to_string(),
         ],
         "descendants before ancestors: the sibling leaf and the failing branch's \
-         committed procedure both unwind before the root they share"
+         committed tasklet both unwind before the root they share"
     );
 }

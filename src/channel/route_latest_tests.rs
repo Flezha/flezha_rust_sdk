@@ -7,11 +7,11 @@ use super::{LatestRouter, RouteLatestInput};
 use crate::channel::builder::TopologyIssue;
 use crate::channel::ChannelBuilder;
 use crate::operative::builder::build_topology_for;
-use crate::operative::topology::EntityMode;
+use crate::operative::topology::CellMode;
 use crate::operative::StreamOperative;
-use crate::procedure::{Procedure, ProcedureCtx, ProcedureError};
 use crate::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
-use crate::testing::ProcedureTestHarness;
+use crate::tasklet::{Tasklet, TaskletCtx, TaskletError};
+use crate::testing::TaskletTestHarness;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct Thresholds {
@@ -38,8 +38,8 @@ fn delivery(key: &str, limit: u64) -> Delivery {
     (key.to_string(), thresholds(limit))
 }
 
-fn harness() -> ProcedureTestHarness<LatestRouter<Thresholds>> {
-    ProcedureTestHarness::<LatestRouter<Thresholds>>::new()
+fn harness() -> TaskletTestHarness<LatestRouter<Thresholds>> {
+    TaskletTestHarness::<LatestRouter<Thresholds>>::new()
 }
 
 /// fails when: a changed document stops reaching a key on that key's own next
@@ -86,7 +86,7 @@ fn a_repeated_identical_document_is_inert() {
 }
 
 /// fails when: a key first seen after the document was retained never receives
-/// it (a late-born Entity starts up config-less) or receives it repeatedly.
+/// it (a late-born Cell starts up config-less) or receives it repeatedly.
 #[test]
 fn a_first_seen_key_receives_the_current_document_once() {
     let mut h = harness();
@@ -171,7 +171,7 @@ struct Trade {
 #[derive(Default)]
 struct Detector;
 
-impl Procedure for Detector {
+impl Tasklet for Detector {
     type Input = Delivery;
     type Output = ();
     type State = ();
@@ -189,8 +189,8 @@ impl Procedure for Detector {
         &mut self,
         _input: Self::Input,
         _state: StateHandle<'_, Self>,
-        _ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        _ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         Ok(())
     }
 }
@@ -212,18 +212,18 @@ impl StreamOperative for RoutedOperative {
     }
 }
 
-/// fails when: the block stops expanding to one single-entity node fed by both
+/// fails when: the block stops expanding to one single-cell node fed by both
 /// streams with the key function on the traffic edge. Every guarantee the block
-/// carries rests on that shape: single-entity (one retained document per
+/// carries rests on that shape: single-cell (one retained document per
 /// operative), and the traffic payload replaced by its key at the routing seam
 /// (so the router never holds application values).
 #[test]
-fn the_block_expands_to_one_single_entity_node_fed_by_both_streams() {
+fn the_block_expands_to_one_single_cell_node_fed_by_both_streams() {
     let topology = build_topology_for::<RoutedOperative>().expect("topology");
 
-    let router_id = topology.procedure_name_to_id["route_latest"];
-    let router = &topology.procedures[router_id as usize];
-    assert_eq!(router.mode, EntityMode::Single);
+    let router_id = topology.tasklet_name_to_id["route_latest"];
+    let router = &topology.tasklets[router_id as usize];
+    assert_eq!(router.mode, CellMode::Single);
     assert_eq!(router.input_channel_ids.len(), 2);
 
     let docs = &topology.channels[topology.name_to_id["thresholds"] as usize];
@@ -232,12 +232,12 @@ fn the_block_expands_to_one_single_entity_node_fed_by_both_streams() {
         let edge = source
             .consumers
             .iter()
-            .find(|e| e.procedure == router_id)
+            .find(|e| e.tasklet == router_id)
             .expect("both streams feed the router");
         // The merge mapping (and, on traffic, the key function fused into it)
         // is one closure on the edge — no extra node, no extra hop.
         assert!(edge.transform.is_some());
-        assert!(edge.key.is_none(), "the router is single-entity");
+        assert!(edge.key.is_none(), "the router is single-cell");
     }
 
     // The routed pair carries its own key, which is what lets the consumer be
@@ -245,15 +245,13 @@ fn the_block_expands_to_one_single_entity_node_fed_by_both_streams() {
     let out = &topology.channels[router.output_channel_id.expect("output channel") as usize];
     let detector = &out.consumers[0];
     assert_eq!(
-        topology.procedures[detector.procedure as usize]
-            .name
-            .as_ref(),
+        topology.tasklets[detector.tasklet as usize].name.as_ref(),
         "detector"
     );
     assert!(detector.key.is_some());
     assert_eq!(
-        topology.procedures[detector.procedure as usize].mode,
-        EntityMode::Dynamic
+        topology.tasklets[detector.tasklet as usize].mode,
+        CellMode::Dynamic
     );
 }
 
@@ -316,16 +314,16 @@ fn a_second_router_needs_a_node_name() {
             .iter()
             .any(|e| matches!(
                 e,
-                TopologyIssue::EdgeAlreadyWired { channel, procedure }
-                    if channel == "trades" && procedure == "route_latest"
+                TopologyIssue::EdgeAlreadyWired { channel, tasklet }
+                    if channel == "trades" && tasklet == "route_latest"
             )),
         "the shared traffic edge must be refused, not silently re-wired"
     );
 
     let two = build_topology_for::<TwoNamedRouterOperative>().expect("topology");
-    assert!(two.procedure_name_to_id.contains_key("primary"));
-    assert!(two.procedure_name_to_id.contains_key("secondary"));
-    assert!(!two.procedure_name_to_id.contains_key("route_latest"));
+    assert!(two.tasklet_name_to_id.contains_key("primary"));
+    assert!(two.tasklet_name_to_id.contains_key("secondary"));
+    assert!(!two.tasklet_name_to_id.contains_key("route_latest"));
 }
 
 struct SelfRoutedOperative;

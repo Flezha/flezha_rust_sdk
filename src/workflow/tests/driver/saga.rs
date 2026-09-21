@@ -57,16 +57,16 @@ pub(super) fn saga_compensation(node: &mut RunnerNode, rx: &Receiver<RunnerMessa
         "a clean ok must not compensate"
     );
 
-    // --- §7b.1 per-entity compensation: once per entity that ran;
-    // hookless SplitProc is skipped ---
+    // --- §7b.1 per-cell compensation: once per cell that ran;
+    // hookless SplitTask is skipped ---
     let _ = drain_comp_log();
     assert!(node.start_workflow("test-fan-saga".into(), "fan-saga".into(), "a,bb,ccc".into()));
     let (_o, done) = drain(rx, "fan-saga");
     assert_eq!(done.0, "error");
     let mut fan_comp = drain_comp_log();
     fan_comp.sort();
-    // odd entity ran "a","ccc"; even ran "bb"; the hook fires once per
-    // entity with that entity's own outputs. SplitProc (no hook) is skipped.
+    // odd cell ran "a","ccc"; even ran "bb"; the hook fires once per
+    // cell with that cell's own outputs. SplitTask (no hook) is skipped.
     assert_eq!(
         fan_comp,
         vec![
@@ -98,9 +98,9 @@ pub(super) fn saga_compensation(node: &mut RunnerNode, rx: &Receiver<RunnerMessa
 
 pub(super) fn saga_crash_resume(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
     // --- §4.3 durable saga records: a fresh abnormal run emits one
-    // compensation_intent per completed compensable entity and one
-    // compensation_done per compensated entity ---
-    use crate::entity::state_sink::{
+    // compensation_intent per completed compensable cell and one
+    // compensation_done per compensated cell ---
+    use crate::cell::state_sink::{
         COMPENSATION_DONE_PAYLOAD_ID as DONE, COMPENSATION_INTENT_PAYLOAD_ID as INTENT,
     };
     WAL_FRAMES.lock().unwrap().clear();
@@ -113,9 +113,9 @@ pub(super) fn saga_crash_resume(node: &mut RunnerNode, rx: &Receiver<RunnerMessa
     assert_eq!(
         count_wal_frames(INTENT),
         2,
-        "one intent per completed compensable entity"
+        "one intent per completed compensable cell"
     );
-    assert_eq!(count_wal_frames(DONE), 2, "one done per compensated entity");
+    assert_eq!(count_wal_frames(DONE), 2, "one done per compensated cell");
 
     // --- §4.3 crash-resume finishes the remaining hooks, skipping the ones
     // already recorded done, and does NOT re-run the forward chain ---
@@ -131,11 +131,11 @@ pub(super) fn saga_crash_resume(node: &mut RunnerNode, rx: &Receiver<RunnerMessa
         0,
         None,
     ));
-    let a_id = crate::entity::flusher::encode_entity_identity("resume-saga", "resume_undo_a", "");
-    let b_id = crate::entity::flusher::encode_entity_identity("resume-saga", "resume_undo_b", "");
+    let a_id = crate::cell::flusher::encode_cell_identity("resume-saga", "resume_undo_a", "");
+    let b_id = crate::cell::flusher::encode_cell_identity("resume-saga", "resume_undo_b", "");
     let (saga_inst, _slot) = node
-        .find_workflow_entity(&a_id)
-        .expect("a durable workflow saga Entity is reachable by the restore handler");
+        .find_workflow_cell(&a_id)
+        .expect("a durable workflow saga Cell is reachable by the restore handler");
     // Original run: A + B both completed (intent); B was already undone before
     // the crash (done). Resume must undo A and SKIP B — in reverse — without
     // re-running the forward chain (so no fresh intents, no `a:`/`b:` output).
@@ -149,7 +149,7 @@ pub(super) fn saga_crash_resume(node: &mut RunnerNode, rx: &Receiver<RunnerMessa
     );
     assert!(
         outs.is_empty(),
-        "compensation-resume does not re-run forward procs"
+        "compensation-resume does not re-run forward tasks"
     );
     assert_eq!(
         drain_comp_log(),

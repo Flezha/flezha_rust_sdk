@@ -1,5 +1,5 @@
 //! The Rust SDK's local mode: a user's own operative type, its declared
-//! two-procedure graph, and no controller anywhere.
+//! two-tasklet graph, and no controller anywhere.
 //!
 //! The graph and its expected sink output are read from
 //! `test/fixtures/local_mode_word_count.txt`, which the Java and Elixir
@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use flezha_runner::local::SinkOutput;
-use flezha_runner::procedure::{ProcedureCtx, ProcedureError, SimpleProcedure};
 use flezha_runner::state::StateHandle;
+use flezha_runner::tasklet::{SimpleTasklet, TaskletCtx, TaskletError};
 use flezha_runner::{ChannelBuilder, Flezha, LocalOperative, StreamOperative};
 use serde::{Deserialize, Serialize};
 
@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Default)]
 struct Split;
 
-impl SimpleProcedure for Split {
+impl SimpleTasklet for Split {
     type Input = String;
     type Output = String;
     type State = ();
@@ -32,14 +32,14 @@ impl SimpleProcedure for Split {
         "split"
     }
 
-    fn init_state(_entity_key: Option<&str>) {}
+    fn init_state(_cell_key: Option<&str>) {}
 
     fn run(
         &mut self,
         line: String,
         _state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         for word in line.split_whitespace() {
             ctx.emit(word.to_lowercase())?;
         }
@@ -52,11 +52,11 @@ struct Count {
     seen: u64,
 }
 
-/// One Entity per word, minted on first sight of it.
+/// One Cell per word, minted on first sight of it.
 #[derive(Default)]
 struct Tally;
 
-impl SimpleProcedure for Tally {
+impl SimpleTasklet for Tally {
     type Input = String;
     type Output = String;
     type State = Count;
@@ -65,7 +65,7 @@ impl SimpleProcedure for Tally {
         "tally"
     }
 
-    fn init_state(_entity_key: Option<&str>) -> Count {
+    fn init_state(_cell_key: Option<&str>) -> Count {
         Count::default()
     }
 
@@ -73,8 +73,8 @@ impl SimpleProcedure for Tally {
         &mut self,
         word: String,
         mut state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         state.set_seen(state.seen + 1);
         ctx.emit(format!("{word} {}", state.seen))
     }
@@ -174,13 +174,13 @@ fn a_declared_graph_runs_locally_and_releases_the_recorded_output() {
     }
     assert_eq!(
         counted, expected,
-        "both procedures ran, the runtime performed the hop, and one Entity per word counted"
+        "both tasklets ran, the runtime performed the hop, and one Cell per word counted"
     );
 
     let first = seen.first().expect("a released value");
     assert_eq!(first.channel, "totals");
     assert!(
-        first.metadata.contains_key("flz.entity")
+        first.metadata.contains_key("flz.cell")
             && first.metadata.contains_key("flz.seq")
             && first.metadata.contains_key("flz.key"),
         "a keyed sink carries the identity stamps a deployed run stamps: {:?}",

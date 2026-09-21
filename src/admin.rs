@@ -3,7 +3,7 @@
 //!
 //! [`FlezhaRunner::admin`](crate::FlezhaRunner::admin) hands back an [`Admin`]
 //! whose methods start, stop and feed operatives, enable and disable plugins,
-//! and read what is running. No procedure has to be running and the
+//! and read what is running. No tasklet has to be running and the
 //! application holds no credential of its own: the controller judges every
 //! call as the identity the connection already established, so an operator
 //! grants the authority once per namespace and revokes it the same way:
@@ -59,7 +59,7 @@ impl OperativeSpec {
         self
     }
 
-    /// The values the factory is seeded with, keyed by procedure.
+    /// The values the factory is seeded with, keyed by tasklet.
     pub fn init_values(mut self, values: Value) -> Self {
         self.init_values = values;
         self
@@ -157,11 +157,11 @@ impl Admin {
         self.call("PluginManager.list", &[])
     }
 
-    /// One entity's live state, and the change sequence it was read at.
-    pub fn entity_state(&self, operative_id: &str, entity_key: &str) -> Result<Value, AdminError> {
+    /// One cell's live state, and the change sequence it was read at.
+    pub fn cell_state(&self, operative_id: &str, cell_key: &str) -> Result<Value, AdminError> {
         self.call(
-            "Operative.entity_state",
-            &[json!(operative_id), json!(entity_key)],
+            "Operative.cell_state",
+            &[json!(operative_id), json!(cell_key)],
         )
     }
 

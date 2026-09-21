@@ -1,4 +1,4 @@
-error[E0277]: `Receipt` cannot be written down, so it cannot be a procedure's `Output`
+error[E0277]: `Receipt` cannot be written down, so it cannot be a tasklet's `Output`
   --> tests/ui/output_without_byte_form.rs:17:19
    |
 17 |     type Output = Receipt;
@@ -9,10 +9,10 @@ help: the trait `JournalValue` is not implemented for `Receipt`
    |
 11 | struct Receipt;
    | ^^^^^^^^^^^^^^
-   = note: a procedure's output is the handoff to the next procedure, and a durable workflow journals that handoff at its commit barrier and re-seeds from it on crash-resume
+   = note: a tasklet's output is the handoff to the next tasklet, and a durable workflow journals that handoff at its commit barrier and re-seeds from it on crash-resume
    = note: add `#[derive(serde::Serialize, serde::Deserialize)]` to `Receipt`
-note: required by a bound in `flezha_runner::Procedure::Output`
-  --> src/procedure/mod.rs
+note: required by a bound in `flezha_runner::Tasklet::Output`
+  --> src/tasklet/mod.rs
    |
    |     type Output: Send + Sync + 'static + JournalValue;
-   |                                          ^^^^^^^^^^^^ required by this bound in `Procedure::Output`
+   |                                          ^^^^^^^^^^^^ required by this bound in `Tasklet::Output`

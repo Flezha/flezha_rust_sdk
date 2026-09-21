@@ -215,7 +215,7 @@ fn expand_items(state_ident: &Ident, change_ident: &Ident, out: &Mutators) -> To
 
         impl<'__sh, __S> #mut_trait_ident for ::flezha_runner::StateHandle<'__sh, __S>
         where
-            __S: ::flezha_runner::Procedure<State = #state_ident, Change = #change_ident>,
+            __S: ::flezha_runner::Tasklet<State = #state_ident, Change = #change_ident>,
         {
             #(#impls)*
         }
@@ -255,8 +255,8 @@ fn expand_flat_field(field: &Field, pascal: &syn::Ident, out: &mut Mutators) -> 
 
 /// The whole-collection mutators a bare `Vec` or `VecDeque` field carries. A
 /// `VecDeque<U>` takes the same deltas `map_deque` records, for a window whose
-/// entity key already is what the map would have keyed by; without them a
-/// per-entity window could only journal whole-collection sets.
+/// cell key already is what the map would have keyed by; without them a
+/// per-cell window could only journal whole-collection sets.
 fn expand_seq_mutators(
     field_ident: &syn::Ident,
     field_ty: &syn::Type,

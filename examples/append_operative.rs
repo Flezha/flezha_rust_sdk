@@ -1,15 +1,15 @@
-//! Sticky per-Entity ordering, with persistent state.
+//! Sticky per-Cell ordering, with persistent state.
 //!
-//! The crate's worked example: one entry channel feeding one procedure that
+//! The crate's worked example: one entry channel feeding one tasklet that
 //! appends every input it sees to its own durable state. It is the smallest
-//! class that exercises all four halves of the authoring surface: a procedure
+//! class that exercises all four halves of the authoring surface: a tasklet
 //! with state, a `StreamOperative` that wires it, a runner that registers the
 //! class, and the derived state whose recorder journals the mutation.
 //!
 //! The invariant it demonstrates: when 10,000 messages targeting one
-//! `appender` Entity arrive on the entry channel, `state.seen` ends up holding
-//! those 10,000 inputs in arrival order. The per-Entity inflight CAS
-//! guarantees no two `Procedure::run` calls overlap on the same Entity, so no
+//! `appender` Cell arrive on the entry channel, `state.seen` ends up holding
+//! those 10,000 inputs in arrival order. The per-Cell inflight CAS
+//! guarantees no two `Tasklet::run` calls overlap on the same Cell, so no
 //! ordering work is left to the author.
 //!
 //! Run it:
@@ -20,7 +20,7 @@
 //! then feed it:
 //!     flz operative send appender --channel input --text '"first"'
 
-use flezha_runner::{procedure, ChannelBuilder, StreamOperative};
+use flezha_runner::{tasklet, ChannelBuilder, StreamOperative};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Clone, Default, flezha_runner::State)]
@@ -28,7 +28,7 @@ struct AppendState {
     seen: Vec<String>,
 }
 
-#[procedure(id = "append_procedure")]
+#[tasklet(id = "append_tasklet")]
 fn append(input: String, state: &mut AppendState) {
     // Every mutation goes through a generated recorder, never through the
     // state directly: that is what makes it durable and replayable.

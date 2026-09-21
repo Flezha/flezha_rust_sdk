@@ -10,7 +10,7 @@ use flz_core::host::HostLink;
 use super::state::{erase, erase_transform, BuilderState, PluginSink};
 use super::ChannelBuilder;
 use crate::channel::{Channel, EdgeKeyFn, EdgeTransformFn, EdgeYield, OverflowPolicy};
-use crate::procedure::Procedure;
+use crate::tasklet::Tasklet;
 
 /// What a stream handle points at. The two markers are what keep the
 /// entry-side and output-side handles distinct types while their shared
@@ -18,7 +18,7 @@ use crate::procedure::Procedure;
 /// exactly once, against `K: StreamTarget`.
 pub trait StreamTarget: Copy + 'static {
     /// Whether the handle's `target` already IS a channel id, or is the
-    /// producing procedure whose output channel is created on demand.
+    /// producing tasklet whose output channel is created on demand.
     const IS_ENTRY: bool;
 }
 
@@ -26,7 +26,7 @@ pub trait StreamTarget: Copy + 'static {
 #[derive(Clone, Copy)]
 pub struct EntryTarget;
 
-/// [`Stream`]'s marker: `target` is the producing procedure, whose output
+/// [`Stream`]'s marker: `target` is the producing tasklet, whose output
 /// channel is created lazily so a leaf node never carries a phantom channel.
 #[derive(Clone, Copy)]
 pub struct NodeTarget;
@@ -45,7 +45,7 @@ impl StreamTarget for NodeTarget {
 /// entry channel's name is given at `input(...)`).
 pub type EntryStream<'b, T> = Stream<'b, T, EntryTarget>;
 
-/// A procedure's output stream handle, returned by `.into::<Proc>()`: a
+/// A tasklet's output stream handle, returned by `.into::<Task>()`: a
 /// lightweight `Copy` reference into the operative's topology builder.
 ///
 /// - `stream.into::<Next>()` wires Next as a consumer and returns Next's own
@@ -64,7 +64,7 @@ pub type EntryStream<'b, T> = Stream<'b, T, EntryTarget>;
 /// using one after the topology freezes at registration is a compile error.
 pub struct Stream<'b, T, K = NodeTarget> {
     pub(super) builder: &'b ChannelBuilder,
-    /// The entry channel id (`EntryTarget`) or the producing procedure id
+    /// The entry channel id (`EntryTarget`) or the producing tasklet id
     /// (`NodeTarget`) — `K` decides which.
     pub(super) target: u32,
     /// The transform/key chain declared on this handle, `None` for a bare one.
@@ -113,25 +113,22 @@ impl<'b, T: 'static + Send + Sync, K: StreamTarget> Stream<'b, T, K> {
     /// Compile-time bound: `S::Input == T`. Calling `.into` on the same handle
     /// repeatedly declares fan-out; wiring the same (unnamed) class from two
     /// streams declares fan-in.
-    pub fn into<S: Procedure<Input = T>>(self) -> Stream<'b, S::Output> {
+    pub fn into<S: Tasklet<Input = T>>(self) -> Stream<'b, S::Output> {
         self.wire::<S>(None)
     }
 
     /// Like [`into`](Stream::into), but the consumer is a distinct named node:
     /// its identity string is `node_name` instead of `S::name()`, letting one
-    /// Procedure class appear at several graph positions with independent
+    /// Tasklet class appear at several graph positions with independent
     /// state (`sdk-graph-authoring` node-identity rule).
-    pub fn into_named<S: Procedure<Input = T>>(
+    pub fn into_named<S: Tasklet<Input = T>>(
         self,
         node_name: &'static str,
     ) -> Stream<'b, S::Output> {
         self.wire::<S>(Some(node_name))
     }
 
-    fn wire<S: Procedure<Input = T>>(
-        self,
-        node_name: Option<&'static str>,
-    ) -> Stream<'b, S::Output> {
+    fn wire<S: Tasklet<Input = T>>(self, node_name: Option<&'static str>) -> Stream<'b, S::Output> {
         let pending = self.pending;
         let node = self.with_channel(|st, cid| st.wire_consumer::<S>(cid, pending, node_name));
         Stream {
@@ -143,7 +140,7 @@ impl<'b, T: 'static + Send + Sync, K: StreamTarget> Stream<'b, T, K> {
     }
 
     /// Reshape every value on the way to the next consumer. Costs no
-    /// Procedure, no Entity, no mailbox and no dispatch hop: the closure is
+    /// Tasklet, no Cell, no mailbox and no dispatch hop: the closure is
     /// stored on the consumer edge this chain terminates in and evaluated at
     /// the routing seam, so it runs identically on live delivery and on the
     /// controller's re-forwarded replay slice.
@@ -151,7 +148,7 @@ impl<'b, T: 'static + Send + Sync, K: StreamTarget> Stream<'b, T, K> {
     /// It MUST therefore be pure and cheap. Pure because a replay that
     /// disagreed with the live run would rebuild a state the live run never
     /// had; cheap because it runs on the routing thread — real work belongs in
-    /// a Procedure behind [`key_by`](Stream::key_by), which buys per-Entity
+    /// a Tasklet behind [`key_by`](Stream::key_by), which buys per-Cell
     /// parallelism.
     pub fn map<U, F>(self, f: F) -> Stream<'b, U, K>
     where
@@ -199,7 +196,7 @@ impl<'b, T: 'static + Send + Sync, K: StreamTarget> Stream<'b, T, K> {
 
     /// Expand one value into zero or more. Each yielded value is keyed and
     /// delivered independently, so `flat_map` + [`key_by`](Stream::key_by) is
-    /// how one input fans out across several Entities. Same purity and cost
+    /// how one input fans out across several Cells. Same purity and cost
     /// contract as [`map`](Stream::map).
     ///
     /// The yielded values are pushed one at a time under the channel's
@@ -224,16 +221,16 @@ impl<'b, T: 'static + Send + Sync, K: StreamTarget> Stream<'b, T, K> {
         self.relink(Some(link), None)
     }
 
-    /// Name the Entity each value is routed to, making the consumer a
-    /// dynamic-mode Procedure whose Entities are created on first sight of a
+    /// Name the Cell each value is routed to, making the consumer a
+    /// dynamic-mode Tasklet whose Cells are created on first sight of a
     /// key. This is the only way to declare dynamic keying — the consumer
-    /// Procedure carries no keying member at all, so a reader of `channels()`
+    /// Tasklet carries no keying member at all, so a reader of `channels()`
     /// can see where work fans out.
     ///
-    /// Total by signature: it names an Entity, it never declines. Discard
+    /// Total by signature: it names a Cell, it never declines. Discard
     /// inputs with [`filter`](Stream::filter) before it. It is evaluated on the
     /// **post-transform** value, so it must be the last link before `.into`.
-    /// Wiring it onto a Procedure declaring `entity_keys()` (static mode) is a
+    /// Wiring it onto a Tasklet declaring `cell_keys()` (static mode) is a
     /// registration error.
     pub fn key_by<F>(self, key: F) -> Self
     where
@@ -262,7 +259,7 @@ impl<'b, T: 'static + Send + Sync, K: StreamTarget> Stream<'b, T, K> {
 
     /// Override the exponential-backoff base (milliseconds, default 50)
     /// waited out between failed attempts. The wait holds no thread — the
-    /// entity becomes eligible again at its due time.
+    /// cell becomes eligible again at its due time.
     pub fn retry_backoff_ms(self, base_ms: u64) -> Self {
         self.with_channel(|st, cid| st.channels[cid as usize].retry.backoff_base_ms = base_ms);
         self
@@ -302,8 +299,8 @@ impl<'b, T: 'static + Send + Sync> Stream<'b, T, NodeTarget> {
     }
 
     /// Opt this channel into output identity: every plugin emit carries a
-    /// natural key (the Entity's own via `ctx.emit(value)`, another via
-    /// `ctx.emit_keyed(key, value)`) and the runtime stamps `flz.entity` /
+    /// natural key (the Cell's own via `ctx.emit(value)`, another via
+    /// `ctx.emit_keyed(key, value)`) and the runtime stamps `flz.cell` /
     /// `flz.seq` / `flz.key` on the wire frame.
     /// Requires a plugin wire (`sink`); `build_topology` refuses a keyed
     /// channel without one.

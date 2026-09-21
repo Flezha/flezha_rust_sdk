@@ -1,4 +1,4 @@
-//! `OperativeMessage` is answered with the canonical refusal. Per-Procedure
+//! `OperativeMessage` is answered with the canonical refusal. Per-Tasklet
 //! `handle_message` is not implemented (`operative-message-handlers` owes it),
 //! and until it is, every request must come back with an empty payload and the
 //! one refusal string — never with silence, and never with a decode error.

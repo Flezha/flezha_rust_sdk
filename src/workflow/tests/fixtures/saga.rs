@@ -7,24 +7,24 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 
 use super::*;
+use crate::cell::restore::RestoreInitPayload;
 use crate::channel::ChannelBuilder;
-use crate::entity::restore::RestoreInitPayload;
-use crate::procedure::change::NoChange;
-use crate::procedure::clock::WallClock;
-use crate::procedure::{Procedure, ProcedureCtx, ProcedureError, StateHandle};
+use crate::tasklet::change::NoChange;
+use crate::tasklet::clock::WallClock;
+use crate::tasklet::{StateHandle, Tasklet, TaskletCtx, TaskletError};
 use crate::workflow::*;
 
 // ---- saga compensation operatives (Phase 2 §4) --------------------------
 
 /// Process-global compensation observation log. The driver-observation test
-/// owns it (like `EMIT_RUNS`); compensable procedures append a marker so
-/// rollback order and per-entity firing are assertable without wire
-/// plumbing (a compensable inter-procedure proc's `ctx.emit` is collected, not
+/// owns it (like `EMIT_RUNS`); compensable tasklets append a marker so
+/// rollback order and per-cell firing are assertable without wire
+/// plumbing (a compensable inter-tasklet task's `ctx.emit` is collected, not
 /// wired).
 pub(crate) static COMPENSATION_LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 // Captures the `(payload_id, frame)` pairs a durable workflow ships to the
-// reliable sink — `entity_state_change` from the flush plus the saga
+// reliable sink — `cell_state_change` from the flush plus the saga
 // `compensation_intent` / `compensation_done` markers.
 pub(crate) static WAL_FRAMES: Mutex<Vec<(String, Vec<u8>)>> = Mutex::new(Vec::new());
 
@@ -55,7 +55,7 @@ pub(crate) static STAGE0_RELEASE: AtomicBool = AtomicBool::new(false);
 /// Compensable: reserves (emits `reserved:<arg>`); undo logs `undo-reserve`.
 #[derive(Default)]
 pub(crate) struct SagaReserve;
-impl Procedure for SagaReserve {
+impl Tasklet for SagaReserve {
     type Input = String;
     type Output = String;
     type State = ();
@@ -70,8 +70,8 @@ impl Procedure for SagaReserve {
         &mut self,
         input: String,
         _state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         ctx.emit(format!("reserved:{input}"))?;
         Ok(())
     }
@@ -80,8 +80,8 @@ impl Procedure for SagaReserve {
         &mut self,
         completed_output: Vec<Arc<String>>,
         _state: StateHandle<'_, Self>,
-        _ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        _ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         for out in &completed_output {
             comp_log(format!("undo-reserve:{out}"));
         }
@@ -92,7 +92,7 @@ impl Procedure for SagaReserve {
 /// Compensable: charges (emits `charged:<input>`); undo logs `undo-charge`.
 #[derive(Default)]
 pub(crate) struct SagaCharge;
-impl Procedure for SagaCharge {
+impl Tasklet for SagaCharge {
     type Input = String;
     type Output = String;
     type State = ();
@@ -107,8 +107,8 @@ impl Procedure for SagaCharge {
         &mut self,
         input: String,
         _state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         ctx.emit(format!("charged:{input}"))?;
         Ok(())
     }
@@ -117,8 +117,8 @@ impl Procedure for SagaCharge {
         &mut self,
         completed_output: Vec<Arc<String>>,
         _state: StateHandle<'_, Self>,
-        _ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        _ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         for out in &completed_output {
             comp_log(format!("undo-charge:{out}"));
         }
@@ -128,8 +128,8 @@ impl Procedure for SagaCharge {
 
 // Terminal step that always fails — triggers reverse-order rollback of the
 // completed `reserve` + `charge`. Itself uncompleted ⇒ never compensated.
-string_proc!(SagaShipFails, "saga_ship_fails", |_input, _ctx| Err(
-    ProcedureError::Custom("ship failed".into())
+string_task!(SagaShipFails, "saga_ship_fails", |_input, _ctx| Err(
+    TaskletError::Custom("ship failed".into())
 ));
 
 /// Reserve → Charge → Ship(fails). Default all-or-nothing rollback.
@@ -137,7 +137,7 @@ string_proc!(SagaShipFails, "saga_ship_fails", |_input, _ctx| Err(
 /// undo logs `undo-archive`.
 #[derive(Default)]
 pub(crate) struct SagaArchive;
-impl Procedure for SagaArchive {
+impl Tasklet for SagaArchive {
     type Input = String;
     type Output = String;
     type State = ();
@@ -152,8 +152,8 @@ impl Procedure for SagaArchive {
         &mut self,
         input: String,
         _state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         ctx.emit(format!("archived:{input}"))?;
         Ok(())
     }
@@ -162,8 +162,8 @@ impl Procedure for SagaArchive {
         &mut self,
         completed_output: Vec<Arc<String>>,
         _state: StateHandle<'_, Self>,
-        _ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        _ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         for out in &completed_output {
             comp_log(format!("undo-archive:{out}"));
         }
@@ -179,13 +179,13 @@ impl WorkflowOperative for TreeSaga {
     fn factory_id() -> &'static str {
         "test-tree-saga"
     }
-    fn procedures(c: &ChannelBuilder) {
+    fn tasklets(c: &ChannelBuilder) {
         let t1 = c.input::<String>("in").into::<SagaReserve>().named("t1");
         t1.into::<SagaCharge>()
             .named("t2")
             .into::<SagaShipFails>()
             .sink_named("t_ship");
-        // The archive leaf releases an inter-proc batch nobody consumes: it
+        // The archive leaf releases an inter-task batch nobody consumes: it
         // stays a leaf, and its retained output is what its undo reverses
         // (a plugin-bound leaf would stage instead of collect, leaving the
         // hook nothing to name).
@@ -198,7 +198,7 @@ impl WorkflowOperative for SagaWorkflow {
     fn factory_id() -> &'static str {
         "test-saga-workflow"
     }
-    fn procedures(c: &ChannelBuilder) {
+    fn tasklets(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<SagaReserve>()
             .named("c1")
@@ -221,7 +221,7 @@ impl WorkflowOperative for KeepProgressSaga {
     fn rollback_mode() -> RollbackMode {
         RollbackMode::KeepProgress
     }
-    fn procedures(c: &ChannelBuilder) {
+    fn tasklets(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<SagaReserve>()
             .named("c1")
@@ -238,27 +238,27 @@ impl WorkflowOperative for CleanSaga {
     fn factory_id() -> &'static str {
         "test-clean-saga"
     }
-    fn procedures(c: &ChannelBuilder) {
+    fn tasklets(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<SagaReserve>()
             .named("c1")
             .into::<SagaCharge>()
             .named("c2")
-            .into::<EchoProc>()
+            .into::<EchoTask>()
             .sink_named("out");
     }
 }
 
-/// Static-entity compensable proc: stores its entity key in state, emits
-/// `<key>:<item>`, and compensates ONCE per entity (logs all that entity's
-/// outputs together) so per-entity firing is assertable.
+/// Static-cell compensable task: stores its cell key in state, emits
+/// `<key>:<item>`, and compensates ONCE per cell (logs all that cell's
+/// outputs together) so per-cell firing is assertable.
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub(crate) struct FanKeyState {
     key: String,
 }
 #[derive(Default)]
 pub(crate) struct SagaFan;
-impl Procedure for SagaFan {
+impl Tasklet for SagaFan {
     type Input = String;
     type Output = String;
     type State = FanKeyState;
@@ -268,28 +268,28 @@ impl Procedure for SagaFan {
     fn name() -> &'static str {
         "saga_fan"
     }
-    fn entity_keys() -> Vec<&'static str> {
+    fn cell_keys() -> Vec<&'static str> {
         vec!["even", "odd"]
     }
-    const ENTITIES_FOR_OVERRIDDEN: bool = true;
-    fn entities_for(input: &String) -> Vec<&'static str> {
+    const CELLS_FOR_OVERRIDDEN: bool = true;
+    fn cells_for(input: &String) -> Vec<&'static str> {
         if input.len().is_multiple_of(2) {
             vec!["even"]
         } else {
             vec!["odd"]
         }
     }
-    fn init_state(entity_key: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> FanKeyState {
+    fn init_state(cell_key: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> FanKeyState {
         FanKeyState {
-            key: entity_key.unwrap_or("").to_string(),
+            key: cell_key.unwrap_or("").to_string(),
         }
     }
     fn run(
         &mut self,
         input: String,
         state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         ctx.emit(format!("{}:{input}", state.key))?;
         Ok(())
     }
@@ -298,30 +298,30 @@ impl Procedure for SagaFan {
         &mut self,
         completed_output: Vec<Arc<String>>,
         state: StateHandle<'_, Self>,
-        _ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        _ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         let items: Vec<String> = completed_output.iter().map(|o| o.to_string()).collect();
         comp_log(format!("undo-fan:{}:[{}]", state.key, items.join(",")));
         Ok(())
     }
 }
 
-// Terminal failing proc for the per-entity rollback chain.
-string_proc!(FailLast, "saga_fail_last", |_input, _ctx| Err(
-    ProcedureError::Custom("fan ship failed".into())
+// Terminal failing task for the per-cell rollback chain.
+string_task!(FailLast, "saga_fail_last", |_input, _ctx| Err(
+    TaskletError::Custom("fan ship failed".into())
 ));
 
 /// Split(hookless) → Fan(compensable, even/odd) → FailLast. The hookless
-/// `SplitProc` is skipped during rollback; only `SagaFan` compensates, once
-/// per entity.
+/// `SplitTask` is skipped during rollback; only `SagaFan` compensates, once
+/// per cell.
 pub(crate) struct FanSaga;
 impl WorkflowOperative for FanSaga {
     fn factory_id() -> &'static str {
         "test-fan-saga"
     }
-    fn procedures(c: &ChannelBuilder) {
+    fn tasklets(c: &ChannelBuilder) {
         c.input::<String>("in")
-            .into::<SplitProc>()
+            .into::<SplitTask>()
             .named("mid")
             .into::<SagaFan>()
             .named("mid2")
@@ -330,11 +330,11 @@ impl WorkflowOperative for FanSaga {
     }
 }
 
-/// Compensable stage-0 proc with a handshake so a cooperative stop lands after
+/// Compensable stage-0 task with a handshake so a cooperative stop lands after
 /// it completes but before stage 1 (deterministic forced-stop rollback).
 #[derive(Default)]
 pub(crate) struct StopReserve;
-impl Procedure for StopReserve {
+impl Tasklet for StopReserve {
     type Input = String;
     type Output = String;
     type State = ();
@@ -349,8 +349,8 @@ impl Procedure for StopReserve {
         &mut self,
         input: String,
         _state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         STAGE0_RAN.store(true, Ordering::SeqCst);
         while !STAGE0_RELEASE.load(Ordering::SeqCst) {
             std::thread::yield_now();
@@ -363,8 +363,8 @@ impl Procedure for StopReserve {
         &mut self,
         completed_output: Vec<Arc<String>>,
         _state: StateHandle<'_, Self>,
-        _ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        _ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         for out in &completed_output {
             comp_log(format!("undo-stop-reserve:{out}"));
         }
@@ -379,23 +379,23 @@ impl WorkflowOperative for StopSaga {
     fn factory_id() -> &'static str {
         "test-stop-saga"
     }
-    fn procedures(c: &ChannelBuilder) {
+    fn tasklets(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<StopReserve>()
             .named("mid")
-            .into::<EchoProc>()
+            .into::<EchoTask>()
             .sink_named("out");
     }
 }
 
-// ---- saga crash-resume procs (§4.3) ---------------------------------------
-// Compensable procs whose `compensate` logs UNCONDITIONALLY (not per output),
+// ---- saga crash-resume tasks (§4.3) ---------------------------------------
+// Compensable tasks whose `compensate` logs UNCONDITIONALLY (not per output),
 // so a crash-resume — which reconstructs completed stages with EMPTY outputs
-// (a procedure's collected output was never durable) — is still observable.
+// (a tasklet's collected output was never durable) — is still observable.
 
 #[derive(Default)]
 pub(crate) struct ResumeUndoA;
-impl Procedure for ResumeUndoA {
+impl Tasklet for ResumeUndoA {
     type Input = String;
     type Output = String;
     type State = ();
@@ -410,8 +410,8 @@ impl Procedure for ResumeUndoA {
         &mut self,
         input: String,
         _state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         ctx.emit(format!("a:{input}"))?;
         Ok(())
     }
@@ -420,8 +420,8 @@ impl Procedure for ResumeUndoA {
         &mut self,
         _out: Vec<Arc<String>>,
         _state: StateHandle<'_, Self>,
-        _ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        _ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         comp_log("undo-A".to_string());
         Ok(())
     }
@@ -429,7 +429,7 @@ impl Procedure for ResumeUndoA {
 
 #[derive(Default)]
 pub(crate) struct ResumeUndoB;
-impl Procedure for ResumeUndoB {
+impl Tasklet for ResumeUndoB {
     type Input = String;
     type Output = String;
     type State = ();
@@ -444,8 +444,8 @@ impl Procedure for ResumeUndoB {
         &mut self,
         input: String,
         _state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         ctx.emit(format!("b:{input}"))?;
         Ok(())
     }
@@ -454,8 +454,8 @@ impl Procedure for ResumeUndoB {
         &mut self,
         _out: Vec<Arc<String>>,
         _state: StateHandle<'_, Self>,
-        _ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        _ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         comp_log("undo-B".to_string());
         Ok(())
     }

@@ -1,5 +1,5 @@
 //! `DropNothing` withholds work; it never holds a thread. A push into a full
-//! consumer is held in the producing Entity's holdback and that Entity is
+//! consumer is held in the producing Cell's holdback and that Cell is
 //! handed no further work, so the invariant is that nothing is discarded AND
 //! no worker parks.
 //!
@@ -34,7 +34,7 @@ static DEEPEST_INFLIGHT: AtomicUsize = AtomicUsize::new(0);
 
 const FANOUT: usize = 20;
 
-test_procedure!(ChainHead, "nonparking_chain_head", String => String, (), |_input, _state, ctx| {
+test_tasklet!(ChainHead, "nonparking_chain_head", String => String, (), |_input, _state, ctx| {
     for i in 0..FANOUT {
         ctx.emit(format!("v{i}"))?;
     }
@@ -43,14 +43,14 @@ test_procedure!(ChainHead, "nonparking_chain_head", String => String, (), |_inpu
 
 // Capacity 1 on both hops: every emit past the first has nowhere to go, so the
 // producer defers on all but one of them.
-test_procedure!(ChainMid, "nonparking_chain_mid", String => String, (), cap 1, |input, _state, ctx| {
+test_tasklet!(ChainMid, "nonparking_chain_mid", String => String, (), cap 1, |input, _state, ctx| {
     CHAIN_MID.fetch_add(1, Ordering::AcqRel);
     note_inflight();
     ctx.emit(input)?;
     Ok(())
 });
 
-test_procedure!(ChainTail, "nonparking_chain_tail", String => (), (), cap 1, |_input, _state, _ctx| {
+test_tasklet!(ChainTail, "nonparking_chain_tail", String => (), (), cap 1, |_input, _state, _ctx| {
     CHAIN_TAIL.fetch_add(1, Ordering::AcqRel);
     note_inflight();
     Ok(())
@@ -114,8 +114,8 @@ fn a_chain_of_full_mailboxes_drains_on_a_single_pinned_worker() {
 
     // Nothing discarded anywhere on the chain: DropNothing means DropNothing
     // whichever mechanism realized it.
-    for procedure in instance.entities.iter() {
-        for slot in procedure {
+    for tasklet in instance.cells.iter() {
+        for slot in tasklet {
             let c = slot.counters();
             assert_eq!(c.drops_newest_total.load(Ordering::Relaxed), 0);
             assert_eq!(c.drops_oldest_total.load(Ordering::Relaxed), 0);
@@ -129,8 +129,8 @@ fn a_chain_of_full_mailboxes_drains_on_a_single_pinned_worker() {
     );
 
     // The holdback is empty and the producer's gates were handed back, or the
-    // Entity would never serve another input.
-    let head = &instance.entities[0][0];
+    // Cell would never serve another input.
+    let head = &instance.cells[0][0];
     assert!(head.push_holdback.lock().unwrap().is_empty());
     assert!(!head.push_deferred.load(Ordering::Acquire));
     assert!(!head.push_gated.load(Ordering::Acquire));
@@ -139,14 +139,14 @@ fn a_chain_of_full_mailboxes_drains_on_a_single_pinned_worker() {
 
 static ORDERED_SEEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
-test_procedure!(OrderedHead, "nonparking_ordered_head", String => String, (), |_input, _state, ctx| {
+test_tasklet!(OrderedHead, "nonparking_ordered_head", String => String, (), |_input, _state, ctx| {
     for i in 0..FANOUT {
         ctx.emit(format!("e{i}"))?;
     }
     Ok(())
 });
 
-test_procedure!(OrderedTail, "nonparking_ordered_tail", String => (), (), cap 1, |input, _state, _ctx| {
+test_tasklet!(OrderedTail, "nonparking_ordered_tail", String => (), (), cap 1, |input, _state, _ctx| {
     ORDERED_SEEN.lock().unwrap().push(input);
     Ok(())
 });
@@ -200,14 +200,14 @@ fn per_producer_emit_order_survives_the_holdback() {
 
 static GATED_SEEN: AtomicUsize = AtomicUsize::new(0);
 
-test_procedure!(GateHead, "nonparking_gate_head", String => String, (), |_input, _state, ctx| {
+test_tasklet!(GateHead, "nonparking_gate_head", String => String, (), |_input, _state, ctx| {
     for i in 0..FANOUT {
         ctx.emit(format!("g{i}"))?;
     }
     Ok(())
 });
 
-test_procedure!(GateTail, "nonparking_gate_tail", String => (), (), cap 1, |_input, _state, _ctx| {
+test_tasklet!(GateTail, "nonparking_gate_tail", String => (), (), cap 1, |_input, _state, _ctx| {
     GATED_SEEN.fetch_add(1, Ordering::AcqRel);
     Ok(())
 });
@@ -227,8 +227,8 @@ impl StreamOperative for GateOperative {
 }
 
 /// One erased payload, pushed straight onto a mailbox to saturate it.
-fn blob(stream: &Arc<flz_transport::transport::FlezhaStream>) -> flz_core::entity::EntityItem {
-    flz_core::entity::EntityItem::Input(flz_core::entity::EntityPayload {
+fn blob(stream: &Arc<flz_transport::transport::FlezhaStream>) -> flz_core::cell::CellItem {
+    flz_core::cell::CellItem::Input(flz_core::cell::CellPayload {
         value: Arc::new(String::from("saturate")) as Arc<dyn std::any::Any + Send + Sync>,
         stream: Arc::clone(stream),
         consumed_offset: None,
@@ -247,8 +247,8 @@ fn a_gated_producer_holds_its_round_and_is_reported() {
     GATED_SEEN.store(0, Ordering::Release);
 
     let (handle, instance) = setup::<GateOperative>("nonparking-gate");
-    let head = Arc::clone(&instance.entities[0][0]);
-    let tail = Arc::clone(&instance.entities[1][0]);
+    let head = Arc::clone(&instance.cells[0][0]);
+    let tail = Arc::clone(&instance.cells[1][0]);
     let stream = dummy_stream();
 
     // Claim the consumer's round and fill it: no assembly can run, so every

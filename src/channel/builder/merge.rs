@@ -1,4 +1,4 @@
-//! Merged subscriptions: one procedure fed by two or more source channels,
+//! Merged subscriptions: one tasklet fed by two or more source channels,
 //! each supplying the mapping that lifts its payload into the sum type.
 
 use std::marker::PhantomData;
@@ -7,11 +7,11 @@ use super::state::{erase, erase_merge_map};
 use super::stream::{Stream, StreamTarget};
 use super::ChannelBuilder;
 use crate::channel::{ChannelId, EdgeKeyFn};
-use crate::procedure::Procedure;
+use crate::tasklet::Tasklet;
 
 /// A channel handle usable as a [`merge`](ChannelBuilder::merge) source:
 /// either an [`EntryStream`] (sealed payload off the wire) or a [`Stream`]
-/// (another procedure's output). One impl covers both, so the two are freely
+/// (another tasklet's output). One impl covers both, so the two are freely
 /// mixed in one merge.
 pub trait MergeSource<'b> {
     /// The payload the source channel carries — the mapping's argument type,
@@ -40,7 +40,7 @@ impl<'b, T: Clone + Send + Sync + 'static, K: StreamTarget> MergeSource<'b> for 
 /// Nothing is recorded on the topology until `into`, so a merge left unclosed
 /// declares no edges at all — silently. `must_use` is what makes that a
 /// compiler warning rather than a graph that is quietly missing a consumer.
-#[must_use = "a merge declares nothing until it is closed with `.into::<Proc>()`"]
+#[must_use = "a merge declares nothing until it is closed with `.into::<Task>()`"]
 pub struct Merge<'b, I> {
     pub(super) builder: &'b ChannelBuilder,
     /// Per source: its channel and the pending chain that ends in this merge's
@@ -72,7 +72,7 @@ impl<'b, I: Send + Sync + 'static> Merge<'b, I> {
         self
     }
 
-    /// Declare the Entity key for the merged procedure — once, on the merge,
+    /// Declare the Cell key for the merged tasklet — once, on the merge,
     /// because by the time keying runs every source has been mapped into the
     /// one `Input` type. Yields the key for a value of the merged sum type.
     pub fn key_by<F>(mut self, key: F) -> Self
@@ -86,13 +86,13 @@ impl<'b, I: Send + Sync + 'static> Merge<'b, I> {
     /// Close the merge on its consumer and return **the consumer's** output
     /// stream handle, so a merged node chains like any other. Compile-time
     /// bound: `S::Input == I`.
-    pub fn into<S: Procedure<Input = I>>(self) -> Stream<'b, S::Output> {
+    pub fn into<S: Tasklet<Input = I>>(self) -> Stream<'b, S::Output> {
         self.wire::<S>(None)
     }
 
     /// Like [`into`](Merge::into), but the consumer is a distinct named node
     /// (the `sdk-graph-authoring` node-identity rule).
-    pub fn into_named<S: Procedure<Input = I>>(
+    pub fn into_named<S: Tasklet<Input = I>>(
         self,
         node_name: &'static str,
     ) -> Stream<'b, S::Output> {
@@ -103,7 +103,7 @@ impl<'b, I: Send + Sync + 'static> Merge<'b, I> {
     /// spellings, and the seam a packaged building block
     /// ([`ChannelBuilder::route_latest`]) closes its own merge with instead of
     /// re-deriving the named/unnamed dispatch.
-    pub(crate) fn wire<S: Procedure<Input = I>>(
+    pub(crate) fn wire<S: Tasklet<Input = I>>(
         self,
         node_name: Option<&'static str>,
     ) -> Stream<'b, S::Output> {

@@ -9,13 +9,13 @@ mod remove_factory_tests {
     use flz_core::restore::RestoreInitPayload;
     use flz_core::runner::*;
 
-    use crate::procedure::state_handle::StateHandle;
-    use crate::procedure::{NoChange, Procedure, ProcedureCtx, ProcedureError, WallClock};
+    use crate::tasklet::state_handle::StateHandle;
+    use crate::tasklet::{NoChange, Tasklet, TaskletCtx, TaskletError, WallClock};
     use crate::{ChannelBuilder, StreamOperative};
 
     #[derive(Default)]
-    struct SeamProc;
-    impl Procedure for SeamProc {
+    struct SeamTask;
+    impl Tasklet for SeamTask {
         type Input = String;
         type Output = String;
         type State = ();
@@ -30,8 +30,8 @@ mod remove_factory_tests {
             &mut self,
             _: String,
             _: StateHandle<'_, Self>,
-            _: &mut ProcedureCtx<'_>,
-        ) -> Result<(), ProcedureError> {
+            _: &mut TaskletCtx<'_>,
+        ) -> Result<(), TaskletError> {
             Ok(())
         }
     }
@@ -42,7 +42,7 @@ mod remove_factory_tests {
             "remove_factory_seam_probe"
         }
         fn channels(c: &ChannelBuilder) {
-            c.input::<String>("in").into::<SeamProc>();
+            c.input::<String>("in").into::<SeamTask>();
         }
     }
 

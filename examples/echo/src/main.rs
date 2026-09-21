@@ -5,7 +5,7 @@
 //! serve several, and the same call takes a workflow operative.
 
 mod operative;
-mod procedure;
+mod tasklet;
 
 use flezha_runner::Flezha;
 

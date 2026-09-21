@@ -1,4 +1,4 @@
-//! Structured classes: procedures, chains, loops and the hybrid
+//! Structured classes: tasklets, chains, loops and the hybrid
 //! channel wiring.
 
 use std::sync::Arc;
@@ -7,31 +7,31 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use super::*;
+use crate::cell::restore::RestoreInitPayload;
 use crate::channel::ChannelBuilder;
-use crate::entity::restore::RestoreInitPayload;
-use crate::procedure::change::{Change, NoChange};
-use crate::procedure::clock::WallClock;
-use crate::procedure::{Procedure, ProcedureCtx, ProcedureError, StateHandle};
+use crate::tasklet::change::{Change, NoChange};
+use crate::tasklet::clock::WallClock;
+use crate::tasklet::{StateHandle, Tasklet, TaskletCtx, TaskletError};
 use crate::workflow::*;
 
-// ---- structured procedures + operatives ----------------------------------
+// ---- structured tasklets + operatives ----------------------------------
 
-string_proc!(EchoProc, "workflow_echo_op", |input, ctx| ctx
+string_task!(EchoTask, "workflow_echo_op", |input, ctx| ctx
     .emit(format!("echo:{input}")));
 
-string_proc!(Stage1, "workflow_stage1", |input, ctx| ctx
+string_task!(Stage1, "workflow_stage1", |input, ctx| ctx
     .emit(format!("{input}-1")));
 
-string_proc!(Stage2, "workflow_stage2", |input, ctx| ctx
+string_task!(Stage2, "workflow_stage2", |input, ctx| ctx
     .emit(format!("{input}-2")));
 
-/// `workflow-branching`: Stage1 fans out to Stage2 and EchoProc on one channel,
+/// `workflow-branching`: Stage1 fans out to Stage2 and EchoTask on one channel,
 /// each branch ending at its own plugin sink. The edge is (channel,
 /// consumer), so both branches read exactly what Stage1 released on `mid`.
 pub(crate) fn tree_chain(c: &ChannelBuilder) {
     let mid = c.input::<String>("in").into::<Stage1>().named("mid");
     mid.into::<Stage2>().sink_named("out_b");
-    mid.into::<EchoProc>().sink_named("out_c");
+    mid.into::<EchoTask>().sink_named("out_c");
 }
 
 pub(crate) struct TreeWorkflow;
@@ -39,7 +39,7 @@ impl WorkflowOperative for TreeWorkflow {
     fn factory_id() -> &'static str {
         "test-tree-workflow"
     }
-    fn procedures(c: &ChannelBuilder) {
+    fn tasklets(c: &ChannelBuilder) {
         tree_chain(c);
     }
 }
@@ -60,7 +60,7 @@ impl WorkflowOperative for ChainWorkflow {
     fn factory_id() -> &'static str {
         "test-chain-workflow"
     }
-    fn procedures(c: &ChannelBuilder) {
+    fn tasklets(c: &ChannelBuilder) {
         two_stage_chain(c);
     }
 }
@@ -78,7 +78,7 @@ impl WorkflowOperative for ResendChain {
     fn retry_backoff() -> Duration {
         Duration::from_millis(50)
     }
-    fn procedures(c: &ChannelBuilder) {
+    fn tasklets(c: &ChannelBuilder) {
         two_stage_chain(c);
     }
 }
@@ -101,7 +101,7 @@ impl WorkflowOperative for ResendLoop {
     fn retry_backoff() -> Duration {
         Duration::from_millis(50)
     }
-    fn procedures(c: &ChannelBuilder) {
+    fn tasklets(c: &ChannelBuilder) {
         two_stage_chain(c);
     }
 }
@@ -120,20 +120,20 @@ impl WorkflowOperative for ChatLoop {
     fn max_duration() -> Option<Duration> {
         Some(Duration::from_secs(30))
     }
-    fn procedures(c: &ChannelBuilder) {
+    fn tasklets(c: &ChannelBuilder) {
         two_stage_chain(c);
     }
 }
 
-/// Compensable stage-0 proc of the loop saga. Its undo logs the number of
+/// Compensable stage-0 task of the loop saga. Its undo logs the number of
 /// retained outputs it was handed, which is how the test tells the two
 /// rollback sources apart: the in-flight iteration carries its outputs in
 /// memory (`1`), while an iteration rebuilt from the journal carries none
 /// (`0`) — the documented at-least-once contract, where a durable undo
-/// handle lives in Entity state.
+/// handle lives in Cell state.
 #[derive(Default)]
 pub(crate) struct LoopReserve;
-impl Procedure for LoopReserve {
+impl Tasklet for LoopReserve {
     type Input = String;
     type Output = String;
     type State = ();
@@ -148,8 +148,8 @@ impl Procedure for LoopReserve {
         &mut self,
         input: String,
         _state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         ctx.emit(format!("reserved:{input}"))?;
         Ok(())
     }
@@ -158,17 +158,17 @@ impl Procedure for LoopReserve {
         &mut self,
         completed_output: Vec<Arc<String>>,
         _state: StateHandle<'_, Self>,
-        _ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        _ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         comp_log(format!("undo-loop:{}", completed_output.len()));
         Ok(())
     }
 }
 
-// Terminal proc of the loop saga: fails the iteration whose turn says "boom".
-string_proc!(LoopMaybeFail, "loop_maybe_fail", |input, ctx| {
+// Terminal task of the loop saga: fails the iteration whose turn says "boom".
+string_task!(LoopMaybeFail, "loop_maybe_fail", |input, ctx| {
     if input.contains("boom") {
-        return Err(ProcedureError::Custom("turn failed".into()));
+        return Err(TaskletError::Custom("turn failed".into()));
     }
     ctx.emit(format!("done:{input}"))
 });
@@ -189,7 +189,7 @@ impl WorkflowOperative for LoopSagaAllOrNothing {
     fn max_duration() -> Option<Duration> {
         Some(Duration::from_secs(30))
     }
-    fn procedures(c: &ChannelBuilder) {
+    fn tasklets(c: &ChannelBuilder) {
         loop_saga_chain(c);
     }
 }
@@ -212,7 +212,7 @@ impl WorkflowOperative for LoopSagaKeepProgress {
     fn max_duration() -> Option<Duration> {
         Some(Duration::from_secs(30))
     }
-    fn procedures(c: &ChannelBuilder) {
+    fn tasklets(c: &ChannelBuilder) {
         loop_saga_chain(c);
     }
 }
@@ -225,7 +225,7 @@ pub(crate) fn loop_saga_chain(c: &ChannelBuilder) {
         .sink_named("out");
 }
 
-/// A durable handoff-chained loop whose terminal procedure releases nothing:
+/// A durable handoff-chained loop whose terminal tasklet releases nothing:
 /// no consumer is wired from it and it names no sink, so it owns no output
 /// channel at all and iteration N+1 has no handoff to be re-seeded from.
 pub(crate) struct ChainedLoopNoTerminalOutput;
@@ -236,7 +236,7 @@ impl WorkflowOperative for ChainedLoopNoTerminalOutput {
     fn loop_mode() -> LoopMode {
         LoopMode::Chained
     }
-    fn procedures(c: &ChannelBuilder) {
+    fn tasklets(c: &ChannelBuilder) {
         c.input::<String>("in").into::<Stage1>().into::<Stage2>();
     }
 }
@@ -253,7 +253,7 @@ impl WorkflowOperative for ChainedLoopPluginTerminal {
     fn loop_mode() -> LoopMode {
         LoopMode::Chained
     }
-    fn procedures(c: &ChannelBuilder) {
+    fn tasklets(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<Stage1>()
             .named("mid")
@@ -262,8 +262,8 @@ impl WorkflowOperative for ChainedLoopPluginTerminal {
     }
 }
 
-// Splits the comma-separated args into individual items (one entity).
-string_proc!(SplitProc, "workflow_split_op", |input, ctx| {
+// Splits the comma-separated args into individual items (one cell).
+string_task!(SplitTask, "workflow_split_op", |input, ctx| {
     for piece in input.split(',') {
         ctx.emit(piece.to_string())?;
     }
@@ -278,11 +278,11 @@ pub(crate) struct CountState {
 pub(crate) struct Inc;
 impl Change for Inc {}
 
-/// Static-entity procedure: routes items to `even`/`odd` entities by
-/// length parity, counts per-entity (independent state), emits `<n>:<item>`.
+/// Static-cell tasklet: routes items to `even`/`odd` cells by
+/// length parity, counts per-cell (independent state), emits `<n>:<item>`.
 #[derive(Default)]
-pub(crate) struct FanProc;
-impl Procedure for FanProc {
+pub(crate) struct FanTask;
+impl Tasklet for FanTask {
     type Input = String;
     type Output = String;
     type State = CountState;
@@ -292,11 +292,11 @@ impl Procedure for FanProc {
     fn name() -> &'static str {
         "workflow_fan_op"
     }
-    fn entity_keys() -> Vec<&'static str> {
+    fn cell_keys() -> Vec<&'static str> {
         vec!["even", "odd"]
     }
-    const ENTITIES_FOR_OVERRIDDEN: bool = true;
-    fn entities_for(input: &String) -> Vec<&'static str> {
+    const CELLS_FOR_OVERRIDDEN: bool = true;
+    fn cells_for(input: &String) -> Vec<&'static str> {
         if input.len().is_multiple_of(2) {
             vec!["even"]
         } else {
@@ -313,8 +313,8 @@ impl Procedure for FanProc {
         &mut self,
         input: String,
         mut state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         state.apply(Inc);
         let n = state.n;
         ctx.emit(format!("{n}:{input}"))?;
@@ -322,17 +322,17 @@ impl Procedure for FanProc {
     }
 }
 
-/// Split → fan-out across static entities → plugin.
+/// Split → fan-out across static cells → plugin.
 pub(crate) struct FanWorkflow;
 impl WorkflowOperative for FanWorkflow {
     fn factory_id() -> &'static str {
         "test-fan-workflow"
     }
-    fn procedures(c: &ChannelBuilder) {
+    fn tasklets(c: &ChannelBuilder) {
         c.input::<String>("in")
-            .into::<SplitProc>()
+            .into::<SplitTask>()
             .named("mid")
-            .into::<FanProc>()
+            .into::<FanTask>()
             .sink_named("out");
     }
 }
@@ -344,30 +344,30 @@ impl WorkflowOperative for FanOptOutWorkflow {
     fn factory_id() -> &'static str {
         "test-fan-optout-workflow"
     }
-    fn procedures(c: &ChannelBuilder) {
+    fn tasklets(c: &ChannelBuilder) {
         c.input::<String>("in")
-            .into::<SplitProc>()
+            .into::<SplitTask>()
             .named("mid")
-            .into::<FanProc>()
+            .into::<FanTask>()
             .sink_named("out");
     }
     const PERSISTENCE_ENABLED: bool = false;
 }
 
-string_proc!(HybridStage1, "workflow_hybrid_stage1", |input, ctx| ctx
+string_task!(HybridStage1, "workflow_hybrid_stage1", |input, ctx| ctx
     .emit(format!("h:{input}")));
 
-string_proc!(HybridStage2, "workflow_hybrid_stage2", |input, ctx| ctx
+string_task!(HybridStage2, "workflow_hybrid_stage2", |input, ctx| ctx
     .emit(format!("final:{input}")));
 
-/// Hybrid inter-procedure channel (`sink_with`): Stage1's output
+/// Hybrid inter-tasklet channel (`sink_with`): Stage1's output
 /// both feeds Stage2 AND is serialized to a plugin sink.
 pub(crate) struct HybridWorkflow;
 impl WorkflowOperative for HybridWorkflow {
     fn factory_id() -> &'static str {
         "test-hybrid-workflow"
     }
-    fn procedures(c: &ChannelBuilder) {
+    fn tasklets(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<HybridStage1>()
             .sink_named_with("mid", |s: &String| format!("mid:{s}").into_bytes())

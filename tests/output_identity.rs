@@ -2,7 +2,7 @@
 //! an emit, the byte layout a non-keyed frame keeps, and the identical
 //! stamps a crash-restore replay produces.
 
-use flezha_runner::entity::header::header_template_for;
+use flezha_runner::cell::header::header_template_for;
 use flz_transport::service::payloader;
 
 mod common;
@@ -11,7 +11,7 @@ use common::prelude::*;
 // ----- Output identity: keyed-channel stamps, byte-identity, replay -----
 
 /// Spec "Identity stamps on keyed-channel output frames": every keyed
-/// plugin emit carries `flz.entity` / `flz.seq` / `flz.key` alongside the
+/// plugin emit carries `flz.cell` / `flz.seq` / `flz.key` alongside the
 /// `channel` stamp; `flz.seq` reflects the durable change seq after the
 /// flush-before-emit drain plus the emit ordinal.
 #[test]
@@ -40,8 +40,8 @@ fn keyed_channel_emits_carry_identity_stamps() {
     assert_eq!(f1.message, b"x".to_vec());
     assert_eq!(f1.metadata.get("channel").unwrap(), "out");
     assert_eq!(
-        f1.metadata.get("flz.entity").unwrap(),
-        "keyed-stamps-instance/keyed_stamp_procedure/"
+        f1.metadata.get("flz.cell").unwrap(),
+        "keyed-stamps-instance/keyed_stamp_tasklet/"
     );
     assert_eq!(f1.metadata.get("flz.seq").unwrap(), "1.0");
     assert_eq!(f1.metadata.get("flz.key").unwrap(), "x");
@@ -56,7 +56,7 @@ fn keyed_channel_emits_carry_identity_stamps() {
 /// to `payloader::build_from_binary` with only the `channel` stamp.
 #[test]
 fn non_keyed_frame_is_byte_identical_to_prechange_layout() {
-    // MetaProducerProcedure-free operative: reuse FlushOrderOperative's shape
+    // MetaProducerTasklet-free operative: reuse FlushOrderOperative's shape
     // via a minimal pure-plugin operative.
     struct PlainPluginOperative;
     impl StreamOperative for PlainPluginOperative {
@@ -65,7 +65,7 @@ fn non_keyed_frame_is_byte_identical_to_prechange_layout() {
         }
         fn channels(c: &ChannelBuilder) {
             c.input::<String>("input")
-                .into::<PlainPluginProcedure>()
+                .into::<PlainPluginTasklet>()
                 .sink_named("out");
         }
     }
@@ -96,7 +96,7 @@ fn non_keyed_frame_is_byte_identical_to_prechange_layout() {
     );
 }
 
-test_procedure!(PlainPluginProcedure, "plain_plugin_procedure", String => String, (), |input, _state, ctx| {
+test_tasklet!(PlainPluginTasklet, "plain_plugin_tasklet", String => String, (), |input, _state, ctx| {
     ctx.emit::<String>(input)?;
     Ok(())
 });
@@ -131,19 +131,15 @@ fn keyed_stamps_replay_identically_after_crash_restore() {
     // Fresh instance, same identity: restore state from the WAL and
     // re-arm change_seq exactly like `RestoreInitState` does.
     let (handle_b, instance_b) = setup::<KeyedStampOperative>("restore-stamps-instance");
-    let slot = Arc::clone(&instance_b.entities[0][0]);
+    let slot = Arc::clone(&instance_b.cells[0][0]);
     let change_bytes = postcard::to_allocvec(&TickChange).expect("encode change");
-    let change_log = wal_record(
-        0,
-        &change_bytes,
-        header_template_for::<KeyedStampProcedure>(),
-    );
+    let change_log = wal_record(0, &change_bytes, header_template_for::<KeyedStampTasklet>());
     let terminal = {
         let mut guard = slot.state.lock().unwrap();
         slot.dispatcher
             .restore_state(
                 &mut guard,
-                &mut flezha_runner::entity::timer::PendingTimers::default(),
+                &mut flezha_runner::cell::timer::PendingTimers::default(),
                 &[],
                 &[],
                 &change_log,
@@ -170,7 +166,7 @@ fn keyed_stamps_replay_identically_after_crash_restore() {
     let orig = &original[1];
     let replay = &replayed[0];
     assert_eq!(replay.message, orig.message);
-    for stamp in ["flz.entity", "flz.seq", "flz.key"] {
+    for stamp in ["flz.cell", "flz.seq", "flz.key"] {
         assert_eq!(
             replay.metadata.get(stamp),
             orig.metadata.get(stamp),

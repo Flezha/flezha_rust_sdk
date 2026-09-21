@@ -7,13 +7,13 @@ use flezha_runner::Flezha;
 
 // ---- sdk-graph-authoring pins -------------------------------------------
 
-test_procedure!(GraphStage1, "graph_stage1", String => String, (), |_input, _state, _ctx| {
+test_tasklet!(GraphStage1, "graph_stage1", String => String, (), |_input, _state, _ctx| {
     Ok(())
 });
-test_procedure!(GraphStage2, "graph_stage2", String => String, (), |_input, _state, _ctx| {
+test_tasklet!(GraphStage2, "graph_stage2", String => String, (), |_input, _state, _ctx| {
     Ok(())
 });
-test_procedure!(GraphMerge, "graph_merge", String => String, (), |_input, _state, _ctx| {
+test_tasklet!(GraphMerge, "graph_merge", String => String, (), |_input, _state, _ctx| {
     Ok(())
 });
 
@@ -26,7 +26,7 @@ type ChannelShape = (
 );
 
 /// Flatten a frozen topology to a comparable shape: channels as
-/// `(name, kind, producer, consumers)` plus the procedure identity list.
+/// `(name, kind, producer, consumers)` plus the tasklet identity list.
 fn topo_shape(t: &flezha_runner::operative::OperativeTopology) -> (Vec<ChannelShape>, Vec<String>) {
     (
         t.channels
@@ -40,7 +40,7 @@ fn topo_shape(t: &flezha_runner::operative::OperativeTopology) -> (Vec<ChannelSh
                 )
             })
             .collect(),
-        t.procedures.iter().map(|o| o.name.to_string()).collect(),
+        t.tasklets.iter().map(|o| o.name.to_string()).collect(),
     )
 }
 
@@ -54,7 +54,7 @@ fn branch_builds_the_identical_topology() {
             "graph_by_handles"
         }
         fn channels(c: &ChannelBuilder) {
-            let validated = c.input::<String>("in").into::<EchoProcedure>();
+            let validated = c.input::<String>("in").into::<EchoTasklet>();
             validated.into::<GraphStage1>();
             validated.into::<GraphStage2>();
         }
@@ -65,7 +65,7 @@ fn branch_builds_the_identical_topology() {
             "graph_by_branch"
         }
         fn channels(c: &ChannelBuilder) {
-            c.input::<String>("in").into::<EchoProcedure>().branch([
+            c.input::<String>("in").into::<EchoTasklet>().branch([
                 &|b| {
                     b.into::<GraphStage1>();
                 },
@@ -88,11 +88,9 @@ fn branch_with_fewer_than_two_arms_is_refused() {
             "graph_one_arm"
         }
         fn channels(c: &ChannelBuilder) {
-            c.input::<String>("in")
-                .into::<EchoProcedure>()
-                .branch([&|b| {
-                    b.into::<GraphStage1>();
-                }]);
+            c.input::<String>("in").into::<EchoTasklet>().branch([&|b| {
+                b.into::<GraphStage1>();
+            }]);
         }
     }
     let err = match build_topology_for::<OneArm>() {
@@ -116,7 +114,7 @@ fn named_nodes_reuse_one_class_at_two_positions() {
             "graph_two_filters"
         }
         fn channels(c: &ChannelBuilder) {
-            let validated = c.input::<String>("in").into::<EchoProcedure>();
+            let validated = c.input::<String>("in").into::<EchoTasklet>();
             validated
                 .into_named::<GraphStage1>("fraud_filter")
                 .into::<GraphMerge>();
@@ -126,22 +124,17 @@ fn named_nodes_reuse_one_class_at_two_positions() {
         }
     }
     let t = build_topology_for::<TwoFilters>().expect("named nodes build");
-    let names: Vec<&str> = t.procedures.iter().map(|o| o.name.as_ref()).collect();
+    let names: Vec<&str> = t.tasklets.iter().map(|o| o.name.as_ref()).collect();
     assert_eq!(
         names,
-        vec![
-            "echo_procedure",
-            "fraud_filter",
-            "graph_merge",
-            "spam_filter"
-        ]
+        vec!["echo_tasklet", "fraud_filter", "graph_merge", "spam_filter"]
     );
     // Derived channel names are the node identities.
     assert!(t.lookup_channel_id("fraud_filter").is_some());
     assert!(t.lookup_channel_id("spam_filter").is_some());
     // The merge node accumulates both named nodes' channels: fan-in.
-    let merge_id = *t.procedure_name_to_id.get("graph_merge").unwrap();
-    assert_eq!(t.procedures[merge_id as usize].input_channel_ids.len(), 2);
+    let merge_id = *t.tasklet_name_to_id.get("graph_merge").unwrap();
+    assert_eq!(t.tasklets[merge_id as usize].input_channel_ids.len(), 2);
 }
 
 /// Two unnamed mentions of one class resolve to the same node — which is
@@ -154,16 +147,16 @@ fn unnamed_mentions_unify_into_a_fan_in() {
             "graph_fan_in"
         }
         fn channels(c: &ChannelBuilder) {
-            let validated = c.input::<String>("in").into::<EchoProcedure>();
+            let validated = c.input::<String>("in").into::<EchoTasklet>();
             validated.into::<GraphStage1>().into::<GraphMerge>();
             validated.into::<GraphStage2>().into::<GraphMerge>();
         }
     }
     let t = build_topology_for::<FanInGraph>().expect("fan-in builds");
-    assert_eq!(t.procedures.len(), 4, "one Merge node, not two");
-    let merge_id = *t.procedure_name_to_id.get("graph_merge").unwrap();
+    assert_eq!(t.tasklets.len(), 4, "one Merge node, not two");
+    let merge_id = *t.tasklet_name_to_id.get("graph_merge").unwrap();
     assert_eq!(
-        t.procedures[merge_id as usize].input_channel_ids.len(),
+        t.tasklets[merge_id as usize].input_channel_ids.len(),
         2,
         "the join consumes both producers' channels"
     );
@@ -177,8 +170,8 @@ fn node_identity_collision_is_refused() {
             "graph_identity_collision"
         }
         fn channels(c: &ChannelBuilder) {
-            let validated = c.input::<String>("in").into::<EchoProcedure>();
-            // A node name equal to another procedure's `name()`.
+            let validated = c.input::<String>("in").into::<EchoTasklet>();
+            // A node name equal to another tasklet's `name()`.
             validated.into_named::<GraphStage2>("graph_stage1");
             validated.into::<GraphStage1>();
         }
@@ -206,7 +199,7 @@ fn channel_names_derive_from_the_producer_identity() {
         }
         fn channels(c: &ChannelBuilder) {
             c.input::<String>("in")
-                .into::<EchoProcedure>()
+                .into::<EchoTasklet>()
                 .into::<GraphStage1>()
                 .named("orders.validated")
                 .into::<GraphStage2>();
@@ -214,7 +207,7 @@ fn channel_names_derive_from_the_producer_identity() {
     }
     let t = build_topology_for::<Derived>().expect("derived names build");
     assert!(
-        t.lookup_channel_id("echo_procedure").is_some(),
+        t.lookup_channel_id("echo_tasklet").is_some(),
         "no override ⇒ the producer's identity"
     );
     assert!(
@@ -229,8 +222,8 @@ fn channel_names_derive_from_the_producer_identity() {
         }
         fn channels(c: &ChannelBuilder) {
             // The entry claims the name the derived channel would take.
-            c.input::<String>("echo_procedure")
-                .into::<EchoProcedure>()
+            c.input::<String>("echo_tasklet")
+                .into::<EchoTasklet>()
                 .into::<GraphStage1>();
         }
     }
@@ -241,7 +234,7 @@ fn channel_names_derive_from_the_producer_identity() {
     assert!(err.errors.iter().any(|e| matches!(
         e,
         flezha_runner::channel::builder::TopologyIssue::DuplicateChannel(name)
-            if name == "echo_procedure"
+            if name == "echo_tasklet"
     )));
 }
 
@@ -305,7 +298,7 @@ struct OrderEvent {
     sku: String,
 }
 
-test_procedure!(OrderConsumer, "order_consumer", OrderEvent => String, (), |_input, _state, _ctx| {
+test_tasklet!(OrderConsumer, "order_consumer", OrderEvent => String, (), |_input, _state, _ctx| {
     Ok(())
 });
 
@@ -386,7 +379,7 @@ fn bytes_and_string_entries_stay_passthrough() {
     assert_eq!(ok.downcast_ref::<String>().unwrap(), "plain");
     assert!(wrap(vec![0xff, 0xfe]).is_err(), "invalid UTF-8 still errs");
 
-    test_procedure!(BytesConsumer, "bytes_consumer", Vec<u8> => String, (), |_input, _state, _ctx| {
+    test_tasklet!(BytesConsumer, "bytes_consumer", Vec<u8> => String, (), |_input, _state, _ctx| {
         Ok(())
     });
     struct BytesEntry;
@@ -421,7 +414,7 @@ fn generated_naming(input: String) -> Option<String> {
     Some(input)
 }
 
-/// The same operative spelled by hand, around the short form's own procedure.
+/// The same operative spelled by hand, around the short form's own tasklet.
 struct HandWrittenNaming;
 impl StreamOperative for HandWrittenNaming {
     fn factory_id() -> &'static str {
@@ -429,7 +422,7 @@ impl StreamOperative for HandWrittenNaming {
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
-            .into::<GeneratedNamingProcedure>()
+            .into::<GeneratedNamingTasklet>()
             .sink_named("items_output");
     }
 }
@@ -450,29 +443,29 @@ fn the_generated_and_hand_written_spellings_name_one_channel() {
 /// shadows the trait's default only when its impl's bound holds.
 struct Roles<T>(std::marker::PhantomData<T>);
 trait NoRole {
-    const PROCEDURE: bool = false;
+    const TASKLET: bool = false;
     const STREAM: bool = false;
 }
 impl<T> NoRole for Roles<T> {}
-impl<T: flezha_runner::Procedure> Roles<T> {
-    const PROCEDURE: bool = true;
+impl<T: flezha_runner::Tasklet> Roles<T> {
+    const TASKLET: bool = true;
 }
 impl<T: StreamOperative> Roles<T> {
     const STREAM: bool = true;
 }
 
 /// fails when: the short form makes one type play both roles again, so the
-/// name the author registers is also a procedure.
+/// name the author registers is also a tasklet.
 #[test]
-fn a_short_form_is_an_operative_beside_its_procedure() {
+fn a_short_form_is_an_operative_beside_its_tasklet() {
     assert!(<Roles<GeneratedNaming>>::STREAM);
-    assert!(!<Roles<GeneratedNaming>>::PROCEDURE);
-    assert!(<Roles<GeneratedNamingProcedure>>::PROCEDURE);
-    assert!(!<Roles<GeneratedNamingProcedure>>::STREAM);
-    // The procedure is named after the factory id, so ejecting to the full
-    // form keeps every entity's state path.
+    assert!(!<Roles<GeneratedNaming>>::TASKLET);
+    assert!(<Roles<GeneratedNamingTasklet>>::TASKLET);
+    assert!(!<Roles<GeneratedNamingTasklet>>::STREAM);
+    // The tasklet is named after the factory id, so ejecting to the full
+    // form keeps every cell's state path.
     assert_eq!(
-        <GeneratedNamingProcedure as flezha_runner::Procedure>::name(),
+        <GeneratedNamingTasklet as flezha_runner::Tasklet>::name(),
         "generated_naming"
     );
 }
@@ -509,20 +502,19 @@ fn sinkless_counter(input: String, state: &mut CounterState) {
     state.push_seen(input);
 }
 
-/// The same operative spelled by hand: a channel ending at a procedure.
+/// The same operative spelled by hand: a channel ending at a tasklet.
 struct HandWrittenCounter;
 impl StreamOperative for HandWrittenCounter {
     fn factory_id() -> &'static str {
         "hand_written_counter"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<String>("ticks")
-            .into::<SinklessCounterProcedure>();
+        c.input::<String>("ticks").into::<SinklessCounterTasklet>();
     }
 }
 
 /// fails when: a short form with no `sink` stops declaring exactly the entry
-/// channel into its procedure, which is what the full form declares.
+/// channel into its tasklet, which is what the full form declares.
 #[test]
 fn a_short_form_with_no_sink_declares_only_its_entry_channel() {
     let generated =
@@ -558,7 +550,7 @@ fn default_entry_attribute(input: String) -> Vec<u8> {
     input.into_bytes()
 }
 
-#[flezha_runner::procedure(id = "pipeline_hop")]
+#[flezha_runner::tasklet(id = "pipeline_hop")]
 fn pipeline_hop(input: String) -> Vec<u8> {
     input.into_bytes()
 }

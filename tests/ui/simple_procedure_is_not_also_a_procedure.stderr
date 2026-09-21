@@ -1,9 +1,0 @@
-error[E0119]: conflicting implementations of trait `Procedure` for type `Both`
-  --> tests/ui/simple_procedure_is_not_also_a_procedure.rs:34:1
-   |
-34 | impl Procedure for Both {
-   | ^^^^^^^^^^^^^^^^^^^^^^^
-   |
-   = note: conflicting implementation in crate `flezha_runner`:
-           - impl<T> Procedure for T
-             where T: SimpleProcedure;

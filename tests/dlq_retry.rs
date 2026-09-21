@@ -1,10 +1,10 @@
 //! Retry-then-park dispatcher semantics (`dead-letter-queue`):
 //! - transient failure recovers within the retry budget (no park)
-//! - `ProcedureError::non_retryable` parks immediately
-//! - a panicking procedure follows the same policy as a returned error
-//!   and the entity continues — never a silent drop
+//! - `TaskletError::non_retryable` parks immediately
+//! - a panicking tasklet follows the same policy as a returned error
+//!   and the cell continues — never a silent drop
 
-use flezha_runner::entity::park;
+use flezha_runner::cell::park;
 
 mod common;
 use common::prelude::*;
@@ -18,9 +18,9 @@ static SINK_LOCK: Mutex<()> = Mutex::new(());
 static TRANSIENT_ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
 static TRANSIENT_OK: AtomicUsize = AtomicUsize::new(0);
 
-test_procedure!(TransientProcedure, "transient_procedure", String => String, (), |_input, _state, _ctx| {
+test_tasklet!(TransientTasklet, "transient_tasklet", String => String, (), |_input, _state, _ctx| {
     if TRANSIENT_ATTEMPTS.fetch_add(1, Ordering::SeqCst) < 2 {
-        Err(ProcedureError::Custom("transient".into()))
+        Err(TaskletError::Custom("transient".into()))
     } else {
         TRANSIENT_OK.fetch_add(1, Ordering::SeqCst);
         Ok(())
@@ -35,7 +35,7 @@ impl StreamOperative for TransientOperative {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .retry_backoff_ms(1)
-            .into::<TransientProcedure>();
+            .into::<TransientTasklet>();
     }
 }
 
@@ -81,10 +81,10 @@ fn transient_failure_recovers_within_retry_budget() {
 static NON_RETRYABLE_RUNS: AtomicUsize = AtomicUsize::new(0);
 static NON_RETRYABLE_OK: AtomicUsize = AtomicUsize::new(0);
 
-test_procedure!(NonRetryableProcedure, "non_retryable_procedure", String => String, (), |input, _state, _ctx| {
+test_tasklet!(NonRetryableTasklet, "non_retryable_tasklet", String => String, (), |input, _state, _ctx| {
     NON_RETRYABLE_RUNS.fetch_add(1, Ordering::SeqCst);
     if input == "poison" {
-        Err(ProcedureError::non_retryable("bad record"))
+        Err(TaskletError::non_retryable("bad record"))
     } else {
         NON_RETRYABLE_OK.fetch_add(1, Ordering::SeqCst);
         Ok(())
@@ -99,7 +99,7 @@ impl StreamOperative for NonRetryableOperative {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .retry_backoff_ms(1)
-            .into::<NonRetryableProcedure>();
+            .into::<NonRetryableTasklet>();
     }
 }
 
@@ -130,7 +130,7 @@ fn non_retryable_error_parks_immediately() {
             || NON_RETRYABLE_OK.load(Ordering::SeqCst) == 1,
             Duration::from_secs(5)
         ),
-        "entity must continue past the parked payload"
+        "cell must continue past the parked payload"
     );
     let entries = parked.lock().unwrap().clone();
     assert_eq!(entries.len(), 1, "exactly one park");
@@ -150,7 +150,7 @@ fn non_retryable_error_parks_immediately() {
 static PANIC_RUNS: AtomicUsize = AtomicUsize::new(0);
 static PANIC_OK: AtomicUsize = AtomicUsize::new(0);
 
-test_procedure!(PanickyProcedure, "panicky_procedure", String => String, (), |input, _state, _ctx| {
+test_tasklet!(PanickyTasklet, "panicky_tasklet", String => String, (), |input, _state, _ctx| {
     PANIC_RUNS.fetch_add(1, Ordering::SeqCst);
     if input == "poison" {
         panic!("kaboom");
@@ -167,7 +167,7 @@ impl StreamOperative for PanickyOperative {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .retry_backoff_ms(1)
-            .into::<PanickyProcedure>();
+            .into::<PanickyTasklet>();
     }
 }
 
@@ -198,7 +198,7 @@ fn panic_parity_exhausts_budget_then_parks_and_continues() {
             || PANIC_OK.load(Ordering::SeqCst) == 1,
             Duration::from_secs(5)
         ),
-        "entity must continue past the parked payload — never a silent drop"
+        "cell must continue past the parked payload — never a silent drop"
     );
     let entries = parked.lock().unwrap().clone();
     assert_eq!(
@@ -228,7 +228,7 @@ struct TypedOrder {
     id: u64,
 }
 
-test_procedure!(TypedOrderProcedure, "typed_order_procedure", TypedOrder => String, (), |_input, _state, _ctx| {
+test_tasklet!(TypedOrderTasklet, "typed_order_tasklet", TypedOrder => String, (), |_input, _state, _ctx| {
     TYPED_OK.fetch_add(1, Ordering::SeqCst);
     Ok(())
 });
@@ -241,7 +241,7 @@ impl StreamOperative for TypedEntryOperative {
     fn channels(c: &ChannelBuilder) {
         c.input::<TypedOrder>("orders")
             .retry_backoff_ms(1)
-            .into::<TypedOrderProcedure>();
+            .into::<TypedOrderTasklet>();
     }
 }
 

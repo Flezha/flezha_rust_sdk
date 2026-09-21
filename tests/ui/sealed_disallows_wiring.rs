@@ -9,12 +9,12 @@
 // "method not found" shape on a name std does not claim.
 
 use flezha_runner::channel::ChannelBuilder;
-use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError};
+use flezha_runner::tasklet::{Tasklet, TaskletCtx, TaskletError};
 use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
 
 #[derive(Default)]
 struct PluginProducer;
-impl Procedure for PluginProducer {
+impl Tasklet for PluginProducer {
     type Input = String;
     type Output = Vec<u8>;
     type State = ();
@@ -23,14 +23,14 @@ impl Procedure for PluginProducer {
     type Config = ();
     fn name() -> &'static str { "plugin_producer" }
     fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(&mut self, _: String, _: StateHandle<'_, Self>, _: &mut ProcedureCtx<'_>) -> Result<(), ProcedureError> {
+    fn run(&mut self, _: String, _: StateHandle<'_, Self>, _: &mut TaskletCtx<'_>) -> Result<(), TaskletError> {
         Ok(())
     }
 }
 
 #[derive(Default)]
 struct Downstream;
-impl Procedure for Downstream {
+impl Tasklet for Downstream {
     type Input = Vec<u8>;
     type Output = Vec<u8>;
     type State = ();
@@ -39,7 +39,7 @@ impl Procedure for Downstream {
     type Config = ();
     fn name() -> &'static str { "downstream" }
     fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(&mut self, _: Vec<u8>, _: StateHandle<'_, Self>, _: &mut ProcedureCtx<'_>) -> Result<(), ProcedureError> {
+    fn run(&mut self, _: Vec<u8>, _: StateHandle<'_, Self>, _: &mut TaskletCtx<'_>) -> Result<(), TaskletError> {
         Ok(())
     }
 }

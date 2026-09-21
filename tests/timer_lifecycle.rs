@@ -1,26 +1,26 @@
-//! What a timer's Entity outliving or outlived: eviction takes its pending
-//! set with it, and a firing is excluded while the Entity is busy.
+//! What a timer's Cell outliving or outlived: eviction takes its pending
+//! set with it, and a firing is excluded while the Cell is busy.
 
 use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 
-use flezha_runner::entity::timer::TimerKind;
-use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError, StateHandle};
+use flezha_runner::cell::timer::TimerKind;
 use flezha_runner::state::{NoChange, RestoreInitPayload};
+use flezha_runner::tasklet::{StateHandle, Tasklet, TaskletCtx, TaskletError};
 
 mod common;
 use common::prelude::*;
 
 // ------------------------------------------------------------ eviction
 
-/// Spec: "Eviction discards the Entity's timers" — dynamic eviction is
+/// Spec: "Eviction discards the Cell's timers" — dynamic eviction is
 /// destructive by existing decision, so the timers go with the state and the
 /// wake-list entry goes with them. A later input cold-starts with nothing
 /// pending.
 #[test]
-fn an_idle_evicted_entity_loses_its_timers() {
+fn an_idle_evicted_cell_loses_its_timers() {
     let _guard = timer_test_guard();
     take_firings();
-    let armed_before = flezha_runner::entity::timer::timers_armed();
+    let armed_before = flezha_runner::cell::timer::timers_armed();
 
     let (handle, instance) = setup::<EvictOperative>("timers-evict");
     let stream = dummy_stream();
@@ -29,7 +29,7 @@ fn an_idle_evicted_entity_loses_its_timers() {
     let registry = Arc::clone(instance.dynamic_registries[0].as_ref().expect("dynamic"));
     assert!(
         wait_until(
-            || registry.entities.get("gone").is_some_and(|e| !e
+            || registry.cells.get("gone").is_some_and(|e| !e
                 .value()
                 .timers
                 .lock()
@@ -37,12 +37,9 @@ fn an_idle_evicted_entity_loses_its_timers() {
                 .is_empty()),
             Duration::from_secs(5)
         ),
-        "the Entity must arm its timer before the reaper runs"
+        "the Cell must arm its timer before the reaper runs"
     );
-    assert_eq!(
-        flezha_runner::entity::timer::timers_armed(),
-        armed_before + 1
-    );
+    assert_eq!(flezha_runner::cell::timer::timers_armed(), armed_before + 1);
 
     // Sweep directly rather than waiting on the reaper's cadence: the seam
     // under test is what the sweep does, not when it decides to run.
@@ -50,28 +47,28 @@ fn an_idle_evicted_entity_loses_its_timers() {
         wait_until(
             || {
                 registry.reap_sweep(Duration::from_millis(1));
-                registry.entities.get("gone").is_none()
+                registry.cells.get("gone").is_none()
             },
             Duration::from_secs(5)
         ),
-        "the Entity is evicted"
+        "the Cell is evicted"
     );
     assert_eq!(
-        flezha_runner::entity::timer::timers_armed(),
+        flezha_runner::cell::timer::timers_armed(),
         armed_before,
         "and its armed timer is released with it, not left to fire into nothing"
     );
     assert!(
         firings_snapshot().is_empty(),
-        "an evicted Entity's timer never fires"
+        "an evicted Cell's timer never fires"
     );
 }
 
 /// Dynamic keying + a TTL: the combination the design calls out as legal but
 /// timer-disposable.
 #[derive(Default)]
-struct EvictProc;
-impl Procedure for EvictProc {
+struct EvictTask;
+impl Tasklet for EvictTask {
     type Input = String;
     type Output = ();
     type State = ();
@@ -79,10 +76,10 @@ impl Procedure for EvictProc {
     type Clock = flezha_runner::state::WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "timers_evict_procedure"
+        "timers_evict_tasklet"
     }
     fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn entity_idle_ttl() -> Option<Duration> {
+    fn cell_idle_ttl() -> Option<Duration> {
         // Long enough that the reaper thread never beats the test to the
         // sweep; the case drives `reap_sweep` itself with a short TTL.
         Some(Duration::from_secs(3_600))
@@ -91,8 +88,8 @@ impl Procedure for EvictProc {
         &mut self,
         _input: String,
         _state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         ctx.timer_after(Duration::from_secs(3_600))?;
         Ok(())
     }
@@ -101,8 +98,8 @@ impl Procedure for EvictProc {
         fired_at: u64,
         kind: TimerKind,
         _state: StateHandle<'_, Self>,
-        _ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        _ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         note_firing("gone", kind, fired_at);
         Ok(())
     }
@@ -116,7 +113,7 @@ impl StreamOperative for EvictOperative {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .key_by(|s: &String| s.clone())
-            .into::<EvictProc>();
+            .into::<EvictTask>();
     }
 }
 
@@ -155,7 +152,7 @@ fn on_timer_never_runs_concurrently_with_run() {
     assert_eq!(
         OVERLAPS.load(Ordering::SeqCst),
         0,
-        "run and on_timer must never be inside the same Entity at once"
+        "run and on_timer must never be inside the same Cell at once"
     );
 }
 
@@ -164,8 +161,8 @@ static OVERLAPS: AtomicUsize = AtomicUsize::new(0);
 static FIRED: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Default)]
-struct ExclusionProc;
-impl ExclusionProc {
+struct ExclusionTask;
+impl ExclusionTask {
     fn enter() {
         if INSIDE.fetch_add(1, Ordering::SeqCst) != 0 {
             OVERLAPS.fetch_add(1, Ordering::SeqCst);
@@ -180,7 +177,7 @@ impl ExclusionProc {
         INSIDE.fetch_sub(1, Ordering::SeqCst);
     }
 }
-impl Procedure for ExclusionProc {
+impl Tasklet for ExclusionTask {
     type Input = u64;
     type Output = ();
     type State = ();
@@ -188,15 +185,15 @@ impl Procedure for ExclusionProc {
     type Clock = flezha_runner::state::WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "timers_exclusion_procedure"
+        "timers_exclusion_tasklet"
     }
     fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
     fn run(
         &mut self,
         _input: u64,
         _state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         Self::enter();
         ctx.timer_after(Duration::from_millis(1))?;
         Self::leave();
@@ -207,8 +204,8 @@ impl Procedure for ExclusionProc {
         _fired_at: u64,
         _kind: TimerKind,
         _state: StateHandle<'_, Self>,
-        _ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        _ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         Self::enter();
         FIRED.fetch_add(1, Ordering::SeqCst);
         Self::leave();
@@ -222,6 +219,6 @@ impl StreamOperative for ExclusionOperative {
         "timers_exclusion_operative"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<u64>("in").into::<ExclusionProc>();
+        c.input::<u64>("in").into::<ExclusionTask>();
     }
 }

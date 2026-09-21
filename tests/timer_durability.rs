@@ -1,12 +1,12 @@
 //! The pending set is folded state: it reaches the WAL as timer ops, and a
 //! replay rebuilds it exactly, overdue entries included.
 
-use flezha_runner::entity::header::FORMAT_ID_TIMER_OPS;
-use flezha_runner::entity::state_sink;
-use flezha_runner::entity::timer::{TimerKind, TimerOp};
-use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError, StateHandle};
+use flezha_runner::cell::header::FORMAT_ID_TIMER_OPS;
+use flezha_runner::cell::state_sink;
+use flezha_runner::cell::timer::{TimerKind, TimerOp};
 use flezha_runner::state::{NoChange, RestoreInitPayload};
-use flezha_runner::testing::ProcedureTestHarness;
+use flezha_runner::tasklet::{StateHandle, Tasklet, TaskletCtx, TaskletError};
+use flezha_runner::testing::TaskletTestHarness;
 
 mod common;
 use common::prelude::*;
@@ -19,8 +19,8 @@ use common::prelude::*;
 #[test]
 fn a_crash_before_firing_leaves_the_timer_pending() {
     let log =
-        timer_ops_record::<SessionProc>(0, &[TimerOp::register(TimerKind::ProcessingTime, 31_000)]);
-    let (_state, timers) = restore::<SessionProc>(&log);
+        timer_ops_record::<SessionTask>(0, &[TimerOp::register(TimerKind::ProcessingTime, 31_000)]);
+    let (_state, timers) = restore::<SessionTask>(&log);
     assert_eq!(timers.all(TimerKind::ProcessingTime), vec![31_000]);
 }
 
@@ -29,12 +29,12 @@ fn a_crash_before_firing_leaves_the_timer_pending() {
 #[test]
 fn a_crash_after_firing_does_not_re_fire() {
     let mut log =
-        timer_ops_record::<SessionProc>(0, &[TimerOp::register(TimerKind::ProcessingTime, 31_000)]);
-    log.extend_from_slice(&timer_ops_record::<SessionProc>(
+        timer_ops_record::<SessionTask>(0, &[TimerOp::register(TimerKind::ProcessingTime, 31_000)]);
+    log.extend_from_slice(&timer_ops_record::<SessionTask>(
         1,
         &[TimerOp::cancel(TimerKind::ProcessingTime, 31_000)],
     ));
-    let (_state, timers) = restore::<SessionProc>(&log);
+    let (_state, timers) = restore::<SessionTask>(&log);
     assert!(
         timers.is_empty(),
         "the fired timer is gone; nothing re-fires"
@@ -47,24 +47,24 @@ fn a_crash_after_firing_does_not_re_fire() {
 #[test]
 fn a_crash_mid_firing_leaves_no_partial_state_and_the_timer_pending() {
     let registered =
-        timer_ops_record::<SessionProc>(0, &[TimerOp::register(TimerKind::ProcessingTime, 31_000)]);
-    let (state, timers) = restore::<SessionProc>(&registered);
+        timer_ops_record::<SessionTask>(0, &[TimerOp::register(TimerKind::ProcessingTime, 31_000)]);
+    let (state, timers) = restore::<SessionTask>(&registered);
     assert_eq!(state.closed_at, Vec::<u64>::new());
     assert_eq!(timers.all(TimerKind::ProcessingTime), vec![31_000]);
 
     let mut both = registered.clone();
-    both.extend_from_slice(&effect_record::<SessionProc>(
+    both.extend_from_slice(&effect_record::<SessionTask>(
         1,
         vec![postcard::to_allocvec(&SessionChange::Closed(31_000)).unwrap()],
         vec![TimerOp::cancel(TimerKind::ProcessingTime, 31_000)],
     ));
-    let (state, timers) = restore::<SessionProc>(&both);
+    let (state, timers) = restore::<SessionTask>(&both);
     assert_eq!(state.closed_at, vec![31_000]);
     assert!(timers.is_empty());
 }
 
 /// A compaction truncates every record the snapshot folds — so the pending
-/// timers are re-stated ABOVE the snapshot seq, or a compacted Entity silently
+/// timers are re-stated ABOVE the snapshot seq, or a compacted Cell silently
 /// forgets what it owes.
 #[test]
 fn a_compaction_re_states_the_pending_timers_above_the_snapshot_seq() {
@@ -75,7 +75,7 @@ fn a_compaction_re_states_the_pending_timers_above_the_snapshot_seq() {
     let (handle, instance) = setup::<WindowOperative>("timers-compaction");
     let stream = dummy_stream();
     dispatch_input(&handle, "timers-compaction", "in", tick(50), &stream);
-    let slot = Arc::clone(&instance.entities[0][0]);
+    let slot = Arc::clone(&instance.cells[0][0]);
     assert!(wait_until(
         || pending(&slot, TimerKind::EventTime).len() == 3,
         Duration::from_secs(5)
@@ -130,7 +130,7 @@ fn a_registration_outside_the_tier_ships_a_timer_ops_record() {
     let stream = dummy_stream();
     dispatch_input(&handle, "timers-record", "in", tick(50), &stream);
     assert!(wait_until(
-        || pending(&instance.entities[0][0], TimerKind::EventTime).len() == 3,
+        || pending(&instance.cells[0][0], TimerKind::EventTime).len() == 3,
         Duration::from_secs(5)
     ));
     assert!(wait_until(
@@ -148,7 +148,7 @@ fn a_registration_outside_the_tier_ships_a_timer_ops_record() {
         .find(|(_, f)| frame_format_id(f) == FORMAT_ID_TIMER_OPS)
         .expect("a timer-ops record");
     assert_eq!(
-        pid, "entity_state_change",
+        pid, "cell_state_change",
         "it rides the payload-id the controller already stores verbatim"
     );
     let (_seq, ops) = decode_timer_frame(frame);
@@ -223,13 +223,13 @@ fn a_tier_firing_writes_one_record_with_no_consumed_offset() {
     reset_sink();
 }
 
-/// The tier twin of [`SessionProc`]: same shape, keyed output so its emits
+/// The tier twin of [`SessionTask`]: same shape, keyed output so its emits
 /// ride the effect record.
 #[derive(Default)]
-struct TierSessionProc {
+struct TierSessionTask {
     key: String,
 }
-impl Procedure for TierSessionProc {
+impl Tasklet for TierSessionTask {
     type Input = String;
     type Output = String;
     type State = SessionState;
@@ -237,20 +237,20 @@ impl Procedure for TierSessionProc {
     type Clock = flezha_runner::state::WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "timers_tier_session_procedure"
+        "timers_tier_session_tasklet"
     }
     fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> SessionState {
         SessionState::default()
     }
     fn apply_change(state: &mut SessionState, change: &SessionChange) {
-        <SessionProc as Procedure>::apply_change(state, change)
+        <SessionTask as Tasklet>::apply_change(state, change)
     }
     fn run(
         &mut self,
         input: String,
         mut state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         self.key = input.clone();
         state.apply(SessionChange::Touched(ctx.now()));
         ctx.timer_after(Duration::from_millis(TIMEOUT_MS))?;
@@ -261,8 +261,8 @@ impl Procedure for TierSessionProc {
         fired_at: u64,
         kind: TimerKind,
         mut state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         note_firing(&self.key, kind, fired_at);
         state.apply(SessionChange::Closed(fired_at));
         ctx.emit_keyed::<String>("k".to_string(), format!("closed@{fired_at}"))?;
@@ -278,7 +278,7 @@ impl StreamOperative for TierSessionOperative {
     fn channels(c: &ChannelBuilder) {
         c.effectively_once();
         c.input::<String>("in")
-            .into::<TierSessionProc>()
+            .into::<TierSessionTask>()
             .keyed()
             .sink_named("out");
     }
@@ -291,7 +291,7 @@ impl StreamOperative for TierSessionOperative {
 /// skipped on replay, unlike `spawn_workflow`.
 #[test]
 fn replay_rebuilds_the_identical_pending_set() {
-    let mut harness = ProcedureTestHarness::<SurfaceProc>::new().with_wall_clock(1_000);
+    let mut harness = TaskletTestHarness::<SurfaceTask>::new().with_wall_clock(1_000);
     harness.apply_inputs(vec![
         SurfaceCmd::RegisterMany(2),
         SurfaceCmd::Register,
@@ -311,7 +311,7 @@ fn replay_rebuilds_the_identical_pending_set() {
 /// anchored on `fired_at`, so a periodic tick is exactly reproducible.
 #[test]
 fn on_timer_may_chain_a_further_timer_anchored_on_fired_at() {
-    let mut harness = ProcedureTestHarness::<ChainProc>::new().with_wall_clock(1_000);
+    let mut harness = TaskletTestHarness::<ChainTask>::new().with_wall_clock(1_000);
     harness.apply_inputs(vec![()]);
     assert_eq!(
         harness.pending_timers(TimerKind::ProcessingTime),
@@ -327,8 +327,8 @@ fn on_timer_may_chain_a_further_timer_anchored_on_fired_at() {
 }
 
 #[derive(Default)]
-struct ChainProc;
-impl Procedure for ChainProc {
+struct ChainTask;
+impl Tasklet for ChainTask {
     type Input = ();
     type Output = ();
     type State = ();
@@ -336,15 +336,15 @@ impl Procedure for ChainProc {
     type Clock = flezha_runner::state::WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "timers_chain_procedure"
+        "timers_chain_tasklet"
     }
     fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
     fn run(
         &mut self,
         _input: (),
         _state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         ctx.timer_after(Duration::from_millis(100))?;
         Ok(())
     }
@@ -353,8 +353,8 @@ impl Procedure for ChainProc {
         _fired_at: u64,
         _kind: TimerKind,
         _state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         ctx.timer_after(Duration::from_millis(100))?;
         Ok(())
     }
@@ -374,7 +374,7 @@ fn a_restore_re_arms_the_wake_list_and_fires_what_is_already_due() {
 
     let (_handle, instance) = setup::<SessionOperative>("timers-restore");
     let registry = Arc::clone(instance.dynamic_registries[0].as_ref().expect("dynamic"));
-    let slot = registry.get_or_create("carol").expect("entity");
+    let slot = registry.get_or_create("carol").expect("cell");
 
     // Stand in for the restore's fold: two deadlines already in the past.
     {
@@ -382,7 +382,7 @@ fn a_restore_re_arms_the_wake_list_and_fires_what_is_already_due() {
         timers.apply(&TimerOp::register(TimerKind::ProcessingTime, 1));
         timers.apply(&TimerOp::register(TimerKind::ProcessingTime, 2));
     }
-    flezha_runner::entity::timer::rearm_restored(&slot);
+    flezha_runner::cell::timer::rearm_restored(&slot);
 
     assert!(
         wait_until(|| firings_snapshot().len() == 2, Duration::from_secs(5)),

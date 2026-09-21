@@ -1,13 +1,13 @@
 use flezha_runner::{ChannelBuilder, StreamOperative};
 
-use crate::procedure::Echo;
+use crate::tasklet::Echo;
 
 /// The deployable unit. An operative declares the graph a message travels: the
 /// entry channel it arrives on, the steps it passes through, and the channel its
 /// result leaves on.
 ///
 /// The operative is what the controller schedules onto a runner, restarts after
-/// a failure and moves when a runner goes away. A procedure is one stage inside
+/// a failure and moves when a runner goes away. A tasklet is one stage inside
 /// that graph.
 pub struct EchoOperative;
 
@@ -23,7 +23,7 @@ impl StreamOperative for EchoOperative {
     /// as a whole there, so one that cannot work is refused at startup.
     ///
     /// An entry channel named `in` carrying strings, routed into the echo
-    /// procedure, whose output ends on the plugin layer as the channel `out`.
+    /// tasklet, whose output ends on the plugin layer as the channel `out`.
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<Echo>()

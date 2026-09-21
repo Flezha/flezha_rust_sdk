@@ -1,7 +1,7 @@
 //! The two sinks an invocation's outputs leave through.
 //!
-//! [`EntityEmitSink`] serves a stream procedure, on the connection its item
-//! rode in on; [`WorkflowCollectAdapter`] serves a structured workflow proc,
+//! [`CellEmitSink`] serves a stream tasklet, on the connection its item
+//! rode in on; [`WorkflowCollectAdapter`] serves a structured workflow task,
 //! collecting into the driver instead. Both answer the one `EmitSink` trait,
 //! and both route a keyed plugin emit into the invocation's atomic effect
 //! record when the effectively-once tier is on.
@@ -15,15 +15,15 @@ use std::sync::Arc;
 use flz_core::routing::send_plugin_frame;
 use flz_transport::transport::FlezhaStream;
 
+use crate::cell::CellSlot;
 use crate::channel::{ChannelId, ChannelKind};
-use crate::entity::EntitySlot;
 use crate::operative::instance::StreamInstance;
 use crate::operative::topology::OperativeTopology;
-use crate::procedure::ctx::EmitSink;
-use crate::procedure::ProcedureError;
+use crate::tasklet::ctx::EmitSink;
+use crate::tasklet::TaskletError;
 use crate::workflow::WorkflowCollectSink;
 
-/// Synchronous drain of the producing entity's pending changes onto
+/// Synchronous drain of the producing cell's pending changes onto
 /// the durable WAL path, invoked before each output frame is written.
 pub(super) type FlushBeforeEmit<'a> = Box<dyn FnMut() + 'a>;
 
@@ -31,18 +31,18 @@ pub(super) type FlushBeforeEmit<'a> = Box<dyn FnMut() + 'a>;
 /// call. Holds an upgraded `Arc<StreamInstance>` for the duration of the
 /// run; if the instance has been dropped, every emit returns
 /// `UnknownChannel`.
-pub(super) struct EntityEmitSink<'a> {
-    /// The Entity this invocation belongs to. An emit it cannot deliver is
+pub(super) struct CellEmitSink<'a> {
+    /// The Cell this invocation belongs to. An emit it cannot deliver is
     /// held against this slot and this slot is handed no further work — the
     /// backpressure a mailbox at capacity owes its producer.
-    pub(super) producer: &'a Arc<EntitySlot>,
+    pub(super) producer: &'a Arc<CellSlot>,
     pub(super) output_channel_id: Option<ChannelId>,
     pub(super) output_channel_name: Option<&'a str>,
     /// `.keyed()` opt-in for the output channel. Non-keyed channels take
     /// the pre-identity emit path byte-for-byte (no stamps, no extra work).
     pub(super) keyed: bool,
-    /// `flz.entity` stamp value for keyed emits.
-    pub(super) entity_label: &'a str,
+    /// `flz.cell` stamp value for keyed emits.
+    pub(super) cell_label: &'a str,
     /// Durable change seq, read at stamp time (after flush_pending, so
     /// the just-applied changes are counted) for the `flz.seq` stamp.
     pub(super) change_seq: &'a AtomicU64,
@@ -50,21 +50,21 @@ pub(super) struct EntityEmitSink<'a> {
     pub(super) emit_ordinal: u32,
     pub(super) instance: Option<Arc<StreamInstance>>,
     pub(super) stream: Arc<FlezhaStream>,
-    /// `Some` for persistence-enabled entities with the flush-before-emit
+    /// `Some` for persistence-enabled cells with the flush-before-emit
     /// knob on. Called at the top of every emit so this run's just-applied
     /// changes are durably shipped before the output frame leaves.
     pub(super) flush_before_emit: Option<FlushBeforeEmit<'a>>,
     /// Input-log offset of the invocation's input, inherited by
-    /// inter-procedure emits so downstream Entities' effect records carry
+    /// inter-tasklet emits so downstream Cells' effect records carry
     /// the origin offset.
     pub(super) consumed_offset: Option<u64>,
     /// `Some` in effectively-once tier mode: plugin emits are pushed here
     /// (for the invocation's atomic effect record) instead of being written
     /// to the primary stream.
-    pub(super) effect_outputs: Option<&'a RefCell<Vec<crate::entity::flusher::OutputRecord>>>,
+    pub(super) effect_outputs: Option<&'a RefCell<Vec<crate::cell::flusher::OutputRecord>>>,
 }
 
-impl<'a> EntityEmitSink<'a> {
+impl<'a> CellEmitSink<'a> {
     /// Drain pending changes onto the WAL path before an output frame is
     /// written. No-op for non-persistent / `NoChange` operatives.
     fn flush_pending(&mut self) {
@@ -75,8 +75,8 @@ impl<'a> EntityEmitSink<'a> {
 
     /// `UnknownChannel` carrying the cached output channel name (or
     /// `<unknown>` when unset), for the resolve failure paths.
-    fn unknown_channel(&self) -> ProcedureError {
-        ProcedureError::UnknownChannel {
+    fn unknown_channel(&self) -> TaskletError {
+        TaskletError::UnknownChannel {
             channel: self
                 .output_channel_name
                 .map(|s| s.to_string())
@@ -87,7 +87,7 @@ impl<'a> EntityEmitSink<'a> {
     /// Resolve the channel descriptor + StreamInstance for the cached
     /// output channel. Returns `UnknownChannel` if either has been
     /// dropped or is unset.
-    fn resolve_channel(&self) -> Result<(Arc<StreamInstance>, ChannelId), ProcedureError> {
+    fn resolve_channel(&self) -> Result<(Arc<StreamInstance>, ChannelId), TaskletError> {
         let cid = self
             .output_channel_id
             .ok_or_else(|| self.unknown_channel())?;
@@ -106,7 +106,7 @@ impl<'a> EntityEmitSink<'a> {
         if self.keyed {
             apply_identity_stamps(
                 metadata,
-                self.entity_label,
+                self.cell_label,
                 self.change_seq.load(Ordering::Relaxed),
                 &mut self.emit_ordinal,
                 key,
@@ -116,7 +116,7 @@ impl<'a> EntityEmitSink<'a> {
 
     /// Plugin-sink tail: serialize once inside `catch_unwind` and forward the
     /// bytes through the plugin-wire framing path. A serializer panic surfaces
-    /// as `ProcedureError::PluginSerializerPanic` to the producing Procedure;
+    /// as `TaskletError::PluginSerializerPanic` to the producing Tasklet;
     /// the dispatcher thread is unaffected.
     fn emit_plugin_sink(
         &mut self,
@@ -126,7 +126,7 @@ impl<'a> EntityEmitSink<'a> {
         value: &Arc<dyn Any + Send + Sync>,
         meta: Option<HashMap<String, String>>,
         key: Option<String>,
-    ) -> Result<(), ProcedureError> {
+    ) -> Result<(), TaskletError> {
         let serializer = Arc::clone(&sink.serializer);
         let value_for_panic = Arc::clone(value);
         let bytes_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -135,15 +135,15 @@ impl<'a> EntityEmitSink<'a> {
         let bytes = match bytes_result {
             Ok(b) => b,
             Err(panic) => {
-                return Err(ProcedureError::PluginSerializerPanic {
+                return Err(TaskletError::PluginSerializerPanic {
                     channel: descriptor.name.to_string(),
-                    message: crate::procedure::error::format_panic(panic),
+                    message: crate::tasklet::error::format_panic(panic),
                 });
             }
         };
 
-        if let Some(cell) = self.effect_outputs {
-            push_effect_output(cell, &descriptor.name, key, meta, bytes);
+        if let Some(outputs) = self.effect_outputs {
+            push_effect_output(outputs, &descriptor.name, key, meta, bytes);
             return Ok(());
         }
 
@@ -151,11 +151,11 @@ impl<'a> EntityEmitSink<'a> {
         self.stamp_identity(&mut metadata, key);
 
         send_plugin_frame(&self.stream, &instance.instance_id, &bytes, &metadata)
-            .map_err(|error| ProcedureError::non_retryable(error.to_string()))
+            .map_err(|error| TaskletError::non_retryable(error.to_string()))
     }
 }
 
-impl<'a> EmitSink for EntityEmitSink<'a> {
+impl<'a> EmitSink for CellEmitSink<'a> {
     /// Fan out to the consumer mailboxes, then to the plugin sink if the
     /// channel has one. The plugin-bound terminal is the same path with an
     /// empty consumer list, which is why there is no second arm for it.
@@ -164,18 +164,18 @@ impl<'a> EmitSink for EntityEmitSink<'a> {
         value: Arc<dyn Any + Send + Sync>,
         meta: Option<HashMap<String, String>>,
         key: Option<String>,
-    ) -> Result<(), ProcedureError> {
+    ) -> Result<(), TaskletError> {
         self.flush_pending();
         let (instance, cid) = self.resolve_channel()?;
         let descriptor =
             instance
                 .topology
                 .channel(cid)
-                .ok_or_else(|| ProcedureError::UnknownChannel {
+                .ok_or_else(|| TaskletError::UnknownChannel {
                     channel: format!("<channel id {}>", cid),
                 })?;
-        // An inter-procedure emit is never a replay member: the downstream
-        // Procedure receives the corrected outputs already in order, and a
+        // An inter-tasklet emit is never a replay member: the downstream
+        // Tasklet receives the corrected outputs already in order, and a
         // slice it could never see the end of would hold its drain forever.
         flz_core::routing::route_to_consumers(
             &instance,
@@ -215,7 +215,7 @@ impl<'a> EmitSink for EntityEmitSink<'a> {
     }
 }
 
-/// Emit sink for the workflow sequential driver. Inter-procedure output is
+/// Emit sink for the workflow sequential driver. Inter-tasklet output is
 /// **collected** for handoff to the next stage at the barrier; plugin-bound
 /// output is serialized and routed to the wire via the `WorkflowCollectSink`.
 /// Constructed fresh per `run_collecting` call, so it never threads through
@@ -229,12 +229,12 @@ pub(super) struct WorkflowCollectAdapter<'a> {
     /// `Some` under the effectively-once tier: plugin emits (keyed
     /// included) are captured into the invocation's atomic effect record
     /// instead of the metadata-less workflow plugin wire.
-    pub(super) effect_outputs: Option<&'a RefCell<Vec<crate::entity::flusher::OutputRecord>>>,
+    pub(super) effect_outputs: Option<&'a RefCell<Vec<crate::cell::flusher::OutputRecord>>>,
 }
 
 impl<'a> WorkflowCollectAdapter<'a> {
-    fn unknown_channel(&self) -> ProcedureError {
-        ProcedureError::UnknownChannel {
+    fn unknown_channel(&self) -> TaskletError {
+        TaskletError::UnknownChannel {
             channel: self
                 .output_channel_name
                 .map(|s| s.to_string())
@@ -250,14 +250,14 @@ impl<'a> WorkflowCollectAdapter<'a> {
         value: &Arc<dyn Any + Send + Sync>,
         key: Option<String>,
         meta: Option<HashMap<String, String>>,
-    ) -> Result<(), ProcedureError> {
+    ) -> Result<(), TaskletError> {
         let cid = self
             .output_channel_id
             .ok_or_else(|| self.unknown_channel())?;
         let descriptor =
             self.topology
                 .channel(cid)
-                .ok_or_else(|| ProcedureError::UnknownChannel {
+                .ok_or_else(|| TaskletError::UnknownChannel {
                     channel: format!("<channel id {}>", cid),
                 })?;
         let serializer = descriptor
@@ -265,14 +265,14 @@ impl<'a> WorkflowCollectAdapter<'a> {
             .as_ref()
             .map(|s| &s.serializer)
             .ok_or_else(|| {
-                ProcedureError::Custom(format!(
+                TaskletError::Custom(format!(
                     "workflow plugin channel `{}` is missing a serializer",
                     descriptor.name
                 ))
             })?;
         let bytes = serializer(&**value);
-        if let Some(cell) = self.effect_outputs {
-            push_effect_output(cell, &descriptor.name, key, meta, bytes);
+        if let Some(outputs) = self.effect_outputs {
+            push_effect_output(outputs, &descriptor.name, key, meta, bytes);
         } else {
             self.sink.emit_plugin_bytes(&descriptor.name, bytes);
         }
@@ -290,9 +290,9 @@ impl<'a> WorkflowCollectAdapter<'a> {
         matches!(self.output_channel_kind, ChannelKind::PluginBound)
     }
 
-    fn refuse_key(&self, key: &Option<String>) -> Result<(), ProcedureError> {
+    fn refuse_key(&self, key: &Option<String>) -> Result<(), TaskletError> {
         if self.effect_outputs.is_none() && key.is_some() {
-            return Err(ProcedureError::Custom(format!(
+            return Err(TaskletError::Custom(format!(
                 "keyed output identity is not supported on workflow operatives \
                  (channel `{}`): the workflow plugin wire carries no metadata",
                 self.channel_name()
@@ -308,7 +308,7 @@ impl<'a> EmitSink for WorkflowCollectAdapter<'a> {
         value: Arc<dyn Any + Send + Sync>,
         meta: Option<HashMap<String, String>>,
         key: Option<String>,
-    ) -> Result<(), ProcedureError> {
+    ) -> Result<(), TaskletError> {
         self.refuse_key(&key)?;
         if self.has_plugin_sink() {
             self.route_plugin(&value, key, meta)?;
@@ -340,7 +340,7 @@ impl<'a> EmitSink for WorkflowCollectAdapter<'a> {
             .unwrap_or(false)
     }
 
-    fn complete(&mut self, result: Vec<u8>) -> Result<(), ProcedureError> {
+    fn complete(&mut self, result: Vec<u8>) -> Result<(), TaskletError> {
         self.sink.complete(result);
         Ok(())
     }
@@ -359,19 +359,19 @@ fn channel_metadata(
 }
 
 /// Output-identity stamps for one keyed-channel plugin frame: the emitting
-/// Entity (`flz.entity`), the replay-stable output sequence
+/// Cell (`flz.cell`), the replay-stable output sequence
 /// `<change_seq>.<emit_ordinal>` (`flz.seq`), and the caller's natural key
 /// (`flz.key`). Applied after user metadata so stamps win; advances the
 /// per-invocation emit ordinal. Shared with the test harness so
 /// `replay_emits_equal` compares the same stamp bytes the wire carries.
 pub(crate) fn apply_identity_stamps(
     metadata: &mut HashMap<String, String>,
-    entity_label: &str,
+    cell_label: &str,
     change_seq: u64,
     emit_ordinal: &mut u32,
     key: Option<String>,
 ) {
-    metadata.insert("flz.entity".to_string(), entity_label.to_string());
+    metadata.insert("flz.cell".to_string(), cell_label.to_string());
     metadata.insert(
         "flz.seq".to_string(),
         format!("{}.{}", change_seq, emit_ordinal),
@@ -389,7 +389,7 @@ pub(crate) fn apply_identity_stamps(
 /// the reserved `channel` key is dropped like `channel_metadata` does, and
 /// identity stamps are derived controller-side from the durable record.
 fn push_effect_output(
-    cell: &RefCell<Vec<crate::entity::flusher::OutputRecord>>,
+    outputs: &RefCell<Vec<crate::cell::flusher::OutputRecord>>,
     channel: &str,
     key: Option<String>,
     meta: Option<HashMap<String, String>>,
@@ -401,8 +401,9 @@ fn push_effect_output(
         .filter(|(k, _)| k != "channel")
         .collect();
     metadata.sort();
-    cell.borrow_mut()
-        .push(crate::entity::flusher::OutputRecord {
+    outputs
+        .borrow_mut()
+        .push(crate::cell::flusher::OutputRecord {
             channel: channel.to_string(),
             key: key.unwrap_or_default(),
             metadata,
@@ -412,7 +413,7 @@ fn push_effect_output(
 
 const ENV_FLUSH_BEFORE_EMIT: &str = "FLEZHA_FLUSH_BEFORE_EMIT";
 
-/// Whether flush-before-emit is enabled for persistence-enabled entities.
+/// Whether flush-before-emit is enabled for persistence-enabled cells.
 /// Defaults to ON (durability over latency); set `FLEZHA_FLUSH_BEFORE_EMIT`
 /// to `0`/`false`/`off`/`no` to revert to the inline-emit fast path.
 pub(super) fn flush_before_emit_enabled() -> bool {

@@ -13,28 +13,28 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use flz_core::host::{
-    check, DerivedChannel, HostAckGranularity, HostBeyondWindow, HostChannelDecl, HostChannelKind,
-    HostCheckpointOutputs, HostClassDecl, HostClock, HostEntityModeDecl, HostLink, HostOverflow,
-    HostProcedureDecl,
+    check, DerivedChannel, HostAckGranularity, HostBeyondWindow, HostCellModeDecl, HostChannelDecl,
+    HostChannelKind, HostCheckpointOutputs, HostClassDecl, HostClock, HostLink, HostOverflow,
+    HostTaskletDecl,
 };
 
 use crate::channel::builder::{
-    BuilderState, ChannelBuilder, ChannelEntry, ProcedureEntry, TopologyIssue,
+    BuilderState, ChannelBuilder, ChannelEntry, TaskletEntry, TopologyIssue,
 };
 use crate::channel::{
-    ChannelDescriptor, ChannelKind, ConsumerEdge, OverflowPolicy, PluginSink, ProcedureId,
+    ChannelDescriptor, ChannelKind, ConsumerEdge, OverflowPolicy, PluginSink, TaskletId,
 };
 use crate::operative::topology::{
-    AckGranularity, BeyondWindowPolicy, CheckpointOutputs, CheckpointPolicy, EntityMode,
-    OperativeTopology, ProcedureDescriptor,
+    AckGranularity, BeyondWindowPolicy, CellMode, CheckpointOutputs, CheckpointPolicy,
+    OperativeTopology, TaskletDescriptor,
 };
 
-/// Built-in default per-Entity mailbox capacity used when a Procedure does
+/// Built-in default per-Cell mailbox capacity used when a Tasklet does
 /// not override `mailbox_capacity()` and `FLEZHA_MAILBOX_CAPACITY` is
 /// either unset or unparseable.
 pub const DEFAULT_MAILBOX_CAPACITY: usize = 1024;
 
-/// Environment variable consulted when a Procedure does not set
+/// Environment variable consulted when a Tasklet does not set
 /// `MAILBOX_CAPACITY_OVERRIDDEN = true`. Parsed as `usize`; empty,
 /// missing, or unparseable values fall through to
 /// [`DEFAULT_MAILBOX_CAPACITY`].
@@ -66,7 +66,7 @@ pub fn build_topology_with_persistence(
     // A chain nothing closed is recorded as written; the core answers it.
     state.record_open_chains();
     let keyed_consumers = derive_keyed_consumers(&state.channels);
-    let capacities = resolve_capacities(&state.procedures);
+    let capacities = resolve_capacities(&state.tasklets);
     let derived = check(declaration(
         factory_id,
         persistence_enabled_const,
@@ -78,8 +78,8 @@ pub fn build_topology_with_persistence(
 
     let BuilderState {
         channels,
-        procedures,
-        procedure_name_to_id,
+        tasklets,
+        tasklet_name_to_id,
         effectively_once,
         correction,
         checkpoint_every,
@@ -99,8 +99,8 @@ pub fn build_topology_with_persistence(
         sdk_lang: flz_core::header::SDK_LANG_RUST,
         channels: descriptors,
         name_to_id,
-        procedures: build_procedure_descs(procedures, capacities, &keyed_consumers),
-        procedure_name_to_id,
+        tasklets: build_tasklet_descs(tasklets, capacities, &keyed_consumers),
+        tasklet_name_to_id,
         factory_id,
         persistence_enabled_const,
         effectively_once,
@@ -120,14 +120,14 @@ pub fn build_topology_with_persistence(
 /// The closures stay behind on the builder, keyed by the chain they close.
 ///
 /// A workflow class declares `None` here: its own facts — the loop shape, the
-/// retry ladder, the proc-journal codecs — are `build_spec`'s to refuse, and
+/// retry ladder, the task-journal codecs — are `build_spec`'s to refuse, and
 /// this record carries the channel topology they are declared over.
 fn declaration(
     factory_id: &'static str,
     persistent: bool,
     state: &BuilderState,
     capacities: &[usize],
-    keyed_consumers: &HashSet<ProcedureId>,
+    keyed_consumers: &HashSet<TaskletId>,
 ) -> HostClassDecl {
     HostClassDecl {
         factory_id: factory_id.to_string(),
@@ -151,11 +151,11 @@ fn declaration(
         compact_after_bytes: None,
         sync_durability: false,
         channels: state.channels.iter().map(channel_decl).collect(),
-        procedures: state
-            .procedures
+        tasklets: state
+            .tasklets
             .iter()
             .enumerate()
-            .map(|(id, entry)| procedure_decl(id, entry, capacities[id], keyed_consumers))
+            .map(|(id, entry)| tasklet_decl(id, entry, capacities[id], keyed_consumers))
             .collect(),
         workflow: None,
     }
@@ -166,7 +166,7 @@ fn channel_decl(entry: &ChannelEntry) -> HostChannelDecl {
         name: entry.name.to_string(),
         kind: match entry.kind {
             ChannelKind::Entry => HostChannelKind::Entry,
-            ChannelKind::InterProcedure => HostChannelKind::InterProc,
+            ChannelKind::InterTasklet => HostChannelKind::InterTask,
             ChannelKind::PluginBound => HostChannelKind::Plugin,
         },
         producer: entry.producer,
@@ -182,23 +182,23 @@ fn channel_decl(entry: &ChannelEntry) -> HostChannelDecl {
     }
 }
 
-fn procedure_decl(
+fn tasklet_decl(
     id: usize,
-    entry: &ProcedureEntry,
+    entry: &TaskletEntry,
     mailbox_capacity: usize,
-    keyed_consumers: &HashSet<ProcedureId>,
-) -> HostProcedureDecl {
-    HostProcedureDecl {
+    keyed_consumers: &HashSet<TaskletId>,
+) -> HostTaskletDecl {
+    HostTaskletDecl {
         name: entry.name.to_string(),
-        entity_mode: match entity_mode(id, entry, keyed_consumers) {
-            EntityMode::Single => HostEntityModeDecl::Single,
-            EntityMode::Static => HostEntityModeDecl::Static,
-            EntityMode::Dynamic => HostEntityModeDecl::Dynamic,
+        cell_mode: match cell_mode(id, entry, keyed_consumers) {
+            CellMode::Single => HostCellModeDecl::Single,
+            CellMode::Static => HostCellModeDecl::Static,
+            CellMode::Dynamic => HostCellModeDecl::Dynamic,
         },
-        entity_keys: entry.entity_keys.iter().map(|k| k.to_string()).collect(),
+        cell_keys: entry.cell_keys.iter().map(|k| k.to_string()).collect(),
         idle_ttl_ms: entry.idle_ttl.map(|ttl| ttl.as_millis() as u64),
-        max_entities: Some(entry.max_entities),
-        entities_for_overridden: entry.entities_for_overridden,
+        max_cells: Some(entry.max_cells),
+        cells_for_overridden: entry.cells_for_overridden,
         compensate_overridden: entry.compensate_overridden,
         clock: clock_of(entry),
         mailbox_capacity,
@@ -211,7 +211,7 @@ fn procedure_decl(
 }
 
 /// The record names the clock the runtime serves, not the Rust type behind it.
-fn clock_of(entry: &ProcedureEntry) -> HostClock {
+fn clock_of(entry: &TaskletEntry) -> HostClock {
     if entry.clock_is_event_time {
         HostClock::EventTime
     } else if entry.clock_type_name == "LogicalClock" {
@@ -221,25 +221,21 @@ fn clock_of(entry: &ProcedureEntry) -> HostClock {
     }
 }
 
-/// Entity mode is read off the WIRING: a procedure that names its own keys is
+/// Cell mode is read off the WIRING: a tasklet that names its own keys is
 /// static, one reached by a chain that keys its values is dynamic, and a
-/// procedure nothing keys serves one Entity.
-fn entity_mode(
-    id: usize,
-    entry: &ProcedureEntry,
-    keyed_consumers: &HashSet<ProcedureId>,
-) -> EntityMode {
-    if !entry.entity_keys.is_empty() {
-        EntityMode::Static
-    } else if keyed_consumers.contains(&(id as ProcedureId)) {
-        EntityMode::Dynamic
+/// tasklet nothing keys serves one Cell.
+fn cell_mode(id: usize, entry: &TaskletEntry, keyed_consumers: &HashSet<TaskletId>) -> CellMode {
+    if !entry.cell_keys.is_empty() {
+        CellMode::Static
+    } else if keyed_consumers.contains(&(id as TaskletId)) {
+        CellMode::Dynamic
     } else {
-        EntityMode::Single
+        CellMode::Single
     }
 }
 
-/// The procedures some chain names an Entity for, read off the record's links.
-fn derive_keyed_consumers(channels: &[ChannelEntry]) -> HashSet<ProcedureId> {
+/// The tasklets some chain names a Cell for, read off the record's links.
+fn derive_keyed_consumers(channels: &[ChannelEntry]) -> HashSet<TaskletId> {
     let mut keyed = HashSet::new();
     for entry in channels {
         for links in &entry.chains {
@@ -247,8 +243,8 @@ fn derive_keyed_consumers(channels: &[ChannelEntry]) -> HashSet<ProcedureId> {
             for link in links {
                 match link {
                     HostLink::Key => key = true,
-                    HostLink::Into { procedure } | HostLink::Merge { procedure, .. } if key => {
-                        keyed.insert(*procedure);
+                    HostLink::Into { tasklet } | HostLink::Merge { tasklet, .. } if key => {
+                        keyed.insert(*tasklet);
                     }
                     _ => {}
                 }
@@ -264,7 +260,7 @@ fn derive_keyed_consumers(channels: &[ChannelEntry]) -> HashSet<ProcedureId> {
 fn channel_descriptor(entry: ChannelEntry, derived: DerivedChannel) -> ChannelDescriptor {
     let kind = match derived.kind {
         HostChannelKind::Entry => ChannelKind::Entry,
-        HostChannelKind::InterProc => ChannelKind::InterProcedure,
+        HostChannelKind::InterTask => ChannelKind::InterTasklet,
         HostChannelKind::Plugin => ChannelKind::PluginBound,
     };
     let consumers: Vec<ConsumerEdge> = derived
@@ -273,7 +269,7 @@ fn channel_descriptor(entry: ChannelEntry, derived: DerivedChannel) -> ChannelDe
         .map(|edge| {
             let (transform, key) = entry.chain_edges[edge.chain].clone();
             ConsumerEdge {
-                procedure: edge.procedure,
+                tasklet: edge.tasklet,
                 transform,
                 key,
             }
@@ -294,45 +290,45 @@ fn channel_descriptor(entry: ChannelEntry, derived: DerivedChannel) -> ChannelDe
         retry: entry.retry,
         // One rule, both paths: a channel carries a journal codec exactly when
         // the journal reads it back, which is when the derived kind is
-        // inter-procedure. `flz_core::host::build::channel_descriptor` says the
+        // inter-tasklet. `flz_core::host::build::channel_descriptor` says the
         // same thing for a host that ships bytes. A plugin-bound terminal is
         // not a handoff: nothing re-seeds from it, and journaling every plugin
-        // payload at every proc barrier would be WAL volume nobody reads.
-        codec: matches!(kind, ChannelKind::InterProcedure)
+        // payload at every task barrier would be WAL volume nobody reads.
+        codec: matches!(kind, ChannelKind::InterTasklet)
             .then_some(entry.codec)
             .flatten(),
     }
 }
 
-fn build_procedure_descs(
-    procedures: Vec<ProcedureEntry>,
+fn build_tasklet_descs(
+    tasklets: Vec<TaskletEntry>,
     capacities: Vec<usize>,
-    keyed_consumers: &HashSet<ProcedureId>,
-) -> Vec<ProcedureDescriptor> {
-    procedures
+    keyed_consumers: &HashSet<TaskletId>,
+) -> Vec<TaskletDescriptor> {
+    tasklets
         .into_iter()
         .zip(capacities)
         .enumerate()
-        .map(|(id, (entry, capacity))| build_procedure_desc(id, entry, capacity, keyed_consumers))
+        .map(|(id, (entry, capacity))| build_tasklet_desc(id, entry, capacity, keyed_consumers))
         .collect()
 }
 
-fn build_procedure_desc(
+fn build_tasklet_desc(
     id: usize,
-    entry: ProcedureEntry,
+    entry: TaskletEntry,
     mailbox_capacity: usize,
-    keyed_consumers: &HashSet<ProcedureId>,
-) -> ProcedureDescriptor {
-    let mode = entity_mode(id, &entry, keyed_consumers);
-    ProcedureDescriptor {
+    keyed_consumers: &HashSet<TaskletId>,
+) -> TaskletDescriptor {
+    let mode = cell_mode(id, &entry, keyed_consumers);
+    TaskletDescriptor {
         host_facts: None,
         name: Arc::from(entry.name),
-        entity_keys: entry.entity_keys,
-        entities_for_overridden: entry.entities_for_overridden,
+        cell_keys: entry.cell_keys,
+        cells_for_overridden: entry.cells_for_overridden,
         compensate_overridden: entry.compensate_overridden,
         mode,
         idle_ttl: entry.idle_ttl,
-        max_entities: entry.max_entities,
+        max_cells: entry.max_cells,
         input_channel_ids: entry.input_channel_ids,
         output_channel_id: entry.output_channel_id,
         input_type_id: entry.input_type_id,
@@ -340,8 +336,8 @@ fn build_procedure_desc(
         mailbox_capacity,
         mailbox_capacity_overridden: entry.mailbox_capacity_overridden,
         compact_after_bytes: entry.compact_after_bytes,
-        build_entity: entry.build_entity,
-        entities_for_erased: entry.entities_for_erased,
+        build_cell: entry.build_cell,
+        cells_for_erased: entry.cells_for_erased,
         serialize_state: entry.serialize_state,
         deserialize_state: entry.deserialize_state,
     }
@@ -358,12 +354,12 @@ pub fn build_topology_for<R: crate::operative::StreamOperative>(
     build_topology_with_persistence(R::factory_id(), cb, R::PERSISTENCE_ENABLED)
 }
 
-/// Every procedure's resolved mailbox capacity, in declaration order. The
+/// Every tasklet's resolved mailbox capacity, in declaration order. The
 /// resolved value is what the record carries; the range it must fall in is the
 /// core's to refuse (`MailboxCapacityZero` / `MailboxCapacityTooLarge`).
-fn resolve_capacities(procedures: &[ProcedureEntry]) -> Vec<usize> {
+fn resolve_capacities(tasklets: &[TaskletEntry]) -> Vec<usize> {
     let env_capacity = flz_core::util::env_raw(ENV_MAILBOX_CAPACITY);
-    procedures
+    tasklets
         .iter()
         .map(|entry| {
             resolve_mailbox_capacity(
@@ -375,8 +371,8 @@ fn resolve_capacities(procedures: &[ProcedureEntry]) -> Vec<usize> {
         .collect()
 }
 
-/// Resolve a Procedure's mailbox capacity: an explicit override on the
-/// Procedure wins over `FLEZHA_MAILBOX_CAPACITY`, which wins over the built-in
+/// Resolve a Tasklet's mailbox capacity: an explicit override on the
+/// Tasklet wins over `FLEZHA_MAILBOX_CAPACITY`, which wins over the built-in
 /// default. An unparseable env var falls through to the default rather than
 /// failing (runners tolerate typos in env values during development).
 pub(crate) fn resolve_mailbox_capacity(

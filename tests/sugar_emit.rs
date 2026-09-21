@@ -1,13 +1,13 @@
 //! The sugar's emit surface: the `key = fn` opt-in, which names the output's
-//! own natural key for the output whose key is not the key its Entity was
-//! routed by (that one the keyed channel already supplies, and a single-entity
-//! procedure — which has no key at all — needs the opt-in or its emit is
+//! own natural key for the output whose key is not the key its Cell was
+//! routed by (that one the keyed channel already supplies, and a single-cell
+//! tasklet — which has no key at all — needs the opt-in or its emit is
 //! refused); and the context-parameter shape, where the body owns every emit
 //! and `emits = Type` declares what it emits.
 
-use flezha_runner::procedure::{Procedure, ProcedureCtx, ProcedureError};
 use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_runner::testing::ProcedureTestHarness;
+use flezha_runner::tasklet::{Tasklet, TaskletCtx, TaskletError};
+use flezha_runner::testing::TaskletTestHarness;
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 struct Reading {
@@ -19,12 +19,12 @@ fn reading_key(out: &Reading) -> String {
     out.symbol.clone()
 }
 
-#[flezha_runner::procedure(id = "keyed_sugar", key = reading_key)]
+#[flezha_runner::tasklet(id = "keyed_sugar", key = reading_key)]
 fn keyed_sugar(input: Reading) -> Option<Reading> {
     (input.value > 0.0).then_some(input)
 }
 
-#[flezha_runner::procedure(id = "unkeyed_sugar")]
+#[flezha_runner::tasklet(id = "unkeyed_sugar")]
 fn unkeyed_sugar(input: Reading) -> Option<Reading> {
     Some(input)
 }
@@ -36,12 +36,12 @@ fn reading(symbol: &str, value: f64) -> Reading {
     }
 }
 
-/// fails when: a `key = fn` sugared procedure stops stamping the natural key
+/// fails when: a `key = fn` sugared tasklet stops stamping the natural key
 /// on its emits — the Kafka producer plugin would then publish keyless
 /// records and per-key ordering across a partitioned group's members is lost.
 #[test]
 fn key_opt_in_stamps_the_natural_key_on_every_emit() {
-    let mut harness = ProcedureTestHarness::<KeyedSugar>::new().with_keyed_channel();
+    let mut harness = TaskletTestHarness::<KeyedSugar>::new().with_keyed_channel();
     harness.apply_inputs(vec![reading("BTC/USD", 1.0), reading("ETH/USD", 2.0)]);
 
     let keys: Vec<String> = harness
@@ -61,36 +61,36 @@ fn key_opt_in_stamps_the_natural_key_on_every_emit() {
 /// anyway would publish an unwarmed indicator value downstream.
 #[test]
 fn a_skipped_output_emits_nothing_to_key() {
-    let mut harness = ProcedureTestHarness::<KeyedSugar>::new().with_keyed_channel();
+    let mut harness = TaskletTestHarness::<KeyedSugar>::new().with_keyed_channel();
     harness.apply_inputs(vec![reading("BTC/USD", -1.0)]);
     assert!(harness.emitted_meta().is_empty());
 }
 
-/// fails when: a single-entity procedure's plain `emit` is accepted on a
-/// keyed channel — it has no Entity key to fall back on, so the guard that
+/// fails when: a single-cell tasklet's plain `emit` is accepted on a
+/// keyed channel — it has no Cell key to fall back on, so the guard that
 /// makes `key` load-bearing there would be gone and a keyless record would
 /// ship silently.
 #[test]
 #[should_panic(expected = "is declared .keyed()")]
-fn without_the_key_opt_in_a_keyed_channel_refuses_a_single_entity_emit() {
-    let mut harness = ProcedureTestHarness::<UnkeyedSugar>::new().with_keyed_channel();
+fn without_the_key_opt_in_a_keyed_channel_refuses_a_single_cell_emit() {
+    let mut harness = TaskletTestHarness::<UnkeyedSugar>::new().with_keyed_channel();
     harness.apply_inputs(vec![reading("BTC/USD", 1.0)]);
 }
 
-/// fails when: a key-less emit inside a keyed Entity stops carrying that
-/// Entity's own key, or stamps it differently from the explicit spelling —
-/// the whole point is that the two are one path, so a keyed procedure never
+/// fails when: a key-less emit inside a keyed Cell stops carrying that
+/// Cell's own key, or stamps it differently from the explicit spelling —
+/// the whole point is that the two are one path, so a keyed tasklet never
 /// has to re-supply (and so can never drift from) its routing key.
 #[test]
-fn a_keyed_entity_stamps_its_own_key_on_a_key_less_emit() {
-    let mut defaulted = ProcedureTestHarness::<UnkeyedSugar>::new()
+fn a_keyed_cell_stamps_its_own_key_on_a_key_less_emit() {
+    let mut defaulted = TaskletTestHarness::<UnkeyedSugar>::new()
         .with_keyed_channel()
-        .with_entity_key("BTC/USD");
+        .with_cell_key("BTC/USD");
     defaulted.apply_inputs(vec![reading("BTC/USD", 1.0)]);
 
-    let mut explicit = ProcedureTestHarness::<KeyedSugar>::new()
+    let mut explicit = TaskletTestHarness::<KeyedSugar>::new()
         .with_keyed_channel()
-        .with_entity_key("BTC/USD");
+        .with_cell_key("BTC/USD");
     explicit.apply_inputs(vec![reading("BTC/USD", 1.0)]);
 
     assert_eq!(
@@ -121,8 +121,8 @@ fn split(input: &Reading) -> Vec<(String, Reading)> {
         .collect()
 }
 
-#[flezha_runner::procedure(id = "fanout_sugar", emits = Reading)]
-fn fanout_sugar(input: Reading, ctx: &mut ProcedureCtx) -> Result<(), ProcedureError> {
+#[flezha_runner::tasklet(id = "fanout_sugar", emits = Reading)]
+fn fanout_sugar(input: Reading, ctx: &mut TaskletCtx) -> Result<(), TaskletError> {
     for (key, out) in split(&input) {
         ctx.emit_keyed(key, out)?;
     }
@@ -133,7 +133,7 @@ fn fanout_sugar(input: Reading, ctx: &mut ProcedureCtx) -> Result<(), ProcedureE
 #[derive(Default)]
 struct FanoutManual;
 
-impl Procedure for FanoutManual {
+impl Tasklet for FanoutManual {
     type Input = Reading;
     type Output = Reading;
     type State = ();
@@ -151,8 +151,8 @@ impl Procedure for FanoutManual {
         &mut self,
         input: Self::Input,
         _state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         for (key, out) in split(&input) {
             ctx.emit_keyed(key, out)?;
         }
@@ -162,15 +162,15 @@ impl Procedure for FanoutManual {
 
 /// fails when: the context-parameter expansion stops being the hand-written
 /// implementation it claims to be — the escape hatch (§1) is that a sugared
-/// procedure can be pasted out as a full impl and behave identically, and a
+/// tasklet can be pasted out as a full impl and behave identically, and a
 /// multi-emit body is where the two could most easily diverge.
 #[test]
 fn a_context_parameter_emits_every_value_exactly_as_the_hand_written_twin() {
     let inputs = vec![reading("BTC/USD", 1.0), reading("ETH/USD", 2.0)];
 
-    let mut sugared = ProcedureTestHarness::<FanoutSugar>::new().with_keyed_channel();
+    let mut sugared = TaskletTestHarness::<FanoutSugar>::new().with_keyed_channel();
     sugared.apply_inputs(inputs.clone());
-    let mut manual = ProcedureTestHarness::<FanoutManual>::new().with_keyed_channel();
+    let mut manual = TaskletTestHarness::<FanoutManual>::new().with_keyed_channel();
     manual.apply_inputs(inputs.clone());
 
     let expected: Vec<Reading> = inputs.iter().flat_map(split).map(|(_, o)| o).collect();

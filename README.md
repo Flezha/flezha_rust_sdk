@@ -21,7 +21,7 @@ run.run_until_idle(Duration::from_secs(5))?;
 
 `on_sink` registers against the sink's **channel** name — the string the
 declaration's `sink_named(...)` or `named(...)` supplied, else the producing
-procedure's name. `feed` takes the wire bytes
+tasklet's name. `feed` takes the wire bytes
 the channel's declared decoder parses, and blocks while the consumer's mailbox
 is full. Worked example: `cargo run -p flezha_runner --example local_word_count`.
 
@@ -65,9 +65,9 @@ site — no panics. Lifecycle vocabulary: `docs/sdk/naming_conventions.md`.
 
 ## Authoring a topology
 
-Graphs are declared producer-first (`sdk-graph-authoring`): `.into::<Proc>()`
-wires a consumer and returns **that procedure's** output stream handle, so a
-linear pipeline is one expression. The channel between two procedures carries
+Graphs are declared producer-first (`sdk-graph-authoring`): `.into::<Task>()`
+wires a consumer and returns **that tasklet's** output stream handle, so a
+linear pipeline is one expression. The channel between two tasklets carries
 the producer's declared `Output` type — no type token, no channel name unless
 you want one (`.sink_named(...)` names the channel it terminates and
 `.named(...)` names one that has no sink; either overrides the name derived
@@ -143,7 +143,7 @@ tap is the SAME method — `sink()` / `sink_named(name)` / `sink_with(serializer
 after it. A channel is terminal by having none; `.sealed()` states that in the
 type.
 
-A procedure that needs **two feeds** — a data stream plus a live config
+A tasklet that needs **two feeds** — a data stream plus a live config
 stream, a join of two computed streams — subscribes them with `merge`, which
 maps each source's payload into one author-declared sum-type `Input`:
 
@@ -155,10 +155,10 @@ c.merge::<DetectorInput>()
 ```
 
 Per-source FIFO is preserved and nothing is ordered across sources; see
-`docs/sdk/multi_input_procedures.md`.
+`docs/sdk/multi_input_tasklets.md`.
 
 When that config stream is **operative-wide** and the consumer is keyed, a merge
-alone is not enough: a keyed procedure cannot receive a broadcast, since the key
+alone is not enough: a keyed tasklet cannot receive a broadcast, since the key
 function is total and inside a partitioned member the computed key is admitted
 against that member's key-group range. `route_latest` is the packaged bridge —
 every key seen on the traffic stream receives each distinct document exactly
@@ -201,7 +201,7 @@ impl StreamOperative for RiskOperative {
             // tap: default JSON, on a channel this call names
             .sink_named("orders.validated");
 
-        // One class, two nodes: each keeps its own per-entity state under
+        // One class, two nodes: each keeps its own per-cell state under
         // its node identity (state dirs, journals, diagnostics). Both arms
         // name the same (unnamed) Verdicts class, so their verdicts fan IN —
         // either arm's `.into::<Verdicts>()` returns the one join's handle.
@@ -224,7 +224,7 @@ the entry (`orders`), the tap (`orders.validated`), the terminal
 ### A structured workflow DAG
 
 Workflow operatives author on the same builder. A durable class journals each
-proc barrier, and the runtime derives the codec for that from each procedure's
+task barrier, and the runtime derives the codec for that from each tasklet's
 declared `Output`, so a chain declares nothing about it; a fan-in node runs once,
 after **all** its producers committed, with the accumulated batch — and on an
 abnormal exit the saga unwinds reverse-topologically (the join before either
@@ -234,8 +234,8 @@ producer, the shared root last):
 struct SettleWorkflow;
 impl WorkflowOperative for SettleWorkflow {
     fn factory_id() -> &'static str { "settle" }
-    fn retry_attempts() -> u32 { 3 } // per-entity ladder before the saga fires
-    fn procedures(c: &ChannelBuilder) {
+    fn retry_attempts() -> u32 { 3 } // per-cell ladder before the saga fires
+    fn tasklets(c: &ChannelBuilder) {
         // The diamond: Reserve fans out to Charge and Ledger, whose outputs
         // accumulate into one Reconcile join.
         let reserved = c
@@ -256,25 +256,25 @@ still runs exactly once. Cycles are refused at registration; a chained loop
 terminal that releases an output channel, since that handoff is what seeds the
 next iteration.
 
-Parameterized procedures use the `Config` associated type: declare
+Parameterized tasklets use the `Config` associated type: declare
 `type Config = MyConfig` and build the instance from it in `from_config` —
 the sanctioned path for one class serving several configurations (see the
-`Procedure::from_config` rustdoc for a compiling worked example).
+`Tasklet::from_config` rustdoc for a compiling worked example).
 
-### Declaring less: `SimpleProcedure`
+### Declaring less: `SimpleTasklet`
 
-A procedure is usually a function under `#[flezha::procedure]`
-(`examples/echo/src/procedure.rs`), which generates the `Procedure` impl.
-Stable Rust has no associated-type defaults, so a hand-written `Procedure` impl
+A tasklet is usually a function under `#[flezha::tasklet]`
+(`examples/echo/src/tasklet.rs`), which generates the `Tasklet` impl.
+Stable Rust has no associated-type defaults, so a hand-written `Tasklet` impl
 spells all six even when three of them are the near-universal values.
-`SimpleProcedure` is the shorthand — `Input`, `Output`, `State` plus `name`,
-`init_state` and `run` — lifted to `Procedure` by a blanket impl with
+`SimpleTasklet` is the shorthand — `Input`, `Output`, `State` plus `name`,
+`init_state` and `run` — lifted to `Tasklet` by a blanket impl with
 `Clock = WallClock`, `Config = ()` and the `State` type's derived change
-(`type State = ()` for a stateless procedure). It registers and dispatches exactly like any other
-`Procedure`; the wiring cannot tell which tier authored a node.
+(`type State = ()` for a stateless tasklet). It registers and dispatches exactly like any other
+`Tasklet`; the wiring cannot tell which tier authored a node.
 
-Implement `Procedure` directly for anything the shorthand does not cover — a
-non-default clock, a typed config, a hand-written `Change`, static entity keys.
+Implement `Tasklet` directly for anything the shorthand does not cover — a
+non-default clock, a typed config, a hand-written `Change`, static cell keys.
 A type cannot do both: the two impls overlap and the compiler says so.
 
 ## Public API workflow
@@ -298,7 +298,7 @@ After any public-API-affecting change:
 
 - `bench-internals` — exposes internal dispatch types for the crate's
   own benches/tests. NOT a stable API.
-- `testing` — exposes `flezha_runner::testing::ProcedureTestHarness`
+- `testing` — exposes `flezha_runner::testing::TaskletTestHarness`
   for downstream crates that want replay-equality tests.
 
 ## Architecture

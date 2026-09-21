@@ -1,15 +1,15 @@
-//! Per-entity ordering and stickiness: one Entity is never dispatched
-//! concurrently, its inputs keep enqueue order, different entities run in
+//! Per-cell ordering and stickiness: one Cell is never dispatched
+//! concurrently, its inputs keep enqueue order, different cells run in
 //! parallel, and two operatives' same-named channels stay independent.
 
 mod common;
 use common::prelude::*;
 
-// ----- Per-entity ordering (single mode) -----
+// ----- Per-cell ordering (single mode) -----
 
 static APPEND_OBSERVED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-test_procedure!(AppendProcedure, "append_procedure", String => String, (), |input, _state, _ctx| {
+test_tasklet!(AppendTasklet, "append_tasklet", String => String, (), |input, _state, _ctx| {
     APPEND_OBSERVED.lock().unwrap().push(input);
     Ok(())
 });
@@ -20,12 +20,12 @@ impl StreamOperative for AppendOperative {
         "append_operative"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<String>("input").into::<AppendProcedure>();
+        c.input::<String>("input").into::<AppendTasklet>();
     }
 }
 
 #[test]
-fn per_entity_input_order_preserved() {
+fn per_cell_input_order_preserved() {
     APPEND_OBSERVED.lock().unwrap().clear();
     let (handle, _instance) = setup::<AppendOperative>("append-instance");
     let stream = dummy_stream();
@@ -57,12 +57,12 @@ fn per_entity_input_order_preserved() {
     }
 }
 
-// ----- Sticky non-concurrent dispatch on the same entity -----
+// ----- Sticky non-concurrent dispatch on the same cell -----
 
 static APPEND_CONCURRENT: AtomicUsize = AtomicUsize::new(0);
 static APPEND_MAX_CONCURRENT: AtomicUsize = AtomicUsize::new(0);
 
-test_procedure!(ConcurrencyProbeProcedure, "concurrency_probe_procedure", String => String, (), |_input, _state, _ctx| {
+test_tasklet!(ConcurrencyProbeTasklet, "concurrency_probe_tasklet", String => String, (), |_input, _state, _ctx| {
     let cur = APPEND_CONCURRENT.fetch_add(1, Ordering::AcqRel) + 1;
     let mut prev = APPEND_MAX_CONCURRENT.load(Ordering::Acquire);
     while cur > prev {
@@ -89,13 +89,12 @@ impl StreamOperative for ConcurrencyProbeOperative {
         "concurrency_probe_operative"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<String>("input")
-            .into::<ConcurrencyProbeProcedure>();
+        c.input::<String>("input").into::<ConcurrencyProbeTasklet>();
     }
 }
 
 #[test]
-fn same_entity_never_runs_concurrently() {
+fn same_cell_never_runs_concurrently() {
     APPEND_CONCURRENT.store(0, Ordering::Release);
     APPEND_MAX_CONCURRENT.store(0, Ordering::Release);
 
@@ -132,7 +131,7 @@ fn same_entity_never_runs_concurrently() {
     }
 
     // Wait for drain: nothing running and nothing queued.
-    let slot = Arc::clone(&registry_instance(&registry, "conc-instance").entities[0][0]);
+    let slot = Arc::clone(&registry_instance(&registry, "conc-instance").cells[0][0]);
     assert!(wait_until(
         || APPEND_CONCURRENT.load(Ordering::Acquire) == 0 && slot.mailbox.is_empty(),
         Duration::from_secs(10)
@@ -141,7 +140,7 @@ fn same_entity_never_runs_concurrently() {
     assert_eq!(
         APPEND_MAX_CONCURRENT.load(Ordering::Acquire),
         1,
-        "single-entity mailbox allowed concurrent dispatch"
+        "single-cell mailbox allowed concurrent dispatch"
     );
 }
 
@@ -149,18 +148,18 @@ fn registry_instance(registry: &Arc<OperativeRegistry>, id: &str) -> Arc<StreamI
     registry.get_stream(id).expect("registered instance")
 }
 
-// ----- Parallel entities of the same procedure -----
+// ----- Parallel cells of the same tasklet -----
 
 use std::sync::OnceLock;
 
 fn parallel_observed() -> &'static Mutex<HashMap<&'static str, Vec<String>>> {
-    static CELL: OnceLock<Mutex<HashMap<&'static str, Vec<String>>>> = OnceLock::new();
-    CELL.get_or_init(|| Mutex::new(HashMap::new()))
+    static OBSERVED: OnceLock<Mutex<HashMap<&'static str, Vec<String>>>> = OnceLock::new();
+    OBSERVED.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 #[derive(Default)]
-struct ParallelStaticProcedure;
-impl Procedure for ParallelStaticProcedure {
+struct ParallelStaticTasklet;
+impl Tasklet for ParallelStaticTasklet {
     type Input = String;
     type Output = String;
     type State = String;
@@ -168,13 +167,10 @@ impl Procedure for ParallelStaticProcedure {
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "parallel_static_procedure"
+        "parallel_static_tasklet"
     }
-    fn init_state(
-        entity_key: Option<&str>,
-        _init_payload: Option<RestoreInitPayload<'_>>,
-    ) -> String {
-        match entity_key {
+    fn init_state(cell_key: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) -> String {
+        match cell_key {
             Some("a") => "a".to_string(),
             Some("b") => "b".to_string(),
             Some("c") => "c".to_string(),
@@ -182,11 +178,11 @@ impl Procedure for ParallelStaticProcedure {
             _ => "?".to_string(),
         }
     }
-    fn entity_keys() -> Vec<&'static str> {
+    fn cell_keys() -> Vec<&'static str> {
         vec!["a", "b", "c", "d"]
     }
-    const ENTITIES_FOR_OVERRIDDEN: bool = true;
-    fn entities_for(input: &String) -> Vec<&'static str> {
+    const CELLS_FOR_OVERRIDDEN: bool = true;
+    fn cells_for(input: &String) -> Vec<&'static str> {
         match input.chars().next() {
             Some('a') => vec!["a"],
             Some('b') => vec!["b"],
@@ -197,9 +193,9 @@ impl Procedure for ParallelStaticProcedure {
     fn run(
         &mut self,
         input: String,
-        state: StateHandle<'_, ParallelStaticProcedure>,
-        _: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        state: StateHandle<'_, ParallelStaticTasklet>,
+        _: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         let key: &'static str = match state.as_str() {
             "a" => "a",
             "b" => "b",
@@ -223,12 +219,12 @@ impl StreamOperative for ParallelOperative {
         "parallel_operative"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<String>("input").into::<ParallelStaticProcedure>();
+        c.input::<String>("input").into::<ParallelStaticTasklet>();
     }
 }
 
 #[test]
-fn static_entities_dispatch_independently() {
+fn static_cells_dispatch_independently() {
     parallel_observed().lock().unwrap().clear();
     let (handle, _instance) = setup::<ParallelOperative>("parallel-instance");
     let stream = dummy_stream();
@@ -259,10 +255,10 @@ fn static_entities_dispatch_independently() {
 
     let map = parallel_observed().lock().unwrap();
     for &p in &prefixes {
-        let v = map.get(p).expect("entity observed");
+        let v = map.get(p).expect("cell observed");
         assert_eq!(v.len(), per_prefix);
         for (i, s) in v.iter().enumerate() {
-            assert_eq!(*s, format!("{}{}", p, i), "{} entity out of order", p);
+            assert_eq!(*s, format!("{}{}", p, i), "{} cell out of order", p);
         }
     }
 }
@@ -274,7 +270,7 @@ struct CountingState {
     n: usize,
 }
 
-test_procedure!(CountingProcedure, "counting_procedure", String => String, CountingState, |_input, _state, _ctx| {
+test_tasklet!(CountingTasklet, "counting_tasklet", String => String, CountingState, |_input, _state, _ctx| {
     Ok(())
 });
 
@@ -284,7 +280,7 @@ impl StreamOperative for StreamA {
         "ns_operative_a"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<String>("input").into::<CountingProcedure>();
+        c.input::<String>("input").into::<CountingTasklet>();
     }
 }
 
@@ -294,7 +290,7 @@ impl StreamOperative for StreamB {
         "ns_operative_b"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<String>("input").into::<CountingProcedure>();
+        c.input::<String>("input").into::<CountingTasklet>();
     }
 }
 
@@ -314,11 +310,11 @@ fn per_operative_namespace_isolation() {
     ));
 }
 
-// ----- emit_with_meta rejection on inter-procedure channels -----
+// ----- emit_with_meta rejection on inter-tasklet channels -----
 
 static META_REJECT_OBSERVED: Mutex<Option<String>> = Mutex::new(None);
 
-test_procedure!(MetaProducerProcedure, "meta_producer_procedure", String => String, (), |input, _state, ctx| {
+test_tasklet!(MetaProducerTasklet, "meta_producer_tasklet", String => String, (), |input, _state, ctx| {
     let mut meta = HashMap::new();
     meta.insert("k".to_string(), "v".to_string());
     let res = ctx.emit_with_meta::<String>(input, meta);
@@ -328,7 +324,7 @@ test_procedure!(MetaProducerProcedure, "meta_producer_procedure", String => Stri
     Ok(())
 });
 
-test_procedure!(MetaConsumerProcedure, "meta_consumer_procedure", String => (), (), |_input, _state, _ctx| {
+test_tasklet!(MetaConsumerTasklet, "meta_consumer_tasklet", String => (), (), |_input, _state, _ctx| {
     Ok(())
 });
 
@@ -339,14 +335,14 @@ impl StreamOperative for MetaRejectOperative {
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
-            .into::<MetaProducerProcedure>()
+            .into::<MetaProducerTasklet>()
             .named("hop")
-            .into::<MetaConsumerProcedure>();
+            .into::<MetaConsumerTasklet>();
     }
 }
 
 #[test]
-fn emit_with_meta_rejected_on_inter_procedure() {
+fn emit_with_meta_rejected_on_inter_tasklet() {
     *META_REJECT_OBSERVED.lock().unwrap() = None;
     let (handle, _instance) = setup::<MetaRejectOperative>("meta-instance");
     let stream = dummy_stream();
@@ -361,7 +357,7 @@ fn emit_with_meta_rejected_on_inter_procedure() {
     ));
     let msg = META_REJECT_OBSERVED.lock().unwrap().clone().unwrap();
     assert!(
-        msg.contains("inter-procedure"),
-        "expected inter-procedure rejection, got {msg}"
+        msg.contains("inter-tasklet"),
+        "expected inter-tasklet rejection, got {msg}"
     );
 }

@@ -1,4 +1,4 @@
-//! The per-entity retry ladder: recovery, exhaustion, opt-out, and what an
+//! The per-cell retry ladder: recovery, exhaustion, opt-out, and what an
 //! external stop does to a waiting backoff.
 
 use std::sync::atomic::Ordering;
@@ -10,9 +10,9 @@ use super::super::fake_controller::*;
 use super::super::fixtures::*;
 use crate::runner::RunnerMessage;
 
-pub(super) fn entity_retry(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
-    // --- workflow-entity-retry: a transient entity failure recovers in
-    // place — the sibling entity is NOT re-run and nothing compensates ---
+pub(super) fn cell_retry(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
+    // --- workflow-cell-retry: a transient cell failure recovers in
+    // place — the sibling cell is NOT re-run and nothing compensates ---
     arm_flaky(1, false);
     assert!(node.start_workflow(
         "test-retry-workflow".into(),
@@ -25,26 +25,26 @@ pub(super) fn entity_retry(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) 
     assert_eq!(
         outs,
         vec![b"even:bb".to_vec(), b"odd:a".to_vec()],
-        "each entity's output lands exactly once — a retried attempt's \
+        "each cell's output lands exactly once — a retried attempt's \
          staged output is discarded, not double-emitted"
     );
     assert_eq!(
         ODD_ATTEMPTS.load(Ordering::SeqCst),
         2,
-        "the failing entity ran twice (fail, then retry)"
+        "the failing cell ran twice (fail, then retry)"
     );
     assert_eq!(
         EVEN_RUNS.load(Ordering::SeqCst),
         1,
-        "the sibling entity stayed buffered at the barrier: no re-run"
+        "the sibling cell stayed buffered at the barrier: no re-run"
     );
     assert!(
         drain_comp_log().is_empty(),
         "a recovered retry must not compensate"
     );
 
-    // --- retry exhaustion fails the procedure exactly as before: the
-    // original error surfaces and completed procedures compensate ---
+    // --- retry exhaustion fails the tasklet exactly as before: the
+    // original error surfaces and completed tasklets compensate ---
     arm_flaky(99, false);
     assert!(node.start_workflow(
         "test-retry-workflow".into(),
@@ -81,7 +81,7 @@ pub(super) fn entity_retry(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) 
     assert_eq!(
         ODD_ATTEMPTS.load(Ordering::SeqCst),
         1,
-        "ProcedureError::non_retryable ⇒ no retry"
+        "TaskletError::non_retryable ⇒ no retry"
     );
     assert_eq!(drain_comp_log(), vec!["undo-retry-reserve".to_string()]);
 
@@ -106,7 +106,7 @@ pub(super) fn retry_stop_and_stage(node: &mut RunnerNode, rx: &Receiver<RunnerMe
     // --- an external stop interrupts a waiting backoff (30 s base: the run
     // can only end inside `drain`'s deadline by observing the cancel in the
     // wait). The stop rides a helper thread because this thread is the fake
-    // controller — it must stay in `drain` to ack the chain's proc commits ---
+    // controller — it must stay in `drain` to ack the chain's task commits ---
     arm_flaky(99, false);
     assert!(node.start_workflow(
         "test-retry-slow-workflow".into(),
@@ -137,8 +137,8 @@ pub(super) fn retry_stop_and_stage(node: &mut RunnerNode, rx: &Receiver<RunnerMe
     );
 
     // --- a stage step is an activation the SDK's workers run, and the
-    // backoff between two attempts holds none of them: every entity of this
-    // stage backs off at once, and there are twice as many entities as
+    // backoff between two attempts holds none of them: every cell of this
+    // stage backs off at once, and there are twice as many cells as
     // workers, so a backoff that occupied its worker would leave the pool
     // starved and the core would answer with threads above the base set ---
     STEP_ATTEMPTS.lock().unwrap().clear();
@@ -152,18 +152,18 @@ pub(super) fn retry_stop_and_stage(node: &mut RunnerNode, rx: &Receiver<RunnerMe
     assert_eq!(
         outs.len(),
         probe_keys().len(),
-        "every entity emitted once, after its own retry"
+        "every cell emitted once, after its own retry"
     );
     let attempts = STEP_ATTEMPTS.lock().unwrap().clone();
     assert_eq!(
         attempts.len(),
         probe_keys().len() * 2,
-        "one failed attempt and one success per entity"
+        "one failed attempt and one success per cell"
     );
     let base = crate::operative::poll_pool::base_worker_count();
     for (key, thread) in &attempts {
         let worker = thread.strip_prefix("flz-poll-").unwrap_or_else(|| {
-            panic!("entity {key} ran its step on {thread}, not on an SDK poll worker")
+            panic!("cell {key} ran its step on {thread}, not on an SDK poll worker")
         });
         assert!(
             worker.parse::<usize>().expect("poll worker id") < base,

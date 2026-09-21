@@ -1,6 +1,6 @@
 //! Section 3.1: the journaling mutators `#[derive(flezha::State)]` generates
-//! for flat collection fields. A per-entity sliding window — the shape every
-//! keyed procedure has once its Entity key *is* what a map would have keyed by
+//! for flat collection fields. A per-cell sliding window — the shape every
+//! keyed tasklet has once its Cell key *is* what a map would have keyed by
 //! — must journal one delta per mutation, not a whole-collection set.
 
 use std::collections::VecDeque;

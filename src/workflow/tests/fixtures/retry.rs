@@ -1,4 +1,4 @@
-//! The per-entity retry ladder's procedures, and the step probe that
+//! The per-cell retry ladder's tasklets, and the step probe that
 //! records who ran a stage and what a backoff held.
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -8,30 +8,30 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use super::*;
+use crate::cell::restore::RestoreInitPayload;
 use crate::channel::ChannelBuilder;
-use crate::entity::restore::RestoreInitPayload;
-use crate::procedure::change::NoChange;
-use crate::procedure::clock::WallClock;
-use crate::procedure::{Procedure, ProcedureCtx, ProcedureError, StateHandle};
+use crate::tasklet::change::NoChange;
+use crate::tasklet::clock::WallClock;
+use crate::tasklet::{StateHandle, Tasklet, TaskletCtx, TaskletError};
 use crate::workflow::*;
 
-// ---- per-entity retry ladder procs (`workflow-entity-retry`) -------------
+// ---- per-cell retry ladder tasks (`workflow-cell-retry`) -------------
 
-/// Attempts the `odd` entity has made, and items the `even` sibling has
-/// processed — a retry must re-run ONLY the failing entity.
+/// Attempts the `odd` cell has made, and items the `even` sibling has
+/// processed — a retry must re-run ONLY the failing cell.
 pub(crate) static ODD_ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static EVEN_RUNS: AtomicUsize = AtomicUsize::new(0);
-/// How many of the `odd` entity's attempts fail, and how they are
+/// How many of the `odd` cell's attempts fail, and how they are
 /// classified — set per scenario.
 pub(crate) static ODD_FAILURES: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static ODD_NON_RETRYABLE: AtomicBool = AtomicBool::new(false);
 
 /// Compensable pass-through in front of the flaky stage: its undo proves
-/// whether an entity failure escalated to the procedure (compensation) or
+/// whether a cell failure escalated to the tasklet (compensation) or
 /// was absorbed by the ladder.
 #[derive(Default)]
 pub(crate) struct RetryReserve;
-impl Procedure for RetryReserve {
+impl Tasklet for RetryReserve {
     type Input = String;
     type Output = String;
     type State = ();
@@ -46,8 +46,8 @@ impl Procedure for RetryReserve {
         &mut self,
         input: String,
         _state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         ctx.emit(input)?;
         Ok(())
     }
@@ -56,20 +56,20 @@ impl Procedure for RetryReserve {
         &mut self,
         _completed_output: Vec<Arc<String>>,
         _state: StateHandle<'_, Self>,
-        _ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        _ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         comp_log("undo-retry-reserve".to_string());
         Ok(())
     }
 }
 
-/// Static-entity flaky stage: the `odd` entity fails its first
+/// Static-cell flaky stage: the `odd` cell fails its first
 /// `ODD_FAILURES` attempts (retryably, or `NonRetryable` when the scenario
-/// says so) and then succeeds; the `even` entity always succeeds and
+/// says so) and then succeeds; the `even` cell always succeeds and
 /// counts the items it saw.
 #[derive(Default)]
 pub(crate) struct FlakyFan;
-impl Procedure for FlakyFan {
+impl Tasklet for FlakyFan {
     type Input = String;
     type Output = String;
     type State = ();
@@ -79,11 +79,11 @@ impl Procedure for FlakyFan {
     fn name() -> &'static str {
         "flaky_fan"
     }
-    fn entity_keys() -> Vec<&'static str> {
+    fn cell_keys() -> Vec<&'static str> {
         vec!["even", "odd"]
     }
-    const ENTITIES_FOR_OVERRIDDEN: bool = true;
-    fn entities_for(input: &String) -> Vec<&'static str> {
+    const CELLS_FOR_OVERRIDDEN: bool = true;
+    fn cells_for(input: &String) -> Vec<&'static str> {
         if input.len().is_multiple_of(2) {
             vec!["even"]
         } else {
@@ -95,8 +95,8 @@ impl Procedure for FlakyFan {
         &mut self,
         input: String,
         _state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         if input.len().is_multiple_of(2) {
             EVEN_RUNS.fetch_add(1, Ordering::SeqCst);
             ctx.emit(format!("even:{input}"))?;
@@ -106,9 +106,9 @@ impl Procedure for FlakyFan {
         if attempt <= ODD_FAILURES.load(Ordering::SeqCst) {
             let message = format!("flaky attempt {attempt}");
             return Err(if ODD_NON_RETRYABLE.load(Ordering::SeqCst) {
-                ProcedureError::non_retryable(message)
+                TaskletError::non_retryable(message)
             } else {
-                ProcedureError::Custom(message)
+                TaskletError::Custom(message)
             });
         }
         ctx.emit(format!("odd:{input}"))?;
@@ -118,7 +118,7 @@ impl Procedure for FlakyFan {
 
 pub(crate) fn retry_chain(c: &ChannelBuilder) {
     c.input::<String>("in")
-        .into::<SplitProc>()
+        .into::<SplitTask>()
         .named("mid")
         .into::<RetryReserve>()
         .named("mid2")
@@ -136,13 +136,13 @@ impl WorkflowOperative for RetryWorkflow {
     fn retry_backoff() -> Duration {
         Duration::from_millis(10)
     }
-    fn procedures(c: &ChannelBuilder) {
+    fn tasklets(c: &ChannelBuilder) {
         retry_chain(c);
     }
 }
 
-/// The same chain with the ladder opted out: the first entity error fails
-/// the procedure, exactly as before this capability existed.
+/// The same chain with the ladder opted out: the first cell error fails
+/// the tasklet, exactly as before this capability existed.
 pub(crate) struct RetryFailFastWorkflow;
 impl WorkflowOperative for RetryFailFastWorkflow {
     fn factory_id() -> &'static str {
@@ -151,7 +151,7 @@ impl WorkflowOperative for RetryFailFastWorkflow {
     fn retry_attempts() -> u32 {
         0
     }
-    fn procedures(c: &ChannelBuilder) {
+    fn tasklets(c: &ChannelBuilder) {
         retry_chain(c);
     }
 }
@@ -166,17 +166,17 @@ impl WorkflowOperative for RetrySlowBackoffWorkflow {
     fn retry_backoff() -> Duration {
         Duration::from_secs(30)
     }
-    fn procedures(c: &ChannelBuilder) {
+    fn tasklets(c: &ChannelBuilder) {
         retry_chain(c);
     }
 }
 
 // ---- who runs a stage step, and what a backoff holds -------------------
 
-/// Every attempt the probe stage ran, as `(entity key, thread name)`.
+/// Every attempt the probe stage ran, as `(cell key, thread name)`.
 pub(crate) static STEP_ATTEMPTS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
 
-/// One entity per SDK worker, twice over. More entities backing off at
+/// One cell per SDK worker, twice over. More cells backing off at
 /// once than the pool has threads is what makes a backoff that HELD a
 /// worker observable: it would starve the pool, and the core answers
 /// starvation with threads above the base set.
@@ -194,12 +194,12 @@ pub(crate) struct ProbeState {
     key: String,
 }
 
-/// Every entity fails its first attempt and succeeds on the retry, so the
+/// Every cell fails its first attempt and succeeds on the retry, so the
 /// whole stage sits on a backoff at the same moment, and each attempt
 /// records the thread that ran it.
 #[derive(Default)]
 pub(crate) struct StepProbe;
-impl Procedure for StepProbe {
+impl Tasklet for StepProbe {
     type Input = String;
     type Output = String;
     type State = ProbeState;
@@ -209,24 +209,24 @@ impl Procedure for StepProbe {
     fn name() -> &'static str {
         "step_probe"
     }
-    fn entity_keys() -> Vec<&'static str> {
+    fn cell_keys() -> Vec<&'static str> {
         probe_keys().to_vec()
     }
-    const ENTITIES_FOR_OVERRIDDEN: bool = true;
-    fn entities_for(_input: &String) -> Vec<&'static str> {
+    const CELLS_FOR_OVERRIDDEN: bool = true;
+    fn cells_for(_input: &String) -> Vec<&'static str> {
         probe_keys().to_vec()
     }
-    fn init_state(entity_key: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> ProbeState {
+    fn init_state(cell_key: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> ProbeState {
         ProbeState {
-            key: entity_key.unwrap_or("").to_string(),
+            key: cell_key.unwrap_or("").to_string(),
         }
     }
     fn run(
         &mut self,
         input: String,
         state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         let thread = std::thread::current()
             .name()
             .unwrap_or("<unnamed>")
@@ -236,7 +236,7 @@ impl Procedure for StepProbe {
         attempts.push((state.key.clone(), thread));
         drop(attempts);
         if prior == 0 {
-            return Err(ProcedureError::Custom(format!(
+            return Err(TaskletError::Custom(format!(
                 "probe {} attempt 1",
                 state.key
             )));
@@ -246,7 +246,7 @@ impl Procedure for StepProbe {
     }
 }
 
-/// One flaky stage whose entities outnumber the SDK's workers, on a
+/// One flaky stage whose cells outnumber the SDK's workers, on a
 /// backoff long enough that a worker holding one would be observed.
 pub(crate) struct StepProbeWorkflow;
 impl WorkflowOperative for StepProbeWorkflow {
@@ -256,14 +256,14 @@ impl WorkflowOperative for StepProbeWorkflow {
     fn retry_backoff() -> Duration {
         Duration::from_millis(200)
     }
-    fn procedures(c: &ChannelBuilder) {
+    fn tasklets(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<StepProbe>()
             .sink_named("probe_out");
     }
 }
 
-/// Arm the flaky stage: `failures` attempts of the `odd` entity fail,
+/// Arm the flaky stage: `failures` attempts of the `odd` cell fail,
 /// classified retryable or not, with both attempt counters reset.
 pub(crate) fn arm_flaky(failures: usize, non_retryable: bool) {
     ODD_ATTEMPTS.store(0, Ordering::SeqCst);

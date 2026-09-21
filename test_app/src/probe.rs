@@ -42,8 +42,8 @@ impl TimeExtractor<String> for TradeEventTime {
 }
 
 #[derive(Default)]
-struct CandleProcedure;
-impl Procedure for CandleProcedure {
+struct CandleTasklet;
+impl Tasklet for CandleTasklet {
     type Input = String;
     type Output = String;
     type State = CandleState;
@@ -51,7 +51,7 @@ impl Procedure for CandleProcedure {
     type Clock = EventTimeFrom<TradeEventTime>;
     type Config = ();
     fn name() -> &'static str {
-        "candle_procedure"
+        "candle_tasklet"
     }
     fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> CandleState {
         CandleState::default()
@@ -65,8 +65,8 @@ impl Procedure for CandleProcedure {
         &mut self,
         input: String,
         mut state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         // `ctx.now()` IS the extracted event time under an EventTimeFrom clock.
         let event_time = ctx.now();
         state.apply(CandleChange::Fold(event_time));
@@ -86,7 +86,7 @@ impl StreamOperative for CandleOperative {
         c.effectively_once();
         c.correction_window(600_000);
         c.input::<String>("input")
-            .into::<CandleProcedure>()
+            .into::<CandleTasklet>()
             .keyed()
             .sink_named("sink");
     }
@@ -96,14 +96,14 @@ impl StreamOperative for CandleOperative {
 //
 // Tier-off retry-then-park probe: `run` fails on the input "poison" until an
 // "antidote" input flips a process-global flag. The e2e parks the poison
-// payload (durable DLQ entry, entity continues), sends the antidote, then
+// payload (durable DLQ entry, cell continues), sends the antidote, then
 // replays the parked entry — which now succeeds and removes it.
 
 static POISON_ANTIDOTE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[derive(Default)]
-struct PoisonProbeProcedure;
-impl Procedure for PoisonProbeProcedure {
+struct PoisonProbeTasklet;
+impl Tasklet for PoisonProbeTasklet {
     type Input = String;
     type Output = String;
     type State = ();
@@ -111,19 +111,19 @@ impl Procedure for PoisonProbeProcedure {
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "poison_probe_procedure"
+        "poison_probe_tasklet"
     }
     fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
     fn run(
         &mut self,
         input: String,
         _state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         if input == "antidote" {
             POISON_ANTIDOTE.store(true, std::sync::atomic::Ordering::SeqCst);
         } else if input == "poison" && !POISON_ANTIDOTE.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err(ProcedureError::Custom("poison payload".into()));
+            return Err(TaskletError::Custom("poison payload".into()));
         }
         ctx.emit(format!("ok:{input}"))
     }
@@ -139,7 +139,7 @@ impl StreamOperative for PoisonProbeOperative {
         // at the default 3 attempts.
         c.input::<String>("input")
             .retry_backoff_ms(25)
-            .into::<PoisonProbeProcedure>()
+            .into::<PoisonProbeTasklet>()
             .sink_named("out");
     }
 }
@@ -158,7 +158,7 @@ impl StreamOperative for PoisonProbeOperative {
 //     emitting, once per process. Rust has no way for user code to kill a poll
 //     worker outright: the dispatcher catches the unwind per item and the
 //     panic rides the retry ladder. That is what the scenario asserts is
-//     survivable — whatever the host does with a violent failure, the Entity
+//     survivable — whatever the host does with a violent failure, the Cell
 //     must be served again and the aborting item must not produce twice.
 //
 // Every other input emits `ok:<input>`, which is how the e2e proves the
@@ -168,8 +168,8 @@ static WEDGE_PROBE_ABORTED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
 #[derive(Default)]
-struct WedgeProbeProcedure;
-impl Procedure for WedgeProbeProcedure {
+struct WedgeProbeTasklet;
+impl Tasklet for WedgeProbeTasklet {
     type Input = String;
     type Output = String;
     type State = ();
@@ -177,15 +177,15 @@ impl Procedure for WedgeProbeProcedure {
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "wedge_probe_procedure"
+        "wedge_probe_tasklet"
     }
     fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
     fn run(
         &mut self,
         input: String,
         _state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         if input == "wedge" {
             loop {
                 thread::sleep(Duration::from_secs(3600));
@@ -206,7 +206,7 @@ impl StreamOperative for WedgeProbeOperative {
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
-            .into::<WedgeProbeProcedure>()
+            .into::<WedgeProbeTasklet>()
             .sink_named("out");
     }
 }
@@ -232,8 +232,8 @@ enum ResumeProbeChange {
 impl Change for ResumeProbeChange {}
 
 #[derive(Default)]
-struct ResumeProbeProcedure;
-impl Procedure for ResumeProbeProcedure {
+struct ResumeProbeTasklet;
+impl Tasklet for ResumeProbeTasklet {
     type Input = String;
     type Output = Vec<u8>;
     type State = ResumeProbeState;
@@ -241,7 +241,7 @@ impl Procedure for ResumeProbeProcedure {
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
-        "resume_probe_procedure"
+        "resume_probe_tasklet"
     }
     fn init_state(
         _: Option<&str>,
@@ -260,8 +260,8 @@ impl Procedure for ResumeProbeProcedure {
         &mut self,
         input: String,
         mut state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         let delta: i64 = input.parse().unwrap_or(0);
         let new_total = state.total.saturating_add(delta);
         state.apply(ResumeProbeChange::Add(delta));
@@ -276,7 +276,7 @@ impl StreamOperative for ResumeProbeOperative {
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
-            .into::<ResumeProbeProcedure>()
+            .into::<ResumeProbeTasklet>()
             .sink_named("total");
     }
 }
@@ -284,7 +284,7 @@ impl StreamOperative for ResumeProbeOperative {
 // -- SchemaEvolutionOperative -----------------------------------------------------
 //
 // The same class either side of a deploy that edits its own state type. Both
-// halves declare the SAME procedure name, so an operative started under v1 and
+// halves declare the SAME tasklet name, so an operative started under v1 and
 // restarted under v2 restores from the very WAL v1 wrote — which is what a
 // deploy does, with the two binaries collapsed into one for the fixture.
 //
@@ -316,8 +316,8 @@ enum EvolvingCartChangeV2 {
 impl Change for EvolvingCartChangeV2 {}
 
 #[derive(Default)]
-struct SchemaEvolutionV1Procedure;
-impl Procedure for SchemaEvolutionV1Procedure {
+struct SchemaEvolutionV1Tasklet;
+impl Tasklet for SchemaEvolutionV1Tasklet {
     type Input = String;
     type Output = Vec<u8>;
     type State = EvolvingCartV1;
@@ -339,8 +339,8 @@ impl Procedure for SchemaEvolutionV1Procedure {
         &mut self,
         input: String,
         mut state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         let delta: i64 = input.parse().unwrap_or(0);
         let total = state.total.saturating_add(delta);
         state.apply(EvolvingCartChangeV1::Add(delta));
@@ -349,8 +349,8 @@ impl Procedure for SchemaEvolutionV1Procedure {
 }
 
 #[derive(Default)]
-struct SchemaEvolutionV2Procedure;
-impl Procedure for SchemaEvolutionV2Procedure {
+struct SchemaEvolutionV2Tasklet;
+impl Tasklet for SchemaEvolutionV2Tasklet {
     type Input = String;
     type Output = Vec<u8>;
     type State = EvolvingCartV2;
@@ -402,8 +402,8 @@ impl Procedure for SchemaEvolutionV2Procedure {
         &mut self,
         input: String,
         mut state: StateHandle<'_, Self>,
-        ctx: &mut ProcedureCtx<'_>,
-    ) -> Result<(), ProcedureError> {
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
         let delta: i64 = input.parse().unwrap_or(0);
         let total = state.total.saturating_add(delta);
         let currency = if state.currency.is_empty() {
@@ -426,7 +426,7 @@ impl StreamOperative for SchemaEvolutionV1Operative {
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
-            .into::<SchemaEvolutionV1Procedure>()
+            .into::<SchemaEvolutionV1Tasklet>()
             .sink_named("total");
     }
 }
@@ -438,7 +438,7 @@ impl StreamOperative for SchemaEvolutionV2Operative {
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
-            .into::<SchemaEvolutionV2Procedure>()
+            .into::<SchemaEvolutionV2Tasklet>()
             .sink_named("total");
     }
 }

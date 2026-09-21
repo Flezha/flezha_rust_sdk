@@ -18,7 +18,7 @@
 //!   at startup, so a refused one kills the process with the refusal's own
 //!   name in its output.
 //!
-//! The palette procedures below exist only for this run. They are not in the
+//! The palette tasklets below exist only for this run. They are not in the
 //! app's declared fixture set: nothing registers them but a row that names
 //! them.
 //!
@@ -41,7 +41,7 @@ use flezha_runner::channel::{
 };
 use flezha_runner::operative::builder::{build_topology_for, DEFAULT_MAILBOX_CAPACITY};
 use flezha_runner::operative::topology::OperativeTopology;
-use flezha_runner::procedure::LogicalClock;
+use flezha_runner::tasklet::LogicalClock;
 use flezha_runner::workflow::spec::build_spec;
 use flezha_runner::{Flezha, FlezhaRunner};
 use serde_json::{json, Value};
@@ -118,12 +118,12 @@ fn split_call(text: &str) -> (&str, &str) {
 }
 
 // ---------------------------------------------------------------------------
-// The palette. One fixture procedure per role the fixture header names; the
+// The palette. One fixture tasklet per role the fixture header names; the
 // facts a role declares are the facts a rule reads.
 
 thread_local! {
     /// The mailbox capacity a row declared per role, read by the palette's
-    /// `mailbox_capacity()` as the procedure is minted.
+    /// `mailbox_capacity()` as the tasklet is minted.
     static MAILBOX: RefCell<HashMap<String, usize>> = RefCell::new(HashMap::new());
 }
 
@@ -136,13 +136,13 @@ fn mailbox_of(role: &str) -> usize {
     })
 }
 
-/// One palette procedure: `String → String`, with the role's own facts.
-macro_rules! palette_procedure {
+/// One palette tasklet: `String → String`, with the role's own facts.
+macro_rules! palette_tasklet {
     ($ty:ident, $role:literal, $name:literal, { $($facts:tt)* }) => {
         #[derive(Default)]
         pub(crate) struct $ty;
 
-        impl Procedure for $ty {
+        impl Tasklet for $ty {
             type Input = String;
             type Output = String;
             type State = ();
@@ -154,7 +154,7 @@ macro_rules! palette_procedure {
             }
 
             // A row declares the capacity on the role; the resolver reads it
-            // here, which is the only place a Rust procedure can carry one.
+            // here, which is the only place a Rust tasklet can carry one.
             const MAILBOX_CAPACITY_OVERRIDDEN: bool = true;
 
             fn mailbox_capacity() -> usize {
@@ -167,62 +167,62 @@ macro_rules! palette_procedure {
                 &mut self,
                 _input: String,
                 _state: StateHandle<'_, Self>,
-                _ctx: &mut ProcedureCtx<'_>,
-            ) -> Result<(), ProcedureError> {
+                _ctx: &mut TaskletCtx<'_>,
+            ) -> Result<(), TaskletError> {
                 Ok(())
             }
         }
     };
 }
 
-palette_procedure!(Plain, "plain", "plain", {
+palette_tasklet!(Plain, "plain", "plain", {
     type Change = NoChange;
     type Clock = WallClock;
 });
 
-palette_procedure!(Second, "second", "second", {
+palette_tasklet!(Second, "second", "second", {
     type Change = NoChange;
     type Clock = WallClock;
 });
 
 // A distinct class declaring the SAME name as `plain`: that IS the collision.
-palette_procedure!(Twin, "twin", "plain", {
+palette_tasklet!(Twin, "twin", "plain", {
     type Change = NoChange;
     type Clock = WallClock;
 });
 
-palette_procedure!(StaticKeys, "static", "static", {
+palette_tasklet!(StaticKeys, "static", "static", {
     type Change = NoChange;
     type Clock = WallClock;
 
-    fn entity_keys() -> Vec<&'static str> {
+    fn cell_keys() -> Vec<&'static str> {
         vec!["a", "b"]
     }
 });
 
-palette_procedure!(Routed, "routed", "routed", {
+palette_tasklet!(Routed, "routed", "routed", {
     type Change = NoChange;
     type Clock = WallClock;
 
-    fn entity_keys() -> Vec<&'static str> {
+    fn cell_keys() -> Vec<&'static str> {
         vec!["a", "b"]
     }
 
-    const ENTITIES_FOR_OVERRIDDEN: bool = true;
+    const CELLS_FOR_OVERRIDDEN: bool = true;
 
-    fn entities_for(_input: &String) -> Vec<&'static str> {
+    fn cells_for(_input: &String) -> Vec<&'static str> {
         vec!["a"]
     }
 });
 
-// Dynamic mode is read off the WIRING in this SDK — a procedure reached by a
+// Dynamic mode is read off the WIRING in this SDK — a tasklet reached by a
 // keyed chain is dynamic — so the role's own declaration is a plain one.
-palette_procedure!(Dynamic, "dynamic", "dynamic", {
+palette_tasklet!(Dynamic, "dynamic", "dynamic", {
     type Change = NoChange;
     type Clock = WallClock;
 });
 
-palette_procedure!(NoChangeLogical, "nochange", "nochange", {
+palette_tasklet!(NoChangeLogical, "nochange", "nochange", {
     type Change = NoChange;
     type Clock = LogicalClock;
 });
@@ -235,7 +235,7 @@ impl TimeExtractor<String> for FirstByte {
     }
 }
 
-palette_procedure!(EventTime, "eventtime", "eventtime", {
+palette_tasklet!(EventTime, "eventtime", "eventtime", {
     type Change = NoChange;
     type Clock = EventTimeFrom<FirstByte>;
 });
@@ -295,7 +295,7 @@ fn load(row: &Row) {
     });
 }
 
-/// The capacities a row declares, read BEFORE the steps run: a procedure is
+/// The capacities a row declares, read BEFORE the steps run: a tasklet is
 /// minted by the `into` that first names it, and its capacity is read then —
 /// which is one step earlier than the `mailbox` step that declares it.
 fn mailbox_steps(steps: &str) -> HashMap<String, usize> {
@@ -321,7 +321,7 @@ fn leak(text: &str) -> &'static str {
 // ---------------------------------------------------------------------------
 // The interpreter.
 
-/// A channel the steps address: an entry channel by name, or a procedure's
+/// A channel the steps address: an entry channel by name, or a tasklet's
 /// output channel by the role that produces it. The two are different types —
 /// which is what puts the producer-side links out of an entry channel's reach.
 #[derive(Clone, Copy)]
@@ -411,7 +411,7 @@ impl<'b> Interp<'b> {
     }
 
     /// The links both handle kinds carry. `false` selects the producer-side
-    /// set, which only a procedure's output channel has.
+    /// set, which only a tasklet's output channel has.
     fn terminate<K: StreamTarget>(&mut self, s: Stream<'b, String, K>, link: &str) -> bool {
         let (verb, arg) = split_call(link);
         match verb {
@@ -425,14 +425,14 @@ impl<'b> Interp<'b> {
             "on_full" => {
                 s.on_full(overflow(arg));
             }
-            // Read by `mailbox_capacity()` as the procedure was minted.
+            // Read by `mailbox_capacity()` as the tasklet was minted.
             "mailbox" => {}
             _ => return false,
         }
         true
     }
 
-    /// `merge(<proc>, <x>, <x>…)` — one merge over the listed sources.
+    /// `merge(<task>, <x>, <x>…)` — one merge over the listed sources.
     fn merge(&mut self, arg: &str) {
         let parts: Vec<&str> = arg.split(',').map(str::trim).collect();
         let (role, sources) = parts.split_first().expect("a merge names its consumer");
@@ -510,7 +510,7 @@ fn reshape<'b, K: StreamTarget>(
     s
 }
 
-/// The producer-side links, which only a procedure's output channel carries.
+/// The producer-side links, which only a tasklet's output channel carries.
 fn producer_link(s: Stream<'_, String, NodeTarget>, link: &str) {
     let (verb, arg) = split_call(link);
     match verb {
@@ -522,7 +522,7 @@ fn producer_link(s: Stream<'_, String, NodeTarget>, link: &str) {
     };
 }
 
-/// `<x>.into(<role>)` — the palette role bound to its fixture procedure. The
+/// `<x>.into(<role>)` — the palette role bound to its fixture tasklet. The
 /// consumer is a type argument here, so the binding is a match and not a table.
 fn wire<'b, K: StreamTarget>(s: Stream<'b, String, K>, role: &str) -> Stream<'b, String> {
     match role {
@@ -727,7 +727,7 @@ fn derived(topology: &OperativeTopology) -> Value {
 fn kind_name(channel: &ChannelDescriptor) -> &'static str {
     match channel.kind {
         ChannelKind::Entry => "entry",
-        ChannelKind::InterProcedure => "inter_proc",
+        ChannelKind::InterTasklet => "inter_task",
         ChannelKind::PluginBound => "plugin",
     }
 }

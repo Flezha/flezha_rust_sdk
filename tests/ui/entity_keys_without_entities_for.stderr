@@ -1,5 +1,0 @@
-error: #[flezha::procedure] static entity requires both `keys = [..]` and `entities_for = fn`
- --> tests/ui/entity_keys_without_entities_for.rs:2:1
-  |
-2 | fn f(a: String) -> Vec<u8> {
-  | ^^

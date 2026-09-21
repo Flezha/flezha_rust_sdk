@@ -1,0 +1,5 @@
+error: #[flezha::tasklet] `key` conflicts with a `&mut TaskletCtx` parameter; the body keys its own emits with `ctx.emit_keyed(..)`
+ --> tests/ui/tasklet_ctx_with_key.rs:9:1
+  |
+9 | fn p(_input: u64, ctx: &mut flezha_runner::TaskletCtx) -> Result<(), flezha_runner::TaskletError> {
+  | ^^

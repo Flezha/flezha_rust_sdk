@@ -1,5 +1,5 @@
 //! The entry edge under load: what the wire reader does when the first
-//! Entity's mailbox is full, and what the runner reports while it waits.
+//! Cell's mailbox is full, and what the runner reports while it waits.
 
 mod common;
 use common::prelude::*;
@@ -7,19 +7,19 @@ use common::prelude::*;
 // ----- Wire-reader behavior at the entry edge (Section 9) -----
 
 /// The two wire-reader scenarios share `WIRE_A_DELIVERED` /
-/// `WIRE_B_DELIVERED` statics through their Procedure impls. Serialize them
+/// `WIRE_B_DELIVERED` statics through their Tasklet impls. Serialize them
 /// so cargo's per-binary parallelism doesn't cross-contaminate the
 /// counter resets.
 static WIRE_TEST_LOCK: Mutex<()> = Mutex::new(());
 static WIRE_A_DELIVERED: AtomicUsize = AtomicUsize::new(0);
 static WIRE_B_DELIVERED: AtomicUsize = AtomicUsize::new(0);
 
-test_procedure!(WireSlowAProcedure, "wire_slow_a_procedure", Vec<u8> => (), (), cap 2, |_input, _state, _ctx| {
+test_tasklet!(WireSlowATasklet, "wire_slow_a_tasklet", Vec<u8> => (), (), cap 2, |_input, _state, _ctx| {
     WIRE_A_DELIVERED.fetch_add(1, Ordering::Relaxed);
     Ok(())
 });
 
-test_procedure!(WireFastBProcedure, "wire_fast_b_procedure", Vec<u8> => (), (), |_input, _state, _ctx| {
+test_tasklet!(WireFastBTasklet, "wire_fast_b_tasklet", Vec<u8> => (), (), |_input, _state, _ctx| {
     WIRE_B_DELIVERED.fetch_add(1, Ordering::Relaxed);
     Ok(())
 });
@@ -30,7 +30,7 @@ impl StreamOperative for WireOperativeADefault {
         "wire_operative_a_default"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<Vec<u8>>("input").into::<WireSlowAProcedure>();
+        c.input::<Vec<u8>>("input").into::<WireSlowATasklet>();
     }
 }
 
@@ -42,7 +42,7 @@ impl StreamOperative for WireOperativeABlock {
     fn channels(c: &ChannelBuilder) {
         c.input::<Vec<u8>>("input")
             .on_full(OverflowPolicy::DropNothing)
-            .into::<WireSlowAProcedure>();
+            .into::<WireSlowATasklet>();
     }
 }
 
@@ -54,7 +54,7 @@ impl StreamOperative for WireOperativeADropNewest {
     fn channels(c: &ChannelBuilder) {
         c.input::<Vec<u8>>("input")
             .on_full(OverflowPolicy::DropNewest)
-            .into::<WireSlowAProcedure>();
+            .into::<WireSlowATasklet>();
     }
 }
 
@@ -64,7 +64,7 @@ impl StreamOperative for WireOperativeB {
         "wire_operative_b"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<Vec<u8>>("input").into::<WireFastBProcedure>();
+        c.input::<Vec<u8>>("input").into::<WireFastBTasklet>();
     }
 }
 
@@ -89,7 +89,7 @@ fn declared_drop_newest_entry_does_not_stall_sibling_operatives() {
 
     // Saturate A's mailbox; pre-acquire inflight so A's drain does not
     // make room for new frames during the test.
-    let slot_a = Arc::clone(&instance_a.entities[0][0]);
+    let slot_a = Arc::clone(&instance_a.cells[0][0]);
     assert!(slot_a.mailbox.claim_inflight());
 
     let handle = OperativeDispatchHandle {
@@ -145,7 +145,7 @@ fn declared_entry_drop_nothing_parks_the_reader_until_the_pool_drains() {
 
 /// Shared body of the entry-edge `Block` scenarios: when StreamOperative A's
 /// entry channel saturates while A's round is queued but not yet served, the
-/// wire-reader thread parks on the push. It never runs A's procedures itself
+/// wire-reader thread parks on the push. It never runs A's tasklets itself
 /// — serving a consumer inline is a pool thread's move; a reader doing it
 /// would run one operative's work while every sibling on the connection waits
 /// — so B's frame, queued behind the parked push, waits too. Once the pool
@@ -169,9 +169,9 @@ fn entry_drop_nothing_parks_reader_until_pool_drains<A: StreamOperative>(tag: &s
 
     // A's round is marked inflight but not handed to the pool, so nothing
     // drains A until the test schedules it below.
-    let slot_a = Arc::clone(&instance_a.entities[0][0]);
+    let slot_a = Arc::clone(&instance_a.cells[0][0]);
     assert!(slot_a.mailbox.claim_inflight());
-    let blocked_before = flezha_runner::entity::pushes_blocked_total();
+    let blocked_before = flezha_runner::cell::pushes_blocked_total();
 
     let handle = OperativeDispatchHandle {
         registry: Arc::clone(&registry),
@@ -223,7 +223,7 @@ fn entry_drop_nothing_parks_reader_until_pool_drains<A: StreamOperative>(tag: &s
     // block count — byte for byte the picture a wedged runner shows, which is
     // the distinction the controller's stall classifier hangs off. The park is
     // bounded at 50 ms, so 300 ms of blocking is several iterations.
-    let climbed = flezha_runner::entity::pushes_blocked_total() - blocked_before;
+    let climbed = flezha_runner::cell::pushes_blocked_total() - blocked_before;
     assert!(
         climbed > 1,
         "a sustained block episode must keep the counter moving; it advanced {climbed}"

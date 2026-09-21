@@ -1,12 +1,12 @@
 //! Producer-first fluent graph builder.
 //!
 //! `c.input::<T>("name").into::<A>().into::<B>().sink_named("plugin")` — `.into`
-//! wires a consumer and returns that procedure's **output stream handle**
+//! wires a consumer and returns that tasklet's **output stream handle**
 //! ([`Stream`]), so a linear pipeline is one chained expression. Branching is
 //! handle reuse or the equivalent [`Stream::branch`] sugar; fan-in is two
 //! streams naming the same consumer node.
 //!
-//! What the types enforce: `.into::<S>()` requires `S: Procedure<Input = T>`,
+//! What the types enforce: `.into::<S>()` requires `S: Tasklet<Input = T>`,
 //! so a mismatched consumer fires at the call site; channel payload types come
 //! from the producer's declared `Output`, never a user-supplied token;
 //! `.sealed()` returns a finalized [`Channel`] with no further builder methods;
@@ -29,9 +29,9 @@ pub use issue::TopologyIssue;
 pub use merge::{Merge, MergeSource};
 use serde::de::DeserializeOwned;
 pub use state::{
-    BuildEntityArgs, DeserializeStateFn, EntitiesForFn, EntityBuilder, ErasedFn, SerializeStateFn,
+    BuildCellArgs, CellBuilder, CellsForFn, DeserializeStateFn, ErasedFn, SerializeStateFn,
 };
-pub(crate) use state::{BuilderState, ChannelEntry, ProcedureEntry};
+pub(crate) use state::{BuilderState, ChannelEntry, TaskletEntry};
 pub use stream::{EntryStream, EntryTarget, NodeTarget, Stream, StreamTarget};
 
 use crate::channel::ChannelKind;
@@ -48,8 +48,8 @@ impl ChannelBuilder {
         Self {
             state: RefCell::new(BuilderState {
                 channels: Vec::new(),
-                procedures: Vec::new(),
-                procedure_name_to_id: HashMap::new(),
+                tasklets: Vec::new(),
+                tasklet_name_to_id: HashMap::new(),
                 pending: Vec::new(),
                 merge_groups: 0,
                 effectively_once: false,
@@ -69,17 +69,17 @@ impl ChannelBuilder {
         self.state.into_inner()
     }
 
-    /// Whether any procedure was declared (a workflow without one is
+    /// Whether any tasklet was declared (a workflow without one is
     /// refused).
-    pub(crate) fn has_procedures(&self) -> bool {
-        !self.state.borrow().procedures.is_empty()
+    pub(crate) fn has_tasklets(&self) -> bool {
+        !self.state.borrow().tasklets.is_empty()
     }
 
     /// Opt this operative into late-input correction over the given window.
     ///
-    /// An input whose extracted event time is behind its Entity's high-water
+    /// An input whose extracted event time is behind its Cell's high-water
     /// by no more than `window_ms` is not processed as an arrival. The engine
-    /// rewinds the Entity to a baseline preceding that event time, replays
+    /// rewinds the Cell to a baseline preceding that event time, replays
     /// the retained input slice in event-time order under a bumped epoch, and
     /// keyed changelog sinks overwrite the stale rows by natural key.
     ///
@@ -132,7 +132,7 @@ impl ChannelBuilder {
     }
 
     /// Advance the durable consumed-offset only at an explicit
-    /// [`ProcedureCtx::checkpoint`], instead of once per input.
+    /// [`TaskletCtx::checkpoint`], instead of once per input.
     ///
     /// For an operative that folds many inputs into one state push — a window
     /// that only closes on its boundary — the per-input default is not merely
@@ -153,19 +153,19 @@ impl ChannelBuilder {
     /// checkpointing moves the *acknowledgement*, not the output. To hold them
     /// for the interval too, see [`outputs_at_checkpoint`].
     ///
-    /// [`ProcedureCtx::checkpoint`]: crate::procedure::ProcedureCtx::checkpoint
+    /// [`TaskletCtx::checkpoint`]: crate::tasklet::TaskletCtx::checkpoint
     /// [`outputs_at_checkpoint`]: ChannelBuilder::outputs_at_checkpoint
     pub fn checkpoint_ack(&self) {
         self.state.borrow_mut().checkpoint_ack = true;
     }
 
     /// Close the checkpoint interval once `inputs` inputs have folded into it,
-    /// instead of waiting for an explicit [`ProcedureCtx::checkpoint`].
+    /// instead of waiting for an explicit [`TaskletCtx::checkpoint`].
     ///
     /// An explicit checkpoint still closes the interval early; this is the
     /// ceiling, not the only closer. Implies `checkpoint_ack()`.
     ///
-    /// [`ProcedureCtx::checkpoint`]: crate::procedure::ProcedureCtx::checkpoint
+    /// [`TaskletCtx::checkpoint`]: crate::tasklet::TaskletCtx::checkpoint
     pub fn checkpoint_every(&self, inputs: u32) {
         self.state.borrow_mut().checkpoint_every = Some(inputs);
     }
@@ -178,7 +178,7 @@ impl ChannelBuilder {
     /// The trade is output latency: an emit is not visible downstream until
     /// its interval closes. `max_delay_ms` bounds that — the interval closes
     /// that long after the input that opened it even if nothing else arrives,
-    /// so a quiet Entity never holds an output indefinitely. It is a parameter
+    /// so a quiet Cell never holds an output indefinitely. It is a parameter
     /// rather than an option because an unbounded hold is not a posture anyone
     /// should be able to declare by omission.
     ///
@@ -228,54 +228,54 @@ impl ChannelBuilder {
         self.entry_channel(name, wrap, true)
     }
 
-    /// Open a **merged** subscription: one procedure fed by two or more source
+    /// Open a **merged** subscription: one tasklet fed by two or more source
     /// channels, each supplying a mapping from its payload into the
-    /// procedure's `Input` sum type (`multi-input-procedures`).
+    /// tasklet's `Input` sum type (`multi-input-tasklets`).
     ///
     /// ```ignore
     /// c.merge::<SignalInput>()
     ///     .from(ticker, SignalInput::Ticker)
     ///     .from(config, SignalInput::Config)
-    ///     .into::<DetectorProcedure>();
+    ///     .into::<DetectorTasklet>();
     /// ```
     ///
-    /// Sources may be entry streams (sealed payloads) or another procedure's
+    /// Sources may be entry streams (sealed payloads) or another tasklet's
     /// output stream, freely mixed — on an **stream** operative. A workflow
     /// operative is seeded from its spawn args through one entry channel and
     /// nothing on that path says which channel a payload arrived on, so a
     /// workflow merge over an entry channel is refused at registration
     /// (`BuildWorkflowError::MergeFromEntryChannel`); its sources are the
-    /// output streams of two or more of its procedures.
+    /// output streams of two or more of its tasklets.
     ///
-    /// `entities_for` and the merge's own `key_by` are evaluated on the
-    /// **mapped** value, so per-source entity mode is encoded in the sum type.
+    /// `cells_for` and the merge's own `key_by` are evaluated on the
+    /// **mapped** value, so per-source cell mode is encoded in the sum type.
     /// A source handle may carry its own transforms, which run before that
     /// source's mapping; keying is declared once, on the merge. Per-source FIFO
     /// order is preserved; nothing is guaranteed across sources — correlate in
-    /// the procedure's own state.
+    /// the tasklet's own state.
     ///
     /// The mappings MUST be pure: they run on live delivery and again on WAL
     /// replay, and a replay that disagreed with the live run would restore a
     /// state the live run never had. They must also be total — a mapping
     /// returns `I`, not `Result<I, _>`, so unlike an entry parser it has no
     /// error to hand the channel's retry→DLQ ladder. Do the fallible work in
-    /// the procedure, on the sum type.
+    /// the tasklet, on the sum type.
     ///
     /// A panicking mapping is contained everywhere it can be: on an
-    /// inter-procedure source it is caught as the producing procedure's panic
+    /// inter-tasklet source it is caught as the producing tasklet's panic
     /// (stream) or turned into a terminal chain error the saga compensates
     /// (workflow). The one unguarded seam is a stream entry-channel source,
     /// where the mapping runs on the wire-reader path — the same exposure the
-    /// entry parser there already carries. `docs/sdk/multi_input_procedures.md`
+    /// entry parser there already carries. `docs/sdk/multi_input_tasklets.md`
     /// tabulates it.
     ///
     /// A source's payload must be [`Clone`]: the mapping is handed the
     /// channel's value by reference and clones it, where a plain `.into`
     /// forwards the existing `Arc`.
     ///
-    /// `Procedure::Input == I` is enforced at the `.into::<Proc>()` call site by
+    /// `Tasklet::Input == I` is enforced at the `.into::<Task>()` call site by
     /// the compiler. Fewer than two sources, the same channel twice, or a
-    /// source whose edge into this procedure is already wired all fail at
+    /// source whose edge into this tasklet is already wired all fail at
     /// registration ([`TopologyIssue::MergeTooFewSources`] /
     /// [`TopologyIssue::DuplicateMergeSource`] /
     /// [`TopologyIssue::EdgeAlreadyWired`]).

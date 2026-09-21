@@ -8,11 +8,11 @@ pub(crate) use std::sync::atomic::{AtomicUsize, Ordering};
 pub(crate) use std::time::Duration;
 pub(crate) use std::{env, io, thread};
 
-pub(crate) use flezha_runner::procedure::{
-    EventTimeFrom, Procedure, ProcedureCtx, ProcedureError, TimeExtractor,
-};
 pub(crate) use flezha_runner::state::{
     postcard, Change, CoalesceKey, NoChange, RestoreInitPayload, StateHandle, WallClock,
+};
+pub(crate) use flezha_runner::tasklet::{
+    EventTimeFrom, Tasklet, TaskletCtx, TaskletError, TimeExtractor,
 };
 pub(crate) use flezha_runner::{
     ChannelBuilder, Flezha, FlezhaRunner, LoopMode, OverflowPolicy, StreamOperative,
@@ -20,17 +20,17 @@ pub(crate) use flezha_runner::{
 };
 pub(crate) use serde::{Deserialize, Serialize};
 
+mod cell;
 mod channel;
 mod conformance;
-mod entity;
 mod probe;
 mod state;
 mod sugar;
 mod workflow;
 mod workflow_loop;
 
+use crate::cell::*;
 use crate::channel::*;
-use crate::entity::*;
 use crate::probe::*;
 use crate::state::*;
 use crate::sugar::*;
@@ -74,8 +74,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register_factory(DoNothingOperative)?
         .register_factory(StoreInputOperative)?
         .register_factory(CompareFilterOperative)?
-        .register_factory(StaticEntityOperative)?
-        .register_factory(EntityStressOperative)?
+        .register_factory(StaticCellOperative)?
+        .register_factory(CellStressOperative)?
         .register_factory(BoundedMailboxDropNothingOperative)?
         .register_factory(BoundedMailboxDropNewestOperative)?
         .register_factory(BoundedMailboxDropOldestOperative)?
@@ -88,7 +88,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register_factory(ResumeProbeOperative)?
         .register_factory(SchemaEvolutionV1Operative)?
         .register_factory(SchemaEvolutionV2Operative)?
-        .register_factory(DynamicEntityOperative)?
+        .register_factory(DynamicCellOperative)?
         .register_factory(PartitionRelayOperative)?
         .register_factory(SessionTimeoutOperative)?
         .register_factory(MixedOperative)?
@@ -106,7 +106,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register_factory(SugarDoNothing)?
         .register_factory(SugarStoreInput)?
         .register_factory(SugarNamedInput)?
-        .register_factory(SugarStaticEntity)?
+        .register_factory(SugarStaticCell)?
         .register_factory(SugarWorkflow)?
         .register_factory(SugarStateOnly)?
         .register_factory(EchoWorkflow)?

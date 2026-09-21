@@ -9,15 +9,15 @@ use std::sync::Arc;
 use flz_core::host::HostLink;
 
 use crate::channel::{
-    ChannelId, ChannelKind, EdgeKeyFn, EdgeTransformFn, EdgeYield, OverflowPolicy, ProcedureId,
+    ChannelId, ChannelKind, EdgeKeyFn, EdgeTransformFn, EdgeYield, OverflowPolicy, TaskletId,
 };
-use crate::procedure::Procedure;
+use crate::tasklet::Tasklet;
 
-/// Type-erased dispatcher factory for one Procedure. Stored on
-/// `BuilderState::procedures` and consumed by `build_topology` to produce
-/// per-entity slots in each `StreamInstance`.
-pub(crate) struct ProcedureEntry {
-    /// Node identity: the procedure's `name()`, or the explicit node name
+/// Type-erased dispatcher factory for one Tasklet. Stored on
+/// `BuilderState::tasklets` and consumed by `build_topology` to produce
+/// per-cell slots in each `StreamInstance`.
+pub(crate) struct TaskletEntry {
+    /// Node identity: the tasklet's `name()`, or the explicit node name
     /// given at wiring time (`into_named`). Feeds everything `name()` feeds —
     /// state directories, journal entries, the derived channel name,
     /// diagnostics.
@@ -27,11 +27,11 @@ pub(crate) struct ProcedureEntry {
     pub class_id: TypeId,
     /// Whether this node was created with an explicit node name.
     pub named: bool,
-    pub entity_keys: Vec<&'static str>,
-    pub entities_for_overridden: bool,
-    /// `Procedure::COMPENSATE_OVERRIDDEN` captured at registration time. The
+    pub cell_keys: Vec<&'static str>,
+    pub cells_for_overridden: bool,
+    /// `Tasklet::COMPENSATE_OVERRIDDEN` captured at registration time. The
     /// workflow driver consults the resolved descriptor flag to fire saga
-    /// compensation only for procedures that declared a `compensate` hook.
+    /// compensation only for tasklets that declared a `compensate` hook.
     pub compensate_overridden: bool,
     /// Channels this node consumes. Several = a fan-in, or a merge whose
     /// edges each map into this node's `Input`: either way the node receives
@@ -44,58 +44,58 @@ pub(crate) struct ProcedureEntry {
     /// Erased output-type marker: matches the producer-edge's payload type.
     pub output_type_id: std::any::TypeId,
 
-    /// `Procedure::Clock::type_name()` captured at registration time, plus
-    /// whether the Procedure's `Change` is `NoChange`. `build_topology`
+    /// `Tasklet::Clock::type_name()` captured at registration time, plus
+    /// whether the Tasklet's `Change` is `NoChange`. `build_topology`
     /// refuses clock configurations the runtime cannot serve (a
     /// `LogicalClock` without persistent changes never advances).
     pub clock_type_name: &'static str,
-    /// `Clock::IS_EVENT_TIME` — whether this procedure's clock yields a time
+    /// `Clock::IS_EVENT_TIME` — whether this tasklet's clock yields a time
     /// carried by the input rather than one read off the wall or the WAL.
     /// Late-input correction is only definable against such a clock.
     pub clock_is_event_time: bool,
     pub change_is_nochange: bool,
 
-    /// `Procedure::mailbox_capacity()` captured at registration time. The
+    /// `Tasklet::mailbox_capacity()` captured at registration time. The
     /// resolved value (after applying env-var precedence in `build_topology`)
-    /// is the size of every Entity mailbox built for this Procedure.
+    /// is the size of every Cell mailbox built for this Tasklet.
     pub mailbox_capacity: usize,
 
-    /// `Procedure::MAILBOX_CAPACITY_OVERRIDDEN` captured at registration time.
+    /// `Tasklet::MAILBOX_CAPACITY_OVERRIDDEN` captured at registration time.
     /// Drives the precedence rule in `resolve_mailbox_capacity`.
     pub mailbox_capacity_overridden: bool,
 
-    /// `Procedure::compact_after_bytes()` captured at registration time. The
-    /// controller resolves the per-Entity WAL size compaction trigger from it,
+    /// `Tasklet::compact_after_bytes()` captured at registration time. The
+    /// controller resolves the per-Cell WAL size compaction trigger from it,
     /// shipped in the `AddOperative` response metadata.
     pub compact_after_bytes: usize,
 
-    /// Build a per-entity slot. The closure captures the Procedure type
-    /// statically so the entity mailbox carries `Arc<S::Input>` items
-    /// and `Procedure::run` is called with the typed signature.
-    pub build_entity: EntityBuilder,
+    /// Build a per-cell slot. The closure captures the Tasklet type
+    /// statically so the cell mailbox carries `Arc<S::Input>` items
+    /// and `Tasklet::run` is called with the typed signature.
+    pub build_cell: CellBuilder,
 
-    /// Entity routing for inputs targeting this Procedure. Returns the
-    /// entity keys. Single-mode procedures return an empty vec; the runtime
-    /// then routes everything to entity index 0.
-    pub entities_for_erased: EntitiesForFn,
+    /// Cell routing for inputs targeting this Tasklet. Returns the
+    /// cell keys. Single-mode tasklets return an empty vec; the runtime
+    /// then routes everything to cell index 0.
+    pub cells_for_erased: CellsForFn,
 
-    /// Dynamic-mode knobs captured at registration (`Procedure::entity_idle_ttl`,
-    /// `max_entities`). Carried through to the `ProcedureDescriptor` for the
-    /// reaper / registry; inert for non-dynamic Procedures. `idle_ttl == None`
+    /// Dynamic-mode knobs captured at registration (`Tasklet::cell_idle_ttl`,
+    /// `max_cells`). Carried through to the `TaskletDescriptor` for the
+    /// reaper / registry; inert for non-dynamic Tasklets. `idle_ttl == None`
     /// means no eviction.
     pub idle_ttl: Option<std::time::Duration>,
-    pub max_entities: usize,
+    pub max_cells: usize,
 
-    /// Serialize an Entity's typed state to JSON. Captures S statically
+    /// Serialize a Cell's typed state to JSON. Captures S statically
     /// so the closure downcasts the type-erased `Box<dyn Any + Send>`
-    /// stored in `EntitySlot::state` and produces a `serde_json::Value`
+    /// stored in `CellSlot::state` and produces a `serde_json::Value`
     /// via the `S::State: Serialize` bound on the trait.
     pub serialize_state: SerializeStateFn,
 
-    /// Deserialize a per-Procedure JSON value into a fresh State and wrap
-    /// it as the typed-erased payload `EntitySlot::state` expects
-    /// (a `Box<EntityState<S>>`). Captures S statically; constructs
-    /// a fresh `S` via `Default` since the user's `Procedure` is stateless.
+    /// Deserialize a per-Tasklet JSON value into a fresh State and wrap
+    /// it as the typed-erased payload `CellSlot::state` expects
+    /// (a `Box<CellState<S>>`). Captures S statically; constructs
+    /// a fresh `S` via `Default` since the user's `Tasklet` is stateless.
     pub deserialize_state: DeserializeStateFn,
 
     /// The journal codec of everything this node releases, derived from
@@ -109,7 +109,7 @@ pub(crate) struct ProcedureEntry {
 /// `EdgeTransformFn`, `EdgeKeyFn` and `PluginSerializeFn` are this same shape
 /// spelled out.
 pub use flz_core::channel::{
-    BuildEntityArgs, DeserializeStateFn, EntitiesForFn, EntityBuilder, ErasedFn, SerializeStateFn,
+    BuildCellArgs, CellBuilder, CellsForFn, DeserializeStateFn, ErasedFn, SerializeStateFn,
 };
 
 /// Plugin sink attached to a channel via `sink(...)` / `sink_with(...)` — the
@@ -125,7 +125,7 @@ pub(crate) struct PluginSink {
 pub(crate) struct ChannelEntry {
     pub name: &'static str,
     pub kind: ChannelKind,
-    pub producer: Option<ProcedureId>,
+    pub producer: Option<TaskletId>,
     pub wrap_input: Option<crate::channel::EntryWrapFn>,
     /// Entry channels whose `wrap_input` is a real parser (typed JSON or a
     /// custom `input_with` parser). A failing parse rides the channel's
@@ -148,10 +148,10 @@ pub(crate) struct ChannelEntry {
     /// Retry-then-park policy for this channel's consumer dispatchers.
     /// `.retry_max(...)` / `.retry_backoff_ms(...)` overwrite the defaults.
     pub retry: crate::channel::RetryPolicy,
-    /// Inter-proc byte codec, derived from the producing procedure's `Output`
+    /// Inter-task byte codec, derived from the producing tasklet's `Output`
     /// type when the channel is created. `None` only on a channel with no
-    /// producer (an entry channel); a durable structured workflow's proc
-    /// journal reads it at every barrier (`workflow-proc-journal`).
+    /// producer (an entry channel); a durable structured workflow's task
+    /// journal reads it at every barrier (`workflow-task-journal`).
     pub codec: Option<crate::channel::ChannelCodec>,
     /// The authoring record: one entry per fluent sequence declared off this
     /// channel's handle, in the order the author closed them. The consumers,
@@ -191,8 +191,8 @@ pub(crate) struct PendingEdge {
 /// `Copy` stream handles can share it.
 pub(crate) struct BuilderState {
     pub channels: Vec<ChannelEntry>,
-    pub procedures: Vec<ProcedureEntry>,
-    pub procedure_name_to_id: HashMap<&'static str, u32>,
+    pub tasklets: Vec<TaskletEntry>,
+    pub tasklet_name_to_id: HashMap<&'static str, u32>,
     /// Transform/key chains under construction, indexed by the id the stream
     /// handles carry. A chain neither superseded nor consumed is dangling.
     pub pending: Vec<PendingEdge>,
@@ -234,23 +234,23 @@ impl BuilderState {
     /// creates/refers to a distinct node whose identity string replaces
     /// `S::name()`. An identity claimed by a *different* declaration is a
     /// collision.
-    pub(super) fn resolve_node<S: Procedure>(&mut self, node_name: Option<&'static str>) -> u32 {
+    pub(super) fn resolve_node<S: Tasklet>(&mut self, node_name: Option<&'static str>) -> u32 {
         let identity = node_name.unwrap_or_else(S::name);
         let named = node_name.is_some();
-        if let Some(&id) = self.procedure_name_to_id.get(identity) {
-            let existing = &self.procedures[id as usize];
+        if let Some(&id) = self.tasklet_name_to_id.get(identity) {
+            let existing = &self.tasklets[id as usize];
             if existing.class_id == TypeId::of::<S>() && existing.named == named {
                 return id;
             }
             // Two distinct nodes claiming one identity: the record carries both
             // under that name, which is what the collision IS.
-            let id = self.procedures.len() as u32;
-            self.procedures.push(procedure_entry::<S>(identity, named));
+            let id = self.tasklets.len() as u32;
+            self.tasklets.push(tasklet_entry::<S>(identity, named));
             return id;
         }
-        let id = self.procedures.len() as u32;
-        self.procedures.push(procedure_entry::<S>(identity, named));
-        self.procedure_name_to_id.insert(identity, id);
+        let id = self.tasklets.len() as u32;
+        self.tasklets.push(tasklet_entry::<S>(identity, named));
+        self.tasklet_name_to_id.insert(identity, id);
         id
     }
 
@@ -258,23 +258,23 @@ impl BuilderState {
     /// never carries a phantom channel. Named by the node's identity until a
     /// `.named(...)` override.
     pub(super) fn ensure_output_channel(&mut self, node: u32) -> u32 {
-        if let Some(id) = self.procedures[node as usize].output_channel_id {
+        if let Some(id) = self.tasklets[node as usize].output_channel_id {
             return id;
         }
-        let name = self.procedures[node as usize].name;
-        let codec = self.procedures[node as usize].output_codec.clone();
-        let id = self.push_channel(name, ChannelKind::InterProcedure);
+        let name = self.tasklets[node as usize].name;
+        let codec = self.tasklets[node as usize].output_codec.clone();
+        let id = self.push_channel(name, ChannelKind::InterTasklet);
         self.channels[id as usize].producer = Some(node);
         // Derived, never declared: a produced channel carries its codec from
         // the moment it exists, so the handoff is journalable by construction.
         self.channels[id as usize].codec = Some(codec);
-        self.procedures[node as usize].output_channel_id = Some(id);
+        self.tasklets[node as usize].output_channel_id = Some(id);
         id
     }
 
     /// Wire `channel_id` into a consumer node (created/resolved by identity),
     /// closing `pending`'s transform chain onto the resulting edge.
-    pub(super) fn wire_consumer<S: Procedure>(
+    pub(super) fn wire_consumer<S: Tasklet>(
         &mut self,
         channel_id: u32,
         pending: Option<u32>,
@@ -288,7 +288,7 @@ impl BuilderState {
     /// Record one consumer subscription on a channel, closing `pending`'s
     /// transform/key chain onto it — a `merge::<I>().from(..)` mapping is one
     /// link of that chain. `None` is the bare `.into`, where the channel's
-    /// payload already IS the consumer's `Input` and the consumer's Entity
+    /// payload already IS the consumer's `Input` and the consumer's Cell
     /// mode is its own. Closing the chain here is what makes it impossible to
     /// wire an edge and forget its closures.
     ///
@@ -304,17 +304,15 @@ impl BuilderState {
         let (mut links, transform, key) = self.close_pending(pending);
         links.push(match merge_group {
             Some(group) => HostLink::Merge {
-                procedure: consumer,
+                tasklet: consumer,
                 group,
             },
-            None => HostLink::Into {
-                procedure: consumer,
-            },
+            None => HostLink::Into { tasklet: consumer },
         });
         self.push_chain(channel_id, links, transform, key);
-        let proc = &mut self.procedures[consumer as usize];
-        if !proc.input_channel_ids.contains(&channel_id) {
-            proc.input_channel_ids.push(channel_id);
+        let task = &mut self.tasklets[consumer as usize];
+        if !task.input_channel_ids.contains(&channel_id) {
+            task.input_channel_ids.push(channel_id);
         }
     }
 
@@ -421,59 +419,57 @@ impl BuilderState {
 }
 
 /// The node record for `S` under the identity it resolved to. The only site
-/// that constructs a [`ProcedureEntry`], so every fact a node carries is read
-/// off the Procedure's declaration in one place.
-fn procedure_entry<S: Procedure>(name: &'static str, named: bool) -> ProcedureEntry {
-    let entities_for_erased: EntitiesForFn =
-        erase::<S::Input, _, _>("entities_for", S::entities_for);
+/// that constructs a [`TaskletEntry`], so every fact a node carries is read
+/// off the Tasklet's declaration in one place.
+fn tasklet_entry<S: Tasklet>(name: &'static str, named: bool) -> TaskletEntry {
+    let cells_for_erased: CellsForFn = erase::<S::Input, _, _>("cells_for", S::cells_for);
 
-    let build_entity: EntityBuilder = Box::new(
-        |args: BuildEntityArgs<'_>| -> Arc<crate::entity::EntitySlot> {
-            crate::operative::dispatcher::build_entity_slot::<S>(args)
-        },
-    );
+    let build_cell: CellBuilder =
+        Box::new(|args: BuildCellArgs<'_>| -> Arc<crate::cell::CellSlot> {
+            crate::operative::dispatcher::build_cell_slot::<S>(args)
+        });
 
     let (serialize_state, deserialize_state) = crate::operative::dispatcher::build_state_fns::<S>();
 
-    ProcedureEntry {
+    TaskletEntry {
         name,
         class_id: TypeId::of::<S>(),
         named,
-        entity_keys: S::entity_keys(),
-        entities_for_overridden: S::ENTITIES_FOR_OVERRIDDEN,
+        cell_keys: S::cell_keys(),
+        cells_for_overridden: S::CELLS_FOR_OVERRIDDEN,
         compensate_overridden: S::COMPENSATE_OVERRIDDEN,
         input_channel_ids: Vec::new(),
         output_channel_id: None,
         input_type_id: std::any::TypeId::of::<S::Input>(),
         output_type_id: std::any::TypeId::of::<S::Output>(),
-        clock_type_name: <S::Clock as crate::procedure::Clock>::type_name(),
-        clock_is_event_time: <S::Clock as crate::procedure::Clock>::IS_EVENT_TIME,
+        clock_type_name: <S::Clock as crate::tasklet::Clock>::type_name(),
+        clock_is_event_time: <S::Clock as crate::tasklet::Clock>::IS_EVENT_TIME,
         change_is_nochange: std::any::TypeId::of::<S::Change>()
-            == std::any::TypeId::of::<crate::procedure::NoChange>(),
+            == std::any::TypeId::of::<crate::tasklet::NoChange>(),
         mailbox_capacity: S::mailbox_capacity(),
         mailbox_capacity_overridden: S::MAILBOX_CAPACITY_OVERRIDDEN,
         compact_after_bytes: S::compact_after_bytes(),
-        build_entity,
-        entities_for_erased,
-        idle_ttl: S::entity_idle_ttl(),
-        max_entities: S::max_entities(),
+        build_cell,
+        cells_for_erased,
+        idle_ttl: S::cell_idle_ttl(),
+        max_cells: S::max_cells(),
         serialize_state,
         deserialize_state,
         output_codec: journal_codec::<S::Output>(),
     }
 }
 
-/// The journal codec of a typed procedure output: postcard, through the
-/// [`JournalValue`](crate::procedure::JournalValue) bound `S::Output` carries,
+/// The journal codec of a typed tasklet output: postcard, through the
+/// [`JournalValue`](crate::tasklet::JournalValue) bound `S::Output` carries,
 /// erased onto the channel the way `flz_core` derives one for an erased host's
-/// inter-proc channel.
-fn journal_codec<T: crate::procedure::JournalValue + Send + Sync + 'static>(
+/// inter-task channel.
+fn journal_codec<T: crate::tasklet::JournalValue + Send + Sync + 'static>(
 ) -> crate::channel::ChannelCodec {
     crate::channel::ChannelCodec {
         encode: Arc::new(move |val: &dyn Any| {
             val.downcast_ref::<T>()
                 .ok_or_else(|| {
-                    "inter-proc codec: type mismatch (build-time invariant)".to_string()
+                    "inter-task codec: type mismatch (build-time invariant)".to_string()
                 })?
                 .to_journal_bytes()
         }),
@@ -515,12 +511,12 @@ fn compose(
     }
 }
 
-/// Erase one author callback — `entities_for`, a `key_by`, a hybrid plugin
+/// Erase one author callback — `cells_for`, a `key_by`, a hybrid plugin
 /// serializer. The downcast is a build-time
 /// invariant (the callback is installed by the same wiring that declared the
 /// payload type), so `what` names the declaration only for the impossible
 /// case. An erasure whose downcast failure is a *reported* error rather than
-/// an impossibility — the inter-proc codec — needs a `Result` and stays
+/// an impossibility — the inter-task codec — needs a `Result` and stays
 /// hand-written.
 pub(super) fn erase<T, R, F>(what: &'static str, f: F) -> ErasedFn<R>
 where
