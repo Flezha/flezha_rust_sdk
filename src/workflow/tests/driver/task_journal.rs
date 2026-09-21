@@ -15,7 +15,7 @@ pub(super) fn durable_wal_and_journal(node: &mut RunnerNode, rx: &Receiver<Runne
     // FanWorkflow is durable-by-default; its FanTask applies a Change per item,
     // which the driver flushes as a cell_state_change frame to the sink.
     WAL_FRAMES.lock().unwrap().clear();
-    assert!(node.start_workflow("test-fan-workflow".into(), "fan-wal".into(), "a,bb".into()));
+    assert!(start_fed(node, "test-fan-workflow", "fan-wal", b"a,bb"));
     let (_o, done) = drain(rx, "fan-wal");
     assert_eq!(done.0, "ok");
     assert!(
@@ -26,10 +26,11 @@ pub(super) fn durable_wal_and_journal(node: &mut RunnerNode, rx: &Receiver<Runne
     // The opt-out twin does identical work with PERSISTENCE_ENABLED=false:
     // Changes drain-and-discard, nothing reaches the WAL.
     WAL_FRAMES.lock().unwrap().clear();
-    assert!(node.start_workflow(
-        "test-fan-optout-workflow".into(),
-        "fan-optout".into(),
-        "a,bb".into(),
+    assert!(start_fed(
+        node,
+        "test-fan-optout-workflow",
+        "fan-optout",
+        b"a,bb"
     ));
     let (_o, done) = drain(rx, "fan-optout");
     assert_eq!(done.0, "ok");
@@ -45,14 +46,17 @@ pub(super) fn durable_wal_and_journal(node: &mut RunnerNode, rx: &Receiver<Runne
     // Spawn as a "respawn" expecting one Cell restore: the driver builds
     // and registers its Cells, then parks on the resume gate — nothing
     // runs yet because no restore has landed.
-    assert!(node.start_workflow_resumable(
-        "test-fan-workflow".into(),
-        "resume-inst".into(),
-        "a,bb".into(),
-        1,
-        0,
-        None,
-    ));
+    assert!(node
+        .start_workflow_resumable(
+            "test-fan-workflow".into(),
+            "resume-inst".into(),
+            "",
+            1,
+            0,
+            None,
+        )
+        .expect("init_values is a JSON object"));
+    assert!(feed(node, "resume-inst", b"a,bb"));
     // The workflow Cells are reachable by wire identity: the stream
     // lookup only scans StreamInstance cells, so the restore handler
     // finds a workflow Cell by identity or not at all.
@@ -78,11 +82,7 @@ pub(super) fn task_journal_commits(node: &mut RunnerNode, rx: &Receiver<RunnerMe
     // task boundary — one TaskCommit per stage, gated on the (fake
     // controller's) durable ack, carrying the codec-serialized handoff ---
     let _ = drain_task_commits();
-    assert!(node.start_workflow(
-        "test-chain-workflow".into(),
-        "chain-commit".into(),
-        "x".into()
-    ));
+    assert!(start_fed(node, "test-chain-workflow", "chain-commit", b"x"));
     let (outs, done) = drain(rx, "chain-commit");
     assert_eq!(done.0, "ok");
     assert_eq!(outs, vec![b"x-1-2".to_vec()]);
@@ -124,10 +124,11 @@ pub(super) fn task_journal_commits(node: &mut RunnerNode, rx: &Receiver<RunnerMe
 
     // Opt-out twin: no journal, no handshake — zero commits, and (having
     // nothing that could ever flush a staged outbox) it still emits direct.
-    assert!(node.start_workflow(
-        "test-fan-optout-workflow".into(),
-        "optout-no-commit".into(),
-        "a".into(),
+    assert!(start_fed(
+        node,
+        "test-fan-optout-workflow",
+        "optout-no-commit",
+        b"a"
     ));
     let (outs, done) = drain(rx, "optout-no-commit");
     assert_eq!(done.0, "ok");
@@ -145,7 +146,7 @@ pub(super) fn task_journal_commits(node: &mut RunnerNode, rx: &Receiver<RunnerMe
 
 pub(super) fn transactional_outbox(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
     // --- workflow-transactional-outbox: a failed tasklet leaks nothing ---
-    assert!(node.start_workflow("test-leak-workflow".into(), "leak-1".into(), "x".into()));
+    assert!(start_fed(node, "test-leak-workflow", "leak-1", b"x"));
     let (outs, done) = drain(rx, "leak-1");
     assert_eq!(done.0, "error");
     assert!(
@@ -160,7 +161,7 @@ pub(super) fn transactional_outbox(node: &mut RunnerNode, rx: &Receiver<RunnerMe
     // --- a compensate hook's undo output
     // is staged too, and rides a `compensating` commit for the tasklet it
     // reverses (the forward output already flushed under its own key) ---
-    assert!(node.start_workflow("test-undo-saga".into(), "undo-1".into(), "u".into()));
+    assert!(start_fed(node, "test-undo-saga", "undo-1", b"u"));
     let (outs, done) = drain(rx, "undo-1");
     assert_eq!(done.0, "error");
     assert!(

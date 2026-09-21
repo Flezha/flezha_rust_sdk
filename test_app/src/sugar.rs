@@ -43,8 +43,8 @@ pub(crate) fn sugar_named_input(input: String) -> Vec<u8> {
     input.into_bytes()
 }
 
-// The workflow short form: one declaration is a whole `once` workflow, seeded
-// on `order` from its start values and completing after one run.
+// The workflow short form: one declaration is a whole `once` workflow, run on
+// its first message on `order` and completing after one run.
 #[flezha_runner::workflow_operative(
     id = "sugar_workflow",
     sink = "sugar_workflow_placed",

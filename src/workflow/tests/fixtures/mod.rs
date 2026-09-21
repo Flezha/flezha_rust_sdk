@@ -33,6 +33,7 @@ macro_rules! string_task {
     };
 }
 
+mod entrance;
 mod fan_in;
 mod lifecycle;
 mod outbox;
@@ -40,6 +41,7 @@ mod retry;
 mod saga;
 mod structured;
 
+pub(crate) use entrance::*;
 pub(crate) use fan_in::*;
 pub(crate) use lifecycle::*;
 pub(crate) use outbox::*;

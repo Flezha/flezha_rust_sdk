@@ -6,7 +6,7 @@ use flz_core::operative::topology::{CellMode, OperativeTopology};
 pub use flz_core::workflow::spec::*;
 use flz_core::workflow::LoopMode;
 
-use crate::channel::{ChannelBuilder, ChannelKind, RetryPolicy, TaskletId};
+use crate::channel::{ChannelBuilder, RetryPolicy, TaskletId};
 use crate::operative::builder::build_topology;
 use crate::workflow::WorkflowOperative;
 
@@ -56,19 +56,23 @@ pub fn build_spec<T: WorkflowOperative>() -> Result<WorkflowSpec, BuildWorkflowE
 }
 
 /// A handoff-chained loop re-seeds iteration N+1 from iteration N's terminal
-/// batch, so "the terminal tasklet" must be unambiguous — a graph with
-/// several leaves has no single terminal batch to carry forward.
+/// batch, so "the terminal tasklet" must be unambiguous in every chain the
+/// loop can enter: a chain with several leaves has no single terminal batch
+/// to carry forward.
 fn refuse_chained_loop_shape<T: WorkflowOperative>(
     factory_id: &'static str,
     dag: &TaskDag,
 ) -> Result<(), BuildWorkflowError> {
-    if T::loop_mode() == LoopMode::Chained && dag.single_leaf().is_none() {
-        return Err(BuildWorkflowError::BranchingChainedLoop {
-            factory_id,
-            leaves: dag.leaves().count(),
-        });
+    if T::loop_mode() != LoopMode::Chained {
+        return Ok(());
     }
-    Ok(())
+    match dag.branching_chain() {
+        Some(branching) => Err(BuildWorkflowError::BranchingChainedLoop {
+            factory_id,
+            leaves: branching.leaves(dag).count(),
+        }),
+        None => Ok(()),
+    }
 }
 
 /// A durable chained loop seeds iteration N+1 from iteration N's terminal
@@ -87,21 +91,13 @@ fn refuse_loop_terminal_without_handoff<T: WorkflowOperative>(
     if T::loop_mode() != LoopMode::Chained {
         return Ok(());
     }
-    let terminal = dag
-        .single_leaf()
-        .and_then(|leaf| topology.tasklet(dag.order[leaf]))
-        .expect("a chained loop has a single leaf (checked above)");
-    let carries_handoff = terminal
-        .output_channel_id
-        .and_then(|cid| topology.channel(cid))
-        .is_some_and(|ch| ch.kind == ChannelKind::InterTasklet);
-    if !carries_handoff {
-        return Err(BuildWorkflowError::LoopTerminalWithoutHandoff {
+    match dag.terminal_without_handoff(topology) {
+        Some(terminal) => Err(BuildWorkflowError::LoopTerminalWithoutHandoff {
             factory_id,
             tasklet: terminal.name.to_string(),
-        });
+        }),
+        None => Ok(()),
     }
-    Ok(())
 }
 
 /// Resolve the class's per-cell retry ladder onto the shared
@@ -125,11 +121,12 @@ fn retry_policy<T: WorkflowOperative>(
 }
 
 /// Resolve the execution DAG of a structured workflow's tasklets and refuse
-/// anything outside the shared graph-shape rule (`sdk-graph-authoring`): one
-/// entry-rooted connected acyclic graph — fan-out and fan-in both legal — with
-/// at most one output channel per tasklet, no dynamic cell mode.
+/// anything outside the shared graph-shape rule (`sdk-graph-authoring`): an
+/// entry-rooted connected acyclic graph (several entry channels, fan-out and
+/// fan-in all legal) with at most one output channel per tasklet, no dynamic
+/// cell mode.
 ///
-/// Nodes come out in **Kahn topological order** from the root, so every
+/// Nodes come out in **Kahn topological order** from the roots, so every
 /// producer's index precedes its consumers' — for a join, *all* of them. That
 /// is the invariant the completion and compensation orders rest on (BFS, the
 /// former walk, enqueued a join on its first producer and broke it).
@@ -139,12 +136,18 @@ fn build_dag(
 ) -> Result<TaskDag, BuildWorkflowError> {
     refuse_dynamic_cells(factory_id, topology)?;
     refuse_multiple_outputs(factory_id, topology)?;
-    refuse_entry_edges(factory_id, topology)?;
-    let root = resolve_root(factory_id, topology)?;
+    let entries = topology.entry_consumers();
+    if entries.is_empty() {
+        return Err(BuildWorkflowError::NoEntryChannel { factory_id });
+    }
+    let roots: Vec<TaskletId> = entries
+        .iter()
+        .flat_map(|(_, c)| c.iter().copied())
+        .collect();
 
     // Reachability is named first, so a genuinely disconnected tasklet is
     // not reported as a cycle symptom; a leftover Kahn node is on a cycle.
-    // Kahn pop-in-FIFO from the root yields exactly the former BFS numbering
+    // Kahn pop-in-FIFO from the roots yields exactly the former BFS numbering
     // for a tree, so journaled `task_idx` values keep their meaning.
     let n = topology.tasklets.len();
     let edges: Vec<_> = topology
@@ -153,7 +156,7 @@ fn build_dag(
         .filter_map(|c| c.producer.map(|p| (p, c)))
         .flat_map(|(p, c)| c.consumer_ids().map(move |id| (p, id)))
         .collect();
-    let shape = graph_order(n, &edges, &[root], GraphSeed::EveryIndegreeZero);
+    let shape = graph_order(n, &edges, &roots, GraphSeed::EveryIndegreeZero);
     if let Some(node) = shape.unreachable.filter(|_| shape.on_cycle.is_none()) {
         return Err(BuildWorkflowError::Disconnected {
             factory_id,
@@ -167,29 +170,7 @@ fn build_dag(
         });
     }
 
-    Ok(dag_of(shape, &edges))
-}
-
-/// The DAG the driver runs: the walk's order, with the adjacency re-indexed
-/// positionally so stage `i`'s parents and children are stage indices too.
-fn dag_of(shape: GraphOrder, edges: &[(TaskletId, TaskletId)]) -> TaskDag {
-    let n = shape.pos.len();
-    let mut dag = TaskDag {
-        order: shape.order,
-        parents: vec![Vec::new(); n],
-        children: vec![Vec::new(); n],
-    };
-    for &(producer, consumer) in edges {
-        dag.children[shape.pos[producer as usize]].push(shape.pos[consumer as usize]);
-        dag.parents[shape.pos[consumer as usize]].push(shape.pos[producer as usize]);
-    }
-    for children in &mut dag.children {
-        children.sort_unstable();
-    }
-    for parents in &mut dag.parents {
-        parents.sort_unstable();
-    }
-    dag
+    Ok(TaskDag::from_walk(shape, entries))
 }
 
 /// Workflow has no `dynamic_cells?` capability.
@@ -231,55 +212,4 @@ fn refuse_multiple_outputs(
         }
     }
     Ok(())
-}
-
-/// The entry channel seeds the root tasklet from the spawn args, and the
-/// seed is a bare payload that bypasses the routing seam entirely — so no edge
-/// closure declared there could ever be selected, whether it is a merge
-/// mapping (every entry channel past the first would be unreadable) or a plain
-/// transform (it would silently never run). Refuse the shape rather than
-/// accept one that cannot run.
-fn refuse_entry_edges(
-    factory_id: &'static str,
-    topology: &OperativeTopology,
-) -> Result<(), BuildWorkflowError> {
-    for channel in topology
-        .channels
-        .iter()
-        .filter(|c| c.kind == ChannelKind::Entry)
-    {
-        if let Some(edge) = channel
-            .consumers
-            .iter()
-            .find(|e| e.transform.is_some() || e.key.is_some())
-        {
-            return Err(BuildWorkflowError::MergeFromEntryChannel {
-                factory_id,
-                channel: channel.name.to_string(),
-                tasklet: topology.tasklets[edge.tasklet as usize].name.to_string(),
-            });
-        }
-    }
-    Ok(())
-}
-
-/// The one tasklet the entry channel seeds — a bounded topology has a single
-/// root.
-fn resolve_root(
-    factory_id: &'static str,
-    topology: &OperativeTopology,
-) -> Result<TaskletId, BuildWorkflowError> {
-    let entry = topology
-        .channels
-        .iter()
-        .find(|c| c.kind == ChannelKind::Entry)
-        .ok_or(BuildWorkflowError::NoEntryChannel { factory_id })?;
-    if entry.consumers.len() != 1 {
-        return Err(BuildWorkflowError::EntryRoot {
-            factory_id,
-            channel: entry.name.to_string(),
-            consumers: entry.consumers.len(),
-        });
-    }
-    Ok(entry.consumers[0].tasklet)
 }

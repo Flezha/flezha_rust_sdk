@@ -240,12 +240,10 @@ impl ChannelBuilder {
     /// ```
     ///
     /// Sources may be entry streams (sealed payloads) or another tasklet's
-    /// output stream, freely mixed — on an **stream** operative. A workflow
-    /// operative is seeded from its spawn args through one entry channel and
-    /// nothing on that path says which channel a payload arrived on, so a
-    /// workflow merge over an entry channel is refused at registration
-    /// (`BuildWorkflowError::MergeFromEntryChannel`); its sources are the
-    /// output streams of two or more of its tasklets.
+    /// output stream, freely mixed, on either kind of operative. A workflow
+    /// message starts only the chain of the entry channel it arrived on, so a
+    /// merge over two entry channels runs once per message, over that
+    /// message's source.
     ///
     /// `cells_for` and the merge's own `key_by` are evaluated on the
     /// **mapped** value, so per-source cell mode is encoded in the sum type.

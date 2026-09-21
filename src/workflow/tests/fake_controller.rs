@@ -2,10 +2,11 @@
 //! journal entry and a lost ack look like from the runner's side, plus the
 //! drains that turn `RunnerMessage`s into a scenario's observations.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crossbeam::channel::Receiver;
+use flz_core::runner::RunnerNode;
 
 use crate::runner::RunnerMessage;
 
@@ -177,6 +178,48 @@ pub(crate) fn control_request_operative(command: &crate::pb::command_request::Co
         Command::IterPark(p) => p.operative_id.clone(),
         _ => String::new(),
     }
+}
+
+/// One message into workflow `id` through the entrance, on its first entry
+/// channel; `false` when no such instance is registered or its driver is
+/// gone.
+pub(crate) fn feed(node: &RunnerNode, id: &str, message: &[u8]) -> bool {
+    feed_on(node, id, None, message)
+}
+
+/// One message into workflow `id` naming `channel`, as `flz operative send
+/// --channel` does.
+pub(crate) fn feed_on(node: &RunnerNode, id: &str, channel: Option<&str>, message: &[u8]) -> bool {
+    let Some(instance) = node.get_workflow(id) else {
+        return false;
+    };
+    let metadata = channel
+        .map(|name| std::collections::HashMap::from([("channel".to_string(), name.to_string())]))
+        .unwrap_or_default();
+    flz_core::routing::feed_workflow_frame(&instance, message.to_vec(), &metadata);
+    true
+}
+
+/// One message into `instance` stamped with the durable-inbox offset the
+/// controller would have given it.
+pub(crate) fn feed_at(
+    instance: &Arc<flz_core::workflow::instance::WorkflowInstance>,
+    message: &[u8],
+    offset: u64,
+) {
+    let metadata = std::collections::HashMap::from([(
+        flz_core::workflow::INBOX_OFFSET_KEY.to_string(),
+        offset.to_string(),
+    )]);
+    flz_core::routing::feed_workflow_frame(instance, message.to_vec(), &metadata);
+}
+
+/// Start `factory` under `id` and hand it `message` as its first input: what
+/// a spawn, a `send` or `flz operative start --text` does.
+pub(crate) fn start_fed(node: &RunnerNode, factory: &str, id: &str, message: &[u8]) -> bool {
+    node.start_workflow(factory.into(), id.into(), "")
+        .expect("init_values is a JSON object")
+        && feed(node, id, message)
 }
 
 /// Drain output frames until the `WorkflowCompleted` for `id`, returning the

@@ -14,6 +14,7 @@ use crate::runner::{install_reconnect_trigger, RunnerMessage};
 use crate::workflow::*;
 
 mod durable_loop;
+mod entrance;
 mod fan_in;
 mod lifecycle;
 mod retry;
@@ -88,6 +89,10 @@ fn workflow_driver_scenarios() {
     crate::register_class::<crate::WorkflowKind, MergeWorkflow>().unwrap();
     crate::register_class::<crate::WorkflowKind, PanickingMergeWorkflow>().unwrap();
     crate::register_class::<crate::WorkflowKind, PanickingTransformWorkflow>().unwrap();
+    crate::register_class::<crate::WorkflowKind, TwoChainsWorkflow>().unwrap();
+    crate::register_class::<crate::WorkflowKind, FanEntryWorkflow>().unwrap();
+    crate::register_class::<crate::WorkflowKind, ChainedChainsWorkflow>().unwrap();
+    crate::register_class::<crate::WorkflowKind, BudgetOnce>().unwrap();
 
     let mut node = RunnerNode::new("test-ns".to_string());
 
@@ -113,6 +118,7 @@ fn workflow_driver_scenarios() {
     retry::retry_stop_and_stage(&mut node, &rx);
     fan_in::branching_resume(&mut node, &rx);
     durable_loop::barrier_resend(&mut node, &rx);
+    entrance::entrance(&mut node, &rx);
 }
 
 /// Respawn `test-chain-workflow` as a crash-resume carrying `journal` on the
@@ -124,14 +130,17 @@ pub(super) fn resume_chain_with_journal(
     id: &str,
     journal: instance::JournalResume,
 ) -> (Vec<Vec<u8>>, (String, String, Vec<u8>)) {
-    assert!(node.start_workflow_resumable(
-        "test-chain-workflow".into(),
-        id.into(),
-        "ignored-args".into(),
-        1,
-        0,
-        Some(journal)
-    ));
+    assert!(node
+        .start_workflow_resumable(
+            "test-chain-workflow".into(),
+            id.into(),
+            "",
+            1,
+            0,
+            Some(journal)
+        )
+        .expect("init_values is a JSON object"));
+    assert!(feed(node, id, b"ignored-args"));
     let s1_id = crate::cell::flusher::encode_cell_identity(id, "workflow_stage1", "");
     let (inst, _slot) = node
         .find_workflow_cell(&s1_id)

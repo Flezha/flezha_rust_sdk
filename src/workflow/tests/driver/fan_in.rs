@@ -57,11 +57,7 @@ pub(super) fn fan_in_branching(node: &mut RunnerNode, rx: &Receiver<RunnerMessag
     // producers committed, with the accumulated batch ---
     let _ = drain_diamond_log();
     let _ = drain_task_commits();
-    assert!(node.start_workflow(
-        "test-diamond-workflow".into(),
-        "diamond-1".into(),
-        "x".into()
-    ));
+    assert!(start_fed(node, "test-diamond-workflow", "diamond-1", b"x"));
     let (outs, done) = drain(rx, "diamond-1");
     assert_eq!(done.0, "ok");
     assert_eq!(
@@ -103,14 +99,17 @@ pub(super) fn fan_in_branching(node: &mut RunnerNode, rx: &Receiver<RunnerMessag
     let diamond_topo = &diamond_spec.topology;
     let d_fan = diamond_topo.lookup_channel_id("d_fan").unwrap();
     let d_b = diamond_topo.lookup_channel_id("d_b").unwrap();
-    assert!(node.start_workflow_resumable(
-        "test-diamond-workflow".into(),
-        "diamond-r".into(),
-        "x".into(),
-        1,
-        0,
-        Some(ab_committed(d_fan, d_b, vec![da_id.clone()], Vec::new()))
-    ));
+    assert!(node
+        .start_workflow_resumable(
+            "test-diamond-workflow".into(),
+            "diamond-r".into(),
+            "",
+            1,
+            0,
+            Some(ab_committed(d_fan, d_b, vec![da_id.clone()], Vec::new()))
+        )
+        .expect("init_values is a JSON object"));
+    assert!(feed(node, "diamond-r", b"x"));
     let (diamond_inst, _slot) = node
         .find_workflow_cell(&da_id)
         .expect("a durable diamond Cell is reachable by the restore handler");
@@ -147,7 +146,7 @@ pub(super) fn fan_in_branching(node: &mut RunnerNode, rx: &Receiver<RunnerMessag
     let _ = drain_comp_log();
     let _ = drain_diamond_log();
     let _ = drain_task_commits();
-    assert!(node.start_workflow("test-diamond-saga".into(), "diamond-s".into(), "x".into()));
+    assert!(start_fed(node, "test-diamond-saga", "diamond-s", b"x"));
     let (_o, done) = drain(rx, "diamond-s");
     assert_eq!(done.0, "error");
     assert_eq!(
@@ -167,7 +166,7 @@ pub(super) fn fan_in_branching(node: &mut RunnerNode, rx: &Receiver<RunnerMessag
     // so a node whose Input is neither producer's Output still dispatches ---
     let _ = drain_diamond_log();
     let _ = drain_task_commits();
-    assert!(node.start_workflow("test-merge-workflow".into(), "merge-1".into(), "x".into()));
+    assert!(start_fed(node, "test-merge-workflow", "merge-1", b"x"));
     let (outs, done) = drain(rx, "merge-1");
     assert_eq!(done.0, "ok");
     assert_eq!(
@@ -187,14 +186,17 @@ pub(super) fn merge_mapping(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>)
     let merge_topo = &merge_spec.topology;
     let m_fan = merge_topo.lookup_channel_id("m_fan").unwrap();
     let m_b = merge_topo.lookup_channel_id("m_b").unwrap();
-    assert!(node.start_workflow_resumable(
-        "test-merge-workflow".into(),
-        "merge-r".into(),
-        "x".into(),
-        1,
-        0,
-        Some(ab_committed(m_fan, m_b, vec![ma_id.clone()], Vec::new()))
-    ));
+    assert!(node
+        .start_workflow_resumable(
+            "test-merge-workflow".into(),
+            "merge-r".into(),
+            "",
+            1,
+            0,
+            Some(ab_committed(m_fan, m_b, vec![ma_id.clone()], Vec::new()))
+        )
+        .expect("init_values is a JSON object"));
+    assert!(feed(node, "merge-r", b"x"));
     let (merge_inst, _slot) = node
         .find_workflow_cell(&ma_id)
         .expect("a durable merge Cell is reachable by the restore handler");
@@ -213,10 +215,11 @@ pub(super) fn merge_mapping(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>)
     let _ = drain_comp_log();
     let _ = drain_diamond_log();
     let _ = drain_task_commits();
-    assert!(node.start_workflow(
-        "test-panic-merge-workflow".into(),
-        "merge-panic".into(),
-        "x".into()
+    assert!(start_fed(
+        node,
+        "test-panic-merge-workflow",
+        "merge-panic",
+        b"x"
     ));
     let (outs, done) = drain(rx, "merge-panic");
     assert_eq!(
@@ -254,10 +257,11 @@ pub(super) fn merge_mapping(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>)
     let _ = drain_comp_log();
     let _ = drain_diamond_log();
     let _ = drain_task_commits();
-    assert!(node.start_workflow(
-        "test-panic-transform-workflow".into(),
-        "map-panic".into(),
-        "x".into()
+    assert!(start_fed(
+        node,
+        "test-panic-transform-workflow",
+        "map-panic",
+        b"x"
     ));
     let (outs, done) = drain(rx, "map-panic");
     assert_eq!(
@@ -295,19 +299,22 @@ pub(super) fn merge_mapping(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>)
     let pm_fan = panic_topo.lookup_channel_id("pm_fan").unwrap();
     let pm_b = panic_topo.lookup_channel_id("pm_b").unwrap();
     WAL_FRAMES.lock().unwrap().clear();
-    assert!(node.start_workflow_resumable(
-        "test-panic-merge-workflow".into(),
-        "merge-panic-r".into(),
-        "x".into(),
-        1,
-        0,
-        Some(ab_committed(
-            pm_fan,
-            pm_b,
-            vec![pa_id.clone()],
-            vec![pb_id.clone()],
-        ))
-    ));
+    assert!(node
+        .start_workflow_resumable(
+            "test-panic-merge-workflow".into(),
+            "merge-panic-r".into(),
+            "",
+            1,
+            0,
+            Some(ab_committed(
+                pm_fan,
+                pm_b,
+                vec![pa_id.clone()],
+                vec![pb_id.clone()],
+            ))
+        )
+        .expect("init_values is a JSON object"));
+    assert!(feed(node, "merge-panic-r", b"x"));
     let (panic_inst, _slot) = node
         .find_workflow_cell(&pa_id)
         .expect("a durable resumed Cell is reachable by the restore handler");
@@ -353,7 +360,7 @@ pub(super) fn branching_resume(node: &mut RunnerNode, rx: &Receiver<RunnerMessag
     // what A released on the channel they consume, and the operative is `ok`
     // exactly when every leaf has committed ---
     let _ = drain_task_commits();
-    assert!(node.start_workflow("test-tree-workflow".into(), "tree-1".into(), "x".into()));
+    assert!(start_fed(node, "test-tree-workflow", "tree-1", b"x"));
     let (mut tree_outs, done) = drain(rx, "tree-1");
     assert_eq!(
         done.0, "ok",
@@ -378,35 +385,38 @@ pub(super) fn branching_resume(node: &mut RunnerNode, rx: &Receiver<RunnerMessag
     let id = "tree-resume";
     let root_seg = crate::cell::flusher::encode_cell_identity(id, "workflow_stage1", "");
     // Channel ids follow declaration order: `in` = 0, `mid` = 1.
-    assert!(node.start_workflow_resumable(
-        "test-tree-workflow".into(),
-        id.into(),
-        "ignored-args".into(),
-        1,
-        0,
-        Some(instance::JournalResume {
-            committed_task_idxs: vec![0, 1],
-            task_handoffs: vec![instance::EdgeHandoff {
-                task_idx: 0,
-                handoff: vec![(1, postcard::to_allocvec(&"resumed-1".to_string()).unwrap())],
-            }],
-            committed_tasks: vec![
-                instance::CommittedTask {
+    assert!(node
+        .start_workflow_resumable(
+            "test-tree-workflow".into(),
+            id.into(),
+            "",
+            1,
+            0,
+            Some(instance::JournalResume {
+                committed_task_idxs: vec![0, 1],
+                task_handoffs: vec![instance::EdgeHandoff {
                     task_idx: 0,
-                    iter: 0,
-                    cells_ran: vec![root_seg.clone()],
-                    completion: None,
-                },
-                instance::CommittedTask {
-                    task_idx: 1,
-                    iter: 0,
-                    cells_ran: Vec::new(),
-                    completion: None,
-                },
-            ],
-            ..Default::default()
-        })
-    ));
+                    handoff: vec![(1, postcard::to_allocvec(&"resumed-1".to_string()).unwrap())],
+                }],
+                committed_tasks: vec![
+                    instance::CommittedTask {
+                        task_idx: 0,
+                        iter: 0,
+                        cells_ran: vec![root_seg.clone()],
+                        completion: None,
+                    },
+                    instance::CommittedTask {
+                        task_idx: 1,
+                        iter: 0,
+                        cells_ran: Vec::new(),
+                        completion: None,
+                    },
+                ],
+                ..Default::default()
+            })
+        )
+        .expect("init_values is a JSON object"));
+    assert!(feed(node, id, b"ignored-args"));
     let (inst, _slot) = node
         .find_workflow_cell(&root_seg)
         .expect("the tree's root Cell is reachable by the restore handler");
@@ -430,7 +440,7 @@ pub(super) fn branching_resume(node: &mut RunnerNode, rx: &Receiver<RunnerMessag
     // --- workflow-branching compensation: a failure under one branch unwinds
     // BOTH branches before their shared parent (reverse topological) ---
     let _ = drain_comp_log();
-    assert!(node.start_workflow("test-tree-saga".into(), "tree-saga".into(), "o1".into()));
+    assert!(start_fed(node, "test-tree-saga", "tree-saga", b"o1"));
     let (_o, done) = drain(rx, "tree-saga");
     assert_eq!(done.0, "error");
     assert_eq!(

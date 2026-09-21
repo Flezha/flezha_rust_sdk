@@ -127,7 +127,7 @@ pub(crate) use stateless_step;
 
 // -- EchoWorkflow -----------------------------------------------------------------
 //
-// One tasklet, run once (the `workflow-kind` e2e): emits its start values
+// One tasklet, run once (the `workflow-kind` e2e): emits its first message
 // back, so the pass ends and the controller deregisters the instance.
 stateless_step!(EchoStep, "echo", |input, ctx| ctx
     .emit::<String>(format!("echo:{input}")));

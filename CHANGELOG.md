@@ -4,6 +4,20 @@ All notable changes to the Rust SDK crate.
 
 ## Unreleased
 
+### Changed: a workflow reads messages on its entry channels (`feed-a-workflow-through-its-entry-channel`)
+
+**Breaking.** A workflow's `init_values` are each tasklet's starting state, as
+a stream's are; they no longer feed the entry channel. Every loop mode takes
+its input as messages through the entrance a stream's frame takes: the channel
+a message names is resolved (none takes the first entry channel, an undeclared
+one is parked), the entry parser and the entry edge's transforms run, and an
+unreadable message rides the entry channel's retry ladder to the dead-letter
+queue without ending the run. A `once` pass waits for its message, and a
+durable one parks while it waits. Several entry channels are allowed, each
+starting only its own chain, and a merge may take entry channels as sources:
+`BuildWorkflowError::EntryRoot` and `BuildWorkflowError::MergeFromEntryChannel`
+are deleted. A spawn's payload is an ordinary first message.
+
 ### Changed: the short form is an operative declaration
 
 **Breaking.** The single-tasklet short form moves from `#[flezha::tasklet]`
@@ -374,11 +388,7 @@ support on `state_sink`: `reset_for_test`, `reconnect_requested_for_test`.
   merge already declared — the mapping would otherwise be silently dropped); a
   mapped type that is not the tasklet's `Input` is a compile error at
   `.into::<Task>()`.
-- **Workflow merges consume inter-tasklet channels only.** The workflow seed is
-  a bare payload naming no channel, so an entry channel as one merge source
-  among several is refused at registration with
-  `BuildWorkflowError::MergeFromEntryChannel` rather than accepted and failing
-  every invocation. Stream merges accept entry channels.
+- Merges accept entry channels as sources, in a stream and in a workflow.
 - `ChannelDescriptor::consumers` is now `Vec<ConsumerEdge>` (tasklet id plus
   the optional mapping); `consumer_ids()` is the id-only view.
 - No wire change and no controller change. Example: `examples/merged_input.rs`.

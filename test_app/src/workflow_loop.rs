@@ -156,6 +156,144 @@ impl StreamOperative for SpawnRequesterOperative {
     }
 }
 
+// -- SpawnOnceRequesterOperative / TypedOnceWorkflow --------------------------------
+//
+// `spawn_once_requester`: on each input it spawns `typed_once_workflow` once
+// with `{"text": <input>}` as the payload and prints the handle's answer as
+// `spawn_result once <id> <outcome>`. `typed_once_workflow` is the `once`
+// shape whose entry channel `order` decodes that JSON into a `Ticket`; its one
+// tasklet prints `once_ran <text>`, emits `placed:<text>` to its sink and
+// completes with the text, so the pass ends on the payload it was spawned
+// with (KB-381).
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub(crate) struct Ticket {
+    text: String,
+}
+
+#[derive(Default)]
+struct SpawnOnceRequester;
+impl Tasklet for SpawnOnceRequester {
+    type Input = String;
+    type Output = String;
+    type State = ();
+    type Change = NoChange;
+    type Clock = WallClock;
+    type Config = ();
+    fn name() -> &'static str {
+        "spawn_once_requester"
+    }
+    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
+    fn run(
+        &mut self,
+        input: String,
+        _: StateHandle<'_, Self>,
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
+        let ticket = serde_json::to_string(&Ticket { text: input }).expect("a ticket serializes");
+        match ctx
+            .spawn_workflow(TypedOnceWorkflow::factory_id(), ticket)
+            .wait()
+        {
+            Ok(result) => println!(
+                "spawn_result once {} {}",
+                result.id,
+                result.outcome.as_wire()
+            ),
+            Err(e) => println!("spawn_result once error {e}"),
+        }
+        Ok(())
+    }
+}
+
+pub(crate) struct SpawnOnceRequesterOperative;
+impl StreamOperative for SpawnOnceRequesterOperative {
+    fn factory_id() -> &'static str {
+        "spawn_once_requester"
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("in")
+            .into::<SpawnOnceRequester>()
+            .sink_named("out");
+    }
+}
+
+#[derive(Default)]
+struct OncePlaced;
+impl Tasklet for OncePlaced {
+    type Input = Ticket;
+    type Output = String;
+    type State = ();
+    type Change = NoChange;
+    type Clock = WallClock;
+    type Config = ();
+    fn name() -> &'static str {
+        "once_placed"
+    }
+    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
+    fn run(
+        &mut self,
+        ticket: Ticket,
+        _: StateHandle<'_, Self>,
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
+        println!("once_ran {}", ticket.text);
+        ctx.complete(ticket.text.clone())?;
+        ctx.emit::<String>(format!("placed:{}", ticket.text))
+    }
+}
+
+pub(crate) struct TypedOnceWorkflow;
+impl WorkflowOperative for TypedOnceWorkflow {
+    fn factory_id() -> &'static str {
+        "typed_once_workflow"
+    }
+    fn tasklets(c: &ChannelBuilder) {
+        c.input::<Ticket>("order")
+            .into::<OncePlaced>()
+            .sink_named("placed");
+    }
+}
+
+// -- ReplyBlockLoopWorkflow -----------------------------------------------------
+//
+// `reply_block_loop_workflow`: the chat loop with the block moved AFTER the
+// root's commit (TURN commits its turn, REPLY blocks on the turn
+// `reply-crash` while the release env is unset), so a SIGKILL lands between a
+// root's `task_committed` and the pass's `iter_committed`, the shape that
+// asks whether the re-forwarded message drives one iteration or two.
+const REPLY_CRASH_TURN: &str = "reply-crash";
+
+stateless_step!(BlockingReply, "blocking_reply", |input, ctx| {
+    if input == REPLY_CRASH_TURN {
+        block_until_released();
+    }
+    ctx.emit::<String>(format!("reply:{input}"))
+});
+
+pub(crate) struct ReplyBlockLoopWorkflow;
+impl WorkflowOperative for ReplyBlockLoopWorkflow {
+    fn factory_id() -> &'static str {
+        "reply_block_loop_workflow"
+    }
+    fn loop_mode() -> LoopMode {
+        LoopMode::PerInput
+    }
+    fn self_terminating() -> bool {
+        false
+    }
+    fn max_duration() -> Option<Duration> {
+        Some(Duration::from_secs(600))
+    }
+    fn tasklets(c: &ChannelBuilder) {
+        c.input::<String>("in")
+            .into::<ChatTurn>()
+            .named("mid")
+            .into::<BlockingReply>()
+            .sink_named("out");
+    }
+}
+
 // -- ChatRewindWorkflow ----------------------------------------------------------
 //
 // `workflow-loop-rewind`: the same chat loop, but its replying tasklet can be

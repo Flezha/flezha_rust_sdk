@@ -48,9 +48,10 @@ fn register_workflow_makes_factory_resolvable() {
 #[test]
 fn registry_holds_workflow_as_sealed_variant() {
     let reg = OperativeRegistry::new();
+    let spec = Arc::new(spec::build_spec::<EmitWorkflow>().expect("the fixture registers"));
     let (instance, _inbox_rx) = crate::workflow::instance::WorkflowInstance::new(
         Arc::from("t1"),
-        Arc::from("t1-factory"),
+        spec,
         Vec::new(),
         0,
         0,
@@ -260,7 +261,7 @@ fn dag_topology_is_validated() {
     assert_eq!(spec.dag.children, vec![vec![1, 2], vec![], vec![]]);
     assert_eq!(spec.dag.leaves().collect::<Vec<_>>(), vec![1, 2]);
     assert!(
-        spec.dag.single_leaf().is_none(),
+        spec.dag.chains[0].single_leaf(&spec.dag).is_none(),
         "two leaves ⇒ no single terminal tasklet"
     );
     for (node, parents) in spec.dag.parents.iter().enumerate() {
@@ -275,7 +276,7 @@ fn dag_topology_is_validated() {
     // A linear chain is the single-branch case, unchanged.
     let linear = spec::build_spec::<ChainWorkflow>().expect("linear still registers");
     assert_eq!(linear.dag.children, vec![vec![1], vec![]]);
-    assert_eq!(linear.dag.single_leaf(), Some(1));
+    assert_eq!(linear.dag.chains[0].single_leaf(&linear.dag), Some(1));
 
     // A join — two streams feeding one node — registers, and Kahn numbers
     // BOTH producers before it (BFS would have enqueued the join on its
@@ -334,12 +335,10 @@ fn dag_topology_is_validated() {
         other => panic!("expected the shared cycle refusal, got {other:?}"),
     }
 
-    // `multi-input-tasklets`: a workflow seed is a bare payload naming no
-    // channel, so an entry channel cannot be one merge source among
-    // several — the mapping could not be selected and every entry channel
-    // past the first would be unreadable. Refused by name, at definition
-    // time, instead of accepted and failing every invocation on a type
-    // mismatch.
+    // `multi-input-tasklets`: every message carries the channel it arrived
+    // on, so an entry channel is a merge source on a workflow as on a
+    // stream, and each entry channel roots its own chain over the merged
+    // tasklet.
     struct EntryMergeWorkflow;
     impl WorkflowOperative for EntryMergeWorkflow {
         fn factory_id() -> &'static str {
@@ -352,17 +351,23 @@ fn dag_topology_is_validated() {
                 .into::<MergeJoinTask>();
         }
     }
-    match spec::build_spec::<EntryMergeWorkflow>()
-        .expect_err("a workflow merge over an entry channel is refused")
-    {
-        spec::BuildWorkflowError::MergeFromEntryChannel {
-            channel, tasklet, ..
-        } => {
-            assert_eq!(channel, "in");
-            assert_eq!(tasklet, "workflow_merge_join_op");
-        }
-        other => panic!("expected MergeFromEntryChannel, got {other:?}"),
-    }
+    let entry_merge = spec::build_spec::<EntryMergeWorkflow>()
+        .expect("a workflow merge over two entry channels registers");
+    assert_eq!(
+        entry_merge.dag.len(),
+        1,
+        "the merged tasklet is the one node"
+    );
+    assert_eq!(
+        entry_merge
+            .dag
+            .chains
+            .iter()
+            .map(|chain| (chain.channel_id, chain.roots.clone()))
+            .collect::<Vec<_>>(),
+        vec![(0, vec![0]), (1, vec![0])],
+        "each entry channel roots its own chain at the merged tasklet"
+    );
 
     // The inter-task form of the same merge is the supported one and still
     // registers, with the merged node as a two-parent inner node.

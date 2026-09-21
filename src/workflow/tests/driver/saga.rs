@@ -13,7 +13,7 @@ use crate::runner::RunnerMessage;
 pub(super) fn saga_compensation(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
     // --- §7b.1 saga: a failed step rolls back completed steps in reverse ---
     let _ = drain_comp_log();
-    assert!(node.start_workflow("test-saga-workflow".into(), "saga-1".into(), "X".into()));
+    assert!(start_fed(node, "test-saga-workflow", "saga-1", b"X"));
     let (_o, done) = drain(rx, "saga-1");
     assert_eq!(done.0, "error", "a failed terminal step ⇒ status error");
     assert!(done.1.contains("ship failed"));
@@ -31,11 +31,7 @@ pub(super) fn saga_compensation(node: &mut RunnerNode, rx: &Receiver<RunnerMessa
     // pass (the mode only diverges with committed iterations) — proves
     // rollback_mode() reaches the driver ---
     let _ = drain_comp_log();
-    assert!(node.start_workflow(
-        "test-keep-progress-saga".into(),
-        "saga-kp".into(),
-        "Y".into()
-    ));
+    assert!(start_fed(node, "test-keep-progress-saga", "saga-kp", b"Y"));
     let (_o, done) = drain(rx, "saga-kp");
     assert_eq!(done.0, "error");
     assert_eq!(
@@ -48,7 +44,7 @@ pub(super) fn saga_compensation(node: &mut RunnerNode, rx: &Receiver<RunnerMessa
 
     // --- §7b.1 clean completion does NOT compensate ---
     let _ = drain_comp_log();
-    assert!(node.start_workflow("test-clean-saga".into(), "saga-ok".into(), "Z".into()));
+    assert!(start_fed(node, "test-clean-saga", "saga-ok", b"Z"));
     let (clean_outs, done) = drain(rx, "saga-ok");
     assert_eq!(done.0, "ok");
     assert_eq!(clean_outs, vec![b"echo:charged:reserved:Z".to_vec()]);
@@ -60,7 +56,7 @@ pub(super) fn saga_compensation(node: &mut RunnerNode, rx: &Receiver<RunnerMessa
     // --- §7b.1 per-cell compensation: once per cell that ran;
     // hookless SplitTask is skipped ---
     let _ = drain_comp_log();
-    assert!(node.start_workflow("test-fan-saga".into(), "fan-saga".into(), "a,bb,ccc".into()));
+    assert!(start_fed(node, "test-fan-saga", "fan-saga", b"a,bb,ccc"));
     let (_o, done) = drain(rx, "fan-saga");
     assert_eq!(done.0, "error");
     let mut fan_comp = drain_comp_log();
@@ -79,7 +75,7 @@ pub(super) fn saga_compensation(node: &mut RunnerNode, rx: &Receiver<RunnerMessa
     let _ = drain_comp_log();
     STAGE0_RAN.store(false, Ordering::SeqCst);
     STAGE0_RELEASE.store(false, Ordering::SeqCst);
-    assert!(node.start_workflow("test-stop-saga".into(), "stop-saga".into(), "W".into()));
+    assert!(start_fed(node, "test-stop-saga", "stop-saga", b"W"));
     while !STAGE0_RAN.load(Ordering::SeqCst) {
         std::thread::yield_now();
     }
@@ -107,7 +103,7 @@ pub(super) fn saga_crash_resume(node: &mut RunnerNode, rx: &Receiver<RunnerMessa
     let _ = drain_comp_log();
     // reserve + charge complete (both compensable ⇒ 2 intents); ship fails ⇒
     // both roll back (2 dones). Hookless ship_fails never completed ⇒ no record.
-    assert!(node.start_workflow("test-saga-workflow".into(), "saga-rec".into(), "42".into()));
+    assert!(start_fed(node, "test-saga-workflow", "saga-rec", b"42"));
     let (_o, done) = drain(rx, "saga-rec");
     assert_eq!(done.0, "error");
     assert_eq!(
@@ -123,14 +119,17 @@ pub(super) fn saga_crash_resume(node: &mut RunnerNode, rx: &Receiver<RunnerMessa
     let _ = drain_comp_log();
     // Respawn a durable saga expecting one restore: the driver parks on the
     // gate while we seed the markers the RestoreInitState handler would carry.
-    assert!(node.start_workflow_resumable(
-        "test-resume-saga".into(),
-        "resume-saga".into(),
-        "x".into(),
-        1,
-        0,
-        None,
-    ));
+    assert!(node
+        .start_workflow_resumable(
+            "test-resume-saga".into(),
+            "resume-saga".into(),
+            "",
+            1,
+            0,
+            None,
+        )
+        .expect("init_values is a JSON object"));
+    assert!(feed(node, "resume-saga", b"x"));
     let a_id = crate::cell::flusher::encode_cell_identity("resume-saga", "resume_undo_a", "");
     let b_id = crate::cell::flusher::encode_cell_identity("resume-saga", "resume_undo_b", "");
     let (saga_inst, _slot) = node

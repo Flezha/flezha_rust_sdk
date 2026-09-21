@@ -14,11 +14,7 @@ pub(super) fn cell_retry(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
     // --- workflow-cell-retry: a transient cell failure recovers in
     // place — the sibling cell is NOT re-run and nothing compensates ---
     arm_flaky(1, false);
-    assert!(node.start_workflow(
-        "test-retry-workflow".into(),
-        "retry-ok".into(),
-        "a,bb".into()
-    ));
+    assert!(start_fed(node, "test-retry-workflow", "retry-ok", b"a,bb"));
     let (mut outs, done) = drain(rx, "retry-ok");
     assert_eq!(done.0, "ok", "the ladder absorbed the transient failure");
     outs.sort();
@@ -46,10 +42,11 @@ pub(super) fn cell_retry(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
     // --- retry exhaustion fails the tasklet exactly as before: the
     // original error surfaces and completed tasklets compensate ---
     arm_flaky(99, false);
-    assert!(node.start_workflow(
-        "test-retry-workflow".into(),
-        "retry-exhausted".into(),
-        "a,bb".into()
+    assert!(start_fed(
+        node,
+        "test-retry-workflow",
+        "retry-exhausted",
+        b"a,bb"
     ));
     let (_o, done) = drain(rx, "retry-exhausted");
     assert_eq!(done.0, "error");
@@ -71,10 +68,11 @@ pub(super) fn cell_retry(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
 
     // --- a non-retryable error skips the ladder entirely ---
     arm_flaky(99, true);
-    assert!(node.start_workflow(
-        "test-retry-workflow".into(),
-        "retry-permanent".into(),
-        "a,bb".into()
+    assert!(start_fed(
+        node,
+        "test-retry-workflow",
+        "retry-permanent",
+        b"a,bb"
     ));
     let (_o, done) = drain(rx, "retry-permanent");
     assert_eq!(done.0, "error");
@@ -87,10 +85,11 @@ pub(super) fn cell_retry(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
 
     // --- retry_attempts() = 0 restores the pre-change fail-fast ---
     arm_flaky(99, false);
-    assert!(node.start_workflow(
-        "test-retry-failfast-workflow".into(),
-        "retry-failfast".into(),
-        "a,bb".into()
+    assert!(start_fed(
+        node,
+        "test-retry-failfast-workflow",
+        "retry-failfast",
+        b"a,bb"
     ));
     let (_o, done) = drain(rx, "retry-failfast");
     assert_eq!(done.0, "error");
@@ -108,10 +107,11 @@ pub(super) fn retry_stop_and_stage(node: &mut RunnerNode, rx: &Receiver<RunnerMe
     // wait). The stop rides a helper thread because this thread is the fake
     // controller — it must stay in `drain` to ack the chain's task commits ---
     arm_flaky(99, false);
-    assert!(node.start_workflow(
-        "test-retry-slow-workflow".into(),
-        "retry-stop".into(),
-        "a,bb".into()
+    assert!(start_fed(
+        node,
+        "test-retry-slow-workflow",
+        "retry-stop",
+        b"a,bb"
     ));
     let stop_target = node
         .get_workflow("retry-stop")
@@ -142,10 +142,11 @@ pub(super) fn retry_stop_and_stage(node: &mut RunnerNode, rx: &Receiver<RunnerMe
     // workers, so a backoff that occupied its worker would leave the pool
     // starved and the core would answer with threads above the base set ---
     STEP_ATTEMPTS.lock().unwrap().clear();
-    assert!(node.start_workflow(
-        "test-step-probe-workflow".into(),
-        "workflow-steps".into(),
-        "go".into()
+    assert!(start_fed(
+        node,
+        "test-step-probe-workflow",
+        "workflow-steps",
+        b"go"
     ));
     let (outs, done) = drain(rx, "workflow-steps");
     assert_eq!((done.0.as_str(), done.1.as_str()), ("ok", ""));

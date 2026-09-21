@@ -103,6 +103,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register_factory(WedgeProbeOperative)?
         .register_factory(CandleOperative)?
         .register_factory(SpawnRequesterOperative)?
+        .register_factory(SpawnOnceRequesterOperative)?
         .register_factory(SugarDoNothing)?
         .register_factory(SugarStoreInput)?
         .register_factory(SugarNamedInput)?
@@ -120,6 +121,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register_factory(ChatLoopWorkflow)?
         .register_factory(StatelessLoopWorkflow)?
         .register_factory(ChatRewindWorkflow)?
+        .register_factory(ReplyBlockLoopWorkflow)?
+        .register_factory(TypedOnceWorkflow)?
         .register_factory(RetryWorkflow)?
         .register_factory(BranchWorkflow)?
         .register_factory(DiamondWorkflow)?

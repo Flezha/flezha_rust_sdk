@@ -14,14 +14,16 @@ pub(super) fn durable_loop(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) 
     // a durable iteration commit; an idle inbox parks the instance ---
     std::env::set_var("FLEZHA_WORKFLOW_PARK_IDLE_MS", "300");
     let _ = drain_task_commits();
-    assert!(node.start_workflow("test-chat-loop".into(), "chat-1".into(), "ignored".into()));
+    assert!(node
+        .start_workflow("test-chat-loop".into(), "chat-1".into(), "")
+        .expect("init_values is a JSON object"));
     let chat = node
         .get_workflow("chat-1")
         .expect("the loop's instance is registered before its driver runs");
     // Two chat turns, at durable-inbox offsets 4 and 7 (the controller's
     // offsets are opaque to the driver — it only echoes them back).
-    assert!(chat.push_inbox(b"hi".to_vec(), 4));
-    assert!(chat.push_inbox(b"again".to_vec(), 7));
+    feed_at(&chat, b"hi", 4);
+    feed_at(&chat, b"again", 7);
 
     let (outs, done) = drain(rx, "chat-1");
     assert_eq!(
@@ -68,37 +70,39 @@ pub(super) fn durable_loop(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) 
     // --- resume-at-iteration: a journal recording iterations 0-1 committed
     // enters iteration 2 — the committed turns never re-run ---
     let s1_id = crate::cell::flusher::encode_cell_identity("chat-2", "workflow_stage1", "");
-    assert!(node.start_workflow_resumable(
-        "test-chat-loop".into(),
-        "chat-2".into(),
-        "ignored".into(),
-        1,
-        0,
-        Some(instance::JournalResume {
-            iter: 2,
-            consumed_offset: 7,
-            committed_tasks: vec![
-                instance::CommittedTask {
-                    task_idx: 0,
-                    iter: 0,
-                    cells_ran: vec![s1_id.clone()],
-                    completion: None,
-                },
-                instance::CommittedTask {
-                    task_idx: 1,
-                    iter: 0,
-                    cells_ran: Vec::new(),
-                    completion: None,
-                },
-            ],
-            ..Default::default()
-        })
-    ));
+    assert!(node
+        .start_workflow_resumable(
+            "test-chat-loop".into(),
+            "chat-2".into(),
+            "",
+            1,
+            0,
+            Some(instance::JournalResume {
+                iter: 2,
+                consumed_offset: 7,
+                committed_tasks: vec![
+                    instance::CommittedTask {
+                        task_idx: 0,
+                        iter: 0,
+                        cells_ran: vec![s1_id.clone()],
+                        completion: None,
+                    },
+                    instance::CommittedTask {
+                        task_idx: 1,
+                        iter: 0,
+                        cells_ran: Vec::new(),
+                        completion: None,
+                    },
+                ],
+                ..Default::default()
+            })
+        )
+        .expect("init_values is a JSON object"));
     let (chat2, _slot) = node
         .find_workflow_cell(&s1_id)
         .expect("the loop's Cell is reachable by the restore handler");
     chat2.note_restored();
-    assert!(chat2.push_inbox(b"third".to_vec(), 9));
+    feed_at(&chat2, b"third", 9);
 
     let (outs, done) = drain(rx, "chat-2");
     assert_eq!(done.0, "parked");
@@ -140,37 +144,39 @@ pub(super) fn loop_saga_and_rewind(node: &mut RunnerNode, rx: &Receiver<RunnerMe
         let _ = drain_comp_log();
         let seg = crate::cell::flusher::encode_cell_identity(id, "loop_reserve", "");
         // Journal: iteration 0 committed both of its tasklets.
-        assert!(node.start_workflow_resumable(
-            factory.into(),
-            id.into(),
-            "ignored".into(),
-            1,
-            0,
-            Some(instance::JournalResume {
-                iter: 1,
-                consumed_offset: 2,
-                committed_tasks: vec![
-                    instance::CommittedTask {
-                        task_idx: 0,
-                        iter: 0,
-                        cells_ran: vec![seg.clone()],
-                        completion: None,
-                    },
-                    instance::CommittedTask {
-                        task_idx: 1,
-                        iter: 0,
-                        cells_ran: Vec::new(),
-                        completion: None,
-                    },
-                ],
-                ..Default::default()
-            })
-        ));
+        assert!(node
+            .start_workflow_resumable(
+                factory.into(),
+                id.into(),
+                "",
+                1,
+                0,
+                Some(instance::JournalResume {
+                    iter: 1,
+                    consumed_offset: 2,
+                    committed_tasks: vec![
+                        instance::CommittedTask {
+                            task_idx: 0,
+                            iter: 0,
+                            cells_ran: vec![seg.clone()],
+                            completion: None,
+                        },
+                        instance::CommittedTask {
+                            task_idx: 1,
+                            iter: 0,
+                            cells_ran: Vec::new(),
+                            completion: None,
+                        },
+                    ],
+                    ..Default::default()
+                })
+            )
+            .expect("init_values is a JSON object"));
         let (inst, _slot) = node
             .find_workflow_cell(&seg)
             .expect("the loop saga's Cell is reachable by the restore handler");
         inst.note_restored();
-        assert!(inst.push_inbox(b"boom".to_vec(), 5));
+        feed_at(&inst, b"boom", 5);
 
         let (_outs, done) = drain(rx, id);
         assert_eq!(done.0, "error", "the failing turn terminates the run");
@@ -199,32 +205,34 @@ pub(super) fn loop_saga_and_rewind(node: &mut RunnerNode, rx: &Receiver<RunnerMe
         cells_ran,
         completion: None,
     };
-    assert!(node.start_workflow_resumable(
-        "test-loop-saga-keep".into(),
-        id.into(),
-        "ignored".into(),
-        1,
-        0,
-        Some(instance::JournalResume {
-            iter: 1,
-            consumed_offset: 1,
-            committed_tasks: vec![undo_op(0, 0, vec![seg.clone()]), undo_op(1, 0, Vec::new())],
-            rewind_undo: vec![
-                undo_op(0, 1, vec![seg.clone()]),
-                undo_op(1, 1, Vec::new()),
-                undo_op(0, 2, vec![seg.clone()]),
-                undo_op(1, 2, Vec::new()),
-            ],
-            ..Default::default()
-        })
-    ));
+    assert!(node
+        .start_workflow_resumable(
+            "test-loop-saga-keep".into(),
+            id.into(),
+            "",
+            1,
+            0,
+            Some(instance::JournalResume {
+                iter: 1,
+                consumed_offset: 1,
+                committed_tasks: vec![undo_op(0, 0, vec![seg.clone()]), undo_op(1, 0, Vec::new())],
+                rewind_undo: vec![
+                    undo_op(0, 1, vec![seg.clone()]),
+                    undo_op(1, 1, Vec::new()),
+                    undo_op(0, 2, vec![seg.clone()]),
+                    undo_op(1, 2, Vec::new()),
+                ],
+                ..Default::default()
+            })
+        )
+        .expect("init_values is a JSON object"));
     let (inst, _slot) = node
         .find_workflow_cell(&seg)
         .expect("the loop saga's Cell is reachable by the restore handler");
     inst.note_restored();
     // The resumed turn fails, so the run reaches a terminal state (the fake
     // controller must stay in `drain` to ack the undo commits).
-    assert!(inst.push_inbox(b"boom".to_vec(), 2));
+    feed_at(&inst, b"boom", 2);
 
     let (_outs, done) = drain(rx, id);
     assert_eq!(done.0, "error", "the resumed turn's own failure terminates");
@@ -262,16 +270,14 @@ pub(super) fn loop_completion(node: &mut RunnerNode, rx: &Receiver<RunnerMessage
     let _ = drain_task_commits();
     let _ = drain_iter_commits();
     let _ = drain_iter_parks();
-    assert!(node.start_workflow(
-        "test-completing-chat".into(),
-        "bye-1".into(),
-        "ignored".into()
-    ));
+    assert!(node
+        .start_workflow("test-completing-chat".into(), "bye-1".into(), "")
+        .expect("init_values is a JSON object"));
     let chat = node
         .get_workflow("bye-1")
         .expect("the loop's instance is registered before its driver runs");
-    assert!(chat.push_inbox(b"hi".to_vec(), 4));
-    assert!(chat.push_inbox(b"bye".to_vec(), 5));
+    feed_at(&chat, b"hi", 4);
+    feed_at(&chat, b"bye", 5);
 
     let (outs, done) = drain(rx, "bye-1");
     assert_eq!(
@@ -306,19 +312,21 @@ pub(super) fn loop_completion(node: &mut RunnerNode, rx: &Receiver<RunnerMessage
 
     // --- resume from a completing iter_committed: ends at once, runs nothing ---
     let seg = crate::cell::flusher::encode_cell_identity("bye-2", "workflow_chat_turn", "");
-    assert!(node.start_workflow_resumable(
-        "test-completing-chat".into(),
-        "bye-2".into(),
-        "ignored".into(),
-        1,
-        0,
-        Some(instance::JournalResume {
-            iter: 2,
-            consumed_offset: 5,
-            completion: Some(b"farewell".to_vec()),
-            ..Default::default()
-        })
-    ));
+    assert!(node
+        .start_workflow_resumable(
+            "test-completing-chat".into(),
+            "bye-2".into(),
+            "",
+            1,
+            0,
+            Some(instance::JournalResume {
+                iter: 2,
+                consumed_offset: 5,
+                completion: Some(b"farewell".to_vec()),
+                ..Default::default()
+            })
+        )
+        .expect("init_values is a JSON object"));
     let (inst, _slot) = node
         .find_workflow_cell(&seg)
         .expect("the loop's Cell is reachable by the restore handler");
@@ -337,29 +345,32 @@ pub(super) fn loop_completion(node: &mut RunnerNode, rx: &Receiver<RunnerMessage
     let id = "bye-3";
     let seg = crate::cell::flusher::encode_cell_identity(id, "workflow_chat_turn", "");
     // Channel ids follow declaration order: `in` = 0, `mid` = 1.
-    assert!(node.start_workflow_resumable(
-        "test-completing-chat".into(),
-        id.into(),
-        "ignored".into(),
-        1,
-        0,
-        Some(instance::JournalResume {
-            iter: 1,
-            consumed_offset: 4,
-            committed_task_idxs: vec![0],
-            task_handoffs: vec![instance::EdgeHandoff {
-                task_idx: 0,
-                handoff: vec![(1, postcard::to_allocvec(&"bye".to_string()).unwrap())],
-            }],
-            committed_tasks: vec![instance::CommittedTask {
-                task_idx: 0,
+    assert!(node
+        .start_workflow_resumable(
+            "test-completing-chat".into(),
+            id.into(),
+            "",
+            1,
+            0,
+            Some(instance::JournalResume {
                 iter: 1,
-                cells_ran: vec![seg.clone()],
-                completion: Some(b"farewell".to_vec()),
-            }],
-            ..Default::default()
-        })
-    ));
+                consumed_offset: 4,
+                committed_task_idxs: vec![0],
+                task_handoffs: vec![instance::EdgeHandoff {
+                    task_idx: 0,
+                    handoff: vec![(1, postcard::to_allocvec(&"bye".to_string()).unwrap())],
+                }],
+                committed_tasks: vec![instance::CommittedTask {
+                    task_idx: 0,
+                    iter: 1,
+                    cells_ran: vec![seg.clone()],
+                    completion: Some(b"farewell".to_vec()),
+                }],
+                ..Default::default()
+            })
+        )
+        .expect("init_values is a JSON object"));
+    assert!(feed(node, id, b"ignored"));
     let (inst, _slot) = node
         .find_workflow_cell(&seg)
         .expect("the loop's Cell is reachable by the restore handler");
@@ -396,7 +407,7 @@ pub(super) fn barrier_resend(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>
 
     // The first TaskCommit's ack is lost: the re-send continues the chain.
     lose_acks("resend-1", 1);
-    assert!(node.start_workflow("test-resend-chain".into(), "resend-1".into(), "x".into()));
+    assert!(start_fed(node, "test-resend-chain", "resend-1", b"x"));
     let (outs, done) = drain(rx, "resend-1");
     assert_eq!(
         (done.0.as_str(), done.1.as_str()),
@@ -426,7 +437,7 @@ pub(super) fn barrier_resend(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>
 
     // No ack ever arrives: the bounded ladder fails the run.
     lose_acks("resend-2", usize::MAX);
-    assert!(node.start_workflow("test-resend-chain".into(), "resend-2".into(), "y".into()));
+    assert!(start_fed(node, "test-resend-chain", "resend-2", b"y"));
     let (_outs, done) = drain(rx, "resend-2");
     assert_eq!(done.0, "error");
     assert!(
@@ -445,15 +456,13 @@ pub(super) fn barrier_resend(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>
     let _ = drain_iter_commits();
     let _ = drain_iter_parks();
     lose_acks("resend-3", 3);
-    assert!(node.start_workflow(
-        "test-resend-loop".into(),
-        "resend-3".into(),
-        "ignored".into()
-    ));
+    assert!(node
+        .start_workflow("test-resend-loop".into(), "resend-3".into(), "")
+        .expect("init_values is a JSON object"));
     let resend_loop = node
         .get_workflow("resend-3")
         .expect("the loop's instance is registered before its driver runs");
-    assert!(resend_loop.push_inbox(b"hi".to_vec(), 4));
+    feed_at(&resend_loop, b"hi", 4);
     let (outs, done) = drain(rx, "resend-3");
     assert_eq!(done.0, "parked");
     assert_eq!(outs, vec![b"hi-1-2".to_vec()]);

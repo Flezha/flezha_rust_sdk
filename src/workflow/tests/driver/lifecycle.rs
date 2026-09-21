@@ -16,10 +16,11 @@ use crate::runner::RunnerMessage;
 pub(super) fn lifecycle(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
     // --- a once pass: args echoed, status "ok" ---
     EMIT_RUNS.store(0, Ordering::SeqCst);
-    assert!(node.start_workflow(
-        "test-emit-workflow".into(),
-        "workflow-ok".into(),
-        "hello".into()
+    assert!(start_fed(
+        node,
+        "test-emit-workflow",
+        "workflow-ok",
+        b"hello"
     ));
     let (outs, done) = drain(rx, "workflow-ok");
     assert_eq!(
@@ -36,10 +37,11 @@ pub(super) fn lifecycle(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
         node.get_stream("workflow-ok").is_none(),
         "a workflow is not a stream operative"
     );
-    assert!(node.start_workflow(
-        "test-emit-workflow".into(),
-        "workflow-ok".into(),
-        "hello".into()
+    assert!(start_fed(
+        node,
+        "test-emit-workflow",
+        "workflow-ok",
+        b"hello"
     ));
     assert_eq!(
         EMIT_RUNS.load(Ordering::SeqCst),
@@ -49,11 +51,7 @@ pub(super) fn lifecycle(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
 
     // --- a non-retryable failure: terminal on its first run ---
     FAIL_RUNS.store(0, Ordering::SeqCst);
-    assert!(node.start_workflow(
-        "test-fail-workflow".into(),
-        "workflow-err".into(),
-        "".into()
-    ));
+    assert!(start_fed(node, "test-fail-workflow", "workflow-err", b""));
     let (_o, done) = drain(rx, "workflow-err");
     assert_eq!(done.0, "error");
     assert!(done.1.contains("boom"));
@@ -64,10 +62,11 @@ pub(super) fn lifecycle(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
     );
 
     // --- a panic caught and reported as "error" ---
-    assert!(node.start_workflow(
-        "test-panic-workflow".into(),
-        "workflow-panic".into(),
-        "".into()
+    assert!(start_fed(
+        node,
+        "test-panic-workflow",
+        "workflow-panic",
+        b""
     ));
     let (_o, done) = drain(rx, "workflow-panic");
     assert_eq!(done.0, "error");
@@ -77,10 +76,11 @@ pub(super) fn lifecycle(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
 pub(super) fn completions(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
     // --- a tasklet's complete carries the result, journaled on its commit ---
     let _ = drain_task_commits();
-    assert!(node.start_workflow(
-        "test-complete-workflow".into(),
-        "workflow-c".into(),
-        "z".into()
+    assert!(start_fed(
+        node,
+        "test-complete-workflow",
+        "workflow-c",
+        b"z"
     ));
     let (_o, done) = drain(rx, "workflow-c");
     assert_eq!(done.0, "ok");
@@ -96,10 +96,11 @@ pub(super) fn completions(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
     );
 
     // --- two completing tasklets: the later one in commit order wins ---
-    assert!(node.start_workflow(
-        "test-two-completions".into(),
-        "workflow-two".into(),
-        "x".into()
+    assert!(start_fed(
+        node,
+        "test-two-completions",
+        "workflow-two",
+        b"x"
     ));
     let (_o, done) = drain(rx, "workflow-two");
     assert_eq!((done.0.as_str(), done.2.as_slice()), ("ok", &b"second"[..]));
@@ -110,10 +111,11 @@ pub(super) fn completions(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
     );
 
     // --- two cells of one tasklet: the greatest cell key wins ---
-    assert!(node.start_workflow(
-        "test-keyed-completions".into(),
-        "workflow-keyed".into(),
-        "x".into()
+    assert!(start_fed(
+        node,
+        "test-keyed-completions",
+        "workflow-keyed",
+        b"x"
     ));
     let (_o, done) = drain(rx, "workflow-keyed");
     assert_eq!((done.0.as_str(), done.2.as_slice()), ("ok", &b"b"[..]));
@@ -124,10 +126,11 @@ pub(super) fn completions(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
     );
 
     // --- a failure later in the iteration discards the completion ---
-    assert!(node.start_workflow(
-        "test-complete-then-fail".into(),
-        "workflow-cf".into(),
-        "x".into()
+    assert!(start_fed(
+        node,
+        "test-complete-then-fail",
+        "workflow-cf",
+        b"x"
     ));
     let (_o, done) = drain(rx, "workflow-cf");
     assert_eq!(done.0, "error");
@@ -147,11 +150,12 @@ fn completions_of(commits: Vec<crate::pb::TaskCommit>, id: &str) -> Vec<Option<V
 
 pub(super) fn loop_stop_and_removal(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
     // --- inbox loop: one iteration per input until a tasklet completes it ---
-    assert!(node.start_workflow("test-loop-workflow".into(), "loop-1".into(), "".into()));
+    assert!(node
+        .start_workflow("test-loop-workflow".into(), "loop-1".into(), "")
+        .expect("init_values is a JSON object"));
     for turn in [&b"alpha"[..], b"beta", b"quit"] {
         assert!(
-            node.get_workflow("loop-1")
-                .is_some_and(|i| i.push_inbox(turn.to_vec(), 0)),
+            feed(node, "loop-1", turn),
             "inbox delivers to running instance"
         );
     }
@@ -164,10 +168,10 @@ pub(super) fn loop_stop_and_removal(node: &mut RunnerNode, rx: &Receiver<RunnerM
     );
 
     // --- external stop (WorkflowStop handler) → cancelled ---
-    assert!(node.start_workflow("test-loop-workflow".into(), "loop-2".into(), "".into()));
     assert!(node
-        .get_workflow("loop-2")
-        .is_some_and(|i| i.push_inbox(b"one".to_vec(), 0)));
+        .start_workflow("test-loop-workflow".into(), "loop-2".into(), "")
+        .expect("init_values is a JSON object"));
+    assert!(feed(node, "loop-2", b"one"));
     // Drain the echo first so the instance is definitely live before stop.
     wait_for_output(rx, "loop-2", b"got:one");
     let stop = WorkflowStop {
@@ -180,10 +184,10 @@ pub(super) fn loop_stop_and_removal(node: &mut RunnerNode, rx: &Receiver<RunnerM
     assert_eq!(done.0, "cancelled", "WorkflowStop ⇒ cancelled");
 
     // --- hard removal (RemOperative → stop_operative) cancels a workflow ---
-    assert!(node.start_workflow("test-loop-workflow".into(), "loop-3".into(), "".into()));
     assert!(node
-        .get_workflow("loop-3")
-        .is_some_and(|i| i.push_inbox(b"x".to_vec(), 0)));
+        .start_workflow("test-loop-workflow".into(), "loop-3".into(), "")
+        .expect("init_values is a JSON object"));
+    assert!(feed(node, "loop-3", b"x"));
     wait_for_output(rx, "loop-3", b"got:x");
     assert!(
         node.stop_operative("loop-3"),
@@ -197,14 +201,16 @@ pub(super) fn loop_stop_and_removal(node: &mut RunnerNode, rx: &Receiver<RunnerM
     );
 
     // --- max_duration backstop → cancelled ---
-    assert!(node.start_workflow("test-timed-workflow".into(), "timed-1".into(), "".into()));
+    assert!(node
+        .start_workflow("test-timed-workflow".into(), "timed-1".into(), "")
+        .expect("init_values is a JSON object"));
     let (_o, done) = drain(rx, "timed-1");
     assert_eq!(done.0, "cancelled", "max_duration elapse ⇒ cancelled");
 }
 
 pub(super) fn structured_chains(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
     // --- structured multi-task chain runs in order with a barrier ---
-    assert!(node.start_workflow("test-chain-workflow".into(), "chain-1".into(), "x".into()));
+    assert!(start_fed(node, "test-chain-workflow", "chain-1", b"x"));
     let (chain_outs, done) = drain(rx, "chain-1");
     assert_eq!(done.0, "ok");
     assert_eq!(
@@ -214,10 +220,11 @@ pub(super) fn structured_chains(node: &mut RunnerNode, rx: &Receiver<RunnerMessa
     );
 
     // --- structured parallel static cells + barrier + per-cell state ---
-    assert!(node.start_workflow(
-        "test-fan-workflow".into(),
-        "fan-1".into(),
-        "a,bb,ccc,dddd".into(),
+    assert!(start_fed(
+        node,
+        "test-fan-workflow",
+        "fan-1",
+        b"a,bb,ccc,dddd"
     ));
     let (mut fan_outs, done) = drain(rx, "fan-1");
     assert_eq!(done.0, "ok");
@@ -234,7 +241,7 @@ pub(super) fn structured_chains(node: &mut RunnerNode, rx: &Receiver<RunnerMessa
     assert_eq!(fan_outs, expected);
 
     // --- hybrid channel: inter-task output also routed to a plugin sink ---
-    assert!(node.start_workflow("test-hybrid-workflow".into(), "hybrid-1".into(), "z".into()));
+    assert!(start_fed(node, "test-hybrid-workflow", "hybrid-1", b"z"));
     let (mut hybrid_outs, done) = drain(rx, "hybrid-1");
     assert_eq!(done.0, "ok");
     hybrid_outs.sort();
@@ -246,11 +253,12 @@ pub(super) fn structured_chains(node: &mut RunnerNode, rx: &Receiver<RunnerMessa
 }
 
 pub(super) fn add_operative_routing(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
-    // --- AddOperative --kind workflow routes to the workflow path ---
+    // --- AddOperative --kind workflow routes to the workflow path; its
+    // init_values are state, never the first message ---
     let add = AddOperative {
         operative_id: "workflow-via-add".into(),
         factory_id: "test-emit-workflow".into(),
-        init_values: "argz".into(),
+        init_values: "{}".into(),
         kind: "workflow".into(),
         resume_cell_count: 0,
         task_journal: None,
@@ -262,9 +270,27 @@ pub(super) fn add_operative_routing(node: &mut RunnerNode, rx: &Receiver<RunnerM
         errors.is_empty(),
         "AddOperative --kind workflow should not error: {errors:?}"
     );
+    assert!(feed(node, "workflow-via-add", b"argz"));
     let (outs, done) = drain(rx, "workflow-via-add");
     assert_eq!(outs, vec![b"argz".to_vec()]);
     assert_eq!(done.0, "ok");
+
+    // --- init_values that are not a JSON object are refused at the bind ---
+    let add_text = AddOperative {
+        operative_id: "workflow-text-init".into(),
+        factory_id: "test-emit-workflow".into(),
+        init_values: "argz".into(),
+        kind: "workflow".into(),
+        ..Default::default()
+    };
+    let mut errors_text = Vec::new();
+    add_text.handle(node, "", &mut errors_text);
+    assert_eq!(errors_text.len(), 1, "{errors_text:?}");
+    assert!(errors_text[0].contains("init_values"), "{errors_text:?}");
+    assert!(
+        node.get_workflow("workflow-text-init").is_none(),
+        "a refused document starts nothing"
+    );
 
     // --- AddOperative --kind workflow for an unregistered factory reports it ---
     let add_bad = AddOperative {

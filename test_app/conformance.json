@@ -101,7 +101,9 @@
     ],
     "workflow": [
       "spawn_requester",
+      "spawn_once_requester",
       "echo_workflow",
+      "typed_once_workflow",
       "commit_block_workflow",
       "sync_durable_workflow",
       "optout_commit_block",
@@ -112,6 +114,7 @@
       "chat_loop_workflow",
       "stateless_loop_workflow",
       "chat_rewind_workflow",
+      "reply_block_loop_workflow",
       "retry_workflow",
       "branch_workflow",
       "diamond_workflow",
