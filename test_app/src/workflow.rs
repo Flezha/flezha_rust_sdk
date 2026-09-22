@@ -349,6 +349,51 @@ impl WorkflowOperative for SagaBlockWorkflow {
     }
 }
 
+// `keyed_block_workflow` / `keyed_saga_workflow`: the entry's comma-separated
+// key list is split into one value per key, and a `key_by` on that value mints
+// one Cell per key of a durable compensable tasklet that declares no keys; each
+// Cell commits one idempotent change. The third tasklet blocks until the
+// release env, or fails, so the keyed stage is rolled back once per key.
+stateless_step!(KeySplit, "key_split", |input, ctx| {
+    for key in input.split(',') {
+        ctx.emit::<String>(key.to_string())?;
+    }
+    Ok(())
+});
+durable_step!(KeyedCommit, "keyed_commit", compensate: |_ctx| Ok(()));
+stateless_step!(KeyedFail, "keyed_fail", |_input, _ctx| Err(TaskletError::Custom(
+    "keyed_fail always fails".into()
+)));
+
+fn keyed_commits(c: &ChannelBuilder) -> Stream<'_, String> {
+    c.input::<String>("in")
+        .into::<KeySplit>()
+        .named("keys")
+        .key_by(|key: &String| key.clone())
+        .into::<KeyedCommit>()
+        .named("committed")
+}
+
+pub(crate) struct KeyedBlockWorkflow;
+impl WorkflowOperative for KeyedBlockWorkflow {
+    fn factory_id() -> &'static str {
+        "keyed_block_workflow"
+    }
+    fn channels(c: &ChannelBuilder) {
+        keyed_commits(c).into::<BlockB>();
+    }
+}
+
+pub(crate) struct KeyedSagaWorkflow;
+impl WorkflowOperative for KeyedSagaWorkflow {
+    fn factory_id() -> &'static str {
+        "keyed_saga_workflow"
+    }
+    fn channels(c: &ChannelBuilder) {
+        keyed_commits(c).into::<KeyedFail>();
+    }
+}
+
 // `outbox_block_workflow`: the transactional-outbox fixture
 // (`workflow-staged-commit-and-outbox`). Task A commits durable state AND emits
 // plugin-bound output on a hybrid channel — STAGED, so it reaches the sink only

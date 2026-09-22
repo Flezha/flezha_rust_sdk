@@ -2,7 +2,7 @@
 //! author's `channels` against a `ChannelBuilder` and validates the chain.
 //! The spec/DAG data structures live in `flz_core::workflow::spec`.
 
-use flz_core::operative::topology::{CellMode, OperativeTopology};
+use flz_core::operative::topology::OperativeTopology;
 pub use flz_core::workflow::spec::*;
 use flz_core::workflow::LoopMode;
 
@@ -123,8 +123,7 @@ fn refuse_stream_settings(
 /// Resolve the execution DAG of a structured workflow's tasklets and refuse
 /// anything outside the shared graph-shape rule (`sdk-graph-authoring`): an
 /// entry-rooted connected acyclic graph (several entry channels, fan-out and
-/// fan-in all legal) with at most one output channel per tasklet, no dynamic
-/// cell mode.
+/// fan-in all legal) with at most one output channel per tasklet.
 ///
 /// Nodes come out in **Kahn topological order** from the roots, so every
 /// producer's index precedes its consumers' — for a join, *all* of them. That
@@ -134,7 +133,6 @@ fn build_dag(
     factory_id: &'static str,
     topology: &OperativeTopology,
 ) -> Result<TaskDag, BuildWorkflowError> {
-    refuse_dynamic_cells(factory_id, topology)?;
     refuse_multiple_outputs(factory_id, topology)?;
     let entries = topology.entry_consumers();
     if entries.is_empty() {
@@ -171,22 +169,6 @@ fn build_dag(
     }
 
     Ok(TaskDag::from_walk(shape, entries))
-}
-
-/// Workflow has no `dynamic_cells?` capability.
-fn refuse_dynamic_cells(
-    factory_id: &'static str,
-    topology: &OperativeTopology,
-) -> Result<(), BuildWorkflowError> {
-    for task in &topology.tasklets {
-        if task.mode == CellMode::Dynamic {
-            return Err(BuildWorkflowError::DynamicCells {
-                factory_id,
-                tasklet: task.name.to_string(),
-            });
-        }
-    }
-    Ok(())
 }
 
 /// A tasklet producing two channels is unroutable (the topology keeps one

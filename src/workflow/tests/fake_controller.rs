@@ -193,6 +193,10 @@ pub(crate) fn start_resumable(
     owed_inbox: u32,
     journal: Option<flz_core::workflow::instance::JournalResume>,
 ) -> Result<bool, flz_core::Error> {
+    // A duplicate never initializes twice, as `AddOperative` guards it.
+    if node.has_operative(&id) {
+        return Ok(true);
+    }
     let resume = flz_core::workflow::Resume {
         expected: expected as usize,
         owed_inbox,

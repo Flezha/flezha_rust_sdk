@@ -461,7 +461,7 @@ fn dag_topology_is_validated() {
 }
 
 #[test]
-fn dynamic_cell_tasklet_is_rejected() {
+fn a_keyed_edge_makes_a_workflow_tasklet_dynamic() {
     #[derive(Default)]
     struct DynTask;
     impl Tasklet for DynTask {
@@ -490,17 +490,23 @@ fn dynamic_cell_tasklet_is_rejected() {
             "test-dyn-workflow"
         }
         fn channels(c: &ChannelBuilder) {
-            // The key rides an inter-tasklet edge: a keyed ENTRY edge is
-            // refused earlier, by the workflow seed's own rule.
             c.input::<String>("in")
                 .into::<EchoTask>()
                 .key_by(|s: &String| s.clone())
                 .into::<DynTask>();
         }
     }
-    let err = spec::build_spec::<DynWorkflow>().expect_err("dynamic cells must be refused");
-    assert!(
-        matches!(err, spec::BuildWorkflowError::DynamicCells { .. }),
-        "expected DynamicCells, got {err:?}"
+    let topology = spec::build_spec::<DynWorkflow>().expect("a keyed edge registers");
+    let keyed = topology.tasklet_name_to_id["workflow_dyn_op"];
+    assert_eq!(
+        topology.tasklets[keyed as usize].mode,
+        flz_core::operative::topology::CellMode::Dynamic
     );
+    let instance =
+        flz_core::operative::instance::OperativeInstance::new(topology, "dyn-workflow-1".into());
+    assert!(
+        instance.cells[keyed as usize].is_empty(),
+        "no Cell before a pass"
+    );
+    assert!(instance.dynamic_registries[keyed as usize].is_some());
 }

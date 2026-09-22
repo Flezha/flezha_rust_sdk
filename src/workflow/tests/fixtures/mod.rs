@@ -35,6 +35,7 @@ macro_rules! string_task {
 
 mod entrance;
 mod fan_in;
+mod keyed;
 mod lifecycle;
 mod outbox;
 mod retry;
@@ -43,6 +44,7 @@ mod structured;
 
 pub(crate) use entrance::*;
 pub(crate) use fan_in::*;
+pub(crate) use keyed::*;
 pub(crate) use lifecycle::*;
 pub(crate) use outbox::*;
 pub(crate) use retry::*;

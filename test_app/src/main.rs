@@ -15,7 +15,7 @@ pub(crate) use flezha_runner::tasklet::{
     EventTimeFrom, Tasklet, TaskletCtx, TaskletError, TimeExtractor,
 };
 pub(crate) use flezha_runner::{
-    ChannelBuilder, Flezha, FlezhaRunner, LoopMode, OverflowPolicy, StreamOperative,
+    ChannelBuilder, Flezha, FlezhaRunner, LoopMode, OverflowPolicy, Stream, StreamOperative,
     WorkflowOperative,
 };
 pub(crate) use serde::{Deserialize, Serialize};
@@ -119,6 +119,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register_factory(OptOutCommitBlockWorkflow)?
         .register_factory(TierCommitBlockWorkflow)?
         .register_factory(SagaBlockWorkflow)?
+        .register_factory(KeyedBlockWorkflow)?
+        .register_factory(KeyedSagaWorkflow)?
         .register_factory(OutboxBlockWorkflow)?
         .register_factory(UndoOutboxWorkflow)?
         .register_factory(ChatLoopWorkflow)?

@@ -16,6 +16,7 @@ use crate::workflow::*;
 mod durable_loop;
 mod entrance;
 mod fan_in;
+mod keyed;
 mod lifecycle;
 mod retry;
 mod saga;
@@ -94,6 +95,13 @@ fn workflow_driver_scenarios() {
     crate::register_class::<crate::WorkflowKind, BudgetOnce>().unwrap();
     crate::register_class::<crate::WorkflowKind, ItemRetryWorkflow>().unwrap();
     crate::register_class::<crate::WorkflowKind, SiblingSaga>().unwrap();
+    crate::register_class::<crate::WorkflowKind, KeyedFlow>().unwrap();
+    crate::register_class::<crate::WorkflowKind, StaticOrderFlow>().unwrap();
+    crate::register_class::<crate::WorkflowKind, KeyedSaga>().unwrap();
+    crate::register_class::<crate::WorkflowKind, KeyedBlockFlow>().unwrap();
+    crate::register_class::<crate::WorkflowKind, CappedKeyedFlow>().unwrap();
+    crate::register_class::<crate::WorkflowKind, KeyedLoopAllOrNothing>().unwrap();
+    crate::register_class::<crate::WorkflowKind, KeyedLoopKeepProgress>().unwrap();
 
     let mut node = RunnerNode::new("test-ns".to_string());
 
@@ -123,6 +131,7 @@ fn workflow_driver_scenarios() {
     durable_loop::barrier_resend(&mut node, &rx);
     entrance::entrance(&mut node, &rx);
     entrance::once_waits(&mut node, &rx);
+    keyed::keyed_cells(&mut node, &rx);
 }
 
 /// Respawn `test-chain-workflow` as a crash-resume carrying `journal` on the

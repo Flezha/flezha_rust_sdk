@@ -112,6 +112,8 @@
       "optout_commit_block",
       "tier_commit_block_workflow",
       "saga_block_workflow",
+      "keyed_block_workflow",
+      "keyed_saga_workflow",
       "outbox_block_workflow",
       "undo_outbox_workflow",
       "chat_loop_workflow",
