@@ -332,8 +332,7 @@ fn a_zero_interval_is_refused() {
         .keyed()
         .sink_named("out");
     let err = build_topology("checkpoint_zero", cb)
-        .err()
-        .expect("an interval that closes every zero inputs is not an interval");
+        .expect_err("an interval that closes every zero inputs is not an interval");
 
     assert!(err
         .errors
@@ -369,8 +368,7 @@ fn a_dropping_policy_under_the_tier_is_refused_naming_the_channel() {
             .sink_named("out");
 
         let err = build_topology("tier_sheds", cb)
-            .err()
-            .expect("a shedding channel under the tier must fail");
+            .expect_err("a shedding channel under the tier must fail");
 
         assert!(
             err.errors.iter().any(|e| matches!(
@@ -409,8 +407,7 @@ fn checkpoint_ack_without_the_tier_is_refused() {
         .sink_named("out");
 
     let err = build_topology("checkpoint_no_tier", cb)
-        .err()
-        .expect("checkpoint_ack without the tier must fail");
+        .expect_err("checkpoint_ack without the tier must fail");
 
     assert!(err
         .errors
@@ -426,8 +423,7 @@ fn correction_without_the_tier_is_refused() {
         "correction_no_tier",
         correction_builder::<EventTimeTask>(600_000, false),
     )
-    .err()
-    .expect("correction without the tier must fail");
+    .expect_err("correction without the tier must fail");
 
     assert!(err
         .errors
@@ -443,8 +439,7 @@ fn correction_without_an_event_time_clock_is_refused() {
         "correction_wall_clock",
         correction_builder::<TierTask>(600_000, true),
     )
-    .err()
-    .expect("correction without an event-time clock must fail");
+    .expect_err("correction without an event-time clock must fail");
 
     // The refusal names the clock the record spells, not the Rust type.
     assert!(err.errors.iter().any(|e| matches!(
@@ -459,8 +454,7 @@ fn a_zero_correction_window_is_refused() {
         "correction_zero",
         correction_builder::<EventTimeTask>(0, true),
     )
-    .err()
-    .expect("a zero window must fail");
+    .expect_err("a zero window must fail");
 
     assert!(err
         .errors

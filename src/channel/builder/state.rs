@@ -15,7 +15,7 @@ use crate::tasklet::Tasklet;
 
 /// Type-erased dispatcher factory for one Tasklet. Stored on
 /// `BuilderState::tasklets` and consumed by `build_topology` to produce
-/// per-cell slots in each `StreamInstance`.
+/// per-cell slots in each `OperativeInstance`.
 pub(crate) struct TaskletEntry {
     /// Node identity: the tasklet's `name()`, or the explicit node name
     /// given at wiring time (`into_named`). Feeds everything `name()` feeds —
@@ -29,8 +29,8 @@ pub(crate) struct TaskletEntry {
     pub named: bool,
     pub cell_keys: Vec<&'static str>,
     pub cells_for_overridden: bool,
-    /// `Tasklet::COMPENSATE_OVERRIDDEN` captured at registration time. The
-    /// workflow driver consults the resolved descriptor flag to fire saga
+    /// `Tasklet::COMPENSATE_OVERRIDDEN` captured at registration time. A
+    /// workflow run consults the resolved descriptor flag to fire saga
     /// compensation only for tasklets that declared a `compensate` hook.
     pub compensate_overridden: bool,
     /// Channels this node consumes. Several = a fan-in, or a merge whose

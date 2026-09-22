@@ -22,7 +22,7 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use flezha_runner::channel::ChannelBuilder;
 use flezha_runner::operative::builder::build_topology_for;
 use flezha_runner::operative::registry::OperativeRegistry;
-use flezha_runner::operative::StreamInstance;
+use flezha_runner::operative::OperativeInstance;
 use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
 use flezha_runner::tasklet::{Tasklet, TaskletCtx, TaskletError};
 use flezha_runner::{__dispatch_internals as bi, OverflowPolicy, StreamOperative};
@@ -362,8 +362,8 @@ fn run_bench<R: StreamOperative>(
 ) {
     let topology = build_topology_for::<R>().expect("topology");
     let registry = Arc::new(OperativeRegistry::new());
-    let inst = StreamInstance::new(topology, Arc::from(instance_id));
-    registry.register_stream(inst);
+    let inst = OperativeInstance::new(topology, Arc::from(instance_id));
+    registry.register(inst);
     let handle = bi::OperativeDispatchHandle {
         registry: Arc::clone(&registry),
     };

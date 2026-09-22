@@ -463,14 +463,19 @@ mod macro_twin_tests {
         ] {
             assert!(ids.contains(&id), "registered operative `{id}` missing");
         }
+        let class = flezha_runner::operative::registry::get_class;
         assert!(
-            flezha_runner::workflow::registry::get_class("sugar_workflow").is_some(),
-            "the workflow short form registers in the workflow registry"
+            class("sugar_workflow").is_some_and(|c| c.workflow.is_some()),
+            "the workflow short form registers as a workflow class"
         );
-        let per_input = flezha_runner::workflow::registry::get_class("sugar_workflow_per_input")
-            .expect("the looping short form registers");
+        let per_input =
+            class("sugar_workflow_per_input").expect("the looping short form registers");
         assert_eq!(
-            per_input.loop_mode,
+            per_input
+                .workflow
+                .as_ref()
+                .expect("a workflow class")
+                .loop_mode,
             LoopMode::PerInput,
             "the short form carries the loop mode it wrote"
         );

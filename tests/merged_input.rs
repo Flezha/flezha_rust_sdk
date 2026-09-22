@@ -440,8 +440,7 @@ impl StreamOperative for OneSourceMergeOperative {
 #[test]
 fn a_merge_with_fewer_than_two_sources_is_refused() {
     let err = build_topology_for::<OneSourceMergeOperative>()
-        .err()
-        .expect("a one-source merge must fail definition");
+        .expect_err("a one-source merge must fail definition");
     assert!(
         err.errors.iter().any(|e| matches!(
             e,
@@ -470,8 +469,7 @@ impl StreamOperative for DuplicateSourceMergeOperative {
 #[test]
 fn a_duplicated_merge_source_is_refused_naming_the_channel() {
     let err = build_topology_for::<DuplicateSourceMergeOperative>()
-        .err()
-        .expect("a duplicated merge source must fail definition");
+        .expect_err("a duplicated merge source must fail definition");
     assert!(
         err.errors.iter().any(
             |e| matches!(e, TopologyIssue::DuplicateMergeSource { channel } if channel == "data")
@@ -507,8 +505,7 @@ impl StreamOperative for RewiredMergeSourceOperative {
 #[test]
 fn a_merge_source_may_not_re_wire_an_edge_that_is_already_declared() {
     let err = build_topology_for::<RewiredMergeSourceOperative>()
-        .err()
-        .expect("re-wiring a declared edge with a second mapping must fail definition");
+        .expect_err("re-wiring a declared edge with a second mapping must fail definition");
     assert!(
         err.errors.iter().any(|e| matches!(
             e,
@@ -540,8 +537,7 @@ impl StreamOperative for PlainThenMergedOperative {
 #[test]
 fn a_merge_may_not_re_wire_an_edge_a_plain_into_already_declared() {
     let err = build_topology_for::<PlainThenMergedOperative>()
-        .err()
-        .expect("merging onto an edge a plain `.into` declared must fail definition");
+        .expect_err("merging onto an edge a plain `.into` declared must fail definition");
     assert!(
         err.errors.iter().any(|e| matches!(
             e,

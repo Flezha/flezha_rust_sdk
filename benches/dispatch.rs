@@ -19,7 +19,7 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use flezha_runner::channel::ChannelBuilder;
 use flezha_runner::operative::builder::build_topology_for;
 use flezha_runner::operative::registry::OperativeRegistry;
-use flezha_runner::operative::StreamInstance;
+use flezha_runner::operative::OperativeInstance;
 use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
 use flezha_runner::tasklet::{Tasklet, TaskletCtx, TaskletError};
 use flezha_runner::{__dispatch_internals as bi, OverflowPolicy, StreamOperative};
@@ -104,8 +104,8 @@ fn regression_bench(c: &mut Criterion) {
         .map(|i| format!("regression-{}", i))
         .collect();
     for id in &instance_ids {
-        let inst = StreamInstance::new(Arc::clone(&topology), Arc::from(id.as_str()));
-        registry.register_stream(inst);
+        let inst = OperativeInstance::new(Arc::clone(&topology), Arc::from(id.as_str()));
+        registry.register(inst);
     }
 
     let handle = bi::OperativeDispatchHandle {
@@ -351,8 +351,8 @@ fn cell_stress_bench(c: &mut Criterion) {
             .map(|i| format!("cell-stress-{}", i))
             .collect();
         for id in &instance_ids {
-            let inst = StreamInstance::new(Arc::clone(&topology), Arc::from(id.as_str()));
-            registry.register_stream(inst);
+            let inst = OperativeInstance::new(Arc::clone(&topology), Arc::from(id.as_str()));
+            registry.register(inst);
         }
         let handle = bi::OperativeDispatchHandle {
             registry: Arc::clone(&registry),

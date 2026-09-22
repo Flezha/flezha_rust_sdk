@@ -458,10 +458,12 @@ impl<T: StreamOperative> Roles<T> {
 /// name the author registers is also a tasklet.
 #[test]
 fn a_short_form_is_an_operative_beside_its_tasklet() {
-    assert!(<Roles<GeneratedNaming>>::STREAM);
-    assert!(!<Roles<GeneratedNaming>>::TASKLET);
-    assert!(<Roles<GeneratedNamingTasklet>>::TASKLET);
-    assert!(!<Roles<GeneratedNamingTasklet>>::STREAM);
+    const {
+        assert!(<Roles<GeneratedNaming>>::STREAM);
+        assert!(!<Roles<GeneratedNaming>>::TASKLET);
+        assert!(<Roles<GeneratedNamingTasklet>>::TASKLET);
+        assert!(!<Roles<GeneratedNamingTasklet>>::STREAM);
+    }
     // The tasklet is named after the factory id, so ejecting to the full
     // form keeps every cell's state path.
     assert_eq!(
@@ -639,12 +641,13 @@ fn place_order(order: String) -> String {
 /// short form would then declare a shape the author never wrote.
 #[test]
 fn a_workflow_short_form_is_a_once_workflow_wiring_its_entry_to_its_sink() {
-    let spec =
+    let class =
         flezha_runner::workflow::spec::build_spec::<PlaceOrder>().expect("the short form builds");
+    let spec = class.workflow.as_ref().expect("a workflow class");
 
-    assert_eq!(channel_names(&spec.topology), vec!["order", "placed"]);
+    assert_eq!(channel_names(&class), vec!["order", "placed"]);
     assert_eq!(spec.loop_mode, flezha_runner::LoopMode::Once);
-    assert!(spec.persistence_enabled);
+    assert!(class.persistence_enabled_const);
     assert_eq!(spec.max_duration, None);
 
     // The kind is read from the declaration, never named by the call.

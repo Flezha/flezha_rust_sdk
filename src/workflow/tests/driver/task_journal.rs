@@ -46,30 +46,29 @@ pub(super) fn durable_wal_and_journal(node: &mut RunnerNode, rx: &Receiver<Runne
     // Spawn as a "respawn" expecting one Cell restore: the driver builds
     // and registers its Cells, then parks on the resume gate — nothing
     // runs yet because no restore has landed.
-    assert!(node
-        .start_workflow_resumable(
-            "test-fan-workflow".into(),
-            "resume-inst".into(),
-            "",
-            1,
-            0,
-            None,
-        )
-        .expect("init_values is a JSON object"));
+    assert!(start_resumable(
+        node,
+        "test-fan-workflow".into(),
+        "resume-inst".into(),
+        "",
+        1,
+        0,
+        None,
+    )
+    .expect("init_values is a JSON object"));
     assert!(feed(node, "resume-inst", b"a,bb"));
     // The workflow Cells are reachable by wire identity: the stream
-    // lookup only scans StreamInstance cells, so the restore handler
+    // lookup only scans OperativeInstance cells, so the restore handler
     // finds a workflow Cell by identity or not at all.
     let even_id =
         crate::cell::flusher::encode_cell_identity("resume-inst", "workflow_fan_op", "even");
-    let (resume_instance, _slot) = node
-        .find_workflow_cell(&even_id)
+    let (resume_instance, _slot) = find_cell(node, &even_id)
         .expect("a durable workflow Cell is reachable by the restore handler");
     // Release one restore, exactly as the RestoreInitState handler does after
     // applying a persisted Cell: the parked driver wakes and runs to
     // completion (resume-not-cold-start is proven end-to-end in the Elixir
     // integration test, which does the real WAL round-trip).
-    resume_instance.note_restored();
+    restored(&resume_instance);
     let (_o, done) = drain(rx, "resume-inst");
     assert_eq!(
         done.0, "ok",

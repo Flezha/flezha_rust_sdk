@@ -101,6 +101,32 @@ pub(super) fn cell_retry(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
     assert_eq!(drain_comp_log(), vec!["undo-retry-reserve".to_string()]);
 }
 
+pub(super) fn item_retry(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
+    // --- a failed item is re-handed with the items after it; the item
+    // before it already ran and is never run again ---
+    ITEM_ATTEMPTS.lock().unwrap().clear();
+    assert!(start_fed(
+        node,
+        "test-item-retry-workflow",
+        "item-retry",
+        b"a,b,c"
+    ));
+    let (mut outs, done) = drain(rx, "item-retry");
+    assert_eq!((done.0.as_str(), done.1.as_str()), ("ok", ""));
+    outs.sort();
+    assert_eq!(
+        outs,
+        vec![b"item:a".to_vec(), b"item:b".to_vec(), b"item:c".to_vec()]
+    );
+    let attempts = ITEM_ATTEMPTS.lock().unwrap().clone();
+    let runs = |item: &str| attempts.iter().filter(|seen| *seen == item).count();
+    assert_eq!(
+        (runs("a"), runs("b"), runs("c")),
+        (1, 2, 1),
+        "only the failed item re-ran: {attempts:?}"
+    );
+}
+
 pub(super) fn retry_stop_and_stage(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
     // --- an external stop interrupts a waiting backoff (30 s base: the run
     // can only end inside `drain`'s deadline by observing the cancel in the
@@ -113,14 +139,19 @@ pub(super) fn retry_stop_and_stage(node: &mut RunnerNode, rx: &Receiver<RunnerMe
         "retry-stop",
         b"a,bb"
     ));
-    let stop_target = node
-        .get_workflow("retry-stop")
-        .expect("live instance accepts cancel");
+    let stop_target = instance(node, "retry-stop").expect("live instance accepts cancel");
+    let odd_cell = stop_target
+        .cells
+        .iter()
+        .flatten()
+        .find(|slot| slot.cell_key.as_deref() == Some("odd"))
+        .map(std::sync::Arc::clone)
+        .expect("the flaky stage's odd cell");
     let stopper = std::thread::spawn(move || {
         while ODD_ATTEMPTS.load(Ordering::SeqCst) == 0 {
             std::thread::yield_now();
         }
-        stop_target.request_cancel();
+        flz_core::workflow::stop(&stop_target);
     });
     let (_o, done) = drain(rx, "retry-stop");
     stopper.join().expect("stopper thread");
@@ -134,6 +165,15 @@ pub(super) fn retry_stop_and_stage(node: &mut RunnerNode, rx: &Receiver<RunnerMe
         drain_comp_log(),
         vec!["undo-retry-reserve".to_string()],
         "a cancelled ladder takes the normal abnormal-exit path"
+    );
+    assert!(
+        odd_cell.pending_retry.lock().unwrap().is_empty(),
+        "the stop dropped the items the backoff held"
+    );
+    assert_eq!(
+        crate::runner::poll_core::global().cancel_retry(&odd_cell),
+        0,
+        "the stop disarmed the backoff's wake: nothing is left to promote"
     );
 
     // --- a stage step is an activation the SDK's workers run, and the

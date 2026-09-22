@@ -699,9 +699,7 @@ fn topology_of(row: &Row) -> Result<Arc<OperativeTopology>, Vec<String>> {
     }
     load(row);
     if is_workflow(row) {
-        return build_spec::<RowWorkflow>()
-            .map(|spec| spec.topology)
-            .map_err(|e| vec![refusal_name(&e.to_string())]);
+        return build_spec::<RowWorkflow>().map_err(|e| vec![refusal_name(&e.to_string())]);
     }
     let built = if row.steps.contains("class.persistent") {
         build_topology_for::<RowClass>()
@@ -722,9 +720,9 @@ fn cited(topology: &str) -> Result<Arc<OperativeTopology>, Vec<String>> {
     match topology {
         "hybrid_channel" => build_topology_for::<HybridChannelOperative>()
             .map_err(|e| e.errors.iter().map(|i| i.name().to_string()).collect()),
-        "commit_block_chain" => build_spec::<TierCommitBlockWorkflow>()
-            .map_err(|e| vec![e.to_string()])
-            .map(|spec| spec.topology),
+        "commit_block_chain" => {
+            build_spec::<TierCommitBlockWorkflow>().map_err(|e| vec![e.to_string()])
+        }
         other => panic!("the fixture cites a topology this app does not declare: {other}"),
     }
 }

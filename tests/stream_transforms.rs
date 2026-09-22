@@ -408,7 +408,7 @@ refusal!(
 
 /// The live Cell keys of the operative's one dynamic Tasklet, sorted —
 /// the runtime's own record of what the edge key produced.
-fn cell_keys(instance: &Arc<flezha_runner::operative::StreamInstance>) -> Vec<String> {
+fn cell_keys(instance: &Arc<flezha_runner::operative::OperativeInstance>) -> Vec<String> {
     let registry = instance.dynamic_registries[0]
         .as_ref()
         .expect("the keyed edge made the consumer dynamic");

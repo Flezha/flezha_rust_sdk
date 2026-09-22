@@ -174,8 +174,7 @@ impl StreamOperative for UnannotatedOperative {
 #[test]
 fn unannotated_static_mode_rejection() {
     let err = build_topology_for::<UnannotatedOperative>()
-        .err()
-        .expect("expected cells_for-missing rejection");
+        .expect_err("expected cells_for-missing rejection");
     let msg = format!("{:?}", err.errors);
     assert!(
         msg.contains("CellsForMissing"),
@@ -202,8 +201,7 @@ impl StreamOperative for ZeroCapacityOperative {
 #[test]
 fn capacity_zero_is_rejected_at_operative_startup() {
     let err = build_topology_for::<ZeroCapacityOperative>()
-        .err()
-        .expect("expected mailbox-capacity-zero rejection");
+        .expect_err("expected mailbox-capacity-zero rejection");
     let msg = format!("{:?}", err.errors);
     assert!(
         msg.contains("MailboxCapacityZero"),
@@ -251,7 +249,7 @@ fn default_capacity_is_1024_in_topology() {
 fn operative_instance_creates_cells() {
     let topology = build_topology_for::<StaticOperative>().expect("topology");
     let instance =
-        flezha_runner::operative::StreamInstance::new(topology, Arc::from("instance-id"));
+        flezha_runner::operative::OperativeInstance::new(topology, Arc::from("instance-id"));
     assert_eq!(instance.cells.len(), 1);
     assert_eq!(instance.cells[0].len(), 3);
     assert_eq!(instance.cell_key_to_idx[0].get("a"), Some(&0));

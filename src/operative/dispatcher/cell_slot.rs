@@ -8,7 +8,6 @@ use super::{CellState, EdgeFacts, FlushWiring, TaskletDispatcherImpl};
 use crate::cell::flusher::{CellFlusher, FlushableBuffer, TypedBuffer};
 use crate::cell::{CellSlot, TaskletDispatcher};
 use crate::channel::builder::BuildCellArgs;
-use crate::channel::ChannelKind;
 use crate::operative::topology::OperativeTopology;
 use crate::tasklet::change::NoChange;
 use crate::tasklet::Tasklet;
@@ -151,9 +150,6 @@ fn build_dispatcher<S: Tasklet>(
         args.tasklet_id,
         EdgeFacts {
             output_channel_id: tasklet_desc.output_channel_id,
-            output_channel_kind: output_channel
-                .map(|c| c.kind)
-                .unwrap_or(ChannelKind::InterTasklet),
             output_channel_name: output_channel.map(|c| Arc::clone(&c.name)),
             output_channel_keyed: output_channel.map(|c| c.keyed).unwrap_or(false),
             input_channel_name: input_channel.map(|c| Arc::clone(&c.name)),
@@ -169,6 +165,7 @@ fn build_dispatcher<S: Tasklet>(
             effectively_once: topology.effectively_once,
             checkpoint: topology.ack_granularity.checkpoint(),
             correction: topology.correction,
+            workflow: topology.workflow.is_some(),
         },
     )) as Arc<dyn TaskletDispatcher>
 }

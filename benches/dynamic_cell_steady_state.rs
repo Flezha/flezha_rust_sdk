@@ -10,7 +10,7 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use flezha_runner::channel::ChannelBuilder;
 use flezha_runner::operative::builder::build_topology_for;
 use flezha_runner::operative::registry::OperativeRegistry;
-use flezha_runner::operative::StreamInstance;
+use flezha_runner::operative::OperativeInstance;
 use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
 use flezha_runner::tasklet::{Tasklet, TaskletCtx, TaskletError};
 use flezha_runner::{__dispatch_internals as bi, OverflowPolicy, StreamOperative};
@@ -69,7 +69,7 @@ fn steady_state_bench(c: &mut Criterion) {
 
     let topology = build_topology_for::<SteadyDynOperative>().expect("topology");
     let registry = Arc::new(OperativeRegistry::new());
-    registry.register_stream(StreamInstance::new(
+    registry.register(OperativeInstance::new(
         Arc::clone(&topology),
         Arc::from("steady-dyn-0"),
     ));

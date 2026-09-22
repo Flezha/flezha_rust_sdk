@@ -113,6 +113,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register_factory(SugarStateOnly)?
         .register_factory(EchoWorkflow)?
         .register_factory(TimerRefusedWorkflow)?
+        .register_factory(StaticCellWorkflow)?
         .register_factory(CommitBlockWorkflow)?
         .register_factory(SyncDurableWorkflow)?
         .register_factory(OptOutCommitBlockWorkflow)?

@@ -423,7 +423,7 @@ pub trait Tasklet: Send + Sync + 'static + Default {
 
     /// Optional saga **compensation** hook (workflow operatives only). An
     /// tasklet whose `run` commits a reversible side effect declares this to
-    /// undo it. The workflow driver fires it ONLY during abnormal-termination
+    /// undo it. The workflow fires it ONLY during abnormal-termination
     /// rollback — never on a clean `ok`, never for a stream operative — once
     /// per cell that ran, in reverse completion order, handing back that
     /// cell's own collected outputs (zero-copy `Arc`s) and its
@@ -432,7 +432,7 @@ pub trait Tasklet: Send + Sync + 'static + Default {
     ///
     /// The default is a no-op; a tasklet that overrides this MUST also set
     /// [`COMPENSATE_OVERRIDDEN`](Self::COMPENSATE_OVERRIDDEN) `= true` so the
-    /// workflow driver registers it as compensable (hookless tasklets are
+    /// workflow registers it as compensable (hookless tasklets are
     /// skipped during rollback).
     fn compensate(
         &mut self,
@@ -445,7 +445,7 @@ pub trait Tasklet: Send + Sync + 'static + Default {
 
     /// Override-detection sentinel for [`Self::compensate`]. Default `false`; an
     /// tasklet that overrides `compensate` MUST set this to `true` so the
-    /// workflow driver knows the tasklet participates in saga rollback.
+    /// workflow knows the tasklet participates in saga rollback.
     const COMPENSATE_OVERRIDDEN: bool = false;
 }
 

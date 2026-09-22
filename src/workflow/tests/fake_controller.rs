@@ -1,4 +1,4 @@
-//! The controller half the driver runs against: what a barrier send, a
+//! The controller half a workflow run talks to: what a barrier send, a
 //! journal entry and a lost ack look like from the runner's side, plus the
 //! drains that turn `RunnerMessage`s into a scenario's observations.
 
@@ -35,7 +35,7 @@ pub(crate) static JOURNALED_REFS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 /// Per operative, how many barriers lose their first ack on the way back
 /// (`usize::MAX` = every send of every barrier). A lost ack is the real
 /// controller's: the entry is journaled and its outbox flushed, only the
-/// reply never reaches the driver.
+/// reply never reaches the runner.
 pub(crate) static LOST_ACKS: Mutex<Vec<(String, usize)>> = Mutex::new(Vec::new());
 
 /// Every `EmitWorkflowOutput` the drain helpers saw — output that went
@@ -137,8 +137,8 @@ pub(crate) fn wire_emits_for(id: &str) -> Vec<Vec<u8>> {
 }
 
 /// Fake-controller half of every SDK-initiated control request: record the
-/// frame and, for the two durability handshakes, wake the blocked driver
-/// with an ack success. Returns the outbox the (real) controller would flush
+/// frame and, for the two durability handshakes, answer the barrier with an
+/// ack success. Returns the outbox the (real) controller would flush
 /// to the plugins AFTER that durable point — the drain helpers append it to
 /// the observed output, so a staged operative's assertions still describe
 /// what a plugin finally sees. A park is one-way: nothing to ack.
@@ -180,9 +180,75 @@ pub(crate) fn control_request_operative(command: &crate::pb::command_request::Co
     }
 }
 
+/// Bind workflow `id` of `factory` as `AddOperative` does, resuming with
+/// `expected` Cell restores, `owed_inbox` re-forwarded messages and the
+/// journal; `Ok(false)` names an unregistered class, `Err` a refused
+/// `init_values`.
+pub(crate) fn start_resumable(
+    node: &RunnerNode,
+    factory: String,
+    id: String,
+    init_values: &str,
+    expected: u32,
+    owed_inbox: u32,
+    journal: Option<flz_core::workflow::instance::JournalResume>,
+) -> Result<bool, flz_core::Error> {
+    let resume = flz_core::workflow::Resume {
+        expected: expected as usize,
+        owed_inbox,
+        journal,
+    };
+    let Some(instance) = node.start_operative(
+        factory,
+        id.clone(),
+        flz_core::operative::instance::KeyGroupRange::UNPARTITIONED,
+        resume,
+    ) else {
+        return Ok(false);
+    };
+    if let Err(e) = flz_core::command::cell_state::apply_init_values(&instance, init_values) {
+        node.stop_operative(&id);
+        return Err(e);
+    }
+    flz_core::workflow::open(&instance);
+    Ok(true)
+}
+
+/// A fresh bind of workflow `id`.
+pub(crate) fn start(
+    node: &RunnerNode,
+    factory: String,
+    id: String,
+    init_values: &str,
+) -> Result<bool, flz_core::Error> {
+    start_resumable(node, factory, id, init_values, 0, 0, None)
+}
+
+pub(crate) fn instance(
+    node: &RunnerNode,
+    id: &str,
+) -> Option<Arc<flz_core::operative::instance::OperativeInstance>> {
+    node.get_operative(id)
+}
+
+/// A live Cell by wire identity, with its instance: where a restore lands.
+pub(crate) fn find_cell(
+    node: &RunnerNode,
+    cell_id: &[u8],
+) -> Option<(
+    Arc<flz_core::operative::instance::OperativeInstance>,
+    Arc<crate::cell::CellSlot>,
+)> {
+    node.find_cell(cell_id)
+}
+
+/// One Cell restore landed, carrying no saga marker.
+pub(crate) fn restored(instance: &flz_core::operative::instance::OperativeInstance) {
+    flz_core::workflow::restore_landed(instance, &[], false, false);
+}
+
 /// One message into workflow `id` through the entrance, on its first entry
-/// channel; `false` when no such instance is registered or its driver is
-/// gone.
+/// channel; `false` when no such instance is registered.
 pub(crate) fn feed(node: &RunnerNode, id: &str, message: &[u8]) -> bool {
     feed_on(node, id, None, message)
 }
@@ -190,33 +256,54 @@ pub(crate) fn feed(node: &RunnerNode, id: &str, message: &[u8]) -> bool {
 /// One message into workflow `id` naming `channel`, as `flz operative send
 /// --channel` does.
 pub(crate) fn feed_on(node: &RunnerNode, id: &str, channel: Option<&str>, message: &[u8]) -> bool {
-    let Some(instance) = node.get_workflow(id) else {
-        return false;
-    };
     let metadata = channel
         .map(|name| std::collections::HashMap::from([("channel".to_string(), name.to_string())]))
         .unwrap_or_default();
-    flz_core::routing::feed_workflow_frame(&instance, message.to_vec(), &metadata);
-    true
+    dispatch(node, id, message, &metadata)
 }
 
 /// One message into `instance` stamped with the input-log offset the
 /// controller would have given it.
 pub(crate) fn feed_at(
-    instance: &Arc<flz_core::workflow::instance::WorkflowInstance>,
+    instance: &Arc<flz_core::operative::instance::OperativeInstance>,
     message: &[u8],
     offset: u64,
 ) {
+    let registry = Arc::new(flz_core::operative::registry::OperativeRegistry::new());
+    registry.register(Arc::clone(instance));
     let metadata =
         std::collections::HashMap::from([("flz.offset".to_string(), offset.to_string())]);
-    flz_core::routing::feed_workflow_frame(instance, message.to_vec(), &metadata);
+    flz_core::runner::OperativeDispatchHandle { registry }.dispatch(
+        &instance.instance_id,
+        message.to_vec(),
+        &metadata,
+        flz_core::workflow::unwired_stream(),
+    );
+}
+
+/// A frame through the dispatch a stream reader makes.
+fn dispatch(
+    node: &RunnerNode,
+    id: &str,
+    message: &[u8],
+    metadata: &std::collections::HashMap<String, String>,
+) -> bool {
+    if !node.has_operative(id) {
+        return false;
+    }
+    node.operative_dispatch_handle().dispatch(
+        id,
+        message.to_vec(),
+        metadata,
+        flz_core::workflow::unwired_stream(),
+    );
+    true
 }
 
 /// Start `factory` under `id` and hand it `message` as its first input: what
 /// a spawn, a `send` or `flz operative start --text` does.
 pub(crate) fn start_fed(node: &RunnerNode, factory: &str, id: &str, message: &[u8]) -> bool {
-    node.start_workflow(factory.into(), id.into(), "")
-        .expect("init_values is a JSON object")
+    start(node, factory.into(), id.into(), "").expect("init_values is a JSON object")
         && feed(node, id, message)
 }
 
@@ -269,6 +356,31 @@ pub(crate) fn drain(
                         return (outs, ("parked".to_string(), String::new(), Vec::new()));
                     }
                 }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// A completion for `id` within `wait` fails the scenario; control requests
+/// seen meanwhile are acked as the controller would.
+pub(crate) fn assert_no_completion(rx: &Receiver<RunnerMessage>, id: &str, wait: Duration) {
+    let deadline = Instant::now() + wait;
+    while let Ok(message) = rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+        match message {
+            RunnerMessage::EmitWorkflowCompleted {
+                operative_id,
+                status,
+                ..
+            } => assert!(
+                operative_id != id,
+                "workflow {id} ended with status `{status}` instead of staying quiet"
+            ),
+            RunnerMessage::EmitControlRequest {
+                reference_id,
+                command,
+            } => {
+                let _ = ack_control_request(reference_id, *command);
             }
             _ => {}
         }

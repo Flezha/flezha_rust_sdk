@@ -159,7 +159,7 @@ impl Tasklet for MergeJoinTask {
     }
 }
 
-/// A→(B,C)→merge(D): the fan-in wired as a merge, so the driver must apply
+/// A→(B,C)→merge(D): the fan-in wired as a merge, so the run must apply
 /// each edge's mapping both where it accumulates a producer's released
 /// batch and where a resume re-seeds from the journaled handoff.
 pub(crate) struct MergeWorkflow;
@@ -179,10 +179,10 @@ impl WorkflowOperative for MergeWorkflow {
     }
 }
 
-/// The same chain whose merge mapping panics. A mapping is the one author
-/// closure on a workflow chain that runs on the driver thread rather than
-/// inside a cell invocation, so without containment its unwind would
-/// take the driver thread with it and the instance would never report.
+/// The same chain whose merge mapping panics. A mapping runs in the routing
+/// seam after its producing item, outside the tasklet's own invocation, so
+/// without containment its unwind would take the worker with it and the
+/// instance would never report.
 pub(crate) struct PanickingMergeWorkflow;
 impl WorkflowOperative for PanickingMergeWorkflow {
     fn factory_id() -> &'static str {
@@ -200,8 +200,8 @@ impl WorkflowOperative for PanickingMergeWorkflow {
     }
 }
 
-/// A plain edge `map` on an inter-tasklet edge — the same driver-thread
-/// seam a merge mapping runs on, reached without a merge.
+/// A plain edge `map` on an inter-tasklet edge — the same routing seam a
+/// merge mapping runs on, reached without a merge.
 pub(crate) struct PanickingTransformWorkflow;
 impl WorkflowOperative for PanickingTransformWorkflow {
     fn factory_id() -> &'static str {

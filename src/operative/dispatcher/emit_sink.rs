@@ -1,10 +1,8 @@
-//! The two sinks an invocation's outputs leave through.
-//!
-//! [`CellEmitSink`] serves a stream tasklet, on the connection its item
-//! rode in on; [`WorkflowCollectAdapter`] serves a structured workflow task,
-//! collecting into the driver instead. Both answer the one `EmitSink` trait,
-//! and both route a keyed plugin emit into the invocation's atomic effect
-//! record when the effectively-once tier is on.
+//! The sink an invocation's outputs leave through, [`CellEmitSink`], on the
+//! connection its item rode in on. A stream's emit is routed to its
+//! consumers and its plugin output written (or, under the effectively-once
+//! tier, captured into the invocation's atomic effect record); a workflow's
+//! is held on its pass for the stage's commit.
 
 use std::any::Any;
 use std::cell::RefCell;
@@ -16,19 +14,17 @@ use flz_core::routing::send_plugin_frame;
 use flz_transport::transport::FlezhaStream;
 
 use crate::cell::CellSlot;
-use crate::channel::{ChannelId, ChannelKind};
-use crate::operative::instance::StreamInstance;
-use crate::operative::topology::OperativeTopology;
+use crate::channel::ChannelId;
+use crate::operative::instance::OperativeInstance;
 use crate::tasklet::ctx::EmitSink;
 use crate::tasklet::TaskletError;
-use crate::workflow::WorkflowCollectSink;
 
 /// Synchronous drain of the producing cell's pending changes onto
 /// the durable WAL path, invoked before each output frame is written.
 pub(super) type FlushBeforeEmit<'a> = Box<dyn FnMut() + 'a>;
 
 /// Per-invocation emit sink, constructed fresh inside each `dispatch`
-/// call. Holds an upgraded `Arc<StreamInstance>` for the duration of the
+/// call. Holds an upgraded `Arc<OperativeInstance>` for the duration of the
 /// run; if the instance has been dropped, every emit returns
 /// `UnknownChannel`.
 pub(super) struct CellEmitSink<'a> {
@@ -48,7 +44,7 @@ pub(super) struct CellEmitSink<'a> {
     pub(super) change_seq: &'a AtomicU64,
     /// Emit ordinal within this invocation; second half of `flz.seq`.
     pub(super) emit_ordinal: u32,
-    pub(super) instance: Option<Arc<StreamInstance>>,
+    pub(super) instance: Option<Arc<OperativeInstance>>,
     pub(super) stream: Arc<FlezhaStream>,
     /// `Some` for persistence-enabled cells with the flush-before-emit
     /// knob on. Called at the top of every emit so this run's just-applied
@@ -84,10 +80,10 @@ impl<'a> CellEmitSink<'a> {
         }
     }
 
-    /// Resolve the channel descriptor + StreamInstance for the cached
+    /// Resolve the channel descriptor + OperativeInstance for the cached
     /// output channel. Returns `UnknownChannel` if either has been
     /// dropped or is unset.
-    fn resolve_channel(&self) -> Result<(Arc<StreamInstance>, ChannelId), TaskletError> {
+    fn resolve_channel(&self) -> Result<(Arc<OperativeInstance>, ChannelId), TaskletError> {
         let cid = self
             .output_channel_id
             .ok_or_else(|| self.unknown_channel())?;
@@ -120,7 +116,7 @@ impl<'a> CellEmitSink<'a> {
     /// the dispatcher thread is unaffected.
     fn emit_plugin_sink(
         &mut self,
-        instance: &StreamInstance,
+        instance: &OperativeInstance,
         descriptor: &crate::channel::ChannelDescriptor,
         sink: &crate::channel::PluginSink,
         value: &Arc<dyn Any + Send + Sync>,
@@ -142,6 +138,10 @@ impl<'a> CellEmitSink<'a> {
             }
         };
 
+        if instance.workflow.is_some() {
+            flz_core::workflow::plugin_output(self.producer, &descriptor.name, bytes);
+            return Ok(());
+        }
         if let Some(outputs) = self.effect_outputs {
             push_effect_output(outputs, &descriptor.name, key, meta, bytes);
             return Ok(());
@@ -166,6 +166,14 @@ impl<'a> EmitSink for CellEmitSink<'a> {
         key: Option<String>,
     ) -> Result<(), TaskletError> {
         self.flush_pending();
+        // A workflow tasklet with no output channel still releases what it
+        // emits: a chained loop's leaf carries it into the next pass.
+        if self.output_channel_id.is_none() {
+            if let Some(instance) = self.instance.as_ref().filter(|i| i.workflow.is_some()) {
+                flz_core::workflow::hold_emit(instance, None, &value, &self.stream, self.producer);
+                return Ok(());
+            }
+        }
         let (instance, cid) = self.resolve_channel()?;
         let descriptor =
             instance
@@ -174,6 +182,15 @@ impl<'a> EmitSink for CellEmitSink<'a> {
                 .ok_or_else(|| TaskletError::UnknownChannel {
                     channel: format!("<channel id {}>", cid),
                 })?;
+        // A workflow's plugin output rides its stage's commit as bare bytes,
+        // so `.keyed()` identity stamps have nothing to ride on.
+        if instance.workflow.is_some() && key.is_some() {
+            return Err(TaskletError::Custom(format!(
+                "keyed output identity is not supported on workflow operatives \
+                 (channel `{}`): the workflow plugin wire carries no metadata",
+                descriptor.name
+            )));
+        }
         // An inter-tasklet emit is never a replay member: the downstream
         // Tasklet receives the corrected outputs already in order, and a
         // slice it could never see the end of would hold its drain forever.
@@ -213,119 +230,14 @@ impl<'a> EmitSink for CellEmitSink<'a> {
     fn is_keyed(&self) -> bool {
         self.keyed
     }
-}
-
-/// Emit sink for the workflow sequential driver. Inter-tasklet output is
-/// **collected** for handoff to the next stage at the barrier; plugin-bound
-/// output is serialized and routed to the wire via the `WorkflowCollectSink`.
-/// Constructed fresh per `run_collecting` call, so it never threads through
-/// the stream push-dispatch mailbox path.
-pub(super) struct WorkflowCollectAdapter<'a> {
-    pub(super) sink: &'a mut dyn WorkflowCollectSink,
-    pub(super) output_channel_id: Option<ChannelId>,
-    pub(super) output_channel_kind: ChannelKind,
-    pub(super) output_channel_name: Option<&'a str>,
-    pub(super) topology: &'a OperativeTopology,
-}
-
-impl<'a> WorkflowCollectAdapter<'a> {
-    fn unknown_channel(&self) -> TaskletError {
-        TaskletError::UnknownChannel {
-            channel: self
-                .output_channel_name
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| "<unknown>".to_string()),
-        }
-    }
-
-    /// Serialize a value with the producer-edge channel's plugin sink and
-    /// route the bytes to the workflow plugin wire.
-    fn route_plugin(&mut self, value: &Arc<dyn Any + Send + Sync>) -> Result<(), TaskletError> {
-        let cid = self
-            .output_channel_id
-            .ok_or_else(|| self.unknown_channel())?;
-        let descriptor =
-            self.topology
-                .channel(cid)
-                .ok_or_else(|| TaskletError::UnknownChannel {
-                    channel: format!("<channel id {}>", cid),
-                })?;
-        let serializer = descriptor
-            .plugin_sink
-            .as_ref()
-            .map(|s| &s.serializer)
-            .ok_or_else(|| {
-                TaskletError::Custom(format!(
-                    "workflow plugin channel `{}` is missing a serializer",
-                    descriptor.name
-                ))
-            })?;
-        let bytes = serializer(&**value);
-        self.sink.emit_plugin_bytes(&descriptor.name, bytes);
-        Ok(())
-    }
-}
-
-impl<'a> WorkflowCollectAdapter<'a> {
-    fn is_plugin_bound(&self) -> bool {
-        matches!(self.output_channel_kind, ChannelKind::PluginBound)
-    }
-
-    /// The workflow plugin wire (`emit_plugin_bytes`) carries no metadata,
-    /// so `.keyed()` identity stamps cannot ride it. Refuse rather than
-    /// silently dropping the identity contract.
-    fn refuse_key(&self, key: &Option<String>) -> Result<(), TaskletError> {
-        if key.is_some() {
-            return Err(TaskletError::Custom(format!(
-                "keyed output identity is not supported on workflow operatives \
-                 (channel `{}`): the workflow plugin wire carries no metadata",
-                self.channel_name()
-            )));
-        }
-        Ok(())
-    }
-}
-
-impl<'a> EmitSink for WorkflowCollectAdapter<'a> {
-    fn emit(
-        &mut self,
-        value: Arc<dyn Any + Send + Sync>,
-        _meta: Option<HashMap<String, String>>,
-        key: Option<String>,
-    ) -> Result<(), TaskletError> {
-        self.refuse_key(&key)?;
-        if self.has_plugin_sink() {
-            self.route_plugin(&value)?;
-        }
-        // The one place a workflow channel's shape still matters: a
-        // plugin-bound channel has no consumer to hand a stage batch to, so
-        // collecting there would seed the next stage with a terminal output.
-        if !self.is_plugin_bound() {
-            self.sink.collect(value);
-        }
-        Ok(())
-    }
-
-    fn channel_name(&self) -> &str {
-        self.output_channel_name.unwrap_or("<workflow>")
-    }
-
-    fn has_plugin_sink(&self) -> bool {
-        self.output_channel_id
-            .and_then(|cid| self.topology.channel(cid))
-            .map(|d| d.plugin_sink.is_some())
-            .unwrap_or(false)
-    }
-
-    fn is_keyed(&self) -> bool {
-        self.output_channel_id
-            .and_then(|cid| self.topology.channel(cid))
-            .map(|d| d.keyed)
-            .unwrap_or(false)
-    }
 
     fn complete(&mut self, result: Vec<u8>) -> Result<(), TaskletError> {
-        self.sink.complete(result);
+        if self.instance.as_ref().is_none_or(|i| i.workflow.is_none()) {
+            return Err(TaskletError::non_retryable(
+                flz_core::workflow::COMPLETE_OUTSIDE_WORKFLOW,
+            ));
+        }
+        flz_core::workflow::complete(self.producer, result);
         Ok(())
     }
 }
@@ -366,8 +278,7 @@ pub(crate) fn apply_identity_stamps(
     }
 }
 
-/// Tier-mode capture (shared by the stream emit sink and the workflow
-/// collect adapter): push one plugin output into the invocation's atomic
+/// Tier-mode capture: push one plugin output into the invocation's atomic
 /// effect record instead of any wire path. Key-sorted user metadata keeps
 /// the record bytes replay-deterministic (HashMap iteration order is not);
 /// the reserved `channel` key is dropped like `channel_metadata` does, and

@@ -56,11 +56,12 @@ mod remove_factory_tests {
                 "remove_factory_seam_probe".to_string(),
                 "seam-inst-1".to_string(),
                 flz_core::operative::instance::KeyGroupRange::UNPARTITIONED,
+                flz_core::workflow::Resume::default(),
             )
             .expect("instance spawns");
 
         assert_eq!(
-            runner.remove_factory("remove_factory_seam_probe", false),
+            runner.remove_factory("remove_factory_seam_probe"),
             Err(1),
             "a live instance must refuse the removal with its count"
         );
@@ -70,19 +71,13 @@ mod remove_factory_tests {
         );
 
         assert!(runner.stop_operative("seam-inst-1"));
-        assert_eq!(
-            runner.remove_factory("remove_factory_seam_probe", false),
-            Ok(())
-        );
+        assert_eq!(runner.remove_factory("remove_factory_seam_probe"), Ok(()));
         assert!(
             flz_core::operative::registry::get_class("remove_factory_seam_probe").is_none(),
             "the removal must unregister the class"
         );
         // Idempotent on an unknown id (registry contract).
-        assert_eq!(
-            runner.remove_factory("remove_factory_seam_probe", false),
-            Ok(())
-        );
+        assert_eq!(runner.remove_factory("remove_factory_seam_probe"), Ok(()));
     }
 }
 

@@ -31,7 +31,7 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use flezha_runner::channel::ChannelBuilder;
 use flezha_runner::operative::builder::build_topology_for;
 use flezha_runner::operative::registry::OperativeRegistry;
-use flezha_runner::operative::StreamInstance;
+use flezha_runner::operative::OperativeInstance;
 use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
 use flezha_runner::tasklet::{Tasklet, TaskletCtx, TaskletError};
 use flezha_runner::{__dispatch_internals as bi, OverflowPolicy, StreamOperative};
@@ -95,8 +95,8 @@ fn throughput_single_cell(c: &mut Criterion) {
 
     let topology = build_topology_for::<SingleCellOperative>().expect("topology");
     let registry = Arc::new(OperativeRegistry::new());
-    let instance = StreamInstance::new(Arc::clone(&topology), Arc::from("single-cell-bench"));
-    registry.register_stream(instance);
+    let instance = OperativeInstance::new(Arc::clone(&topology), Arc::from("single-cell-bench"));
+    registry.register(instance);
 
     let handle = bi::OperativeDispatchHandle {
         registry: Arc::clone(&registry),
@@ -195,8 +195,8 @@ fn throughput_static_fanout(c: &mut Criterion) {
 
     let topology = build_topology_for::<StaticFanoutOperative>().expect("topology");
     let registry = Arc::new(OperativeRegistry::new());
-    let instance = StreamInstance::new(Arc::clone(&topology), Arc::from("static-fanout-bench"));
-    registry.register_stream(instance);
+    let instance = OperativeInstance::new(Arc::clone(&topology), Arc::from("static-fanout-bench"));
+    registry.register(instance);
 
     let handle = bi::OperativeDispatchHandle {
         registry: Arc::clone(&registry),
@@ -345,8 +345,8 @@ fn throughput_effectively_once_tiers(c: &mut Criterion) {
             "tier-on-bench",
         ),
     ] {
-        let instance = StreamInstance::new(factory, Arc::from(id));
-        registry.register_stream(instance);
+        let instance = OperativeInstance::new(factory, Arc::from(id));
+        registry.register(instance);
     }
 
     let handle = bi::OperativeDispatchHandle {

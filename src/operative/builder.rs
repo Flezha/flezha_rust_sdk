@@ -113,6 +113,7 @@ pub fn build_topology_with_persistence(
                 max_delay_ms: checkpoint_max_delay_ms,
             }),
         },
+        workflow: None,
     }))
 }
 
@@ -345,7 +346,7 @@ fn build_tasklet_desc(
 
 /// Convenience constructor used by `register_factory(R)`. Calls
 /// `R::channels(...)` once and returns the resulting topology, capturing
-/// `R::PERSISTENCE_ENABLED` so `StreamInstance::new` can resolve the
+/// `R::PERSISTENCE_ENABLED` so `OperativeInstance::new` can resolve the
 /// final per-instance flag.
 pub fn build_topology_for<R: crate::operative::StreamOperative>(
 ) -> Result<Arc<OperativeTopology>, TopologyBuildError> {

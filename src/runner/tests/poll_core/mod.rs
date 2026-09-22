@@ -12,19 +12,19 @@ pub(crate) mod fixtures {
     use crate::cell::{CellItem, CellPayload, CellSlot};
     use crate::channel::ChannelBuilder;
     use crate::operative::builder::build_topology_with_persistence;
-    use crate::operative::instance::StreamInstance;
+    use crate::operative::instance::OperativeInstance;
     use crate::operative::StreamOperative;
     use crate::runner::poll_core::PollCore;
 
     /// One instance of `O` and its first Cell.
     pub(crate) fn build_slot_of<O: StreamOperative>(
         instance_id: &str,
-    ) -> (Arc<StreamInstance>, Arc<CellSlot>) {
+    ) -> (Arc<OperativeInstance>, Arc<CellSlot>) {
         let cb = ChannelBuilder::new();
         O::channels(&cb);
         let topology = build_topology_with_persistence(O::factory_id(), cb, O::PERSISTENCE_ENABLED)
             .expect("topology");
-        let instance = StreamInstance::new(topology, Arc::from(instance_id));
+        let instance = OperativeInstance::new(topology, Arc::from(instance_id));
         let slot = Arc::clone(&instance.cells[0][0]);
         (instance, slot)
     }
@@ -96,7 +96,7 @@ mod support {
     use crate::cell::timer::{TimerKind, TimerOp};
     use crate::cell::{CellItem, CellSlot};
     use crate::channel::ChannelBuilder;
-    use crate::operative::instance::StreamInstance;
+    use crate::operative::instance::OperativeInstance;
     use crate::operative::StreamOperative;
     use crate::tasklet::change::NoChange;
     use crate::tasklet::clock::WallClock;
@@ -179,7 +179,7 @@ mod support {
 
     /// A slot whose one mailbox slot is taken and whose round is claimed by
     /// nobody: every wake promoted against it meets a full mailbox.
-    pub(super) fn full_slot(instance_id: &str) -> (Arc<StreamInstance>, Arc<CellSlot>) {
+    pub(super) fn full_slot(instance_id: &str) -> (Arc<OperativeInstance>, Arc<CellSlot>) {
         let (instance, slot) = build_slot_of::<TinyOp>(instance_id);
         assert!(slot.mailbox.try_push(payload(0, &unix_stream())).is_ok());
         assert!(slot.mailbox.is_full());
@@ -203,7 +203,7 @@ mod support {
         }
     }
 
-    pub(super) fn build_slot(instance_id: &str) -> (Arc<StreamInstance>, Arc<CellSlot>) {
+    pub(super) fn build_slot(instance_id: &str) -> (Arc<OperativeInstance>, Arc<CellSlot>) {
         build_slot_of::<PollOp>(instance_id)
     }
 

@@ -82,10 +82,10 @@ fn declared_drop_newest_entry_does_not_stall_sibling_operatives() {
 
     let topology_a = build_topology_for::<WireOperativeADropNewest>().expect("topology a");
     let topology_b = build_topology_for::<WireOperativeB>().expect("topology b");
-    let instance_a = StreamInstance::new(topology_a, Arc::from("wire-a-drop"));
-    let instance_b = StreamInstance::new(topology_b, Arc::from("wire-b-drop"));
-    registry.register_stream(Arc::clone(&instance_a));
-    registry.register_stream(Arc::clone(&instance_b));
+    let instance_a = OperativeInstance::new(topology_a, Arc::from("wire-a-drop"));
+    let instance_b = OperativeInstance::new(topology_b, Arc::from("wire-b-drop"));
+    registry.register(Arc::clone(&instance_a));
+    registry.register(Arc::clone(&instance_b));
 
     // Saturate A's mailbox; pre-acquire inflight so A's drain does not
     // make room for new frames during the test.
@@ -162,10 +162,10 @@ fn entry_drop_nothing_parks_reader_until_pool_drains<A: StreamOperative>(tag: &s
     let id_b = format!("wire-b-{tag}");
     let topology_a = build_topology_for::<A>().expect("topology a");
     let topology_b = build_topology_for::<WireOperativeB>().expect("topology b");
-    let instance_a = StreamInstance::new(topology_a, Arc::from(id_a.as_str()));
-    let instance_b = StreamInstance::new(topology_b, Arc::from(id_b.as_str()));
-    registry.register_stream(Arc::clone(&instance_a));
-    registry.register_stream(Arc::clone(&instance_b));
+    let instance_a = OperativeInstance::new(topology_a, Arc::from(id_a.as_str()));
+    let instance_b = OperativeInstance::new(topology_b, Arc::from(id_b.as_str()));
+    registry.register(Arc::clone(&instance_a));
+    registry.register(Arc::clone(&instance_b));
 
     // A's round is marked inflight but not handed to the pool, so nothing
     // drains A until the test schedules it below.

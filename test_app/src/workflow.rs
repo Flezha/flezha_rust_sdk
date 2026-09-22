@@ -158,6 +158,61 @@ impl WorkflowOperative for TimerRefusedWorkflow {
     }
 }
 
+// `static_cell_workflow`: a per-input loop whose one tasklet declares three
+// static cells and routes every message to two of them; each cell that runs
+// emits `<cell key>:<message>`, so one message yields exactly two outputs.
+#[derive(Default)]
+struct StaticCellStep;
+impl Tasklet for StaticCellStep {
+    type Input = String;
+    type Output = String;
+    type State = ();
+    type Change = NoChange;
+    type Clock = WallClock;
+    type Config = ();
+    fn name() -> &'static str {
+        "static_cell_step"
+    }
+    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
+    fn cell_keys() -> Vec<&'static str> {
+        vec!["a", "b", "c"]
+    }
+    const CELLS_FOR_OVERRIDDEN: bool = true;
+    fn cells_for(_: &String) -> Vec<&'static str> {
+        vec!["a", "b"]
+    }
+    fn run(
+        &mut self,
+        input: String,
+        _: StateHandle<'_, Self>,
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
+        let key = ctx.cell_key().unwrap_or_default().to_string();
+        ctx.emit::<String>(format!("{key}:{input}"))
+    }
+}
+
+pub(crate) struct StaticCellWorkflow;
+impl WorkflowOperative for StaticCellWorkflow {
+    fn factory_id() -> &'static str {
+        "static_cell_workflow"
+    }
+    fn loop_mode() -> LoopMode {
+        LoopMode::PerInput
+    }
+    fn self_terminating() -> bool {
+        false
+    }
+    fn max_duration() -> Option<Duration> {
+        Some(Duration::from_secs(600))
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("in")
+            .into::<StaticCellStep>()
+            .sink_named("out");
+    }
+}
+
 // `commit_block_workflow`: task A commits durable state, task B blocks until the
 // resumed runner sets the release env — so a SIGKILL lands with task A's state
 // already on the WAL and task B never finished. Completion is observed

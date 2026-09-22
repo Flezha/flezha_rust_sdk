@@ -7,12 +7,13 @@ pub use flz_core::workflow::spec::*;
 use flz_core::workflow::LoopMode;
 
 use crate::channel::{ChannelBuilder, TaskletId};
-use crate::operative::builder::build_topology;
+use crate::operative::builder::build_topology_with_persistence;
 use crate::workflow::WorkflowOperative;
 
 /// Build and validate the spec for a workflow class: its `channels()`
 /// declaration, validated as a static DAG.
-pub fn build_spec<T: WorkflowOperative>() -> Result<WorkflowSpec, BuildWorkflowError> {
+pub fn build_spec<T: WorkflowOperative>(
+) -> Result<std::sync::Arc<OperativeTopology>, BuildWorkflowError> {
     let factory_id = T::factory_id();
 
     // Self-termination guard: an operative whose only exit is an external stop,
@@ -29,10 +30,13 @@ pub fn build_spec<T: WorkflowOperative>() -> Result<WorkflowSpec, BuildWorkflowE
     }
     refuse_stream_settings(factory_id, &cb)?;
 
-    let topology = build_topology(factory_id, cb).map_err(|e| BuildWorkflowError::Topology {
-        factory_id,
-        detail: format!("{e}"),
-    })?;
+    let topology = build_topology_with_persistence(factory_id, cb, T::PERSISTENCE_ENABLED)
+        .map_err(|e| BuildWorkflowError::Topology {
+            factory_id,
+            detail: format!("{e}"),
+        })?;
+    let mut topology =
+        std::sync::Arc::into_inner(topology).expect("a topology just built is shared with nobody");
     let dag = build_dag(factory_id, &topology)?;
 
     refuse_chained_loop_shape::<T>(factory_id, &dag)?;
@@ -40,16 +44,15 @@ pub fn build_spec<T: WorkflowOperative>() -> Result<WorkflowSpec, BuildWorkflowE
         refuse_loop_terminal_without_handoff::<T>(factory_id, &topology, &dag)?;
     }
 
-    Ok(WorkflowSpec {
-        topology,
+    topology.workflow = Some(WorkflowSpec {
         dag,
         max_duration: T::max_duration(),
         rollback_mode: T::rollback_mode(),
         loop_mode: T::loop_mode(),
         wake_after: T::wake_after(),
-        persistence_enabled: T::PERSISTENCE_ENABLED,
         sync_durability: T::SYNC_DURABILITY,
-    })
+    });
+    Ok(std::sync::Arc::new(topology))
 }
 
 /// A handoff-chained loop re-seeds iteration N+1 from iteration N's terminal

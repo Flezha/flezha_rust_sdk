@@ -1,12 +1,12 @@
 //! Registration, spec resolution and authoring refusals: everything a
-//! workflow class is checked for before a driver ever runs.
+//! workflow class is checked for before an instance ever runs.
 
 use std::sync::Arc;
 
 use super::fixtures::*;
 use crate::cell::restore::RestoreInitPayload;
 use crate::channel::{ChannelBuilder, ChannelKind};
-use crate::operative::registry::{Operative, OperativeRegistry};
+use crate::operative::registry::OperativeRegistry;
 use crate::tasklet::change::NoChange;
 use crate::tasklet::clock::WallClock;
 use crate::tasklet::{StateHandle, Tasklet, TaskletCtx, TaskletError};
@@ -38,38 +38,33 @@ fn register_workflow_makes_factory_resolvable() {
             c.input::<String>("in").into::<EchoTask>();
         }
     }
-    assert!(registry::get_class("test-getclass-workflow").is_none());
+    let get_class = crate::operative::registry::get_class;
+    assert!(get_class("test-getclass-workflow").is_none());
     crate::register_class::<crate::WorkflowKind, RegWorkflow>().unwrap();
-    assert!(registry::get_class("test-getclass-workflow").is_some());
-    assert!(registry::get_class("test-nonexistent-workflow").is_none());
+    let class = get_class("test-getclass-workflow").expect("registered");
+    assert!(class.workflow.is_some(), "the class carries its kind");
+    assert!(get_class("test-nonexistent-workflow").is_none());
 }
 
+/// One registry holds both kinds: a workflow instance is an operative
+/// instance that carries a run.
 #[test]
-fn registry_holds_workflow_as_sealed_variant() {
+fn the_one_registry_holds_a_workflow_instance() {
     let reg = OperativeRegistry::new();
-    let spec = Arc::new(spec::build_spec::<EmitWorkflow>().expect("the fixture registers"));
-    let (instance, _inbox_rx) = crate::workflow::instance::WorkflowInstance::new(
+    let class = spec::build_spec::<EmitWorkflow>().expect("the fixture registers");
+    reg.register(crate::operative::instance::OperativeInstance::new(
+        class,
         Arc::from("t1"),
-        spec,
-        Vec::new(),
-        0,
-        0,
-        None,
-    );
-    reg.register_workflow(instance);
+    ));
 
     assert!(reg.contains("t1"));
-    // A workflow is not a operative: the operative-only accessor returns None.
-    assert!(reg.get_stream("t1").is_none());
-    match reg.get_operative("t1").as_deref() {
-        Some(Operative::Workflow(inst)) => assert_eq!(&*inst.instance_id, "t1"),
-        _ => panic!("expected a WorkflowOperative variant"),
-    }
-
-    assert!(matches!(
-        reg.remove("t1").as_deref(),
-        Some(Operative::Workflow(_))
-    ));
+    let instance = reg.get("t1").expect("registered");
+    assert_eq!(&*instance.instance_id, "t1");
+    assert!(
+        instance.workflow.is_some(),
+        "a workflow instance carries a run"
+    );
+    assert!(reg.remove("t1").is_some());
     assert!(!reg.contains("t1"));
 }
 
@@ -86,8 +81,9 @@ fn a_workflow_without_tasklets_is_refused() {
 
 #[test]
 fn structured_spec_resolves_linear_chain() {
-    let spec = spec::build_spec::<ChainWorkflow>().expect("structured spec builds");
-    let topology = &spec.topology;
+    let class = spec::build_spec::<ChainWorkflow>().expect("structured spec builds");
+    let spec = class.workflow.as_ref().expect("a workflow class");
+    let topology = &class;
     // Chain is ordered entry-consumer → terminal: Stage1 then Stage2.
     let names: Vec<&str> = spec
         .dag
@@ -124,9 +120,8 @@ fn a_durable_handoff_is_journalable_with_nothing_declared() {
                 .into::<Stage2>();
         }
     }
-    let spec = spec::build_spec::<NoCodec>().expect("the runtime derives the handoff codec");
-    let mid = spec
-        .topology
+    let class = spec::build_spec::<NoCodec>().expect("the runtime derives the handoff codec");
+    let mid = class
         .channels
         .iter()
         .find(|c| &*c.name == "mid")
@@ -174,7 +169,8 @@ fn loop_authoring_is_validated() {
 
     // An inbox-driven loop over the same topology is fine: it re-seeds each
     // iteration from its inbox, never from the terminal handoff.
-    let spec = spec::build_spec::<ChatLoop>().expect("PerInput loop registers");
+    let class = spec::build_spec::<ChatLoop>().expect("PerInput loop registers");
+    let spec = class.workflow.as_ref().expect("a workflow class");
     assert_eq!(spec.loop_mode, LoopMode::PerInput);
     assert_eq!(spec.dag.len(), 2);
 }
@@ -184,15 +180,12 @@ fn loop_authoring_is_validated() {
 /// fail-fast, and `retry_max(0)` is the shared topology refusal.
 #[test]
 fn the_retry_policy_is_the_edges() {
-    let edge = |spec: &spec::WorkflowSpec, name: &str| {
-        let id = spec
-            .topology
-            .lookup_channel_id(name)
-            .expect("channel declared");
-        spec.topology.channel(id).expect("channel built").retry
+    let edge = |class: &crate::operative::topology::OperativeTopology, name: &str| {
+        let id = class.lookup_channel_id(name).expect("channel declared");
+        class.channel(id).expect("channel built").retry
     };
-    let spec = spec::build_spec::<ChainWorkflow>().expect("defaults register");
-    let default = edge(&spec, "in");
+    let class = spec::build_spec::<ChainWorkflow>().expect("defaults register");
+    let default = edge(&class, "in");
     assert_eq!((default.max_attempts, default.backoff_base_ms), (3, 50));
 
     let fail_fast = spec::build_spec::<RetryFailFastWorkflow>().expect("retry_max(1) registers");
@@ -272,7 +265,13 @@ fn a_stream_setting_on_a_workflow_is_refused_by_name() {
 #[test]
 fn sync_durability_is_declared_per_class_and_off_by_default() {
     let default = spec::build_spec::<ChainWorkflow>().expect("defaults register");
-    assert!(!default.sync_durability);
+    assert!(
+        !default
+            .workflow
+            .as_ref()
+            .expect("a workflow class")
+            .sync_durability
+    );
 
     struct SyncDurable;
     impl WorkflowOperative for SyncDurable {
@@ -285,7 +284,8 @@ fn sync_durability_is_declared_per_class_and_off_by_default() {
         }
     }
 
-    let spec = spec::build_spec::<SyncDurable>().expect("a declaring class registers");
+    let class = spec::build_spec::<SyncDurable>().expect("a declaring class registers");
+    let spec = class.workflow.as_ref().expect("a workflow class");
     assert!(spec.sync_durability);
 }
 
@@ -297,8 +297,9 @@ fn sync_durability_is_declared_per_class_and_off_by_default() {
 fn dag_topology_is_validated() {
     // A→(B,C): one channel, two consumers. The edge is (channel, consumer),
     // so both branches read what Stage1 released on `mid`.
-    let spec = spec::build_spec::<TreeWorkflow>().expect("a fan-out tree registers");
-    let topology = &spec.topology;
+    let class = spec::build_spec::<TreeWorkflow>().expect("a fan-out tree registers");
+    let spec = class.workflow.as_ref().expect("a workflow class");
+    let topology = &class;
     let names: Vec<&str> = spec
         .dag
         .order
@@ -328,6 +329,7 @@ fn dag_topology_is_validated() {
 
     // A linear chain is the single-branch case, unchanged.
     let linear = spec::build_spec::<ChainWorkflow>().expect("linear still registers");
+    let linear = linear.workflow.as_ref().expect("a workflow class");
     assert_eq!(linear.dag.children, vec![vec![1], vec![]]);
     assert_eq!(linear.dag.chains[0].single_leaf(&linear.dag), Some(1));
 
@@ -335,8 +337,9 @@ fn dag_topology_is_validated() {
     // BOTH producers before it (BFS would have enqueued the join on its
     // first producer).
     match spec::build_spec::<JoinWorkflow>() {
-        Ok(spec) => {
-            let topology = &spec.topology;
+        Ok(class) => {
+            let topology = &class;
+            let spec = class.workflow.as_ref().expect("a workflow class");
             let names: Vec<&str> = spec
                 .dag
                 .order
@@ -406,6 +409,7 @@ fn dag_topology_is_validated() {
     }
     let entry_merge = spec::build_spec::<EntryMergeWorkflow>()
         .expect("a workflow merge over two entry channels registers");
+    let entry_merge = entry_merge.workflow.as_ref().expect("a workflow class");
     assert_eq!(
         entry_merge.dag.len(),
         1,
@@ -425,6 +429,7 @@ fn dag_topology_is_validated() {
     // The inter-task form of the same merge is the supported one and still
     // registers, with the merged node as a two-parent inner node.
     let merged = spec::build_spec::<MergeWorkflow>().expect("an inter-task merge registers");
+    let merged = merged.workflow.as_ref().expect("a workflow class");
     assert_eq!(
         merged.dag.parents[3],
         vec![1, 2],

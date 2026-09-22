@@ -79,9 +79,8 @@ pub(super) fn saga_compensation(node: &mut RunnerNode, rx: &Receiver<RunnerMessa
     while !STAGE0_RAN.load(Ordering::SeqCst) {
         std::thread::yield_now();
     }
-    node.get_workflow("stop-saga")
-        .expect("live instance accepts cancel")
-        .request_cancel();
+    flz_core::workflow::stop(&instance(node, "stop-saga").expect("live instance accepts cancel"));
+
     STAGE0_RELEASE.store(true, Ordering::SeqCst);
     let (_o, done) = drain(rx, "stop-saga");
     assert_eq!(done.0, "cancelled", "cooperative stop ⇒ cancelled");
@@ -117,30 +116,28 @@ pub(super) fn saga_crash_resume(node: &mut RunnerNode, rx: &Receiver<RunnerMessa
     // already recorded done, and does NOT re-run the forward chain ---
     WAL_FRAMES.lock().unwrap().clear();
     let _ = drain_comp_log();
-    // Respawn a durable saga expecting one restore: the driver parks on the
-    // gate while we seed the markers the RestoreInitState handler would carry.
-    assert!(node
-        .start_workflow_resumable(
-            "test-resume-saga".into(),
-            "resume-saga".into(),
-            "",
-            1,
-            0,
-            None,
-        )
-        .expect("init_values is a JSON object"));
+    // Respawn a durable saga expecting two restores: the run waits at the
+    // gate for the markers each Cell's RestoreInitState carries.
+    assert!(start_resumable(
+        node,
+        "test-resume-saga".into(),
+        "resume-saga".into(),
+        "",
+        2,
+        0,
+        None,
+    )
+    .expect("init_values is a JSON object"));
     assert!(feed(node, "resume-saga", b"x"));
     let a_id = crate::cell::flusher::encode_cell_identity("resume-saga", "resume_undo_a", "");
     let b_id = crate::cell::flusher::encode_cell_identity("resume-saga", "resume_undo_b", "");
-    let (saga_inst, _slot) = node
-        .find_workflow_cell(&a_id)
+    let (saga_inst, _slot) = find_cell(node, &a_id)
         .expect("a durable workflow saga Cell is reachable by the restore handler");
     // Original run: A + B both completed (intent); B was already undone before
     // the crash (done). Resume must undo A and SKIP B — in reverse — without
     // re-running the forward chain (so no fresh intents, no `a:`/`b:` output).
-    saga_inst.note_compensation_markers(&a_id, true, false);
-    saga_inst.note_compensation_markers(&b_id, true, true);
-    saga_inst.note_restored();
+    flz_core::workflow::restore_landed(&saga_inst, &a_id, true, false);
+    flz_core::workflow::restore_landed(&saga_inst, &b_id, true, true);
     let (outs, done) = drain(rx, "resume-saga");
     assert_eq!(
         done.0, "error",
@@ -165,4 +162,25 @@ pub(super) fn saga_crash_resume(node: &mut RunnerNode, rx: &Receiver<RunnerMessa
         0,
         "a compensation-resume records no new intent (forward chain not re-run)"
     );
+}
+
+pub(super) fn sibling_commit(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
+    // --- a sibling stage commits while its sibling still runs, and is undone
+    // when that sibling then fails ---
+    let _ = drain_task_commits();
+    let _ = drain_comp_log();
+    assert!(start_fed(node, "test-sibling-saga", SIBLING_SAGA_ID, b"x"));
+    let (_o, done) = drain(rx, SIBLING_SAGA_ID);
+    assert_eq!(done.0, "error");
+    assert!(
+        done.1.contains("after its sibling committed"),
+        "the fast sibling committed before the slow one failed: {}",
+        done.1
+    );
+    assert_eq!(
+        drain_comp_log(),
+        vec!["undo-fast:echo:x".to_string()],
+        "the committed sibling is compensated"
+    );
+    let _ = drain_task_commits();
 }

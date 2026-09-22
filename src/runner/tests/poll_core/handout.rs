@@ -11,7 +11,7 @@ use flz_core::poll_core::{Answered, PollCore, Polled};
 use super::fixtures::{build_slot_of, payload, unix_stream, wait_until};
 use super::support::*;
 use crate::cell::{CellItem, CellSlot};
-use crate::operative::instance::StreamInstance;
+use crate::operative::instance::OperativeInstance;
 
 /// The spec pin: two workers polling concurrently while two cells each
 /// have 100 queued inputs never both hold the same cell, and each
@@ -362,6 +362,33 @@ fn a_backoff_defers_the_re_hand_without_holding_a_thread() {
     core.complete(act.token);
 }
 
+/// A disarmed backoff never promotes: its wake leaves the list, the held
+/// items are dropped and the gates released, so the Cell's next round starts
+/// from what arrives after it.
+#[test]
+fn a_cancelled_retry_drops_its_holdback_and_never_promotes() {
+    let core = PollCore::new();
+    let (_i, slot) = build_slot_of::<SlowRetryOp>("poll-cancel-retry");
+    let stream = unix_stream();
+
+    let act = queue_and_hand_out(&core, &slot, &stream, 2);
+    let (token, _slot, items) = act.into_work().expect("work activation");
+    core.retry_after_failure(token, items, "boom".into());
+
+    assert_eq!(core.cancel_retry(&slot), 2, "head and tail were held");
+    assert!(slot.pending_retry.lock().unwrap().is_empty());
+    assert_eq!(core.cancel_retry(&slot), 0, "no wake is left to promote");
+
+    let act = queue_and_hand_out(&core, &slot, &stream, 1);
+    assert_eq!(
+        ordinals(&act),
+        vec![0],
+        "the dropped items are not re-handed"
+    );
+    assert_eq!(act.items()[0].attempt, 1);
+    core.complete(act.token);
+}
+
 /// Correlated failure — every cell failing at once — leaves pollers free
 /// to serve the cells whose work would succeed. This is the whole point
 /// of not sleeping a worker: with the pool sized to the CPU count, N
@@ -372,7 +399,7 @@ fn correlated_failure_leaves_pollers_serving_healthy_cells() {
     let (_ih, healthy) = build_slot("poll-correlated-healthy");
     let stream = unix_stream();
 
-    let failing: Vec<(Arc<StreamInstance>, Arc<CellSlot>)> = (0..4)
+    let failing: Vec<(Arc<OperativeInstance>, Arc<CellSlot>)> = (0..4)
         .map(|i| build_slot_of::<SlowRetryOp>(&format!("poll-correlated-{i}")))
         .collect();
     for (_instance, slot) in &failing {

@@ -20,7 +20,7 @@ use flezha_runner::cell::park::{self, ParkBody};
 use flezha_runner::cell::state_sink::{install_global_sink, PARK_PAYLOAD_PAYLOAD_ID};
 use flezha_runner::operative::builder::build_topology_for;
 use flezha_runner::operative::registry::OperativeRegistry;
-use flezha_runner::operative::{StreamInstance, StreamOperative};
+use flezha_runner::operative::{OperativeInstance, StreamOperative};
 use flz_transport::transport::FlezhaStream;
 pub use tier::*;
 pub use timers::*;
@@ -39,7 +39,7 @@ pub mod prelude {
     pub use flezha_runner::channel::{ChannelBuilder, OverflowPolicy};
     pub use flezha_runner::operative::builder::build_topology_for;
     pub use flezha_runner::operative::registry::OperativeRegistry;
-    pub use flezha_runner::operative::{StreamInstance, StreamOperative};
+    pub use flezha_runner::operative::{OperativeInstance, StreamOperative};
     pub use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
     pub use flezha_runner::tasklet::{Tasklet, TaskletCtx, TaskletError};
 
@@ -73,7 +73,7 @@ pub fn stays_quiet<F: Fn() -> bool>(happened: F, window: Duration) -> bool {
 
 /// Build + register a single StreamOperative instance, returning a dispatch handle
 /// and the live instance (for counter / state assertions).
-pub fn setup<R: StreamOperative>(id: &str) -> (OperativeDispatchHandle, Arc<StreamInstance>) {
+pub fn setup<R: StreamOperative>(id: &str) -> (OperativeDispatchHandle, Arc<OperativeInstance>) {
     setup_partitioned::<R>(id, flezha_runner::operative::KeyGroupRange::UNPARTITIONED)
 }
 
@@ -83,11 +83,11 @@ pub fn setup<R: StreamOperative>(id: &str) -> (OperativeDispatchHandle, Arc<Stre
 pub fn setup_partitioned<R: StreamOperative>(
     id: &str,
     partition: flezha_runner::operative::KeyGroupRange,
-) -> (OperativeDispatchHandle, Arc<StreamInstance>) {
+) -> (OperativeDispatchHandle, Arc<OperativeInstance>) {
     let topology = build_topology_for::<R>().expect("topology");
     let registry = Arc::new(OperativeRegistry::new());
-    let instance = StreamInstance::with_options(topology, Arc::from(id), None, partition);
-    registry.register_stream(Arc::clone(&instance));
+    let instance = OperativeInstance::with_options(topology, Arc::from(id), None, partition);
+    registry.register(Arc::clone(&instance));
     (OperativeDispatchHandle { registry }, instance)
 }
 

@@ -54,13 +54,13 @@ fn stop(node: &mut RunnerNode, id: &str) {
 
 pub(super) fn entrance(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
     // --- init_values is state for a workflow, in place before its first message ---
-    assert!(node
-        .start_workflow(
-            "test-budget-once".into(),
-            "budget-1".into(),
-            r#"{"entrance_budget":{"value":7}}"#
-        )
-        .expect("init_values is a JSON object"));
+    assert!(start(
+        node,
+        "test-budget-once".into(),
+        "budget-1".into(),
+        r#"{"entrance_budget":{"value":7}}"#
+    )
+    .expect("init_values is a JSON object"));
     assert!(feed(node, "budget-1", b"go"));
     let (outs, done) = drain(rx, "budget-1");
     assert_eq!(
@@ -72,8 +72,7 @@ pub(super) fn entrance(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
 
     // --- a message runs only the chain of the channel it names; the join
     // waits for that chain's producer alone ---
-    assert!(node
-        .start_workflow("test-two-chains".into(), "chains-1".into(), "")
+    assert!(start(node, "test-two-chains".into(), "chains-1".into(), "")
         .expect("init_values is a JSON object"));
     assert!(feed_on(node, "chains-1", Some("a"), b"x"));
     assert_eq!(outputs(rx, "chains-1", 1), vec![b"j:a:x".to_vec()]);
@@ -86,9 +85,10 @@ pub(super) fn entrance(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
 
     // --- an entry feeding two roots dispatches both in the first level, each
     // through its own edge transform ---
-    assert!(node
-        .start_workflow("test-fan-entry".into(), "fan-entry-1".into(), "")
-        .expect("init_values is a JSON object"));
+    assert!(
+        start(node, "test-fan-entry".into(), "fan-entry-1".into(), "")
+            .expect("init_values is a JSON object")
+    );
     assert!(feed(node, "fan-entry-1", b"x"));
     let (mut outs, done) = drain(rx, "fan-entry-1");
     outs.sort();
@@ -97,9 +97,10 @@ pub(super) fn entrance(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
 
     // --- a chained loop re-enters the chain its first message picked ---
     CHAINED_ROOTS.lock().unwrap().clear();
-    assert!(node
-        .start_workflow("test-chained-chains".into(), "chained-1".into(), "")
-        .expect("init_values is a JSON object"));
+    assert!(
+        start(node, "test-chained-chains".into(), "chained-1".into(), "")
+            .expect("init_values is a JSON object")
+    );
     assert!(feed_on(node, "chained-1", Some("b"), b"2"));
     let (_outs, done) = drain(rx, "chained-1");
     assert_eq!(done.0, "ok");
@@ -112,11 +113,14 @@ pub(super) fn entrance(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
     // --- a durable chained loop commits its message's offset once, and no
     // offset for a carry-fed pass ---
     let _ = drain_iter_commits();
-    assert!(node
-        .start_workflow("test-journaled-countdown".into(), "countdown-1".into(), "")
-        .expect("init_values is a JSON object"));
-    let countdown = node
-        .get_workflow("countdown-1")
+    assert!(start(
+        node,
+        "test-journaled-countdown".into(),
+        "countdown-1".into(),
+        ""
+    )
+    .expect("init_values is a JSON object"));
+    let countdown = instance(node, "countdown-1")
         .expect("the loop's instance is registered before its driver runs");
     feed_at(&countdown, b"2", 0);
     let (_outs, done) = drain(rx, "countdown-1");
@@ -130,15 +134,18 @@ pub(super) fn entrance(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
         vec![Some(0), None, None],
         "the carry-fed passes consumed no journaled input"
     );
+}
 
+pub(super) fn once_waits(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
     // --- a once run with an empty inbox parks after the idle window when it
     // journals, and resumes at pass 0 from parked(0) ---
     std::env::set_var("FLEZHA_WORKFLOW_PARK_IDLE_MS", "300");
     let _ = drain_iter_parks();
     EMIT_RUNS.store(0, Ordering::SeqCst);
-    assert!(node
-        .start_workflow("test-emit-workflow".into(), "once-parks".into(), "")
-        .expect("init_values is a JSON object"));
+    assert!(
+        start(node, "test-emit-workflow".into(), "once-parks".into(), "")
+            .expect("init_values is a JSON object")
+    );
     let (outs, done) = drain(rx, "once-parks");
     assert_eq!(
         done.0, "parked",
@@ -154,19 +161,19 @@ pub(super) fn entrance(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
     assert_eq!(parks.len(), 1);
     assert_eq!(parks[0].iter, 0, "the park names pass 0");
     assert!(node.stop_operative("once-parks"));
-    assert!(node
-        .start_workflow_resumable(
-            "test-emit-workflow".into(),
-            "once-parks-2".into(),
-            "",
-            0,
-            0,
-            Some(instance::JournalResume {
-                iter: 0,
-                ..Default::default()
-            })
-        )
-        .expect("init_values is a JSON object"));
+    assert!(start_resumable(
+        node,
+        "test-emit-workflow".into(),
+        "once-parks-2".into(),
+        "",
+        0,
+        0,
+        Some(instance::JournalResume {
+            iter: 0,
+            ..Default::default()
+        })
+    )
+    .expect("init_values is a JSON object"));
     assert!(feed(node, "once-parks-2", b"wake"));
     let (outs, done) = drain(rx, "once-parks-2");
     assert_eq!(
@@ -177,9 +184,10 @@ pub(super) fn entrance(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
     assert_eq!(done.0, "ok");
 
     // --- a once run that journals nothing waits for its message ---
-    assert!(node
-        .start_workflow("test-budget-once".into(), "once-waits".into(), "")
-        .expect("init_values is a JSON object"));
+    assert!(
+        start(node, "test-budget-once".into(), "once-waits".into(), "")
+            .expect("init_values is a JSON object")
+    );
     match rx.recv_timeout(Duration::from_millis(400)) {
         Ok(RunnerMessage::EmitWorkflowCompleted { operative_id, .. })
             if operative_id == "once-waits" =>
@@ -198,9 +206,10 @@ pub(super) fn entrance(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
     assert_eq!(done.0, "ok");
 
     // --- a stop during the wait completes as cancelled ---
-    assert!(node
-        .start_workflow("test-budget-once".into(), "once-stop".into(), "")
-        .expect("init_values is a JSON object"));
+    assert!(
+        start(node, "test-budget-once".into(), "once-stop".into(), "")
+            .expect("init_values is a JSON object")
+    );
     stop(node, "once-stop");
     let (_outs, done) = drain(rx, "once-stop");
     assert_eq!(done.0, "cancelled");

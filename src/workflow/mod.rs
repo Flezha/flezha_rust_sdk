@@ -1,14 +1,12 @@
-//! Workflow-operative authoring surface. The driver, saga machinery,
-//! registry and spec kernel live in `flz_core::workflow` and are re-exported
-//! here; this module keeps the author-facing `WorkflowOperative` trait (and
-//! the driver scenario suite).
+//! Workflow-operative authoring surface. The run, saga machinery and spec
+//! kernel live in `flz_core::workflow` and are re-exported here; this module
+//! keeps the author-facing `WorkflowOperative` trait (and the run's scenario
+//! suite).
 
 pub use flz_core::workflow::*;
 pub mod spec;
 
 use std::time::Duration;
-
-pub use flz_core::workflow::{compensation, driver, instance, registry};
 
 use crate::channel::ChannelBuilder;
 
@@ -22,8 +20,8 @@ pub trait WorkflowOperative: Send + Sync + 'static {
     /// Stable, controller-facing factory identifier.
     fn factory_id() -> &'static str;
 
-    /// The DAG, declared as a stream declares its graph. The workflow driver
-    /// runs it in topological order: a tasklet becomes runnable only after
+    /// The DAG, declared as a stream declares its graph. The workflow runs it
+    /// in topological order: a tasklet becomes runnable only after
     /// **every** producer feeding it has committed — fan-out branches
     /// interleave independently, and a fan-in node is dispatched once, with
     /// the accumulated batch of all its producers. Cycles are refused at
@@ -93,8 +91,8 @@ pub trait WorkflowOperative: Send + Sync + 'static {
     /// Synchronous remote durability (`remote-durability-tier`): the
     /// controller completes the remote ship of each commit barrier — the
     /// task-journal suffix and the inbox the barrier consumed — before it
-    /// acknowledges the barrier. The acknowledgement this driver blocks on
-    /// therefore implies the commit survives losing the controller's disk
+    /// acknowledges the barrier. The acknowledgement a tasklet's outputs wait
+    /// for therefore implies the commit survives losing the controller's disk
     /// (RPO 0), at the cost of one remote round trip per barrier.
     ///
     /// Inert unless the controller has a durability backend configured, and

@@ -83,8 +83,8 @@ pub use workflow::{LoopMode, RollbackMode, WorkflowError, WorkflowOperative};
 /// Build a class of kind `K` and install it in that kind's process-global
 /// registry, with no runner involved — the body
 /// [`FlezhaRunner::register_factory`] runs once it has cleared the runner's own
-/// declared set. Kept callable on its own for the local run and for the driver
-/// scenarios that drive a class without a runner at all.
+/// declared set. Kept callable on its own for the local run and for the
+/// workflow scenarios that drive a class without a runner at all.
 pub(crate) fn register_class<K, O: Operative<K>>() -> Result<(), FlezhaError> {
     O::install_class(O::build_class()?);
     Ok(())

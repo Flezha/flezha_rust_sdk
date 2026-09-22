@@ -70,7 +70,7 @@ impl StreamOperative for CounterOperative {
 #[test]
 fn single_mode_tasklet_serializes_under_tasklet_name_key() {
     let topology = build_topology_for::<CounterOperative>().expect("topology");
-    let instance = StreamInstance::new(topology, Arc::from("inst-1"));
+    let instance = OperativeInstance::new(topology, Arc::from("inst-1"));
 
     // Cold start: state is the default.
     let bytes = serialize_operative_state(&instance);
@@ -81,9 +81,9 @@ fn single_mode_tasklet_serializes_under_tasklet_name_key() {
 #[test]
 fn apply_init_values_seeds_single_mode_tasklet() {
     let topology = build_topology_for::<CounterOperative>().expect("topology");
-    let instance = StreamInstance::new(topology, Arc::from("inst-2"));
+    let instance = OperativeInstance::new(topology, Arc::from("inst-2"));
 
-    apply_init_values(&*instance, "{\"counter\":{\"value\":42}}").unwrap();
+    apply_init_values(&instance, "{\"counter\":{\"value\":42}}").unwrap();
 
     let bytes = serialize_operative_state(&instance);
     let v: Value = serde_json::from_slice(&bytes).unwrap();
@@ -142,7 +142,7 @@ impl StreamOperative for OhlcOperative {
 #[test]
 fn static_mode_tasklet_serializes_under_keyed_object() {
     let topology = build_topology_for::<OhlcOperative>().expect("topology");
-    let instance = StreamInstance::new(topology, Arc::from("inst-3"));
+    let instance = OperativeInstance::new(topology, Arc::from("inst-3"));
 
     let bytes = serialize_operative_state(&instance);
     let v: Value = serde_json::from_slice(&bytes).unwrap();
@@ -152,10 +152,10 @@ fn static_mode_tasklet_serializes_under_keyed_object() {
 #[test]
 fn apply_init_values_seeds_static_mode_tasklet_per_key() {
     let topology = build_topology_for::<OhlcOperative>().expect("topology");
-    let instance = StreamInstance::new(topology, Arc::from("inst-4"));
+    let instance = OperativeInstance::new(topology, Arc::from("inst-4"));
 
     apply_init_values(
-        &*instance,
+        &instance,
         "{\"ohlc\":{\"1m\":{\"high\":5},\"1h\":{\"high\":10}}}",
     )
     .unwrap();
@@ -168,9 +168,9 @@ fn apply_init_values_seeds_static_mode_tasklet_per_key() {
 #[test]
 fn apply_init_values_empty_string_is_noop() {
     let topology = build_topology_for::<CounterOperative>().expect("topology");
-    let instance = StreamInstance::new(topology, Arc::from("inst-5"));
+    let instance = OperativeInstance::new(topology, Arc::from("inst-5"));
 
-    apply_init_values(&*instance, "").unwrap();
+    apply_init_values(&instance, "").unwrap();
     let bytes = serialize_operative_state(&instance);
     let v: Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(v, json!({"counter": {"value": 0}}));
@@ -179,10 +179,10 @@ fn apply_init_values_empty_string_is_noop() {
 #[test]
 fn apply_init_values_unknown_tasklet_is_ignored() {
     let topology = build_topology_for::<CounterOperative>().expect("topology");
-    let instance = StreamInstance::new(topology, Arc::from("inst-6"));
+    let instance = OperativeInstance::new(topology, Arc::from("inst-6"));
 
     apply_init_values(
-        &*instance,
+        &instance,
         "{\"counter\":{\"value\":7},\"bogus_tasklet\":{\"x\":1}}",
     )
     .unwrap();
@@ -194,9 +194,9 @@ fn apply_init_values_unknown_tasklet_is_ignored() {
 #[test]
 fn round_trip_static_mode_through_serialize_then_apply() {
     let topology = build_topology_for::<OhlcOperative>().expect("topology");
-    let src = StreamInstance::new(Arc::clone(&topology), Arc::from("src"));
+    let src = OperativeInstance::new(Arc::clone(&topology), Arc::from("src"));
     apply_init_values(
-        &*src,
+        &src,
         "{\"ohlc\":{\"1m\":{\"high\":42},\"1h\":{\"high\":7}}}",
     )
     .unwrap();
@@ -204,8 +204,8 @@ fn round_trip_static_mode_through_serialize_then_apply() {
     let bytes = serialize_operative_state(&src);
     let json_str = std::str::from_utf8(&bytes).unwrap();
 
-    let dst = StreamInstance::new(topology, Arc::from("dst"));
-    apply_init_values(&*dst, json_str).unwrap();
+    let dst = OperativeInstance::new(topology, Arc::from("dst"));
+    apply_init_values(&dst, json_str).unwrap();
 
     let dst_bytes = serialize_operative_state(&dst);
     assert_eq!(bytes, dst_bytes);
@@ -273,7 +273,7 @@ impl StreamOperative for CandleOperative {
 }
 
 fn read(
-    instance: &Arc<StreamInstance>,
+    instance: &Arc<OperativeInstance>,
     tasklet: Option<&str>,
     key: Option<&str>,
 ) -> (Value, Option<u64>) {
@@ -347,7 +347,7 @@ fn dynamic_mode_cells_serialize_under_their_live_keys() {
 fn apply_init_values_cannot_seed_a_dynamic_mode_tasklet() {
     let (_handle, instance) = setup::<CandleOperative>("dyn-seed-1");
 
-    apply_init_values(&*instance, "{\"candle\":{\"BTCUSD@1m\":{\"ticks\":9}}}").unwrap();
+    apply_init_values(&instance, "{\"candle\":{\"BTCUSD@1m\":{\"ticks\":9}}}").unwrap();
 
     let registry = instance.dynamic_registries[0]
         .as_ref()
@@ -571,7 +571,7 @@ fn a_selector_less_cell_state_command_encodes_exactly_as_before() {
 fn the_json_shape_matches_the_java_sdk_byte_for_byte() {
     let (_handle, instance) = setup::<PairOperative>("cross-1");
     apply_init_values(
-        &*instance,
+        &instance,
         "{\"counter\":{\"value\":1},\"ohlc\":{\"1m\":{\"high\":2},\"1h\":{\"high\":3}}}",
     )
     .unwrap();

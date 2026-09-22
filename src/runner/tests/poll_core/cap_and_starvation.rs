@@ -78,8 +78,7 @@ fn handout_stops_at_the_cap_and_resumes_on_completion() {
     core.complete(held[1]);
 }
 
-/// Command activations are barrier-bounded by the drivers that enqueue
-/// them and answer a caller blocked on a rendezvous — holding one behind
+/// Command activations answer a caller blocked on a rendezvous — holding one behind
 /// capped cell work would deadlock that caller, so the cap never gates
 /// them.
 #[test]
@@ -94,13 +93,12 @@ fn a_command_activation_is_served_at_the_cap() {
     assert!(other.mailbox.claim_inflight());
     core.schedule(&other);
 
-    let (reply, _rx) = crossbeam::channel::bounded(1);
     core.submit_direct(flz_core::poll_core::EnginePayload::Command {
-        target: flz_core::host::cell_ref_of(&other),
+        slot: std::sync::Arc::clone(&other),
         change_seq: 0,
-        factory: "poll_core_exclusivity_op".into(),
         kind: flz_core::schema::ActivationKind::SnapshotRequest,
-        reply,
+        values: Vec::new(),
+        reply: flz_core::poll_core::CommandReply::new(|_| {}),
     });
 
     match core.poll(Duration::from_millis(500)) {
@@ -141,9 +139,9 @@ fn starvation_wakes_when_work_is_queued_with_no_poller() {
 }
 
 /// A direct activation queued with nobody to take it is starvation too,
-/// and unlike cell work the cap does not gate it: a workflow driver is
-/// blocked on its step, so "every worker is inside user code" must buy a
-/// thread rather than wedge the stage.
+/// and unlike cell work the cap does not gate it: a caller is waiting on
+/// its answer, so "every worker is inside user code" must buy a thread
+/// rather than wedge that caller.
 #[test]
 fn starvation_wakes_at_a_queued_direct_activation() {
     let core = Arc::new(PollCore::with_max_inflight(1));
@@ -154,13 +152,12 @@ fn starvation_wakes_at_a_queued_direct_activation() {
 
     let supervisor = starvation_waiter(&core);
 
-    let (reply, _rx) = crossbeam::channel::bounded(1);
     core.submit_direct(flz_core::poll_core::EnginePayload::Command {
-        target: flz_core::host::cell_ref_of(&slot),
+        slot: std::sync::Arc::clone(&slot),
         change_seq: 0,
-        factory: "poll_core_exclusivity_op".into(),
         kind: flz_core::schema::ActivationKind::SnapshotRequest,
-        reply,
+        values: Vec::new(),
+        reply: flz_core::poll_core::CommandReply::new(|_| {}),
     });
 
     assert!(

@@ -16,7 +16,7 @@ use crate::workflow::*;
 
 // ---- saga compensation operatives (Phase 2 §4) --------------------------
 
-/// Process-global compensation observation log. The driver-observation test
+/// Process-global compensation observation log. The workflow scenario test
 /// owns it (like `EMIT_RUNS`); compensable tasklets append a marker so
 /// rollback order and per-cell firing are assertable without wire
 /// plumbing (a compensable inter-tasklet task's `ctx.emit` is collected, not
@@ -212,7 +212,7 @@ impl WorkflowOperative for SagaWorkflow {
 /// Same chain, keep-progress mode declared — for a single no-loop pass it
 /// unwinds identically (the mode only diverges with committed iterations,
 /// covered by the planner unit tests). Proves `rollback_mode()` is plumbed
-/// through the registration → driver path.
+/// through the registration → run path.
 pub(crate) struct KeepProgressSaga;
 impl WorkflowOperative for KeepProgressSaga {
     fn factory_id() -> &'static str {
@@ -458,5 +458,83 @@ impl Tasklet for ResumeUndoB {
     ) -> Result<(), TaskletError> {
         comp_log("undo-B".to_string());
         Ok(())
+    }
+}
+
+// ---- a sibling that commits before its sibling fails -----------------------
+
+/// Compensable leaf that finishes at once; its undo names what it emitted.
+#[derive(Default)]
+pub(crate) struct SiblingFast;
+impl Tasklet for SiblingFast {
+    type Input = String;
+    type Output = String;
+    type State = ();
+    type Change = NoChange;
+    type Clock = WallClock;
+    type Config = ();
+    fn name() -> &'static str {
+        "sibling_fast"
+    }
+    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
+    fn run(
+        &mut self,
+        input: String,
+        _state: StateHandle<'_, Self>,
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
+        ctx.emit(format!("fast:{input}"))?;
+        Ok(())
+    }
+    const COMPENSATE_OVERRIDDEN: bool = true;
+    fn compensate(
+        &mut self,
+        completed_output: Vec<Arc<String>>,
+        _state: StateHandle<'_, Self>,
+        _ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
+        for out in &completed_output {
+            comp_log(format!("undo-{out}"));
+        }
+        Ok(())
+    }
+}
+
+/// The instance [`SiblingSlow`] watches for its sibling's commit.
+pub(crate) const SIBLING_SAGA_ID: &str = "sibling-commit";
+
+// Fails only once the journal holds its sibling's commit, so the failure
+// lands after that sibling's stage committed on its own.
+string_task!(SiblingSlow, "sibling_slow", |_input, _ctx| {
+    let fast = crate::cell::flusher::encode_cell_identity(SIBLING_SAGA_ID, "sibling_fast", "");
+    let committed = || {
+        super::super::fake_controller::TASK_COMMITS
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|commit| commit.cells_ran.contains(&fast))
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while !committed() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    Err(TaskletError::non_retryable(if committed() {
+        "slow sibling failed after its sibling committed"
+    } else {
+        "slow sibling never saw its sibling commit"
+    }))
+});
+
+/// A root into two leaves: `SiblingFast` commits while `SiblingSlow` still
+/// runs, then `SiblingSlow` fails and the committed sibling is undone.
+pub(crate) struct SiblingSaga;
+impl WorkflowOperative for SiblingSaga {
+    fn factory_id() -> &'static str {
+        "test-sibling-saga"
+    }
+    fn channels(c: &ChannelBuilder) {
+        let root = c.input::<String>("in").into::<EchoTask>().named("s_root");
+        root.into::<SiblingFast>().named("s_fast");
+        root.into::<SiblingSlow>().named("s_slow");
     }
 }

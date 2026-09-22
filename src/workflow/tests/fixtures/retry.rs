@@ -264,3 +264,39 @@ pub(crate) fn arm_flaky(failures: usize, non_retryable: bool) {
     ODD_NON_RETRYABLE.store(non_retryable, Ordering::SeqCst);
     let _ = drain_comp_log();
 }
+
+// ---- the per-item ladder --------------------------------------------------
+
+/// Every item the one-cell stage below attempted, in order.
+pub(crate) static ITEM_ATTEMPTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+// One Cell whose item `b` fails its first attempt: the retry re-hands `b`
+// and what followed it, never the item before it.
+string_task!(ItemFlaky, "item_flaky", |input, ctx| {
+    let prior = {
+        let mut attempts = ITEM_ATTEMPTS.lock().unwrap();
+        let prior = attempts.iter().filter(|seen| **seen == input).count();
+        attempts.push(input.clone());
+        prior
+    };
+    if input == "b" && prior == 0 {
+        return Err(TaskletError::Custom("item b attempt 1".into()));
+    }
+    ctx.emit(format!("item:{input}"))
+});
+
+/// Split → ItemFlaky: every piece of the message lands in the one Cell.
+pub(crate) struct ItemRetryWorkflow;
+impl WorkflowOperative for ItemRetryWorkflow {
+    fn factory_id() -> &'static str {
+        "test-item-retry-workflow"
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("in")
+            .into::<SplitTask>()
+            .named("pieces")
+            .retry_backoff_ms(10)
+            .into::<ItemFlaky>()
+            .sink_named("item_out");
+    }
+}

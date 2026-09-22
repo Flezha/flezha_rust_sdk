@@ -92,6 +92,8 @@ fn workflow_driver_scenarios() {
     crate::register_class::<crate::WorkflowKind, ChainedChainsWorkflow>().unwrap();
     crate::register_class::<crate::WorkflowKind, JournaledCountdownWorkflow>().unwrap();
     crate::register_class::<crate::WorkflowKind, BudgetOnce>().unwrap();
+    crate::register_class::<crate::WorkflowKind, ItemRetryWorkflow>().unwrap();
+    crate::register_class::<crate::WorkflowKind, SiblingSaga>().unwrap();
 
     let mut node = RunnerNode::new("test-ns".to_string());
 
@@ -114,10 +116,13 @@ fn workflow_driver_scenarios() {
     durable_loop::loop_saga_and_rewind(&mut node, &rx);
     durable_loop::loop_completion(&mut node, &rx);
     retry::cell_retry(&mut node, &rx);
+    retry::item_retry(&mut node, &rx);
     retry::retry_stop_and_stage(&mut node, &rx);
+    saga::sibling_commit(&mut node, &rx);
     fan_in::branching_resume(&mut node, &rx);
     durable_loop::barrier_resend(&mut node, &rx);
     entrance::entrance(&mut node, &rx);
+    entrance::once_waits(&mut node, &rx);
 }
 
 /// Respawn `test-chain-workflow` as a crash-resume carrying `journal` on the
@@ -129,21 +134,20 @@ pub(super) fn resume_chain_with_journal(
     id: &str,
     journal: instance::JournalResume,
 ) -> (Vec<Vec<u8>>, (String, String, Vec<u8>)) {
-    assert!(node
-        .start_workflow_resumable(
-            "test-chain-workflow".into(),
-            id.into(),
-            "",
-            1,
-            0,
-            Some(journal)
-        )
-        .expect("init_values is a JSON object"));
+    assert!(start_resumable(
+        node,
+        "test-chain-workflow".into(),
+        id.into(),
+        "",
+        1,
+        0,
+        Some(journal)
+    )
+    .expect("init_values is a JSON object"));
     assert!(feed(node, id, b"ignored-args"));
     let s1_id = crate::cell::flusher::encode_cell_identity(id, "workflow_stage1", "");
-    let (inst, _slot) = node
-        .find_workflow_cell(&s1_id)
-        .expect("chain cell reachable by the restore handler");
-    inst.note_restored();
+    let (inst, _slot) =
+        find_cell(node, &s1_id).expect("chain cell reachable by the restore handler");
+    restored(&inst);
     drain(rx, id)
 }

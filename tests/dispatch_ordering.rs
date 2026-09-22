@@ -100,8 +100,8 @@ fn same_cell_never_runs_concurrently() {
 
     let topology = build_topology_for::<ConcurrencyProbeOperative>().expect("topology");
     let registry = Arc::new(OperativeRegistry::new());
-    let instance = StreamInstance::new(topology, Arc::from("conc-instance"));
-    registry.register_stream(instance);
+    let instance = OperativeInstance::new(topology, Arc::from("conc-instance"));
+    registry.register(instance);
     let handle = OperativeDispatchHandle {
         registry: Arc::clone(&registry),
     };
@@ -144,8 +144,8 @@ fn same_cell_never_runs_concurrently() {
     );
 }
 
-fn registry_instance(registry: &Arc<OperativeRegistry>, id: &str) -> Arc<StreamInstance> {
-    registry.get_stream(id).expect("registered instance")
+fn registry_instance(registry: &Arc<OperativeRegistry>, id: &str) -> Arc<OperativeInstance> {
+    registry.get(id).expect("registered instance")
 }
 
 // ----- Parallel cells of the same tasklet -----

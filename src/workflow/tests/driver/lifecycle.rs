@@ -34,8 +34,8 @@ pub(super) fn lifecycle(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
     // Instance stays registered; a duplicate start is idempotent (no re-run).
     assert!(node.has_operative("workflow-ok"));
     assert!(
-        node.get_stream("workflow-ok").is_none(),
-        "a workflow is not a stream operative"
+        instance(node, "workflow-ok").is_some_and(|i| i.workflow.is_some()),
+        "a workflow instance carries its run"
     );
     assert!(start_fed(
         node,
@@ -150,9 +150,10 @@ fn completions_of(commits: Vec<crate::pb::TaskCommit>, id: &str) -> Vec<Option<V
 
 pub(super) fn loop_stop_and_removal(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
     // --- inbox loop: one iteration per input until a tasklet completes it ---
-    assert!(node
-        .start_workflow("test-loop-workflow".into(), "loop-1".into(), "")
-        .expect("init_values is a JSON object"));
+    assert!(
+        start(node, "test-loop-workflow".into(), "loop-1".into(), "")
+            .expect("init_values is a JSON object")
+    );
     for turn in [&b"alpha"[..], b"beta", b"quit"] {
         assert!(
             feed(node, "loop-1", turn),
@@ -168,9 +169,10 @@ pub(super) fn loop_stop_and_removal(node: &mut RunnerNode, rx: &Receiver<RunnerM
     );
 
     // --- external stop (WorkflowStop handler) → cancelled ---
-    assert!(node
-        .start_workflow("test-loop-workflow".into(), "loop-2".into(), "")
-        .expect("init_values is a JSON object"));
+    assert!(
+        start(node, "test-loop-workflow".into(), "loop-2".into(), "")
+            .expect("init_values is a JSON object")
+    );
     assert!(feed(node, "loop-2", b"one"));
     // Drain the echo first so the instance is definitely live before stop.
     wait_for_output(rx, "loop-2", b"got:one");
@@ -183,10 +185,12 @@ pub(super) fn loop_stop_and_removal(node: &mut RunnerNode, rx: &Receiver<RunnerM
     let (_o, done) = drain(rx, "loop-2");
     assert_eq!(done.0, "cancelled", "WorkflowStop ⇒ cancelled");
 
-    // --- hard removal (RemOperative → stop_operative) cancels a workflow ---
-    assert!(node
-        .start_workflow("test-loop-workflow".into(), "loop-3".into(), "")
-        .expect("init_values is a JSON object"));
+    // --- hard removal (RemOperative → stop_operative) ends the run with no
+    // completion: the controller removing an instance writes none ---
+    assert!(
+        start(node, "test-loop-workflow".into(), "loop-3".into(), "")
+            .expect("init_values is a JSON object")
+    );
     assert!(feed(node, "loop-3", b"x"));
     wait_for_output(rx, "loop-3", b"got:x");
     assert!(
@@ -194,16 +198,13 @@ pub(super) fn loop_stop_and_removal(node: &mut RunnerNode, rx: &Receiver<RunnerM
         "stop_operative removes the workflow"
     );
     assert!(!node.has_operative("loop-3"));
-    let (_o, done) = drain(rx, "loop-3");
-    assert_eq!(
-        done.0, "cancelled",
-        "hard stop ⇒ driver cancels and tears down"
-    );
+    assert_no_completion(rx, "loop-3", std::time::Duration::from_millis(300));
 
     // --- max_duration backstop → cancelled ---
-    assert!(node
-        .start_workflow("test-timed-workflow".into(), "timed-1".into(), "")
-        .expect("init_values is a JSON object"));
+    assert!(
+        start(node, "test-timed-workflow".into(), "timed-1".into(), "")
+            .expect("init_values is a JSON object")
+    );
     let (_o, done) = drain(rx, "timed-1");
     assert_eq!(done.0, "cancelled", "max_duration elapse ⇒ cancelled");
 }
@@ -288,38 +289,37 @@ pub(super) fn add_operative_routing(node: &mut RunnerNode, rx: &Receiver<RunnerM
     assert_eq!(errors_text.len(), 1, "{errors_text:?}");
     assert!(errors_text[0].contains("init_values"), "{errors_text:?}");
     assert!(
-        node.get_workflow("workflow-text-init").is_none(),
+        instance(node, "workflow-text-init").is_none(),
         "a refused document starts nothing"
     );
 
-    // --- AddOperative --kind workflow for an unregistered factory reports it ---
+    // --- AddOperative for an unregistered factory reports it ---
     let add_bad = AddOperative {
         operative_id: "workflow-bad".into(),
         factory_id: "test-unregistered".into(),
-        init_values: "".into(),
-        kind: "workflow".into(),
-        resume_cell_count: 0,
-        task_journal: None,
         ..Default::default()
     };
     let mut errors_bad = Vec::new();
     add_bad.handle(node, "", &mut errors_bad);
     assert_eq!(errors_bad.len(), 1);
-    assert!(errors_bad[0].contains("WorkflowOperative class"));
+    assert!(
+        errors_bad[0].contains("factory_id test-unregistered is not registered"),
+        "{errors_bad:?}"
+    );
 
-    // --- AddOperative with an unknown kind literal is refused ---
-    let add_unknown = AddOperative {
-        operative_id: "kind-bad".into(),
+    // --- the class says what it is: the wire's kind string is not read ---
+    let add_other_kind = AddOperative {
+        operative_id: "kind-other".into(),
         factory_id: "test-emit-workflow".into(),
-        init_values: "".into(),
         kind: "continuous".into(),
-        resume_cell_count: 0,
-        task_journal: None,
         ..Default::default()
     };
-    let mut errors_unknown = Vec::new();
-    add_unknown.handle(node, "", &mut errors_unknown);
-    assert_eq!(errors_unknown.len(), 1);
-    assert!(errors_unknown[0].contains("unknown compute-unit kind 'continuous'"));
-    assert!(node.get_workflow("kind-bad").is_none());
+    let mut errors_other = Vec::new();
+    add_other_kind.handle(node, "", &mut errors_other);
+    assert!(errors_other.is_empty(), "{errors_other:?}");
+    assert!(
+        instance(node, "kind-other").is_some_and(|i| i.workflow.is_some()),
+        "a workflow class binds a workflow instance whatever the wire says"
+    );
+    assert!(node.stop_operative("kind-other"));
 }

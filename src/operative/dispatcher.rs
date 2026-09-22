@@ -22,12 +22,10 @@ use crate::cell::flusher::{FlushableBuffer, TypedBuffer};
 use crate::cell::header::HeaderTemplate;
 use crate::cell::timer::{PendingTimers, TimerOp, TimerPolicy};
 use crate::cell::{CellItem, CellPayload, CellSlot, TaskletDispatcher};
-use crate::channel::{ChannelId, ChannelKind, RetryPolicy, TaskletId};
-use crate::operative::instance::StreamInstance;
-use crate::operative::topology::OperativeTopology;
+use crate::channel::{ChannelId, RetryPolicy, TaskletId};
+use crate::operative::instance::OperativeInstance;
 use crate::tasklet::Tasklet;
 use crate::util::LockRecover;
-use crate::workflow::{WorkflowCollectSink, WorkflowError};
 
 mod cell_slot;
 pub(crate) mod emit_sink;
@@ -35,7 +33,7 @@ mod invocation;
 
 pub use cell_slot::build_cell_slot;
 use cell_slot::Handout;
-use invocation::{CellScope, CollectShape, Invocation};
+use invocation::{CellScope, Invocation};
 
 /// Per-cell holder for a typed Tasklet instance + its State. Boxed and
 /// type-erased into `CellSlot.state`.
@@ -81,7 +79,6 @@ pub(crate) fn build_state_fns<S: Tasklet>() -> (
 /// at construction, so emit pays zero topology lookups on the hot path.
 struct EdgeFacts {
     output_channel_id: Option<ChannelId>,
-    output_channel_kind: ChannelKind,
     output_channel_name: Option<Arc<str>>,
     /// `.keyed()` opt-in of the producer-edge channel.
     output_channel_keyed: bool,
@@ -136,6 +133,9 @@ struct FlushWiring {
     /// engine's assembly (`runner::poll_core`), which reads this through
     /// `TaskletDispatcher::correction_policy`.
     correction: Option<crate::operative::topology::CorrectionPolicy>,
+    /// A workflow Cell: its changes ship as each item settles, its final
+    /// failure fails the stage instead of parking, and it registers no timer.
+    workflow: bool,
 }
 
 impl<S: Tasklet> TaskletDispatcherImpl<S> {
@@ -286,7 +286,7 @@ impl<S: Tasklet> TaskletDispatcher for TaskletDispatcherImpl<S> {
         state: &mut Box<dyn Any + Send>,
         flush_buffer: &mut Box<dyn FlushableBuffer>,
         timers: &mut PendingTimers,
-        instance: &Weak<StreamInstance>,
+        instance: &Weak<OperativeInstance>,
     ) -> crate::cell::ItemDisposition {
         use crate::cell::ItemDisposition;
 
@@ -391,77 +391,39 @@ impl<S: Tasklet> TaskletDispatcher for TaskletDispatcherImpl<S> {
         ))
     }
 
-    fn run_collecting(
-        &self,
-        input: Arc<dyn Any + Send + Sync>,
-        state: &mut Box<dyn Any + Send>,
-        topology: &OperativeTopology,
-        sink: &mut dyn WorkflowCollectSink,
-    ) -> Result<(), WorkflowError> {
-        let input_arc = Arc::downcast::<S::Input>(input).map_err(|_| {
-            WorkflowError::from(format!(
-                "workflow tasklet {} received an input of the wrong type",
-                S::name()
-            ))
-        })?;
-        let input: S::Input = Arc::unwrap_or_clone(input_arc);
-
-        let typed_state = state
+    fn compensate(&self, slot: &Arc<CellSlot>, outputs: Vec<Arc<dyn Any + Send + Sync>>) {
+        // The outputs this Cell recorded forward; empty after a crash-resume,
+        // which is why a compensable tasklet keeps its undo handle in State.
+        let typed: Vec<Arc<S::Output>> = outputs
+            .into_iter()
+            .filter_map(|value| Arc::downcast::<S::Output>(value).ok())
+            .collect();
+        let mut state_guard = slot.state.lock_recover();
+        let mut buffer_guard = slot.flush_buffer.lock_recover();
+        let mut timer_guard = slot.timers.lock_recover();
+        let typed_state = state_guard
             .downcast_mut::<CellState<S>>()
-            .expect("run_collecting: state type mismatch for tasklet");
-        let inputs = self.invocation_inputs(Some(&input));
-        self.collect_invoke(
-            typed_state,
-            topology,
-            sink,
-            inputs,
-            CollectShape {
-                prefix: "tasklet",
-                author_classifies: true,
-            },
-            |tasklet, handle, ctx| tasklet.run(input, handle, ctx),
-        )
-    }
-
-    fn compensate_collecting(
-        &self,
-        outputs: Vec<Arc<dyn Any + Send + Sync>>,
-        state: &mut Box<dyn Any + Send>,
-        topology: &OperativeTopology,
-        sink: &mut dyn WorkflowCollectSink,
-    ) -> Result<(), WorkflowError> {
-        // Recover the typed outputs the cell collected on its forward run.
-        let mut typed_outputs: Vec<Arc<S::Output>> = Vec::with_capacity(outputs.len());
-        for value in outputs {
-            match Arc::downcast::<S::Output>(value) {
-                Ok(out) => typed_outputs.push(out),
-                Err(_) => {
-                    return Err(WorkflowError::from(format!(
-                        "compensate: collected output of the wrong type for tasklet {}",
-                        S::name()
-                    )))
-                }
-            }
-        }
-
-        let typed_state = state
-            .downcast_mut::<CellState<S>>()
-            .expect("compensate_collecting: state type mismatch for tasklet");
-        // Compensation has no current input: EventTimeFrom yields 0 here. It
-        // also keeps the pre-tier emit contract (keyed emits are refused),
-        // which is why it captures no effects.
-        let inputs = self.invocation_inputs(None);
-        self.collect_invoke(
-            typed_state,
-            topology,
-            sink,
-            inputs,
-            CollectShape {
-                prefix: "compensation for tasklet",
-                author_classifies: false,
-            },
-            |tasklet, handle, ctx| tasklet.compensate(typed_outputs, handle, ctx),
-        )
+            .expect("compensate: state type mismatch for tasklet");
+        let typed_buffer = buffer_guard
+            .as_any_mut()
+            .downcast_mut::<TypedBuffer<S>>()
+            .expect("compensate: flush buffer type mismatch for tasklet");
+        let stream = flz_core::workflow::unwired_stream();
+        let instance = Weak::clone(&slot.instance);
+        let scope = CellScope {
+            slot,
+            state: typed_state,
+            buffer: typed_buffer,
+            timers: &mut timer_guard,
+            stream: &stream,
+            instance: &instance,
+        };
+        // Compensation has no current input: EventTimeFrom yields 0 here. A
+        // failing hook is the undo's to report, never a retry.
+        let _ = self.invoke_once(
+            Invocation::compensation(typed, self.invocation_inputs(None).0),
+            scope,
+        );
     }
 
     fn restore_state(
@@ -581,19 +543,24 @@ fn complete_item(slot: &Arc<CellSlot>, ops: &[TimerOp], stream: &Arc<FlezhaStrea
 }
 
 /// The Cell work one activation carries, or `None` when there is none to run
-/// here: a workflow step carries its own reply, so it releases this worker the
-/// moment it answers (a retry backoff is timed by the driver at its barrier,
-/// never slept here), and command/prepare payloads are host-only — a typed
-/// worker never receives one, because typed and host classes do not share a
-/// process.
+/// here: a workflow undo is served in process and answered at once, and the
+/// other command and prepare payloads are host-only — a typed worker never
+/// receives one, because typed and host classes do not share a process.
 fn cell_work(
     payload: crate::runner::poll_core::EnginePayload,
 ) -> Option<(Arc<CellSlot>, Vec<crate::runner::poll_core::ItemAttempt>)> {
     use crate::runner::poll_core::EnginePayload;
     match payload {
         EnginePayload::Work { slot, items } => Some((slot, items)),
-        EnginePayload::WorkflowStep(step) => {
-            flz_core::workflow::step::run_workflow_step(step);
+        EnginePayload::Command {
+            slot,
+            kind: flz_core::schema::ActivationKind::CompensateRun { .. },
+            values,
+            reply,
+            ..
+        } => {
+            slot.dispatcher.compensate(&slot, values);
+            reply.answer(flz_core::schema::ActivationOutcome::Work(Vec::new()));
             None
         }
         _ => None,
@@ -615,6 +582,7 @@ pub(super) fn run_activation(
     let Some((slot, items)) = cell_work(payload) else {
         return;
     };
+    let workflow = slot.topology.workflow.is_some();
     let mut handout = Handout::new(core, token, items);
     while let Some(work) = handout.next_item() {
         // Returning with no connection is safe only because the guard
@@ -626,12 +594,19 @@ pub(super) fn run_activation(
         match dispatch_locked(&slot, work) {
             ItemDisposition::Done { ops } => {
                 handout.item_done();
-                if complete_item(&slot, &ops, &stream) {
+                let hand_back = complete_item(&slot, &ops, &stream);
+                if workflow {
+                    flz_core::workflow::item_settled(&slot);
+                }
+                if hand_back {
                     handout.hand_back();
                     return;
                 }
             }
             ItemDisposition::RetryLater { item, error } => {
+                if workflow {
+                    flz_core::workflow::attempt_failed(&slot);
+                }
                 handout.retry(
                     ItemAttempt {
                         item,

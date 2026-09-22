@@ -1,10 +1,8 @@
 //! One invocation of the author's code, from the call to the settle.
 //!
 //! The retry ladder, the emit sink, the effect record and the DLQ park are the
-//! same machinery for an input and for a timer firing; only [`Call`] differs,
-//! which is why both reach `invoke_once`. The collecting entry points a
-//! workflow task uses share that containment and the WAL flush through
-//! `collect_invoke`.
+//! same machinery for an input, a timer firing and a workflow undo; only
+//! [`Call`] differs, which is why all three reach `invoke_once`.
 
 use std::any::Any;
 use std::cell::RefCell;
@@ -14,18 +12,15 @@ use std::sync::{Arc, Weak};
 use flz_transport::transport::FlezhaStream;
 
 use super::cell_slot::flusher_registered;
-use super::emit_sink::{
-    flush_before_emit_enabled, CellEmitSink, FlushBeforeEmit, WorkflowCollectAdapter,
-};
+use super::emit_sink::{flush_before_emit_enabled, CellEmitSink, FlushBeforeEmit};
 use super::{CellState, TaskletDispatcherImpl};
 use crate::cell::flusher::{FlushableBuffer, TypedBodies, TypedBuffer};
 use crate::cell::timer::{PendingTimers, TimerKind, TimerOp};
 use crate::cell::CellSlot;
-use crate::operative::instance::StreamInstance;
-use crate::operative::topology::OperativeTopology;
+use crate::operative::instance::OperativeInstance;
 use crate::tasklet::state_handle::StateHandle;
 use crate::tasklet::{Tasklet, TaskletCtx, TaskletError};
-use crate::workflow::{WorkflowCollectSink, WorkflowError};
+use crate::workflow::WorkflowError;
 
 impl<S: Tasklet> TaskletDispatcherImpl<S> {
     /// Fresh per-invocation output capture — `Some` only under the
@@ -63,17 +58,6 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
             &self.flush.header,
             self.flush.persistence_enabled,
         );
-    }
-
-    /// Ship the Changes a collecting-path task applied — or drain and discard
-    /// when the class opted out. The workflow analog of the stream `dispatch`
-    /// flush hook; both feed `flusher::flush_one`.
-    fn flush_collected(&self, buffer: RefCell<Vec<S::Change>>) {
-        let mut buf = TypedBuffer::<S> {
-            changes: buffer.into_inner(),
-            ..Default::default()
-        };
-        self.flush_now(&mut buf);
     }
 
     /// The changes one invocation applies into, seeded with a previous failed
@@ -163,10 +147,16 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
         let state = &mut *scope.state;
         let live_timers = &mut *scope.timers;
         let session = self.timers.session(live_timers, now, firing);
-        let mut ctx = TaskletCtx::new(&mut sink, now, invocation_seq, &self.flush.cell_identity)
+        let ctx = TaskletCtx::new(&mut sink, now, invocation_seq, &self.flush.cell_identity)
             .with_cell_key(self.cell_key.as_deref())
-            .during_replay(replay)
-            .with_timers(&session);
+            .during_replay(replay);
+        // Timers do not fire inside a workflow yet: its ctx answers
+        // `TimersUnavailable`.
+        let mut ctx = if self.flush.workflow {
+            ctx
+        } else {
+            ctx.with_timers(&session)
+        };
         let handle = StateHandle::<S>::new(&mut state.state, changes);
 
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match call {
@@ -174,6 +164,7 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
             Call::Timer { fired_at, kind } => {
                 state.tasklet.on_timer(fired_at, kind, handle, &mut ctx)
             }
+            Call::Compensate { outputs } => state.tasklet.compensate(outputs, handle, &mut ctx),
         }));
         match outcome {
             Ok(Ok(())) => {
@@ -285,7 +276,12 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
             effects,
             dlq,
         );
-        if !buffer.timer_ops.is_empty() && !flusher_registered::<S>(self.flush.effectively_once) {
+        // A workflow Cell ships its changes as its item settles, ahead of
+        // the stage's commit that follows.
+        if self.flush.workflow
+            || (!buffer.timer_ops.is_empty()
+                && !flusher_registered::<S>(self.flush.effectively_once))
+        {
             self.flush_now(buffer);
         }
         if let Some(entry) = tier_off_dlq {
@@ -342,10 +338,23 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
                 }
             };
 
-        let dlq = settled
-            .park_error
-            .take()
-            .map(|error| self.park_entry(error, attempt, parked_payload_bytes, retained_input));
+        // A workflow's final attempt is its kind's: the stage fails into
+        // compensation, and no dead letter is minted.
+        let dlq = match settled.park_error.take() {
+            Some(error) if self.flush.workflow => {
+                flz_core::workflow::note_failure(
+                    scope.slot,
+                    WorkflowError::from(format!("tasklet {} failed: {error}", S::name())),
+                    None,
+                    attempt,
+                );
+                None
+            }
+            Some(error) => {
+                Some(self.park_entry(error, attempt, parked_payload_bytes, retained_input))
+            }
+            None => None,
+        };
         let committed = settled.timers.clone();
         let effects = settled.into_effects(changes.into_inner(), offset, now);
         self.settle(scope.buffer, effects, dlq);
@@ -369,6 +378,10 @@ pub(super) enum Call<S: Tasklet> {
         fired_at: u64,
         kind: TimerKind,
     },
+    /// A workflow undo over the outputs the Cell recorded forward.
+    Compensate {
+        outputs: Vec<Arc<S::Output>>,
+    },
 }
 
 impl<S: Tasklet> Call<S> {
@@ -377,7 +390,7 @@ impl<S: Tasklet> Call<S> {
             Call::Input {
                 consumed_offset, ..
             } => *consumed_offset,
-            Call::Timer { .. } => None,
+            Call::Timer { .. } | Call::Compensate { .. } => None,
         }
     }
 
@@ -390,7 +403,7 @@ impl<S: Tasklet> Call<S> {
     fn firing(&self) -> Option<(TimerKind, u64)> {
         match self {
             Call::Timer { fired_at, kind } => Some((*kind, *fired_at)),
-            Call::Input { .. } => None,
+            Call::Input { .. } | Call::Compensate { .. } => None,
         }
     }
 }
@@ -424,6 +437,19 @@ impl<'a, S: Tasklet> Invocation<'a, S> {
             now: fire.scheduled_at,
             attempt,
             is_final,
+            parked_payload_bytes: None,
+            retained_input: None,
+        }
+    }
+
+    /// A workflow undo: one attempt, never retried, and nothing a park could
+    /// record.
+    pub(super) fn compensation(outputs: Vec<Arc<S::Output>>, now: u64) -> Self {
+        Self {
+            call: Call::Compensate { outputs },
+            now,
+            attempt: 1,
+            is_final: true,
             parked_payload_bytes: None,
             retained_input: None,
         }
@@ -489,7 +515,7 @@ pub(super) struct CellScope<'a, S: Tasklet> {
     /// The connection this invocation's emits ride — the one its item came in
     /// on, inherited by any processing-time timer it arms.
     pub(super) stream: &'a Arc<FlezhaStream>,
-    pub(super) instance: &'a Weak<StreamInstance>,
+    pub(super) instance: &'a Weak<OperativeInstance>,
 }
 
 /// What one settling attempt left. `park_error` is set when the item parks —
@@ -524,44 +550,6 @@ impl Settled {
     }
 }
 
-/// How one collecting entry point differs from the other: the error prefix,
-/// whether the author's own retryability classification survives (a
-/// compensation has no ladder of its own), and whether keyed plugin emits are
-/// captured into the invocation's atomic effect record.
-#[derive(Clone, Copy)]
-pub(super) struct CollectShape {
-    pub(super) prefix: &'static str,
-    pub(super) author_classifies: bool,
-}
-
-/// The workflow error a failed collecting call reports: `{prefix} {tasklet}
-/// failed: {cause}` for a returned error, `panicked` for an unwind. The
-/// author's own classification rides through only where the entry point has a
-/// retry ladder of its own — a compensation has none, and a panic never
-/// classifies, because the author never got to.
-pub(super) fn collect_failure(
-    shape: CollectShape,
-    name: &str,
-    failed: Result<Result<(), TaskletError>, Box<dyn Any + Send>>,
-) -> WorkflowError {
-    match failed {
-        Ok(Err(err)) => WorkflowError::new(
-            format!("{} {} failed: {}", shape.prefix, name, err),
-            shape.author_classifies && err.is_non_retryable(),
-        ),
-        Err(panic) => WorkflowError::new(
-            format!(
-                "{} {} panicked: {}",
-                shape.prefix,
-                name,
-                crate::tasklet::error::format_panic(panic)
-            ),
-            false,
-        ),
-        Ok(Ok(())) => unreachable!("handled above"),
-    }
-}
-
 /// The error text of a failed attempt and whether the ladder may retry it. A
 /// panic is retryable by default — the author never got to classify it.
 fn classify_failure(
@@ -574,69 +562,5 @@ fn classify_failure(
         }
         Err(panic) => (crate::tasklet::error::format_panic(panic), true),
         Ok(Ok(())) => unreachable!("handled above"),
-    }
-}
-
-impl<S: Tasklet> TaskletDispatcherImpl<S> {
-    /// One collecting-path invocation — a workflow `run` or its `compensate`
-    /// — through the collect sink, the change buffer and the WAL flush all of
-    /// them owe. `body` is the call into the author's code; `shape` carries
-    /// the only three things the two entry points disagree about.
-    pub(super) fn collect_invoke<F>(
-        &self,
-        typed_state: &mut CellState<S>,
-        topology: &OperativeTopology,
-        sink: &mut dyn WorkflowCollectSink,
-        inputs: (u64, u64),
-        shape: CollectShape,
-        body: F,
-    ) -> Result<(), WorkflowError>
-    where
-        F: FnOnce(&mut S, StateHandle<'_, S>, &mut TaskletCtx<'_>) -> Result<(), TaskletError>,
-    {
-        let (now, invocation_seq) = inputs;
-        // Per-run change buffer: `StateHandle::apply` records Changes here; the
-        // flush after the run ships them to the WAL when the class is durable.
-        let buffer: RefCell<Vec<S::Change>> = RefCell::new(Vec::new());
-
-        let mut collect_sink = self.collect_sink(sink, topology);
-        let mut ctx = TaskletCtx::new(
-            &mut collect_sink,
-            now,
-            invocation_seq,
-            &self.flush.cell_identity,
-        )
-        .with_cell_key(self.cell_key.as_deref());
-        let handle = StateHandle::<S>::new(&mut typed_state.state, &buffer);
-
-        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            body(&mut typed_state.tasklet, handle, &mut ctx)
-        }));
-
-        // Ship the applied Changes to the WAL regardless of outcome, so the WAL
-        // reflects the state applied before any failure (at-least-once; the saga
-        // compensates a partial run).
-        self.flush_collected(buffer);
-
-        match outcome {
-            Ok(Ok(())) => Ok(()),
-            failed => Err(collect_failure(shape, S::name(), failed)),
-        }
-    }
-
-    /// The collect sink one workflow invocation writes through, on this
-    /// Cell's producer edge.
-    fn collect_sink<'a>(
-        &'a self,
-        sink: &'a mut dyn WorkflowCollectSink,
-        topology: &'a OperativeTopology,
-    ) -> WorkflowCollectAdapter<'a> {
-        WorkflowCollectAdapter {
-            sink,
-            output_channel_id: self.edges.output_channel_id,
-            output_channel_kind: self.edges.output_channel_kind,
-            output_channel_name: self.edges.output_channel_name.as_deref(),
-            topology,
-        }
     }
 }

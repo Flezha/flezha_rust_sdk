@@ -65,11 +65,11 @@ pub(super) fn fan_in_branching(node: &mut RunnerNode, rx: &Receiver<RunnerMessag
         vec![b"j:b:a:x".to_vec(), b"j:c:a:x".to_vec()],
         "the join's input batch accumulates BOTH producers' outputs (B's first: sibling order)"
     );
+    // The two producers commit on their own, in whichever order they finish.
+    let mut commits: Vec<u32> = drain_task_commits().iter().map(|c| c.task_idx).collect();
+    commits[1..3].sort_unstable();
     assert_eq!(
-        drain_task_commits()
-            .iter()
-            .map(|c| c.task_idx)
-            .collect::<Vec<_>>(),
+        commits,
         vec![0, 1, 2, 3],
         "one commit per node — the join commits exactly once, after both producers"
     );
@@ -94,26 +94,25 @@ pub(super) fn fan_in_branching(node: &mut RunnerNode, rx: &Receiver<RunnerMessag
     // accumulates B's JOURNALED handoff with C's fresh output ---
     let _ = drain_diamond_log();
     let da_id = crate::cell::flusher::encode_cell_identity("diamond-r", "diamond_a", "");
-    let diamond_spec =
-        registry::get_class("test-diamond-workflow").expect("diamond class registered");
-    let diamond_topo = &diamond_spec.topology;
+    let diamond_spec = crate::operative::registry::get_class("test-diamond-workflow")
+        .expect("diamond class registered");
+    let diamond_topo = &diamond_spec;
     let d_fan = diamond_topo.lookup_channel_id("d_fan").unwrap();
     let d_b = diamond_topo.lookup_channel_id("d_b").unwrap();
-    assert!(node
-        .start_workflow_resumable(
-            "test-diamond-workflow".into(),
-            "diamond-r".into(),
-            "",
-            1,
-            0,
-            Some(ab_committed(d_fan, d_b, vec![da_id.clone()], Vec::new()))
-        )
-        .expect("init_values is a JSON object"));
+    assert!(start_resumable(
+        node,
+        "test-diamond-workflow".into(),
+        "diamond-r".into(),
+        "",
+        1,
+        0,
+        Some(ab_committed(d_fan, d_b, vec![da_id.clone()], Vec::new()))
+    )
+    .expect("init_values is a JSON object"));
     assert!(feed(node, "diamond-r", b"x"));
-    let (diamond_inst, _slot) = node
-        .find_workflow_cell(&da_id)
+    let (diamond_inst, _slot) = find_cell(node, &da_id)
         .expect("a durable diamond Cell is reachable by the restore handler");
-    diamond_inst.note_restored();
+    restored(&diamond_inst);
     let (outs, done) = drain(rx, "diamond-r");
     assert_eq!(done.0, "ok");
     let log = drain_diamond_log();
@@ -149,16 +148,25 @@ pub(super) fn fan_in_branching(node: &mut RunnerNode, rx: &Receiver<RunnerMessag
     assert!(start_fed(node, "test-diamond-saga", "diamond-s", b"x"));
     let (_o, done) = drain(rx, "diamond-s");
     assert_eq!(done.0, "error");
+    // The two branches commit on their own, so they unwind in reverse of
+    // whichever finished first; the join before both, the root after both.
+    let comp = drain_comp_log();
     assert_eq!(
-        drain_comp_log(),
-        vec![
-            "undo-j:j:b:a:x".to_string(),
-            "undo-j:j:c:a:x".to_string(),
-            "undo-c:c:a:x".to_string(),
-            "undo-b:b:a:x".to_string(),
-            "undo-a:a:x".to_string(),
-        ],
-        "reverse-topological over the DAG: join first, shared root last"
+        comp[..2],
+        ["undo-j:j:b:a:x".to_string(), "undo-j:j:c:a:x".to_string()],
+        "the join unwinds first"
+    );
+    let mut branches = comp[2..4].to_vec();
+    branches.sort();
+    assert_eq!(
+        branches,
+        ["undo-b:b:a:x".to_string(), "undo-c:c:a:x".to_string()],
+        "then both branches"
+    );
+    assert_eq!(
+        comp[4..],
+        ["undo-a:a:x".to_string()],
+        "the shared root last"
     );
 
     // --- multi-input-tasklets: the same fan-in wired as a merge. Each
@@ -182,25 +190,25 @@ pub(super) fn merge_mapping(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>)
     let _ = drain_diamond_log();
     let _ = drain_task_commits();
     let ma_id = crate::cell::flusher::encode_cell_identity("merge-r", "diamond_a", "");
-    let merge_spec = registry::get_class("test-merge-workflow").expect("merge class registered");
-    let merge_topo = &merge_spec.topology;
+    let merge_spec = crate::operative::registry::get_class("test-merge-workflow")
+        .expect("merge class registered");
+    let merge_topo = &merge_spec;
     let m_fan = merge_topo.lookup_channel_id("m_fan").unwrap();
     let m_b = merge_topo.lookup_channel_id("m_b").unwrap();
-    assert!(node
-        .start_workflow_resumable(
-            "test-merge-workflow".into(),
-            "merge-r".into(),
-            "",
-            1,
-            0,
-            Some(ab_committed(m_fan, m_b, vec![ma_id.clone()], Vec::new()))
-        )
-        .expect("init_values is a JSON object"));
+    assert!(start_resumable(
+        node,
+        "test-merge-workflow".into(),
+        "merge-r".into(),
+        "",
+        1,
+        0,
+        Some(ab_committed(m_fan, m_b, vec![ma_id.clone()], Vec::new()))
+    )
+    .expect("init_values is a JSON object"));
     assert!(feed(node, "merge-r", b"x"));
-    let (merge_inst, _slot) = node
-        .find_workflow_cell(&ma_id)
-        .expect("a durable merge Cell is reachable by the restore handler");
-    merge_inst.note_restored();
+    let (merge_inst, _slot) =
+        find_cell(node, &ma_id).expect("a durable merge Cell is reachable by the restore handler");
+    restored(&merge_inst);
     let (outs, done) = drain(rx, "merge-r");
     assert_eq!(done.0, "ok");
     assert_eq!(
@@ -232,17 +240,20 @@ pub(super) fn merge_mapping(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>)
         done.1
     );
     assert!(outs.is_empty(), "the join never ran, so nothing shipped");
-    // The saga fires over exactly what was RECORDED as completed when the
-    // abort began: the producer whose edge blew up (B) and its parent (A),
-    // reverse-topologically. C ran in the same level but the abort returns
-    // before its stage record is pushed, so it is not undone — the same
-    // mid-level shape a failing task commit has always had. Asserted as an
-    // exact list so the Java arm is pinned to it, not merely compatible.
-    let comp = drain_comp_log();
+    // The saga undoes every stage that ran: the producer whose edge blew up
+    // (B, its tasklet ran to its end), the sibling that committed on its own
+    // (C) in whichever order the two finished, and their parent (A) last.
+    let mut comp = drain_comp_log();
+    assert_eq!(
+        comp.pop().as_deref(),
+        Some("undo-a:a:x"),
+        "the shared parent unwinds last"
+    );
+    comp.sort();
     assert_eq!(
         comp,
-        vec!["undo-b:b:a:x".to_string(), "undo-a:a:x".to_string()],
-        "the contained mapping panic compensates the recorded stages, in reverse"
+        vec!["undo-b:b:a:x".to_string(), "undo-c:c:a:x".to_string()],
+        "the contained mapping panic compensates both branches that ran"
     );
     let panic_log = drain_diamond_log();
     assert!(
@@ -293,32 +304,31 @@ pub(super) fn merge_mapping(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>)
     let _ = drain_task_commits();
     let pa_id = crate::cell::flusher::encode_cell_identity("merge-panic-r", "diamond_a", "");
     let pb_id = crate::cell::flusher::encode_cell_identity("merge-panic-r", "diamond_b", "");
-    let panic_spec =
-        registry::get_class("test-panic-merge-workflow").expect("panic merge class registered");
-    let panic_topo = &panic_spec.topology;
+    let panic_spec = crate::operative::registry::get_class("test-panic-merge-workflow")
+        .expect("panic merge class registered");
+    let panic_topo = &panic_spec;
     let pm_fan = panic_topo.lookup_channel_id("pm_fan").unwrap();
     let pm_b = panic_topo.lookup_channel_id("pm_b").unwrap();
     WAL_FRAMES.lock().unwrap().clear();
-    assert!(node
-        .start_workflow_resumable(
-            "test-panic-merge-workflow".into(),
-            "merge-panic-r".into(),
-            "",
-            1,
-            0,
-            Some(ab_committed(
-                pm_fan,
-                pm_b,
-                vec![pa_id.clone()],
-                vec![pb_id.clone()],
-            ))
-        )
-        .expect("init_values is a JSON object"));
+    assert!(start_resumable(
+        node,
+        "test-panic-merge-workflow".into(),
+        "merge-panic-r".into(),
+        "",
+        1,
+        0,
+        Some(ab_committed(
+            pm_fan,
+            pm_b,
+            vec![pa_id.clone()],
+            vec![pb_id.clone()],
+        ))
+    )
+    .expect("init_values is a JSON object"));
     assert!(feed(node, "merge-panic-r", b"x"));
-    let (panic_inst, _slot) = node
-        .find_workflow_cell(&pa_id)
+    let (panic_inst, _slot) = find_cell(node, &pa_id)
         .expect("a durable resumed Cell is reachable by the restore handler");
-    panic_inst.note_restored();
+    restored(&panic_inst);
     let (outs, done) = drain(rx, "merge-panic-r");
     assert_eq!(
         done.0, "error",
@@ -372,7 +382,8 @@ pub(super) fn branching_resume(node: &mut RunnerNode, rx: &Receiver<RunnerMessag
         vec![b"echo:x-1".to_vec(), b"x-1-2".to_vec()],
         "each branch consumed Stage1's `mid` batch and emitted on its own sink"
     );
-    let committed: Vec<u32> = drain_task_commits().iter().map(|c| c.task_idx).collect();
+    let mut committed: Vec<u32> = drain_task_commits().iter().map(|c| c.task_idx).collect();
+    committed[1..].sort_unstable();
     assert_eq!(
         committed,
         vec![0, 1, 2],
@@ -385,42 +396,41 @@ pub(super) fn branching_resume(node: &mut RunnerNode, rx: &Receiver<RunnerMessag
     let id = "tree-resume";
     let root_seg = crate::cell::flusher::encode_cell_identity(id, "workflow_stage1", "");
     // Channel ids follow declaration order: `in` = 0, `mid` = 1.
-    assert!(node
-        .start_workflow_resumable(
-            "test-tree-workflow".into(),
-            id.into(),
-            "",
-            1,
-            0,
-            Some(instance::JournalResume {
-                committed_task_idxs: vec![0, 1],
-                task_handoffs: vec![instance::EdgeHandoff {
+    assert!(start_resumable(
+        node,
+        "test-tree-workflow".into(),
+        id.into(),
+        "",
+        1,
+        0,
+        Some(instance::JournalResume {
+            committed_task_idxs: vec![0, 1],
+            task_handoffs: vec![instance::EdgeHandoff {
+                task_idx: 0,
+                handoff: vec![(1, postcard::to_allocvec(&"resumed-1".to_string()).unwrap())],
+            }],
+            committed_tasks: vec![
+                instance::CommittedTask {
                     task_idx: 0,
-                    handoff: vec![(1, postcard::to_allocvec(&"resumed-1".to_string()).unwrap())],
-                }],
-                committed_tasks: vec![
-                    instance::CommittedTask {
-                        task_idx: 0,
-                        iter: 0,
-                        cells_ran: vec![root_seg.clone()],
-                        completion: None,
-                    },
-                    instance::CommittedTask {
-                        task_idx: 1,
-                        iter: 0,
-                        cells_ran: Vec::new(),
-                        completion: None,
-                    },
-                ],
-                ..Default::default()
-            })
-        )
-        .expect("init_values is a JSON object"));
+                    iter: 0,
+                    cells_ran: vec![root_seg.clone()],
+                    completion: None,
+                },
+                instance::CommittedTask {
+                    task_idx: 1,
+                    iter: 0,
+                    cells_ran: Vec::new(),
+                    completion: None,
+                },
+            ],
+            ..Default::default()
+        })
+    )
+    .expect("init_values is a JSON object"));
     assert!(feed(node, id, b"ignored-args"));
-    let (inst, _slot) = node
-        .find_workflow_cell(&root_seg)
+    let (inst, _slot) = find_cell(node, &root_seg)
         .expect("the tree's root Cell is reachable by the restore handler");
-    inst.note_restored();
+    restored(&inst);
     let (outs, done) = drain(rx, id);
     assert_eq!(done.0, "ok");
     assert_eq!(
@@ -443,14 +453,21 @@ pub(super) fn branching_resume(node: &mut RunnerNode, rx: &Receiver<RunnerMessag
     assert!(start_fed(node, "test-tree-saga", "tree-saga", b"o1"));
     let (_o, done) = drain(rx, "tree-saga");
     assert_eq!(done.0, "error");
+    // The two branches commit on their own, so their undos come in whichever
+    // order they completed.
+    let mut undone = drain_comp_log();
     assert_eq!(
-        drain_comp_log(),
+        undone.pop().as_deref(),
+        Some("undo-reserve:reserved:o1"),
+        "descendants before ancestors: the shared root unwinds last"
+    );
+    undone.sort();
+    assert_eq!(
+        undone,
         vec![
             "undo-archive:archived:reserved:o1".to_string(),
             "undo-charge:charged:reserved:o1".to_string(),
-            "undo-reserve:reserved:o1".to_string(),
         ],
-        "descendants before ancestors: the sibling leaf and the failing branch's \
-         committed tasklet both unwind before the root they share"
+        "the sibling leaf and the failing branch's committed tasklet both unwind"
     );
 }

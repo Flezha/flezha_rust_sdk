@@ -10,11 +10,11 @@ use std::sync::{Arc, Condvar, Mutex, RwLock, Weak};
 
 use crossbeam::channel::{Receiver, Sender};
 
-use crate::operative::instance::StreamInstance;
+use crate::operative::instance::OperativeInstance;
 use crate::operative::Operative;
 use crate::runner::{ClientResponseMessage, RunnerMessage};
 use crate::shutdown::ShutdownBridge;
-use crate::{operative, pb, runner, shutdown, workflow, BuildWorkflowError, TopologyBuildError};
+use crate::{operative, pb, runner, shutdown, BuildWorkflowError, TopologyBuildError};
 
 /// The ONE public error of the entry-point chain: every fallible call on
 /// [`FlezhaRunner`] returns `Result<_, FlezhaError>`, so
@@ -276,7 +276,7 @@ impl FlezhaRunner {
         &self,
         _operative: O,
     ) -> Result<&Self, FlezhaError> {
-        self.remove(O::factory_id(), O::IS_WORKFLOW)
+        self.remove(O::factory_id())
     }
 
     /// Connect to the controller. Blocks only for the connect handshake
@@ -337,7 +337,7 @@ impl FlezhaRunner {
     /// Snapshot of the live StreamOperative-instance registry, keyed by
     /// what the wire calls `operative_id`. `Err(NotStarted)` on a
     /// never-started runner — never a panic.
-    pub fn operatives(&self) -> Result<HashMap<String, Arc<StreamInstance>>, FlezhaError> {
+    pub fn operatives(&self) -> Result<HashMap<String, Arc<OperativeInstance>>, FlezhaError> {
         let started = self.core.started.lock().unwrap();
         let Some(live) = started.as_ref() else {
             return Err(FlezhaError::NotStarted);
@@ -387,7 +387,7 @@ impl FlezhaRunner {
     /// with `AddOperative` handling by construction, so the check is
     /// race-free. Pre-start no instances can exist, so the class is
     /// unregistered directly.
-    fn remove(&self, factory_id: &str, workflow: bool) -> Result<&Self, FlezhaError> {
+    fn remove(&self, factory_id: &str) -> Result<&Self, FlezhaError> {
         if !self
             .core
             .declared
@@ -404,8 +404,8 @@ impl FlezhaRunner {
         {
             let started = self.core.started.lock().unwrap();
             match started.as_ref() {
-                Some(live) => refuse_live_instances(live, factory_id, workflow)?,
-                None => unregister_class(factory_id, workflow),
+                Some(live) => refuse_live_instances(live, factory_id)?,
+                None => operative::registry::unregister_class(factory_id),
             }
         }
 
@@ -483,14 +483,9 @@ impl FlezhaRunner {
 /// Post-start removal: the live-instance check and the class unregistration
 /// run on the coordinator loop, serialized with `AddOperative` handling by
 /// construction, so the check is race-free. Refuses while instances exist.
-fn refuse_live_instances(
-    live: &Started,
-    factory_id: &str,
-    workflow: bool,
-) -> Result<(), FlezhaError> {
+fn refuse_live_instances(live: &Started, factory_id: &str) -> Result<(), FlezhaError> {
     match live.exchange(RunnerMessage::RemoveFactory {
         factory_id: factory_id.to_string(),
-        workflow,
     })? {
         ClientResponseMessage::RemoveFactoryResult(Ok(())) => Ok(()),
         ClientResponseMessage::RemoveFactoryResult(Err(live_instances)) => {
@@ -500,16 +495,6 @@ fn refuse_live_instances(
             })
         }
         _ => Err(Started::unexpected_reply()),
-    }
-}
-
-/// Pre-start removal: no instance can exist yet, so the class leaves the
-/// global registry directly.
-fn unregister_class(factory_id: &str, workflow: bool) {
-    if workflow {
-        workflow::registry::unregister_class(factory_id);
-    } else {
-        operative::registry::unregister_class(factory_id);
     }
 }
 

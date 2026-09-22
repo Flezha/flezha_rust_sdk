@@ -5,7 +5,7 @@ pub mod builder;
 pub mod dispatcher;
 pub(crate) mod poll_pool;
 pub use flz_core::operative::{instance, registry, topology};
-pub use instance::{KeyGroupRange, StreamInstance};
+pub use instance::{KeyGroupRange, OperativeInstance};
 pub use topology::OperativeTopology;
 
 use crate::channel::ChannelBuilder;
@@ -23,7 +23,7 @@ use crate::channel::ChannelBuilder;
 ///
 /// The runtime calls `R::channels(...)` once at `register_factory(R)`
 /// time and freezes the resulting topology in an `Arc<OperativeTopology>`
-/// shared by every `StreamInstance` of this class.
+/// shared by every `OperativeInstance` of this class.
 pub trait StreamOperative: Send + Sync + 'static {
     /// Stable name. Used as the controller-facing factory identifier — the
     /// controller's `flz operative start <factory_id>` looks this up.
@@ -38,7 +38,7 @@ pub trait StreamOperative: Send + Sync + 'static {
     /// Class-level persistence toggle. The runtime resolves the final
     /// value at instance start by checking the operative-start metadata
     /// (runner override) first; if no override is present, this const
-    /// is used. Frozen on the `StreamInstance` at construction; runtime
+    /// is used. Frozen on the `OperativeInstance` at construction; runtime
     /// changes only take effect on the next `stop_operative` + `start_operative`
     /// cycle.
     const PERSISTENCE_ENABLED: bool = true;
@@ -76,13 +76,9 @@ pub struct WorkflowKind;
 /// means a third marker and a third blanket impl: neither authoring trait moves
 /// and the runner gains no method.
 pub trait Operative<K>: sealed::Sealed<K> {
-    /// What building this class produces before it is installed: a frozen
-    /// topology for a stream, a frozen spec for a workflow.
+    /// What building this class produces before it is installed: its frozen
+    /// topology, which for a workflow carries the spec.
     type Class;
-
-    /// Whether a removal must check the workflow instance registry rather than
-    /// the stream one.
-    const IS_WORKFLOW: bool;
 
     /// The controller-facing factory id, the one member both kinds share.
     fn factory_id() -> &'static str;
@@ -91,7 +87,7 @@ pub trait Operative<K>: sealed::Sealed<K> {
     /// invalid declaration leaves the runner exactly as it was.
     fn build_class() -> Result<Self::Class, crate::FlezhaError>;
 
-    /// Put the built class in the process-global class registry of its kind.
+    /// Put the built class in the process-global class registry.
     fn install_class(class: Self::Class);
 }
 
@@ -99,7 +95,6 @@ impl<R: StreamOperative> sealed::Sealed<StreamKind> for R {}
 
 impl<R: StreamOperative> Operative<StreamKind> for R {
     type Class = std::sync::Arc<OperativeTopology>;
-    const IS_WORKFLOW: bool = false;
 
     fn factory_id() -> &'static str {
         <R as StreamOperative>::factory_id()
@@ -117,8 +112,7 @@ impl<R: StreamOperative> Operative<StreamKind> for R {
 impl<T: crate::WorkflowOperative> sealed::Sealed<WorkflowKind> for T {}
 
 impl<T: crate::WorkflowOperative> Operative<WorkflowKind> for T {
-    type Class = crate::workflow::spec::WorkflowSpec;
-    const IS_WORKFLOW: bool = true;
+    type Class = std::sync::Arc<OperativeTopology>;
 
     fn factory_id() -> &'static str {
         <T as crate::WorkflowOperative>::factory_id()
@@ -129,10 +123,7 @@ impl<T: crate::WorkflowOperative> Operative<WorkflowKind> for T {
     }
 
     fn install_class(class: Self::Class) {
-        crate::workflow::registry::register_class(
-            <T as crate::WorkflowOperative>::factory_id(),
-            class,
-        );
+        registry::register_class(<T as crate::WorkflowOperative>::factory_id(), class);
     }
 }
 

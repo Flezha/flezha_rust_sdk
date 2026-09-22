@@ -1,4 +1,4 @@
-//! Relocated kernel tests: `StreamInstance` construction with typed fixtures.
+//! Relocated kernel tests: `OperativeInstance` construction with typed fixtures.
 
 #[cfg(test)]
 mod tests {
@@ -60,7 +60,7 @@ mod tests {
             DummyOperative::PERSISTENCE_ENABLED,
         )
         .expect("topology");
-        let instance = StreamInstance::new(topology, Arc::from("instance"));
+        let instance = OperativeInstance::new(topology, Arc::from("instance"));
         assert!(instance.persistence_enabled());
     }
 
@@ -74,7 +74,7 @@ mod tests {
             DummyOperative::PERSISTENCE_ENABLED,
         )
         .expect("topology");
-        let instance = StreamInstance::with_options(
+        let instance = OperativeInstance::with_options(
             topology,
             Arc::from("instance"),
             Some(false),

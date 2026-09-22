@@ -126,7 +126,7 @@ dyn_tasklet_base!(
 );
 
 /// The single dynamic registry on a one-tasklet operative instance.
-fn registry(instance: &Arc<StreamInstance>) -> Arc<DynamicCellRegistry> {
+fn registry(instance: &Arc<OperativeInstance>) -> Arc<DynamicCellRegistry> {
     Arc::clone(
         instance.dynamic_registries[0]
             .as_ref()

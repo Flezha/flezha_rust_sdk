@@ -1,10 +1,10 @@
-//! Instance-count scaling probe for the workflow driver.
+//! Instance-count scaling probe for workflow instances.
 //!
-//! One driver thread runs per actively-running workflow instance. This probe
-//! measures what that costs at population: resident memory per instance, the
-//! CPU a *blocked* population still burns, how long starting and tearing one
-//! down takes, and whether an unrelated instance beside it still completes at
-//! its unloaded latency.
+//! A workflow instance holds no thread: its run is a pass sheet its events
+//! advance. This probe measures what an instance costs at population: resident
+//! memory per instance, the CPU a *blocked* population still burns, how long
+//! starting and tearing one down takes, and whether an unrelated instance
+//! beside it still completes at its unloaded latency.
 //!
 //! A `harness = false` bench, not a test: it spawns thousands of threads and
 //! takes tens of seconds, and it reports numbers rather than asserting a
@@ -14,8 +14,7 @@
 //!
 //! ```text
 //! FLEZHA_SCALE_N=10000 FLEZHA_SCALE_SHAPE=step \
-//!   FLEZHA_WORKFLOW_DRIVER_STACK_KIB=256 \
-//!   cargo bench -p flezha_runner --features bench-internals \
+//!   cargo bench -p flezha_runner --features bench-internals,testing \
 //!     --bench workflow_scaling
 //! ```
 //!
@@ -26,16 +25,16 @@
 //! SDK's poll workers spawn themselves on the first instance's cell build,
 //! which is why `FLEZHA_WORKER_POOL_SIZE` is set before the first start.
 //!
-//! Two population shapes, because a blocked instance does not always cost the
-//! same number of threads:
+//! Two population shapes, because a blocked instance does not always hold the
+//! same thing:
 //!
-//! - `step` — blocked mid-step, the agent-turn shape (a 30 s model call). Costs
-//!   a driver thread AND the SDK worker running the step. Java's worker is a
-//!   virtual thread, so there an agent turn costs one OS thread; Rust's is a
-//!   pool thread, so there it costs two.
-//! - `idle` — blocked in the inbox wait of a `PerInput` loop. Costs the driver
-//!   thread alone, which is what isolates the per-driver number the gate
-//!   criterion is stated in.
+//! - `step` — blocked mid-step, the agent-turn shape (a 30 s model call). Holds
+//!   the SDK worker running the step and nothing else. Java's worker is a
+//!   virtual thread, so there an agent turn costs no OS thread of its own;
+//!   Rust's is a pool thread.
+//! - `idle` — waiting for the next message of a `PerInput` loop. Holds no
+//!   thread at all, which is what isolates the per-instance heap and shows
+//!   that a waiting population costs no CPU.
 
 // The suite's one polling primitive, reached from `benches/` rather than
 // copied: charter §9 allows exactly one `wait_until` per layer.
@@ -96,9 +95,9 @@ impl Tasklet for GateTask {
     }
 }
 
-/// The control instance's tasklet, and the idle population's: as short as a
-/// step gets, so what the control's completion latency measures is the path —
-/// driver spawn, step handout, barrier, teardown — and not the body.
+/// The control instance's tasklet: as short as a step gets, so what the
+/// control's completion latency measures is the path — bind, step handout,
+/// commit, teardown — and not the body.
 #[derive(Default)]
 struct ShortTask;
 impl Tasklet for ShortTask {
@@ -123,12 +122,10 @@ impl Tasklet for ShortTask {
     }
 }
 
-/// Blocked mid-step: a driver parked at its stage barrier while the SDK's
-/// worker runs the gated body. `FLEZHA_SCALE_MAX_DURATION_MS` adds the
-/// duration backstop a real agent class would declare — read at registration,
-/// which is where `build_spec` asks — because that backstop is a third thread
-/// per run (`spawn_duration_watcher`), and whether it is armed is exactly the
-/// difference between two and three OS threads per blocked turn.
+/// Blocked mid-step: the SDK's worker runs the gated body while the pass waits
+/// for its item to settle. `FLEZHA_SCALE_MAX_DURATION_MS` adds the duration
+/// backstop a real agent class would declare — read at registration, which is
+/// where `build_spec` asks — an entry on the deferred-wake list per run.
 struct ScaleStepWorkflow;
 impl WorkflowOperative for ScaleStepWorkflow {
     fn factory_id() -> &'static str {
@@ -146,11 +143,39 @@ impl WorkflowOperative for ScaleStepWorkflow {
     }
 }
 
-/// Blocked in the inbox wait: a `PerInput` loop with nothing to consume. The
-/// driver thread is the only thread the instance holds — no worker (no step is
-/// running) and no duration watcher — which is what isolates the per-driver
-/// cost. It is `self_terminating` in the declared sense: the loop ends when
-/// its inbox closes.
+/// The idle population's tasklet: counts its one pass, after which its
+/// instance waits for the next message.
+#[derive(Default)]
+struct IdleTask;
+impl Tasklet for IdleTask {
+    type Input = String;
+    type Output = String;
+    type State = ();
+    type Change = NoChange;
+    type Clock = WallClock;
+    type Config = ();
+    fn name() -> &'static str {
+        "scale_idle"
+    }
+    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
+    fn run(
+        &mut self,
+        input: String,
+        _state: StateHandle<'_, Self>,
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
+        ctx.emit(input)?;
+        IDLE_PASSES.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+/// Idle passes run so far: how the probe knows the idle population is waiting.
+static IDLE_PASSES: AtomicUsize = AtomicUsize::new(0);
+
+/// Waiting for its next message: a `PerInput` loop after one pass. It holds
+/// no thread — no worker (no step is running), no duration backstop — which
+/// is what isolates the per-instance cost.
 struct ScaleIdleWorkflow;
 impl WorkflowOperative for ScaleIdleWorkflow {
     fn factory_id() -> &'static str {
@@ -161,7 +186,7 @@ impl WorkflowOperative for ScaleIdleWorkflow {
         LoopMode::PerInput
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<String>("in").into::<ShortTask>().named("out");
+        c.input::<String>("in").into::<IdleTask>().named("out");
     }
 }
 
@@ -184,7 +209,6 @@ const ENV_SHAPE: &str = "FLEZHA_SCALE_SHAPE";
 const ENV_HOLD_MS: &str = "FLEZHA_SCALE_HOLD_MS";
 const ENV_POOL: &str = "FLEZHA_SCALE_POOL";
 const ENV_MAX_DURATION_MS: &str = "FLEZHA_SCALE_MAX_DURATION_MS";
-const ENV_DRIVER_STACK_KIB: &str = "FLEZHA_WORKFLOW_DRIVER_STACK_KIB";
 
 /// How long the unloaded baseline, the discarded warmup, and each quiet-CPU
 /// window run for. Short on purpose — the population, not the baseline, is
@@ -200,13 +224,13 @@ const CONTROL_DEADLINE: Duration = Duration::from_secs(60);
 const SETTLE_DEADLINE: Duration = Duration::from_secs(120);
 const DRAIN_DEADLINE: Duration = Duration::from_secs(180);
 
-/// Which wait the population is blocked in, and therefore how many threads
-/// each instance holds.
+/// Which wait the population is blocked in, and therefore what each
+/// instance holds.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Shape {
-    /// Mid-step, on the gate: driver + SDK worker.
+    /// Mid-step, on the gate: an SDK worker each.
     Step,
-    /// In the inbox wait of a `PerInput` loop: driver only.
+    /// Waiting for a `PerInput` loop's next message: nothing.
     Idle,
 }
 
@@ -242,13 +266,12 @@ impl Shape {
         }
     }
 
-    /// Whether the whole population has reached its wait. A gated step counts
-    /// itself in; an inbox wait leaves no such mark, so its drivers are counted
-    /// as threads the process did not have before.
-    fn all_blocked(self, n: usize, threads_before: u64) -> bool {
+    /// Whether the whole population has reached its wait: a gated step
+    /// counts itself in, and so does an idle loop's one pass.
+    fn all_blocked(self, n: usize) -> bool {
         match self {
             Shape::Step => AT_GATE.load(Ordering::SeqCst) >= n,
-            Shape::Idle => thread_count() >= threads_before + n as u64,
+            Shape::Idle => IDLE_PASSES.load(Ordering::SeqCst) >= n,
         }
     }
 }
@@ -273,12 +296,10 @@ fn rss_kib() -> u64 {
     status_field("VmRSS:")
 }
 
-/// Virtual size. Not a cost in itself — but it is the only place a driver's
-/// stack *size* shows up at all, so it is what proves the stack knob took
-/// effect when the resident number does not move. Read it only at populations
-/// in the thousands: glibc maps a fresh 64 MiB malloc arena per thread up to
-/// 8× the core count, so at small N those few arenas dominate the delta and
-/// the per-instance figure is meaningless.
+/// Virtual size. Not a cost in itself, and at small N meaningless: glibc
+/// maps a fresh 64 MiB malloc arena per thread up to 8× the core count, so
+/// those few arenas dominate the delta. Read it at populations in the
+/// thousands.
 fn vsize_kib() -> u64 {
     status_field("VmSize:")
 }
@@ -304,19 +325,25 @@ fn cpu_ms() -> u64 {
     (ticks(11) + ticks(12)) * 1000 / TICKS_PER_SEC
 }
 
-/// Start instance `id` of `factory_id` with no init values and feed `message`
-/// through its entry channel; `false` when the class is not registered.
+/// Start instance `id` of `factory_id` as `AddOperative` does and feed
+/// `message` through its entry channel; `false` when the class is not
+/// registered.
 fn start_fed(node: &RunnerNode, factory_id: &str, id: &str, message: &[u8]) -> bool {
-    if !matches!(
-        node.start_workflow(factory_id.into(), id.into(), ""),
-        Ok(true)
-    ) {
-        return false;
-    }
-    let Some(instance) = node.get_workflow(id) else {
+    let Some(instance) = node.start_operative(
+        factory_id.into(),
+        id.into(),
+        flz_core::operative::instance::KeyGroupRange::UNPARTITIONED,
+        flz_core::workflow::Resume::default(),
+    ) else {
         return false;
     };
-    flz_core::routing::feed_workflow_frame(&instance, message.to_vec(), &Default::default());
+    flz_core::workflow::open(&instance);
+    node.operative_dispatch_handle().dispatch(
+        id,
+        message.to_vec(),
+        &Default::default(),
+        flz_core::workflow::unwired_stream(),
+    );
     true
 }
 
@@ -397,7 +424,6 @@ fn workflow_instance_scaling_probe() {
     let n = env_parse(ENV_N, 1_000usize);
     let shape = Shape::from_env();
     let hold = Duration::from_millis(env_parse(ENV_HOLD_MS, 15_000u64));
-    let stack = std::env::var(ENV_DRIVER_STACK_KIB).unwrap_or_else(|_| "default".into());
     let watchdog = env_parse(ENV_MAX_DURATION_MS, 0u64);
 
     // A blocked `step` population holds one SDK worker each, so the pool has to
@@ -411,6 +437,9 @@ fn workflow_instance_scaling_probe() {
     // a cost of the pool sized for it.
     let pool = env_parse(ENV_POOL, shape.workers_for(n));
     std::env::set_var("FLEZHA_WORKER_POOL_SIZE", pool.to_string());
+    // A stage's items take the in-flight cap like any cell's, so a population
+    // blocked mid-step needs the cap to cover it as well as the pool.
+    std::env::set_var("FLEZHA_MAX_INFLIGHT_ACTIVATIONS", pool.to_string());
 
     let _runner_guard = flz_core::runner::env_test_guard();
     let (tx, rx) = crossbeam::channel::unbounded::<RunnerMessage>();
@@ -459,7 +488,7 @@ fn workflow_instance_scaling_probe() {
 
     // Blocked means blocked: nothing is measured until every instance has
     // reached its wait.
-    let settled = wait_until(|| shape.all_blocked(n, before_threads), SETTLE_DEADLINE);
+    let settled = wait_until(|| shape.all_blocked(n), SETTLE_DEADLINE);
     assert!(
         settled,
         "population never reached {n} blocked instances (at gate {}, threads {})",
@@ -503,9 +532,7 @@ fn workflow_instance_scaling_probe() {
     let shape = shape.name();
 
     println!("--- workflow instance scaling probe -------------------------------");
-    println!(
-        "shape={shape} n={n} driver_stack_kib={stack} hold={hold:?} max_duration_ms={watchdog}"
-    );
+    println!("shape={shape} n={n} hold={hold:?} max_duration_ms={watchdog}");
     println!(
         "threads: {before_threads} (incl. {pool} pre-sized SDK workers) -> {loaded_threads} \
          ({threads_per:.2} per instance){}",
@@ -526,7 +553,7 @@ fn workflow_instance_scaling_probe() {
          rate {baseline_rate:.0}/s -> {loaded_rate:.0}/s"
     );
     println!(
-        "PROBE\tshape={shape}\tn={n}\tstack={stack}\twatchdog_ms={watchdog}\tpool={pool}\t\
+        "PROBE\tshape={shape}\tn={n}\twatchdog_ms={watchdog}\tpool={pool}\t\
          rss_kib_per_instance={rss_per:.1}\tvsize_kib_per_instance={vsize_per:.0}\t\
          threads_per_instance={threads_per:.2}\tcpu_pct_base={base_cpu_pct:.1}\t\
          cpu_pct_loaded={loaded_cpu_pct:.1}\tstart_ms={}\tteardown_ms={}\t\

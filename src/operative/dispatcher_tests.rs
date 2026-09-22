@@ -1,9 +1,7 @@
 //! The typed dispatcher's own tests: the worker guard on the path it exists
-//! for, the workflow collect adapter's keyed-emit contract, and a snapshot
-//! round trip through the real restore path.
+//! for, a context with no timer session, and a snapshot round trip through
+//! the real restore path.
 
-use super::emit_sink::WorkflowCollectAdapter;
-use super::invocation::collect_failure;
 use super::*;
 use crate::cell::restore::RestoreInitPayload;
 use crate::channel::ChannelBuilder;
@@ -11,7 +9,6 @@ use crate::operative::StreamOperative;
 use crate::tasklet::ctx::EmitSink;
 use crate::tasklet::state_handle::StateHandle;
 use crate::tasklet::{Tasklet, TaskletCtx, TaskletError};
-use crate::workflow::WorkflowCollectSink;
 
 /// The worker's guard, on exactly the path it exists for. Per-cell
 /// exclusivity IS the handout, so a worker that leaves without answering —
@@ -92,60 +89,39 @@ impl StreamOperative for KeyedOperative {
     }
 }
 
-#[derive(Default)]
-struct NullCollect {
-    plugin_bytes: usize,
-}
-impl WorkflowCollectSink for NullCollect {
-    fn collect(&mut self, _value: Arc<dyn Any + Send + Sync>) {}
-    fn emit_plugin_bytes(&mut self, _channel: &str, _bytes: Vec<u8>) {
-        self.plugin_bytes += 1;
+/// An emit sink that takes nothing: what a context with no timer session
+/// needs to exist.
+struct NoSink;
+impl EmitSink for NoSink {
+    fn emit(
+        &mut self,
+        _value: Arc<dyn Any + Send + Sync>,
+        _meta: Option<std::collections::HashMap<String, String>>,
+        _key: Option<String>,
+    ) -> Result<(), TaskletError> {
+        Ok(())
     }
-    fn complete(&mut self, _result: Vec<u8>) {}
+
+    fn channel_name(&self) -> &str {
+        "out"
+    }
+
+    fn has_plugin_sink(&self) -> bool {
+        false
+    }
+
+    fn is_keyed(&self) -> bool {
+        false
+    }
 }
 
-/// The workflow plugin wire carries no metadata, so a keyed emit
-/// through the workflow adapter must fail typed, never silently drop
-/// the identity contract.
-#[test]
-fn workflow_adapter_rejects_keyed_emits() {
-    let topology =
-        crate::operative::builder::build_topology_for::<KeyedOperative>().expect("topology");
-    let out_id = topology.lookup_channel_id("out");
-    let mut collect = NullCollect::default();
-    let mut adapter = WorkflowCollectAdapter {
-        sink: &mut collect,
-        output_channel_id: out_id,
-        output_channel_kind: ChannelKind::PluginBound,
-        output_channel_name: Some("out"),
-        topology: &topology,
-    };
-    assert!(adapter.is_keyed(), "descriptor keyed flag must surface");
-    let mut ctx = TaskletCtx::new(&mut adapter, 0, 0, b"workflow/keyed/");
-    let err = ctx
-        .emit_keyed::<String>("k", "v".into())
-        .expect_err("keyed emit on the workflow wire must fail");
-    assert!(err.to_string().contains("workflow"));
-    assert_eq!(collect.plugin_bytes, 0, "nothing may reach the wire");
-}
-
-/// A workflow stage and a `compensate` hook both get a context with no
-/// timer session — the two places the design excludes. The refusal is
-/// structural (there is nothing to register into), and typed rather than
-/// a silent drop.
+/// A workflow Cell's context carries no timer session — timers do not fire
+/// inside a workflow yet. The refusal is structural (there is nothing to
+/// register into), and typed rather than a silent drop.
 #[test]
 fn a_context_without_a_timer_session_refuses_rather_than_dropping() {
-    let topology =
-        crate::operative::builder::build_topology_for::<KeyedOperative>().expect("topology");
-    let mut collect = NullCollect::default();
-    let mut adapter = WorkflowCollectAdapter {
-        sink: &mut collect,
-        output_channel_id: topology.lookup_channel_id("out"),
-        output_channel_kind: ChannelKind::PluginBound,
-        output_channel_name: Some("out"),
-        topology: &topology,
-    };
-    let ctx = TaskletCtx::new(&mut adapter, 0, 0, b"workflow/keyed/");
+    let mut sink = NoSink;
+    let ctx = TaskletCtx::new(&mut sink, 0, 0, b"workflow/keyed/");
     let err = ctx
         .timer_after(std::time::Duration::from_secs(1))
         .expect_err("a session-less context must refuse");
@@ -200,7 +176,6 @@ fn snapshot_frame_round_trips_through_restore() {
         0,
         EdgeFacts {
             output_channel_id: None,
-            output_channel_kind: ChannelKind::InterTasklet,
             output_channel_name: None,
             output_channel_keyed: false,
             input_channel_name: None,
@@ -216,6 +191,7 @@ fn snapshot_frame_round_trips_through_restore() {
             effectively_once: false,
             checkpoint: None,
             correction: None,
+            workflow: false,
         },
     );
 
@@ -256,46 +232,5 @@ fn snapshot_frame_round_trips_through_restore() {
     assert_eq!(
         restored, 115,
         "snapshot round-trips back to the original state"
-    );
-}
-
-/// The four texts a failed collecting call reports. They are the saga's own
-/// report and the workflow retry ladder's evidence, and one shared core now
-/// composes all four — so they are pinned whole, with the author's
-/// classification surviving only where the entry point has a ladder.
-#[test]
-fn a_collecting_failure_reports_the_four_texts_it_always_has() {
-    let run = CollectShape {
-        prefix: "tasklet",
-        author_classifies: true,
-    };
-    let compensate = CollectShape {
-        prefix: "compensation for tasklet",
-        author_classifies: false,
-    };
-    let failure = || Ok(Err(TaskletError::NonRetryable("boom".into())));
-    let panic = || Err(Box::new("blew up") as Box<dyn Any + Send>);
-
-    let e = collect_failure(run, "op", failure());
-    let boom = "non-retryable tasklet error: boom";
-    assert_eq!(e.to_string(), format!("tasklet op failed: {boom}"));
-    assert!(
-        e.non_retryable,
-        "the author's classification survives `run`"
-    );
-    assert_eq!(
-        collect_failure(run, "op", panic()).to_string(),
-        "tasklet op panicked: blew up"
-    );
-
-    let e = collect_failure(compensate, "op", failure());
-    assert_eq!(
-        e.to_string(),
-        format!("compensation for tasklet op failed: {boom}")
-    );
-    assert!(!e.non_retryable, "a compensation has no ladder of its own");
-    assert_eq!(
-        collect_failure(compensate, "op", panic()).to_string(),
-        "compensation for tasklet op panicked: blew up"
     );
 }
