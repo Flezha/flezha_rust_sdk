@@ -39,7 +39,7 @@ impl WorkflowOperative for TreeWorkflow {
     fn factory_id() -> &'static str {
         "test-tree-workflow"
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         tree_chain(c);
     }
 }
@@ -60,7 +60,7 @@ impl WorkflowOperative for ChainWorkflow {
     fn factory_id() -> &'static str {
         "test-chain-workflow"
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         two_stage_chain(c);
     }
 }
@@ -68,44 +68,6 @@ impl WorkflowOperative for ChainWorkflow {
 /// The same chain, driven as a chat-style inbox loop: one iteration per
 /// post-start input, parking when the inbox goes quiet
 /// (`workflow-durable-loop` + `workflow-durable-suspension`).
-/// `ChainWorkflow` with a short re-send backoff, so the barrier re-send
-/// scenarios wait out their ladder inside the drain's deadline.
-pub(crate) struct ResendChain;
-impl WorkflowOperative for ResendChain {
-    fn factory_id() -> &'static str {
-        "test-resend-chain"
-    }
-    fn retry_backoff() -> Duration {
-        Duration::from_millis(50)
-    }
-    fn tasklets(c: &ChannelBuilder) {
-        two_stage_chain(c);
-    }
-}
-
-/// `ChatLoop` with a short re-send backoff.
-pub(crate) struct ResendLoop;
-impl WorkflowOperative for ResendLoop {
-    fn factory_id() -> &'static str {
-        "test-resend-loop"
-    }
-    fn loop_mode() -> LoopMode {
-        LoopMode::PerInput
-    }
-    fn self_terminating() -> bool {
-        false
-    }
-    fn max_duration() -> Option<Duration> {
-        Some(Duration::from_secs(30))
-    }
-    fn retry_backoff() -> Duration {
-        Duration::from_millis(50)
-    }
-    fn tasklets(c: &ChannelBuilder) {
-        two_stage_chain(c);
-    }
-}
-
 pub(crate) struct ChatLoop;
 impl WorkflowOperative for ChatLoop {
     fn factory_id() -> &'static str {
@@ -120,7 +82,7 @@ impl WorkflowOperative for ChatLoop {
     fn max_duration() -> Option<Duration> {
         Some(Duration::from_secs(30))
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         two_stage_chain(c);
     }
 }
@@ -189,7 +151,7 @@ impl WorkflowOperative for LoopSagaAllOrNothing {
     fn max_duration() -> Option<Duration> {
         Some(Duration::from_secs(30))
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         loop_saga_chain(c);
     }
 }
@@ -212,7 +174,7 @@ impl WorkflowOperative for LoopSagaKeepProgress {
     fn max_duration() -> Option<Duration> {
         Some(Duration::from_secs(30))
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         loop_saga_chain(c);
     }
 }
@@ -236,7 +198,7 @@ impl WorkflowOperative for ChainedLoopNoTerminalOutput {
     fn loop_mode() -> LoopMode {
         LoopMode::Chained
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("in").into::<Stage1>().into::<Stage2>();
     }
 }
@@ -253,7 +215,7 @@ impl WorkflowOperative for ChainedLoopPluginTerminal {
     fn loop_mode() -> LoopMode {
         LoopMode::Chained
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<Stage1>()
             .named("mid")
@@ -328,7 +290,7 @@ impl WorkflowOperative for FanWorkflow {
     fn factory_id() -> &'static str {
         "test-fan-workflow"
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<SplitTask>()
             .named("mid")
@@ -344,7 +306,7 @@ impl WorkflowOperative for FanOptOutWorkflow {
     fn factory_id() -> &'static str {
         "test-fan-optout-workflow"
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<SplitTask>()
             .named("mid")
@@ -367,7 +329,7 @@ impl WorkflowOperative for HybridWorkflow {
     fn factory_id() -> &'static str {
         "test-hybrid-workflow"
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<HybridStage1>()
             .sink_named_with("mid", |s: &String| format!("mid:{s}").into_bytes())

@@ -4,6 +4,22 @@ All notable changes to the Rust SDK crate.
 
 ## Unreleased
 
+### Changed: a workflow is declared like a stream (`declare-a-workflow-like-a-stream`)
+
+**Breaking.** `WorkflowOperative::tasklets` is renamed `channels`, required as
+`StreamOperative::channels` is. The class-level `retry_attempts`,
+`retry_backoff` and `barrier_retry_attempts` are deleted with
+`BuildWorkflowError::ZeroRetryBackoff`: a stage's retry ladder is the consuming
+edge's `retry_max` / `retry_backoff_ms` (3 attempts from 50 ms by default), and
+a commit barrier is re-sent a fixed three times. `build_spec` refuses a
+workflow whose `channels` set `effectively_once`, a checkpoint flag or
+`correction_window`, as `EffectivelyOnceOnWorkflow`, `CheckpointOnWorkflow` or
+`CorrectionWindowOnWorkflow`; a workflow cell writes no effect record. The
+runner announces each factory's kind with its id, so no start names one, and a
+spawn naming a stream factory resolves `SpawnError::FactoryNotWorkflow`.
+`#[flezha::workflow_operative]` accepts `loop_mode = "once" | "per_input" |
+"chained"`. `TaskletError::TimersUnavailable` names itself in its message.
+
 ### Changed: a workflow reads messages on its entry channels (`feed-a-workflow-through-its-entry-channel`)
 
 **Breaking.** A workflow's `init_values` are each tasklet's starting state, as

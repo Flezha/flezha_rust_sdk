@@ -179,7 +179,7 @@ impl WorkflowOperative for TreeSaga {
     fn factory_id() -> &'static str {
         "test-tree-saga"
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         let t1 = c.input::<String>("in").into::<SagaReserve>().named("t1");
         t1.into::<SagaCharge>()
             .named("t2")
@@ -198,7 +198,7 @@ impl WorkflowOperative for SagaWorkflow {
     fn factory_id() -> &'static str {
         "test-saga-workflow"
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<SagaReserve>()
             .named("c1")
@@ -221,7 +221,7 @@ impl WorkflowOperative for KeepProgressSaga {
     fn rollback_mode() -> RollbackMode {
         RollbackMode::KeepProgress
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<SagaReserve>()
             .named("c1")
@@ -238,7 +238,7 @@ impl WorkflowOperative for CleanSaga {
     fn factory_id() -> &'static str {
         "test-clean-saga"
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<SagaReserve>()
             .named("c1")
@@ -319,7 +319,7 @@ impl WorkflowOperative for FanSaga {
     fn factory_id() -> &'static str {
         "test-fan-saga"
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<SplitTask>()
             .named("mid")
@@ -379,7 +379,7 @@ impl WorkflowOperative for StopSaga {
     fn factory_id() -> &'static str {
         "test-stop-saga"
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<StopReserve>()
             .named("mid")

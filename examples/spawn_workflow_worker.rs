@@ -72,7 +72,7 @@ impl WorkflowOperative for Triage {
         "triage"
     }
 
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("alert")
             .into::<TriageStep>()
             .sink_named("triaged");

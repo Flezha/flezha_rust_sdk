@@ -44,6 +44,8 @@ struct TaskletArgs {
     input: Option<LitStr>,
     /// The short form's entry channel overflow policy.
     on_full: Option<syn::Ident>,
+    /// A workflow short form's loop mode, as the author wrote it.
+    loop_mode: Option<LitStr>,
     init: Option<syn::Path>,
     key: Option<syn::Path>,
     emits: Option<Type>,
@@ -538,6 +540,7 @@ fn expand_short_form(
         chain: quote! { .into::<#tasklet>(); },
         payload: resolve_output_ty(args, output),
         sink: args.sink.as_deref(),
+        settings: loop_mode_item(&args.loop_mode)?,
     })
 }
 
@@ -614,6 +617,31 @@ fn mut_trait_use(state_ty: &Type) -> TokenStream {
     quote! { use #path as _; }
 }
 
+/// The generated workflow's `loop_mode()`, empty when the author wrote none so
+/// the trait's `Once` applies.
+fn loop_mode_item(loop_mode: &Option<LitStr>) -> syn::Result<TokenStream> {
+    let Some(lit) = loop_mode else {
+        return Ok(quote! {});
+    };
+    let variant = match lit.value().as_str() {
+        "once" => quote! { Once },
+        "per_input" => quote! { PerInput },
+        "chained" => quote! { Chained },
+        _ => {
+            return Err(syn::Error::new_spanned(
+                lit,
+                "#[flezha::workflow_operative] `loop_mode` must be one of: \"once\", \
+                 \"per_input\", \"chained\"",
+            ))
+        }
+    };
+    Ok(quote! {
+        fn loop_mode() -> ::flezha_runner::workflow::LoopMode {
+            ::flezha_runner::workflow::LoopMode::#variant
+        }
+    })
+}
+
 fn on_full_call(attr: &str, on_full: &Option<syn::Ident>) -> syn::Result<TokenStream> {
     let Some(id) = on_full else {
         return Ok(quote! {});
@@ -648,7 +676,9 @@ fn parse_args(declares: Declares, attr: TokenStream) -> syn::Result<TaskletArgs>
         let value = meta.value;
         match key.as_str() {
             "id" => args.id = Some(try_str(&value)?),
-            "sink" | "input" | "kind" | "on_full" if matches!(declares, Declares::Tasklet) => {
+            "sink" | "input" | "kind" | "on_full" | "loop_mode"
+                if matches!(declares, Declares::Tasklet) =>
+            {
                 return Err(syn::Error::new_spanned(
                     &meta.path,
                     format!(
@@ -658,8 +688,16 @@ fn parse_args(declares: Declares, attr: TokenStream) -> syn::Result<TaskletArgs>
                     ),
                 ))
             }
+            "loop_mode" if matches!(declares, Declares::Operative(Kind::Stream)) => {
+                return Err(syn::Error::new_spanned(
+                    &meta.path,
+                    "#[flezha::stream_operative]: `loop_mode` is a workflow setting; declare the \
+                     short form with `#[flezha::workflow_operative(..)]`",
+                ))
+            }
             "sink" => args.sink = Some(try_str(&value)?),
             "input" => args.input = Some(try_lit_str(&value)?.clone()),
+            "loop_mode" => args.loop_mode = Some(try_lit_str(&value)?.clone()),
             "init" => args.init = Some(try_path(&value)?),
             "key" => args.key = Some(try_path(&value)?),
             "emits" => args.emits = Some(try_type(&value)?),

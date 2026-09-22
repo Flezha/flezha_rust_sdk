@@ -76,8 +76,6 @@ fn workflow_driver_scenarios() {
     crate::register_class::<crate::WorkflowKind, LeakWorkflow>().unwrap();
     crate::register_class::<crate::WorkflowKind, UndoSaga>().unwrap();
     crate::register_class::<crate::WorkflowKind, ChatLoop>().unwrap();
-    crate::register_class::<crate::WorkflowKind, ResendChain>().unwrap();
-    crate::register_class::<crate::WorkflowKind, ResendLoop>().unwrap();
     crate::register_class::<crate::WorkflowKind, LoopSagaAllOrNothing>().unwrap();
     crate::register_class::<crate::WorkflowKind, LoopSagaKeepProgress>().unwrap();
     crate::register_class::<crate::WorkflowKind, RetryWorkflow>().unwrap();

@@ -234,12 +234,12 @@ producer, the shared root last):
 struct SettleWorkflow;
 impl WorkflowOperative for SettleWorkflow {
     fn factory_id() -> &'static str { "settle" }
-    fn retry_attempts() -> u32 { 3 } // per-cell ladder before the saga fires
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         // The diamond: Reserve fans out to Charge and Ledger, whose outputs
         // accumulate into one Reconcile join.
         let reserved = c
             .input::<SettleJob>("in")
+            .retry_max(3) // per-cell ladder before the saga fires
             .into::<Reserve>()
             .named("reserved");
         reserved.into::<Charge>().named("charged").into::<Reconcile>();

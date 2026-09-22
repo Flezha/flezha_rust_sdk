@@ -43,6 +43,12 @@ fn ui_compile_fail() {
     t.compile_fail("tests/ui/operative_empty_input.rs");
     t.compile_fail("tests/ui/operative_with_hand_written_impl.rs");
     t.compile_fail("tests/ui/operative_shared_ref_state.rs");
+    t.compile_fail("tests/ui/operative_unknown_loop_mode.rs");
+
+    // A workflow declares its graph in `channels` and its retry ladder on the
+    // edge, as a stream does.
+    t.compile_fail("tests/ui/workflow_tasklets_body.rs");
+    t.compile_fail("tests/ui/workflow_retry_attempts.rs");
 
     // Keyed/collection journaling (`expressive-state-journaling`).
     t.compile_fail("tests/ui/state_map_without_journal.rs");

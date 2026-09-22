@@ -83,7 +83,7 @@ pub(super) fn cell_retry(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
     );
     assert_eq!(drain_comp_log(), vec!["undo-retry-reserve".to_string()]);
 
-    // --- retry_attempts() = 0 restores the pre-change fail-fast ---
+    // --- retry_max(1) on the edge is fail-fast ---
     arm_flaky(99, false);
     assert!(start_fed(
         node,

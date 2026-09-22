@@ -226,10 +226,6 @@ pub(super) struct WorkflowCollectAdapter<'a> {
     pub(super) output_channel_kind: ChannelKind,
     pub(super) output_channel_name: Option<&'a str>,
     pub(super) topology: &'a OperativeTopology,
-    /// `Some` under the effectively-once tier: plugin emits (keyed
-    /// included) are captured into the invocation's atomic effect record
-    /// instead of the metadata-less workflow plugin wire.
-    pub(super) effect_outputs: Option<&'a RefCell<Vec<crate::cell::flusher::OutputRecord>>>,
 }
 
 impl<'a> WorkflowCollectAdapter<'a> {
@@ -243,14 +239,8 @@ impl<'a> WorkflowCollectAdapter<'a> {
     }
 
     /// Serialize a value with the producer-edge channel's plugin sink and
-    /// route the bytes: into the invocation's effect record under the tier,
-    /// else to the workflow plugin wire.
-    fn route_plugin(
-        &mut self,
-        value: &Arc<dyn Any + Send + Sync>,
-        key: Option<String>,
-        meta: Option<HashMap<String, String>>,
-    ) -> Result<(), TaskletError> {
+    /// route the bytes to the workflow plugin wire.
+    fn route_plugin(&mut self, value: &Arc<dyn Any + Send + Sync>) -> Result<(), TaskletError> {
         let cid = self
             .output_channel_id
             .ok_or_else(|| self.unknown_channel())?;
@@ -271,27 +261,21 @@ impl<'a> WorkflowCollectAdapter<'a> {
                 ))
             })?;
         let bytes = serializer(&**value);
-        if let Some(outputs) = self.effect_outputs {
-            push_effect_output(outputs, &descriptor.name, key, meta, bytes);
-        } else {
-            self.sink.emit_plugin_bytes(&descriptor.name, bytes);
-        }
+        self.sink.emit_plugin_bytes(&descriptor.name, bytes);
         Ok(())
     }
 }
 
 impl<'a> WorkflowCollectAdapter<'a> {
-    /// The workflow plugin wire (`emit_plugin_bytes`) carries no metadata,
-    /// so `.keyed()` identity stamps cannot ride it. Refuse rather than
-    /// silently dropping the identity contract — except under the
-    /// effectively-once tier, where emits ride the effect record (which
-    /// carries the key durably).
     fn is_plugin_bound(&self) -> bool {
         matches!(self.output_channel_kind, ChannelKind::PluginBound)
     }
 
+    /// The workflow plugin wire (`emit_plugin_bytes`) carries no metadata,
+    /// so `.keyed()` identity stamps cannot ride it. Refuse rather than
+    /// silently dropping the identity contract.
     fn refuse_key(&self, key: &Option<String>) -> Result<(), TaskletError> {
-        if self.effect_outputs.is_none() && key.is_some() {
+        if key.is_some() {
             return Err(TaskletError::Custom(format!(
                 "keyed output identity is not supported on workflow operatives \
                  (channel `{}`): the workflow plugin wire carries no metadata",
@@ -306,12 +290,12 @@ impl<'a> EmitSink for WorkflowCollectAdapter<'a> {
     fn emit(
         &mut self,
         value: Arc<dyn Any + Send + Sync>,
-        meta: Option<HashMap<String, String>>,
+        _meta: Option<HashMap<String, String>>,
         key: Option<String>,
     ) -> Result<(), TaskletError> {
         self.refuse_key(&key)?;
         if self.has_plugin_sink() {
-            self.route_plugin(&value, key, meta)?;
+            self.route_plugin(&value)?;
         }
         // The one place a workflow channel's shape still matters: a
         // plugin-bound channel has no consumer to hand a stage batch to, so

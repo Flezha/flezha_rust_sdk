@@ -65,39 +65,13 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
         );
     }
 
-    /// Ship the Changes (and, under the effectively-once tier, the captured
-    /// outputs as one atomic effect entry) a collecting-path task applied — or
-    /// drain and discard when the class opted out. The workflow analog of the
-    /// stream `dispatch` flush hook; both feed `flusher::flush_one`.
-    fn flush_collected(
-        &self,
-        buffer: RefCell<Vec<S::Change>>,
-        outputs: Vec<crate::cell::flusher::OutputRecord>,
-        event_time: u64,
-    ) {
-        let changes = buffer.into_inner();
-        let mut buf = if self.flush.effectively_once {
-            if changes.is_empty() && outputs.is_empty() {
-                return;
-            }
-            // Workflow inputs arrive via args/inbox, not the input-log —
-            // no consumed-offset to carry.
-            TypedBuffer::<S> {
-                effects: vec![crate::cell::flusher::EffectEntry {
-                    changes,
-                    outputs,
-                    consumed_offset: None,
-                    dlq: None,
-                    event_time,
-                    timers: Vec::new(),
-                }],
-                ..Default::default()
-            }
-        } else {
-            TypedBuffer::<S> {
-                changes,
-                ..Default::default()
-            }
+    /// Ship the Changes a collecting-path task applied — or drain and discard
+    /// when the class opted out. The workflow analog of the stream `dispatch`
+    /// flush hook; both feed `flusher::flush_one`.
+    fn flush_collected(&self, buffer: RefCell<Vec<S::Change>>) {
+        let mut buf = TypedBuffer::<S> {
+            changes: buffer.into_inner(),
+            ..Default::default()
         };
         self.flush_now(&mut buf);
     }
@@ -558,7 +532,6 @@ impl Settled {
 pub(super) struct CollectShape {
     pub(super) prefix: &'static str,
     pub(super) author_classifies: bool,
-    pub(super) captures_effects: bool,
 }
 
 /// The workflow error a failed collecting call reports: `{prefix} {tasklet}
@@ -625,14 +598,8 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
         // Per-run change buffer: `StateHandle::apply` records Changes here; the
         // flush after the run ships them to the WAL when the class is durable.
         let buffer: RefCell<Vec<S::Change>> = RefCell::new(Vec::new());
-        // Tier mode: keyed plugin emits are captured for the invocation's
-        // atomic effect record instead of the workflow plugin wire.
-        let effect_outputs = shape
-            .captures_effects
-            .then(|| self.effect_capture())
-            .flatten();
 
-        let mut collect_sink = self.collect_sink(sink, topology, effect_outputs.as_ref());
+        let mut collect_sink = self.collect_sink(sink, topology);
         let mut ctx = TaskletCtx::new(
             &mut collect_sink,
             now,
@@ -649,8 +616,7 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
         // Ship the applied Changes to the WAL regardless of outcome, so the WAL
         // reflects the state applied before any failure (at-least-once; the saga
         // compensates a partial run).
-        let outputs = effect_outputs.map(RefCell::into_inner).unwrap_or_default();
-        self.flush_collected(buffer, outputs, now);
+        self.flush_collected(buffer);
 
         match outcome {
             Ok(Ok(())) => Ok(()),
@@ -664,7 +630,6 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
         &'a self,
         sink: &'a mut dyn WorkflowCollectSink,
         topology: &'a OperativeTopology,
-        effect_outputs: Option<&'a RefCell<Vec<crate::cell::flusher::OutputRecord>>>,
     ) -> WorkflowCollectAdapter<'a> {
         WorkflowCollectAdapter {
             sink,
@@ -672,7 +637,6 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
             output_channel_kind: self.edges.output_channel_kind,
             output_channel_name: self.edges.output_channel_name.as_deref(),
             topology,
-            effect_outputs,
         }
     }
 }

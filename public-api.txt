@@ -526,6 +526,28 @@ pub use operative::builder::TopologyBuildError;
 #                                            # install warns and returns, never panics
 #   }
 
+# A workflow declared like a stream (`declare-a-workflow-like-a-stream`).
+# BREAKING, no shim:
+#
+#   pub trait WorkflowOperative {
+#       fn factory_id() -> &'static str;
+#       fn channels(c: &ChannelBuilder);          # was `tasklets`, now required
+#       fn max_duration() -> Option<Duration>;
+#       fn self_terminating() -> bool;
+#       fn loop_mode() -> LoopMode;
+#       fn wake_after() -> Option<Duration>;
+#       fn rollback_mode() -> RollbackMode;
+#       const PERSISTENCE_ENABLED: bool;
+#       const SYNC_DURABILITY: bool;
+#   }
+#   REMOVED: WorkflowOperative::{tasklets, retry_attempts, retry_backoff,
+#   barrier_retry_attempts}; BuildWorkflowError::ZeroRetryBackoff;
+#   WorkflowSpec::{retry, barrier_retry_attempts}. A stage's ladder is the
+#   consuming edge's `retry_max` / `retry_backoff_ms`, as on a stream.
+#   ADDED: BuildWorkflowError::{EffectivelyOnceOnWorkflow, CheckpointOnWorkflow,
+#   CorrectionWindowOnWorkflow} { factory_id }; SpawnError::FactoryNotWorkflow(String);
+#   `#[flezha::workflow_operative(.., loop_mode = "once" | "per_input" | "chained")]`.
+
 # Authoring macros. `stream_operative` and `workflow_operative` are the §5 short
 # form: on a `run` function each emits the operative type under the function's
 # PascalCase name and the tasklet type beside it, suffixed `Tasklet`.

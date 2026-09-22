@@ -137,8 +137,24 @@ impl WorkflowOperative for EchoWorkflow {
     fn factory_id() -> &'static str {
         "echo_workflow"
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("in").into::<EchoStep>().sink_named("out");
+    }
+}
+
+// `workflow_timer_refused`: a tasklet that registers a timer, which a workflow
+// cannot fire yet, so the pass fails naming `TimersUnavailable`.
+stateless_step!(TimerStep, "workflow_timer_refused", |_input, ctx| ctx
+    .timer_after(Duration::from_secs(60))
+    .map(drop));
+
+pub(crate) struct TimerRefusedWorkflow;
+impl WorkflowOperative for TimerRefusedWorkflow {
+    fn factory_id() -> &'static str {
+        "workflow_timer_refused"
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("input").into::<TimerStep>();
     }
 }
 
@@ -157,7 +173,7 @@ impl WorkflowOperative for CommitBlockWorkflow {
     fn factory_id() -> &'static str {
         "commit_block_workflow"
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<CommitA>()
             .named("mid")
@@ -176,7 +192,7 @@ impl WorkflowOperative for SyncDurableWorkflow {
     fn factory_id() -> &'static str {
         "sync_durable_workflow"
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<CommitA>()
             .named("mid")
@@ -195,7 +211,7 @@ impl WorkflowOperative for OptOutCommitBlockWorkflow {
         "optout_commit_block"
     }
     const PERSISTENCE_ENABLED: bool = false;
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<CommitA>()
             .sink_named_with("mid", |s: &String| format!("a-ran:{s}").into_bytes())
@@ -203,12 +219,11 @@ impl WorkflowOperative for OptOutCommitBlockWorkflow {
     }
 }
 
-// `tier_commit_block_workflow`: the effectively-once workflow fixture. Task A
-// commits durable state AND emits `committed:<input>` under a stable key on a
-// keyed hybrid channel (captured into the atomic effect record); task B blocks
-// until the resumed runner sets the release env. A SIGKILL lands with A's
-// effect record durable and B unfinished; the resume re-runs A (idempotent
-// change, deterministic re-emit) and completes.
+// `tier_commit_block_workflow`: the hybrid mid-chain shape the conformance
+// fixture's `commit_block_chain` twin is transcribed from. Task A commits
+// durable state AND emits `committed:<input>` on a channel that both reaches a
+// plugin sink and feeds task B, which blocks until the resumed runner sets the
+// release env.
 #[derive(Default)]
 struct TierCommitA;
 impl Tasklet for TierCommitA {
@@ -234,7 +249,7 @@ impl Tasklet for TierCommitA {
         ctx: &mut TaskletCtx<'_>,
     ) -> Result<(), TaskletError> {
         state.apply(Insert("tier_commit_a".to_string()));
-        ctx.emit_keyed::<String>("job".to_string(), format!("committed:{input}"))
+        ctx.emit::<String>(format!("committed:{input}"))
     }
 }
 
@@ -243,11 +258,9 @@ impl WorkflowOperative for TierCommitBlockWorkflow {
     fn factory_id() -> &'static str {
         "tier_commit_block_workflow"
     }
-    fn tasklets(c: &ChannelBuilder) {
-        c.effectively_once();
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<TierCommitA>()
-            .keyed()
             .sink_named_with("mid", |s: &String| s.as_bytes().to_vec())
             .into::<BlockB>();
     }
@@ -271,7 +284,7 @@ impl WorkflowOperative for SagaBlockWorkflow {
     fn factory_id() -> &'static str {
         "saga_block_workflow"
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<SagaA>()
             .named("s1")
@@ -292,7 +305,7 @@ impl WorkflowOperative for OutboxBlockWorkflow {
     fn factory_id() -> &'static str {
         "outbox_block_workflow"
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<CommitA>()
             .sink_named_with("mid", |s: &String| format!("a-out:{s}").into_bytes())
@@ -323,7 +336,7 @@ impl WorkflowOperative for UndoOutboxWorkflow {
     fn factory_id() -> &'static str {
         "undo_outbox_workflow"
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<UndoOutboxA>()
             .sink_named_with("mid", |s: &String| format!("out:{s}").into_bytes())
@@ -429,20 +442,18 @@ impl WorkflowOperative for BranchWorkflow {
     fn factory_id() -> &'static str {
         "branch_workflow"
     }
-    // Fail fast: the compensation scenario is about the rollback order, not the
-    // ladder that precedes it.
-    fn retry_attempts() -> u32 {
-        0
-    }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         // One channel, two consumers: THE fan-out. Both branches read exactly
         // what BranchA released on it (held handle, wired twice).
         let mid = c
             .input::<String>("in")
             .into::<BranchA>()
             .sink_named_with("mid", |s: &String| format!("a:{s}").into_bytes());
+        // Fail fast: the compensation scenario is about the rollback order,
+        // not the ladder that precedes it.
         mid.into::<BranchB>()
             .sink_named_with("bmid", |s: &String| format!("b:{s}").into_bytes())
+            .retry_max(1)
             .into::<BranchD>()
             .sink_named("d_out");
         mid.into::<BranchC>().sink_named("c_out");
@@ -554,7 +565,7 @@ impl WorkflowOperative for DiamondWorkflow {
     fn factory_id() -> &'static str {
         "diamond_workflow"
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         // Held handle wired twice = fan-out; two streams naming DiamJoin
         // (unnamed, same class) = the fan-in.
         let fan = c
@@ -629,7 +640,7 @@ impl WorkflowOperative for RetryWorkflow {
     fn factory_id() -> &'static str {
         "retry_workflow"
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<RetryA>()
             .sink_named_with("mid", |s: &String| format!("res:{s}").into_bytes())

@@ -13,7 +13,7 @@ pub use flz_core::workflow::{compensation, driver, instance, registry};
 use crate::channel::ChannelBuilder;
 
 /// One workflow operative class: a static DAG of Tasklets/Channels/Cells
-/// declared in [`tasklets`](Self::tasklets), on the same graph builder a
+/// declared in [`channels`](Self::channels), on the same graph builder a
 /// stream operative uses. A tasklet ends its instance with
 /// [`TaskletCtx::complete`](crate::TaskletCtx::complete). Capabilities
 /// attach to the kind, not here; choosing the workflow kind is sufficient.
@@ -22,13 +22,16 @@ pub trait WorkflowOperative: Send + Sync + 'static {
     /// Stable, controller-facing factory identifier.
     fn factory_id() -> &'static str;
 
-    /// The DAG. The workflow driver runs it in topological order: a tasklet
-    /// becomes runnable only after **every** producer feeding it has committed
-    /// — fan-out branches interleave independently, and a fan-in node is
-    /// dispatched once, with the accumulated batch of all its producers.
-    /// Cycles are refused at registration, and so is a class that declares no
-    /// tasklet.
-    fn tasklets(_c: &ChannelBuilder) {}
+    /// The DAG, declared as a stream declares its graph. The workflow driver
+    /// runs it in topological order: a tasklet becomes runnable only after
+    /// **every** producer feeding it has committed — fan-out branches
+    /// interleave independently, and a fan-in node is dispatched once, with
+    /// the accumulated batch of all its producers. Cycles are refused at
+    /// registration, and so is a class that declares no tasklet. A tasklet's
+    /// retry ladder is the edge's (`retry_max` / `retry_backoff_ms`), as on a
+    /// stream; the stream-only settings (`effectively_once`, the checkpoint
+    /// flags, `correction_window`) are refused at registration.
+    fn channels(c: &ChannelBuilder);
 
     /// Optional wall-clock backstop. `None` (the default) means no duration
     /// bound; when `Some`, the SDK cooperatively cancels in-flight work once
@@ -64,42 +67,6 @@ pub trait WorkflowOperative: Send + Sync + 'static {
     /// payload, which a class declaring one must accept as its tick.
     fn wake_after() -> Option<Duration> {
         None
-    }
-
-    /// Total attempts a **structured** tasklet's cell gets before its
-    /// error fails the tasklet (`workflow-cell-retry`): the first run plus
-    /// the retries. Default 3; `0` or `1` restores fail-fast. Only the failed
-    /// cell re-runs — siblings that completed stay buffered at the barrier —
-    /// and the retry always happens **before** the tasklet commits, so a
-    /// committed tasklet is never retried.
-    ///
-    /// A retried cell re-runs its whole batch for that tasklet, under the
-    /// same at-least-once idempotency contract crash-resume imposes: a failed
-    /// attempt's state changes are already applied, so `Tasklet::run` must
-    /// tolerate re-running over them. Classify a permanent failure with
-    /// [`TaskletError::non_retryable`](crate::tasklet::TaskletError::non_retryable)
-    /// to skip the ladder.
-    fn retry_attempts() -> u32 {
-        3
-    }
-
-    /// Backoff base of the retry ladder: attempt `n` waits `base × 2^(n-1)`
-    /// with jitter, capped at [`RETRY_BACKOFF_MAX_MS`](crate::channel::RETRY_BACKOFF_MAX_MS).
-    /// Default 500 ms. The wait observes cancellation, so an external stop or
-    /// `max_duration` interrupts it promptly.
-    fn retry_backoff() -> Duration {
-        Duration::from_millis(500)
-    }
-
-    /// Sends of one commit barrier (`TaskCommit` / `IterCommit`, first send
-    /// included) before an ack that never arrives fails the run. Default 3;
-    /// `0` or `1` is the single wait. A re-send carries the same
-    /// `reference_id`, and the controller journals a barrier once by its
-    /// identity, so a transient control-channel stall delays the chain
-    /// instead of ending it. The re-sends wait out
-    /// [`retry_backoff`](Self::retry_backoff) between attempts.
-    fn barrier_retry_attempts() -> u32 {
-        3
     }
 
     /// Saga rollback scope, applied when the operative terminates abnormally

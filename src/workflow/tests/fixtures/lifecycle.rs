@@ -70,7 +70,7 @@ impl WorkflowOperative for EmitWorkflow {
     fn factory_id() -> &'static str {
         "test-emit-workflow"
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("in").into::<EmitTask>().sink_named("out");
     }
 }
@@ -81,7 +81,7 @@ impl WorkflowOperative for FailWorkflow {
     fn factory_id() -> &'static str {
         "test-fail-workflow"
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("in").into::<FailTask>();
     }
 }
@@ -91,11 +91,8 @@ impl WorkflowOperative for PanicWorkflow {
     fn factory_id() -> &'static str {
         "test-panic-workflow"
     }
-    fn retry_attempts() -> u32 {
-        0
-    }
-    fn tasklets(c: &ChannelBuilder) {
-        c.input::<String>("in").into::<PanicTask>();
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("in").retry_max(1).into::<PanicTask>();
     }
 }
 
@@ -105,7 +102,7 @@ impl WorkflowOperative for CompleteWorkflow {
     fn factory_id() -> &'static str {
         "test-complete-workflow"
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("in").into::<CompleteTask>();
     }
 }
@@ -121,7 +118,7 @@ impl WorkflowOperative for LoopWorkflow {
     fn loop_mode() -> LoopMode {
         LoopMode::PerInput
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("in").into::<GotTask>().sink_named("out");
     }
 }
@@ -139,7 +136,7 @@ impl WorkflowOperative for TimedWorkflow {
     fn max_duration() -> Option<Duration> {
         Some(Duration::from_millis(200))
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("in").into::<GotTask>().sink_named("out");
     }
 }
@@ -151,7 +148,7 @@ impl WorkflowOperative for TwoCompletions {
     fn factory_id() -> &'static str {
         "test-two-completions"
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<CompleteFirst>()
             .into::<CompleteSecond>();
@@ -164,7 +161,7 @@ impl WorkflowOperative for CompleteThenFail {
     fn factory_id() -> &'static str {
         "test-complete-then-fail"
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<CompleteFirst>()
             .into::<BoomTask>();
@@ -208,7 +205,7 @@ impl WorkflowOperative for KeyedCompletions {
     fn factory_id() -> &'static str {
         "test-keyed-completions"
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("in").into::<KeyedComplete>();
     }
 }
@@ -223,7 +220,7 @@ impl WorkflowOperative for CompletingChat {
     fn loop_mode() -> LoopMode {
         LoopMode::PerInput
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<ChatTurn>()
             .named("mid")
@@ -242,7 +239,7 @@ impl WorkflowOperative for ExternalStopOnlyWorkflow {
     fn self_terminating() -> bool {
         false
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("in").into::<EmitTask>();
     }
 }
@@ -253,4 +250,5 @@ impl WorkflowOperative for NoTaskletsWorkflow {
     fn factory_id() -> &'static str {
         "test-no-tasklets"
     }
+    fn channels(_c: &ChannelBuilder) {}
 }

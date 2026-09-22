@@ -418,7 +418,6 @@ impl<S: Tasklet> TaskletDispatcher for TaskletDispatcherImpl<S> {
             CollectShape {
                 prefix: "tasklet",
                 author_classifies: true,
-                captures_effects: true,
             },
             |tasklet, handle, ctx| tasklet.run(input, handle, ctx),
         )
@@ -460,7 +459,6 @@ impl<S: Tasklet> TaskletDispatcher for TaskletDispatcherImpl<S> {
             CollectShape {
                 prefix: "compensation for tasklet",
                 author_classifies: false,
-                captures_effects: false,
             },
             |tasklet, handle, ctx| tasklet.compensate(typed_outputs, handle, ctx),
         )

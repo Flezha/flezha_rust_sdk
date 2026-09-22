@@ -54,6 +54,17 @@ pub(crate) fn sugar_workflow(order: String) -> Vec<u8> {
     order.into_bytes()
 }
 
+// A workflow short form that loops: one pass per message on `input`, and the
+// instance stays after each.
+#[flezha_runner::workflow_operative(
+    id = "sugar_workflow_per_input",
+    sink = "sugar_workflow_per_input_out",
+    loop_mode = "per_input"
+)]
+pub(crate) fn sugar_workflow_per_input(message: String) -> Vec<u8> {
+    message.into_bytes()
+}
+
 // The short form with no sink: `ticks` feeds a tasklet that only keeps state.
 #[derive(Serialize, Deserialize, Clone, Default, PartialEq, Debug, flezha_runner::State)]
 pub(crate) struct SugarStateOnlyState {
@@ -432,6 +443,8 @@ mod macro_twin_tests {
             .unwrap()
             .register_factory(SugarWorkflow)
             .unwrap()
+            .register_factory(SugarWorkflowPerInput)
+            .unwrap()
             .register_factory(SugarStateOnly)
             .unwrap()
             .register_factory(SugarStaticCell)
@@ -453,6 +466,13 @@ mod macro_twin_tests {
         assert!(
             flezha_runner::workflow::registry::get_class("sugar_workflow").is_some(),
             "the workflow short form registers in the workflow registry"
+        );
+        let per_input = flezha_runner::workflow::registry::get_class("sugar_workflow_per_input")
+            .expect("the looping short form registers");
+        assert_eq!(
+            per_input.loop_mode,
+            LoopMode::PerInput,
+            "the short form carries the loop mode it wrote"
         );
     }
 

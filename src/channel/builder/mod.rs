@@ -75,6 +75,11 @@ impl ChannelBuilder {
         !self.state.borrow().tasklets.is_empty()
     }
 
+    /// The class settings written so far, for a kind that refuses some.
+    pub(crate) fn class_settings(&self) -> std::cell::Ref<'_, BuilderState> {
+        self.state.borrow()
+    }
+
     /// Opt this operative into late-input correction over the given window.
     ///
     /// An input whose extracted event time is behind its Cell's high-water

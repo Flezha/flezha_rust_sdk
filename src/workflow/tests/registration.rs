@@ -2,7 +2,6 @@
 //! workflow class is checked for before a driver ever runs.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use super::fixtures::*;
 use crate::cell::restore::RestoreInitPayload;
@@ -35,7 +34,7 @@ fn register_workflow_makes_factory_resolvable() {
         fn factory_id() -> &'static str {
             "test-getclass-workflow"
         }
-        fn tasklets(c: &ChannelBuilder) {
+        fn channels(c: &ChannelBuilder) {
             c.input::<String>("in").into::<EchoTask>();
         }
     }
@@ -118,7 +117,7 @@ fn a_durable_handoff_is_journalable_with_nothing_declared() {
         fn factory_id() -> &'static str {
             "test-no-codec-workflow"
         }
-        fn tasklets(c: &ChannelBuilder) {
+        fn channels(c: &ChannelBuilder) {
             c.input::<String>("in")
                 .into::<Stage1>()
                 .named("mid")
@@ -180,37 +179,91 @@ fn loop_authoring_is_validated() {
     assert_eq!(spec.dag.len(), 2);
 }
 
-/// `workflow-cell-retry` policy surface: the defaults land on the shared
-/// `RetryPolicy`, `retry_attempts() = 0` collapses to the one-attempt
-/// fail-fast, and a ladder without a backoff is refused at registration.
+/// `workflow-cell-retry` policy surface: a stage's ladder is the edge's, as a
+/// stream's is. The default edge is 3 attempts from 50 ms, `retry_max(1)` is
+/// fail-fast, and `retry_max(0)` is the shared topology refusal.
 #[test]
-fn retry_policy_is_resolved_and_validated() {
+fn the_retry_policy_is_the_edges() {
+    let edge = |spec: &spec::WorkflowSpec, name: &str| {
+        let id = spec
+            .topology
+            .lookup_channel_id(name)
+            .expect("channel declared");
+        spec.topology.channel(id).expect("channel built").retry
+    };
     let spec = spec::build_spec::<ChainWorkflow>().expect("defaults register");
-    assert_eq!(spec.retry.max_attempts, 3, "platform default is 3 attempts");
-    assert_eq!(spec.retry.backoff_base_ms, 500);
+    let default = edge(&spec, "in");
+    assert_eq!((default.max_attempts, default.backoff_base_ms), (3, 50));
 
-    let fail_fast = spec::build_spec::<RetryFailFastWorkflow>().expect("attempts = 0 registers");
-    assert_eq!(
-        fail_fast.retry.max_attempts, 1,
-        "attempts = 0 ⇒ the single fail-fast attempt"
-    );
+    let fail_fast = spec::build_spec::<RetryFailFastWorkflow>().expect("retry_max(1) registers");
+    assert_eq!(edge(&fail_fast, "mid2").max_attempts, 1);
 
-    struct HotLoop;
-    impl WorkflowOperative for HotLoop {
+    struct NoAttempt;
+    impl WorkflowOperative for NoAttempt {
         fn factory_id() -> &'static str {
-            "test-retry-hot-loop"
+            "test-retry-no-attempt"
         }
-        fn retry_backoff() -> Duration {
-            Duration::ZERO
-        }
-        fn tasklets(c: &ChannelBuilder) {
-            retry_chain(c);
+        fn channels(c: &ChannelBuilder) {
+            retry_chain(c, 0, 10);
         }
     }
-    match spec::build_spec::<HotLoop>().expect_err("a retry ladder needs a backoff") {
-        spec::BuildWorkflowError::ZeroRetryBackoff { attempts, .. } => assert_eq!(attempts, 3),
-        other => panic!("expected ZeroRetryBackoff, got {other:?}"),
+    let refused = spec::build_spec::<NoAttempt>().expect_err("an edge needs one attempt");
+    assert!(refused.to_string().contains("RetryMaxZero"), "{refused}");
+}
+
+/// The stream's tier, checkpoint and correction settings are refused on a
+/// workflow by the names the core gives them, never carried.
+#[test]
+fn a_stream_setting_on_a_workflow_is_refused_by_name() {
+    struct Tier;
+    impl WorkflowOperative for Tier {
+        fn factory_id() -> &'static str {
+            "test-refused-tier"
+        }
+        fn channels(c: &ChannelBuilder) {
+            c.effectively_once();
+            two_stage_chain(c);
+        }
     }
+    struct Checkpoint;
+    impl WorkflowOperative for Checkpoint {
+        fn factory_id() -> &'static str {
+            "test-refused-checkpoint"
+        }
+        fn channels(c: &ChannelBuilder) {
+            c.checkpoint_every(500);
+            two_stage_chain(c);
+        }
+    }
+    struct Correction;
+    impl WorkflowOperative for Correction {
+        fn factory_id() -> &'static str {
+            "test-refused-correction"
+        }
+        fn channels(c: &ChannelBuilder) {
+            c.correction_window(60_000);
+            two_stage_chain(c);
+        }
+    }
+    assert!(matches!(
+        spec::build_spec::<Tier>(),
+        Err(spec::BuildWorkflowError::EffectivelyOnceOnWorkflow { .. })
+    ));
+    assert!(matches!(
+        spec::build_spec::<Checkpoint>(),
+        Err(spec::BuildWorkflowError::CheckpointOnWorkflow { .. })
+    ));
+    let correction = spec::build_spec::<Correction>().expect_err("a correction window is refused");
+    assert!(matches!(
+        correction,
+        spec::BuildWorkflowError::CorrectionWindowOnWorkflow { .. }
+    ));
+    assert!(
+        correction
+            .to_string()
+            .starts_with("CorrectionWindowOnWorkflow"),
+        "the author reads the name: {correction}"
+    );
 }
 
 /// The per-class synchronous-durability declaration reaches the spec the controller's `AddOperative` response is
@@ -227,8 +280,8 @@ fn sync_durability_is_declared_per_class_and_off_by_default() {
         fn factory_id() -> &'static str {
             "test-sync-durable"
         }
-        fn tasklets(c: &ChannelBuilder) {
-            retry_chain(c);
+        fn channels(c: &ChannelBuilder) {
+            two_stage_chain(c);
         }
     }
 
@@ -316,7 +369,7 @@ fn dag_topology_is_validated() {
         fn factory_id() -> &'static str {
             "test-cyclic-workflow"
         }
-        fn tasklets(c: &ChannelBuilder) {
+        fn channels(c: &ChannelBuilder) {
             c.input::<String>("in")
                 .into::<Stage1>()
                 .named("mid")
@@ -344,7 +397,7 @@ fn dag_topology_is_validated() {
         fn factory_id() -> &'static str {
             "test-entry-merge-workflow"
         }
-        fn tasklets(c: &ChannelBuilder) {
+        fn channels(c: &ChannelBuilder) {
             c.merge::<MergedJoinInput>()
                 .from(c.input::<String>("in"), MergedJoinInput::B)
                 .from(c.input::<String>("also"), MergedJoinInput::C)
@@ -388,7 +441,7 @@ fn dag_topology_is_validated() {
         fn loop_mode() -> LoopMode {
             LoopMode::Chained
         }
-        fn tasklets(c: &ChannelBuilder) {
+        fn channels(c: &ChannelBuilder) {
             tree_chain(c);
         }
     }
@@ -431,7 +484,7 @@ fn dynamic_cell_tasklet_is_rejected() {
         fn factory_id() -> &'static str {
             "test-dyn-workflow"
         }
-        fn tasklets(c: &ChannelBuilder) {
+        fn channels(c: &ChannelBuilder) {
             // The key rides an inter-tasklet edge: a keyed ENTRY edge is
             // refused earlier, by the workflow seed's own rule.
             c.input::<String>("in")

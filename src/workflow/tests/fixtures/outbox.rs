@@ -26,7 +26,7 @@ impl WorkflowOperative for LeakWorkflow {
     fn factory_id() -> &'static str {
         "test-leak-workflow"
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<EmitThenFail>()
             .sink_named("out");
@@ -79,7 +79,7 @@ impl WorkflowOperative for UndoSaga {
     fn factory_id() -> &'static str {
         "test-undo-saga"
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<UndoEmit>()
             .sink_named_with("mid", |s: &String| s.clone().into_bytes())
@@ -94,7 +94,7 @@ impl WorkflowOperative for ResumeSaga {
     fn factory_id() -> &'static str {
         "test-resume-saga"
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<ResumeUndoA>()
             .named("c1")

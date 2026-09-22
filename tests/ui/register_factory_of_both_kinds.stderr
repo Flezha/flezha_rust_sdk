@@ -1,7 +1,7 @@
 error[E0283]: type annotations needed
-  --> tests/ui/register_factory_of_both_kinds.rs:22:12
+  --> tests/ui/register_factory_of_both_kinds.rs:23:12
    |
-22 |     runner.register_factory(BothKinds).unwrap();
+23 |     runner.register_factory(BothKinds).unwrap();
    |            ^^^^^^^^^^^^^^^^ cannot infer type of the type parameter `K` declared on the method `register_factory`
    |
    = note: multiple `impl`s satisfying `BothKinds: flezha_runner::Operative<_>` found in the `flezha_runner` crate:
@@ -16,5 +16,5 @@ note: required by a bound in `FlezhaRunner::register_factory`
    |                                   ^^^^^^^^^^^^ required by this bound in `FlezhaRunner::register_factory`
 help: consider specifying the generic arguments
    |
-22 |     runner.register_factory::<K, BothKinds>(BothKinds).unwrap();
+23 |     runner.register_factory::<K, BothKinds>(BothKinds).unwrap();
    |                            ++++++++++++++++

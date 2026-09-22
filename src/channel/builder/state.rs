@@ -210,6 +210,15 @@ pub(crate) struct BuilderState {
 }
 
 impl BuilderState {
+    /// Whether any checkpoint flag was written; the granularity they imply is
+    /// still the core's answer.
+    pub(crate) fn declares_checkpoint(&self) -> bool {
+        self.checkpoint_ack
+            || self.checkpoint_every.is_some()
+            || self.checkpoint_outputs != crate::operative::topology::CheckpointOutputs::AsProduced
+            || self.checkpoint_max_delay_ms.is_some()
+    }
+
     pub(super) fn push_channel(&mut self, name: &'static str, kind: ChannelKind) -> u32 {
         let id = self.channels.len() as u32;
         self.channels.push(ChannelEntry {

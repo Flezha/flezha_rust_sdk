@@ -36,7 +36,7 @@ impl WorkflowOperative for TwoChainsWorkflow {
     fn max_duration() -> Option<Duration> {
         Some(Duration::from_secs(600))
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         let a = c.input::<String>("a").into::<ChainA>().named("a_out");
         let b = c.input::<String>("b").into::<ChainB>().named("b_out");
         a.into::<ChainJoin>().sink_named("out");
@@ -51,7 +51,7 @@ impl WorkflowOperative for FanEntryWorkflow {
     fn factory_id() -> &'static str {
         "test-fan-entry"
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         let entry = c.input::<String>("in");
         entry
             .map(|s: String| -> String { format!("l:{s}") })
@@ -94,7 +94,7 @@ impl WorkflowOperative for ChainedChainsWorkflow {
     fn loop_mode() -> LoopMode {
         LoopMode::Chained
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("a")
             .into::<CountA>()
             .named("count_a")
@@ -144,7 +144,7 @@ impl WorkflowOperative for BudgetOnce {
     fn factory_id() -> &'static str {
         "test-budget-once"
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<BudgetTask>()
             .sink_named("out");

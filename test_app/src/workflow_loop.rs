@@ -92,7 +92,7 @@ impl WorkflowOperative for StatelessLoopWorkflow {
     fn max_duration() -> Option<Duration> {
         Some(Duration::from_secs(600))
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<ChatReply>()
             .sink_named("out");
@@ -248,7 +248,7 @@ impl WorkflowOperative for TypedOnceWorkflow {
     fn factory_id() -> &'static str {
         "typed_once_workflow"
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<Ticket>("order")
             .into::<OncePlaced>()
             .sink_named("placed");
@@ -285,7 +285,7 @@ impl WorkflowOperative for ReplyBlockLoopWorkflow {
     fn max_duration() -> Option<Duration> {
         Some(Duration::from_secs(600))
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<ChatTurn>()
             .named("mid")
@@ -376,7 +376,7 @@ impl WorkflowOperative for ChatRewindWorkflow {
     fn max_duration() -> Option<Duration> {
         Some(Duration::from_secs(600))
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<ChatTurn>()
             .named("mid")
@@ -398,7 +398,7 @@ impl WorkflowOperative for ChatLoopWorkflow {
     fn max_duration() -> Option<Duration> {
         Some(Duration::from_secs(600))
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<ChatTurn>()
             .named("mid")
@@ -445,7 +445,7 @@ macro_rules! bench_chain {
             fn factory_id() -> &'static str {
                 $factory
             }
-            fn tasklets(c: &ChannelBuilder) {
+            fn channels(c: &ChannelBuilder) {
                 let s = c.input::<String>("in").into::<$first>();
                 $(
                     let s = s
@@ -553,7 +553,7 @@ impl WorkflowOperative for BenchLoopWorkflow {
             .and_then(|v| v.parse::<u64>().ok())
             .map(Duration::from_millis)
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<BenchTurn>()
             .named("mid")

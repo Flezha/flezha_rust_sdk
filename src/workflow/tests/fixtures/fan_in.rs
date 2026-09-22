@@ -76,7 +76,7 @@ impl WorkflowOperative for DiamondWorkflow {
     fn factory_id() -> &'static str {
         "test-diamond-workflow"
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         let a = c.input::<String>("in").into::<DiamondA>().named("d_fan");
         a.into::<DiamondB>().named("d_b").into::<DiamondJoin>();
         a.into::<DiamondC>()
@@ -92,7 +92,7 @@ impl WorkflowOperative for JoinWorkflow {
     fn factory_id() -> &'static str {
         "test-join-workflow-shape"
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         let mid = c.input::<String>("in").into::<Stage1>().named("mid");
         mid.into::<Stage2>().named("join_b").into::<DiamondJoin>();
         mid.into::<EchoTask>().named("join_c").into::<DiamondJoin>();
@@ -107,7 +107,7 @@ impl WorkflowOperative for DiamondSaga {
     fn factory_id() -> &'static str {
         "test-diamond-saga"
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         let a = c.input::<String>("in").into::<DiamondA>().named("d_fan");
         let join = a
             .into::<DiamondB>()
@@ -167,7 +167,7 @@ impl WorkflowOperative for MergeWorkflow {
     fn factory_id() -> &'static str {
         "test-merge-workflow"
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         let a = c.input::<String>("in").into::<DiamondA>().named("m_fan");
         let b = a.into::<DiamondB>().named("m_b");
         let cc = a.into::<DiamondC>().named("m_c");
@@ -188,7 +188,7 @@ impl WorkflowOperative for PanickingMergeWorkflow {
     fn factory_id() -> &'static str {
         "test-panic-merge-workflow"
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         let a = c.input::<String>("in").into::<DiamondA>().named("pm_fan");
         let b = a.into::<DiamondB>().named("pm_b");
         let cc = a.into::<DiamondC>().named("pm_c");
@@ -207,7 +207,7 @@ impl WorkflowOperative for PanickingTransformWorkflow {
     fn factory_id() -> &'static str {
         "test-panic-transform-workflow"
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<DiamondA>()
             .named("pt_fan")

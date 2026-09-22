@@ -168,6 +168,9 @@ pub(crate) struct Wiring<'a> {
     /// The plugin sink's name, the producing channel named after it; `None`
     /// declares no plugin channel.
     pub sink: Option<&'a str>,
+    /// The operative items the short form sets beyond the graph (a workflow's
+    /// `loop_mode`), empty when every item keeps its trait default.
+    pub settings: TokenStream,
 }
 
 /// The two operative kinds a short form can declare. `operative!` is
@@ -179,18 +182,12 @@ pub(crate) enum Kind {
 }
 
 impl Kind {
-    /// The trait the impl states and the declaration method it fills — the one
-    /// place the two kinds differ, since both author on the same builder.
-    fn trait_and_method(self) -> (TokenStream, Ident) {
+    /// The trait the impl states — the one place the two kinds differ, since
+    /// both declare their graph in `channels` on the same builder.
+    fn operative_trait(self) -> TokenStream {
         match self {
-            Kind::Stream => (
-                quote! { ::flezha_runner::StreamOperative },
-                Ident::new("channels", proc_macro2::Span::call_site()),
-            ),
-            Kind::Workflow => (
-                quote! { ::flezha_runner::WorkflowOperative },
-                Ident::new("tasklets", proc_macro2::Span::call_site()),
-            ),
+            Kind::Stream => quote! { ::flezha_runner::StreamOperative },
+            Kind::Workflow => quote! { ::flezha_runner::WorkflowOperative },
         }
     }
 }
@@ -221,9 +218,10 @@ pub(crate) fn operative_item(wiring: Wiring<'_>) -> syn::Result<TokenStream> {
         chain,
         payload,
         sink,
+        settings,
     } = wiring;
     let entry = entry_channel_name(input_name)?;
-    let (operative_trait, method) = kind.trait_and_method();
+    let operative_trait = kind.operative_trait();
     // Pins the declared sink payload type against the terminal tasklet's
     // `Output`; with no sink the tasklet's output is left unconsumed, as a
     // hand-written channel ending at a tasklet leaves it.
@@ -238,10 +236,11 @@ pub(crate) fn operative_item(wiring: Wiring<'_>) -> syn::Result<TokenStream> {
         #vis struct #ident;
         impl #operative_trait for #ident {
             fn factory_id() -> &'static str { #id }
-            fn #method(c: &::flezha_runner::ChannelBuilder) {
+            fn channels(c: &::flezha_runner::ChannelBuilder) {
                 let stream = c.input::<#input_ty>(#entry) #on_full #chain
                 #sunk
             }
+            #settings
         }
     })
 }
@@ -276,5 +275,6 @@ pub fn expand(item: TokenStream) -> syn::Result<TokenStream> {
         chain: quote! { .into::<#first_tasklet>(); #hops },
         payload: quote! { #plugin_ty },
         sink: Some(&def.plugin_name),
+        settings: quote! {},
     })
 }

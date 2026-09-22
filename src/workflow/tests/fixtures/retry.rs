@@ -3,7 +3,6 @@
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -116,43 +115,41 @@ impl Tasklet for FlakyFan {
     }
 }
 
-pub(crate) fn retry_chain(c: &ChannelBuilder) {
+/// Split → Reserve(compensable) → FlakyFan(even/odd), `FlakyFan`'s edge on a
+/// ladder of `attempts` tries backing off from `backoff_ms`.
+pub(crate) fn retry_chain(c: &ChannelBuilder, attempts: u32, backoff_ms: u64) {
     c.input::<String>("in")
         .into::<SplitTask>()
         .named("mid")
         .into::<RetryReserve>()
         .named("mid2")
+        .retry_max(attempts)
+        .retry_backoff_ms(backoff_ms)
         .into::<FlakyFan>()
         .sink_named("out");
 }
 
-/// Split → Reserve(compensable) → FlakyFan(even/odd). Default 3-attempt
-/// ladder, backoff shrunk so the scenarios do not sleep out a real one.
+/// The default 3-attempt ladder, backoff shrunk so the scenarios do not
+/// sleep out a real one.
 pub(crate) struct RetryWorkflow;
 impl WorkflowOperative for RetryWorkflow {
     fn factory_id() -> &'static str {
         "test-retry-workflow"
     }
-    fn retry_backoff() -> Duration {
-        Duration::from_millis(10)
-    }
-    fn tasklets(c: &ChannelBuilder) {
-        retry_chain(c);
+    fn channels(c: &ChannelBuilder) {
+        retry_chain(c, 3, 10);
     }
 }
 
-/// The same chain with the ladder opted out: the first cell error fails
-/// the tasklet, exactly as before this capability existed.
+/// The same chain with a one-attempt edge: the first cell error fails the
+/// tasklet.
 pub(crate) struct RetryFailFastWorkflow;
 impl WorkflowOperative for RetryFailFastWorkflow {
     fn factory_id() -> &'static str {
         "test-retry-failfast-workflow"
     }
-    fn retry_attempts() -> u32 {
-        0
-    }
-    fn tasklets(c: &ChannelBuilder) {
-        retry_chain(c);
+    fn channels(c: &ChannelBuilder) {
+        retry_chain(c, 1, 10);
     }
 }
 
@@ -163,11 +160,8 @@ impl WorkflowOperative for RetrySlowBackoffWorkflow {
     fn factory_id() -> &'static str {
         "test-retry-slow-workflow"
     }
-    fn retry_backoff() -> Duration {
-        Duration::from_secs(30)
-    }
-    fn tasklets(c: &ChannelBuilder) {
-        retry_chain(c);
+    fn channels(c: &ChannelBuilder) {
+        retry_chain(c, 3, 30_000);
     }
 }
 
@@ -253,11 +247,9 @@ impl WorkflowOperative for StepProbeWorkflow {
     fn factory_id() -> &'static str {
         "test-step-probe-workflow"
     }
-    fn retry_backoff() -> Duration {
-        Duration::from_millis(200)
-    }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
+            .retry_backoff_ms(200)
             .into::<StepProbe>()
             .sink_named("probe_out");
     }

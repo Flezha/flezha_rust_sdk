@@ -26,19 +26,18 @@ use serde_json::{json, Value};
 pub struct OperativeSpec {
     factory_id: String,
     id: Option<String>,
-    kind: Option<String>,
     init_values: Value,
     opts: Value,
 }
 
 impl OperativeSpec {
-    /// A stream operative served by the factory `factory_id`, under an id the
-    /// controller generates unless [`Self::id`] names one.
+    /// An operative of the factory `factory_id`, of the kind its runner
+    /// announced, under an id the controller generates unless [`Self::id`]
+    /// names one.
     pub fn new(factory_id: impl Into<String>) -> Self {
         Self {
             factory_id: factory_id.into(),
             id: None,
-            kind: None,
             init_values: Value::Null,
             opts: Value::Null,
         }
@@ -50,12 +49,6 @@ impl OperativeSpec {
     /// untouched.
     pub fn id(mut self, id: impl Into<String>) -> Self {
         self.id = Some(id.into());
-        self
-    }
-
-    /// The operative kind: `"stream"` (the default) or `"workflow"`.
-    pub fn kind(mut self, kind: impl Into<String>) -> Self {
-        self.kind = Some(kind.into());
         self
     }
 
@@ -78,9 +71,6 @@ impl OperativeSpec {
             .expect("a JSON object was just built");
         if let Some(id) = &self.id {
             object.insert("id".into(), json!(id));
-        }
-        if let Some(kind) = &self.kind {
-            object.insert("kind".into(), json!(kind));
         }
         if !self.init_values.is_null() {
             object.insert("init_values".into(), self.init_values.clone());
@@ -196,11 +186,8 @@ mod tests {
             "no id is sent, so the controller generates one"
         );
         assert_eq!(
-            OperativeSpec::new("echo")
-                .id("my_echo")
-                .kind("workflow")
-                .to_fields(),
-            json!({ "factory_id": "echo", "id": "my_echo", "kind": "workflow" })
+            OperativeSpec::new("echo").id("my_echo").to_fields(),
+            json!({ "factory_id": "echo", "id": "my_echo" })
         );
     }
 

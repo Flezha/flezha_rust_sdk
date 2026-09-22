@@ -65,6 +65,7 @@
       "sugar_store_input",
       "sugar_named_input",
       "sugar_workflow",
+      "sugar_workflow_per_input",
       "sugar_state_only"
     ],
     "liveness": [
@@ -103,6 +104,7 @@
       "spawn_requester",
       "spawn_once_requester",
       "echo_workflow",
+      "workflow_timer_refused",
       "typed_once_workflow",
       "commit_block_workflow",
       "sync_durable_workflow",

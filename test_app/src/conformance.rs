@@ -283,6 +283,27 @@ impl StreamOperative for VolatileRowClass {
     }
 }
 
+/// A `class.workflow` row's class: the same steps on a workflow, so what the
+/// row writes reaches the workflow kind's judgement.
+struct RowWorkflow;
+
+impl WorkflowOperative for RowWorkflow {
+    fn factory_id() -> &'static str {
+        RowClass::factory_id()
+    }
+
+    fn channels(c: &ChannelBuilder) {
+        RowClass::channels(c);
+    }
+}
+
+/// Whether a row declares the workflow kind rather than a stream.
+fn is_workflow(row: &Row) -> bool {
+    row.steps
+        .split(';')
+        .any(|step| step.trim() == "class.workflow")
+}
+
 /// Load `row` as the class the next `build_topology_for` declares.
 fn load(row: &Row) {
     let mailbox = mailbox_steps(&row.steps);
@@ -467,13 +488,14 @@ impl<'b> Interp<'b> {
     }
 
     /// `class.<flag>[(<value>)]` — the facts the class declares on the builder.
-    /// `persistent` is a const on the class, read by `load`; `workflow` and
-    /// `sync_durability` are declarations a stream class does not carry, and
-    /// every row needing one is skipped before it reaches here.
+    /// `persistent` is a const on the class and `workflow` the class's kind,
+    /// both chosen by the caller; `sync_durability` is a declaration a stream
+    /// class does not carry, and every row needing it is skipped before it
+    /// reaches here.
     fn class_flag(&mut self, rest: &str) {
         let (flag, value) = split_call(rest);
         match flag {
-            "persistent" => {}
+            "persistent" | "workflow" => {}
             "effectively_once" => self.c.effectively_once(),
             "checkpoint_ack" => self.c.checkpoint_ack(),
             "checkpoint_every" => self.c.checkpoint_every(value.parse().expect("a cadence")),
@@ -676,6 +698,11 @@ fn topology_of(row: &Row) -> Result<Arc<OperativeTopology>, Vec<String>> {
         return cited(&row.topology);
     }
     load(row);
+    if is_workflow(row) {
+        return build_spec::<RowWorkflow>()
+            .map(|spec| spec.topology)
+            .map_err(|e| vec![refusal_name(&e.to_string())]);
+    }
     let built = if row.steps.contains("class.persistent") {
         build_topology_for::<RowClass>()
     } else {
@@ -836,7 +863,9 @@ pub(crate) fn register_only(
     }
 
     load(row);
-    let defined = if row.steps.contains("class.persistent") {
+    let defined = if is_workflow(row) {
+        runner.register_factory(RowWorkflow)
+    } else if row.steps.contains("class.persistent") {
         runner.register_factory(RowClass)
     } else {
         runner.register_factory(VolatileRowClass)

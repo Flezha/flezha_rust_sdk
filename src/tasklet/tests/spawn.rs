@@ -74,6 +74,28 @@ fn without_a_control_plane_the_request_resolves_instead_of_blocking_the_tasklet(
 }
 
 #[test]
+fn a_stream_factory_is_answered_by_name() {
+    let _guard = crate::runner::env_test_guard();
+    let rx = capture_control_requests();
+    let mut sink = NullSink;
+    let ctx = TaskletCtx::new(&mut sink, 0, 0, IDENTITY);
+
+    let handle = ctx.spawn_workflow("prices", b"p".to_vec());
+    let (reference_id, request) = shipped(&rx);
+    assert_eq!(request.factory_id, "prices");
+    flz_core::shutdown::signal_result(
+        &reference_id,
+        Ok(flz_core::spawn::encode_ack("factory_not_workflow", "")),
+    );
+
+    assert_eq!(
+        handle.wait(),
+        Err(SpawnError::FactoryNotWorkflow("prices".to_string())),
+        "a stream factory is neither unknown nor refused"
+    );
+}
+
+#[test]
 fn a_dropped_handle_is_not_an_error_for_the_tasklet() {
     let _guard = crate::runner::env_test_guard();
     // Fire-and-forget: dropping the handle must neither panic nor block. The

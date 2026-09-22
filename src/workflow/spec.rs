@@ -1,16 +1,16 @@
 //! The typed half of workflow-spec construction: `build_spec::<T>()` runs the
-//! author's `tasklets` against a `ChannelBuilder` and validates the chain.
+//! author's `channels` against a `ChannelBuilder` and validates the chain.
 //! The spec/DAG data structures live in `flz_core::workflow::spec`.
 
 use flz_core::operative::topology::{CellMode, OperativeTopology};
 pub use flz_core::workflow::spec::*;
 use flz_core::workflow::LoopMode;
 
-use crate::channel::{ChannelBuilder, RetryPolicy, TaskletId};
+use crate::channel::{ChannelBuilder, TaskletId};
 use crate::operative::builder::build_topology;
 use crate::workflow::WorkflowOperative;
 
-/// Build and validate the spec for a workflow class: its `tasklets()`
+/// Build and validate the spec for a workflow class: its `channels()`
 /// declaration, validated as a static DAG.
 pub fn build_spec<T: WorkflowOperative>() -> Result<WorkflowSpec, BuildWorkflowError> {
     let factory_id = T::factory_id();
@@ -21,14 +21,13 @@ pub fn build_spec<T: WorkflowOperative>() -> Result<WorkflowSpec, BuildWorkflowE
         return Err(BuildWorkflowError::ExternalStopOnly { factory_id });
     }
 
-    let retry = retry_policy::<T>(factory_id)?;
-
     let cb = ChannelBuilder::new();
-    T::tasklets(&cb);
+    T::channels(&cb);
 
     if !cb.has_tasklets() {
         return Err(BuildWorkflowError::NoTasklets { factory_id });
     }
+    refuse_stream_settings(factory_id, &cb)?;
 
     let topology = build_topology(factory_id, cb).map_err(|e| BuildWorkflowError::Topology {
         factory_id,
@@ -48,8 +47,6 @@ pub fn build_spec<T: WorkflowOperative>() -> Result<WorkflowSpec, BuildWorkflowE
         rollback_mode: T::rollback_mode(),
         loop_mode: T::loop_mode(),
         wake_after: T::wake_after(),
-        retry,
-        barrier_retry_attempts: T::barrier_retry_attempts(),
         persistence_enabled: T::PERSISTENCE_ENABLED,
         sync_durability: T::SYNC_DURABILITY,
     })
@@ -100,24 +97,24 @@ fn refuse_loop_terminal_without_handoff<T: WorkflowOperative>(
     }
 }
 
-/// Resolve the class's per-cell retry ladder onto the shared
-/// [`RetryPolicy`], refusing a ladder that would spin without a backoff. A
-/// declared 0 collapses to the one-attempt fail-fast the driver runs.
-fn retry_policy<T: WorkflowOperative>(
+/// A workflow commits at its stage boundary, so the stream's tier, checkpoint
+/// and correction settings have nothing to rest on; the builder lets an author
+/// write them, so they are refused here by the names the core gives them.
+fn refuse_stream_settings(
     factory_id: &'static str,
-) -> Result<RetryPolicy, BuildWorkflowError> {
-    let attempts = T::retry_attempts();
-    let backoff_base_ms = T::retry_backoff().as_millis().min(u64::MAX as u128) as u64;
-    if attempts > 1 && backoff_base_ms == 0 {
-        return Err(BuildWorkflowError::ZeroRetryBackoff {
-            factory_id,
-            attempts,
-        });
+    cb: &ChannelBuilder,
+) -> Result<(), BuildWorkflowError> {
+    let settings = cb.class_settings();
+    if settings.effectively_once {
+        return Err(BuildWorkflowError::EffectivelyOnceOnWorkflow { factory_id });
     }
-    Ok(RetryPolicy {
-        max_attempts: attempts.max(1),
-        backoff_base_ms,
-    })
+    if settings.declares_checkpoint() {
+        return Err(BuildWorkflowError::CheckpointOnWorkflow { factory_id });
+    }
+    if settings.correction.is_some() {
+        return Err(BuildWorkflowError::CorrectionWindowOnWorkflow { factory_id });
+    }
+    Ok(())
 }
 
 /// Resolve the execution DAG of a structured workflow's tasklets and refuse

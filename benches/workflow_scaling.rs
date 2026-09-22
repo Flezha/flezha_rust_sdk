@@ -141,7 +141,7 @@ impl WorkflowOperative for ScaleStepWorkflow {
             ms => Some(Duration::from_millis(ms)),
         }
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("in").into::<GateTask>().named("out");
     }
 }
@@ -160,7 +160,7 @@ impl WorkflowOperative for ScaleIdleWorkflow {
     fn loop_mode() -> LoopMode {
         LoopMode::PerInput
     }
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("in").into::<ShortTask>().named("out");
     }
 }
@@ -172,7 +172,7 @@ impl WorkflowOperative for ScaleControlWorkflow {
         "scale-control-workflow"
     }
     const PERSISTENCE_ENABLED: bool = false;
-    fn tasklets(c: &ChannelBuilder) {
+    fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<ShortTask>()
             .sink_named("out");
@@ -304,17 +304,29 @@ fn cpu_ms() -> u64 {
     (ticks(11) + ticks(12)) * 1000 / TICKS_PER_SEC
 }
 
+/// Start instance `id` of `factory_id` with no init values and feed `message`
+/// through its entry channel; `false` when the class is not registered.
+fn start_fed(node: &RunnerNode, factory_id: &str, id: &str, message: &[u8]) -> bool {
+    if !matches!(
+        node.start_workflow(factory_id.into(), id.into(), ""),
+        Ok(true)
+    ) {
+        return false;
+    }
+    let Some(instance) = node.get_workflow(id) else {
+        return false;
+    };
+    flz_core::routing::feed_workflow_frame(&instance, message.to_vec(), &Default::default());
+    true
+}
+
 /// One control run: start a fresh single-pass instance and wait for its
 /// completion. Returns the round-trip.
 fn control_sample(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>, seq: usize) -> Duration {
     let id = format!("scale-control-{seq}");
     let started = Instant::now();
     assert!(
-        node.start_workflow(
-            ScaleControlWorkflow::factory_id().into(),
-            id.clone(),
-            "ping".into()
-        ),
+        start_fed(node, ScaleControlWorkflow::factory_id(), &id, b"ping"),
         "control instance {id} failed to start"
     );
     let deadline = Instant::now() + CONTROL_DEADLINE;
@@ -439,11 +451,7 @@ fn workflow_instance_scaling_probe() {
     let start_began = Instant::now();
     for i in 0..n {
         assert!(
-            node.start_workflow(
-                shape.factory_id().into(),
-                format!("scale-{i}"),
-                "work".into()
-            ),
+            start_fed(&node, shape.factory_id(), &format!("scale-{i}"), b"work"),
             "population instance {i} failed to start"
         );
     }

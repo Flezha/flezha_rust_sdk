@@ -15,6 +15,7 @@ impl WorkflowOperative for BothKinds {
     fn factory_id() -> &'static str {
         "both_kinds"
     }
+    fn channels(_c: &ChannelBuilder) {}
 }
 
 fn main() {

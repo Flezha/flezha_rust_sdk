@@ -407,7 +407,7 @@ pub(super) fn barrier_resend(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>
 
     // The first TaskCommit's ack is lost: the re-send continues the chain.
     lose_acks("resend-1", 1);
-    assert!(start_fed(node, "test-resend-chain", "resend-1", b"x"));
+    assert!(start_fed(node, "test-chain-workflow", "resend-1", b"x"));
     let (outs, done) = drain(rx, "resend-1");
     assert_eq!(
         (done.0.as_str(), done.1.as_str()),
@@ -437,7 +437,7 @@ pub(super) fn barrier_resend(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>
 
     // No ack ever arrives: the bounded ladder fails the run.
     lose_acks("resend-2", usize::MAX);
-    assert!(start_fed(node, "test-resend-chain", "resend-2", b"y"));
+    assert!(start_fed(node, "test-chain-workflow", "resend-2", b"y"));
     let (_outs, done) = drain(rx, "resend-2");
     assert_eq!(done.0, "error");
     assert!(
@@ -446,7 +446,7 @@ pub(super) fn barrier_resend(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>
         done.1
     );
     let sends = barrier_sends_of("resend-2");
-    assert_eq!(sends.len(), 3, "the default ladder sends three times");
+    assert_eq!(sends.len(), 3, "the constant ladder sends three times");
     assert!(sends.iter().all(|r| r == &sends[0]));
     let _ = drain_task_commits();
 
@@ -457,7 +457,7 @@ pub(super) fn barrier_resend(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>
     let _ = drain_iter_parks();
     lose_acks("resend-3", 3);
     assert!(node
-        .start_workflow("test-resend-loop".into(), "resend-3".into(), "")
+        .start_workflow("test-chat-loop".into(), "resend-3".into(), "")
         .expect("init_values is a JSON object"));
     let resend_loop = node
         .get_workflow("resend-3")
