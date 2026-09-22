@@ -90,6 +90,7 @@ fn workflow_driver_scenarios() {
     crate::register_class::<crate::WorkflowKind, TwoChainsWorkflow>().unwrap();
     crate::register_class::<crate::WorkflowKind, FanEntryWorkflow>().unwrap();
     crate::register_class::<crate::WorkflowKind, ChainedChainsWorkflow>().unwrap();
+    crate::register_class::<crate::WorkflowKind, JournaledCountdownWorkflow>().unwrap();
     crate::register_class::<crate::WorkflowKind, BudgetOnce>().unwrap();
 
     let mut node = RunnerNode::new("test-ns".to_string());

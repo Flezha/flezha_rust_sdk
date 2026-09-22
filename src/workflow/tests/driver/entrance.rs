@@ -109,6 +109,28 @@ pub(super) fn entrance(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
         "every pass entered through b's root; a's chain never ran"
     );
 
+    // --- a durable chained loop commits its message's offset once, and no
+    // offset for a carry-fed pass ---
+    let _ = drain_iter_commits();
+    assert!(node
+        .start_workflow("test-journaled-countdown".into(), "countdown-1".into(), "")
+        .expect("init_values is a JSON object"));
+    let countdown = node
+        .get_workflow("countdown-1")
+        .expect("the loop's instance is registered before its driver runs");
+    feed_at(&countdown, b"2", 0);
+    let (_outs, done) = drain(rx, "countdown-1");
+    assert_eq!(done.0, "ok");
+    assert_eq!(
+        drain_iter_commits()
+            .iter()
+            .filter(|c| c.operative_id == "countdown-1")
+            .map(|c| c.consumed_offset)
+            .collect::<Vec<_>>(),
+        vec![Some(0), None, None],
+        "the carry-fed passes consumed no journaled input"
+    );
+
     // --- a once run with an empty inbox parks after the idle window when it
     // journals, and resumes at pass 0 from parked(0) ---
     std::env::set_var("FLEZHA_WORKFLOW_PARK_IDLE_MS", "300");

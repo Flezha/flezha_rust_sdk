@@ -20,7 +20,7 @@ pub(super) fn durable_loop(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) 
     let chat = node
         .get_workflow("chat-1")
         .expect("the loop's instance is registered before its driver runs");
-    // Two chat turns, at durable-inbox offsets 4 and 7 (the controller's
+    // Two chat turns, at input-log offsets 4 and 7 (the controller's
     // offsets are opaque to the driver — it only echoes them back).
     feed_at(&chat, b"hi", 4);
     feed_at(&chat, b"again", 7);
@@ -44,8 +44,8 @@ pub(super) fn durable_loop(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) 
     );
     assert_eq!(
         iters.iter().map(|c| c.consumed_offset).collect::<Vec<_>>(),
-        vec![4, 7],
-        "each commit records the inbox offset its iteration consumed"
+        vec![Some(4), Some(7)],
+        "each commit records the input-log offset its iteration consumed"
     );
     assert_eq!(
         drain_task_commits()
@@ -79,7 +79,6 @@ pub(super) fn durable_loop(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) 
             0,
             Some(instance::JournalResume {
                 iter: 2,
-                consumed_offset: 7,
                 committed_tasks: vec![
                     instance::CommittedTask {
                         task_idx: 0,
@@ -117,7 +116,7 @@ pub(super) fn durable_loop(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) 
         vec![2],
         "the resumed run commits iteration 2 — never 0 or 1 again"
     );
-    assert_eq!(iters[0].consumed_offset, 9);
+    assert_eq!(iters[0].consumed_offset, Some(9));
 }
 
 pub(super) fn loop_saga_and_rewind(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
@@ -153,7 +152,6 @@ pub(super) fn loop_saga_and_rewind(node: &mut RunnerNode, rx: &Receiver<RunnerMe
                 0,
                 Some(instance::JournalResume {
                     iter: 1,
-                    consumed_offset: 2,
                     committed_tasks: vec![
                         instance::CommittedTask {
                             task_idx: 0,
@@ -214,7 +212,6 @@ pub(super) fn loop_saga_and_rewind(node: &mut RunnerNode, rx: &Receiver<RunnerMe
             0,
             Some(instance::JournalResume {
                 iter: 1,
-                consumed_offset: 1,
                 committed_tasks: vec![undo_op(0, 0, vec![seg.clone()]), undo_op(1, 0, Vec::new())],
                 rewind_undo: vec![
                     undo_op(0, 1, vec![seg.clone()]),
@@ -321,7 +318,6 @@ pub(super) fn loop_completion(node: &mut RunnerNode, rx: &Receiver<RunnerMessage
             0,
             Some(instance::JournalResume {
                 iter: 2,
-                consumed_offset: 5,
                 completion: Some(b"farewell".to_vec()),
                 ..Default::default()
             })
@@ -354,7 +350,6 @@ pub(super) fn loop_completion(node: &mut RunnerNode, rx: &Receiver<RunnerMessage
             0,
             Some(instance::JournalResume {
                 iter: 1,
-                consumed_offset: 4,
                 committed_task_idxs: vec![0],
                 task_handoffs: vec![instance::EdgeHandoff {
                     task_idx: 0,
@@ -471,7 +466,7 @@ pub(super) fn barrier_resend(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>
             .iter()
             .map(|c| (c.iter, c.consumed_offset))
             .collect::<Vec<_>>(),
-        vec![(0, 4)],
+        vec![(0, Some(4))],
         "one iter_committed for two sends"
     );
     assert_eq!(

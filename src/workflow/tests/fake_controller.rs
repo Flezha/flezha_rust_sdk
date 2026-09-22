@@ -200,17 +200,15 @@ pub(crate) fn feed_on(node: &RunnerNode, id: &str, channel: Option<&str>, messag
     true
 }
 
-/// One message into `instance` stamped with the durable-inbox offset the
+/// One message into `instance` stamped with the input-log offset the
 /// controller would have given it.
 pub(crate) fn feed_at(
     instance: &Arc<flz_core::workflow::instance::WorkflowInstance>,
     message: &[u8],
     offset: u64,
 ) {
-    let metadata = std::collections::HashMap::from([(
-        flz_core::workflow::INBOX_OFFSET_KEY.to_string(),
-        offset.to_string(),
-    )]);
+    let metadata =
+        std::collections::HashMap::from([("flz.offset".to_string(), offset.to_string())]);
     flz_core::routing::feed_workflow_frame(instance, message.to_vec(), &metadata);
 }
 

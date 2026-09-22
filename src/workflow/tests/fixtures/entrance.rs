@@ -106,6 +106,21 @@ impl WorkflowOperative for ChainedChainsWorkflow {
     }
 }
 
+/// A durable chained loop over one entry: only its first pass takes a message,
+/// and the countdown's own channel is the carry the journal hands the next.
+pub(crate) struct JournaledCountdownWorkflow;
+impl WorkflowOperative for JournaledCountdownWorkflow {
+    fn factory_id() -> &'static str {
+        "test-journaled-countdown"
+    }
+    fn loop_mode() -> LoopMode {
+        LoopMode::Chained
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("in").into::<Countdown>().named("carry");
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub(crate) struct Budget {
     pub(crate) value: u32,
