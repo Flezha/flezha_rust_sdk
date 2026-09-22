@@ -77,7 +77,10 @@ pub(super) fn keyed_cells(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
     assert!(start_fed(node, "test-keyed-flow", id, b"a,b,a,c"));
     let (_o, done) = drain(rx, id);
     assert_eq!(done.0, "ok");
-    assert_eq!(live_keys(&registry(node, id, "keyed_undo")), ["a", "b", "c"]);
+    assert_eq!(
+        live_keys(&registry(node, id, "keyed_undo")),
+        ["a", "b", "c"]
+    );
     assert_eq!(
         cells_ran_of(&drain_task_commits(), 1),
         ["a", "b", "c"].map(|k| encode_cell_identity(id, "keyed_undo", k)),
@@ -157,7 +160,9 @@ fn journaled_keyed_cells(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
             flz_core::workflow::instance::CommittedTask {
                 task_idx: 1,
                 iter: 0,
-                cells_ran: ["a", "b"].map(|k| encode_cell_identity(id, "keyed_undo", k)).into(),
+                cells_ran: ["a", "b"]
+                    .map(|k| encode_cell_identity(id, "keyed_undo", k))
+                    .into(),
                 completion: None,
             },
         ],
@@ -192,16 +197,10 @@ fn restored_keyed_cells(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
     // carry the markers; the one already undone is skipped ---
     let _ = drain_comp_log();
     let id = "keyed-intents";
-    assert!(start_resumable(
-        node,
-        "test-keyed-saga".into(),
-        id.into(),
-        "",
-        2,
-        0,
-        None
-    )
-    .expect("init_values is a JSON object"));
+    assert!(
+        start_resumable(node, "test-keyed-saga".into(), id.into(), "", 2, 0, None)
+            .expect("init_values is a JSON object")
+    );
     assert!(feed(node, id, b"a,b"));
     let a = encode_cell_identity(id, "keyed_undo", "a");
     let b = encode_cell_identity(id, "keyed_undo", "b");
@@ -225,25 +224,37 @@ fn restored_keyed_cells(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
     // --- a restore the cap refuses acks its terminal seq and still counts,
     // so the gate opens on the frames that landed and the pass runs ---
     let id = "keyed-capped-restore";
-    assert!(start_resumable(
-        node,
-        "test-capped-keyed".into(),
-        id.into(),
-        "",
-        3,
-        0,
-        None
-    )
-    .expect("init_values is a JSON object"));
+    assert!(
+        start_resumable(node, "test-capped-keyed".into(), id.into(), "", 3, 0, None)
+            .expect("init_values is a JSON object")
+    );
     for key in ["a", "b"] {
-        restore(node, encode_cell_identity(id, "capped_keyed", key), 7, false, false);
+        restore(
+            node,
+            encode_cell_identity(id, "capped_keyed", key),
+            7,
+            false,
+            false,
+        );
     }
-    let refused = restore(node, encode_cell_identity(id, "capped_keyed", "c"), 7, false, false);
-    assert_eq!(refused.terminal_seq, 7, "the refused frame acks its terminal seq");
+    let refused = restore(
+        node,
+        encode_cell_identity(id, "capped_keyed", "c"),
+        7,
+        false,
+        false,
+    );
+    assert_eq!(
+        refused.terminal_seq, 7,
+        "the refused frame acks its terminal seq"
+    );
     assert_eq!(live_keys(&registry(node, id, "capped_keyed")), ["a", "b"]);
     assert!(feed(node, id, b"a"));
     let (_o, done) = drain(rx, id);
-    assert_eq!(done.0, "ok", "the gate opened with the refused frame counted");
+    assert_eq!(
+        done.0, "ok",
+        "the gate opened with the refused frame counted"
+    );
     let _ = drain_task_commits();
 }
 
@@ -257,7 +268,11 @@ fn keyed_sweep(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
         std::thread::yield_now();
     }
     sweep(&keyed);
-    assert_eq!(live_keys(&keyed), ["a", "b"], "a running pass keeps its Cells");
+    assert_eq!(
+        live_keys(&keyed),
+        ["a", "b"],
+        "a running pass keeps its Cells"
+    );
     KEYED_BLOCK_RELEASE.store(true, Ordering::SeqCst);
     let (_o, done) = drain(rx, id);
     assert_eq!(done.0, "ok");
@@ -265,7 +280,7 @@ fn keyed_sweep(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
     // --- between passes: all-or-nothing keeps what its rollback could still
     // undo and frees a hookless Cell; keep-progress frees both. The loops
     // wait for their next message rather than parking meanwhile. ---
-    std::env::set_var("FLEZHA_WORKFLOW_PARK_IDLE_MS", "60000");
+    std::env::set_var("FLEZHA_PARK_IDLE_MS", "60000");
     for (factory, id, kept) in [
         ("test-keyed-loop-aon", "keyed-loop-aon", vec!["a", "b"]),
         ("test-keyed-loop-kp", "keyed-loop-kp", vec![]),
@@ -278,12 +293,15 @@ fn keyed_sweep(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
         sweep(&undo);
         sweep(&plain);
         assert_eq!(live_keys(&undo), kept, "{factory}: the compensable stage");
-        assert!(live_keys(&plain).is_empty(), "{factory}: the hookless stage");
+        assert!(
+            live_keys(&plain).is_empty(),
+            "{factory}: the hookless stage"
+        );
         flz_core::workflow::stop(&instance(node, id).expect("live"));
         let (_o, done) = drain(rx, id);
         assert_eq!(done.0, "cancelled");
     }
-    std::env::remove_var("FLEZHA_WORKFLOW_PARK_IDLE_MS");
+    std::env::remove_var("FLEZHA_PARK_IDLE_MS");
     let _ = drain_task_commits();
     let _ = drain_iter_commits();
 }

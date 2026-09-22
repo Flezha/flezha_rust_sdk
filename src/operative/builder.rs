@@ -50,17 +50,19 @@ pub fn build_topology(
     factory_id: &'static str,
     builder: ChannelBuilder,
 ) -> Result<Arc<OperativeTopology>, TopologyBuildError> {
-    build_topology_with_persistence(factory_id, builder, true)
+    build_topology_with_persistence(factory_id, builder, true, false)
 }
 
-/// Like [`build_topology`] but accepts the `StreamOperative::PERSISTENCE_ENABLED`
-/// const captured at registration. `build_topology_for::<R>()` is the
-/// canonical caller; tests that exercise topology without a StreamOperative
-/// generic call [`build_topology`] which defaults the const to `true`.
+/// Like [`build_topology`] but accepts the class's `PERSISTENCE_ENABLED` and
+/// `SLEEP_WHEN_IDLE` consts captured at registration; the core refuses a
+/// class that sleeps with persistence off. `build_topology_for::<R>()` is the
+/// canonical caller; tests that exercise topology without an operative
+/// generic call [`build_topology`], which persists and never sleeps.
 pub fn build_topology_with_persistence(
     factory_id: &'static str,
     builder: ChannelBuilder,
     persistence_enabled_const: bool,
+    sleep_when_idle: bool,
 ) -> Result<Arc<OperativeTopology>, TopologyBuildError> {
     let mut state = builder.into_state();
     // A chain nothing closed is recorded as written; the core answers it.
@@ -70,6 +72,7 @@ pub fn build_topology_with_persistence(
     let derived = check(declaration(
         factory_id,
         persistence_enabled_const,
+        sleep_when_idle,
         &state,
         &capacities,
         &keyed_consumers,
@@ -103,6 +106,7 @@ pub fn build_topology_with_persistence(
         tasklet_name_to_id,
         factory_id,
         persistence_enabled_const,
+        sleep_when_idle,
         effectively_once,
         correction,
         ack_granularity: match derived.ack_granularity {
@@ -126,6 +130,7 @@ pub fn build_topology_with_persistence(
 fn declaration(
     factory_id: &'static str,
     persistent: bool,
+    sleep_when_idle: bool,
     state: &BuilderState,
     capacities: &[usize],
     keyed_consumers: &HashSet<TaskletId>,
@@ -133,6 +138,7 @@ fn declaration(
     HostClassDecl {
         factory_id: factory_id.to_string(),
         persistent,
+        sleep_when_idle,
         sdk_lang: flz_core::header::SDK_LANG_RUST,
         sdk_version: env!("CARGO_PKG_VERSION").to_string(),
         change_format_id: flz_core::header::FORMAT_ID_POSTCARD,
@@ -347,12 +353,17 @@ fn build_tasklet_desc(
 /// Convenience constructor used by `register_factory(R)`. Calls
 /// `R::channels(...)` once and returns the resulting topology, capturing
 /// `R::PERSISTENCE_ENABLED` so `OperativeInstance::new` can resolve the
-/// final per-instance flag.
+/// final per-instance flag, and `R::SLEEP_WHEN_IDLE`.
 pub fn build_topology_for<R: crate::operative::StreamOperative>(
 ) -> Result<Arc<OperativeTopology>, TopologyBuildError> {
     let cb = ChannelBuilder::new();
     R::channels(&cb);
-    build_topology_with_persistence(R::factory_id(), cb, R::PERSISTENCE_ENABLED)
+    build_topology_with_persistence(
+        R::factory_id(),
+        cb,
+        R::PERSISTENCE_ENABLED,
+        R::SLEEP_WHEN_IDLE,
+    )
 }
 
 /// Every tasklet's resolved mailbox capacity, in declaration order. The

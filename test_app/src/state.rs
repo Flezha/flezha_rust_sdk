@@ -381,6 +381,60 @@ impl Tasklet for CounterEntryTasklet {
     }
 }
 
+// -- SleepingCounterOperative -----------------------------------------------------
+//
+// A stream that sleeps when idle: `key:delta` inputs fold into one running
+// total per key, and every input emits `key=total` on the `totals` sink. The
+// sleep e2e reads the total after a wake to prove the Cell came back with the
+// state it slept with.
+
+#[derive(Default)]
+struct SleepingCounterTasklet;
+impl Tasklet for SleepingCounterTasklet {
+    type Input = String;
+    type Output = String;
+    type State = CounterState;
+    type Change = CounterChange;
+    type Clock = WallClock;
+    type Config = ();
+    fn name() -> &'static str {
+        "sleeping_counter_tasklet"
+    }
+    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) -> CounterState {
+        CounterState::default()
+    }
+    fn apply_change(state: &mut CounterState, change: &CounterChange) {
+        state.value = state.value.saturating_add(change.delta);
+    }
+    fn run(
+        &mut self,
+        input: String,
+        mut state: StateHandle<'_, Self>,
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
+        let (key, delta) = input.split_once(':').unwrap_or((input.as_str(), "0"));
+        state.apply(CounterChange {
+            delta: delta.parse().unwrap_or(0),
+        });
+        ctx.emit::<String>(format!("{key}={}", state.value))
+    }
+}
+
+pub(crate) struct SleepingCounterOperative;
+impl StreamOperative for SleepingCounterOperative {
+    const SLEEP_WHEN_IDLE: bool = true;
+
+    fn factory_id() -> &'static str {
+        "sleeping_counter"
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("input")
+            .key_by(|input: &String| crate::cell::key_prefix(input))
+            .into::<SleepingCounterTasklet>()
+            .sink_named("totals");
+    }
+}
+
 // -- CoalescingCounterOperative (Section 6.2) ------------------------------------
 //
 // `Change = TickChange { interval: u8, ts: u64, delta: i64 }` with

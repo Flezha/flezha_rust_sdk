@@ -60,7 +60,7 @@ pub trait WorkflowOperative: Send + Sync + 'static {
     /// Durable wake deadline for a [`LoopMode::PerInput`] loop: how long after
     /// parking the instance is rehydrated even with no input
     /// (`workflow-durable-suspension`). `None` (the default) parks until the next
-    /// input arrives. The timer is journaled with the park record, so it
+    /// input arrives. The timer is recorded with the park record, so it
     /// survives a controller redeploy; it wakes the loop with an **empty** entry
     /// payload, which a class declaring one must accept as its tick.
     fn wake_after() -> Option<Duration> {
@@ -84,9 +84,16 @@ pub trait WorkflowOperative: Send + Sync + 'static {
     /// written to the WAL as they apply, so a crash resumes from persisted
     /// state. When `false`, the per-Cell flush drains and discards Changes
     /// with no serialization or wire I/O — the operative is in-memory only
-    /// (a crash re-runs from the top). The controller resolves this
-    /// durable-by-default with a per-class operator opt-out.
+    /// (a crash re-runs from the top). The class announces it to the
+    /// controller, which resolves it with a per-class operator override.
     const PERSISTENCE_ENABLED: bool = true;
+
+    /// Sleep when idle: an instance waiting at a committed boundary for
+    /// `FLEZHA_PARK_IDLE_MS` parks, is evicted from the runner and wakes on
+    /// its next message or its wake deadline. On whenever persistence is;
+    /// declaring it with [`Self::PERSISTENCE_ENABLED`] off is refused as
+    /// `SleepWithoutPersistence`.
+    const SLEEP_WHEN_IDLE: bool = Self::PERSISTENCE_ENABLED;
 
     /// Synchronous remote durability (`remote-durability-tier`): the
     /// controller completes the remote ship of each commit barrier — the

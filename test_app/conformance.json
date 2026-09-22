@@ -82,6 +82,7 @@
       "stateful_counter",
       "coalescing_counter",
       "persistence_off_counter",
+      "sleeping_counter",
       "resume_probe",
       "bench_keyed"
     ],

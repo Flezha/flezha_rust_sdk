@@ -22,8 +22,13 @@ pub(crate) mod fixtures {
     ) -> (Arc<OperativeInstance>, Arc<CellSlot>) {
         let cb = ChannelBuilder::new();
         O::channels(&cb);
-        let topology = build_topology_with_persistence(O::factory_id(), cb, O::PERSISTENCE_ENABLED)
-            .expect("topology");
+        let topology = build_topology_with_persistence(
+            O::factory_id(),
+            cb,
+            O::PERSISTENCE_ENABLED,
+            O::SLEEP_WHEN_IDLE,
+        )
+        .expect("topology");
         let instance = OperativeInstance::new(topology, Arc::from(instance_id));
         let slot = Arc::clone(&instance.cells[0][0]);
         (instance, slot)

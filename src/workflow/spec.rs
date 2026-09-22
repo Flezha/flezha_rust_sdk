@@ -30,11 +30,12 @@ pub fn build_spec<T: WorkflowOperative>(
     }
     refuse_stream_settings(factory_id, &cb)?;
 
-    let topology = build_topology_with_persistence(factory_id, cb, T::PERSISTENCE_ENABLED)
-        .map_err(|e| BuildWorkflowError::Topology {
-            factory_id,
-            detail: format!("{e}"),
-        })?;
+    let topology =
+        build_topology_with_persistence(factory_id, cb, T::PERSISTENCE_ENABLED, T::SLEEP_WHEN_IDLE)
+            .map_err(|e| BuildWorkflowError::Topology {
+                factory_id,
+                detail: format!("{e}"),
+            })?;
     let mut topology =
         std::sync::Arc::into_inner(topology).expect("a topology just built is shared with nobody");
     let dag = build_dag(factory_id, &topology)?;

@@ -283,6 +283,31 @@ impl StreamOperative for VolatileRowClass {
     }
 }
 
+/// A `class.sleep_when_idle` row without `class.persistent`: the setting and
+/// the missing switch are consts, so the refusal needs a class of its own.
+struct SleepyVolatileRowClass;
+
+impl StreamOperative for SleepyVolatileRowClass {
+    const PERSISTENCE_ENABLED: bool = false;
+    const SLEEP_WHEN_IDLE: bool = true;
+
+    fn factory_id() -> &'static str {
+        RowClass::factory_id()
+    }
+
+    fn channels(c: &ChannelBuilder) {
+        RowClass::channels(c);
+    }
+}
+
+/// Which const pair a stream row declares: `(persistent, sleeps)`.
+fn stream_consts(row: &Row) -> (bool, bool) {
+    (
+        row.steps.contains("class.persistent"),
+        row.steps.contains("class.sleep_when_idle"),
+    )
+}
+
 /// A `class.workflow` row's class: the same steps on a workflow, so what the
 /// row writes reaches the workflow kind's judgement.
 struct RowWorkflow;
@@ -488,14 +513,14 @@ impl<'b> Interp<'b> {
     }
 
     /// `class.<flag>[(<value>)]` — the facts the class declares on the builder.
-    /// `persistent` is a const on the class and `workflow` the class's kind,
-    /// both chosen by the caller; `sync_durability` is a declaration a stream
+    /// `persistent` and `sleep_when_idle` are consts on the class and
+    /// `workflow` the class's kind, all chosen by the caller; `sync_durability` is a declaration a stream
     /// class does not carry, and every row needing it is skipped before it
     /// reaches here.
     fn class_flag(&mut self, rest: &str) {
         let (flag, value) = split_call(rest);
         match flag {
-            "persistent" | "workflow" => {}
+            "persistent" | "sleep_when_idle" | "workflow" => {}
             "effectively_once" => self.c.effectively_once(),
             "checkpoint_ack" => self.c.checkpoint_ack(),
             "checkpoint_every" => self.c.checkpoint_every(value.parse().expect("a cadence")),
@@ -701,10 +726,11 @@ fn topology_of(row: &Row) -> Result<Arc<OperativeTopology>, Vec<String>> {
     if is_workflow(row) {
         return build_spec::<RowWorkflow>().map_err(|e| vec![refusal_name(&e.to_string())]);
     }
-    let built = if row.steps.contains("class.persistent") {
-        build_topology_for::<RowClass>()
-    } else {
-        build_topology_for::<VolatileRowClass>()
+    let built = match stream_consts(row) {
+        (true, false) => build_topology_for::<RowClass>(),
+        (false, false) => build_topology_for::<VolatileRowClass>(),
+        (false, true) => build_topology_for::<SleepyVolatileRowClass>(),
+        (true, true) => panic!("no row declares a persistent class that sleeps"),
     };
     built.map_err(|e| {
         e.errors
@@ -863,10 +889,13 @@ pub(crate) fn register_only(
     load(row);
     let defined = if is_workflow(row) {
         runner.register_factory(RowWorkflow)
-    } else if row.steps.contains("class.persistent") {
-        runner.register_factory(RowClass)
     } else {
-        runner.register_factory(VolatileRowClass)
+        match stream_consts(row) {
+            (true, false) => runner.register_factory(RowClass),
+            (false, false) => runner.register_factory(VolatileRowClass),
+            (false, true) => runner.register_factory(SleepyVolatileRowClass),
+            (true, true) => panic!("no row declares a persistent class that sleeps"),
+        }
     };
     if let Err(refusal) = defined {
         eprintln!("{topology}: {refusal}");

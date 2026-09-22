@@ -12,7 +12,7 @@ use crate::workflow::*;
 pub(super) fn durable_loop(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
     // --- workflow-durable-loop: one iteration per inbox item, each ending in
     // a durable iteration commit; an idle inbox parks the instance ---
-    std::env::set_var("FLEZHA_WORKFLOW_PARK_IDLE_MS", "300");
+    std::env::set_var("FLEZHA_PARK_IDLE_MS", "300");
     let _ = drain_task_commits();
     assert!(start(node, "test-chat-loop".into(), "chat-1".into(), "")
         .expect("init_values is a JSON object"));
@@ -252,13 +252,13 @@ pub(super) fn loop_saga_and_rewind(node: &mut RunnerNode, rx: &Receiver<RunnerMe
          of the next fold's outstanding work"
     );
 
-    std::env::remove_var("FLEZHA_WORKFLOW_PARK_IDLE_MS");
+    std::env::remove_var("FLEZHA_PARK_IDLE_MS");
 }
 
 pub(super) fn loop_completion(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
     // --- workflow-durable-loop: a tasklet's complete ends a durable loop at
     // its commit, journaled on both barriers, and the loop never parks ---
-    std::env::set_var("FLEZHA_WORKFLOW_PARK_IDLE_MS", "300");
+    std::env::set_var("FLEZHA_PARK_IDLE_MS", "300");
     let _ = drain_task_commits();
     let _ = drain_iter_commits();
     let _ = drain_iter_parks();
@@ -383,7 +383,7 @@ pub(super) fn loop_completion(node: &mut RunnerNode, rx: &Receiver<RunnerMessage
     );
     assert!(drain_iter_parks().is_empty());
     let _ = drain_task_commits();
-    std::env::remove_var("FLEZHA_WORKFLOW_PARK_IDLE_MS");
+    std::env::remove_var("FLEZHA_PARK_IDLE_MS");
 }
 
 pub(super) fn barrier_resend(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
@@ -440,7 +440,7 @@ pub(super) fn barrier_resend(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>
 
     // A re-sent IterCommit is idempotent on the controller: the turn's
     // barriers each lose their first ack, and each is journaled once.
-    std::env::set_var("FLEZHA_WORKFLOW_PARK_IDLE_MS", "300");
+    std::env::set_var("FLEZHA_PARK_IDLE_MS", "300");
     let _ = drain_iter_commits();
     let _ = drain_iter_parks();
     lose_acks("resend-3", 3);

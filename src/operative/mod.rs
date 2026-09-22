@@ -16,10 +16,11 @@ use crate::channel::ChannelBuilder;
 /// State persistence (added by `operative-state-persistence`):
 ///
 /// - [`Self::PERSISTENCE_ENABLED`] — frozen-at-instance-start toggle.
-///   Default `true`. The runner can override via the operative-start
-///   metadata key `operative_persistence.<OperativeClass>`. When `false`, the
-///   per-Process flusher drains-and-discards Changes for this StreamOperative's
-///   Cells (no wire I/O, no controller contact).
+///   Default `true`. When `false`, the per-Process flusher drains-and-discards
+///   Changes for this StreamOperative's Cells (no wire I/O, no controller
+///   contact).
+/// - [`Self::SLEEP_WHEN_IDLE`]: sleep after `FLEZHA_PARK_IDLE_MS` idle.
+///   Default `false`.
 ///
 /// The runtime calls `R::channels(...)` once at `register_factory(R)`
 /// time and freezes the resulting topology in an `Arc<OperativeTopology>`
@@ -35,13 +36,20 @@ pub trait StreamOperative: Send + Sync + 'static {
     /// topology freezes when it returns.
     fn channels(c: &ChannelBuilder);
 
-    /// Class-level persistence toggle. The runtime resolves the final
-    /// value at instance start by checking the operative-start metadata
-    /// (runner override) first; if no override is present, this const
-    /// is used. Frozen on the `OperativeInstance` at construction; runtime
-    /// changes only take effect on the next `stop_operative` + `start_operative`
+    /// Class-level persistence toggle, announced to the controller as the
+    /// class's `persistent` declaration. When `false` the per-Process flusher
+    /// drains and discards this class's Changes and the controller restores
+    /// nothing on a rebind. Frozen on the `OperativeInstance` at construction;
+    /// a change takes effect on the next `stop_operative` + `start_operative`
     /// cycle.
     const PERSISTENCE_ENABLED: bool = true;
+
+    /// Sleep when idle: an instance with nothing to do for
+    /// `FLEZHA_PARK_IDLE_MS` parks, is evicted from the runner and wakes on
+    /// its next input with its state restored. Off for a stream by default;
+    /// declaring it with [`Self::PERSISTENCE_ENABLED`] off is refused as
+    /// `SleepWithoutPersistence`.
+    const SLEEP_WHEN_IDLE: bool = false;
 }
 
 /// Sealing for [`Operative`]: only the SDK's two blanket impls satisfy it, so

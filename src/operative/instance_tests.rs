@@ -58,6 +58,7 @@ mod tests {
             DummyOperative::factory_id(),
             cb,
             DummyOperative::PERSISTENCE_ENABLED,
+            DummyOperative::SLEEP_WHEN_IDLE,
         )
         .expect("topology");
         let instance = OperativeInstance::new(topology, Arc::from("instance"));
@@ -72,6 +73,7 @@ mod tests {
             DummyOperative::factory_id(),
             cb,
             DummyOperative::PERSISTENCE_ENABLED,
+            DummyOperative::SLEEP_WHEN_IDLE,
         )
         .expect("topology");
         let instance = OperativeInstance::with_options(

@@ -204,6 +204,61 @@ fn the_retry_policy_is_the_edges() {
     assert!(refused.to_string().contains("RetryMaxZero"), "{refused}");
 }
 
+/// A sleeping instance is evicted and restored from its durable state, so a
+/// class that keeps none is refused by name, whichever kind it is; a workflow
+/// sleeps by default exactly when it persists.
+#[test]
+fn sleeping_without_persistence_is_refused_by_name_for_either_kind() {
+    struct SleepyWorkflow;
+    impl WorkflowOperative for SleepyWorkflow {
+        const PERSISTENCE_ENABLED: bool = false;
+        const SLEEP_WHEN_IDLE: bool = true;
+        fn factory_id() -> &'static str {
+            "test-sleep-no-persist-wf"
+        }
+        fn channels(c: &ChannelBuilder) {
+            two_stage_chain(c);
+        }
+    }
+    struct SleepyStream;
+    impl crate::operative::StreamOperative for SleepyStream {
+        const PERSISTENCE_ENABLED: bool = false;
+        const SLEEP_WHEN_IDLE: bool = true;
+        fn factory_id() -> &'static str {
+            "test-sleep-no-persist-stream"
+        }
+        fn channels(c: &ChannelBuilder) {
+            c.input::<String>("in").into::<EchoTask>();
+        }
+    }
+    struct OptedOut;
+    impl WorkflowOperative for OptedOut {
+        const PERSISTENCE_ENABLED: bool = false;
+        fn factory_id() -> &'static str {
+            "test-opted-out-wf"
+        }
+        fn channels(c: &ChannelBuilder) {
+            two_stage_chain(c);
+        }
+    }
+
+    let workflow = spec::build_spec::<SleepyWorkflow>().expect_err("refused");
+    assert!(
+        workflow.to_string().contains("SleepWithoutPersistence"),
+        "{workflow}"
+    );
+    let stream =
+        crate::operative::builder::build_topology_for::<SleepyStream>().expect_err("refused");
+    assert!(
+        stream.to_string().contains("SleepWithoutPersistence"),
+        "{stream}"
+    );
+    let opted_out = spec::build_spec::<OptedOut>().expect("an opted-out workflow registers");
+    assert!(!opted_out.sleep_when_idle);
+    let durable = spec::build_spec::<ChainWorkflow>().expect("a durable workflow registers");
+    assert!(durable.sleep_when_idle);
+}
+
 /// The stream's tier, checkpoint and correction settings are refused on a
 /// workflow by the names the core gives them, never carried.
 #[test]

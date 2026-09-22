@@ -82,6 +82,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register_factory(StatefulCounterOperative)?
         .register_factory(CoalescingCounterOperative)?
         .register_factory(PersistenceOffOperative)?
+        .register_factory(SleepingCounterOperative)?
         .register_factory(HybridChannelOperative)?
         .register_factory(MergedInputOperative)?
         .register_factory(TransformChainOperative)?

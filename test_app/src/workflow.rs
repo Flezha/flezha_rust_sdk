@@ -361,9 +361,9 @@ stateless_step!(KeySplit, "key_split", |input, ctx| {
     Ok(())
 });
 durable_step!(KeyedCommit, "keyed_commit", compensate: |_ctx| Ok(()));
-stateless_step!(KeyedFail, "keyed_fail", |_input, _ctx| Err(TaskletError::Custom(
-    "keyed_fail always fails".into()
-)));
+stateless_step!(KeyedFail, "keyed_fail", |_input, _ctx| Err(
+    TaskletError::Custom("keyed_fail always fails".into())
+));
 
 fn keyed_commits(c: &ChannelBuilder) -> Stream<'_, String> {
     c.input::<String>("in")

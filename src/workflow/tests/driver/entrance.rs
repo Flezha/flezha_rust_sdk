@@ -139,7 +139,7 @@ pub(super) fn entrance(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
 pub(super) fn once_waits(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
     // --- a once run with an empty inbox parks after the idle window when it
     // journals, and resumes at pass 0 from parked(0) ---
-    std::env::set_var("FLEZHA_WORKFLOW_PARK_IDLE_MS", "300");
+    std::env::set_var("FLEZHA_PARK_IDLE_MS", "300");
     let _ = drain_iter_parks();
     EMIT_RUNS.store(0, Ordering::SeqCst);
     assert!(
