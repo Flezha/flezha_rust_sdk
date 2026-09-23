@@ -36,9 +36,9 @@ pub struct TaskletCtx<'a> {
     stable_id_ordinal: Cell<u32>,
     checkpoint: bool,
     replay: bool,
-    /// Timer surface for this invocation. `None` where timers do not apply —
-    /// a workflow operative's stage (it has its own wake model) and a
-    /// `compensate` hook — so the refusal is structural, not a runtime check.
+    /// Timer surface for this invocation. `None` in a `compensate` hook,
+    /// where timers do not apply, so the refusal is structural, not a
+    /// runtime check.
     timers: Option<&'a RefCell<TimerSession>>,
 }
 

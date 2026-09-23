@@ -62,7 +62,7 @@ pub(super) fn durable_loop(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) 
     );
     assert_eq!(
         parks[0].wake_deadline_ms, 0,
-        "no wake_after declared ⇒ park until the next input"
+        "no timer pending ⇒ park until the next input"
     );
 
     // --- resume-at-iteration: a journal recording iterations 0-1 committed
@@ -83,12 +83,14 @@ pub(super) fn durable_loop(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) 
                     iter: 0,
                     cells_ran: vec![s1_id.clone()],
                     completion: None,
+                    trigger: None,
                 },
                 instance::CommittedTask {
                     task_idx: 1,
                     iter: 0,
                     cells_ran: Vec::new(),
                     completion: None,
+                    trigger: None,
                 },
             ],
             ..Default::default()
@@ -155,12 +157,14 @@ pub(super) fn loop_saga_and_rewind(node: &mut RunnerNode, rx: &Receiver<RunnerMe
                         iter: 0,
                         cells_ran: vec![seg.clone()],
                         completion: None,
+                        trigger: None,
                     },
                     instance::CommittedTask {
                         task_idx: 1,
                         iter: 0,
                         cells_ran: Vec::new(),
                         completion: None,
+                        trigger: None,
                     },
                 ],
                 ..Default::default()
@@ -198,6 +202,7 @@ pub(super) fn loop_saga_and_rewind(node: &mut RunnerNode, rx: &Receiver<RunnerMe
         iter,
         cells_ran,
         completion: None,
+        trigger: None,
     };
     assert!(start_resumable(
         node,
@@ -354,6 +359,7 @@ pub(super) fn loop_completion(node: &mut RunnerNode, rx: &Receiver<RunnerMessage
                 iter: 1,
                 cells_ran: vec![seg.clone()],
                 completion: Some(b"farewell".to_vec()),
+                trigger: None,
             }],
             ..Default::default()
         })

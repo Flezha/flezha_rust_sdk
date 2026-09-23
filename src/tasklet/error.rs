@@ -43,8 +43,8 @@ pub enum TaskletError {
     TimerCapExceeded { tasklet: String, max: usize },
 
     #[error(
-        "TimersUnavailable: timers are not available in this context; only a stream \
-         operative's `run` / `on_timer` may register them"
+        "TimersUnavailable: timers are not available in this context; only a tasklet's \
+         `run` / `on_timer` may register them"
     )]
     TimersUnavailable,
 

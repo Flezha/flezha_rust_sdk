@@ -156,6 +156,7 @@ fn journaled_keyed_cells(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
                 iter: 0,
                 cells_ran: vec![split],
                 completion: None,
+                trigger: None,
             },
             flz_core::workflow::instance::CommittedTask {
                 task_idx: 1,
@@ -164,6 +165,7 @@ fn journaled_keyed_cells(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
                     .map(|k| encode_cell_identity(id, "keyed_undo", k))
                     .into(),
                 completion: None,
+                trigger: None,
             },
         ],
         ..Default::default()

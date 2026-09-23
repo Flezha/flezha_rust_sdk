@@ -370,7 +370,7 @@ fn dag_topology_is_validated() {
     assert_eq!(spec.dag.children, vec![vec![1, 2], vec![], vec![]]);
     assert_eq!(spec.dag.leaves().collect::<Vec<_>>(), vec![1, 2]);
     assert!(
-        spec.dag.chains[0].single_leaf(&spec.dag).is_none(),
+        spec.dag.entries[0].1.single_leaf(&spec.dag).is_none(),
         "two leaves ⇒ no single terminal tasklet"
     );
     for (node, parents) in spec.dag.parents.iter().enumerate() {
@@ -386,7 +386,7 @@ fn dag_topology_is_validated() {
     let linear = spec::build_spec::<ChainWorkflow>().expect("linear still registers");
     let linear = linear.workflow.as_ref().expect("a workflow class");
     assert_eq!(linear.dag.children, vec![vec![1], vec![]]);
-    assert_eq!(linear.dag.chains[0].single_leaf(&linear.dag), Some(1));
+    assert_eq!(linear.dag.entries[0].1.single_leaf(&linear.dag), Some(1));
 
     // A join — two streams feeding one node — registers, and Kahn numbers
     // BOTH producers before it (BFS would have enqueued the join on its
@@ -473,9 +473,9 @@ fn dag_topology_is_validated() {
     assert_eq!(
         entry_merge
             .dag
-            .chains
+            .entries
             .iter()
-            .map(|chain| (chain.channel_id, chain.roots.clone()))
+            .map(|(channel_id, chain)| (*channel_id, chain.roots.clone()))
             .collect::<Vec<_>>(),
         vec![(0, vec![0]), (1, vec![0])],
         "each entry channel roots its own chain at the merged tasklet"

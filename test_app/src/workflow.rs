@@ -142,19 +142,151 @@ impl WorkflowOperative for EchoWorkflow {
     }
 }
 
-// `workflow_timer_refused`: a tasklet that registers a timer, which a workflow
-// cannot fire yet, so the pass fails naming `TimersUnavailable`.
-stateless_step!(TimerStep, "workflow_timer_refused", |_input, ctx| ctx
-    .timer_after(Duration::from_secs(60))
-    .map(drop));
+// `timer_loop_workflow`: `in -> tick -> relay -> out`, a per-input loop whose
+// `tick` arms a processing-time timer of the delay `after:<ms>` names and
+// emits `armed:<at>`; its firing emits `fired:<at>` and opens a pass of its
+// own. `slow:<ms>` holds `tick` that long, for a firing due mid-pass. On a
+// runner booted with `FLEZHA_WORKFLOW_E2E_HOLD` the firing parks at the gate:
+// `timer` inside `on_timer`, before `tick` commits; `relay` in `relay`, after.
+const E2E_HOLD_ENV: &str = "FLEZHA_WORKFLOW_E2E_HOLD";
 
-pub(crate) struct TimerRefusedWorkflow;
-impl WorkflowOperative for TimerRefusedWorkflow {
+fn hold_at(point: &str) {
+    if env::var(E2E_HOLD_ENV).is_ok_and(|held| held == point) {
+        block_until_released();
+    }
+}
+
+#[derive(Default)]
+struct Tick;
+impl Tasklet for Tick {
+    type Input = String;
+    type Output = String;
+    type State = SeenState;
+    type Change = Insert;
+    type Clock = WallClock;
+    type Config = ();
+    fn name() -> &'static str {
+        "tick"
+    }
+    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> SeenState {
+        SeenState::default()
+    }
+    fn apply_change(state: &mut SeenState, change: &Insert) {
+        state.items.insert(change.0.clone());
+    }
+    fn run(
+        &mut self,
+        input: String,
+        mut state: StateHandle<'_, Self>,
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
+        let millis = |text: &str| Duration::from_millis(text.parse().unwrap_or(0));
+        if let Some(delay) = input.strip_prefix("after:") {
+            let at = ctx.timer_after(millis(delay))?;
+            state.apply(Insert(format!("armed:{at}")));
+            return ctx.emit::<String>(format!("armed:{at}"));
+        }
+        if let Some(pause) = input.strip_prefix("slow:") {
+            thread::sleep(millis(pause));
+        }
+        ctx.emit::<String>(input)
+    }
+    fn on_timer(
+        &mut self,
+        fired_at: u64,
+        _kind: flezha_runner::state::TimerKind,
+        _state: StateHandle<'_, Self>,
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
+        hold_at("timer");
+        ctx.emit::<String>(format!("fired:{fired_at}"))
+    }
+}
+
+stateless_step!(Relay, "relay", |input, ctx| {
+    if input.starts_with("fired:") {
+        hold_at("relay");
+    }
+    ctx.emit::<String>(format!("relay:{input}"))
+});
+
+pub(crate) struct TimerLoopWorkflow;
+impl WorkflowOperative for TimerLoopWorkflow {
     fn factory_id() -> &'static str {
-        "workflow_timer_refused"
+        "timer_loop_workflow"
+    }
+    fn loop_mode() -> LoopMode {
+        LoopMode::PerInput
+    }
+    fn max_duration() -> Option<Duration> {
+        Some(Duration::from_secs(600))
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<String>("input").into::<TimerStep>();
+        c.input::<String>("in")
+            .into::<Tick>()
+            .named("ticked")
+            .into::<Relay>()
+            .sink_named("out");
+    }
+}
+
+// `event_timer_workflow`: an entry-fed tasklet whose clock is the message's
+// leading event time; each message arms an event-time timer 100 later and
+// emits `seen:<t>`, and the firing emits `fired:<at>`.
+#[derive(Default)]
+struct EventTick;
+impl Tasklet for EventTick {
+    type Input = String;
+    type Output = String;
+    type State = SeenState;
+    type Change = Insert;
+    type Clock = EventTimeFrom<TradeEventTime>;
+    type Config = ();
+    fn name() -> &'static str {
+        "event_tick"
+    }
+    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> SeenState {
+        SeenState::default()
+    }
+    fn apply_change(state: &mut SeenState, change: &Insert) {
+        state.items.insert(change.0.clone());
+    }
+    fn run(
+        &mut self,
+        _input: String,
+        mut state: StateHandle<'_, Self>,
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
+        let at = ctx.timer_at_event_time(ctx.now() + 100)?;
+        state.apply(Insert(format!("armed:{at}")));
+        ctx.emit::<String>(format!("seen:{}", ctx.now()))
+    }
+    fn on_timer(
+        &mut self,
+        fired_at: u64,
+        _kind: flezha_runner::state::TimerKind,
+        _state: StateHandle<'_, Self>,
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
+        ctx.emit::<String>(format!("fired:{fired_at}"))
+    }
+}
+
+pub(crate) struct EventTimerWorkflow;
+impl WorkflowOperative for EventTimerWorkflow {
+    fn factory_id() -> &'static str {
+        "event_timer_workflow"
+    }
+    fn loop_mode() -> LoopMode {
+        LoopMode::PerInput
+    }
+    fn max_duration() -> Option<Duration> {
+        Some(Duration::from_secs(600))
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("in")
+            .into::<EventTick>()
+            .sink_named("out");
     }
 }
 

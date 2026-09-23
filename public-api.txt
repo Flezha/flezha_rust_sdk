@@ -535,7 +535,6 @@ pub use operative::builder::TopologyBuildError;
 #       fn max_duration() -> Option<Duration>;
 #       fn self_terminating() -> bool;
 #       fn loop_mode() -> LoopMode;
-#       fn wake_after() -> Option<Duration>;
 #       fn rollback_mode() -> RollbackMode;
 #       const PERSISTENCE_ENABLED: bool;
 #       const SYNC_DURABILITY: bool;
@@ -547,6 +546,12 @@ pub use operative::builder::TopologyBuildError;
 #   ADDED: BuildWorkflowError::{EffectivelyOnceOnWorkflow, CheckpointOnWorkflow,
 #   CorrectionWindowOnWorkflow} { factory_id }; SpawnError::FactoryNotWorkflow(String);
 #   `#[flezha::workflow_operative(.., loop_mode = "once" | "per_input" | "chained")]`.
+
+# Timers inside a workflow (`fire-timers-inside-a-workflow`). BREAKING, no shim:
+#
+#   REMOVED: WorkflowOperative::wake_after. A workflow tasklet registers Cell
+#   timers as a stream tasklet does, and a sleeping instance wakes at the
+#   earliest pending processing-time one.
 
 # Authoring macros. `stream_operative` and `workflow_operative` are the §5 short
 # form: on a `run` function each emits the operative type under the function's

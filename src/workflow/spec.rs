@@ -50,7 +50,6 @@ pub fn build_spec<T: WorkflowOperative>(
         max_duration: T::max_duration(),
         rollback_mode: T::rollback_mode(),
         loop_mode: T::loop_mode(),
-        wake_after: T::wake_after(),
         sync_durability: T::SYNC_DURABILITY,
     });
     Ok(std::sync::Arc::new(topology))
@@ -68,7 +67,7 @@ fn refuse_chained_loop_shape<T: WorkflowOperative>(
         return Ok(());
     }
     match dag.branching_chain() {
-        Some(branching) => Err(BuildWorkflowError::BranchingChainedLoop {
+        Some((_, branching)) => Err(BuildWorkflowError::BranchingChainedLoop {
             factory_id,
             leaves: branching.leaves(dag).count(),
         }),

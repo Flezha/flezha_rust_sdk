@@ -150,9 +150,9 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
         let ctx = TaskletCtx::new(&mut sink, now, invocation_seq, &self.flush.cell_identity)
             .with_cell_key(self.cell_key.as_deref())
             .during_replay(replay);
-        // Timers do not fire inside a workflow yet: its ctx answers
-        // `TimersUnavailable`.
-        let mut ctx = if self.flush.workflow {
+        // A rollback is no place to arm a deadline: `compensate` answers
+        // `TimersUnavailable`, in either kind.
+        let mut ctx = if matches!(call, Call::Compensate { .. }) {
             ctx
         } else {
             ctx.with_timers(&session)
@@ -356,6 +356,7 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
             None => None,
         };
         let committed = settled.timers.clone();
+        flz_core::timer::hold_firing_removal(scope.slot, &mut settled.timers, firing);
         let effects = settled.into_effects(changes.into_inner(), offset, now);
         self.settle(scope.buffer, effects, dlq);
         Ok(committed)

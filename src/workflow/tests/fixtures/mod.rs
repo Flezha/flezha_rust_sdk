@@ -41,6 +41,7 @@ mod outbox;
 mod retry;
 mod saga;
 mod structured;
+mod timers;
 
 pub(crate) use entrance::*;
 pub(crate) use fan_in::*;
@@ -50,3 +51,4 @@ pub(crate) use outbox::*;
 pub(crate) use retry::*;
 pub(crate) use saga::*;
 pub(crate) use structured::*;
+pub(crate) use timers::*;

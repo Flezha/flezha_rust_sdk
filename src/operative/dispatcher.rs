@@ -344,6 +344,14 @@ impl<S: Tasklet> TaskletDispatcher for TaskletDispatcherImpl<S> {
         buffer.close_interval()
     }
 
+    fn write_timer_ops(&self, slot: &Arc<CellSlot>, ops: Vec<TimerOp>) {
+        let mut buffer = slot.flush_buffer.lock_recover();
+        if let Some(typed) = buffer.as_any_mut().downcast_mut::<TypedBuffer<S>>() {
+            typed.timer_ops.extend(ops);
+        }
+        self.flush_now(&mut **buffer);
+    }
+
     fn interval_deadline(
         &self,
         flush_buffer: &mut Box<dyn flz_core::flusher::FlushableBuffer>,

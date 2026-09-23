@@ -21,6 +21,7 @@ mod lifecycle;
 mod retry;
 mod saga;
 mod task_journal;
+mod timers;
 
 // ---- single driver-observation test --------------------------------------
 //
@@ -102,6 +103,8 @@ fn workflow_driver_scenarios() {
     crate::register_class::<crate::WorkflowKind, CappedKeyedFlow>().unwrap();
     crate::register_class::<crate::WorkflowKind, KeyedLoopAllOrNothing>().unwrap();
     crate::register_class::<crate::WorkflowKind, KeyedLoopKeepProgress>().unwrap();
+    crate::register_class::<crate::WorkflowKind, TimerLoop>().unwrap();
+    crate::register_class::<crate::WorkflowKind, ChainedTimerLoop>().unwrap();
 
     let mut node = RunnerNode::new("test-ns".to_string());
 
@@ -132,6 +135,7 @@ fn workflow_driver_scenarios() {
     entrance::entrance(&mut node, &rx);
     entrance::once_waits(&mut node, &rx);
     keyed::keyed_cells(&mut node, &rx);
+    timers::timers(&mut node, &rx);
 }
 
 /// Respawn `test-chain-workflow` as a crash-resume carrying `journal` on the

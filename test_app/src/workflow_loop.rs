@@ -414,9 +414,10 @@ impl WorkflowOperative for ChatLoopWorkflow {
 // idempotent Change per task, the payload passed through unchanged — so the
 // sink receives the seed input and the bench reads its own seq + send
 // timestamp back. The loop is the `chat_loop_workflow` shape with a bounded
-// per-turn state, a day-long duration backstop (soaks outlive 600 s) and a
-// wake deadline taken from `FLEZHA_BENCH_WAKE_AFTER_MS` for the timer-wake
-// measurements.
+// per-turn state and a day-long duration backstop (soaks outlive 600 s); with
+// `FLEZHA_BENCH_WAKE_AFTER_MS` set each turn arms a timer that far out, whose
+// firing sends the bench's wake marker naming its scheduled time, for the
+// timer-wake measurements.
 
 durable_step!(BenchS0, "bench_s0");
 durable_step!(BenchS1, "bench_s1");
@@ -529,7 +530,22 @@ impl Tasklet for BenchTurn {
         ctx: &mut TaskletCtx<'_>,
     ) -> Result<(), TaskletError> {
         state.apply(BenchTurnSeen(input.clone()));
+        if let Some(after) = env::var("FLEZHA_BENCH_WAKE_AFTER_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+        {
+            ctx.timer_after(Duration::from_millis(after))?;
+        }
         ctx.emit::<String>(input)
+    }
+    fn on_timer(
+        &mut self,
+        fired_at: u64,
+        _kind: flezha_runner::state::TimerKind,
+        _state: StateHandle<'_, Self>,
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
+        ctx.emit::<String>(format!("wake:{fired_at}"))
     }
 }
 
@@ -546,12 +562,6 @@ impl WorkflowOperative for BenchLoopWorkflow {
     }
     fn max_duration() -> Option<Duration> {
         Some(Duration::from_secs(24 * 3600))
-    }
-    fn wake_after() -> Option<Duration> {
-        env::var("FLEZHA_BENCH_WAKE_AFTER_MS")
-            .ok()
-            .and_then(|v| v.parse::<u64>().ok())
-            .map(Duration::from_millis)
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")

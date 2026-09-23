@@ -40,12 +40,14 @@ fn ab_committed(
                 iter: 0,
                 cells_ran: a_segs,
                 completion: None,
+                trigger: None,
             },
             instance::CommittedTask {
                 task_idx: 1,
                 iter: 0,
                 cells_ran: b_segs,
                 completion: None,
+                trigger: None,
             },
         ],
         ..Default::default()
@@ -415,12 +417,14 @@ pub(super) fn branching_resume(node: &mut RunnerNode, rx: &Receiver<RunnerMessag
                     iter: 0,
                     cells_ran: vec![root_seg.clone()],
                     completion: None,
+                    trigger: None,
                 },
                 instance::CommittedTask {
                     task_idx: 1,
                     iter: 0,
                     cells_ran: Vec::new(),
                     completion: None,
+                    trigger: None,
                 },
             ],
             ..Default::default()

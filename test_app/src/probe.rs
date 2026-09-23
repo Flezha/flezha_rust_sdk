@@ -29,7 +29,7 @@ enum CandleChange {
 
 impl Change for CandleChange {}
 
-struct TradeEventTime;
+pub(crate) struct TradeEventTime;
 impl TimeExtractor<String> for TradeEventTime {
     fn extract(input: &String) -> u64 {
         input

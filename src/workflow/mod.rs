@@ -57,16 +57,6 @@ pub trait WorkflowOperative: Send + Sync + 'static {
         LoopMode::Once
     }
 
-    /// Durable wake deadline for a [`LoopMode::PerInput`] loop: how long after
-    /// parking the instance is rehydrated even with no input
-    /// (`workflow-durable-suspension`). `None` (the default) parks until the next
-    /// input arrives. The timer is recorded with the park record, so it
-    /// survives a controller redeploy; it wakes the loop with an **empty** entry
-    /// payload, which a class declaring one must accept as its tick.
-    fn wake_after() -> Option<Duration> {
-        None
-    }
-
     /// Saga rollback scope, applied when the operative terminates abnormally
     /// after partial progress. Default [`RollbackMode::AllOrNothing`] undoes
     /// every completed tasklet in reverse, back to the start;
@@ -90,7 +80,8 @@ pub trait WorkflowOperative: Send + Sync + 'static {
 
     /// Sleep when idle: an instance waiting at a committed boundary for
     /// `FLEZHA_PARK_IDLE_MS` parks, is evicted from the runner and wakes on
-    /// its next message or its wake deadline. On whenever persistence is;
+    /// its next message or at the earliest processing-time timer its
+    /// tasklets registered. On whenever persistence is;
     /// declaring it with [`Self::PERSISTENCE_ENABLED`] off is refused as
     /// `SleepWithoutPersistence`.
     const SLEEP_WHEN_IDLE: bool = Self::PERSISTENCE_ENABLED;
