@@ -120,6 +120,7 @@
       "undo_outbox_workflow",
       "chat_loop_workflow",
       "stateless_loop_workflow",
+      "keyed_loop_workflow",
       "chat_rewind_workflow",
       "reply_block_loop_workflow",
       "retry_workflow",
@@ -136,7 +137,8 @@
     ],
     "partitioned": [
       "partition_relay",
-      "dynamic_cell"
+      "dynamic_cell",
+      "keyed_loop_workflow"
     ],
     "pool_wedge": [
       "wedge_probe"

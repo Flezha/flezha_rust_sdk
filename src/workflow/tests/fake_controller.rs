@@ -193,21 +193,52 @@ pub(crate) fn start_resumable(
     owed_inbox: u32,
     journal: Option<flz_core::workflow::instance::JournalResume>,
 ) -> Result<bool, flz_core::Error> {
-    // A duplicate never initializes twice, as `AddOperative` guards it.
-    if node.has_operative(&id) {
-        return Ok(true);
-    }
     let resume = flz_core::workflow::Resume {
         expected: expected as usize,
         owed_inbox,
         journal,
     };
-    let Some(instance) = node.start_operative(
+    bind(
+        node,
         factory,
-        id.clone(),
+        id,
+        init_values,
         flz_core::operative::instance::KeyGroupRange::UNPARTITIONED,
         resume,
-    ) else {
+    )
+}
+
+/// A fresh bind of workflow `id` as the partition member owning `range`.
+pub(crate) fn start_partitioned(
+    node: &RunnerNode,
+    factory: &str,
+    id: &str,
+    range: flz_core::operative::instance::KeyGroupRange,
+) -> bool {
+    bind(
+        node,
+        factory.into(),
+        id.into(),
+        "",
+        range,
+        flz_core::workflow::Resume::default(),
+    )
+    .expect("init_values is a JSON object")
+}
+
+fn bind(
+    node: &RunnerNode,
+    factory: String,
+    id: String,
+    init_values: &str,
+    range: flz_core::operative::instance::KeyGroupRange,
+    resume: flz_core::workflow::Resume,
+) -> Result<bool, flz_core::Error> {
+    // A duplicate never initializes twice, as `AddOperative` guards it.
+    if node.has_operative(&id) {
+        return Ok(true);
+    }
+    let Some(instance) = node.start_operative(factory, id.clone(), range, resume) else {
         return Ok(false);
     };
     if let Err(e) = flz_core::command::cell_state::apply_init_values(&instance, init_values) {

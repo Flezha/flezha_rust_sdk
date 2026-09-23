@@ -128,6 +128,7 @@ pub(super) fn keyed_cells(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
     journaled_keyed_cells(node, rx);
     restored_keyed_cells(node, rx);
     keyed_sweep(node, rx);
+    partition_member(node, rx);
 }
 
 /// A resume reads a journaled `cells_ran` naming keyed Cells back onto the
@@ -306,4 +307,114 @@ fn keyed_sweep(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
     std::env::remove_var("FLEZHA_PARK_IDLE_MS");
     let _ = drain_task_commits();
     let _ = drain_iter_commits();
+}
+
+/// The parks shipped for `id` since `WAL_FRAMES` was cleared, once each,
+/// acked so their parking threads return.
+fn acked_parks(id: &str) -> Vec<crate::cell::park::ParkBody> {
+    let frames: Vec<Vec<u8>> = WAL_FRAMES
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(payload_id, _)| payload_id == crate::cell::state_sink::PARK_PAYLOAD_PAYLOAD_ID)
+        .map(|(_, frame)| frame.clone())
+        .collect();
+    let mut parks: Vec<crate::cell::park::ParkBody> = Vec::new();
+    for frame in frames {
+        // `[id_len(2)][identity][seq(8)][header(16)][body_len(4)][body][crc(4)]`
+        let id_len = u16::from_be_bytes([frame[0], frame[1]]) as usize;
+        let rest = &frame[2 + id_len + 8 + 16..];
+        let len = u32::from_be_bytes(rest[..4].try_into().unwrap()) as usize;
+        let body: crate::cell::park::ParkBody =
+            postcard::from_bytes(&rest[4..4 + len]).expect("a postcard ParkBody");
+        if body.park_id.starts_with(&format!("{id}/"))
+            && !parks.iter().any(|p| p.park_id == body.park_id)
+        {
+            crate::cell::park::complete_ack(&body.park_id);
+            parks.push(body);
+        }
+    }
+    parks
+}
+
+/// Answer `id`'s control requests until its next iteration commits.
+fn await_iter_commit(rx: &Receiver<RunnerMessage>, id: &str) -> crate::pb::IterCommit {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(commit) = drain_iter_commits()
+            .into_iter()
+            .find(|c| c.operative_id == id)
+        {
+            return commit;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{id} committed no iteration"
+        );
+        if let Ok(RunnerMessage::EmitControlRequest {
+            reference_id,
+            command,
+        }) = rx.recv_timeout(Duration::from_millis(10))
+        {
+            let _ = ack_control_request(reference_id, *command);
+        }
+    }
+}
+
+fn partition_member(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
+    // --- a partition member parks a key it does not own under the entry
+    // channel before any Cell exists, opens no pass, and runs its next
+    // in-range message as its first iteration. "a" hashes to key group 100
+    // and "BTC-USD" to 129 ---
+    std::env::set_var("FLEZHA_PARK_IDLE_MS", "60000");
+    let id = "keyed-entry-p1";
+    let range = flz_core::operative::instance::KeyGroupRange {
+        index: 1,
+        count: 2,
+        from: 128,
+        to: 255,
+    };
+    let _ = drain_task_commits();
+    let _ = drain_iter_commits();
+    WAL_FRAMES.lock().unwrap().clear();
+    assert!(start_partitioned(node, "test-keyed-entry-loop", id, range));
+    let inst = instance(node, id).expect("live");
+
+    feed_at(&inst, b"a", 3);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let parks = loop {
+        let parks = acked_parks(id);
+        if !parks.is_empty() || std::time::Instant::now() >= deadline {
+            break parks;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    assert_eq!(parks.len(), 1, "the mis-routed message parks once");
+    assert_eq!(parks[0].entry.channel, "in");
+    assert_eq!(parks[0].origin_offset, Some(3));
+    assert!(
+        parks[0]
+            .entry
+            .error
+            .contains("key 'a' hashes to key group 100"),
+        "{}",
+        parks[0].entry.error
+    );
+    assert!(live_keys(&registry(node, id, "keyed_plain")).is_empty());
+    assert!(drain_task_commits().is_empty(), "no stage ran");
+
+    feed_at(&inst, b"BTC-USD", 4);
+    let commit = await_iter_commit(rx, id);
+    assert_eq!(
+        (commit.iter, commit.consumed_offset),
+        (0, Some(4)),
+        "the in-range message is the first iteration"
+    );
+    assert_eq!(live_keys(&registry(node, id, "keyed_plain")), ["BTC-USD"]);
+
+    flz_core::workflow::stop(&inst);
+    let (_o, done) = drain(rx, id);
+    assert_eq!(done.0, "cancelled");
+    std::env::remove_var("FLEZHA_PARK_IDLE_MS");
+    let _ = drain_task_commits();
 }

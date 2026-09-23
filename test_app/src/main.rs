@@ -127,6 +127,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register_factory(UndoOutboxWorkflow)?
         .register_factory(ChatLoopWorkflow)?
         .register_factory(StatelessLoopWorkflow)?
+        .register_factory(KeyedLoopWorkflow)?
         .register_factory(ChatRewindWorkflow)?
         .register_factory(ReplyBlockLoopWorkflow)?
         .register_factory(TypedOnceWorkflow)?

@@ -103,6 +103,7 @@ fn workflow_driver_scenarios() {
     crate::register_class::<crate::WorkflowKind, CappedKeyedFlow>().unwrap();
     crate::register_class::<crate::WorkflowKind, KeyedLoopAllOrNothing>().unwrap();
     crate::register_class::<crate::WorkflowKind, KeyedLoopKeepProgress>().unwrap();
+    crate::register_class::<crate::WorkflowKind, KeyedEntryLoop>().unwrap();
     crate::register_class::<crate::WorkflowKind, TimerLoop>().unwrap();
     crate::register_class::<crate::WorkflowKind, ChainedTimerLoop>().unwrap();
 

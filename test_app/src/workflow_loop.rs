@@ -99,6 +99,65 @@ impl WorkflowOperative for StatelessLoopWorkflow {
     }
 }
 
+// -- KeyedLoopWorkflow -------------------------------------------------------
+//
+// `keyed_loop_workflow`: a durable PER_INPUT loop keyed on its entry edge by
+// the text before the first `:`, so one Cell counts one symbol's messages. The
+// shape a partition group of workflow members takes: each member mints Cells
+// for its own key groups only, and a rescale moves them with their counts.
+
+#[derive(Default)]
+struct KeyedLoopCount;
+impl Tasklet for KeyedLoopCount {
+    type Input = String;
+    type Output = String;
+    type State = CounterState;
+    type Change = CounterChange;
+    type Clock = WallClock;
+    type Config = ();
+    fn name() -> &'static str {
+        "keyed_loop_count"
+    }
+    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> CounterState {
+        CounterState::default()
+    }
+    fn apply_change(state: &mut CounterState, change: &CounterChange) {
+        state.value += change.delta;
+    }
+    fn run(
+        &mut self,
+        input: String,
+        mut state: StateHandle<'_, Self>,
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
+        let symbol = key_prefix(&input);
+        state.apply(CounterChange { delta: 1 });
+        ctx.emit::<String>(format!("{symbol}:{}", state.value))
+    }
+}
+
+pub(crate) struct KeyedLoopWorkflow;
+impl WorkflowOperative for KeyedLoopWorkflow {
+    fn factory_id() -> &'static str {
+        "keyed_loop_workflow"
+    }
+    fn loop_mode() -> LoopMode {
+        LoopMode::PerInput
+    }
+    fn self_terminating() -> bool {
+        false
+    }
+    fn max_duration() -> Option<Duration> {
+        Some(Duration::from_secs(600))
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("trades")
+            .key_by(|trade: &String| key_prefix(trade))
+            .into::<KeyedLoopCount>()
+            .sink_named("keyed_loop_workflow_out");
+    }
+}
+
 // -- SpawnRequesterOperative -----------------------------------------------------
 //
 // `spawn_requester`: on each input it spawns `stateless_loop_workflow` once with

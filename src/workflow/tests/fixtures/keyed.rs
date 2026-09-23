@@ -256,3 +256,26 @@ impl WorkflowOperative for KeyedLoopKeepProgress {
         keyed_loop(c);
     }
 }
+
+/// A per-input loop keyed on its entry edge: the shape a partition group of
+/// workflow members has, one Cell per message key.
+pub(crate) struct KeyedEntryLoop;
+impl WorkflowOperative for KeyedEntryLoop {
+    fn factory_id() -> &'static str {
+        "test-keyed-entry-loop"
+    }
+    fn loop_mode() -> LoopMode {
+        LoopMode::PerInput
+    }
+    fn self_terminating() -> bool {
+        false
+    }
+    fn max_duration() -> Option<Duration> {
+        Some(Duration::from_secs(30))
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("in")
+            .key_by(|item: &String| item.clone())
+            .into::<KeyedPlain>();
+    }
+}
