@@ -177,7 +177,7 @@ fn a_chained_loops_carry_yields_to_a_queued_firing(
                     held = true;
                     std::thread::sleep(Duration::from_millis(60));
                 }
-                let _ = ack_control_request(reference_id, *command);
+                ack_control_request(reference_id, *command);
             }
             RunnerMessage::EmitWorkflowCompleted {
                 operative_id,
@@ -365,30 +365,6 @@ fn bind_restoring(
         .lock_recover()
         .apply(&TimerOp::register(TimerKind::ProcessingTime, at));
     (inst, tick)
-}
-
-/// What reached `id`'s sink until `done` holds, its barriers acked as the
-/// controller acks them.
-fn pump(rx: &Receiver<RunnerMessage>, id: &str, done: impl Fn(&[Vec<u8>]) -> bool) -> Vec<Vec<u8>> {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let mut outs = Vec::new();
-    while !done(&outs) {
-        let msg = rx
-            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-            .unwrap_or_else(|_| panic!("{id} released {:?} and then nothing", texts(&outs)));
-        if let RunnerMessage::EmitControlRequest {
-            reference_id,
-            command,
-        } = msg
-        {
-            let for_id = control_request_operative(&command) == id;
-            let flushed = ack_control_request(reference_id, *command);
-            if for_id {
-                outs.extend(flushed);
-            }
-        }
-    }
-    outs
 }
 
 /// Let what `id` still has in flight commit.

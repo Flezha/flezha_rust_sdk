@@ -43,7 +43,12 @@ fn cells_ran_of(commits: &[crate::pb::TaskCommit], task_idx: u32) -> Vec<Vec<u8>
     commits
         .iter()
         .find(|c| c.task_idx == task_idx && !c.compensating)
-        .map(|c| c.cells_ran.clone())
+        .map(|c| {
+            c.cells_ran
+                .iter()
+                .map(|cell| cell.cell_id.clone())
+                .collect()
+        })
         .expect("the stage committed")
 }
 
@@ -356,7 +361,7 @@ fn await_iter_commit(rx: &Receiver<RunnerMessage>, id: &str) -> crate::pb::IterC
             command,
         }) = rx.recv_timeout(Duration::from_millis(10))
         {
-            let _ = ack_control_request(reference_id, *command);
+            ack_control_request(reference_id, *command);
         }
     }
 }

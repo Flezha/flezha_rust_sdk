@@ -512,7 +512,7 @@ string_task!(SiblingSlow, "sibling_slow", |_input, _ctx| {
             .lock()
             .unwrap()
             .iter()
-            .any(|commit| commit.cells_ran.contains(&fast))
+            .any(|commit| commit.cells_ran.iter().any(|cell| cell.cell_id == fast))
     };
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
     while !committed() && std::time::Instant::now() < deadline {

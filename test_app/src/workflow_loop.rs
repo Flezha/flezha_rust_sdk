@@ -70,13 +70,11 @@ stateless_step!(ChatReply, "chat_reply", |input, ctx| ctx
 // -- StatelessLoopWorkflow -------------------------------------------------------
 //
 // The same durable PER_INPUT loop as `ChatLoopWorkflow`, minus its stateful
-// first tasklet: `ChatReply` alone holds NO per-Cell state, so nothing
-// writes a Cell WAL, the controller has nothing to restore, and it ships no
-// `RestoreInitState` on a rehydrating bind. The instance's task-journal therefore
-// reaches the driver only if it rides the bind itself — deliver it on the
-// restore frame and every turn after the first commits at iteration 0 again,
-// collides with iteration 0's `outbox_flushed` marker, and has its staged
-// output journaled but never delivered.
+// first tasklet: `ChatReply` alone holds NO per-Cell state, so its Cell's
+// records carry its outputs and nothing to restore. The instance's
+// task-journal therefore reaches the driver only if it rides the bind itself:
+// deliver it on a restore frame alone and every turn after the first commits
+// at iteration 0 again, colliding with iteration 0's entries.
 
 pub(crate) struct StatelessLoopWorkflow;
 impl WorkflowOperative for StatelessLoopWorkflow {

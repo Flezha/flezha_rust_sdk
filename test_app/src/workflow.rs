@@ -1,5 +1,5 @@
 //! Durable structured workflow fixtures: the crash-resume family (commit,
-//! saga, transactional outbox, branch, diamond and the retry ladder) plus the
+//! saga, output identity, branch, diamond and the retry ladder) plus the
 //! run-once echo, and the release gate every blocking step parks on.
 
 use crate::*;
@@ -526,12 +526,41 @@ impl WorkflowOperative for KeyedSagaWorkflow {
     }
 }
 
-// `outbox_block_workflow`: the transactional-outbox fixture
-// (`workflow-staged-commit-and-outbox`). Task A commits durable state AND emits
-// plugin-bound output on a hybrid channel — STAGED, so it reaches the sink only
-// after the controller has journaled and fsynced A's `task_committed` entry (with
-// the output inside it) and flushed the outbox. Task B blocks, so a SIGKILL lands
-// with A committed + flushed and B unfinished.
+// `outbox_block_workflow`: a workflow output's identity. Task A commits
+// durable state AND emits once, keyed `k` with one metadata pair, on a keyed
+// hybrid channel; the output rides A's Cell record and reaches the sink once
+// A's stage commits. Task B blocks, so a SIGKILL lands with A committed and B
+// unfinished.
+#[derive(Default)]
+struct OutboxA;
+impl Tasklet for OutboxA {
+    type Input = String;
+    type Output = String;
+    type State = SeenState;
+    type Change = Insert;
+    type Clock = WallClock;
+    type Config = ();
+    fn name() -> &'static str {
+        "commit_a"
+    }
+    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> SeenState {
+        SeenState::default()
+    }
+    fn apply_change(state: &mut SeenState, change: &Insert) {
+        state.items.insert(change.0.clone());
+    }
+    fn run(
+        &mut self,
+        input: String,
+        mut state: StateHandle<'_, Self>,
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
+        state.apply(Insert("commit_a".to_string()));
+        let meta = std::collections::HashMap::from([("trace".to_string(), "t1".to_string())]);
+        ctx.emit_keyed_with_meta::<String>("k", input, meta)
+    }
+}
+
 pub(crate) struct OutboxBlockWorkflow;
 impl WorkflowOperative for OutboxBlockWorkflow {
     fn factory_id() -> &'static str {
@@ -539,21 +568,22 @@ impl WorkflowOperative for OutboxBlockWorkflow {
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
-            .into::<CommitA>()
+            .into::<OutboxA>()
+            .keyed()
             .sink_named_with("mid", |s: &String| format!("a-out:{s}").into_bytes())
             .into::<BlockB>();
     }
 }
 
-// `undo_outbox_workflow`: the compensation half of the transactional outbox. Task
-// UA commits, emits its forward output on a hybrid plugin channel, and declares
-// a `compensate` hook that EMITS an undo record — plugin-bound, so it is staged
-// and rides a `compensated` journal entry rather than the wire. Task C fails
-// immediately, so the chain always rolls back; the hook BLOCKS until the release
-// env is set, so on the first runner the undo is emitted-but-never-journaled
-// when the SIGKILL lands — proving staged undo output cannot leak. The resumed
-// runner re-runs the outstanding hook (its done marker never landed) and the
-// undo is delivered exactly once, under its comp-marked key.
+// `undo_outbox_workflow`: a compensation's undo output. Task UA commits, emits
+// its forward output on a hybrid plugin channel, and declares a `compensate`
+// hook that EMITS an undo record, which rides UA's Cell's own record and is
+// released once the `compensated` entry naming it is durable. Task C fails
+// immediately, so the chain always rolls back; the hook BLOCKS until the
+// release env is set, so on the first runner the SIGKILL lands before the undo
+// was written. The resumed runner re-runs the outstanding hook (its done marker
+// never landed) and the undo is delivered exactly once, as a newer record of
+// UA's Cell.
 durable_step!(UndoOutboxA, "undo_outbox_a", compensate: |ctx| {
     block_until_released();
     ctx.emit::<String>("undone".to_string())
@@ -573,6 +603,30 @@ impl WorkflowOperative for UndoOutboxWorkflow {
             .into::<UndoOutboxA>()
             .sink_named_with("mid", |s: &String| format!("out:{s}").into_bytes())
             .into::<UndoC>();
+    }
+}
+
+// `failed_stage_workflow`: a failed stage delivers nothing. The entry's two
+// values reach one `failed_stage` Cell in order: the first emits on a plugin
+// channel, so the Cell's record carries an output; the second fails, so the
+// stage never commits and no marker ever names that record.
+stateless_step!(FailedStage, "failed_stage", |input, ctx| {
+    if input == "b" {
+        return Err(TaskletError::Custom("failed_stage fails on b".into()));
+    }
+    ctx.emit::<String>(input)
+});
+
+pub(crate) struct FailedStageWorkflow;
+impl WorkflowOperative for FailedStageWorkflow {
+    fn factory_id() -> &'static str {
+        "failed_stage_workflow"
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("in")
+            .into::<KeySplit>()
+            .into::<FailedStage>()
+            .sink_named_with("mid", |s: &String| format!("lost:{s}").into_bytes());
     }
 }
 

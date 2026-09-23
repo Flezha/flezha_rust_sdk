@@ -97,8 +97,8 @@ impl Drop for Handout<'_> {
 /// to decide whether its records will ever be drained for it: a Tasklet with
 /// nothing to persist has no entry, so anything timers give it to persist must
 /// be drained on the spot.
-pub(super) fn flusher_registered<S: Tasklet>(effectively_once: bool) -> bool {
-    TypeId::of::<S::Change>() != TypeId::of::<NoChange>() || effectively_once
+pub(super) fn flusher_registered<S: Tasklet>(records_effects: bool) -> bool {
+    TypeId::of::<S::Change>() != TypeId::of::<NoChange>() || records_effects
 }
 
 /// Join the background flusher's drain pass — unless this Tasklet would
@@ -106,15 +106,15 @@ pub(super) fn flusher_registered<S: Tasklet>(effectively_once: bool) -> bool {
 /// because registering one would spawn the drain thread for a program that
 /// will never produce a record; its CellSlot still carries an (always empty)
 /// flush buffer so the dispatcher constructs a `StateHandle<'_, S>` uniformly.
-/// Effectively-once operatives always register: their effect records (outputs
+/// A Cell that records effects always registers: its effect records (outputs
 /// + consumed-offset, possibly with no change) drain through the same buffer.
 fn register_flusher<S: Tasklet>(
     parts: &flz_core::cell::SlotParts,
     flush_buffer: &Arc<Mutex<Box<dyn FlushableBuffer>>>,
     persistence_enabled: bool,
-    effectively_once: bool,
+    records_effects: bool,
 ) -> Option<crate::cell::flusher::FlusherEntryId> {
-    flusher_registered::<S>(effectively_once).then(|| {
+    flusher_registered::<S>(records_effects).then(|| {
         CellFlusher::instance().register(
             Arc::clone(&parts.cell_identity),
             Arc::clone(flush_buffer),
@@ -162,7 +162,7 @@ fn build_dispatcher<S: Tasklet>(
             change_seq: Arc::clone(&parts.change_seq),
             header: crate::cell::header::header_template_for::<S>(),
             persistence_enabled: args.persistence_enabled,
-            effectively_once: topology.effectively_once,
+            records_effects: topology.records_effects(args.persistence_enabled),
             checkpoint: topology.ack_granularity.checkpoint(),
             correction: topology.correction,
             workflow: topology.workflow.is_some(),
@@ -207,7 +207,7 @@ pub fn build_cell_slot<S: Tasklet>(args: BuildCellArgs<'_>) -> Arc<CellSlot> {
         &parts,
         &flush_buffer,
         args.persistence_enabled,
-        topology.effectively_once,
+        topology.records_effects(args.persistence_enabled),
     );
 
     let mailbox_capacity = tasklet_desc.mailbox_capacity;

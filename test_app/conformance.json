@@ -118,6 +118,7 @@
       "keyed_saga_workflow",
       "outbox_block_workflow",
       "undo_outbox_workflow",
+      "failed_stage_workflow",
       "chat_loop_workflow",
       "stateless_loop_workflow",
       "keyed_loop_workflow",

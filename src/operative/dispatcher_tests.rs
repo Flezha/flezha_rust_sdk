@@ -188,7 +188,7 @@ fn snapshot_frame_round_trips_through_restore() {
             change_seq: Arc::new(AtomicU64::new(3)),
             header: crate::cell::header::header_template_for::<CounterTask>(),
             persistence_enabled: false,
-            effectively_once: false,
+            records_effects: false,
             checkpoint: None,
             correction: None,
             workflow: false,
@@ -211,16 +211,12 @@ fn snapshot_frame_round_trips_through_restore() {
 
     // Extract the postcard body (header-less, exactly what the controller
     // ships back as RestoreInitState.snapshot_bytes) from the wire frame.
-    let pid_len = u16::from_be_bytes([frame[0], frame[1]]) as usize;
-    let body_len_off = 2 + pid_len + 8 + 16;
-    let body_len =
-        u32::from_be_bytes(frame[body_len_off..body_len_off + 4].try_into().unwrap()) as usize;
-    let body = &frame[body_len_off + 4..body_len_off + 4 + body_len];
+    let crate::cell::flusher::CellFrame { header, body, .. } =
+        crate::cell::flusher::split_cell_frame(&frame).unwrap();
     assert_eq!(size, body.len(), "reported byte size is the body length");
 
     // The header the frame carries is what the controller stores and now
     // ships back beside the body.
-    let header = &frame[2 + pid_len + 8..2 + pid_len + 8 + 16];
     let payload = RestoreInitPayload {
         snapshot_header: header,
         snapshot_bytes: body,

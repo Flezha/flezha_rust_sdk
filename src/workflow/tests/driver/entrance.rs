@@ -19,28 +19,7 @@ use crate::workflow::instance;
 /// The next `count` outputs of `id`, in order, with every control request
 /// answered on the way.
 fn outputs(rx: &Receiver<RunnerMessage>, id: &str, count: usize) -> Vec<Vec<u8>> {
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    let mut outs = Vec::new();
-    while outs.len() < count {
-        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-        match rx
-            .recv_timeout(remaining)
-            .unwrap_or_else(|_| panic!("timed out waiting for {count} outputs of {id}: {outs:?}"))
-        {
-            RunnerMessage::EmitWorkflowOutput {
-                operative_id,
-                payload,
-            } if operative_id == id => outs.push(payload),
-            RunnerMessage::EmitControlRequest {
-                reference_id,
-                command,
-            } => {
-                let _ = ack_control_request(reference_id, *command);
-            }
-            _ => {}
-        }
-    }
-    outs
+    pump(rx, id, |outs| outs.len() >= count)
 }
 
 fn stop(node: &mut RunnerNode, id: &str) {

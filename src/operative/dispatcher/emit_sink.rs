@@ -1,8 +1,8 @@
 //! The sink an invocation's outputs leave through, [`CellEmitSink`], on the
-//! connection its item rode in on. A stream's emit is routed to its
-//! consumers and its plugin output written (or, under the effectively-once
-//! tier, captured into the invocation's atomic effect record); a workflow's
-//! is held on its pass for the stage's commit.
+//! connection its item rode in on. An emit is routed to its consumers (a
+//! workflow's held on its pass for the stage's commit) and its plugin output
+//! written, or, for a Cell that records effects, captured into the
+//! invocation's atomic effect record.
 
 use std::any::Any;
 use std::cell::RefCell;
@@ -54,7 +54,7 @@ pub(super) struct CellEmitSink<'a> {
     /// inter-tasklet emits so downstream Cells' effect records carry
     /// the origin offset.
     pub(super) consumed_offset: Option<u64>,
-    /// `Some` in effectively-once tier mode: plugin emits are pushed here
+    /// `Some` for a Cell that records effects: plugin emits are pushed here
     /// (for the invocation's atomic effect record) instead of being written
     /// to the primary stream.
     pub(super) effect_outputs: Option<&'a RefCell<Vec<crate::cell::flusher::OutputRecord>>>,
@@ -138,10 +138,6 @@ impl<'a> CellEmitSink<'a> {
             }
         };
 
-        if instance.workflow.is_some() {
-            flz_core::workflow::plugin_output(self.producer, &descriptor.name, bytes);
-            return Ok(());
-        }
         if let Some(outputs) = self.effect_outputs {
             push_effect_output(outputs, &descriptor.name, key, meta, bytes);
             return Ok(());
@@ -182,15 +178,6 @@ impl<'a> EmitSink for CellEmitSink<'a> {
                 .ok_or_else(|| TaskletError::UnknownChannel {
                     channel: format!("<channel id {}>", cid),
                 })?;
-        // A workflow's plugin output rides its stage's commit as bare bytes,
-        // so `.keyed()` identity stamps have nothing to ride on.
-        if instance.workflow.is_some() && key.is_some() {
-            return Err(TaskletError::Custom(format!(
-                "keyed output identity is not supported on workflow operatives \
-                 (channel `{}`): the workflow plugin wire carries no metadata",
-                descriptor.name
-            )));
-        }
         // An inter-tasklet emit is never a replay member: the downstream
         // Tasklet receives the corrected outputs already in order, and a
         // slice it could never see the end of would hold its drain forever.

@@ -23,13 +23,11 @@ use crate::tasklet::{Tasklet, TaskletCtx, TaskletError};
 use crate::workflow::WorkflowError;
 
 impl<S: Tasklet> TaskletDispatcherImpl<S> {
-    /// Fresh per-invocation output capture — `Some` only under the
-    /// effectively-once tier (plugin emits then form the atomic effect
-    /// record instead of leaving on a wire path).
+    /// Fresh per-invocation output capture: `Some` only for a Cell that
+    /// records effects (plugin emits then form the atomic effect record
+    /// instead of leaving on a wire path).
     fn effect_capture(&self) -> Option<RefCell<Vec<crate::cell::flusher::OutputRecord>>> {
-        self.flush
-            .effectively_once
-            .then(|| RefCell::new(Vec::new()))
+        self.flush.records_effects.then(|| RefCell::new(Vec::new()))
     }
 
     /// Per-invocation determinism inputs, computed once at entry: the
@@ -75,13 +73,13 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
     /// sink writes the matching output frame, so change N reaches the
     /// controller's WAL before N's output reaches Kafka. `None` when there is
     /// nothing to order against: a `NoChange` / non-persistent operative keeps
-    /// the zero-cost inline emit, and under the tier the changes and the
-    /// outputs ship in ONE effect record.
+    /// the zero-cost inline emit, and a Cell that records effects ships the
+    /// changes and the outputs in ONE effect record.
     fn flush_before_emit<'a>(
         &self,
         changes: &'a RefCell<Vec<S::Change>>,
     ) -> Option<FlushBeforeEmit<'a>> {
-        if self.flush.effectively_once
+        if self.flush.records_effects
             || !self.flush.persistence_enabled
             || !flush_before_emit_enabled()
         {
@@ -256,31 +254,33 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
 
     /// Settle one attempt into this Cell's buffer through the one settlement
     /// rule the erased host also calls, then act on what it hands back: a
+    /// workflow Cell's record ships at once and is named on its pass sheet, a
     /// class with no flusher entry has nothing that would ever drain its timer
     /// ops, so it drains them here, and a tier-off park holds the Cell until
     /// the controller acks the dead-letter append.
     fn settle(
         &self,
+        slot: &Arc<CellSlot>,
         buffer: &mut TypedBuffer<S>,
         effects: crate::cell::flusher::InvocationEffects<S::Change>,
         dlq: Option<crate::cell::flusher::DlqEntryBody>,
     ) {
         let consumed_offset = effects.offset;
+        let channels: Vec<String> = effects.outputs.iter().map(|o| o.channel.clone()).collect();
         let tier_off_dlq = crate::cell::flusher::settle_effects::<TypedBodies<S>>(
             buffer,
             crate::cell::flusher::SettlePolicy {
-                effectively_once: self.flush.effectively_once,
+                records_effects: self.flush.records_effects,
                 checkpoint: self.flush.checkpoint,
                 buffered: true,
             },
             effects,
             dlq,
         );
-        // A workflow Cell ships its changes as its item settles, ahead of
-        // the stage's commit that follows.
-        if self.flush.workflow
-            || (!buffer.timer_ops.is_empty()
-                && !flusher_registered::<S>(self.flush.effectively_once))
+        if self.flush.workflow && self.flush.records_effects {
+            flz_core::workflow::ship_stage_record(slot, buffer, &self.flush.header, channels);
+        } else if !buffer.timer_ops.is_empty()
+            && !flusher_registered::<S>(self.flush.records_effects)
         {
             self.flush_now(buffer);
         }
@@ -358,7 +358,7 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
         let committed = settled.timers.clone();
         flz_core::timer::hold_firing_removal(scope.slot, &mut settled.timers, firing);
         let effects = settled.into_effects(changes.into_inner(), offset, now);
-        self.settle(scope.buffer, effects, dlq);
+        self.settle(scope.slot, scope.buffer, effects, dlq);
         Ok(committed)
     }
 }

@@ -26,7 +26,7 @@ mod timers;
 // ---- single driver-observation test --------------------------------------
 //
 // Installs the process-global coordinator trigger so it can observe the
-// EmitWorkflowOutput / EmitWorkflowCompleted messages the driver routes
+// control requests and `EmitWorkflowCompleted` messages the driver routes
 // through it; the shared runner-state lock keeps that install exclusive
 // against the other tests that install one. Scenarios run strictly
 // sequentially (each drained to its completion before the next) so a
@@ -52,6 +52,9 @@ fn workflow_driver_scenarios() {
         },
     );
     crate::cell::state_sink::install_global_sink(wal_sink);
+    // An opted-out class's plugin output leaves on the connection its item
+    // rode, which for a fed or re-seeded workflow is the secondary.
+    crate::cell::state_sink::set_secondary_stream(Some(capturing_wire()));
 
     crate::register_class::<crate::WorkflowKind, EmitWorkflow>().unwrap();
     crate::register_class::<crate::WorkflowKind, FailWorkflow>().unwrap();
@@ -119,7 +122,7 @@ fn workflow_driver_scenarios() {
     lifecycle::add_operative_routing(&mut node, &rx);
     task_journal::durable_wal_and_journal(&mut node, &rx);
     task_journal::task_journal_commits(&mut node, &rx);
-    task_journal::transactional_outbox(&mut node, &rx);
+    task_journal::record_outputs(&mut node, &rx);
     task_journal::resume_skip(&mut node, &rx);
     saga::saga_crash_resume(&mut node, &rx);
     fan_in::fan_in_branching(&mut node, &rx);
@@ -137,6 +140,7 @@ fn workflow_driver_scenarios() {
     entrance::once_waits(&mut node, &rx);
     keyed::keyed_cells(&mut node, &rx);
     timers::timers(&mut node, &rx);
+    crate::cell::state_sink::set_secondary_stream(None);
 }
 
 /// Respawn `test-chain-workflow` as a crash-resume carrying `journal` on the

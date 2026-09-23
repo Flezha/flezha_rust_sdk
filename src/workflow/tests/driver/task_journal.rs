@@ -103,22 +103,22 @@ pub(super) fn task_journal_commits(node: &mut RunnerNode, rx: &Receiver<RunnerMe
     assert!(commits[1].handoff.is_empty());
     assert_eq!(commits[0].cells_ran.len(), 1, "one cell ran in stage 0");
 
-    // workflow-transactional-outbox: the terminal stage's plugin output did
-    // NOT go to the wire — it was staged and rode INSIDE that stage's
-    // commit, keyed by the producing cell and its per-task sequence.
+    // The terminal stage's plugin output did NOT go to the wire: it rode that
+    // stage's Cell's effect record, which the stage's commit names by seq and
+    // channel, and was released only once the commit was acked.
     assert!(
         wire_emits_for("chain-commit").is_empty(),
-        "a durable structured operative stages: nothing reaches the wire mid-task"
+        "a durable structured operative writes its output into its records"
     );
     assert!(
-        commits[0].outbox.is_empty(),
+        commits[0].cells_ran[0].channels.is_empty(),
         "stage 0's output is inter-task (codec handoff), not plugin-bound"
     );
-    assert_eq!(commits[1].outbox.len(), 1, "stage 1's plugin output staged");
-    assert_eq!(commits[1].outbox[0].payload, b"x-1-2".to_vec());
-    assert_eq!(commits[1].outbox[0].channel, "out");
-    assert_eq!(commits[1].outbox[0].seq_in_task, 0);
-    assert!(!commits[1].outbox[0].cell_id.is_empty());
+    let stage1 = &commits[1].cells_ran[0];
+    assert_eq!(stage1.channels, ["out"], "stage 1's record wrote on `out`");
+    let seq = stage1.seq.expect("stage 1's Cell wrote a record");
+    assert_eq!(stage1.first_seq, Some(seq), "one item, one record");
+    assert_eq!(released(&commits[1].cells_ran), [b"x-1-2".to_vec()]);
     assert!(commits.iter().all(|c| !c.compensating));
 
     // Opt-out twin: no journal, no handshake — zero commits, and (having
@@ -143,8 +143,8 @@ pub(super) fn task_journal_commits(node: &mut RunnerNode, rx: &Receiver<RunnerMe
     assert_eq!(outs, vec![b"1:a".to_vec()]);
 }
 
-pub(super) fn transactional_outbox(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
-    // --- workflow-transactional-outbox: a failed tasklet leaks nothing ---
+pub(super) fn record_outputs(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
+    // --- a failed tasklet leaks nothing: no commit names its record ---
     assert!(start_fed(node, "test-leak-workflow", "leak-1", b"x"));
     let (outs, done) = drain(rx, "leak-1");
     assert_eq!(done.0, "error");
@@ -154,39 +154,46 @@ pub(super) fn transactional_outbox(node: &mut RunnerNode, rx: &Receiver<RunnerMe
     );
     assert!(
         drain_task_commits().is_empty(),
-        "the task never committed, so its staged output was never journaled"
+        "the task never committed, so no entry names its record"
     );
 
-    // --- a compensate hook's undo output
-    // is staged too, and rides a `compensating` commit for the tasklet it
-    // reverses (the forward output already flushed under its own key) ---
+    // --- a compensate hook's undo output rides the compensating Cell's own
+    // record, named by a `compensating` commit for the tasklet it reverses,
+    // at a seq above the forward record's ---
     assert!(start_fed(node, "test-undo-saga", "undo-1", b"u"));
     let (outs, done) = drain(rx, "undo-1");
     assert_eq!(done.0, "error");
     assert!(
         wire_emits_for("undo-1").is_empty(),
-        "undo output stages like forward output — never straight to the wire"
+        "undo output rides a record like forward output, never straight to the wire"
     );
     let commits = drain_task_commits();
     let forward: Vec<_> = commits.iter().filter(|c| !c.compensating).collect();
     let undo: Vec<_> = commits.iter().filter(|c| c.compensating).collect();
     assert_eq!(forward.len(), 1, "only UndoEmit completed forward");
     assert_eq!(
-        forward[0].outbox[0].payload,
-        b"did:u".to_vec(),
-        "the hybrid channel staged the forward copy"
+        released(&forward[0].cells_ran),
+        [b"did:u".to_vec()],
+        "the hybrid channel's forward copy rides the forward record"
     );
-    assert_eq!(undo.len(), 1, "one compensated cell ⇒ one undo record");
+    assert_eq!(undo.len(), 1, "one compensated cell ⇒ one undo entry");
     assert_eq!(undo[0].task_idx, 0, "the compensated tasklet's index");
-    assert_eq!(undo[0].outbox.len(), 1);
-    assert_eq!(undo[0].outbox[0].payload, b"undo:did:u".to_vec());
-    assert_eq!(undo[0].outbox[0].channel, "mid");
+    assert_eq!(released(&undo[0].cells_ran), [b"undo:did:u".to_vec()]);
+    assert_eq!(undo[0].cells_ran[0].channels, ["mid"]);
+    assert_eq!(
+        undo[0].cells_ran[0].cell_id,
+        forward[0].cells_ran[0].cell_id
+    );
+    assert!(
+        undo[0].cells_ran[0].seq > forward[0].cells_ran[0].seq,
+        "the undo is a newer record of the same Cell"
+    );
     assert!(
         undo[0].handoff.is_empty(),
-        "an undo record carries outbox only"
+        "an undo entry carries no handoff"
     );
     // Both the forward copy and the undo reached the plugins (the fake
-    // controller flushes each commit's outbox on ack), in that order.
+    // controller releases each commit's records on ack), in that order.
     assert_eq!(outs, vec![b"did:u".to_vec(), b"undo:did:u".to_vec()]);
 }
 

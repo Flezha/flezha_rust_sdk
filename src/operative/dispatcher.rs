@@ -118,10 +118,11 @@ struct FlushWiring {
     change_seq: Arc<AtomicU64>,
     header: HeaderTemplate,
     persistence_enabled: bool,
-    /// Effectively-once tier (`OperativeTopology::effectively_once`): the
-    /// invocation's plugin emits are captured into an atomic effect record
-    /// on the reliable state sink instead of the primary stream.
-    effectively_once: bool,
+    /// One effect record per invocation (`OperativeTopology::records_effects`):
+    /// the effectively-once tier or a durable workflow. The invocation's plugin
+    /// emits are captured into the record on the reliable state sink instead
+    /// of the primary stream.
+    records_effects: bool,
     /// Checkpoint ack-granularity (`AckGranularity::Checkpoint`): the
     /// consumed-offset advances only when the interval closes, and the
     /// changes it applies — with its outputs, under
@@ -133,8 +134,8 @@ struct FlushWiring {
     /// engine's assembly (`runner::poll_core`), which reads this through
     /// `TaskletDispatcher::correction_policy`.
     correction: Option<crate::operative::topology::CorrectionPolicy>,
-    /// A workflow Cell: its changes ship as each item settles, its final
-    /// failure fails the stage instead of parking, and it registers no timer.
+    /// A workflow Cell: its record ships as each item settles, named on the
+    /// pass sheet, and its final failure fails the stage instead of parking.
     workflow: bool,
 }
 

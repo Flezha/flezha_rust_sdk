@@ -34,15 +34,78 @@ pub(crate) static JOURNALED_REFS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 /// Per operative, how many barriers lose their first ack on the way back
 /// (`usize::MAX` = every send of every barrier). A lost ack is the real
-/// controller's: the entry is journaled and its outbox flushed, only the
-/// reply never reaches the runner.
+/// controller's: the entry is journaled and the records it names released,
+/// only the reply never reaches the runner.
 pub(crate) static LOST_ACKS: Mutex<Vec<(String, usize)>> = Mutex::new(Vec::new());
 
-/// Every `EmitWorkflowOutput` the drain helpers saw — output that went
-/// STRAIGHT to the wire, bypassing any task boundary. A durable structured
-/// operative must produce none of these (it stages); an opted-out class
-/// still does.
+/// Every plugin frame written STRAIGHT to the wire, bypassing any task
+/// boundary. A durable structured operative writes none (its output rides its
+/// Cells' effect records); an opted-out class does.
 pub(crate) static WIRE_EMITS: Mutex<Vec<(String, Vec<u8>)>> = Mutex::new(Vec::new());
+
+/// What a plugin receives, in order, per operative: an opted-out class's wire
+/// output, and a durable one's record outputs once the commit naming the
+/// records is acked.
+pub(crate) static DELIVERED: Mutex<Vec<(String, Vec<u8>)>> = Mutex::new(Vec::new());
+
+/// The wire a run's plugin frames are written to: each parsed back and
+/// recorded as delivered.
+pub(crate) fn capturing_wire() -> Arc<flz_transport::transport::FlezhaStream> {
+    Arc::new(flz_transport::transport::FlezhaStream::Local(Arc::new(
+        |frame: &[u8]| {
+            let (operative_id, payload, _metadata) =
+                flz_transport::service::payloader::extract_payload(frame)?;
+            WIRE_EMITS
+                .lock()
+                .unwrap()
+                .push((operative_id.clone(), payload.clone()));
+            DELIVERED.lock().unwrap().push((operative_id, payload));
+            Ok(())
+        },
+    )))
+}
+
+/// `id`'s deliveries since the last take.
+pub(crate) fn take_delivered(id: &str) -> Vec<Vec<u8>> {
+    let mut delivered = DELIVERED.lock().unwrap();
+    let (mine, rest): (Vec<_>, Vec<_>) = delivered.drain(..).partition(|(oid, _)| oid == id);
+    *delivered = rest;
+    mine.into_iter().map(|(_, payload)| payload).collect()
+}
+
+/// The outputs of the effect records `cells` name, as the controller releases
+/// them once the entry naming them is durable, read back from the frames the
+/// run shipped to the state sink.
+pub(crate) fn released(cells: &[crate::pb::CommittedCell]) -> Vec<Vec<u8>> {
+    let frames = super::fixtures::WAL_FRAMES.lock().unwrap();
+    let records: Vec<(Vec<u8>, u64, Vec<Vec<u8>>)> = frames
+        .iter()
+        .filter(|(pid, _)| pid == crate::cell::state_sink::CELL_EFFECT_RECORD_PAYLOAD_ID)
+        .filter_map(|(_, frame)| effect_record(frame))
+        .collect();
+    cells
+        .iter()
+        .filter_map(|cell| Some((cell, cell.first_seq?, cell.seq?)))
+        .flat_map(|(cell, first, last)| {
+            records
+                .iter()
+                .filter(|(id, seq, _)| *id == cell.cell_id && (first..=last).contains(seq))
+                .flat_map(|(_, _, outputs)| outputs.clone())
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// A `cell_effect_record` frame's Cell, seq and output payloads.
+fn effect_record(frame: &[u8]) -> Option<(Vec<u8>, u64, Vec<Vec<u8>>)> {
+    let split = crate::cell::flusher::split_cell_frame(frame)?;
+    let record: crate::cell::flusher::EffectRecordBody = postcard::from_bytes(split.body).ok()?;
+    Some((
+        split.identity.to_vec(),
+        split.seq,
+        record.outputs.into_iter().map(|o| o.payload).collect(),
+    ))
+}
 
 pub(crate) fn drain_task_commits() -> Vec<crate::pb::TaskCommit> {
     std::mem::take(&mut *TASK_COMMITS.lock().unwrap())
@@ -93,14 +156,14 @@ pub(crate) fn ack_lost(operative_id: &str, first_send: bool) -> bool {
 }
 
 /// The controller's barrier handling: a first send is journaled (`record`)
-/// and its outbox released, a re-send is acked from the existing entry —
-/// unless this operative's ack is lost on the way back.
+/// and the records it names released, a re-send is acked from the existing
+/// entry, unless this operative's ack is lost on the way back.
 pub(crate) fn journal_barrier(
     operative_id: &str,
     reference_id: &str,
-    flushed: Vec<Vec<u8>>,
+    released: Vec<Vec<u8>>,
     record: impl FnOnce(),
-) -> Vec<Vec<u8>> {
+) {
     BARRIER_SENDS
         .lock()
         .unwrap()
@@ -120,9 +183,8 @@ pub(crate) fn journal_barrier(
         crate::shutdown::signal_result(reference_id, Ok(String::new()));
     }
     if fresh {
-        flushed
-    } else {
-        Vec::new()
+        let mut delivered = DELIVERED.lock().unwrap();
+        delivered.extend(released.into_iter().map(|p| (operative_id.to_string(), p)));
     }
 }
 
@@ -138,22 +200,23 @@ pub(crate) fn wire_emits_for(id: &str) -> Vec<Vec<u8>> {
 
 /// Fake-controller half of every SDK-initiated control request: record the
 /// frame and, for the two durability handshakes, answer the barrier with an
-/// ack success. Returns the outbox the (real) controller would flush
-/// to the plugins AFTER that durable point — the drain helpers append it to
-/// the observed output, so a staged operative's assertions still describe
-/// what a plugin finally sees. A park is one-way: nothing to ack.
+/// ack success, releasing what a task commit names to `DELIVERED` as the real
+/// controller releases it AFTER that durable point. A park is one-way:
+/// nothing to ack.
 pub(crate) fn ack_control_request(
     reference_id: String,
     command: crate::pb::command_request::Command,
-) -> Vec<Vec<u8>> {
+) {
     use crate::pb::command_request::Command;
     match command {
         Command::TaskCommit(commit) => {
-            let flushed: Vec<Vec<u8>> = commit.outbox.iter().map(|o| o.payload.clone()).collect();
             let operative_id = commit.operative_id.clone();
-            journal_barrier(&operative_id, &reference_id, flushed, || {
-                TASK_COMMITS.lock().unwrap().push(commit)
-            })
+            journal_barrier(
+                &operative_id,
+                &reference_id,
+                released(&commit.cells_ran),
+                || TASK_COMMITS.lock().unwrap().push(commit),
+            )
         }
         Command::IterCommit(commit) => {
             let operative_id = commit.operative_id.clone();
@@ -161,11 +224,8 @@ pub(crate) fn ack_control_request(
                 ITER_COMMITS.lock().unwrap().push(commit)
             })
         }
-        Command::IterPark(park) => {
-            ITER_PARKS.lock().unwrap().push(park);
-            Vec::new()
-        }
-        _ => Vec::new(),
+        Command::IterPark(park) => ITER_PARKS.lock().unwrap().push(park),
+        _ => {}
     }
 }
 
@@ -342,39 +402,27 @@ pub(crate) fn start_fed(node: &RunnerNode, factory: &str, id: &str, message: &[u
         && feed(node, id, message)
 }
 
-/// Drain output frames until the `WorkflowCompleted` for `id`, returning the
-/// collected outputs and the `(status, error, result)` completion tuple.
-/// "Output" is what reaches the plugins: an opted-out emit straight off the
-/// wire, plus a durable operative's staged outbox once its task commits (the
-/// fake controller flushes it on ack).
+/// Drain control requests until the `WorkflowCompleted` for `id`, returning
+/// what reached its plugins and the `(status, error, result)` completion
+/// tuple: an opted-out emit straight off the wire, a durable operative's
+/// record outputs once the commit naming them is acked.
 pub(crate) fn drain(
     rx: &Receiver<RunnerMessage>,
     id: &str,
 ) -> (Vec<Vec<u8>>, (String, String, Vec<u8>)) {
     let deadline = Instant::now() + Duration::from_secs(5);
-    let mut outs = Vec::new();
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         let msg = rx
             .recv_timeout(remaining)
             .unwrap_or_else(|_| panic!("timed out waiting for workflow {id}"));
         match msg {
-            RunnerMessage::EmitWorkflowOutput {
-                operative_id,
-                payload,
-            } if operative_id == id => {
-                WIRE_EMITS
-                    .lock()
-                    .unwrap()
-                    .push((operative_id, payload.clone()));
-                outs.push(payload);
-            }
             RunnerMessage::EmitWorkflowCompleted {
                 operative_id,
                 status,
                 error,
                 result,
-            } if operative_id == id => return (outs, (status, error, result)),
+            } if operative_id == id => return (take_delivered(id), (status, error, result)),
             RunnerMessage::EmitControlRequest {
                 reference_id,
                 command,
@@ -384,15 +432,43 @@ pub(crate) fn drain(
                 // drain would otherwise wait out its deadline: report it as
                 // the terminal outcome of this run instead.
                 let parked = matches!(*command, crate::pb::command_request::Command::IterPark(_));
-                let flushed = ack_control_request(reference_id, *command);
-                if for_id {
-                    outs.extend(flushed);
-                    if parked {
-                        return (outs, ("parked".to_string(), String::new(), Vec::new()));
-                    }
+                ack_control_request(reference_id, *command);
+                if for_id && parked {
+                    return (
+                        take_delivered(id),
+                        ("parked".to_string(), String::new(), Vec::new()),
+                    );
                 }
             }
             _ => {}
+        }
+    }
+}
+
+/// What reached `id`'s plugins until `done` holds, every control request
+/// answered on the way.
+pub(crate) fn pump(
+    rx: &Receiver<RunnerMessage>,
+    id: &str,
+    done: impl Fn(&[Vec<u8>]) -> bool,
+) -> Vec<Vec<u8>> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut outs = Vec::new();
+    loop {
+        outs.extend(take_delivered(id));
+        if done(&outs) {
+            return outs;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{id} delivered {outs:?} and then nothing"
+        );
+        if let Ok(RunnerMessage::EmitControlRequest {
+            reference_id,
+            command,
+        }) = rx.recv_timeout(Duration::from_millis(20))
+        {
+            ack_control_request(reference_id, *command);
         }
     }
 }
@@ -414,43 +490,14 @@ pub(crate) fn assert_no_completion(rx: &Receiver<RunnerMessage>, id: &str, wait:
             RunnerMessage::EmitControlRequest {
                 reference_id,
                 command,
-            } => {
-                let _ = ack_control_request(reference_id, *command);
-            }
+            } => ack_control_request(reference_id, *command),
             _ => {}
         }
     }
 }
 
-/// Block until a specific output frame for `id` is observed, confirming an
+/// Block until a specific output of `id` reaches its plugins, confirming an
 /// interactive instance is live before stopping it.
 pub(crate) fn wait_for_output(rx: &Receiver<RunnerMessage>, id: &str, payload: &[u8]) {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        let msg = rx
-            .recv_timeout(remaining)
-            .unwrap_or_else(|_| panic!("timed out waiting for output from {id}"));
-        match msg {
-            RunnerMessage::EmitControlRequest {
-                reference_id,
-                command,
-            } => {
-                let for_id = control_request_operative(&command) == id;
-                let flushed = ack_control_request(reference_id, *command);
-                if for_id && flushed.iter().any(|p| p == payload) {
-                    return;
-                }
-            }
-            RunnerMessage::EmitWorkflowOutput {
-                operative_id,
-                payload: p,
-            } => {
-                if operative_id == id && p == payload {
-                    return;
-                }
-            }
-            _ => {}
-        }
-    }
+    pump(rx, id, |outs| outs.iter().any(|p| p == payload));
 }
