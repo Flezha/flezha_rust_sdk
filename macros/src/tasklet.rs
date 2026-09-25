@@ -1,8 +1,8 @@
 //! `#[flezha::tasklet(...)]` and the two short-form attributes, all on a `run`
 //! function. Each infers the six `Tasklet` associated types from the
 //! signature and generates a tasklet type + `Tasklet` impl; the short-form
-//! attributes (`#[flezha::stream_operative]` / `#[flezha::workflow_operative]`)
-//! name it `<Name>Tasklet` and also emit the operative type `<Name>` the
+//! attributes (`#[flezha::unbounded_operator]` / `#[flezha::bounded_operator]`)
+//! name it `<Name>Tasklet` and also emit the operator type `<Name>` the
 //! author registers with `runner.register_factory(Name)`. See
 //! `docs/sdk/authoring_contract.md` §2, §4, §5.
 
@@ -15,22 +15,22 @@ use syn::{
     Token, Type,
 };
 
-use crate::operative::{operative_item, Kind, Wiring};
+use crate::operator::{operator_item, Kind, Wiring};
 use crate::util::{generic_args, snake_ident_to_pascal};
 
-/// What the attribute declares: a tasklet, or a whole operative of a kind.
+/// What the attribute declares: a tasklet, or a whole operator of a kind.
 #[derive(Clone, Copy)]
 pub(crate) enum Declares {
     Tasklet,
-    Operative(Kind),
+    Operator(Kind),
 }
 
 impl Declares {
     fn attribute(self) -> &'static str {
         match self {
             Declares::Tasklet => "#[flezha::tasklet]",
-            Declares::Operative(Kind::Stream) => "#[flezha::stream_operative]",
-            Declares::Operative(Kind::Workflow) => "#[flezha::workflow_operative]",
+            Declares::Operator(Kind::Unbounded) => "#[flezha::unbounded_operator]",
+            Declares::Operator(Kind::Bounded) => "#[flezha::bounded_operator]",
         }
     }
 }
@@ -44,7 +44,7 @@ struct TaskletArgs {
     input: Option<LitStr>,
     /// The short form's entry channel overflow policy.
     on_full: Option<syn::Ident>,
-    /// A workflow short form's loop mode, as the author wrote it.
+    /// A bounded short form's loop mode, as the author wrote it.
     loop_mode: Option<LitStr>,
     init: Option<syn::Path>,
     key: Option<syn::Path>,
@@ -69,14 +69,14 @@ pub(crate) fn expand(
     let output = resolve_output(&func.sig.output)?;
     refuse_shape(attr, &func.sig, &args, &output, &params)?;
     let author_ident = snake_ident_to_pascal(&func.sig.ident);
-    let Declares::Operative(kind) = declares else {
+    let Declares::Operator(kind) = declares else {
         return expand_tasklet(&func, &args, &params, &output, &author_ident);
     };
-    // The short form: the tasklet beside the operative, which takes the
+    // The short form: the tasklet beside the operator, which takes the
     // author's name because it is what the attribute declares.
     let tasklet_ident = format_ident!("{}Tasklet", author_ident);
     let tasklet = expand_tasklet(&func, &args, &params, &output, &tasklet_ident)?;
-    let operative = expand_short_form(
+    let operator = expand_short_form(
         &func,
         &args,
         &params,
@@ -87,7 +87,7 @@ pub(crate) fn expand(
     )?;
     Ok(quote! {
         #tasklet
-        #operative
+        #operator
     })
 }
 
@@ -497,10 +497,10 @@ fn expand_modes(args: &TaskletArgs) -> TokenStream {
     quote! { #cell_items #capacity_items }
 }
 
-/// The short form's operative: `<Name>` implementing the kind's authoring
+/// The short form's operator: `<Name>` implementing the kind's authoring
 /// trait, wiring the entry channel into `<Name>Tasklet` and, with a `sink`,
 /// that tasklet to the plugin sink. The `id` is required, as every
-/// operative's factory id is; a `sink` on a body with no output is refused by
+/// operator's factory id is; a `sink` on a body with no output is refused by
 /// its contract name (`authoring_contract.md` §5.2).
 fn expand_short_form(
     func: &ItemFn,
@@ -508,7 +508,7 @@ fn expand_short_form(
     params: &Params,
     output: &Output,
     kind: Kind,
-    operative: &syn::Ident,
+    operator: &syn::Ident,
     tasklet: &syn::Ident,
 ) -> syn::Result<TokenStream> {
     let sig = &func.sig;
@@ -516,9 +516,9 @@ fn expand_short_form(
         syn::Error::new(
             sig.span(),
             format!(
-                "{} needs an `id`: an operative's factory id is an address an operator types, \
+                "{} needs an `id`: an operator's factory id is an address a user types, \
                  so it is written rather than derived from the function name",
-                Declares::Operative(kind).attribute()
+                Declares::Operator(kind).attribute()
             ),
         )
     })?;
@@ -529,14 +529,14 @@ fn expand_short_form(
              return, or `emits = Type` on the context-parameter shape",
         ));
     }
-    operative_item(Wiring {
+    operator_item(Wiring {
         vis: &func.vis,
-        ident: operative,
+        ident: operator,
         kind,
         id,
         input_ty: params.input_ty,
         input_name: args.input.as_ref(),
-        on_full: on_full_call(Declares::Operative(kind).attribute(), &args.on_full)?,
+        on_full: on_full_call(Declares::Operator(kind).attribute(), &args.on_full)?,
         chain: quote! { .into::<#tasklet>(); },
         payload: resolve_output_ty(args, output),
         sink: args.sink.as_deref(),
@@ -617,7 +617,7 @@ fn mut_trait_use(state_ty: &Type) -> TokenStream {
     quote! { use #path as _; }
 }
 
-/// The generated workflow's `loop_mode()`, empty when the author wrote none so
+/// The generated bounded operator's `loop_mode()`, empty when the author wrote none so
 /// the trait's `Once` applies.
 fn loop_mode_item(loop_mode: &Option<LitStr>) -> syn::Result<TokenStream> {
     let Some(lit) = loop_mode else {
@@ -630,14 +630,14 @@ fn loop_mode_item(loop_mode: &Option<LitStr>) -> syn::Result<TokenStream> {
         _ => {
             return Err(syn::Error::new_spanned(
                 lit,
-                "#[flezha::workflow_operative] `loop_mode` must be one of: \"once\", \
+                "#[flezha::bounded_operator] `loop_mode` must be one of: \"once\", \
                  \"per_input\", \"chained\"",
             ))
         }
     };
     Ok(quote! {
-        fn loop_mode() -> ::flezha_runner::workflow::LoopMode {
-            ::flezha_runner::workflow::LoopMode::#variant
+        fn loop_mode() -> ::flezha_runner::bounded::LoopMode {
+            ::flezha_runner::bounded::LoopMode::#variant
         }
     })
 }
@@ -682,17 +682,17 @@ fn parse_args(declares: Declares, attr: TokenStream) -> syn::Result<TaskletArgs>
                 return Err(syn::Error::new_spanned(
                     &meta.path,
                     format!(
-                        "#[flezha::tasklet] declares a tasklet; `{key}` belongs to an operative \
-                         declaration: write the short form as `#[flezha::stream_operative(..)]` or \
-                         `#[flezha::workflow_operative(..)]`, or wire it in a full form's topology"
+                        "#[flezha::tasklet] declares a tasklet; `{key}` belongs to an operator \
+                         declaration: write the short form as `#[flezha::unbounded_operator(..)]` or \
+                         `#[flezha::bounded_operator(..)]`, or wire it in a full form's topology"
                     ),
                 ))
             }
-            "loop_mode" if matches!(declares, Declares::Operative(Kind::Stream)) => {
+            "loop_mode" if matches!(declares, Declares::Operator(Kind::Unbounded)) => {
                 return Err(syn::Error::new_spanned(
                     &meta.path,
-                    "#[flezha::stream_operative]: `loop_mode` is a workflow setting; declare the \
-                     short form with `#[flezha::workflow_operative(..)]`",
+                    "#[flezha::unbounded_operator]: `loop_mode` is a bounded setting; declare the \
+                     short form with `#[flezha::bounded_operator(..)]`",
                 ))
             }
             "sink" => args.sink = Some(try_str(&value)?),

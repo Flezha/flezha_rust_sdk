@@ -10,7 +10,7 @@
 use std::time::Duration;
 
 use flezha_runner::channel::ChannelBuilder;
-use flezha_runner::operative::StreamOperative;
+use flezha_runner::operator::UnboundedOperator;
 use flezha_runner::state::{Change, RestoreInitPayload, TimerKind, WallClock};
 use flezha_runner::tasklet::{StateHandle, Tasklet, TaskletCtx, TaskletError};
 use flezha_runner::Flezha;
@@ -112,9 +112,9 @@ impl Tasklet for SessionWindow {
     }
 }
 
-struct SessionOperative;
+struct SessionOperator;
 
-impl StreamOperative for SessionOperative {
+impl UnboundedOperator for SessionOperator {
     fn factory_id() -> &'static str {
         "session_window"
     }
@@ -131,7 +131,7 @@ impl StreamOperative for SessionOperative {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     Flezha::create_runner("sessions")?
-        .register_factory(SessionOperative)?
+        .register_factory(SessionOperator)?
         .run()?;
     Ok(())
 }

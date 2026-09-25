@@ -8,7 +8,7 @@ use common::prelude::*;
 
 #[test]
 fn single_mode_cell_creation() {
-    let topology = build_topology_for::<SingleOperative>().expect("build topology");
+    let topology = build_topology_for::<SingleOperator>().expect("build topology");
     assert_eq!(topology.tasklets.len(), 1);
     assert_eq!(topology.channels.len(), 1);
     assert!(topology.tasklets[0].cell_keys.is_empty());
@@ -65,10 +65,10 @@ impl Tasklet for StaticTasklet {
     }
 }
 
-struct StaticOperative;
-impl StreamOperative for StaticOperative {
+struct StaticOperator;
+impl UnboundedOperator for StaticOperator {
     fn factory_id() -> &'static str {
-        "static_operative"
+        "static_operator"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("inp").into::<StaticTasklet>();
@@ -77,7 +77,7 @@ impl StreamOperative for StaticOperative {
 
 #[test]
 fn static_mode_cell_creation() {
-    let topology = build_topology_for::<StaticOperative>().expect("build topology");
+    let topology = build_topology_for::<StaticOperator>().expect("build topology");
     assert_eq!(topology.tasklets.len(), 1);
     assert_eq!(topology.tasklets[0].cell_keys, vec!["a", "b", "c"]);
     assert!(topology.tasklets[0].cells_for_overridden);
@@ -108,10 +108,10 @@ impl Tasklet for DynamicOnlyTasklet {
     }
 }
 
-struct DynamicOnlyOperative;
-impl StreamOperative for DynamicOnlyOperative {
+struct DynamicOnlyOperator;
+impl UnboundedOperator for DynamicOnlyOperator {
     fn factory_id() -> &'static str {
-        "dynamic_only_operative"
+        "dynamic_only_operator"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("inp")
@@ -122,8 +122,8 @@ impl StreamOperative for DynamicOnlyOperative {
 
 #[test]
 fn dynamic_mode_is_accepted_and_classified() {
-    use flezha_runner::operative::topology::CellMode;
-    let topology = build_topology_for::<DynamicOnlyOperative>().expect("dynamic mode accepted");
+    use flezha_runner::operator::topology::CellMode;
+    let topology = build_topology_for::<DynamicOnlyOperator>().expect("dynamic mode accepted");
     assert_eq!(topology.tasklets.len(), 1);
     assert_eq!(topology.tasklets[0].mode, CellMode::Dynamic);
     assert!(topology.tasklets[0].cell_keys.is_empty());
@@ -161,10 +161,10 @@ impl Tasklet for UnannotatedStaticTasklet {
     }
 }
 
-struct UnannotatedOperative;
-impl StreamOperative for UnannotatedOperative {
+struct UnannotatedOperator;
+impl UnboundedOperator for UnannotatedOperator {
     fn factory_id() -> &'static str {
-        "unannotated_operative"
+        "unannotated_operator"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("inp").into::<UnannotatedStaticTasklet>();
@@ -173,7 +173,7 @@ impl StreamOperative for UnannotatedOperative {
 
 #[test]
 fn unannotated_static_mode_rejection() {
-    let err = build_topology_for::<UnannotatedOperative>()
+    let err = build_topology_for::<UnannotatedOperator>()
         .expect_err("expected cells_for-missing rejection");
     let msg = format!("{:?}", err.errors);
     assert!(
@@ -183,15 +183,15 @@ fn unannotated_static_mode_rejection() {
 }
 
 // Tasklet whose `mailbox_capacity()` returns 0; `build_topology` must
-// reject the operative with the offending Tasklet's name.
+// reject the operator with the offending Tasklet's name.
 test_tasklet!(ZeroCapacityTasklet, "zero_capacity_tasklet", String => String, (), cap 0, |_input, _state, _ctx| {
     Ok(())
 });
 
-struct ZeroCapacityOperative;
-impl StreamOperative for ZeroCapacityOperative {
+struct ZeroCapacityOperator;
+impl UnboundedOperator for ZeroCapacityOperator {
     fn factory_id() -> &'static str {
-        "zero_capacity_operative"
+        "zero_capacity_operator"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("inp").into::<ZeroCapacityTasklet>();
@@ -199,8 +199,8 @@ impl StreamOperative for ZeroCapacityOperative {
 }
 
 #[test]
-fn capacity_zero_is_rejected_at_operative_startup() {
-    let err = build_topology_for::<ZeroCapacityOperative>()
+fn capacity_zero_is_rejected_at_operator_startup() {
+    let err = build_topology_for::<ZeroCapacityOperator>()
         .expect_err("expected mailbox-capacity-zero rejection");
     let msg = format!("{:?}", err.errors);
     assert!(
@@ -219,10 +219,10 @@ test_tasklet!(ExplicitCapTasklet, "explicit_cap_tasklet", String => String, (), 
     Ok(())
 });
 
-struct ExplicitCapOperative;
-impl StreamOperative for ExplicitCapOperative {
+struct ExplicitCapOperator;
+impl UnboundedOperator for ExplicitCapOperator {
     fn factory_id() -> &'static str {
-        "explicit_cap_operative"
+        "explicit_cap_operator"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("inp").into::<ExplicitCapTasklet>();
@@ -231,7 +231,7 @@ impl StreamOperative for ExplicitCapOperative {
 
 #[test]
 fn explicit_capacity_threads_to_topology_descriptor() {
-    let topology = build_topology_for::<ExplicitCapOperative>().expect("topology");
+    let topology = build_topology_for::<ExplicitCapOperator>().expect("topology");
     assert_eq!(topology.tasklets.len(), 1);
     assert_eq!(topology.tasklets[0].mailbox_capacity, 4096);
     assert!(topology.tasklets[0].mailbox_capacity_overridden);
@@ -240,16 +240,16 @@ fn explicit_capacity_threads_to_topology_descriptor() {
 /// Default Tasklet inherits the 1024 default.
 #[test]
 fn default_capacity_is_1024_in_topology() {
-    let topology = build_topology_for::<SingleOperative>().expect("topology");
+    let topology = build_topology_for::<SingleOperator>().expect("topology");
     assert_eq!(topology.tasklets[0].mailbox_capacity, 1024);
     assert!(!topology.tasklets[0].mailbox_capacity_overridden);
 }
 
 #[test]
-fn operative_instance_creates_cells() {
-    let topology = build_topology_for::<StaticOperative>().expect("topology");
+fn operator_instance_creates_cells() {
+    let topology = build_topology_for::<StaticOperator>().expect("topology");
     let instance =
-        flezha_runner::operative::OperativeInstance::new(topology, Arc::from("instance-id"));
+        flezha_runner::operator::OperatorInstance::new(topology, Arc::from("instance-id"));
     assert_eq!(instance.cells.len(), 1);
     assert_eq!(instance.cells[0].len(), 3);
     assert_eq!(instance.cell_key_to_idx[0].get("a"), Some(&0));

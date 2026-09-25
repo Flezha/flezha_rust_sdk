@@ -4,7 +4,7 @@
 //! `flz_core/src/host/check_tests.rs` is the same table driven against the
 //! record directly, because the core has no builder. This one maps the same
 //! step vocabulary onto the typed graph builder, so what is measured here is
-//! what an author of a Rust operative actually writes.
+//! what an author of a Rust operator actually writes.
 //!
 //! Two entry points, both off `main`:
 //!
@@ -26,9 +26,9 @@
 //! producer-side links (`named`, `sink`, `keyed`, `branch`) live on
 //! `Stream<'b, T, NodeTarget>` and an entry channel's handle is a different
 //! type, so a row applying one to an entry channel has no Rust spelling; and a
-//! stream class has no `sync_durability` knob at all — it is a workflow
+//! unbounded class has no `sync_durability` knob at all — it is a bounded operator
 //! declaration here, which is why the record's flag is written `false`
-//! (`sdk/rust/src/operative/builder.rs`). The fixture's `needs` column names
+//! (`sdk/rust/src/operator/builder.rs`). The fixture's `needs` column names
 //! both.
 
 use std::cell::RefCell;
@@ -36,18 +36,18 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use flezha_runner::bounded::spec::build_spec;
 use flezha_runner::channel::{
     ChannelDescriptor, ChannelKind, EntryStream, Merge, NodeTarget, Stream, StreamTarget,
 };
-use flezha_runner::operative::builder::{build_topology_for, DEFAULT_MAILBOX_CAPACITY};
-use flezha_runner::operative::topology::OperativeTopology;
+use flezha_runner::operator::builder::{build_topology_for, DEFAULT_MAILBOX_CAPACITY};
+use flezha_runner::operator::topology::OperatorTopology;
 use flezha_runner::tasklet::LogicalClock;
-use flezha_runner::workflow::spec::build_spec;
 use flezha_runner::{Flezha, FlezhaRunner};
 use serde_json::{json, Value};
 
-use crate::channel::HybridChannelOperative;
-use crate::workflow::TierCommitBlockWorkflow;
+use crate::bounded::TierCommitBlockBounded;
+use crate::channel::HybridChannelOperator;
 use crate::*;
 
 /// The fixture, relative to the repository root the app is launched from.
@@ -59,7 +59,7 @@ const FIXTURE: &str = "test/fixtures/reference_topologies.txt";
 const SURFACES: [&str; 5] = [
     "merge",
     "branch",
-    "workflow",
+    "bounded",
     "shorthand",
     "shorthand_typed_output",
 ];
@@ -255,11 +255,11 @@ thread_local! {
 }
 
 /// A row's class. `class.persistent` selects between this and its volatile
-/// twin, which is the only class fact a Rust operative declares as a const
+/// twin, which is the only class fact a Rust operator declares as a const
 /// rather than on the builder.
 struct RowClass;
 
-impl StreamOperative for RowClass {
+impl UnboundedOperator for RowClass {
     fn factory_id() -> &'static str {
         PLAN.with(|p| p.borrow().factory_id)
     }
@@ -271,7 +271,7 @@ impl StreamOperative for RowClass {
 
 struct VolatileRowClass;
 
-impl StreamOperative for VolatileRowClass {
+impl UnboundedOperator for VolatileRowClass {
     const PERSISTENCE_ENABLED: bool = false;
 
     fn factory_id() -> &'static str {
@@ -287,7 +287,7 @@ impl StreamOperative for VolatileRowClass {
 /// the missing switch are consts, so the refusal needs a class of its own.
 struct SleepyVolatileRowClass;
 
-impl StreamOperative for SleepyVolatileRowClass {
+impl UnboundedOperator for SleepyVolatileRowClass {
     const PERSISTENCE_ENABLED: bool = false;
     const SLEEP_WHEN_IDLE: bool = true;
 
@@ -300,7 +300,7 @@ impl StreamOperative for SleepyVolatileRowClass {
     }
 }
 
-/// Which const pair a stream row declares: `(persistent, sleeps)`.
+/// Which const pair an unbounded row declares: `(persistent, sleeps)`.
 fn stream_consts(row: &Row) -> (bool, bool) {
     (
         row.steps.contains("class.persistent"),
@@ -308,11 +308,11 @@ fn stream_consts(row: &Row) -> (bool, bool) {
     )
 }
 
-/// A `class.workflow` row's class: the same steps on a workflow, so what the
-/// row writes reaches the workflow kind's judgement.
-struct RowWorkflow;
+/// A `class.bounded` row's class: the same steps on a bounded operator, so what the
+/// row writes reaches the bounded kind's judgement.
+struct RowBounded;
 
-impl WorkflowOperative for RowWorkflow {
+impl BoundedOperator for RowBounded {
     fn factory_id() -> &'static str {
         RowClass::factory_id()
     }
@@ -322,11 +322,11 @@ impl WorkflowOperative for RowWorkflow {
     }
 }
 
-/// Whether a row declares the workflow kind rather than a stream.
-fn is_workflow(row: &Row) -> bool {
+/// Whether a row declares the bounded kind rather than the unbounded one.
+fn is_bounded(row: &Row) -> bool {
     row.steps
         .split(';')
-        .any(|step| step.trim() == "class.workflow")
+        .any(|step| step.trim() == "class.bounded")
 }
 
 /// Load `row` as the class the next `build_topology_for` declares.
@@ -514,13 +514,13 @@ impl<'b> Interp<'b> {
 
     /// `class.<flag>[(<value>)]` — the facts the class declares on the builder.
     /// `persistent` and `sleep_when_idle` are consts on the class and
-    /// `workflow` the class's kind, all chosen by the caller; `sync_durability` is a declaration a stream
+    /// `bounded` the class's kind, all chosen by the caller; `sync_durability` is a declaration an unbounded operator
     /// class does not carry, and every row needing it is skipped before it
     /// reaches here.
     fn class_flag(&mut self, rest: &str) {
         let (flag, value) = split_call(rest);
         match flag {
-            "persistent" | "sleep_when_idle" | "workflow" => {}
+            "persistent" | "sleep_when_idle" | "bounded" => {}
             "effectively_once" => self.c.effectively_once(),
             "checkpoint_ack" => self.c.checkpoint_ack(),
             "checkpoint_every" => self.c.checkpoint_every(value.parse().expect("a cadence")),
@@ -658,17 +658,17 @@ fn parse_shorthand(step: &str) -> Option<Shorthand> {
 }
 
 /// The refusal a declaration earns, and the compile-fail fixture that pins it.
-/// A second operative impl is rustc's own conflicting-impl error, which cannot
+/// A second operator impl is rustc's own conflicting-impl error, which cannot
 /// carry the contract's name, so that row cites the fixture's source.
 fn citation(s: &Shorthand) -> (&'static str, &'static str) {
     match s {
         Shorthand::WithTopology => (
             "ShortFormWithTopology",
-            "sdk/rust/tests/ui/operative_with_hand_written_impl.rs",
+            "sdk/rust/tests/ui/operator_with_hand_written_impl.rs",
         ),
         Shorthand::NoOutput => (
             "SinkWithoutOutput",
-            "sdk/rust/tests/ui/operative_sink_without_output.stderr",
+            "sdk/rust/tests/ui/operator_sink_without_output.stderr",
         ),
         Shorthand::Plain => {
             panic!("a well-formed shorthand declaration earns no refusal of its own")
@@ -679,24 +679,24 @@ fn citation(s: &Shorthand) -> (&'static str, &'static str) {
 // The duplicate row's pair, declared here rather than beside the app's
 // fixtures because nothing but that row registers them: two short forms, one of
 // each kind, under one factory id.
-#[flezha_runner::stream_operative(id = "plain", sink = "out")]
-fn shorthand_dup_stream(input: String) -> Vec<u8> {
+#[flezha_runner::unbounded_operator(id = "plain", sink = "out")]
+fn shorthand_dup_unbounded(input: String) -> Vec<u8> {
     input.into_bytes()
 }
 
-#[flezha_runner::workflow_operative(id = "plain", sink = "twin_sink")]
-fn shorthand_dup_workflow(input: String) -> Vec<u8> {
+#[flezha_runner::bounded_operator(id = "plain", sink = "twin_sink")]
+fn shorthand_dup_bounded(input: String) -> Vec<u8> {
     input.into_bytes()
 }
 
 /// Register the duplicate row's pair on `runner` and answer what the second
-/// call was told. `Ok(())` means the runner accepted a second operative under a
+/// call was told. `Ok(())` means the runner accepted a second operator under a
 /// factory id it already held, which is the shape the contract refuses.
 fn drive_duplicate(runner: &FlezhaRunner) -> Result<(), String> {
     runner
-        .register_factory(ShorthandDupStream)
+        .register_factory(ShorthandDupUnbounded)
         .map_err(|e| format!("the first registration must succeed, got: {e}"))?;
-    match runner.register_factory(ShorthandDupWorkflow) {
+    match runner.register_factory(ShorthandDupBounded) {
         Ok(_) => Ok(()),
         // The refusal's own name, read off the display the author reads.
         Err(refusal) => Err(refusal.to_string()),
@@ -718,13 +718,13 @@ fn refusal_name(message: &str) -> String {
 
 /// What a row's topology answered: the derived declaration, or the refusal
 /// names the core handed back as data.
-fn topology_of(row: &Row) -> Result<Arc<OperativeTopology>, Vec<String>> {
+fn topology_of(row: &Row) -> Result<Arc<OperatorTopology>, Vec<String>> {
     if row.steps == "cited above" {
         return cited(&row.topology);
     }
     load(row);
-    if is_workflow(row) {
-        return build_spec::<RowWorkflow>().map_err(|e| vec![refusal_name(&e.to_string())]);
+    if is_bounded(row) {
+        return build_spec::<RowBounded>().map_err(|e| vec![refusal_name(&e.to_string())]);
     }
     let built = match stream_consts(row) {
         (true, false) => build_topology_for::<RowClass>(),
@@ -742,12 +742,12 @@ fn topology_of(row: &Row) -> Result<Arc<OperativeTopology>, Vec<String>> {
 
 /// The two twins the fixture cites rather than re-spells: this app's own
 /// fixtures, which is where the seven-column table was transcribed from.
-fn cited(topology: &str) -> Result<Arc<OperativeTopology>, Vec<String>> {
+fn cited(topology: &str) -> Result<Arc<OperatorTopology>, Vec<String>> {
     match topology {
-        "hybrid_channel" => build_topology_for::<HybridChannelOperative>()
+        "hybrid_channel" => build_topology_for::<HybridChannelOperator>()
             .map_err(|e| e.errors.iter().map(|i| i.name().to_string()).collect()),
         "commit_block_chain" => {
-            build_spec::<TierCommitBlockWorkflow>().map_err(|e| vec![e.to_string()])
+            build_spec::<TierCommitBlockBounded>().map_err(|e| vec![e.to_string()])
         }
         other => panic!("the fixture cites a topology this app does not declare: {other}"),
     }
@@ -755,7 +755,7 @@ fn cited(topology: &str) -> Result<Arc<OperativeTopology>, Vec<String>> {
 
 /// The derived declaration, in the columns the fixture's seven-column table
 /// states: what the core answered, as the topology materialised it.
-fn derived(topology: &OperativeTopology) -> Value {
+fn derived(topology: &OperatorTopology) -> Value {
     let channels: Vec<Value> = topology
         .channels
         .iter()
@@ -866,7 +866,7 @@ pub(crate) fn register_only(
             match drive_duplicate(runner) {
                 Ok(()) => {
                     return Err(format!(
-                        "{topology}: the runner accepted a second operative under one factory id"
+                        "{topology}: the runner accepted a second operator under one factory id"
                     )
                     .into())
                 }
@@ -887,8 +887,8 @@ pub(crate) fn register_only(
     }
 
     load(row);
-    let defined = if is_workflow(row) {
-        runner.register_factory(RowWorkflow)
+    let defined = if is_bounded(row) {
+        runner.register_factory(RowBounded)
     } else {
         match stream_consts(row) {
             (true, false) => runner.register_factory(RowClass),

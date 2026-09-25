@@ -73,7 +73,7 @@ pub trait SimpleTasklet: Send + Sync + 'static + Default {
     /// [`NoChange`](crate::tasklet::NoChange).
     type State: Send + Sync + 'static + Serialize + DeserializeOwned + DerivedState;
 
-    /// Stable identifier within the StreamOperative class. See [`Tasklet::name`].
+    /// Stable identifier within the UnboundedOperator class. See [`Tasklet::name`].
     fn name() -> &'static str;
 
     /// Per-cell state factory. See [`Tasklet::init_state`] — the restore

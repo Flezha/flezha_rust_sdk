@@ -35,7 +35,7 @@
   "topology_surfaces": [
     "merge",
     "branch",
-    "workflow",
+    "bounded",
     "shorthand",
     "shorthand_typed_output"
   ],
@@ -53,7 +53,7 @@
     "graph_builder": [
       "sugar_static_cell",
       "static_cell",
-      "mixed_operative",
+      "mixed_operator",
       "hybrid_channel",
       "merged_input",
       "transform_chain",
@@ -64,8 +64,8 @@
       "sugar_do_nothing",
       "sugar_store_input",
       "sugar_named_input",
-      "sugar_workflow",
-      "sugar_workflow_per_input",
+      "sugar_bounded",
+      "sugar_bounded_per_input",
       "sugar_state_only"
     ],
     "liveness": [
@@ -101,37 +101,37 @@
     "keyed_channels": [
       "partition_relay"
     ],
-    "workflow": [
+    "bounded": [
       "spawn_requester",
       "spawn_once_requester",
-      "echo_workflow",
-      "timer_loop_workflow",
-      "event_timer_workflow",
-      "static_cell_workflow",
-      "typed_once_workflow",
-      "commit_block_workflow",
-      "sync_durable_workflow",
+      "echo_bounded",
+      "timer_loop_bounded",
+      "event_timer_bounded",
+      "static_cell_bounded",
+      "typed_once_bounded",
+      "commit_block_bounded",
+      "sync_durable_bounded",
       "optout_commit_block",
-      "tier_commit_block_workflow",
-      "saga_block_workflow",
-      "keyed_block_workflow",
-      "keyed_saga_workflow",
-      "outbox_block_workflow",
-      "undo_outbox_workflow",
-      "failed_stage_workflow",
-      "chat_loop_workflow",
-      "stateless_loop_workflow",
-      "keyed_loop_workflow",
-      "chat_rewind_workflow",
-      "reply_block_loop_workflow",
-      "retry_workflow",
-      "branch_workflow",
-      "diamond_workflow",
+      "tier_commit_block_bounded",
+      "saga_block_bounded",
+      "keyed_block_bounded",
+      "keyed_saga_bounded",
+      "outbox_block_bounded",
+      "undo_outbox_bounded",
+      "failed_stage_bounded",
+      "chat_loop_bounded",
+      "stateless_loop_bounded",
+      "keyed_loop_bounded",
+      "chat_rewind_bounded",
+      "reply_block_loop_bounded",
+      "retry_bounded",
+      "branch_bounded",
+      "diamond_bounded",
       "bench_chain_1",
       "bench_chain_4",
       "bench_chain_16",
       "bench_chain_optout_4",
-      "bench_loop_workflow"
+      "bench_loop_bounded"
     ],
     "dynamic_cell": [
       "dynamic_cell"
@@ -139,7 +139,7 @@
     "partitioned": [
       "partition_relay",
       "dynamic_cell",
-      "keyed_loop_workflow"
+      "keyed_loop_bounded"
     ],
     "pool_wedge": [
       "wedge_probe"

@@ -2,7 +2,7 @@
 name = "flezha_runner"
 version = "0.1.0"
 edition = "2021"
-description = "Flezha Rust SDK — author stream and workflow operatives and run them against a Flezha controller"
+description = "Flezha Rust SDK — author unbounded and bounded operators and run them against a Flezha controller"
 license = "Apache-2.0"
 repository = "https://github.com/flezha/flezha_rust_sdk"
 
@@ -93,7 +93,7 @@ harness = false
 required-features = ["bench-internals"]
 
 [[bench]]
-name = "workflow_scaling"
+name = "bounded_scaling"
 harness = false
 required-features = ["bench-internals", "testing"]
 

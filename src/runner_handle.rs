@@ -10,11 +10,11 @@ use std::sync::{Arc, Condvar, Mutex, RwLock, Weak};
 
 use crossbeam::channel::{Receiver, Sender};
 
-use crate::operative::instance::OperativeInstance;
-use crate::operative::Operative;
+use crate::operator::instance::OperatorInstance;
+use crate::operator::Operator;
 use crate::runner::{ClientResponseMessage, RunnerMessage};
 use crate::shutdown::ShutdownBridge;
-use crate::{operative, pb, runner, shutdown, BuildWorkflowError, TopologyBuildError};
+use crate::{operator, pb, runner, shutdown, BuildBoundedError, TopologyBuildError};
 
 /// The ONE public error of the entry-point chain: every fallible call on
 /// [`FlezhaRunner`] returns `Result<_, FlezhaError>`, so
@@ -43,28 +43,28 @@ pub enum FlezhaError {
     /// call site, never a panic.
     #[error(transparent)]
     InvalidTopology(#[from] TopologyBuildError),
-    /// `register_factory` found invalid workflow authoring.
+    /// `register_factory` found invalid bounded operator authoring.
     #[error(transparent)]
-    InvalidWorkflow(#[from] BuildWorkflowError),
+    InvalidBounded(#[from] BuildBoundedError),
     /// The factory id is already in this runner's declared set, whichever kind
-    /// either operative is. The display begins with the refusal's contract name
+    /// either operator is. The display begins with the refusal's contract name
     /// (`docs/sdk/authoring_contract.md` §5.2), which is what the author reads.
     #[error("DuplicateFactoryId: factory `{factory_id}` is already defined on this runner")]
     DuplicateFactoryId { factory_id: String },
     /// `unregister_factory` named a factory that is not in this runner's declared set.
     #[error("factory `{factory_id}` is not defined on this runner")]
     NotDefined { factory_id: String },
-    /// `unregister_factory` refused: live operative instances of the factory
+    /// `unregister_factory` refused: live operator instances of the factory
     /// exist. The type remains defined.
     #[error(
-        "factory `{factory_id}` has {live_instances} live operative instance(s); \
+        "factory `{factory_id}` has {live_instances} live operator instance(s); \
          stop them before removing the type"
     )]
-    OperativeTypeInUse {
+    OperatorTypeInUse {
         factory_id: String,
         live_instances: usize,
     },
-    /// The call requires a started runner (`await_termination`, `operatives`).
+    /// The call requires a started runner (`await_termination`, `operators`).
     #[error("runner not started")]
     NotStarted,
     /// The runner thread is gone or replied with an unexpected message.
@@ -98,7 +98,7 @@ pub struct Flezha;
 impl Flezha {
     /// Create this process's runner for `namespace` — one object carries
     /// declaration and lifecycle (Beam's `Pipeline.create()` shape). Declare
-    /// operative classes of either kind with
+    /// operator classes of either kind with
     /// [`FlezhaRunner::register_factory`] (legal before AND after start), then
     /// [`FlezhaRunner::start`] (keep the calling thread) or
     /// [`FlezhaRunner::run`] (block until shutdown). Creating a runner never
@@ -106,13 +106,13 @@ impl Flezha {
     ///
     /// ```no_run
     /// # use flezha_runner::{Flezha, FlezhaError};
-    /// # struct MyOperative;
-    /// # impl flezha_runner::StreamOperative for MyOperative {
-    /// #     fn factory_id() -> &'static str { "my_operative" }
+    /// # struct MyOperator;
+    /// # impl flezha_runner::UnboundedOperator for MyOperator {
+    /// #     fn factory_id() -> &'static str { "my_operator" }
     /// #     fn channels(_c: &flezha_runner::ChannelBuilder) {}
     /// # }
     /// # fn main() -> Result<(), FlezhaError> {
-    /// Flezha::create_runner("my_app")?.register_factory(MyOperative)?.run()?;
+    /// Flezha::create_runner("my_app")?.register_factory(MyOperator)?.run()?;
     /// # Ok(())
     /// # }
     /// ```
@@ -137,7 +137,7 @@ impl Flezha {
     /// dropped — `None` otherwise. Never fails and never starts a runner as
     /// a side effect. Runners that were created but never started never
     /// appear here. The returned handle observes the runner (`namespace()`,
-    /// `operatives()`, `await_termination()`); dropping it does NOT shut the
+    /// `operators()`, `await_termination()`); dropping it does NOT shut the
     /// runner down — only dropping the started owning handle does.
     pub fn current_runner() -> Option<Arc<FlezhaRunner>> {
         let active = ACTIVE_RUNNER.lock().unwrap();
@@ -226,10 +226,10 @@ impl FlezhaRunner {
     }
 
     /// Administer this namespace from ordinary application code: start, stop
-    /// and feed operatives, enable and disable plugins, read what is running.
+    /// and feed operators, enable and disable plugins, read what is running.
     ///
     /// The controller judges every call as the identity this connection
-    /// proved, so no credential is held here and nothing expires. An operator
+    /// proved, so no credential is held here and nothing expires. A user
     /// grants a namespace's applications the authority once, with
     /// `flz role bind runner@<namespace> app <namespace>`; until then every
     /// call is refused. See [`crate::admin`].
@@ -237,44 +237,41 @@ impl FlezhaRunner {
         crate::admin::Admin
     }
 
-    /// Declare an operative class the runtime can spawn instances of later
-    /// (via the controller's `AddOperative`), of either kind: the kind is read
-    /// from the value's [`Operative`] impl, never named by the call. Builds the
-    /// class once — `R::channels(...)` for a stream, the spec for a workflow —
+    /// Declare an operator class the runtime can spawn instances of later
+    /// (via the controller's `AddOperator`), of either kind: the kind is read
+    /// from the value's [`Operator`] impl, never named by the call. Builds the
+    /// class once — `R::channels(...)` for an unbounded operator, the spec for a bounded operator —
     /// and records it in the global class registry of its kind. Legal before
     /// and after `start()`; a post-start registration ships the runner's full
     /// factory set to the controller (`UpdateFactories`).
     ///
     /// An invalid declaration (duplicate channel names, unwired channels,
-    /// missing `cells_for` overrides, an unterminating workflow, ...) is
+    /// missing `cells_for` overrides, an unterminating bounded operator, ...) is
     /// reported here, at the declaring call site — not a panic — and leaves the
     /// runner exactly as it was.
     ///
-    /// The operative is passed as a value because a function generic over two
+    /// The operator is passed as a value because a function generic over two
     /// unrelated traits cannot be called with a type argument alone without
-    /// naming the kind marker; operatives are unit structs, so the value costs
+    /// naming the kind marker; operators are unit structs, so the value costs
     /// nothing. A type implementing BOTH kind traits cannot be passed at all —
-    /// `K` is unresolvable — which is Rust's `AmbiguousOperativeKind`.
-    pub fn register_factory<K, O: Operative<K>>(
-        &self,
-        _operative: O,
-    ) -> Result<&Self, FlezhaError> {
+    /// `K` is unresolvable — which is Rust's `AmbiguousOperatorKind`.
+    pub fn register_factory<K, O: Operator<K>>(&self, _operator: O) -> Result<&Self, FlezhaError> {
         // Build/validate BEFORE touching the declared set.
         let class = O::build_class()?;
         self.declare(O::factory_id(), || O::install_class(class))?;
         Ok(self)
     }
 
-    /// Remove an operative class from this runner — the inverse of
+    /// Remove an operator class from this runner — the inverse of
     /// [`Self::register_factory`], taking what it took. Legal before and after
-    /// `start()`. Refuses with [`FlezhaError::OperativeTypeInUse`] while live
+    /// `start()`. Refuses with [`FlezhaError::OperatorTypeInUse`] while live
     /// instances of the factory exist (the type stays defined) and with
     /// [`FlezhaError::NotDefined`] for a factory this runner never declared.
     /// A post-start removal ships the remaining full factory set to the
     /// controller (`UpdateFactories`).
-    pub fn unregister_factory<K, O: Operative<K>>(
+    pub fn unregister_factory<K, O: Operator<K>>(
         &self,
-        _operative: O,
+        _operator: O,
     ) -> Result<&Self, FlezhaError> {
         self.remove(O::factory_id())
     }
@@ -285,9 +282,9 @@ impl FlezhaRunner {
     /// singleton slot by compare-and-set — at most one runner may be started
     /// per process; the loser fails with [`FlezhaError::AlreadyRunning`]
     /// WITHOUT connecting, mutating shared state, or spawning a thread.
-    /// Starting with zero declared operative types is legal (the init frame
+    /// Starting with zero declared operator types is legal (the init frame
     /// carries an empty factory list; types may be declared later), whatever
-    /// short-form or `operative!` types the binary happens to contain: nothing
+    /// short-form or `operator!` types the binary happens to contain: nothing
     /// is harvested here. Bind the runner before starting it
     /// (`let runner = Flezha::create_runner(ns)?; runner.start()?;`): a
     /// chained temporary Drops (and shuts the runner down) at statement end.
@@ -334,17 +331,17 @@ impl FlezhaRunner {
         self.await_termination()
     }
 
-    /// Snapshot of the live StreamOperative-instance registry, keyed by
-    /// what the wire calls `operative_id`. `Err(NotStarted)` on a
+    /// Snapshot of the live UnboundedOperator-instance registry, keyed by
+    /// what the wire calls `operator_id`. `Err(NotStarted)` on a
     /// never-started runner — never a panic.
-    pub fn operatives(&self) -> Result<HashMap<String, Arc<OperativeInstance>>, FlezhaError> {
+    pub fn operators(&self) -> Result<HashMap<String, Arc<OperatorInstance>>, FlezhaError> {
         let started = self.core.started.lock().unwrap();
         let Some(live) = started.as_ref() else {
             return Err(FlezhaError::NotStarted);
         };
 
-        match live.exchange(RunnerMessage::ReturnOperatives)? {
-            ClientResponseMessage::ReturnOperatives(operatives) => Ok(operatives),
+        match live.exchange(RunnerMessage::ReturnOperators)? {
+            ClientResponseMessage::ReturnOperators(operators) => Ok(operators),
             _ => Err(Started::unexpected_reply()),
         }
     }
@@ -384,7 +381,7 @@ impl FlezhaRunner {
 
     /// Remove `factory_id` from this runner. Post-start, the live-instance
     /// check + class unregistration run on the coordinator loop — serialized
-    /// with `AddOperative` handling by construction, so the check is
+    /// with `AddOperator` handling by construction, so the check is
     /// race-free. Pre-start no instances can exist, so the class is
     /// unregistered directly.
     fn remove(&self, factory_id: &str) -> Result<&Self, FlezhaError> {
@@ -405,7 +402,7 @@ impl FlezhaRunner {
             let started = self.core.started.lock().unwrap();
             match started.as_ref() {
                 Some(live) => refuse_live_instances(live, factory_id)?,
-                None => operative::registry::unregister_class(factory_id),
+                None => operator::registry::unregister_class(factory_id),
             }
         }
 
@@ -433,8 +430,7 @@ impl FlezhaRunner {
                 .unwrap()
                 .iter()
                 .map(|id| {
-                    let (sdk_lang, kind) =
-                        flz_core::operative::registry::advertised_for_factory(id);
+                    let (sdk_lang, kind) = flz_core::operator::registry::advertised_for_factory(id);
                     pb::FactoryDecl {
                         id: id.clone(),
                         description: String::new(),
@@ -481,7 +477,7 @@ impl FlezhaRunner {
 }
 
 /// Post-start removal: the live-instance check and the class unregistration
-/// run on the coordinator loop, serialized with `AddOperative` handling by
+/// run on the coordinator loop, serialized with `AddOperator` handling by
 /// construction, so the check is race-free. Refuses while instances exist.
 fn refuse_live_instances(live: &Started, factory_id: &str) -> Result<(), FlezhaError> {
     match live.exchange(RunnerMessage::RemoveFactory {
@@ -489,7 +485,7 @@ fn refuse_live_instances(live: &Started, factory_id: &str) -> Result<(), FlezhaE
     })? {
         ClientResponseMessage::RemoveFactoryResult(Ok(())) => Ok(()),
         ClientResponseMessage::RemoveFactoryResult(Err(live_instances)) => {
-            Err(FlezhaError::OperativeTypeInUse {
+            Err(FlezhaError::OperatorTypeInUse {
                 factory_id: factory_id.to_string(),
                 live_instances,
             })

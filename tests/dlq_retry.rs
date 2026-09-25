@@ -27,10 +27,10 @@ test_tasklet!(TransientTasklet, "transient_tasklet", String => String, (), |_inp
     }
 });
 
-struct TransientOperative;
-impl StreamOperative for TransientOperative {
+struct TransientOperator;
+impl UnboundedOperator for TransientOperator {
     fn factory_id() -> &'static str {
-        "transient_operative"
+        "transient_operator"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
@@ -45,7 +45,7 @@ fn transient_failure_recovers_within_retry_budget() {
     let _g = SINK_LOCK.lock().unwrap();
     let retries_before = park::RETRIES_TOTAL.load(Ordering::SeqCst);
     let parked_before = park::PARKED_TOTAL.load(Ordering::SeqCst);
-    let (handle, _instance) = setup::<TransientOperative>("transient-instance");
+    let (handle, _instance) = setup::<TransientOperator>("transient-instance");
     let stream = dummy_stream();
 
     dispatch_input(
@@ -91,10 +91,10 @@ test_tasklet!(NonRetryableTasklet, "non_retryable_tasklet", String => String, ()
     }
 });
 
-struct NonRetryableOperative;
-impl StreamOperative for NonRetryableOperative {
+struct NonRetryableOperator;
+impl UnboundedOperator for NonRetryableOperator {
     fn factory_id() -> &'static str {
-        "non_retryable_operative"
+        "non_retryable_operator"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
@@ -107,7 +107,7 @@ impl StreamOperative for NonRetryableOperative {
 fn non_retryable_error_parks_immediately() {
     let _g = SINK_LOCK.lock().unwrap();
     let parked = install_auto_acking_sink();
-    let (handle, _instance) = setup::<NonRetryableOperative>("nonretry-instance");
+    let (handle, _instance) = setup::<NonRetryableOperator>("nonretry-instance");
     let stream = dummy_stream();
 
     dispatch_input(
@@ -159,10 +159,10 @@ test_tasklet!(PanickyTasklet, "panicky_tasklet", String => String, (), |input, _
     Ok(())
 });
 
-struct PanickyOperative;
-impl StreamOperative for PanickyOperative {
+struct PanickyOperator;
+impl UnboundedOperator for PanickyOperator {
     fn factory_id() -> &'static str {
-        "panicky_operative"
+        "panicky_operator"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
@@ -175,7 +175,7 @@ impl StreamOperative for PanickyOperative {
 fn panic_parity_exhausts_budget_then_parks_and_continues() {
     let _g = SINK_LOCK.lock().unwrap();
     let parked = install_auto_acking_sink();
-    let (handle, _instance) = setup::<PanickyOperative>("panicky-instance");
+    let (handle, _instance) = setup::<PanickyOperator>("panicky-instance");
     let stream = dummy_stream();
 
     dispatch_input(
@@ -233,10 +233,10 @@ test_tasklet!(TypedOrderTasklet, "typed_order_tasklet", TypedOrder => String, ()
     Ok(())
 });
 
-struct TypedEntryOperative;
-impl StreamOperative for TypedEntryOperative {
+struct TypedEntryOperator;
+impl UnboundedOperator for TypedEntryOperator {
     fn factory_id() -> &'static str {
-        "typed_entry_operative"
+        "typed_entry_operator"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<TypedOrder>("orders")
@@ -253,7 +253,7 @@ impl StreamOperative for TypedEntryOperative {
 fn entry_parse_failure_exhausts_budget_then_parks() {
     let _g = SINK_LOCK.lock().unwrap();
     let parked = install_auto_acking_sink();
-    let (handle, _instance) = setup::<TypedEntryOperative>("typed-entry-instance");
+    let (handle, _instance) = setup::<TypedEntryOperator>("typed-entry-instance");
     let stream = dummy_stream();
 
     dispatch_input(

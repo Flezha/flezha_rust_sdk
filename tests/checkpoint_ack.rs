@@ -54,10 +54,10 @@ impl Tasklet for CheckpointTasklet {
     }
 }
 
-struct CheckpointOperative;
-impl StreamOperative for CheckpointOperative {
+struct CheckpointOperator;
+impl UnboundedOperator for CheckpointOperator {
     fn factory_id() -> &'static str {
-        "checkpoint_operative"
+        "checkpoint_operator"
     }
     fn channels(c: &ChannelBuilder) {
         c.effectively_once();
@@ -79,7 +79,7 @@ fn checkpoint_ack_holds_the_offset_until_the_interval_closes() {
     let _serial = WAL_TEST_LOCK.lock().unwrap();
     install_capturing_tier_sink();
 
-    let (handle, _instance) = setup::<CheckpointOperative>("cp-instance");
+    let (handle, _instance) = setup::<CheckpointOperator>("cp-instance");
 
     dispatch_at(&handle, "cp-instance", 1, "acc"); // fold only
     dispatch_at(&handle, "cp-instance", 2, "emit"); // fold + emit
@@ -134,7 +134,7 @@ fn a_park_closes_the_checkpoint_interval() {
     let _serial = WAL_TEST_LOCK.lock().unwrap();
     install_capturing_tier_sink();
 
-    let (handle, _instance) = setup::<CheckpointOperative>("cp-park-instance");
+    let (handle, _instance) = setup::<CheckpointOperator>("cp-park-instance");
 
     dispatch_at(&handle, "cp-park-instance", 7, "acc");
     dispatch_at(&handle, "cp-park-instance", 8, "poison");
@@ -196,8 +196,8 @@ fn a_restore_discards_the_open_interval() {
 fn a_restore_discards_queued_input_only_where_the_controller_re_forwards_it() {
     use flezha_runner::cell::{make_cell_payload, restore_discarded_inputs};
 
-    let (_tier_handle, tier) = setup::<TierOperative>("restore-mailbox-tier");
-    let (_plain_handle, plain) = setup::<KeyedStampOperative>("restore-mailbox-plain");
+    let (_tier_handle, tier) = setup::<TierOperator>("restore-mailbox-tier");
+    let (_plain_handle, plain) = setup::<KeyedStampOperator>("restore-mailbox-plain");
     let (stream, _observer) = stream_pair();
 
     for instance in [&tier, &plain] {

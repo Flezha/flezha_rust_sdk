@@ -1,6 +1,6 @@
 use flezha_runner::tasklet;
 
-/// A processing stage of the operative's graph, run once per message. This one
+/// A processing stage of the operator's graph, run once per message. This one
 /// prefixes the input, and what it returns is emitted.
 ///
 /// The attribute generates the tasklet type `Echo` from the function: the
@@ -10,7 +10,7 @@ use flezha_runner::tasklet;
 /// renaming it later declares a different tasklet rather than renaming this
 /// one.
 ///
-/// Where the result goes is not decided here. The operative decides that, so
+/// Where the result goes is not decided here. The operator decides that, so
 /// the graph can be rewired without touching this tasklet.
 #[tasklet(id = "echo")]
 pub fn echo(input: String) -> String {

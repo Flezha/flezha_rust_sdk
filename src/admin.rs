@@ -2,10 +2,10 @@
 //! application code.
 //!
 //! [`FlezhaRunner::admin`](crate::FlezhaRunner::admin) hands back an [`Admin`]
-//! whose methods start, stop and feed operatives, enable and disable plugins,
+//! whose methods start, stop and feed operators, enable and disable plugins,
 //! and read what is running. No tasklet has to be running and the
 //! application holds no credential of its own: the controller judges every
-//! call as the identity the connection already established, so an operator
+//! call as the identity the connection already established, so a user
 //! grants the authority once per namespace and revokes it the same way:
 //!
 //! ```sh
@@ -21,17 +21,17 @@ use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-/// The specification a start takes, the same one `flz operative start` takes.
+/// The specification a start takes, the same one `flz operator start` takes.
 #[derive(Debug, Clone, Default)]
-pub struct OperativeSpec {
+pub struct OperatorSpec {
     factory_id: String,
     id: Option<String>,
     init_values: Value,
     opts: Value,
 }
 
-impl OperativeSpec {
-    /// An operative of the factory `factory_id`, of the kind its runner
+impl OperatorSpec {
+    /// An operator of the factory `factory_id`, of the kind its runner
     /// announced, under an id the controller generates unless [`Self::id`]
     /// names one.
     pub fn new(factory_id: impl Into<String>) -> Self {
@@ -43,9 +43,9 @@ impl OperativeSpec {
         }
     }
 
-    /// The operative's own id. Without one, every start runs a new operative
+    /// The operator's own id. Without one, every start runs a new operator
     /// under a generated id, so a start retried after a lost answer starts a
-    /// second one; with one, a second start leaves the running operative
+    /// second one; with one, a second start leaves the running operator
     /// untouched.
     pub fn id(mut self, id: impl Into<String>) -> Self {
         self.id = Some(id.into());
@@ -58,7 +58,7 @@ impl OperativeSpec {
         self
     }
 
-    /// The start options, as `flz operative start` takes them.
+    /// The start options, as `flz operator start` takes them.
     pub fn opts(mut self, opts: Value) -> Self {
         self.opts = opts;
         self
@@ -82,7 +82,7 @@ impl OperativeSpec {
     }
 }
 
-/// What a start answered: the id the operative runs under, the generated one
+/// What a start answered: the id the operator runs under, the generated one
 /// when the start named none, and what the start did.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct StartResult {
@@ -94,7 +94,7 @@ pub struct StartResult {
 #[serde(rename_all = "snake_case")]
 pub enum StartOutcome {
     Started,
-    /// The named operative was already running and was left untouched.
+    /// The named operator was already running and was left untouched.
     AlreadyRunning,
 }
 
@@ -103,27 +103,27 @@ pub enum StartOutcome {
 pub struct Admin;
 
 impl Admin {
-    /// Start an operative.
-    pub fn start_operative(&self, spec: &OperativeSpec) -> Result<StartResult, AdminError> {
-        self.answer("Operative.start", &[spec.to_fields()])
+    /// Start an operator.
+    pub fn start_operator(&self, spec: &OperatorSpec) -> Result<StartResult, AdminError> {
+        self.answer("Operator.start", &[spec.to_fields()])
     }
 
-    /// Stop an operative, or the whole partition group it names.
-    pub fn stop_operative(&self, operative_id: &str) -> Result<Value, AdminError> {
-        self.call("Operative.stop", &[json!(operative_id)])
+    /// Stop an operator, or the whole partition group it names.
+    pub fn stop_operator(&self, operator_id: &str) -> Result<Value, AdminError> {
+        self.call("Operator.stop", &[json!(operator_id)])
     }
 
-    /// Inject a message into an operative's input stream and block for the
+    /// Inject a message into an operator's input stream and block for the
     /// delivery verdict. `channel` may be empty for none.
     pub fn send(
         &self,
-        operative_id: &str,
+        operator_id: &str,
         message: &str,
         channel: &str,
     ) -> Result<Value, AdminError> {
         self.call(
-            "Operative.send",
-            &[json!(operative_id), json!(message), json!(channel)],
+            "Operator.send",
+            &[json!(operator_id), json!(message), json!(channel)],
         )
     }
 
@@ -137,9 +137,9 @@ impl Admin {
         self.call("PluginManager.disable", &[json!(plugin_id)])
     }
 
-    /// The operative ids running in this namespace.
-    pub fn list_operatives(&self) -> Result<Value, AdminError> {
-        self.call("Operative.list_operatives", &[])
+    /// The operator ids running in this namespace.
+    pub fn list_operators(&self) -> Result<Value, AdminError> {
+        self.call("Operator.list_operators", &[])
     }
 
     /// The plugins enabled on the controller node answering this call.
@@ -148,10 +148,10 @@ impl Admin {
     }
 
     /// One cell's live state, and the change sequence it was read at.
-    pub fn cell_state(&self, operative_id: &str, cell_key: &str) -> Result<Value, AdminError> {
+    pub fn cell_state(&self, operator_id: &str, cell_key: &str) -> Result<Value, AdminError> {
         self.call(
-            "Operative.cell_state",
-            &[json!(operative_id), json!(cell_key)],
+            "Operator.cell_state",
+            &[json!(operator_id), json!(cell_key)],
         )
     }
 
@@ -181,12 +181,12 @@ mod tests {
     #[test]
     fn a_start_names_its_id_only_when_given_one() {
         assert_eq!(
-            OperativeSpec::new("echo").to_fields(),
+            OperatorSpec::new("echo").to_fields(),
             json!({ "factory_id": "echo" }),
             "no id is sent, so the controller generates one"
         );
         assert_eq!(
-            OperativeSpec::new("echo").id("my_echo").to_fields(),
+            OperatorSpec::new("echo").id("my_echo").to_fields(),
             json!({ "factory_id": "echo", "id": "my_echo" })
         );
     }

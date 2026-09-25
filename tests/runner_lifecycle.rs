@@ -21,8 +21,8 @@ use common::{stays_quiet, wait_until};
 use flezha_runner::state::{NoChange, RestoreInitPayload, WallClock};
 use flezha_runner::transport::FlezhaStream;
 use flezha_runner::{
-    ChannelBuilder, Flezha, FlezhaError, StateHandle, StreamOperative, Tasklet, TaskletCtx,
-    TaskletError,
+    ChannelBuilder, Flezha, FlezhaError, StateHandle, Tasklet, TaskletCtx, TaskletError,
+    UnboundedOperator,
 };
 use prost::Message;
 
@@ -54,8 +54,8 @@ impl Tasklet for PassTask {
     }
 }
 
-struct ProbeOperativeA;
-impl StreamOperative for ProbeOperativeA {
+struct ProbeOperatorA;
+impl UnboundedOperator for ProbeOperatorA {
     fn factory_id() -> &'static str {
         "lifecycle_probe_a"
     }
@@ -64,8 +64,8 @@ impl StreamOperative for ProbeOperativeA {
     }
 }
 
-struct ProbeOperativeB;
-impl StreamOperative for ProbeOperativeB {
+struct ProbeOperatorB;
+impl UnboundedOperator for ProbeOperatorB {
     fn factory_id() -> &'static str {
         "lifecycle_probe_b"
     }
@@ -74,8 +74,8 @@ impl StreamOperative for ProbeOperativeB {
     }
 }
 
-struct ProbeOperativeC;
-impl StreamOperative for ProbeOperativeC {
+struct ProbeOperatorC;
+impl UnboundedOperator for ProbeOperatorC {
     fn factory_id() -> &'static str {
         "lifecycle_probe_c"
     }
@@ -86,8 +86,8 @@ impl StreamOperative for ProbeOperativeC {
 
 /// Declares a `.keyed()` channel without a plugin wire — `register_factory`
 /// must report this as `Err(FlezhaError::InvalidTopology)`, not panic.
-struct UnwiredOperative;
-impl StreamOperative for UnwiredOperative {
+struct UnwiredOperator;
+impl UnboundedOperator for UnwiredOperator {
     fn factory_id() -> &'static str {
         "lifecycle_unwired"
     }
@@ -217,7 +217,7 @@ fn refuses_before_any_start() {
     // -- an invalid topology is an Err at the define call site --
     let broken = Flezha::create_runner("ns_broken").expect("create");
     let err = broken
-        .register_factory(UnwiredOperative)
+        .register_factory(UnwiredOperator)
         .err()
         .expect("keyed channel without a plugin wire must fail declaration");
     assert!(
@@ -230,15 +230,15 @@ fn refuses_before_any_start() {
     );
     // ...and the failed define left nothing declared: removing it is NotDefined.
     assert!(matches!(
-        broken.unregister_factory(UnwiredOperative),
+        broken.unregister_factory(UnwiredOperator),
         Err(FlezhaError::NotDefined { .. })
     ));
     drop(broken); // never started ⇒ Drop is a no-op
 
     // -- a duplicate factory id on one runner is refused --
     let dup = Flezha::create_runner("ns_dup").expect("create");
-    dup.register_factory(ProbeOperativeA).expect("define A");
-    match dup.register_factory(ProbeOperativeA) {
+    dup.register_factory(ProbeOperatorA).expect("define A");
+    match dup.register_factory(ProbeOperatorA) {
         Err(FlezhaError::DuplicateFactoryId { factory_id }) => {
             assert_eq!(factory_id, "lifecycle_probe_a");
         }
@@ -248,7 +248,7 @@ fn refuses_before_any_start() {
 
     // -- removing an undefined factory is NotDefined --
     let fresh = Flezha::create_runner("ns_fresh").expect("create");
-    match fresh.unregister_factory(ProbeOperativeB) {
+    match fresh.unregister_factory(ProbeOperatorB) {
         Err(FlezhaError::NotDefined { factory_id }) => {
             assert_eq!(factory_id, "lifecycle_probe_b");
         }
@@ -306,7 +306,7 @@ fn serves_the_started_runner(
 
     // -- post-start define ships the FULL factory set as UpdateFactories --
     runner
-        .register_factory(ProbeOperativeC)
+        .register_factory(ProbeOperatorC)
         .expect("post-start define is legal");
     let mut expected = vec![winner_factory.to_string(), "lifecycle_probe_c".to_string()];
     expected.sort();
@@ -314,31 +314,31 @@ fn serves_the_started_runner(
 
     // -- post-start remove (no live instances) ships the remaining set --
     runner
-        .unregister_factory(ProbeOperativeC)
+        .unregister_factory(ProbeOperatorC)
         .expect("post-start remove of an instance-less type is legal");
     assert_eq!(
         update_factories_set(frames, 2),
         vec![winner_factory.to_string()]
     );
     assert!(
-        flezha_runner::operative::registry::get_class("lifecycle_probe_c").is_none(),
+        flezha_runner::operator::registry::get_class("lifecycle_probe_c").is_none(),
         "the removed class must be unregistered"
     );
 
-    // -- pre-start awaits/operatives error typed; started runner serves them --
+    // -- pre-start awaits/operators error typed; started runner serves them --
     let never_started = Flezha::create_runner("ns_cold").unwrap();
     assert!(matches!(
         never_started.await_termination(),
         Err(FlezhaError::NotStarted)
     ));
     assert!(matches!(
-        never_started.operatives(),
+        never_started.operators(),
         Err(FlezhaError::NotStarted)
     ));
     drop(never_started);
     assert!(
-        runner.operatives().expect("started runner").is_empty(),
-        "no AddOperative was issued, so the instance registry is empty"
+        runner.operators().expect("started runner").is_empty(),
+        "no AddOperator was issued, so the instance registry is empty"
     );
 }
 
@@ -372,12 +372,12 @@ fn restart_generations_declare_from_empty(frames: &Arc<Mutex<Vec<CapturedFrame>>
 
     let shaped = Flezha::create_runner("ns_shaped").unwrap();
     shaped
-        .register_factory(ProbeOperativeA)
+        .register_factory(ProbeOperatorA)
         .expect("define A")
-        .register_factory(ProbeOperativeB)
+        .register_factory(ProbeOperatorB)
         .expect("define B");
     shaped
-        .unregister_factory(ProbeOperativeB)
+        .unregister_factory(ProbeOperatorB)
         .expect("pre-start remove is legal");
     shaped.start().expect("start");
     assert_eq!(
@@ -411,9 +411,9 @@ fn runner_lifecycle_and_singleton_guard() {
         thread::spawn(move || {
             let runner = Flezha::create_runner(ns).unwrap();
             if define_b {
-                runner.register_factory(ProbeOperativeB).unwrap();
+                runner.register_factory(ProbeOperatorB).unwrap();
             } else {
-                runner.register_factory(ProbeOperativeA).unwrap();
+                runner.register_factory(ProbeOperatorA).unwrap();
             }
             barrier.wait();
             match runner.start().map(|_| ()) {

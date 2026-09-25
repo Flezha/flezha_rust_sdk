@@ -1,0 +1,10 @@
+error[E0119]: conflicting implementations of trait `UnboundedOperator` for type `Echo`
+  --> tests/ui/operator_with_hand_written_impl.rs:6:1
+   |
+ 6 | #[flezha_runner::unbounded_operator(id = "echo", sink = "out")]
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ conflicting implementation for `Echo`
+...
+11 | impl UnboundedOperator for Echo {
+   | ------------------------------- first implementation here
+   |
+   = note: this error originates in the attribute macro `flezha_runner::unbounded_operator` (in Nightly builds, run with -Z macro-backtrace for more info)

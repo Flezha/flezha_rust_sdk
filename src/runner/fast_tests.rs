@@ -11,7 +11,7 @@ mod remove_factory_tests {
 
     use crate::tasklet::state_handle::StateHandle;
     use crate::tasklet::{NoChange, Tasklet, TaskletCtx, TaskletError, WallClock};
-    use crate::{ChannelBuilder, StreamOperative};
+    use crate::{ChannelBuilder, UnboundedOperator};
 
     #[derive(Default)]
     struct SeamTask;
@@ -36,8 +36,8 @@ mod remove_factory_tests {
         }
     }
 
-    struct SeamOperative;
-    impl StreamOperative for SeamOperative {
+    struct SeamOperator;
+    impl UnboundedOperator for SeamOperator {
         fn factory_id() -> &'static str {
             "remove_factory_seam_probe"
         }
@@ -49,14 +49,14 @@ mod remove_factory_tests {
     #[test]
     fn removal_refuses_while_instances_live_and_unregisters_after() {
         let runner = RunnerNode::new("seam_ns".to_string());
-        crate::register_class::<crate::StreamKind, SeamOperative>().expect("valid topology");
+        crate::register_class::<crate::UnboundedKind, SeamOperator>().expect("valid topology");
 
         runner
-            .start_operative(
+            .start_operator(
                 "remove_factory_seam_probe".to_string(),
                 "seam-inst-1".to_string(),
-                flz_core::operative::instance::KeyGroupRange::UNPARTITIONED,
-                flz_core::workflow::Resume::default(),
+                flz_core::operator::instance::KeyGroupRange::UNPARTITIONED,
+                flz_core::bounded::Resume::default(),
             )
             .expect("instance spawns");
 
@@ -66,14 +66,14 @@ mod remove_factory_tests {
             "a live instance must refuse the removal with its count"
         );
         assert!(
-            flz_core::operative::registry::get_class("remove_factory_seam_probe").is_some(),
+            flz_core::operator::registry::get_class("remove_factory_seam_probe").is_some(),
             "a refused removal must leave the type registered"
         );
 
-        assert!(runner.stop_operative("seam-inst-1"));
+        assert!(runner.stop_operator("seam-inst-1"));
         assert_eq!(runner.remove_factory("remove_factory_seam_probe"), Ok(()));
         assert!(
-            flz_core::operative::registry::get_class("remove_factory_seam_probe").is_none(),
+            flz_core::operator::registry::get_class("remove_factory_seam_probe").is_none(),
             "the removal must unregister the class"
         );
         // Idempotent on an unknown id (registry contract).
@@ -84,7 +84,7 @@ mod remove_factory_tests {
 #[cfg(test)]
 mod reconnect_tests {
     //! Exercises the reconnect-preservation contract: `runner_id` and the
-    //! in-memory `operative_registry` survive `handle_reconnect`'s status flap
+    //! in-memory `operator_registry` survive `handle_reconnect`'s status flap
     //! (the May 25 silent-freeze regression cleared them). The reconnect
     //! re-presents the runner's stable id via the connect handshake — there
     //! is no separate reconnect frame — so the controller resolves it as a
@@ -98,7 +98,7 @@ mod reconnect_tests {
     fn runner_id_and_registry_are_preserved_across_status_flap() {
         let mut runner = RunnerNode::new("ns".to_string());
         runner.assign_runner_id("e-abc".to_string());
-        // RunnerNode has no public `operative_registry.len()` so we drive
+        // RunnerNode has no public `operator_registry.len()` so we drive
         // the state-preservation assertion through the public surface
         // that handle_reconnect uses: the runner_id and the
         // shared_io_streams handle pointer should be stable across the

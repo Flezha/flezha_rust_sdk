@@ -16,13 +16,13 @@
 //! `Tally` performed by the runtime, and `.sink_named("totals")` is what the
 //! sink callback registers against — a sink names the channel it terminates,
 //! and the no-name form leaves it the producing tasklet's. `WordCount` is an
-//! ordinary operative
+//! ordinary operator
 //! class — hand the same type to
 //! `Flezha::create_runner(..).register_factory(..)` and it deploys unchanged.
 
 use std::time::Duration;
 
-use flezha_runner::{tasklet, ChannelBuilder, LocalOperative, StreamOperative, TaskletError};
+use flezha_runner::{tasklet, ChannelBuilder, LocalOperator, TaskletError, UnboundedOperator};
 use serde::{Deserialize, Serialize};
 
 /// One line into its words. Stateless: the whole point of the first
@@ -50,7 +50,7 @@ fn tally(word: String, count: &mut Count) -> String {
 
 struct WordCount;
 
-impl StreamOperative for WordCount {
+impl UnboundedOperator for WordCount {
     fn factory_id() -> &'static str {
         "local_word_count"
     }
@@ -66,7 +66,7 @@ impl StreamOperative for WordCount {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let run = LocalOperative::start::<WordCount>()?;
+    let run = LocalOperator::start::<WordCount>()?;
     run.on_sink("totals", |output| {
         println!("totals <- {}", String::from_utf8_lossy(&output.payload));
     })?;

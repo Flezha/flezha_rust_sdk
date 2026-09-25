@@ -4,20 +4,20 @@
 
 use crate::*;
 
-// -- BoundedMailboxOperative ------------------------------------------------------
+// -- BoundedMailboxOperator ------------------------------------------------------
 
 #[derive(Serialize, Deserialize, Clone, Default)]
-struct WorkflowTaskletState {
+struct BoundedTaskletState {
     pub processed: u64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-enum WorkflowChange {
+enum BoundedChange {
     Inc,
 }
-impl Change for WorkflowChange {}
+impl Change for BoundedChange {}
 
-fn apply_inc(state: &mut WorkflowTaskletState, _: &WorkflowChange) {
+fn apply_inc(state: &mut BoundedTaskletState, _: &BoundedChange) {
     state.processed += 1;
 }
 
@@ -26,8 +26,8 @@ struct DropNothingTestTasklet;
 impl Tasklet for DropNothingTestTasklet {
     type Input = String;
     type Output = Vec<u8>;
-    type State = WorkflowTaskletState;
-    type Change = WorkflowChange;
+    type State = BoundedTaskletState;
+    type Change = BoundedChange;
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
@@ -36,10 +36,10 @@ impl Tasklet for DropNothingTestTasklet {
     fn init_state(
         _: Option<&str>,
         _init_payload: Option<RestoreInitPayload<'_>>,
-    ) -> WorkflowTaskletState {
-        WorkflowTaskletState::default()
+    ) -> BoundedTaskletState {
+        BoundedTaskletState::default()
     }
-    fn apply_change(state: &mut WorkflowTaskletState, change: &WorkflowChange) {
+    fn apply_change(state: &mut BoundedTaskletState, change: &BoundedChange) {
         apply_inc(state, change);
     }
     fn mailbox_capacity() -> usize {
@@ -52,7 +52,7 @@ impl Tasklet for DropNothingTestTasklet {
         mut state: StateHandle<'_, Self>,
         ctx: &mut TaskletCtx<'_>,
     ) -> Result<(), TaskletError> {
-        state.apply(WorkflowChange::Inc);
+        state.apply(BoundedChange::Inc);
         ctx.emit::<Vec<u8>>(input.into_bytes())
     }
 }
@@ -62,8 +62,8 @@ struct DropNewestTestTasklet;
 impl Tasklet for DropNewestTestTasklet {
     type Input = String;
     type Output = Vec<u8>;
-    type State = WorkflowTaskletState;
-    type Change = WorkflowChange;
+    type State = BoundedTaskletState;
+    type Change = BoundedChange;
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
@@ -72,10 +72,10 @@ impl Tasklet for DropNewestTestTasklet {
     fn init_state(
         _: Option<&str>,
         _init_payload: Option<RestoreInitPayload<'_>>,
-    ) -> WorkflowTaskletState {
-        WorkflowTaskletState::default()
+    ) -> BoundedTaskletState {
+        BoundedTaskletState::default()
     }
-    fn apply_change(state: &mut WorkflowTaskletState, change: &WorkflowChange) {
+    fn apply_change(state: &mut BoundedTaskletState, change: &BoundedChange) {
         apply_inc(state, change);
     }
     fn mailbox_capacity() -> usize {
@@ -88,7 +88,7 @@ impl Tasklet for DropNewestTestTasklet {
         mut state: StateHandle<'_, Self>,
         ctx: &mut TaskletCtx<'_>,
     ) -> Result<(), TaskletError> {
-        state.apply(WorkflowChange::Inc);
+        state.apply(BoundedChange::Inc);
         ctx.emit::<Vec<u8>>(input.into_bytes())
     }
 }
@@ -98,8 +98,8 @@ struct DropOldestTestTasklet;
 impl Tasklet for DropOldestTestTasklet {
     type Input = String;
     type Output = Vec<u8>;
-    type State = WorkflowTaskletState;
-    type Change = WorkflowChange;
+    type State = BoundedTaskletState;
+    type Change = BoundedChange;
     type Clock = WallClock;
     type Config = ();
     fn name() -> &'static str {
@@ -108,10 +108,10 @@ impl Tasklet for DropOldestTestTasklet {
     fn init_state(
         _: Option<&str>,
         _init_payload: Option<RestoreInitPayload<'_>>,
-    ) -> WorkflowTaskletState {
-        WorkflowTaskletState::default()
+    ) -> BoundedTaskletState {
+        BoundedTaskletState::default()
     }
-    fn apply_change(state: &mut WorkflowTaskletState, change: &WorkflowChange) {
+    fn apply_change(state: &mut BoundedTaskletState, change: &BoundedChange) {
         apply_inc(state, change);
     }
     fn mailbox_capacity() -> usize {
@@ -124,16 +124,16 @@ impl Tasklet for DropOldestTestTasklet {
         mut state: StateHandle<'_, Self>,
         ctx: &mut TaskletCtx<'_>,
     ) -> Result<(), TaskletError> {
-        state.apply(WorkflowChange::Inc);
+        state.apply(BoundedChange::Inc);
         ctx.emit::<Vec<u8>>(input.into_bytes())
     }
 }
 
-// One operative per overflow policy: the graph-shape rule
-// (`sdk-graph-authoring`) allows exactly one entry channel per operative, so
-// the former three-entry BoundedMailboxOperative is now three classes.
-pub(crate) struct BoundedMailboxDropNothingOperative;
-impl StreamOperative for BoundedMailboxDropNothingOperative {
+// One operator per overflow policy: the graph-shape rule
+// (`sdk-graph-authoring`) allows exactly one entry channel per operator, so
+// the former three-entry BoundedMailboxOperator is now three classes.
+pub(crate) struct BoundedMailboxDropNothingOperator;
+impl UnboundedOperator for BoundedMailboxDropNothingOperator {
     fn factory_id() -> &'static str {
         "bounded_mailbox_drop_nothing"
     }
@@ -145,8 +145,8 @@ impl StreamOperative for BoundedMailboxDropNothingOperative {
     }
 }
 
-pub(crate) struct BoundedMailboxDropNewestOperative;
-impl StreamOperative for BoundedMailboxDropNewestOperative {
+pub(crate) struct BoundedMailboxDropNewestOperator;
+impl UnboundedOperator for BoundedMailboxDropNewestOperator {
     fn factory_id() -> &'static str {
         "bounded_mailbox_drop_newest"
     }
@@ -158,8 +158,8 @@ impl StreamOperative for BoundedMailboxDropNewestOperative {
     }
 }
 
-pub(crate) struct BoundedMailboxDropOldestOperative;
-impl StreamOperative for BoundedMailboxDropOldestOperative {
+pub(crate) struct BoundedMailboxDropOldestOperator;
+impl UnboundedOperator for BoundedMailboxDropOldestOperator {
     fn factory_id() -> &'static str {
         "bounded_mailbox_drop_oldest"
     }
@@ -171,12 +171,12 @@ impl StreamOperative for BoundedMailboxDropOldestOperative {
     }
 }
 
-// -- HybridChannelOperative -------------------------------------------------------
+// -- HybridChannelOperator -------------------------------------------------------
 //
 // Demonstrates `sink_with(...)`: the producer Tasklet emits a
 // `u32` value that fans out to an inter-tasklet consumer and is also
 // serialized to bytes for the `hybrid_indicators` plugin. The
-// serializer panics on the sentinel `0xDEADBEEF` so an operator can
+// serializer panics on the sentinel `0xDEADBEEF` so a user can
 // observe the panic-isolation guarantee end-to-end.
 
 #[derive(Default)]
@@ -234,8 +234,8 @@ impl Tasklet for HybridConsumerTasklet {
     }
 }
 
-pub(crate) struct HybridChannelOperative;
-impl StreamOperative for HybridChannelOperative {
+pub(crate) struct HybridChannelOperator;
+impl UnboundedOperator for HybridChannelOperator {
     fn factory_id() -> &'static str {
         "hybrid_channel"
     }
@@ -252,7 +252,7 @@ impl StreamOperative for HybridChannelOperative {
     }
 }
 
-// -- MergedInputOperative ---------------------------------------------------------
+// -- MergedInputOperator ---------------------------------------------------------
 //
 // Two entry channels merged into one tasklet. Each source's mapping tags the
 // value with the channel it came from, the merge keys on the symbol the mapping
@@ -296,8 +296,8 @@ impl Tasklet for MergeLabelTasklet {
     }
 }
 
-pub(crate) struct MergedInputOperative;
-impl StreamOperative for MergedInputOperative {
+pub(crate) struct MergedInputOperator;
+impl UnboundedOperator for MergedInputOperator {
     fn factory_id() -> &'static str {
         "merged_input"
     }
@@ -314,7 +314,7 @@ impl StreamOperative for MergedInputOperative {
     }
 }
 
-// -- TransformChainOperative ------------------------------------------------------
+// -- TransformChainOperator ------------------------------------------------------
 //
 // Every value transform on one edge: `drop` is filtered out, a comma list fans
 // out into one value per element, each is upper-cased and keyed on its prefix.
@@ -342,8 +342,8 @@ impl Tasklet for TransformLabelTasklet {
     }
 }
 
-pub(crate) struct TransformChainOperative;
-impl StreamOperative for TransformChainOperative {
+pub(crate) struct TransformChainOperator;
+impl UnboundedOperator for TransformChainOperator {
     fn factory_id() -> &'static str {
         "transform_chain"
     }

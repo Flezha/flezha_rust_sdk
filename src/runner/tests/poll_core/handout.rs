@@ -11,7 +11,7 @@ use flz_core::poll_core::{Answered, PollCore, Polled};
 use super::fixtures::{build_slot_of, payload, unix_stream, wait_until};
 use super::support::*;
 use crate::cell::{CellItem, CellSlot};
-use crate::operative::instance::OperativeInstance;
+use crate::operator::instance::OperatorInstance;
 
 /// The spec pin: two workers polling concurrently while two cells each
 /// have 100 queued inputs never both hold the same cell, and each
@@ -399,7 +399,7 @@ fn correlated_failure_leaves_pollers_serving_healthy_cells() {
     let (_ih, healthy) = build_slot("poll-correlated-healthy");
     let stream = unix_stream();
 
-    let failing: Vec<(Arc<OperativeInstance>, Arc<CellSlot>)> = (0..4)
+    let failing: Vec<(Arc<OperatorInstance>, Arc<CellSlot>)> = (0..4)
         .map(|i| build_slot_of::<SlowRetryOp>(&format!("poll-correlated-{i}")))
         .collect();
     for (_instance, slot) in &failing {

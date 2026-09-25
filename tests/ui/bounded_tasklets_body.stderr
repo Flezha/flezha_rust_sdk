@@ -1,0 +1,13 @@
+error[E0407]: method `tasklets` is not a member of trait `BoundedOperator`
+  --> tests/ui/bounded_tasklets_body.rs:10:5
+   |
+10 |     fn tasklets(_c: &ChannelBuilder) {}
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not a member of trait `BoundedOperator`
+
+error[E0046]: not all trait items implemented, missing: `channels`
+ --> tests/ui/bounded_tasklets_body.rs:5:1
+  |
+5 | impl BoundedOperator for Stale {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ missing `channels` in implementation
+  |
+  = help: implement the missing item: `fn channels(_: &ChannelBuilder) { todo!() }`

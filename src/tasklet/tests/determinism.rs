@@ -254,7 +254,9 @@ fn non_reserved_metadata_still_flows() {
 fn a_stream_context_refuses_to_complete_without_a_retry() {
     let mut sink = StubSink::default();
     let mut ctx = TaskletCtx::new(&mut sink, 0, 7, IDENTITY);
-    let err = ctx.complete("3").expect_err("a stream never completes");
+    let err = ctx
+        .complete("3")
+        .expect_err("an unbounded operator never completes");
     assert!(err.is_non_retryable(), "{err:?}");
-    assert!(err.to_string().contains("CompleteOutsideWorkflow"), "{err}");
+    assert!(err.to_string().contains("CompleteOutsideBounded"), "{err}");
 }

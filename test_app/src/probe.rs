@@ -3,7 +3,7 @@
 
 use crate::*;
 
-// -- CandleOperative (stream-late-input-correction e2e) -------------------
+// -- CandleOperator (stream-late-input-correction e2e) -------------------
 //
 // A trade stream keyed by an EVENT time carried in the input itself
 // ("<event_time>:<price>"), with a declared correction window. State records the
@@ -77,8 +77,8 @@ impl Tasklet for CandleTasklet {
     }
 }
 
-pub(crate) struct CandleOperative;
-impl StreamOperative for CandleOperative {
+pub(crate) struct CandleOperator;
+impl UnboundedOperator for CandleOperator {
     fn factory_id() -> &'static str {
         "candle"
     }
@@ -92,7 +92,7 @@ impl StreamOperative for CandleOperative {
     }
 }
 
-// -- PoisonProbeOperative (dead-letter-queue e2e) -------------------
+// -- PoisonProbeOperator (dead-letter-queue e2e) -------------------
 //
 // Tier-off retry-then-park probe: `run` fails on the input "poison" until an
 // "antidote" input flips a process-global flag. The e2e parks the poison
@@ -129,8 +129,8 @@ impl Tasklet for PoisonProbeTasklet {
     }
 }
 
-pub(crate) struct PoisonProbeOperative;
-impl StreamOperative for PoisonProbeOperative {
+pub(crate) struct PoisonProbeOperator;
+impl UnboundedOperator for PoisonProbeOperator {
     fn factory_id() -> &'static str {
         "poison_probe"
     }
@@ -144,10 +144,10 @@ impl StreamOperative for PoisonProbeOperative {
     }
 }
 
-// -- WedgeProbeOperative (runner-dispatch-wedge e2e) -----------------------
+// -- WedgeProbeOperator (runner-dispatch-wedge e2e) -----------------------
 //
 // The `pool_wedge` fixture: the two ways a runner stops doing work, on one
-// operative.
+// operator.
 //
 //   "wedge" — blocks the dispatch inside user code forever, so the SDK's
 //     dispatch counter stops advancing while the heartbeat thread keeps
@@ -162,7 +162,7 @@ impl StreamOperative for PoisonProbeOperative {
 //     must be served again and the aborting item must not produce twice.
 //
 // Every other input emits `ok:<input>`, which is how the e2e proves the
-// operative produces again once the remedy has landed.
+// operator produces again once the remedy has landed.
 
 static WEDGE_PROBE_ABORTED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
@@ -199,8 +199,8 @@ impl Tasklet for WedgeProbeTasklet {
     }
 }
 
-pub(crate) struct WedgeProbeOperative;
-impl StreamOperative for WedgeProbeOperative {
+pub(crate) struct WedgeProbeOperator;
+impl UnboundedOperator for WedgeProbeOperator {
     fn factory_id() -> &'static str {
         "wedge_probe"
     }
@@ -211,12 +211,12 @@ impl StreamOperative for WedgeProbeOperative {
     }
 }
 
-// -- ResumeProbeOperative ---------------------------------------------------------
+// -- ResumeProbeOperator ---------------------------------------------------------
 //
 // Stateful counter that EMITS its running total on every input, so a Kafka
 // plugin on the output makes the persisted value externally observable. Used
 // by chaos/tests/stateful-resume.sh to prove WAL-backed state survives a hard
-// controller kill / runner restart: after recovery the operative resumes from
+// controller kill / runner restart: after recovery the operator resumes from
 // the persisted total (replayed changes), not from zero. Input is a decimal
 // delta string; output is the new running total as ASCII bytes.
 
@@ -269,8 +269,8 @@ impl Tasklet for ResumeProbeTasklet {
     }
 }
 
-pub(crate) struct ResumeProbeOperative;
-impl StreamOperative for ResumeProbeOperative {
+pub(crate) struct ResumeProbeOperator;
+impl UnboundedOperator for ResumeProbeOperator {
     fn factory_id() -> &'static str {
         "resume_probe"
     }
@@ -281,10 +281,10 @@ impl StreamOperative for ResumeProbeOperative {
     }
 }
 
-// -- SchemaEvolutionOperative -----------------------------------------------------
+// -- SchemaEvolutionOperator -----------------------------------------------------
 //
 // The same class either side of a deploy that edits its own state type. Both
-// halves declare the SAME tasklet name, so an operative started under v1 and
+// halves declare the SAME tasklet name, so an operator started under v1 and
 // restarted under v2 restores from the very WAL v1 wrote — which is what a
 // deploy does, with the two binaries collapsed into one for the fixture.
 //
@@ -419,8 +419,8 @@ impl Tasklet for SchemaEvolutionV2Tasklet {
     }
 }
 
-pub(crate) struct SchemaEvolutionV1Operative;
-impl StreamOperative for SchemaEvolutionV1Operative {
+pub(crate) struct SchemaEvolutionV1Operator;
+impl UnboundedOperator for SchemaEvolutionV1Operator {
     fn factory_id() -> &'static str {
         "schema_evolution_v1"
     }
@@ -431,8 +431,8 @@ impl StreamOperative for SchemaEvolutionV1Operative {
     }
 }
 
-pub(crate) struct SchemaEvolutionV2Operative;
-impl StreamOperative for SchemaEvolutionV2Operative {
+pub(crate) struct SchemaEvolutionV2Operator;
+impl UnboundedOperator for SchemaEvolutionV2Operator {
     fn factory_id() -> &'static str {
         "schema_evolution_v2"
     }

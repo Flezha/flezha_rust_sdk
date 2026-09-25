@@ -5,13 +5,13 @@
 //! the same dispatch, the same results as the hand-written twin.
 
 use flezha_runner::channel::ChannelBuilder;
-use flezha_runner::operative::builder::build_topology_for;
+use flezha_runner::operator::builder::build_topology_for;
 use flezha_runner::state::{RestoreInitPayload, WallClock};
 use flezha_runner::tasklet::{
     DerivedState, SimpleTasklet, StateHandle, Tasklet, TaskletCtx, TaskletError,
 };
 use flezha_runner::testing::TaskletTestHarness;
-use flezha_runner::StreamOperative;
+use flezha_runner::UnboundedOperator;
 
 #[derive(Default, Debug, PartialEq, serde::Serialize, serde::Deserialize, flezha_runner::State)]
 struct Totals {
@@ -81,11 +81,11 @@ impl Tasklet for ManualCounter {
     }
 }
 
-struct SimpleTierOperative;
+struct SimpleTierOperator;
 
-impl StreamOperative for SimpleTierOperative {
+impl UnboundedOperator for SimpleTierOperator {
     fn factory_id() -> &'static str {
-        "simple_tier_operative"
+        "simple_tier_operator"
     }
 
     fn channels(c: &ChannelBuilder) {
@@ -118,7 +118,7 @@ fn the_simplified_tier_resolves_to_the_documented_defaults() {
 /// which tier authored a node.
 #[test]
 fn a_simplified_tasklet_wires_like_any_other() {
-    let topology = build_topology_for::<SimpleTierOperative>().expect("build topology");
+    let topology = build_topology_for::<SimpleTierOperator>().expect("build topology");
     assert_eq!(topology.tasklets.len(), 1);
     assert_eq!(&*topology.tasklets[0].name, "counter");
     assert_eq!(topology.tasklets[0].input_channel_ids, vec![0]);

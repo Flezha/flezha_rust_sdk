@@ -48,10 +48,10 @@ impl Tasklet for ReplayTasklet {
     }
 }
 
-struct ReplayOperative;
-impl StreamOperative for ReplayOperative {
+struct ReplayOperator;
+impl UnboundedOperator for ReplayOperator {
     fn factory_id() -> &'static str {
-        "replay_operative"
+        "replay_operator"
     }
     fn channels(c: &ChannelBuilder) {
         c.effectively_once();
@@ -66,7 +66,7 @@ impl StreamOperative for ReplayOperative {
 #[test]
 fn a_replayed_slice_dispatches_in_event_time_order() {
     REPLAY_OBSERVED.lock().unwrap().clear();
-    let (handle, _instance) = setup::<ReplayOperative>("replay-instance");
+    let (handle, _instance) = setup::<ReplayOperator>("replay-instance");
     let stream = dummy_stream();
 
     // The controller re-forwards in offset (arrival) order — the late "200"
@@ -160,10 +160,10 @@ impl Tasklet for HighWaterTasklet {
     }
 }
 
-struct HighWaterOperative;
-impl StreamOperative for HighWaterOperative {
+struct HighWaterOperator;
+impl UnboundedOperator for HighWaterOperator {
     fn factory_id() -> &'static str {
-        "high_water_operative"
+        "high_water_operator"
     }
     fn channels(c: &ChannelBuilder) {
         c.effectively_once();
@@ -176,7 +176,7 @@ impl StreamOperative for HighWaterOperative {
 }
 
 fn dispatch_hw(
-    handle: &OperativeDispatchHandle,
+    handle: &OperatorDispatchHandle,
     payload: &str,
     stream: &Arc<FlezhaStream>,
     marks: &[(&str, &str)],
@@ -209,7 +209,7 @@ fn a_replay_does_not_lower_the_event_time_high_water() {
     // processed as an arrival, so the observable dispatch would not distinguish the
     // two. The invariant is about the water mark.
     HIGHWATER_OBSERVED.lock().unwrap().clear();
-    let (handle, instance) = setup::<HighWaterOperative>("high-water-instance");
+    let (handle, instance) = setup::<HighWaterOperator>("high-water-instance");
     let stream = dummy_stream();
 
     // Live traffic establishes a high-water of 900.

@@ -36,8 +36,8 @@ pub use stream::{EntryStream, EntryTarget, NodeTarget, Stream, StreamTarget};
 
 use crate::channel::ChannelKind;
 
-/// Builder collected by `StreamOperative::channels`. Internal state turns into a
-/// frozen `OperativeTopology` at `build_topology` time. Stream handles hold a
+/// Builder collected by `UnboundedOperator::channels`. Internal state turns into a
+/// frozen `OperatorTopology` at `build_topology` time. Stream handles hold a
 /// shared reference to the builder, so its interior is a `RefCell`.
 pub struct ChannelBuilder {
     pub(crate) state: RefCell<BuilderState>,
@@ -56,7 +56,7 @@ impl ChannelBuilder {
                 correction: None,
                 checkpoint_ack: false,
                 checkpoint_every: None,
-                checkpoint_outputs: crate::operative::topology::CheckpointOutputs::AsProduced,
+                checkpoint_outputs: crate::operator::topology::CheckpointOutputs::AsProduced,
                 checkpoint_max_delay_ms: None,
             }),
         }
@@ -69,7 +69,7 @@ impl ChannelBuilder {
         self.state.into_inner()
     }
 
-    /// Whether any tasklet was declared (a workflow without one is
+    /// Whether any tasklet was declared (a bounded operator without one is
     /// refused).
     pub(crate) fn has_tasklets(&self) -> bool {
         !self.state.borrow().tasklets.is_empty()
@@ -80,7 +80,7 @@ impl ChannelBuilder {
         self.state.borrow()
     }
 
-    /// Opt this operative into late-input correction over the given window.
+    /// Opt this operator into late-input correction over the given window.
     ///
     /// An input whose extracted event time is behind its Cell's high-water
     /// by no more than `window_ms` is not processed as an arrival. The engine
@@ -91,7 +91,7 @@ impl ChannelBuilder {
     /// Requires `effectively_once()` (correction replays the durable input
     /// log) and an `EventTimeFrom` clock (there is nothing else to order by).
     /// `build_topology` refuses the declaration otherwise. The controller
-    /// additionally refuses to start the operative unless its input-log hold
+    /// additionally refuses to start the operator unless its input-log hold
     /// window and snapshot age-floor both cover `window_ms` — you cannot
     /// rebuild a past you did not retain.
     ///
@@ -102,35 +102,35 @@ impl ChannelBuilder {
     pub fn correction_window(&self, window_ms: u64) {
         let mut st = self.state.borrow_mut();
         let beyond_window = st.correction.map(|c| c.beyond_window).unwrap_or_default();
-        st.correction = Some(crate::operative::topology::CorrectionPolicy {
+        st.correction = Some(crate::operator::topology::CorrectionPolicy {
             window_ms,
             beyond_window,
         });
     }
 
     /// Fate of an input later than the declared correction window. Defaults to
-    /// [`BeyondWindowPolicy::ProcessAsArrival`] — the behaviour of an operative
+    /// [`BeyondWindowPolicy::ProcessAsArrival`] — the behaviour of an operator
     /// with no correction window at all, so declaring one never silently starts
     /// dropping data.
     ///
-    /// [`BeyondWindowPolicy::ProcessAsArrival`]: crate::operative::topology::BeyondWindowPolicy::ProcessAsArrival
-    pub fn beyond_window_policy(&self, policy: crate::operative::topology::BeyondWindowPolicy) {
+    /// [`BeyondWindowPolicy::ProcessAsArrival`]: crate::operator::topology::BeyondWindowPolicy::ProcessAsArrival
+    pub fn beyond_window_policy(&self, policy: crate::operator::topology::BeyondWindowPolicy) {
         let mut st = self.state.borrow_mut();
         let window_ms = st.correction.map(|c| c.window_ms).unwrap_or(0);
-        st.correction = Some(crate::operative::topology::CorrectionPolicy {
+        st.correction = Some(crate::operator::topology::CorrectionPolicy {
             window_ms,
             beyond_window: policy,
         });
     }
 
-    /// Opt this operative into the effectively-once delivery tier.
+    /// Opt this operator into the effectively-once delivery tier.
     ///
     /// In tier mode each invocation's plugin emits ship inside the atomic
     /// effect record on the reliable state sink (with the state change and
     /// consumed input offset), and the controller flushes them to plugins
     /// only after the record is fsynced. Identity is the dedup contract:
     /// `build_topology` refuses the declaration when any plugin-bound
-    /// channel lacks `.keyed()`. Default is off — operatives that do not
+    /// channel lacks `.keyed()`. Default is off — operators that do not
     /// call this keep the at-least-once paths byte-identical.
     pub fn effectively_once(&self) {
         self.state.borrow_mut().effectively_once = true;
@@ -139,7 +139,7 @@ impl ChannelBuilder {
     /// Advance the durable consumed-offset only at an explicit
     /// [`TaskletCtx::checkpoint`], instead of once per input.
     ///
-    /// For an operative that folds many inputs into one state push — a window
+    /// For an operator that folds many inputs into one state push — a window
     /// that only closes on its boundary — the per-input default is not merely
     /// expensive, it is incoherent: the offset would run ahead of the state,
     /// and a restore would resume past inputs the restored state never saw.
@@ -193,11 +193,11 @@ impl ChannelBuilder {
     /// tier already requires absorbs both. Implies `checkpoint_ack()`.
     pub fn outputs_at_checkpoint(&self, max_delay_ms: u64) {
         let mut st = self.state.borrow_mut();
-        st.checkpoint_outputs = crate::operative::topology::CheckpointOutputs::AtCheckpoint;
+        st.checkpoint_outputs = crate::operator::topology::CheckpointOutputs::AtCheckpoint;
         st.checkpoint_max_delay_ms = Some(max_delay_ms);
     }
 
-    /// Declare the entry channel fed by the controller — the operative's
+    /// Declare the entry channel fed by the controller — the operator's
     /// external input address, so its name is explicit and mandatory.
     ///
     /// Any payload type is accepted. `Vec<u8>` is delivered unchanged and
@@ -245,7 +245,7 @@ impl ChannelBuilder {
     /// ```
     ///
     /// Sources may be entry streams (sealed payloads) or another tasklet's
-    /// output stream, freely mixed, on either kind of operative. A workflow
+    /// output stream, freely mixed, on either kind of operator. A bounded operator
     /// message starts only the chain of the entry channel it arrived on, so a
     /// merge over two entry channels runs once per message, over that
     /// message's source.
@@ -267,7 +267,7 @@ impl ChannelBuilder {
     /// A panicking mapping is contained everywhere it can be: on an
     /// inter-tasklet source it is caught as the producing tasklet's panic
     /// (stream) or turned into a terminal chain error the saga compensates
-    /// (workflow). The one unguarded seam is a stream entry-channel source,
+    /// (bounded operator). The one unguarded seam is an unbounded operator's entry-channel source,
     /// where the mapping runs on the wire-reader path — the same exposure the
     /// entry parser there already carries. `docs/sdk/multi_input_tasklets.md`
     /// tabulates it.

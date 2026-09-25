@@ -15,7 +15,7 @@ use crate::tasklet::Tasklet;
 
 /// Type-erased dispatcher factory for one Tasklet. Stored on
 /// `BuilderState::tasklets` and consumed by `build_topology` to produce
-/// per-cell slots in each `OperativeInstance`.
+/// per-cell slots in each `OperatorInstance`.
 pub(crate) struct TaskletEntry {
     /// Node identity: the tasklet's `name()`, or the explicit node name
     /// given at wiring time (`into_named`). Feeds everything `name()` feeds —
@@ -30,7 +30,7 @@ pub(crate) struct TaskletEntry {
     pub cell_keys: Vec<&'static str>,
     pub cells_for_overridden: bool,
     /// `Tasklet::COMPENSATE_OVERRIDDEN` captured at registration time. A
-    /// workflow run consults the resolved descriptor flag to fire saga
+    /// bounded run consults the resolved descriptor flag to fire saga
     /// compensation only for tasklets that declared a `compensate` hook.
     pub compensate_overridden: bool,
     /// Channels this node consumes. Several = a fan-in, or a merge whose
@@ -66,7 +66,7 @@ pub(crate) struct TaskletEntry {
 
     /// `Tasklet::compact_after_bytes()` captured at registration time. The
     /// controller resolves the per-Cell WAL size compaction trigger from it,
-    /// shipped in the `AddOperative` response metadata.
+    /// shipped in the `AddOperator` response metadata.
     pub compact_after_bytes: usize,
 
     /// Build a per-cell slot. The closure captures the Tasklet type
@@ -150,8 +150,8 @@ pub(crate) struct ChannelEntry {
     pub retry: crate::channel::RetryPolicy,
     /// Inter-task byte codec, derived from the producing tasklet's `Output`
     /// type when the channel is created. `None` only on a channel with no
-    /// producer (an entry channel); a durable structured workflow's task
-    /// journal reads it at every barrier (`workflow-task-journal`).
+    /// producer (an entry channel); a durable structured bounded operator's task
+    /// journal reads it at every barrier (`bounded-task-journal`).
     pub codec: Option<crate::channel::ChannelCodec>,
     /// The authoring record: one entry per fluent sequence declared off this
     /// channel's handle, in the order the author closed them. The consumers,
@@ -200,12 +200,12 @@ pub(crate) struct BuilderState {
     /// together across the channels they are declared on.
     pub merge_groups: u32,
     pub effectively_once: bool,
-    pub correction: Option<crate::operative::topology::CorrectionPolicy>,
+    pub correction: Option<crate::operator::topology::CorrectionPolicy>,
     /// The checkpoint flags exactly as the author set them. The granularity
     /// they imply is the core's answer, never the builder's.
     pub checkpoint_ack: bool,
     pub checkpoint_every: Option<u32>,
-    pub checkpoint_outputs: crate::operative::topology::CheckpointOutputs,
+    pub checkpoint_outputs: crate::operator::topology::CheckpointOutputs,
     pub checkpoint_max_delay_ms: Option<u64>,
 }
 
@@ -215,7 +215,7 @@ impl BuilderState {
     pub(crate) fn declares_checkpoint(&self) -> bool {
         self.checkpoint_ack
             || self.checkpoint_every.is_some()
-            || self.checkpoint_outputs != crate::operative::topology::CheckpointOutputs::AsProduced
+            || self.checkpoint_outputs != crate::operator::topology::CheckpointOutputs::AsProduced
             || self.checkpoint_max_delay_ms.is_some()
     }
 
@@ -435,10 +435,10 @@ fn tasklet_entry<S: Tasklet>(name: &'static str, named: bool) -> TaskletEntry {
 
     let build_cell: CellBuilder =
         Box::new(|args: BuildCellArgs<'_>| -> Arc<crate::cell::CellSlot> {
-            crate::operative::dispatcher::build_cell_slot::<S>(args)
+            crate::operator::dispatcher::build_cell_slot::<S>(args)
         });
 
-    let (serialize_state, deserialize_state) = crate::operative::dispatcher::build_state_fns::<S>();
+    let (serialize_state, deserialize_state) = crate::operator::dispatcher::build_state_fns::<S>();
 
     TaskletEntry {
         name,

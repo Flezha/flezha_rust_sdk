@@ -1,0 +1,630 @@
+//! Durable-loop bounded fixtures — the chat loop with suspension, its
+//! stateless twin and the rewindable variant — and the chains and loop
+//! `mix bench.bounded` drives.
+
+use flezha_runner::tasklet::SpawnOptions;
+
+use crate::bounded::{block_until_released, durable_step, stateless_step, Insert, SeenState};
+use crate::*;
+
+// `chat_loop_bounded`: the durable-loop + suspension shape
+// (`bounded-durable-loop-and-suspension`). One iteration per inbox item: task
+// TURN commits the turn to Cell state (so a resumed iteration is visible in
+// the WAL) and emits it; task REPLY emits the answer to the sink. Between turns
+// the loop finds an empty inbox at a committed boundary and PARKS — the
+// instance is evicted from the runner and rehydrated by the next message.
+//
+// The turn whose payload is `mid-crash` BLOCKS while the release env is unset,
+// so a SIGKILL lands with the earlier iterations durable and that one in flight.
+// The resumed runner (release env set) runs it through. Keying the block on the
+// payload — rather than an invocation count — keeps it deterministic across the
+// park/rehydrate cycles, which re-run the driver but not the turns. The turn
+// `bye` records nothing, still reaches REPLY, and completes the instance with
+// the number of turns TURN holds, so the session ends once that iteration
+// commits.
+const CRASH_TURN: &str = "mid-crash";
+const BYE_TURN: &str = "bye";
+
+#[derive(Default)]
+struct ChatTurn;
+impl Tasklet for ChatTurn {
+    type Input = String;
+    type Output = String;
+    type State = SeenState;
+    type Change = Insert;
+    type Clock = WallClock;
+    type Config = ();
+    fn name() -> &'static str {
+        "chat_turn"
+    }
+    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> SeenState {
+        SeenState::default()
+    }
+    fn apply_change(state: &mut SeenState, change: &Insert) {
+        state.items.insert(change.0.clone());
+    }
+    fn run(
+        &mut self,
+        input: String,
+        mut state: StateHandle<'_, Self>,
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
+        if input == CRASH_TURN {
+            block_until_released();
+        }
+        if input == BYE_TURN {
+            ctx.complete(state.items.len().to_string())?;
+        } else {
+            // Keyed by the turn, so the WAL record count is the number of
+            // DISTINCT turns that ran — a re-run of a committed iteration
+            // would show up.
+            state.apply(Insert(input.clone()));
+        }
+        ctx.emit::<String>(input)
+    }
+}
+
+stateless_step!(ChatReply, "chat_reply", |input, ctx| ctx
+    .emit::<String>(format!("reply:{input}")));
+
+// -- StatelessLoopBounded -------------------------------------------------------
+//
+// The same durable PER_INPUT loop as `ChatLoopBounded`, minus its stateful
+// first tasklet: `ChatReply` alone holds NO per-Cell state, so its Cell's
+// records carry its outputs and nothing to restore. The instance's
+// task-journal therefore reaches the driver only if it rides the bind itself:
+// deliver it on a restore frame alone and every turn after the first commits
+// at iteration 0 again, colliding with iteration 0's entries.
+
+pub(crate) struct StatelessLoopBounded;
+impl BoundedOperator for StatelessLoopBounded {
+    fn factory_id() -> &'static str {
+        "stateless_loop_bounded"
+    }
+    fn loop_mode() -> LoopMode {
+        LoopMode::PerInput
+    }
+    fn self_terminating() -> bool {
+        false
+    }
+    fn max_duration() -> Option<Duration> {
+        Some(Duration::from_secs(600))
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("in")
+            .into::<ChatReply>()
+            .sink_named("out");
+    }
+}
+
+// -- KeyedLoopBounded -------------------------------------------------------
+//
+// `keyed_loop_bounded`: a durable PER_INPUT loop keyed on its entry edge by
+// the text before the first `:`, so one Cell counts one symbol's messages. The
+// shape a partition group of bounded operator members takes: each member mints Cells
+// for its own key groups only, and a rescale moves them with their counts.
+
+#[derive(Default)]
+struct KeyedLoopCount;
+impl Tasklet for KeyedLoopCount {
+    type Input = String;
+    type Output = String;
+    type State = CounterState;
+    type Change = CounterChange;
+    type Clock = WallClock;
+    type Config = ();
+    fn name() -> &'static str {
+        "keyed_loop_count"
+    }
+    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> CounterState {
+        CounterState::default()
+    }
+    fn apply_change(state: &mut CounterState, change: &CounterChange) {
+        state.value += change.delta;
+    }
+    fn run(
+        &mut self,
+        input: String,
+        mut state: StateHandle<'_, Self>,
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
+        let symbol = key_prefix(&input);
+        state.apply(CounterChange { delta: 1 });
+        ctx.emit::<String>(format!("{symbol}:{}", state.value))
+    }
+}
+
+pub(crate) struct KeyedLoopBounded;
+impl BoundedOperator for KeyedLoopBounded {
+    fn factory_id() -> &'static str {
+        "keyed_loop_bounded"
+    }
+    fn loop_mode() -> LoopMode {
+        LoopMode::PerInput
+    }
+    fn self_terminating() -> bool {
+        false
+    }
+    fn max_duration() -> Option<Duration> {
+        Some(Duration::from_secs(600))
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("trades")
+            .key_by(|trade: &String| key_prefix(trade))
+            .into::<KeyedLoopCount>()
+            .sink_named("keyed_loop_bounded_out");
+    }
+}
+
+// -- SpawnRequesterOperator -----------------------------------------------------
+//
+// `spawn_requester`: on each input it spawns `stateless_loop_bounded` once with
+// no id and once under the input as its id, and prints both results, because a
+// handle's answer is observable nowhere but in the tasklet that read it.
+
+#[derive(Default)]
+struct SpawnRequester;
+impl Tasklet for SpawnRequester {
+    type Input = String;
+    type Output = String;
+    type State = ();
+    type Change = NoChange;
+    type Clock = WallClock;
+    type Config = ();
+    fn name() -> &'static str {
+        "spawn_requester"
+    }
+    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
+    fn run(
+        &mut self,
+        input: String,
+        _: StateHandle<'_, Self>,
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
+        let unnamed = ctx.spawn_bounded(StatelessLoopBounded::factory_id(), input.clone());
+        let named = ctx.spawn_bounded_with(
+            StatelessLoopBounded::factory_id(),
+            input.clone(),
+            SpawnOptions::id(input),
+        );
+        for (label, handle) in [("unnamed", unnamed), ("named", named)] {
+            match handle.wait() {
+                Ok(result) => println!(
+                    "spawn_result {label} {} {}",
+                    result.id,
+                    result.outcome.as_wire()
+                ),
+                Err(e) => println!("spawn_result {label} error {e}"),
+            }
+        }
+        Ok(())
+    }
+}
+
+pub(crate) struct SpawnRequesterOperator;
+impl UnboundedOperator for SpawnRequesterOperator {
+    fn factory_id() -> &'static str {
+        "spawn_requester"
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("in")
+            .into::<SpawnRequester>()
+            .sink_named("out");
+    }
+}
+
+// -- SpawnOnceRequesterOperator / TypedOnceBounded --------------------------------
+//
+// `spawn_once_requester`: on each input it spawns `typed_once_bounded` once
+// with `{"text": <input>}` as the payload and prints the handle's answer as
+// `spawn_result once <id> <outcome>`. `typed_once_bounded` is the `once`
+// shape whose entry channel `order` decodes that JSON into a `Ticket`; its one
+// tasklet prints `once_ran <text>`, emits `placed:<text>` to its sink and
+// completes with the text, so the pass ends on the payload it was spawned
+// with (KB-381).
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub(crate) struct Ticket {
+    text: String,
+}
+
+#[derive(Default)]
+struct SpawnOnceRequester;
+impl Tasklet for SpawnOnceRequester {
+    type Input = String;
+    type Output = String;
+    type State = ();
+    type Change = NoChange;
+    type Clock = WallClock;
+    type Config = ();
+    fn name() -> &'static str {
+        "spawn_once_requester"
+    }
+    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
+    fn run(
+        &mut self,
+        input: String,
+        _: StateHandle<'_, Self>,
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
+        let ticket = serde_json::to_string(&Ticket { text: input }).expect("a ticket serializes");
+        match ctx
+            .spawn_bounded(TypedOnceBounded::factory_id(), ticket)
+            .wait()
+        {
+            Ok(result) => println!(
+                "spawn_result once {} {}",
+                result.id,
+                result.outcome.as_wire()
+            ),
+            Err(e) => println!("spawn_result once error {e}"),
+        }
+        Ok(())
+    }
+}
+
+pub(crate) struct SpawnOnceRequesterOperator;
+impl UnboundedOperator for SpawnOnceRequesterOperator {
+    fn factory_id() -> &'static str {
+        "spawn_once_requester"
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("in")
+            .into::<SpawnOnceRequester>()
+            .sink_named("out");
+    }
+}
+
+#[derive(Default)]
+struct OncePlaced;
+impl Tasklet for OncePlaced {
+    type Input = Ticket;
+    type Output = String;
+    type State = ();
+    type Change = NoChange;
+    type Clock = WallClock;
+    type Config = ();
+    fn name() -> &'static str {
+        "once_placed"
+    }
+    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
+    fn run(
+        &mut self,
+        ticket: Ticket,
+        _: StateHandle<'_, Self>,
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
+        println!("once_ran {}", ticket.text);
+        ctx.complete(ticket.text.clone())?;
+        ctx.emit::<String>(format!("placed:{}", ticket.text))
+    }
+}
+
+pub(crate) struct TypedOnceBounded;
+impl BoundedOperator for TypedOnceBounded {
+    fn factory_id() -> &'static str {
+        "typed_once_bounded"
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.input::<Ticket>("order")
+            .into::<OncePlaced>()
+            .sink_named("placed");
+    }
+}
+
+// -- ReplyBlockLoopBounded -----------------------------------------------------
+//
+// `reply_block_loop_bounded`: the chat loop with the block moved AFTER the
+// root's commit (TURN commits its turn, REPLY blocks on the turn
+// `reply-crash` while the release env is unset), so a SIGKILL lands between a
+// root's `task_committed` and the pass's `iter_committed`, the shape that
+// asks whether the re-forwarded message drives one iteration or two.
+const REPLY_CRASH_TURN: &str = "reply-crash";
+
+stateless_step!(BlockingReply, "blocking_reply", |input, ctx| {
+    if input == REPLY_CRASH_TURN {
+        block_until_released();
+    }
+    ctx.emit::<String>(format!("reply:{input}"))
+});
+
+pub(crate) struct ReplyBlockLoopBounded;
+impl BoundedOperator for ReplyBlockLoopBounded {
+    fn factory_id() -> &'static str {
+        "reply_block_loop_bounded"
+    }
+    fn loop_mode() -> LoopMode {
+        LoopMode::PerInput
+    }
+    fn self_terminating() -> bool {
+        false
+    }
+    fn max_duration() -> Option<Duration> {
+        Some(Duration::from_secs(600))
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("in")
+            .into::<ChatTurn>()
+            .named("mid")
+            .into::<BlockingReply>()
+            .sink_named("out");
+    }
+}
+
+// -- ChatRewindBounded ----------------------------------------------------------
+//
+// `bounded-loop-rewind`: the same chat loop, but its replying tasklet can be
+// undone. The undo handle lives in Cell State — a rewind's compensation is
+// rebuilt from the journal and is handed NO retained outputs (the at-least-once
+// author contract) — so the hook reads the last thing it said, retracts it, and
+// pops it. Unwinding in reverse iteration order therefore retracts the turns in
+// reverse.
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+struct ReplyLog {
+    said: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+enum ReplyChange {
+    Said(String),
+    Retracted,
+}
+impl Change for ReplyChange {}
+
+#[derive(Default)]
+struct ChatReplyUndoable;
+impl Tasklet for ChatReplyUndoable {
+    type Input = String;
+    type Output = String;
+    type State = ReplyLog;
+    type Change = ReplyChange;
+    type Clock = WallClock;
+    type Config = ();
+    fn name() -> &'static str {
+        "chat_reply_undoable"
+    }
+    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> ReplyLog {
+        ReplyLog::default()
+    }
+    fn apply_change(state: &mut ReplyLog, change: &ReplyChange) {
+        match change {
+            ReplyChange::Said(turn) => state.said.push(turn.clone()),
+            ReplyChange::Retracted => {
+                state.said.pop();
+            }
+        }
+    }
+    fn run(
+        &mut self,
+        input: String,
+        mut state: StateHandle<'_, Self>,
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
+        state.apply(ReplyChange::Said(input.clone()));
+        ctx.emit::<String>(format!("reply:{input}"))
+    }
+    const COMPENSATE_OVERRIDDEN: bool = true;
+    fn compensate(
+        &mut self,
+        _completed_output: Vec<std::sync::Arc<String>>,
+        mut state: StateHandle<'_, Self>,
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
+        let Some(turn) = state.said.last().cloned() else {
+            return Ok(());
+        };
+        state.apply(ReplyChange::Retracted);
+        ctx.emit::<String>(format!("retract:{turn}"))
+    }
+}
+
+pub(crate) struct ChatRewindBounded;
+impl BoundedOperator for ChatRewindBounded {
+    fn factory_id() -> &'static str {
+        "chat_rewind_bounded"
+    }
+    fn loop_mode() -> LoopMode {
+        LoopMode::PerInput
+    }
+    fn self_terminating() -> bool {
+        false
+    }
+    fn max_duration() -> Option<Duration> {
+        Some(Duration::from_secs(600))
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("in")
+            .into::<ChatTurn>()
+            .named("mid")
+            .into::<ChatReplyUndoable>()
+            .sink_named("out");
+    }
+}
+
+pub(crate) struct ChatLoopBounded;
+impl BoundedOperator for ChatLoopBounded {
+    fn factory_id() -> &'static str {
+        "chat_loop_bounded"
+    }
+    fn loop_mode() -> LoopMode {
+        LoopMode::PerInput
+    }
+    // A chat session ends itself on `bye`; the duration backstop keeps a
+    // stray e2e instance from outliving the test run.
+    fn max_duration() -> Option<Duration> {
+        Some(Duration::from_secs(600))
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("in")
+            .into::<ChatTurn>()
+            .named("mid")
+            .into::<ChatReply>()
+            .sink_named("out");
+    }
+}
+
+// -- Bench bounded fixtures (`mix bench.bounded`) -------------------------------
+//
+// Durable K-tasklet chains and a long-lived chat loop for the bounded operator
+// operator bench. Every chain step is the `durable_step!` shape — one
+// idempotent Change per task, the payload passed through unchanged — so the
+// sink receives the seed input and the bench reads its own seq + send
+// timestamp back. The loop is the `chat_loop_bounded` shape with a bounded
+// per-turn state and a day-long duration backstop (soaks outlive 600 s); with
+// `FLEZHA_BENCH_WAKE_AFTER_MS` set each turn arms a timer that far out, whose
+// firing sends the bench's wake marker naming its scheduled time, for the
+// timer-wake measurements.
+
+durable_step!(BenchS0, "bench_s0");
+durable_step!(BenchS1, "bench_s1");
+durable_step!(BenchS2, "bench_s2");
+durable_step!(BenchS3, "bench_s3");
+durable_step!(BenchS4, "bench_s4");
+durable_step!(BenchS5, "bench_s5");
+durable_step!(BenchS6, "bench_s6");
+durable_step!(BenchS7, "bench_s7");
+durable_step!(BenchS8, "bench_s8");
+durable_step!(BenchS9, "bench_s9");
+durable_step!(BenchS10, "bench_s10");
+durable_step!(BenchS11, "bench_s11");
+durable_step!(BenchS12, "bench_s12");
+durable_step!(BenchS13, "bench_s13");
+durable_step!(BenchS14, "bench_s14");
+durable_step!(BenchS15, "bench_s15");
+
+// A linear chain `in → $first → $rest… → bench_sink`, every inter-task edge
+// codec'd (required for a durable structured class).
+macro_rules! bench_chain {
+    ($ty:ident, $factory:literal, persist: $persist:expr, $first:ident $(, $rest:ident)*) => {
+        pub(crate) struct $ty;
+        impl BoundedOperator for $ty {
+            const PERSISTENCE_ENABLED: bool = $persist;
+            fn factory_id() -> &'static str {
+                $factory
+            }
+            fn channels(c: &ChannelBuilder) {
+                let s = c.input::<String>("in").into::<$first>();
+                $(
+                    let s = s
+                        .named(concat!("edge_", stringify!($rest)))
+                        .into::<$rest>();
+                )*
+                s.sink_named("out");
+            }
+        }
+    };
+}
+
+bench_chain!(BenchChain1, "bench_chain_1", persist: true, BenchS0);
+bench_chain!(BenchChain4, "bench_chain_4", persist: true, BenchS0, BenchS1, BenchS2, BenchS3);
+bench_chain!(
+    BenchChain16,
+    "bench_chain_16",
+    persist: true,
+    BenchS0,
+    BenchS1,
+    BenchS2,
+    BenchS3,
+    BenchS4,
+    BenchS5,
+    BenchS6,
+    BenchS7,
+    BenchS8,
+    BenchS9,
+    BenchS10,
+    BenchS11,
+    BenchS12,
+    BenchS13,
+    BenchS14,
+    BenchS15
+);
+bench_chain!(
+    BenchChainOptOut4,
+    "bench_chain_optout_4",
+    persist: false,
+    BenchS0,
+    BenchS1,
+    BenchS2,
+    BenchS3
+);
+
+// One turn's durable state: how many turns ran and the last one — bounded,
+// so a million-turn soak snapshots the same few bytes at every iteration.
+#[derive(Serialize, Deserialize, Clone, Default)]
+struct BenchTurnState {
+    turns: u64,
+    last: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+struct BenchTurnSeen(String);
+impl Change for BenchTurnSeen {}
+
+#[derive(Default)]
+struct BenchTurn;
+impl Tasklet for BenchTurn {
+    type Input = String;
+    type Output = String;
+    type State = BenchTurnState;
+    type Change = BenchTurnSeen;
+    type Clock = WallClock;
+    type Config = ();
+    fn name() -> &'static str {
+        "bench_turn"
+    }
+    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> BenchTurnState {
+        BenchTurnState::default()
+    }
+    fn apply_change(state: &mut BenchTurnState, change: &BenchTurnSeen) {
+        state.turns += 1;
+        state.last = change.0.clone();
+    }
+    fn run(
+        &mut self,
+        input: String,
+        mut state: StateHandle<'_, Self>,
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
+        state.apply(BenchTurnSeen(input.clone()));
+        if let Some(after) = env::var("FLEZHA_BENCH_WAKE_AFTER_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+        {
+            ctx.timer_after(Duration::from_millis(after))?;
+        }
+        ctx.emit::<String>(input)
+    }
+    fn on_timer(
+        &mut self,
+        fired_at: u64,
+        _kind: flezha_runner::state::TimerKind,
+        _state: StateHandle<'_, Self>,
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
+        ctx.emit::<String>(format!("wake:{fired_at}"))
+    }
+}
+
+pub(crate) struct BenchLoopBounded;
+impl BoundedOperator for BenchLoopBounded {
+    fn factory_id() -> &'static str {
+        "bench_loop_bounded"
+    }
+    fn loop_mode() -> LoopMode {
+        LoopMode::PerInput
+    }
+    fn self_terminating() -> bool {
+        false
+    }
+    fn max_duration() -> Option<Duration> {
+        Some(Duration::from_secs(24 * 3600))
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("in")
+            .into::<BenchTurn>()
+            .named("mid")
+            .into::<ChatReply>()
+            .sink_named("out");
+    }
+}

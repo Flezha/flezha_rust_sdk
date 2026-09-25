@@ -7,7 +7,7 @@ pub enum TaskletError {
     )]
     MetadataNotAllowedOnInterTaskletChannel { channel: String },
 
-    #[error("channel `{channel}` is not declared on this operative")]
+    #[error("channel `{channel}` is not declared on this operator")]
     UnknownChannel { channel: String },
 
     #[error("plugin serializer for channel `{channel}` panicked: {message}")]
@@ -26,7 +26,7 @@ pub enum TaskletError {
 
     #[error(
         "metadata key `{key}` uses the reserved `flz.` namespace; runtime stamps cannot be \
-             set by operative code"
+             set by operator code"
     )]
     ReservedMetadataKey { key: String },
 

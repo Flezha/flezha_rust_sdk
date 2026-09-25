@@ -15,27 +15,27 @@ pub(crate) use flezha_runner::tasklet::{
     EventTimeFrom, Tasklet, TaskletCtx, TaskletError, TimeExtractor,
 };
 pub(crate) use flezha_runner::{
-    ChannelBuilder, Flezha, FlezhaRunner, LoopMode, OverflowPolicy, Stream, StreamOperative,
-    WorkflowOperative,
+    BoundedOperator, ChannelBuilder, Flezha, FlezhaRunner, LoopMode, OverflowPolicy, Stream,
+    UnboundedOperator,
 };
 pub(crate) use serde::{Deserialize, Serialize};
 
+mod bounded;
+mod bounded_loop;
 mod cell;
 mod channel;
 mod conformance;
 mod probe;
 mod state;
 mod sugar;
-mod workflow;
-mod workflow_loop;
 
+use crate::bounded::*;
+use crate::bounded_loop::*;
 use crate::cell::*;
 use crate::channel::*;
 use crate::probe::*;
 use crate::state::*;
 use crate::sugar::*;
-use crate::workflow::*;
-use crate::workflow_loop::*;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The SDK installs no subscriber of its own, so without this every
@@ -71,75 +71,75 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         run_admin_script(&runner, script);
     }
     runner
-        .register_factory(DoNothingOperative)?
-        .register_factory(StoreInputOperative)?
-        .register_factory(CompareFilterOperative)?
-        .register_factory(StaticCellOperative)?
-        .register_factory(CellStressOperative)?
-        .register_factory(BoundedMailboxDropNothingOperative)?
-        .register_factory(BoundedMailboxDropNewestOperative)?
-        .register_factory(BoundedMailboxDropOldestOperative)?
-        .register_factory(StatefulCounterOperative)?
-        .register_factory(CoalescingCounterOperative)?
-        .register_factory(PersistenceOffOperative)?
-        .register_factory(SleepingCounterOperative)?
-        .register_factory(HybridChannelOperative)?
-        .register_factory(MergedInputOperative)?
-        .register_factory(TransformChainOperative)?
-        .register_factory(ResumeProbeOperative)?
-        .register_factory(SchemaEvolutionV1Operative)?
-        .register_factory(SchemaEvolutionV2Operative)?
-        .register_factory(DynamicCellOperative)?
-        .register_factory(PartitionRelayOperative)?
-        .register_factory(SessionTimeoutOperative)?
-        .register_factory(MixedOperative)?
-        .register_factory(TierStoreOperative)?
-        .register_factory(BenchEchoOperative)?
-        .register_factory(BenchKeyedOperative)?
-        .register_factory(BenchKeyedNoPersistOperative)?
-        .register_factory(CheckpointStoreOperative)?
-        .register_factory(CheckpointBatchedOperative)?
-        .register_factory(BenchCheckpointOperative)?
-        .register_factory(PoisonProbeOperative)?
-        .register_factory(WedgeProbeOperative)?
-        .register_factory(CandleOperative)?
-        .register_factory(SpawnRequesterOperative)?
-        .register_factory(SpawnOnceRequesterOperative)?
+        .register_factory(DoNothingOperator)?
+        .register_factory(StoreInputOperator)?
+        .register_factory(CompareFilterOperator)?
+        .register_factory(StaticCellOperator)?
+        .register_factory(CellStressOperator)?
+        .register_factory(BoundedMailboxDropNothingOperator)?
+        .register_factory(BoundedMailboxDropNewestOperator)?
+        .register_factory(BoundedMailboxDropOldestOperator)?
+        .register_factory(StatefulCounterOperator)?
+        .register_factory(CoalescingCounterOperator)?
+        .register_factory(PersistenceOffOperator)?
+        .register_factory(SleepingCounterOperator)?
+        .register_factory(HybridChannelOperator)?
+        .register_factory(MergedInputOperator)?
+        .register_factory(TransformChainOperator)?
+        .register_factory(ResumeProbeOperator)?
+        .register_factory(SchemaEvolutionV1Operator)?
+        .register_factory(SchemaEvolutionV2Operator)?
+        .register_factory(DynamicCellOperator)?
+        .register_factory(PartitionRelayOperator)?
+        .register_factory(SessionTimeoutOperator)?
+        .register_factory(MixedOperator)?
+        .register_factory(TierStoreOperator)?
+        .register_factory(BenchEchoOperator)?
+        .register_factory(BenchKeyedOperator)?
+        .register_factory(BenchKeyedNoPersistOperator)?
+        .register_factory(CheckpointStoreOperator)?
+        .register_factory(CheckpointBatchedOperator)?
+        .register_factory(BenchCheckpointOperator)?
+        .register_factory(PoisonProbeOperator)?
+        .register_factory(WedgeProbeOperator)?
+        .register_factory(CandleOperator)?
+        .register_factory(SpawnRequesterOperator)?
+        .register_factory(SpawnOnceRequesterOperator)?
         .register_factory(SugarDoNothing)?
         .register_factory(SugarStoreInput)?
         .register_factory(SugarNamedInput)?
         .register_factory(SugarStaticCell)?
-        .register_factory(SugarWorkflow)?
-        .register_factory(SugarWorkflowPerInput)?
+        .register_factory(SugarBounded)?
+        .register_factory(SugarBoundedPerInput)?
         .register_factory(SugarStateOnly)?
-        .register_factory(EchoWorkflow)?
-        .register_factory(TimerLoopWorkflow)?
-        .register_factory(EventTimerWorkflow)?
-        .register_factory(StaticCellWorkflow)?
-        .register_factory(CommitBlockWorkflow)?
-        .register_factory(SyncDurableWorkflow)?
-        .register_factory(OptOutCommitBlockWorkflow)?
-        .register_factory(TierCommitBlockWorkflow)?
-        .register_factory(SagaBlockWorkflow)?
-        .register_factory(KeyedBlockWorkflow)?
-        .register_factory(KeyedSagaWorkflow)?
-        .register_factory(OutboxBlockWorkflow)?
-        .register_factory(UndoOutboxWorkflow)?
-        .register_factory(FailedStageWorkflow)?
-        .register_factory(ChatLoopWorkflow)?
-        .register_factory(StatelessLoopWorkflow)?
-        .register_factory(KeyedLoopWorkflow)?
-        .register_factory(ChatRewindWorkflow)?
-        .register_factory(ReplyBlockLoopWorkflow)?
-        .register_factory(TypedOnceWorkflow)?
-        .register_factory(RetryWorkflow)?
-        .register_factory(BranchWorkflow)?
-        .register_factory(DiamondWorkflow)?
+        .register_factory(EchoBounded)?
+        .register_factory(TimerLoopBounded)?
+        .register_factory(EventTimerBounded)?
+        .register_factory(StaticCellBounded)?
+        .register_factory(CommitBlockBounded)?
+        .register_factory(SyncDurableBounded)?
+        .register_factory(OptOutCommitBlockBounded)?
+        .register_factory(TierCommitBlockBounded)?
+        .register_factory(SagaBlockBounded)?
+        .register_factory(KeyedBlockBounded)?
+        .register_factory(KeyedSagaBounded)?
+        .register_factory(OutboxBlockBounded)?
+        .register_factory(UndoOutboxBounded)?
+        .register_factory(FailedStageBounded)?
+        .register_factory(ChatLoopBounded)?
+        .register_factory(StatelessLoopBounded)?
+        .register_factory(KeyedLoopBounded)?
+        .register_factory(ChatRewindBounded)?
+        .register_factory(ReplyBlockLoopBounded)?
+        .register_factory(TypedOnceBounded)?
+        .register_factory(RetryBounded)?
+        .register_factory(BranchBounded)?
+        .register_factory(DiamondBounded)?
         .register_factory(BenchChain1)?
         .register_factory(BenchChain4)?
         .register_factory(BenchChain16)?
         .register_factory(BenchChainOptOut4)?
-        .register_factory(BenchLoopWorkflow)?
+        .register_factory(BenchLoopBounded)?
         .run()?;
     Ok(())
 }

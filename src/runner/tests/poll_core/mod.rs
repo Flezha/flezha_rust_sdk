@@ -1,7 +1,7 @@
 //! Relocated engine tests: handout exclusivity, ordering, the ladder.
 
 /// Slot scaffolding shared by the engine's own tests and the poll pool's
-/// (`operative::poll_pool`) — one definition of how a test builds a Cell
+/// (`operator::poll_pool`) — one definition of how a test builds a Cell
 /// and hands it an input.
 pub(crate) mod fixtures {
     use std::any::Any;
@@ -11,15 +11,15 @@ pub(crate) mod fixtures {
 
     use crate::cell::{CellItem, CellPayload, CellSlot};
     use crate::channel::ChannelBuilder;
-    use crate::operative::builder::build_topology_with_persistence;
-    use crate::operative::instance::OperativeInstance;
-    use crate::operative::StreamOperative;
+    use crate::operator::builder::build_topology_with_persistence;
+    use crate::operator::instance::OperatorInstance;
+    use crate::operator::UnboundedOperator;
     use crate::runner::poll_core::PollCore;
 
     /// One instance of `O` and its first Cell.
-    pub(crate) fn build_slot_of<O: StreamOperative>(
+    pub(crate) fn build_slot_of<O: UnboundedOperator>(
         instance_id: &str,
-    ) -> (Arc<OperativeInstance>, Arc<CellSlot>) {
+    ) -> (Arc<OperatorInstance>, Arc<CellSlot>) {
         let cb = ChannelBuilder::new();
         O::channels(&cb);
         let topology = build_topology_with_persistence(
@@ -29,7 +29,7 @@ pub(crate) mod fixtures {
             O::SLEEP_WHEN_IDLE,
         )
         .expect("topology");
-        let instance = OperativeInstance::new(topology, Arc::from(instance_id));
+        let instance = OperatorInstance::new(topology, Arc::from(instance_id));
         let slot = Arc::clone(&instance.cells[0][0]);
         (instance, slot)
     }
@@ -86,7 +86,7 @@ pub(crate) mod fixtures {
     }
 }
 
-/// The tasklets, operatives and slot builders the three test modules
+/// The tasklets, operators and slot builders the three test modules
 /// below are written against.
 mod support {
 
@@ -101,8 +101,8 @@ mod support {
     use crate::cell::timer::{TimerKind, TimerOp};
     use crate::cell::{CellItem, CellSlot};
     use crate::channel::ChannelBuilder;
-    use crate::operative::instance::OperativeInstance;
-    use crate::operative::StreamOperative;
+    use crate::operator::instance::OperatorInstance;
+    use crate::operator::UnboundedOperator;
     use crate::tasklet::change::NoChange;
     use crate::tasklet::clock::WallClock;
     use crate::tasklet::ctx::TaskletCtx;
@@ -134,7 +134,7 @@ mod support {
     }
 
     pub(super) struct PollOp;
-    impl StreamOperative for PollOp {
+    impl UnboundedOperator for PollOp {
         fn factory_id() -> &'static str {
             "poll_core_exclusivity_op"
         }
@@ -173,7 +173,7 @@ mod support {
     }
 
     pub(super) struct TinyOp;
-    impl StreamOperative for TinyOp {
+    impl UnboundedOperator for TinyOp {
         fn factory_id() -> &'static str {
             "poll_core_tiny_mailbox_op"
         }
@@ -184,7 +184,7 @@ mod support {
 
     /// A slot whose one mailbox slot is taken and whose round is claimed by
     /// nobody: every wake promoted against it meets a full mailbox.
-    pub(super) fn full_slot(instance_id: &str) -> (Arc<OperativeInstance>, Arc<CellSlot>) {
+    pub(super) fn full_slot(instance_id: &str) -> (Arc<OperatorInstance>, Arc<CellSlot>) {
         let (instance, slot) = build_slot_of::<TinyOp>(instance_id);
         assert!(slot.mailbox.try_push(payload(0, &unix_stream())).is_ok());
         assert!(slot.mailbox.is_full());
@@ -197,7 +197,7 @@ mod support {
     /// A backoff long enough to observe the deferral window from the outside:
     /// base 2 s, so attempt 1 comes due in 1–3 s.
     pub(super) struct SlowRetryOp;
-    impl StreamOperative for SlowRetryOp {
+    impl UnboundedOperator for SlowRetryOp {
         fn factory_id() -> &'static str {
             "poll_core_slow_retry_op"
         }
@@ -208,7 +208,7 @@ mod support {
         }
     }
 
-    pub(super) fn build_slot(instance_id: &str) -> (Arc<OperativeInstance>, Arc<CellSlot>) {
+    pub(super) fn build_slot(instance_id: &str) -> (Arc<OperatorInstance>, Arc<CellSlot>) {
         build_slot_of::<PollOp>(instance_id)
     }
 

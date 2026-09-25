@@ -53,7 +53,7 @@ fn default_directives_pass_every_sdk_diagnostic_target() {
         "flezha::mailbox" => tracing::warn!(target: "flezha::mailbox", "mailbox full"),
         "flz_core" => tracing::warn!(target: "flz_core::state_sink", "sink down"),
         "flz_transport" => tracing::warn!(target: "flz_transport::stream", "stream closed"),
-        "flezha_runner" => tracing::warn!(target: "flezha_runner::operative::poll_pool", "pool"),
+        "flezha_runner" => tracing::warn!(target: "flezha_runner::operator::poll_pool", "pool"),
     };
     let dropped: Vec<&str> = results
         .iter()

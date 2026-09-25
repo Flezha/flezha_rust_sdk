@@ -11,7 +11,7 @@ use flezha_runner::cell::header::{HeaderTemplate, FORMAT_ID_EFFECT_RECORD, FORMA
 use flezha_runner::cell::state_sink;
 use flezha_runner::cell::timer::{PendingTimers, TimerKind, TimerOp};
 use flezha_runner::channel::ChannelBuilder;
-use flezha_runner::operative::StreamOperative;
+use flezha_runner::operator::UnboundedOperator;
 use flezha_runner::state::{NoChange, RestoreInitPayload};
 use flezha_runner::tasklet::{StateHandle, Tasklet, TaskletCtx, TaskletError};
 use flezha_runner::testing::TaskletTestHarness;
@@ -146,10 +146,10 @@ impl<const CAP: usize> Tasklet for SessionTask<CAP> {
     }
 }
 
-pub struct SessionOperative;
-impl StreamOperative for SessionOperative {
+pub struct SessionOperator;
+impl UnboundedOperator for SessionOperator {
     fn factory_id() -> &'static str {
-        "timers_session_operative"
+        "timers_session_operator"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
@@ -159,12 +159,12 @@ impl StreamOperative for SessionOperative {
     }
 }
 
-/// [`SessionOperative`] with a two-slot, `DropNothing` entry mailbox, so a
+/// [`SessionOperator`] with a two-slot, `DropNothing` entry mailbox, so a
 /// case can saturate it with two frames and watch a firing meet it.
-pub struct SaturatedSessionOperative;
-impl StreamOperative for SaturatedSessionOperative {
+pub struct SaturatedSessionOperator;
+impl UnboundedOperator for SaturatedSessionOperator {
     fn factory_id() -> &'static str {
-        "timers_saturated_session_operative"
+        "timers_saturated_session_operator"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
@@ -253,10 +253,10 @@ impl Tasklet for WindowTask {
     }
 }
 
-pub struct WindowOperative;
-impl StreamOperative for WindowOperative {
+pub struct WindowOperator;
+impl UnboundedOperator for WindowOperator {
     fn factory_id() -> &'static str {
-        "timers_window_operative"
+        "timers_window_operator"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<Tick>("in").into::<WindowTask>();

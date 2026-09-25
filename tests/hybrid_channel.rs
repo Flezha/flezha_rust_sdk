@@ -45,7 +45,7 @@ fn duplex_stream_with_reader() -> (Arc<FlezhaStream>, Arc<Mutex<Vec<ReceivedFram
 }
 
 fn dispatch_input(
-    handle: &OperativeDispatchHandle,
+    handle: &OperatorDispatchHandle,
     instance_id: &str,
     stream: &Arc<FlezhaStream>,
     input: &str,
@@ -77,8 +77,8 @@ test_tasklet!(SingleConsumer, "hybrid_single_consumer", u32 => (), (), |input, _
     Ok(())
 });
 
-struct SingleHybridOperative;
-impl StreamOperative for SingleHybridOperative {
+struct SingleHybridOperator;
+impl UnboundedOperator for SingleHybridOperator {
     fn factory_id() -> &'static str {
         "hybrid_single"
     }
@@ -93,7 +93,7 @@ impl StreamOperative for SingleHybridOperative {
 #[test]
 fn hybrid_single_consumer_receives_typed_and_plugin_bytes() {
     single_consumer_observed().lock().unwrap().clear();
-    let (handle, _instance) = setup::<SingleHybridOperative>("hyb-single");
+    let (handle, _instance) = setup::<SingleHybridOperator>("hyb-single");
     let (stream, received) = duplex_stream_with_reader();
 
     dispatch_input(&handle, "hyb-single", &stream, "42");
@@ -150,8 +150,8 @@ test_tasklet!(ThreeConsumerC, "hybrid_three_c", u32 => (), (), |input, _state, _
     Ok(())
 });
 
-struct ThreeHybridOperative;
-impl StreamOperative for ThreeHybridOperative {
+struct ThreeHybridOperator;
+impl UnboundedOperator for ThreeHybridOperator {
     fn factory_id() -> &'static str {
         "hybrid_three"
     }
@@ -176,7 +176,7 @@ fn hybrid_three_consumers_single_serializer_call() {
     three_consumer_observed_c().lock().unwrap().clear();
     SERIALIZER_CALLS.store(0, Ordering::SeqCst);
 
-    let (handle, _instance) = setup::<ThreeHybridOperative>("hyb-three");
+    let (handle, _instance) = setup::<ThreeHybridOperator>("hyb-three");
     let (stream, received) = duplex_stream_with_reader();
 
     dispatch_input(&handle, "hyb-three", &stream, "7");
@@ -226,8 +226,8 @@ test_tasklet!(PanicConsumer, "hybrid_panic_consumer", u32 => (), (), |input, _st
     Ok(())
 });
 
-struct PanicHybridOperative;
-impl StreamOperative for PanicHybridOperative {
+struct PanicHybridOperator;
+impl UnboundedOperator for PanicHybridOperator {
     fn factory_id() -> &'static str {
         "hybrid_panic"
     }
@@ -249,7 +249,7 @@ fn hybrid_serializer_panic_is_caught() {
     panic_consumer_observed().lock().unwrap().clear();
     panic_emit_results().lock().unwrap().clear();
 
-    let (handle, _instance) = setup::<PanicHybridOperative>("hyb-panic");
+    let (handle, _instance) = setup::<PanicHybridOperator>("hyb-panic");
     let (stream, received) = duplex_stream_with_reader();
 
     // First emit panics in the serializer.
@@ -299,8 +299,8 @@ test_tasklet!(DupProducer, "hybrid_dup_producer", String => u32, (), |_input, _s
     Ok(())
 });
 
-struct DupHybridOperative;
-impl StreamOperative for DupHybridOperative {
+struct DupHybridOperator;
+impl UnboundedOperator for DupHybridOperator {
     fn factory_id() -> &'static str {
         "hybrid_dup"
     }
@@ -314,7 +314,7 @@ impl StreamOperative for DupHybridOperative {
 
 #[test]
 fn hybrid_duplicate_plugin_sink_is_rejected() {
-    let result = build_topology_for::<DupHybridOperative>();
+    let result = build_topology_for::<DupHybridOperator>();
     let err = match result {
         Ok(_) => panic!("expected topology error"),
         Err(e) => e,
@@ -348,8 +348,8 @@ test_tasklet!(MetaConsumer, "hybrid_meta_consumer", u32 => (), (), |input, _stat
     Ok(())
 });
 
-struct MetaHybridOperative;
-impl StreamOperative for MetaHybridOperative {
+struct MetaHybridOperator;
+impl UnboundedOperator for MetaHybridOperator {
     fn factory_id() -> &'static str {
         "hybrid_meta"
     }
@@ -364,7 +364,7 @@ impl StreamOperative for MetaHybridOperative {
 #[test]
 fn emit_with_meta_on_hybrid_channel_forwards_meta_to_plugin_only() {
     meta_consumer_observed().lock().unwrap().clear();
-    let (handle, _instance) = setup::<MetaHybridOperative>("hyb-meta");
+    let (handle, _instance) = setup::<MetaHybridOperator>("hyb-meta");
     let (stream, received) = duplex_stream_with_reader();
 
     dispatch_input(&handle, "hyb-meta", &stream, "9");
@@ -422,8 +422,8 @@ test_tasklet!(PureConsumer, "hybrid_pure_consumer", u32 => (), (), |input, _stat
     Ok(())
 });
 
-struct PureOperative;
-impl StreamOperative for PureOperative {
+struct PureOperator;
+impl UnboundedOperator for PureOperator {
     fn factory_id() -> &'static str {
         "hybrid_pure"
     }
@@ -440,7 +440,7 @@ fn emit_with_meta_on_pure_inter_tasklet_channel_is_rejected() {
     pure_consumer_observed().lock().unwrap().clear();
     pure_emit_results().lock().unwrap().clear();
 
-    let (handle, _instance) = setup::<PureOperative>("hyb-pure");
+    let (handle, _instance) = setup::<PureOperator>("hyb-pure");
     let (stream, received) = duplex_stream_with_reader();
 
     dispatch_input(&handle, "hyb-pure", &stream, "1");
@@ -492,8 +492,8 @@ test_tasklet!(UnifiedConsumer, "unified_consumer", String => (), (), |input, _st
 });
 
 /// `sink` and nothing after it — what the removed `output(...)` declared.
-struct TerminalSinkOperative;
-impl StreamOperative for TerminalSinkOperative {
+struct TerminalSinkOperator;
+impl UnboundedOperator for TerminalSinkOperator {
     fn factory_id() -> &'static str {
         "unified_terminal"
     }
@@ -505,8 +505,8 @@ impl StreamOperative for TerminalSinkOperative {
 }
 
 /// The same declaration with the optional type-level terminator.
-struct SealedSinkOperative;
-impl StreamOperative for SealedSinkOperative {
+struct SealedSinkOperator;
+impl UnboundedOperator for SealedSinkOperator {
     fn factory_id() -> &'static str {
         "unified_sealed"
     }
@@ -519,8 +519,8 @@ impl StreamOperative for SealedSinkOperative {
 }
 
 /// The same sink with a consumer wired after it — what `also_output` declared.
-struct HybridSinkOperative;
-impl StreamOperative for HybridSinkOperative {
+struct HybridSinkOperator;
+impl UnboundedOperator for HybridSinkOperator {
     fn factory_id() -> &'static str {
         "unified_hybrid"
     }
@@ -535,8 +535,8 @@ impl StreamOperative for HybridSinkOperative {
 /// A leaf node sealed with no sink at all — the case where "sealing changes
 /// no topology" is falsifiable: a leaf's output channel is created lazily, so
 /// a `sealed()` that reached the builder would conjure one.
-struct SealedLeafOperative;
-impl StreamOperative for SealedLeafOperative {
+struct SealedLeafOperator;
+impl UnboundedOperator for SealedLeafOperator {
     fn factory_id() -> &'static str {
         "unified_sealed_leaf"
     }
@@ -548,8 +548,8 @@ impl StreamOperative for SealedLeafOperative {
 }
 
 /// The same graph with the `sealed()` call removed.
-struct BareLeafOperative;
-impl StreamOperative for BareLeafOperative {
+struct BareLeafOperator;
+impl UnboundedOperator for BareLeafOperator {
     fn factory_id() -> &'static str {
         "unified_bare_leaf"
     }
@@ -559,7 +559,7 @@ impl StreamOperative for BareLeafOperative {
 }
 
 /// Every channel in the topology, in declaration order.
-fn channel_names<R: StreamOperative>() -> Vec<String> {
+fn channel_names<R: UnboundedOperator>() -> Vec<String> {
     build_topology_for::<R>()
         .expect("topology")
         .channels
@@ -574,13 +574,13 @@ fn channel_names<R: StreamOperative>() -> Vec<String> {
 #[test]
 fn sealing_a_leaf_declares_no_channel() {
     assert_eq!(
-        channel_names::<SealedLeafOperative>(),
-        channel_names::<BareLeafOperative>()
+        channel_names::<SealedLeafOperator>(),
+        channel_names::<BareLeafOperator>()
     );
 }
 
 /// Everything about one channel the sink declaration decides.
-fn sink_shape<R: StreamOperative>(channel: &str) -> (ChannelKind, usize, Option<String>, bool) {
+fn sink_shape<R: UnboundedOperator>(channel: &str) -> (ChannelKind, usize, Option<String>, bool) {
     let topology = build_topology_for::<R>().expect("topology");
     let cid = topology.lookup_channel_id(channel).expect("channel id");
     let descriptor = topology.channel(cid).expect("descriptor");
@@ -601,9 +601,9 @@ fn sink_shape<R: StreamOperative>(channel: &str) -> (ChannelKind, usize, Option<
 /// in the type system that changes neither.
 #[test]
 fn terminality_is_derived_from_the_wiring_and_sealed_changes_nothing() {
-    let terminal = sink_shape::<TerminalSinkOperative>("unified_out");
-    let sealed = sink_shape::<SealedSinkOperative>("unified_out");
-    let hybrid = sink_shape::<HybridSinkOperative>("unified_out");
+    let terminal = sink_shape::<TerminalSinkOperator>("unified_out");
+    let sealed = sink_shape::<SealedSinkOperator>("unified_out");
+    let hybrid = sink_shape::<HybridSinkOperator>("unified_out");
 
     assert_eq!(
         terminal, sealed,
@@ -643,13 +643,13 @@ fn terminal_and_hybrid_sink_frames_match_the_pre_rename_fixture() {
 
     unified_consumer_observed().lock().unwrap().clear();
 
-    let (terminal_handle, _t) = setup::<TerminalSinkOperative>("uni-terminal");
+    let (terminal_handle, _t) = setup::<TerminalSinkOperator>("uni-terminal");
     let (terminal_stream, terminal_frames) = duplex_stream_with_reader();
     dispatch_input(&terminal_handle, "uni-terminal", &terminal_stream, "hello");
 
-    let (hybrid_handle, _h) = setup::<HybridSinkOperative>("uni-hybrid");
-    let (hybrid_stream, hybrid_frames) = duplex_stream_with_reader();
-    dispatch_input(&hybrid_handle, "uni-hybrid", &hybrid_stream, "hello");
+    let (hybrid_handle, _h) = setup::<HybridSinkOperator>("uni-hybrid");
+    let (hybrid_unbounded, hybrid_frames) = duplex_stream_with_reader();
+    dispatch_input(&hybrid_handle, "uni-hybrid", &hybrid_unbounded, "hello");
 
     assert!(
         wait_until(
@@ -683,8 +683,8 @@ fn terminal_and_hybrid_sink_frames_match_the_pre_rename_fixture() {
 /// `sink("items_output")` with no `.named(...)` anywhere in the declaration.
 /// The channel this produces is the one the frame is stamped with, so the
 /// string an author can read in the source is the string a plugin filters on.
-struct SinkNamesChannelOperative;
-impl StreamOperative for SinkNamesChannelOperative {
+struct SinkNamesChannelOperator;
+impl UnboundedOperator for SinkNamesChannelOperator {
     fn factory_id() -> &'static str {
         "sink_names_channel"
     }
@@ -695,11 +695,11 @@ impl StreamOperative for SinkNamesChannelOperative {
     }
 }
 
-/// The reproduction: a hand-written operative whose only naming call is its
+/// The reproduction: a hand-written operator whose only naming call is its
 /// sink ships frames stamped with the sink's name, not the producing node's.
 #[test]
 fn sink_name_is_the_channel_name_on_the_wire() {
-    let (handle, _instance) = setup::<SinkNamesChannelOperative>("sink-names");
+    let (handle, _instance) = setup::<SinkNamesChannelOperator>("sink-names");
     let (stream, frames) = duplex_stream_with_reader();
 
     dispatch_input(&handle, "sink-names", &stream, "hello");
@@ -721,8 +721,8 @@ fn sink_name_is_the_channel_name_on_the_wire() {
 
 /// A channel both `.named(...)` and `.sink_named(...)` name is refused rather
 /// than resolved by precedence, and the refusal names both declarations.
-struct DoubleNamedOperative;
-impl StreamOperative for DoubleNamedOperative {
+struct DoubleNamedOperator;
+impl UnboundedOperator for DoubleNamedOperator {
     fn factory_id() -> &'static str {
         "double_named"
     }
@@ -736,7 +736,7 @@ impl StreamOperative for DoubleNamedOperative {
 
 #[test]
 fn a_channel_named_twice_is_refused_naming_both() {
-    let err = match build_topology_for::<DoubleNamedOperative>() {
+    let err = match build_topology_for::<DoubleNamedOperator>() {
         Ok(_) => panic!("expected topology error"),
         Err(e) => e,
     };

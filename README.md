@@ -4,16 +4,16 @@ Rust SDK for the Flezha runner platform.
 
 ## Local mode: run a graph with no controller
 
-The shortest way to see an operative work. `LocalOperative::start::<R>()` takes
+The shortest way to see an operator work. `LocalOperator::start::<R>()` takes
 the class you would deploy, runs its declared `channels()` graph in this
 process, and hands sink output to a callback — no controller, no socket, no
 container:
 
 ```rust
 use std::time::Duration;
-use flezha_runner::LocalOperative;
+use flezha_runner::LocalOperator;
 
-let run = LocalOperative::start::<WordCount>()?;
+let run = LocalOperator::start::<WordCount>()?;
 run.on_sink("totals", |out| println!("{}", String::from_utf8_lossy(&out.payload)))?;
 run.feed("lines", "the quick brown fox")?;
 run.run_until_idle(Duration::from_secs(5))?;
@@ -40,7 +40,7 @@ use flezha_runner::Flezha;
 
 fn main() -> Result<(), flezha_runner::FlezhaError> {
     Flezha::create_runner("my_app")?        // the namespace
-        .register_factory(MyOperative)?     // legal before AND after start()/run()
+        .register_factory(MyOperator)?     // legal before AND after start()/run()
         .run()?;                            // connect + block until shutdown
     Ok(())
 }
@@ -51,11 +51,11 @@ binary. Embedding into a larger app? `start()` keeps your thread — bind the
 runner (`let runner = Flezha::create_runner(ns)?;` then `runner.start()?;`, a
 chained temporary would Drop and shut it down at statement end); dropping it
 runs the graceful-shutdown sequence, and `Flezha::current_runner()` reaches it
-from anywhere. Types are dynamic: one `register_factory` takes an operative of
+from anywhere. Types are dynamic: one `register_factory` takes an operator of
 either kind — the kind is read from the value, never named by the call — and
 `unregister_factory` is its inverse; both are legal before and after `start()`
 (a post-start change ships `UpdateFactories` to the controller). Starting with
-zero declared types is legal, whatever short-form or `operative!` types the
+zero declared types is legal, whatever short-form or `operator!` types the
 binary contains: nothing is harvested. At most one runner is started per
 process: a second `start()` returns
 `Err(FlezhaError::AlreadyRunning { .. })` naming the running namespace. Every
@@ -72,11 +72,11 @@ the producer's declared `Output` type — no type token, no channel name unless
 you want one (`.sink_named(...)` names the channel it terminates and
 `.named(...)` names one that has no sink; either overrides the name derived
 from the producer's identity, and declaring both on one channel is refused.
-Entry names are explicit, they are the operative's address).
+Entry names are explicit, they are the operator's address).
 
 ```rust
-struct OrdersOperative;
-impl StreamOperative for OrdersOperative {
+struct OrdersOperator;
+impl UnboundedOperator for OrdersOperator {
     fn factory_id() -> &'static str { "orders" }
     fn channels(c: &ChannelBuilder) {
         // Typed entry: OrderEvent is deserialized from JSON at the edge
@@ -157,7 +157,7 @@ c.merge::<DetectorInput>()
 Per-source FIFO is preserved and nothing is ordered across sources; see
 `docs/sdk/multi_input_tasklets.md`.
 
-When that config stream is **operative-wide** and the consumer is keyed, a merge
+When that config stream is **operator-wide** and the consumer is keyed, a merge
 alone is not enough: a keyed tasklet cannot receive a broadcast, since the key
 function is total and inside a partitioned member the computed key is admitted
 against that member's key-group range. `route_latest` is the packaged bridge —
@@ -187,8 +187,8 @@ verdicts, and the terminal channel carries output identity for a
 changelog-style sink:
 
 ```rust
-struct RiskOperative;
-impl StreamOperative for RiskOperative {
+struct RiskOperator;
+impl UnboundedOperator for RiskOperator {
     fn factory_id() -> &'static str { "risk" }
     fn channels(c: &ChannelBuilder) {
         // Entry-side config chains BEFORE .into: this channel retries a
@@ -221,9 +221,9 @@ hold, and the only names in the graph are the ones something external needs —
 the entry (`orders`), the tap (`orders.validated`), the terminal
 (`risk.verdicts`), and any channel you chose to `.named(...)`.
 
-### A structured workflow DAG
+### A structured bounded operator DAG
 
-Workflow operatives author on the same builder. A durable class journals each
+Bounded operators author on the same builder. A durable class journals each
 task barrier, and the runtime derives the codec for that from each tasklet's
 declared `Output`, so a chain declares nothing about it; a fan-in node runs once,
 after **all** its producers committed, with the accumulated batch — and on an
@@ -231,8 +231,8 @@ abnormal exit the saga unwinds reverse-topologically (the join before either
 producer, the shared root last):
 
 ```rust
-struct SettleWorkflow;
-impl WorkflowOperative for SettleWorkflow {
+struct SettleBounded;
+impl BoundedOperator for SettleBounded {
     fn factory_id() -> &'static str { "settle" }
     fn channels(c: &ChannelBuilder) {
         // The diamond: Reserve fans out to Charge and Ledger, whose outputs
@@ -306,7 +306,7 @@ After any public-API-affecting change:
 This crate is the typed layer over the shared runner kernel: the `flz_core`
 workspace crate owns dispatch, durability, retries, timers and transport,
 and this crate's poll workers drive it (`docs/sdk/poll_core.md`). See
-`docs/sdk/rust_operative_architecture.md` for the dispatch pipeline,
+`docs/sdk/rust_operator_architecture.md` for the dispatch pipeline,
 `docs/sdk/state_persistence.md` for the state-persistence trait
 surface,
 and `docs/sdk/protocol_spec.md` for the wire format.

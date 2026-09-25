@@ -1,12 +1,12 @@
 //! Fixtures whose subject is persisted Cell state: the effectively-once tier
 //! store, checkpoint granularity and batched confirmation, the counter
-//! reference operatives and the persistence-off class, plus the
+//! reference operators and the persistence-off class, plus the
 //! `mix bench.roundtrip` classes built on them.
 
 use crate::cell::DoNothingTasklet;
 use crate::*;
 
-// -- TierStoreOperative (effectively-once) ----------------------------------------
+// -- TierStoreOperator (effectively-once) ----------------------------------------
 //
 // Effectively-once e2e fixture: inputs are "key:value" strings; state upserts
 // the latest value per key; every input emits `key=value` under the natural
@@ -66,8 +66,8 @@ impl Tasklet for TierStoreTasklet {
     }
 }
 
-pub(crate) struct TierStoreOperative;
-impl StreamOperative for TierStoreOperative {
+pub(crate) struct TierStoreOperator;
+impl UnboundedOperator for TierStoreOperator {
     fn factory_id() -> &'static str {
         "tier_store"
     }
@@ -75,7 +75,7 @@ impl StreamOperative for TierStoreOperative {
         c.effectively_once();
         // 300 ms backoff base keeps the min-watermark freeze observable
         // (~0.9 s from first failure to park) in the DLQ e2e.
-        // Declared DropNothing: a durable-input-log operative that sheds at its
+        // Declared DropNothing: a durable-input-log operator that sheds at its
         // mailbox would hold the min-watermark on the shed offset forever
         // while the log behind it keeps growing.
         c.input::<String>("input")
@@ -87,7 +87,7 @@ impl StreamOperative for TierStoreOperative {
     }
 }
 
-// -- BenchKeyedOperative (mix bench.roundtrip, --workload keyed) -------------
+// -- BenchKeyedOperator (mix bench.roundtrip, --workload keyed) -------------
 //
 // `tier_store` minus the effectively-once declaration, so the round-trip bench
 // can measure the same keyed upsert under both durability postures.
@@ -96,8 +96,8 @@ impl StreamOperative for TierStoreOperative {
 // Echo with a declared DropNothing on its entry mailbox. `do_nothing` is the
 // merge-blocking `mix bench` factory and must not change; a separate factory
 // keeps the round-trip bench's back-pressure posture independent of it.
-pub(crate) struct BenchEchoOperative;
-impl StreamOperative for BenchEchoOperative {
+pub(crate) struct BenchEchoOperator;
+impl UnboundedOperator for BenchEchoOperator {
     fn factory_id() -> &'static str {
         "bench_echo"
     }
@@ -109,8 +109,8 @@ impl StreamOperative for BenchEchoOperative {
     }
 }
 
-pub(crate) struct BenchKeyedOperative;
-impl StreamOperative for BenchKeyedOperative {
+pub(crate) struct BenchKeyedOperator;
+impl UnboundedOperator for BenchKeyedOperator {
     fn factory_id() -> &'static str {
         "bench_keyed"
     }
@@ -128,8 +128,8 @@ impl StreamOperative for BenchKeyedOperative {
 // persistence is a separate, default-on class property — so it is not a
 // like-for-like against an engine whose keyed state is pure heap. This variant
 // isolates that cost.
-pub(crate) struct BenchKeyedNoPersistOperative;
-impl StreamOperative for BenchKeyedNoPersistOperative {
+pub(crate) struct BenchKeyedNoPersistOperator;
+impl UnboundedOperator for BenchKeyedNoPersistOperator {
     const PERSISTENCE_ENABLED: bool = false;
 
     fn factory_id() -> &'static str {
@@ -144,9 +144,9 @@ impl StreamOperative for BenchKeyedNoPersistOperative {
     }
 }
 
-// -- CheckpointStoreOperative (effectively-once-checkpoint-granularity e2e) --
+// -- CheckpointStoreOperator (effectively-once-checkpoint-granularity e2e) --
 //
-// Same store as TierStoreOperative, but acknowledging only at an explicit
+// Same store as TierStoreOperator, but acknowledging only at an explicit
 // checkpoint: a `commit:` input closes the interval, every other input folds
 // into it. Emits still flush as they happen, so the sink sees an interval's
 // outputs long before its offsets are acknowledged — which is exactly what the
@@ -191,8 +191,8 @@ impl Tasklet for CheckpointStoreTasklet {
     }
 }
 
-pub(crate) struct CheckpointStoreOperative;
-impl StreamOperative for CheckpointStoreOperative {
+pub(crate) struct CheckpointStoreOperator;
+impl UnboundedOperator for CheckpointStoreOperator {
     fn factory_id() -> &'static str {
         "checkpoint_store"
     }
@@ -206,15 +206,15 @@ impl StreamOperative for CheckpointStoreOperative {
     }
 }
 
-// -- CheckpointBatchedOperative (amortise-effectively-once-output-confirmation) --
+// -- CheckpointBatchedOperator (amortise-effectively-once-output-confirmation) --
 //
 // The same tasklet as `checkpoint_store`, declared `outputs_at_checkpoint`:
 // the interval's outputs are held with its changes and ship inside its
 // checkpoint record. `checkpoint_every` is deliberately absent so the test
 // drives the close itself — with `commit:` for the batch case, and with the
 // delay alone for the quiet-Cell case.
-pub(crate) struct CheckpointBatchedOperative;
-impl StreamOperative for CheckpointBatchedOperative {
+pub(crate) struct CheckpointBatchedOperator;
+impl UnboundedOperator for CheckpointBatchedOperator {
     fn factory_id() -> &'static str {
         "checkpoint_batched_store"
     }
@@ -229,7 +229,7 @@ impl StreamOperative for CheckpointBatchedOperative {
     }
 }
 
-// -- BenchCheckpointOperative (mix bench.roundtrip, --durability checkpoint) --
+// -- BenchCheckpointOperator (mix bench.roundtrip, --durability checkpoint) --
 //
 // `checkpoint_store` driven by a DECLARED cadence instead of a "commit:" input:
 // the same keyed upsert, acknowledging every `FLEZHA_BENCH_CHECKPOINT_EVERY`
@@ -272,8 +272,8 @@ impl Tasklet for BenchCheckpointTasklet {
     }
 }
 
-pub(crate) struct BenchCheckpointOperative;
-impl StreamOperative for BenchCheckpointOperative {
+pub(crate) struct BenchCheckpointOperator;
+impl UnboundedOperator for BenchCheckpointOperator {
     fn factory_id() -> &'static str {
         "bench_checkpoint"
     }
@@ -298,7 +298,7 @@ impl StreamOperative for BenchCheckpointOperative {
     }
 }
 
-// -- StatefulCounterOperative (Section 6.1) --------------------------------------
+// -- StatefulCounterOperator (Section 6.1) --------------------------------------
 //
 // One Tasklet `CounterTasklet` with `Change = CounterChange { delta: i64 }`,
 // `apply_change` mutating `state.value += change.delta`, `coalesce_key()`
@@ -344,8 +344,8 @@ impl Tasklet for CounterTasklet {
     }
 }
 
-pub(crate) struct StatefulCounterOperative;
-impl StreamOperative for StatefulCounterOperative {
+pub(crate) struct StatefulCounterOperator;
+impl UnboundedOperator for StatefulCounterOperator {
     fn factory_id() -> &'static str {
         "stateful_counter"
     }
@@ -381,9 +381,9 @@ impl Tasklet for CounterEntryTasklet {
     }
 }
 
-// -- SleepingCounterOperative -----------------------------------------------------
+// -- SleepingCounterOperator -----------------------------------------------------
 //
-// A stream that sleeps when idle: `key:delta` inputs fold into one running
+// An unbounded operator that sleeps when idle: `key:delta` inputs fold into one running
 // total per key, and every input emits `key=total` on the `totals` sink. The
 // sleep e2e reads the total after a wake to prove the Cell came back with the
 // state it slept with.
@@ -420,8 +420,8 @@ impl Tasklet for SleepingCounterTasklet {
     }
 }
 
-pub(crate) struct SleepingCounterOperative;
-impl StreamOperative for SleepingCounterOperative {
+pub(crate) struct SleepingCounterOperator;
+impl UnboundedOperator for SleepingCounterOperator {
     const SLEEP_WHEN_IDLE: bool = true;
 
     fn factory_id() -> &'static str {
@@ -435,7 +435,7 @@ impl StreamOperative for SleepingCounterOperative {
     }
 }
 
-// -- CoalescingCounterOperative (Section 6.2) ------------------------------------
+// -- CoalescingCounterOperator (Section 6.2) ------------------------------------
 //
 // `Change = TickChange { interval: u8, ts: u64, delta: i64 }` with
 // `coalesce_key` returning `Some(CoalesceKey::from_hash(&(interval, ts)))`.
@@ -535,8 +535,8 @@ impl Tasklet for TickEntryTasklet {
     }
 }
 
-pub(crate) struct CoalescingCounterOperative;
-impl StreamOperative for CoalescingCounterOperative {
+pub(crate) struct CoalescingCounterOperator;
+impl UnboundedOperator for CoalescingCounterOperator {
     fn factory_id() -> &'static str {
         "coalescing_counter"
     }
@@ -548,14 +548,14 @@ impl StreamOperative for CoalescingCounterOperative {
     }
 }
 
-// -- PersistenceOffOperative (Section 6.3) ---------------------------------------
+// -- PersistenceOffOperator (Section 6.3) ---------------------------------------
 //
-// Same Tasklet topology as `StatefulCounterOperative` but `PERSISTENCE_ENABLED`
+// Same Tasklet topology as `StatefulCounterOperator` but `PERSISTENCE_ENABLED`
 // is `false`. Used by integration tests to verify the toggle-off drain
 // path discards frames without invoking the wire stub.
 
-pub(crate) struct PersistenceOffOperative;
-impl StreamOperative for PersistenceOffOperative {
+pub(crate) struct PersistenceOffOperator;
+impl UnboundedOperator for PersistenceOffOperator {
     fn factory_id() -> &'static str {
         "persistence_off_counter"
     }

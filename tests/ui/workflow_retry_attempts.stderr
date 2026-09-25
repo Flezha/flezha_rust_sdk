@@ -1,7 +1,0 @@
-error[E0407]: method `retry_attempts` is not a member of trait `WorkflowOperative`
-  --> tests/ui/workflow_retry_attempts.rs:12:5
-   |
-12 | /     fn retry_attempts() -> u32 {
-13 | |         5
-14 | |     }
-   | |_____^ not a member of trait `WorkflowOperative`

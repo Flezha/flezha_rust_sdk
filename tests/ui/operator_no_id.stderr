@@ -1,0 +1,5 @@
+error: #[flezha::unbounded_operator] needs an `id`: an operator's factory id is an address a user types, so it is written rather than derived from the function name
+ --> tests/ui/operator_no_id.rs:2:1
+  |
+2 | fn f(a: String) -> Vec<u8> {
+  | ^^

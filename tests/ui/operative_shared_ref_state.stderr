@@ -1,5 +1,0 @@
-error: #[flezha::workflow_operative] state parameter must be `&mut State`, not a shared reference
- --> tests/ui/operative_shared_ref_state.rs:6:17
-  |
-6 | fn f(a: String, s: &S) -> Vec<u8> {
-  |                 ^^^^^

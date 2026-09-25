@@ -14,13 +14,13 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use flezha_runner::__dispatch_internals::OperativeDispatchHandle;
+use flezha_runner::__dispatch_internals::OperatorDispatchHandle;
 use flezha_runner::cell::flusher::{SendError, SendFrameFn};
 use flezha_runner::cell::park::{self, ParkBody};
 use flezha_runner::cell::state_sink::{install_global_sink, PARK_PAYLOAD_PAYLOAD_ID};
-use flezha_runner::operative::builder::build_topology_for;
-use flezha_runner::operative::registry::OperativeRegistry;
-use flezha_runner::operative::{OperativeInstance, StreamOperative};
+use flezha_runner::operator::builder::build_topology_for;
+use flezha_runner::operator::registry::OperatorRegistry;
+use flezha_runner::operator::{OperatorInstance, UnboundedOperator};
 use flz_transport::transport::FlezhaStream;
 pub use tier::*;
 pub use timers::*;
@@ -35,11 +35,11 @@ pub mod prelude {
     pub use std::sync::{Arc, Mutex};
     pub use std::time::{Duration, Instant};
 
-    pub use flezha_runner::__dispatch_internals::OperativeDispatchHandle;
+    pub use flezha_runner::__dispatch_internals::OperatorDispatchHandle;
     pub use flezha_runner::channel::{ChannelBuilder, OverflowPolicy};
-    pub use flezha_runner::operative::builder::build_topology_for;
-    pub use flezha_runner::operative::registry::OperativeRegistry;
-    pub use flezha_runner::operative::{OperativeInstance, StreamOperative};
+    pub use flezha_runner::operator::builder::build_topology_for;
+    pub use flezha_runner::operator::registry::OperatorRegistry;
+    pub use flezha_runner::operator::{OperatorInstance, UnboundedOperator};
     pub use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
     pub use flezha_runner::tasklet::{Tasklet, TaskletCtx, TaskletError};
 
@@ -71,24 +71,24 @@ pub fn stays_quiet<F: Fn() -> bool>(happened: F, window: Duration) -> bool {
     !wait_until(happened, window)
 }
 
-/// Build + register a single StreamOperative instance, returning a dispatch handle
+/// Build + register a single UnboundedOperator instance, returning a dispatch handle
 /// and the live instance (for counter / state assertions).
-pub fn setup<R: StreamOperative>(id: &str) -> (OperativeDispatchHandle, Arc<OperativeInstance>) {
-    setup_partitioned::<R>(id, flezha_runner::operative::KeyGroupRange::UNPARTITIONED)
+pub fn setup<R: UnboundedOperator>(id: &str) -> (OperatorDispatchHandle, Arc<OperatorInstance>) {
+    setup_partitioned::<R>(id, flezha_runner::operator::KeyGroupRange::UNPARTITIONED)
 }
 
 /// [`setup`] for one member of a partition group: the instance is built with
-/// the key-group range its `AddOperative` would have carried, so the dispatch
+/// the key-group range its `AddOperator` would have carried, so the dispatch
 /// guard is armed exactly as it is in production.
-pub fn setup_partitioned<R: StreamOperative>(
+pub fn setup_partitioned<R: UnboundedOperator>(
     id: &str,
-    partition: flezha_runner::operative::KeyGroupRange,
-) -> (OperativeDispatchHandle, Arc<OperativeInstance>) {
+    partition: flezha_runner::operator::KeyGroupRange,
+) -> (OperatorDispatchHandle, Arc<OperatorInstance>) {
     let topology = build_topology_for::<R>().expect("topology");
-    let registry = Arc::new(OperativeRegistry::new());
-    let instance = OperativeInstance::with_options(topology, Arc::from(id), None, partition);
+    let registry = Arc::new(OperatorRegistry::new());
+    let instance = OperatorInstance::with_options(topology, Arc::from(id), None, partition);
     registry.register(Arc::clone(&instance));
-    (OperativeDispatchHandle { registry }, instance)
+    (OperatorDispatchHandle { registry }, instance)
 }
 
 /// Declare a trivial test Tasklet: `State` built via `Default`, no cell
@@ -152,22 +152,22 @@ macro_rules! test_tasklet {
     };
 }
 
-/// Dispatch one wire frame to `operative_id` on `channel`.
+/// Dispatch one wire frame to `operator_id` on `channel`.
 pub fn dispatch_input(
-    handle: &OperativeDispatchHandle,
-    operative_id: &str,
+    handle: &OperatorDispatchHandle,
+    operator_id: &str,
     channel: &str,
     payload: Vec<u8>,
     stream: &Arc<FlezhaStream>,
 ) {
-    dispatch_marked(handle, operative_id, channel, payload, stream, &[]);
+    dispatch_marked(handle, operator_id, channel, payload, stream, &[]);
 }
 
 /// Dispatch one wire frame carrying extra metadata — the controller's
 /// `flz.replay` / `flz.offset` / `flz.replay_end` marks ride there.
 pub fn dispatch_marked(
-    handle: &OperativeDispatchHandle,
-    operative_id: &str,
+    handle: &OperatorDispatchHandle,
+    operator_id: &str,
     channel: &str,
     payload: Vec<u8>,
     stream: &Arc<FlezhaStream>,
@@ -178,7 +178,7 @@ pub fn dispatch_marked(
     for (k, v) in marks {
         md.insert(k.to_string(), v.to_string());
     }
-    handle.dispatch(operative_id, payload, &md, Arc::clone(stream));
+    handle.dispatch(operator_id, payload, &md, Arc::clone(stream));
 }
 
 /// Install a recording global sink whose park frames are auto-acked from a
@@ -248,10 +248,10 @@ impl flezha_runner::tasklet::Tasklet for EchoTasklet {
 /// The smallest complete class: one entry channel into one echo tasklet,
 /// single-cell. What a topology assertion reaches for when the topology
 /// itself is not the subject.
-pub struct SingleOperative;
-impl StreamOperative for SingleOperative {
+pub struct SingleOperator;
+impl UnboundedOperator for SingleOperator {
     fn factory_id() -> &'static str {
-        "single_operative"
+        "single_operator"
     }
     fn channels(c: &flezha_runner::channel::ChannelBuilder) {
         c.input::<String>("inp").into::<EchoTasklet>();

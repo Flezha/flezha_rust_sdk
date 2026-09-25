@@ -22,7 +22,7 @@ fn an_idle_evicted_cell_loses_its_timers() {
     take_firings();
     let armed_before = flezha_runner::cell::timer::timers_armed();
 
-    let (handle, instance) = setup::<EvictOperative>("timers-evict");
+    let (handle, instance) = setup::<EvictOperator>("timers-evict");
     let stream = dummy_stream();
     dispatch_input(&handle, "timers-evict", "in", b"gone".to_vec(), &stream);
 
@@ -105,10 +105,10 @@ impl Tasklet for EvictTask {
     }
 }
 
-struct EvictOperative;
-impl StreamOperative for EvictOperative {
+struct EvictOperator;
+impl UnboundedOperator for EvictOperator {
     fn factory_id() -> &'static str {
-        "timers_evict_operative"
+        "timers_evict_operator"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
@@ -129,7 +129,7 @@ fn on_timer_never_runs_concurrently_with_run() {
     INSIDE.store(0, Ordering::SeqCst);
     FIRED.store(0, Ordering::SeqCst);
 
-    let (handle, _instance) = setup::<ExclusionOperative>("timers-exclusion");
+    let (handle, _instance) = setup::<ExclusionOperator>("timers-exclusion");
     let stream = dummy_stream();
     for i in 0..8u64 {
         dispatch_input(
@@ -213,10 +213,10 @@ impl Tasklet for ExclusionTask {
     }
 }
 
-struct ExclusionOperative;
-impl StreamOperative for ExclusionOperative {
+struct ExclusionOperator;
+impl UnboundedOperator for ExclusionOperator {
     fn factory_id() -> &'static str {
-        "timers_exclusion_operative"
+        "timers_exclusion_operator"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<u64>("in").into::<ExclusionTask>();

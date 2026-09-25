@@ -11,7 +11,7 @@
 # pointer for code reviewers.
 #
 # `extract-sdk-poll-core`: the SDK's kernel (cell slots, mailbox/drain
-# gates, flusher, credit, DLQ park, timers, workflow driver, commands,
+# gates, flusher, credit, DLQ park, timers, bounded driver, commands,
 # transport loop) moved into the `flz_core` workspace crate; every path
 # listed below is unchanged and now resolves through internal re-exports
 # from `flz_core`. This is the documented internal-re-export exception —
@@ -19,30 +19,12 @@
 # (`flz_core::poll_core`) and the C ABI (`flz_core_ffi`) are NOT part of
 # this crate's public surface.
 #
-# `rename-operative-kinds-to-stream-and-workflow`: the two operative kinds are
-# now `stream` and `workflow`. BREAKING, no shim. Every signature below that
-# names a kind CHANGED — the pairs are, verbatim:
+# The unit is `Operator` and its two kinds are `UnboundedOperator` and
+# `BoundedOperator`; every signature below that names the unit or a kind
+# changed with that rename. BREAKING, no shim.
 #
-# kind-naming-record:begin
-#   UnboundedOperative      -> StreamOperative        (trait)
-#   BoundedOperative        -> WorkflowOperative      (trait)
-#   BoundedCtx              -> WorkflowCtx            (trait)
-#   BoundedError            -> WorkflowError          (struct)
-#   BuildBoundedError       -> BuildWorkflowError     (enum, `workflow::spec`)
-#   UnboundedInstance       -> StreamInstance         (struct)
-#   BoundedInstance         -> WorkflowInstance       (struct)
-#   FlezhaError::InvalidBounded -> FlezhaError::InvalidWorkflow
-#   define_unbounded        -> define_stream          (FlezhaRunner)
-#   define_bounded          -> define_workflow        (FlezhaRunner)
-#   remove_unbounded        -> remove_stream          (FlezhaRunner)
-#   remove_bounded          -> remove_workflow        (FlezhaRunner)
-#   TaskletCtx::spawn_bounded -> spawn_workflow
-#   __register_unbounded    -> __register_stream      (macro plumbing)
-#   module `bounded`        -> module `workflow`
-# kind-naming-record:end
-#
-# `Stream<'b, T, K>` (the channel handle) is unrelated and unchanged; a stream
-# operative is the kind that consumes streams.
+# `Stream<'b, T, K>` (the channel handle) is unrelated and unchanged; an
+# unbounded operator is the kind that consumes streams.
 
 pub mod state {
     pub use crate::cell::restore::RestoreError;
@@ -156,11 +138,11 @@ pub use cell::timer::TimerKind;                            # ADDED by `cell-time
 #   that Cell, so a test observes the defaulted stamp.
 #   pub fn complete(&mut self, result: impl Into<Vec<u8>>) -> Result<(), TaskletError>;
 #
-#   `complete` (ADDED by `retire-the-workflow-run-body`) ends a workflow
-#   instance with `result` once the iteration commits; in a stream operative
-#   it fails the input naming `CompleteOutsideWorkflow`.
-#   pub fn spawn_workflow(&self, factory_id: impl Into<String>, payload: impl Into<Vec<u8>>) -> SpawnHandle;
-#   pub fn spawn_workflow_with(&self, factory_id: impl Into<String>, payload: impl Into<Vec<u8>>, options: SpawnOptions) -> SpawnHandle;
+#   `complete` (ADDED by `retire-the-bounded-run-body`) ends a bounded operator
+#   instance with `result` once the iteration commits; in an unbounded operator
+#   it fails the input naming `CompleteOutsideBounded`.
+#   pub fn spawn_bounded(&self, factory_id: impl Into<String>, payload: impl Into<Vec<u8>>) -> SpawnHandle;
+#   pub fn spawn_bounded_with(&self, factory_id: impl Into<String>, payload: impl Into<Vec<u8>>, options: SpawnOptions) -> SpawnHandle;
 #
 # Per-Cell timers (`cell-timers`) — each returns the ABSOLUTE scheduled
 # timestamp, which is the handle a cancellation takes:
@@ -192,19 +174,19 @@ pub use cell::timer::TimerKind;                            # ADDED by `cell-time
 #       pub fn wait_timeout(&mut self, timeout: Duration) -> Option<Result<SpawnResult, SpawnError>>;
 #   }
 #
-# Trait surface on `StreamOperative`:
+# Trait surface on `UnboundedOperator`:
 #
 #   const PERSISTENCE_ENABLED: bool = true;
 #
 # Remote durability tier (`remote-durability-tier`) — trait surface on
-# `WorkflowOperative`:
+# `BoundedOperator`:
 #
 #   const SYNC_DURABILITY: bool = false;
 #
 #   When true the controller ships the commit barrier to its durability backend
 #   before acking it, so the ack the driver blocks on implies the commit
 #   survives losing the controller's disk (RPO 0). Inert unless a backend is
-#   configured; refused on a stream class at registration.
+#   configured; refused on an unbounded class at registration.
 #
 # Test harness (gated behind `cfg(any(test, feature = "testing"))`):
 #
@@ -324,13 +306,13 @@ pub use cell::timer::TimerKind;                            # ADDED by `cell-time
 #
 #   Removed: ChannelDecl, ChannelDeclWithProducer, EntryChannel, EntryChannelType,
 #   channel::<T>("name"), .from::<S>(), to_plugin, also_to_plugin_with.
-#   Trait signatures: StreamOperative::channels(c: &ChannelBuilder),
-#   WorkflowOperative::tasklets(c: &ChannelBuilder)  (was &mut).
+#   Trait signatures: UnboundedOperator::channels(c: &ChannelBuilder),
+#   BoundedOperator::tasklets(c: &ChannelBuilder)  (was &mut).
 #
-#   REMOVED by `retire-the-workflow-run-body` (no shim): the one-function body
-#   `WorkflowOperative::run(ctx: &mut WorkflowCtx, args: &str)` and the
-#   `WorkflowCtx` export. A workflow always declares `tasklets`; one that
-#   declares none is refused with `BuildWorkflowError::NoTasklets`, which
+#   REMOVED by `retire-the-bounded-run-body` (no shim): the one-function body
+#   `BoundedOperator::run(ctx: &mut BoundedCtx, args: &str)` and the
+#   `BoundedCtx` export. A bounded operator always declares `tasklets`; one that
+#   declares none is refused with `BuildBoundedError::NoTasklets`, which
 #   replaces `LoopWithoutChain`.
 #
 # `TopologyIssue` variants (renamed from BuildTopologyError by
@@ -360,9 +342,9 @@ pub use cell::timer::TimerKind;                            # ADDED by `cell-time
 #       UnkeyedEdgeIntoDynamicTasklet { channel: &'static str, tasklet: &'static str },
 #   }
 #
-# `BuildWorkflowError` variants (`workflow::spec`):
+# `BuildBoundedError` variants (`bounded::spec`):
 #
-#   pub enum BuildWorkflowError {
+#   pub enum BuildBoundedError {
 #       /* existing variants unchanged */
 #       MergeFromEntryChannel { factory_id: &'static str, channel: String, tasklet: String },
 #   }
@@ -417,13 +399,13 @@ pub use cell::timer::TimerKind;                            # ADDED by `cell-time
 # Entry point + runner lifecycle (`sdk-runner-entrypoint-redesign`).
 # REMOVED (no back-compat shim): `RunnerBuilder`, `Flezha::new_runner`,
 # `RunnerStartError`, `RunnerError`, `FlezhaRunner::id`, the
-# `Arc<RwLock<..Mutex..>>` `operatives()` view, and the old
+# `Arc<RwLock<..Mutex..>>` `operators()` view, and the old
 # `channel::builder::BuildTopologyError` name (now `TopologyIssue`; the
 # per-kind `TopologyBuildError` keeps its name).
 
-pub use workflow::spec::BuildWorkflowError;
+pub use bounded operator::spec::BuildBoundedError;
 pub use channel::builder::TopologyIssue;
-pub use operative::builder::TopologyBuildError;
+pub use operator::builder::TopologyBuildError;
 
 #   pub struct Flezha;                     # static-only entry point
 #   impl Flezha {
@@ -435,11 +417,11 @@ pub use operative::builder::TopologyBuildError;
 #                                          # Drop of a STARTED owner = graceful shutdown
 #   impl FlezhaRunner {
 #       pub fn namespace(&self) -> &str;
-#       pub fn register_factory<K, O: Operative<K>>(&self, operative: O) -> Result<&Self, FlezhaError>;
-#       pub fn unregister_factory<K, O: Operative<K>>(&self, operative: O) -> Result<&Self, FlezhaError>;
+#       pub fn register_factory<K, O: Operator<K>>(&self, operator: O) -> Result<&Self, FlezhaError>;
+#       pub fn unregister_factory<K, O: Operator<K>>(&self, operator: O) -> Result<&Self, FlezhaError>;
 #       pub fn start(&self) -> Result<&Self, FlezhaError>;     # slot claimed here (CAS)
 #       pub fn run(&self) -> Result<(), FlezhaError>;          # start + await_termination
-#       pub fn operatives(&self) -> Result<HashMap<String, Arc<StreamInstance>>, FlezhaError>;
+#       pub fn operators(&self) -> Result<HashMap<String, Arc<OperatorInstance>>, FlezhaError>;
 #       pub fn await_termination(&self) -> Result<(), FlezhaError>;
 #   }
 #
@@ -448,21 +430,21 @@ pub use operative::builder::TopologyBuildError;
 #       AlreadyRunning { namespace: String },
 #       ConnectFailed(String),
 #       InvalidTopology(#[from] TopologyBuildError),
-#       InvalidWorkflow(#[from] BuildWorkflowError),
+#       InvalidBounded(#[from] BuildBoundedError),
 #       DuplicateFactoryId { factory_id: String },
 #       NotDefined { factory_id: String },
-#       OperativeTypeInUse { factory_id: String, live_instances: usize },
+#       OperatorTypeInUse { factory_id: String, live_instances: usize },
 #       NotStarted,
 #       RunnerUnavailable(String),
 #   }
 #
 #   # The shared base of both kinds: the SDK implements it for every
-#   # StreamOperative and every WorkflowOperative, so one method takes either.
-#   pub struct StreamKind;
-#   pub struct WorkflowKind;
-#   pub trait Operative<K>: sealed::Sealed<K> {   # sealed: only the SDK's two impls
+#   # UnboundedOperator and every BoundedOperator, so one method takes either.
+#   pub struct UnboundedKind;
+#   pub struct BoundedKind;
+#   pub trait Operator<K>: sealed::Sealed<K> {   # sealed: only the SDK's two impls
 #       type Class;
-#       const IS_WORKFLOW: bool;
+#       const IS_BOUNDED: bool;
 #       fn factory_id() -> &'static str;
 #       fn build_class() -> Result<Self::Class, FlezhaError>;
 #       fn install_class(class: Self::Class);
@@ -486,9 +468,9 @@ pub use operative::builder::TopologyBuildError;
 #
 #       pub enum StatePurpose { LiveRead, Migration }
 #
-#       pub fn serialize_operative_state(&Arc<StreamInstance>) -> Vec<u8>;
+#       pub fn serialize_operator_state(&Arc<OperatorInstance>) -> Vec<u8>;
 #       pub fn serialize_selected_state(
-#           &Arc<StreamInstance>, StateSelector<'_>, StatePurpose,
+#           &Arc<OperatorInstance>, StateSelector<'_>, StatePurpose,
 #       ) -> Result<(Vec<u8>, Option<u64>), String>;   # (json, seq of a single Cell)
 #   }
 #
@@ -510,7 +492,7 @@ pub use operative::builder::TopologyBuildError;
 #   default, which forwards to `handle` with no metadata.
 #
 #   ADDED: `DynamicCellRegistry::recently_evicted(&self, key: &str) -> bool`
-#   — the workflow eviction trace that lets a live read say "idle-evicted"
+#   — the bounded operator eviction trace that lets a live read say "idle-evicted"
 #   rather than "never existed".
 
 # Exported tracing defaults (`export-rust-sdk-tracing-defaults`). The SDK's
@@ -526,10 +508,10 @@ pub use operative::builder::TopologyBuildError;
 #                                            # install warns and returns, never panics
 #   }
 
-# A workflow declared like a stream (`declare-a-workflow-like-a-stream`).
+# A bounded operator declared like an unbounded operator (`declare-a-bounded-like-a-stream`).
 # BREAKING, no shim:
 #
-#   pub trait WorkflowOperative {
+#   pub trait BoundedOperator {
 #       fn factory_id() -> &'static str;
 #       fn channels(c: &ChannelBuilder);          # was `tasklets`, now required
 #       fn max_duration() -> Option<Duration>;
@@ -539,22 +521,22 @@ pub use operative::builder::TopologyBuildError;
 #       const PERSISTENCE_ENABLED: bool;
 #       const SYNC_DURABILITY: bool;
 #   }
-#   REMOVED: WorkflowOperative::{tasklets, retry_attempts, retry_backoff,
-#   barrier_retry_attempts}; BuildWorkflowError::ZeroRetryBackoff;
-#   WorkflowSpec::{retry, barrier_retry_attempts}. A stage's ladder is the
-#   consuming edge's `retry_max` / `retry_backoff_ms`, as on a stream.
-#   ADDED: BuildWorkflowError::{EffectivelyOnceOnWorkflow, CheckpointOnWorkflow,
-#   CorrectionWindowOnWorkflow} { factory_id }; SpawnError::FactoryNotWorkflow(String);
-#   `#[flezha::workflow_operative(.., loop_mode = "once" | "per_input" | "chained")]`.
+#   REMOVED: BoundedOperator::{tasklets, retry_attempts, retry_backoff,
+#   barrier_retry_attempts}; BuildBoundedError::ZeroRetryBackoff;
+#   BoundedSpec::{retry, barrier_retry_attempts}. A stage's ladder is the
+#   consuming edge's `retry_max` / `retry_backoff_ms`, as on an unbounded operator.
+#   ADDED: BuildBoundedError::{EffectivelyOnceOnBounded, CheckpointOnBounded,
+#   CorrectionWindowOnBounded} { factory_id }; SpawnError::FactoryNotBounded(String);
+#   `#[flezha::bounded_operator(.., loop_mode = "once" | "per_input" | "chained")]`.
 
-# Timers inside a workflow (`fire-timers-inside-a-workflow`). BREAKING, no shim:
+# Timers inside a bounded operator (`fire-timers-inside-a-bounded`). BREAKING, no shim:
 #
-#   REMOVED: WorkflowOperative::wake_after. A workflow tasklet registers Cell
-#   timers as a stream tasklet does, and a sleeping instance wakes at the
+#   REMOVED: BoundedOperator::wake_after. A bounded tasklet registers Cell
+#   timers as an unbounded tasklet does, and a sleeping instance wakes at the
 #   earliest pending processing-time one.
 
-# Authoring macros. `stream_operative` and `workflow_operative` are the §5 short
-# form: on a `run` function each emits the operative type under the function's
+# Authoring macros. `unbounded_operator` and `bounded_operator` are the §5 short
+# form: on a `run` function each emits the operator type under the function's
 # PascalCase name and the tasklet type beside it, suffixed `Tasklet`.
 
-pub use flezha_macros::{operative, tasklet, stream_operative, workflow_operative, State};
+pub use flezha_macros::{operator, tasklet, unbounded_operator, bounded_operator, State};

@@ -10,8 +10,8 @@
 //! - `hybrid_1c`            — hybrid, 1 consumer + plugin sink
 //! - `hybrid_3c`            — hybrid, 3 consumers + plugin sink
 //!
-//! Each iteration drives one emit per operative through the live
-//! dispatcher (`OperativeDispatchHandle::dispatch` on the shared poll-worker
+//! Each iteration drives one emit per operator through the live
+//! dispatcher (`OperatorDispatchHandle::dispatch` on the shared poll-worker
 //! pool). The consumer Tasklets count receipts atomically so `iter_custom`
 //! waits for full drain before stopping the timer.
 
@@ -20,12 +20,12 @@ use std::time::{Duration, Instant};
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use flezha_runner::channel::ChannelBuilder;
-use flezha_runner::operative::builder::build_topology_for;
-use flezha_runner::operative::registry::OperativeRegistry;
-use flezha_runner::operative::OperativeInstance;
+use flezha_runner::operator::builder::build_topology_for;
+use flezha_runner::operator::registry::OperatorRegistry;
+use flezha_runner::operator::OperatorInstance;
 use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
 use flezha_runner::tasklet::{Tasklet, TaskletCtx, TaskletError};
-use flezha_runner::{__dispatch_internals as bi, OverflowPolicy, StreamOperative};
+use flezha_runner::{__dispatch_internals as bi, OverflowPolicy, UnboundedOperator};
 use flz_core::bench_support::{fan_in, stream_pair, Settle};
 
 const MSGS_PER_ITER: usize = 5_000;
@@ -87,8 +87,8 @@ impl Tasklet for Pure1Consumer {
     }
 }
 
-struct Pure1Operative;
-impl StreamOperative for Pure1Operative {
+struct Pure1Operator;
+impl UnboundedOperator for Pure1Operator {
     fn factory_id() -> &'static str {
         "bench_pure_inter_tasklet_1c"
     }
@@ -158,8 +158,8 @@ pure3_consumer!(Pure3ConsumerA, "pure3_a");
 pure3_consumer!(Pure3ConsumerB, "pure3_b");
 pure3_consumer!(Pure3ConsumerC, "pure3_c");
 
-struct Pure3Operative;
-impl StreamOperative for Pure3Operative {
+struct Pure3Operator;
+impl UnboundedOperator for Pure3Operator {
     fn factory_id() -> &'static str {
         "bench_pure_inter_tasklet_3c"
     }
@@ -201,8 +201,8 @@ impl Tasklet for PluginBoundProducer {
     }
 }
 
-struct PluginBoundOperative;
-impl StreamOperative for PluginBoundOperative {
+struct PluginBoundOperator;
+impl UnboundedOperator for PluginBoundOperator {
     fn factory_id() -> &'static str {
         "bench_pure_plugin_bound"
     }
@@ -263,8 +263,8 @@ impl Tasklet for Hybrid1Consumer {
     }
 }
 
-struct Hybrid1Operative;
-impl StreamOperative for Hybrid1Operative {
+struct Hybrid1Operator;
+impl UnboundedOperator for Hybrid1Operator {
     fn factory_id() -> &'static str {
         "bench_hybrid_1c"
     }
@@ -334,8 +334,8 @@ hybrid3_consumer!(Hybrid3ConsumerA, "hybrid3_a");
 hybrid3_consumer!(Hybrid3ConsumerB, "hybrid3_b");
 hybrid3_consumer!(Hybrid3ConsumerC, "hybrid3_c");
 
-struct Hybrid3Operative;
-impl StreamOperative for Hybrid3Operative {
+struct Hybrid3Operator;
+impl UnboundedOperator for Hybrid3Operator {
     fn factory_id() -> &'static str {
         "bench_hybrid_3c"
     }
@@ -353,7 +353,7 @@ impl StreamOperative for Hybrid3Operative {
 
 // ----- bench harness -----
 
-fn run_bench<R: StreamOperative>(
+fn run_bench<R: UnboundedOperator>(
     c: &mut Criterion,
     name: &'static str,
     instance_id: &'static str,
@@ -361,10 +361,10 @@ fn run_bench<R: StreamOperative>(
     expected_per_msg: usize,
 ) {
     let topology = build_topology_for::<R>().expect("topology");
-    let registry = Arc::new(OperativeRegistry::new());
-    let inst = OperativeInstance::new(topology, Arc::from(instance_id));
+    let registry = Arc::new(OperatorRegistry::new());
+    let inst = OperatorInstance::new(topology, Arc::from(instance_id));
     registry.register(inst);
-    let handle = bi::OperativeDispatchHandle {
+    let handle = bi::OperatorDispatchHandle {
         registry: Arc::clone(&registry),
     };
     let stream = stream_pair().0;
@@ -406,7 +406,7 @@ fn run_bench<R: StreamOperative>(
 }
 
 fn pure_inter_tasklet_1c(c: &mut Criterion) {
-    run_bench::<Pure1Operative>(
+    run_bench::<Pure1Operator>(
         c,
         "pure_inter_tasklet_1c",
         "bench-pure-1c",
@@ -416,7 +416,7 @@ fn pure_inter_tasklet_1c(c: &mut Criterion) {
 }
 
 fn pure_inter_tasklet_3c(c: &mut Criterion) {
-    run_bench::<Pure3Operative>(
+    run_bench::<Pure3Operator>(
         c,
         "pure_inter_tasklet_3c",
         "bench-pure-3c",
@@ -426,7 +426,7 @@ fn pure_inter_tasklet_3c(c: &mut Criterion) {
 }
 
 fn pure_plugin_bound(c: &mut Criterion) {
-    run_bench::<PluginBoundOperative>(
+    run_bench::<PluginBoundOperator>(
         c,
         "pure_plugin_bound",
         "bench-plugin-bound",
@@ -436,11 +436,11 @@ fn pure_plugin_bound(c: &mut Criterion) {
 }
 
 fn hybrid_1c(c: &mut Criterion) {
-    run_bench::<Hybrid1Operative>(c, "hybrid_1c", "bench-hybrid-1c", &HYBRID_1C_COUNT, 1);
+    run_bench::<Hybrid1Operator>(c, "hybrid_1c", "bench-hybrid-1c", &HYBRID_1C_COUNT, 1);
 }
 
 fn hybrid_3c(c: &mut Criterion) {
-    run_bench::<Hybrid3Operative>(c, "hybrid_3c", "bench-hybrid-3c", &HYBRID_3C_COUNT, 3);
+    run_bench::<Hybrid3Operator>(c, "hybrid_3c", "bench-hybrid-3c", &HYBRID_3C_COUNT, 3);
 }
 
 criterion_group!(

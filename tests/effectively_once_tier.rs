@@ -33,7 +33,7 @@ fn tier_emits_ride_the_state_sink_as_one_effect_record() {
     let _serial = WAL_TEST_LOCK.lock().unwrap();
     install_capturing_tier_sink();
 
-    let (handle, _instance) = setup::<TierOperative>("tier-instance");
+    let (handle, _instance) = setup::<TierOperator>("tier-instance");
     let (stream, mut observer) = stream_pair();
 
     let mut md = HashMap::new();
@@ -123,7 +123,7 @@ fn tier_replay_skips_inputs_at_or_below_the_consumed_floor() {
     let _serial = WAL_TEST_LOCK.lock().unwrap();
     install_capturing_tier_sink();
 
-    let (handle, instance) = setup::<TierOperative>("tier-replay-instance");
+    let (handle, instance) = setup::<TierOperator>("tier-replay-instance");
 
     // Restore left this Cell durably consumed through offset 4711.
     instance.cells[0][0]
@@ -217,10 +217,10 @@ test_tasklet!(LogicalNowSinkTasklet, "logical_now_sink_tasklet", String => (), (
     Ok(())
 });
 
-struct LogicalNowOperative;
-impl StreamOperative for LogicalNowOperative {
+struct LogicalNowOperator;
+impl UnboundedOperator for LogicalNowOperator {
     fn factory_id() -> &'static str {
-        "logical_now_operative"
+        "logical_now_operator"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
@@ -239,7 +239,7 @@ fn logical_clock_serves_change_seq_and_survives_restore_rearm() {
     pinned_pool();
     let _serial = WAL_TEST_LOCK.lock().unwrap();
     LOGICAL_OBSERVED.lock().unwrap().clear();
-    let (handle, instance) = setup::<LogicalNowOperative>("logical-now-instance");
+    let (handle, instance) = setup::<LogicalNowOperator>("logical-now-instance");
     let stream = dummy_stream();
 
     for payload in [b"a".to_vec(), b"b".to_vec()] {
@@ -255,7 +255,7 @@ fn logical_clock_serves_change_seq_and_survives_restore_rearm() {
     // Crash-restore: fresh instance, restore both changes (seqs 0, 1) and
     // re-arm; the next invocation's logical time continues at 2.
     LOGICAL_OBSERVED.lock().unwrap().clear();
-    let (handle_b, instance_b) = setup::<LogicalNowOperative>("logical-now-instance");
+    let (handle_b, instance_b) = setup::<LogicalNowOperator>("logical-now-instance");
     let slot = Arc::clone(&instance_b.cells[0][0]);
     let change_bytes = postcard::to_allocvec(&TickChange).expect("encode change");
     let mut change_log = wal_record(0, &change_bytes, header_template_for::<LogicalNowTasklet>());

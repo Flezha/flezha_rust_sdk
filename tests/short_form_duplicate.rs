@@ -1,6 +1,6 @@
-//! A stream and a workflow under one factory id.
+//! An unbounded and a bounded operator under one factory id.
 //!
-//! Streams and workflows share one factory-id namespace per runner, so the
+//! Unbounded and bounded operators share one factory-id namespace per runner, so the
 //! second registration must be refused whichever kind either one is. This lives
 //! in its own test binary because the `plain` id is claimed process-wide, and a
 //! binary's registry is shared by every runner in it.
@@ -13,12 +13,12 @@ use std::thread;
 use flezha_runner::state::{NoChange, RestoreInitPayload, WallClock};
 use flezha_runner::transport::FlezhaStream;
 use flezha_runner::{
-    ChannelBuilder, Flezha, FlezhaError, StateHandle, StreamOperative, Tasklet, TaskletCtx,
-    TaskletError,
+    ChannelBuilder, Flezha, FlezhaError, StateHandle, Tasklet, TaskletCtx, TaskletError,
+    UnboundedOperator,
 };
 
-/// The workflow short form under `plain`: one tasklet, one sink, nothing else.
-#[flezha_runner::workflow_operative(id = "plain", sink = "plain_sink")]
+/// The bounded short form under `plain`: one tasklet, one sink, nothing else.
+#[flezha_runner::bounded_operator(id = "plain", sink = "plain_sink")]
 fn plain(input: String) -> String {
     input
 }
@@ -49,7 +49,7 @@ impl Tasklet for HandWrittenTask {
 
 /// A hand-written stream that claims the same factory id the short form does.
 struct HandWrittenPlain;
-impl StreamOperative for HandWrittenPlain {
+impl UnboundedOperator for HandWrittenPlain {
     fn factory_id() -> &'static str {
         "plain"
     }
@@ -116,7 +116,7 @@ fn init_frame_factories(frames: &Frames) -> Vec<String> {
 }
 
 #[test]
-fn a_workflow_short_form_colliding_with_a_stream_is_refused() {
+fn a_bounded_short_form_colliding_with_a_stream_is_refused() {
     let dir = std::env::temp_dir().join(format!("flz-short-dup-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("create socket dir");
     std::env::set_var("FLEZHA_SOCKET_FILES_PATH", &dir);
@@ -131,10 +131,9 @@ fn a_workflow_short_form_colliding_with_a_stream_is_refused() {
         .register_factory(HandWrittenPlain)
         .expect("the hand-written stream takes the id first");
 
-    let err = runner
-        .register_factory(Plain)
-        .err()
-        .expect("a workflow under a stream's factory id must be refused, not skipped");
+    let err = runner.register_factory(Plain).err().expect(
+        "a bounded operator under an unbounded operator's factory id must be refused, not skipped",
+    );
     assert!(
         matches!(err, FlezhaError::DuplicateFactoryId { ref factory_id } if factory_id == "plain"),
         "expected DuplicateFactoryId naming `plain`, got: {err}"

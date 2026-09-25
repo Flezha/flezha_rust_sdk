@@ -1,20 +1,20 @@
-//! Correctness microbenches per `operative-bench-harness/design.md`
+//! Correctness microbenches per `operator-bench-harness/design.md`
 //! Decision 8 (per-message dispatch-overhead budget) +
 //! `rust-sdk-dispatch` Requirement "Per-Message Dispatch-Overhead Budget".
 //!
 //! Two functions:
-//! - `throughput_single_cell` — single operative × single tasklet ×
+//! - `throughput_single_cell` — single operator × single tasklet ×
 //!   single cell. Measures the per-message dispatch budget on a
 //!   pinned producer thread.
-//! - `throughput_static_fanout` — single operative × single static-mode
+//! - `throughput_static_fanout` — single operator × single static-mode
 //!   tasklet with 4 cell keys, `cells_for` returning all 4
 //!   keys per input. Characterizes the fan-out cost.
 //!
 //! The sync-op invariant ("≤ 4 sync ops per message" on the
 //! single-cell path; "4 + N × 3" for fan-out width N) is an
 //! analytical bound enforced by code review, per
-//! `operative-bench-harness/design.md` Decision 8 / risk note 4 and
-//! `operative-bounded-mailbox/design.md` Decision 7. The 4-op budget
+//! `operator-bench-harness/design.md` Decision 8 / risk note 4 and
+//! `operator-bounded-mailbox/design.md` Decision 7. The 4-op budget
 //! covers: (1) registry/topology lookup, (2) ArrayQueue try_push,
 //! (3) `pushes_total` Relaxed counter, (4) inflight CAS. The fan-out
 //! per-target cost is 3 ops (try_push + counter + inflight CAS), so
@@ -29,12 +29,12 @@ use std::time::{Duration, Instant};
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use flezha_runner::channel::ChannelBuilder;
-use flezha_runner::operative::builder::build_topology_for;
-use flezha_runner::operative::registry::OperativeRegistry;
-use flezha_runner::operative::OperativeInstance;
+use flezha_runner::operator::builder::build_topology_for;
+use flezha_runner::operator::registry::OperatorRegistry;
+use flezha_runner::operator::OperatorInstance;
 use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
 use flezha_runner::tasklet::{Tasklet, TaskletCtx, TaskletError};
-use flezha_runner::{__dispatch_internals as bi, OverflowPolicy, StreamOperative};
+use flezha_runner::{__dispatch_internals as bi, OverflowPolicy, UnboundedOperator};
 use flz_core::bench_support::{
     allocations, drained_pair, fan_in, report, stream_pair, Counting, Settle,
 };
@@ -72,10 +72,10 @@ impl Tasklet for SingleCellTasklet {
     }
 }
 
-struct SingleCellOperative;
-impl StreamOperative for SingleCellOperative {
+struct SingleCellOperator;
+impl UnboundedOperator for SingleCellOperator {
     fn factory_id() -> &'static str {
-        "single_cell_operative"
+        "single_cell_operator"
     }
     fn channels(c: &ChannelBuilder) {
         // Opt the entry channel into Block so the bench measures the
@@ -93,12 +93,12 @@ impl StreamOperative for SingleCellOperative {
 fn throughput_single_cell(c: &mut Criterion) {
     let msgs_per_iter = 100_000usize;
 
-    let topology = build_topology_for::<SingleCellOperative>().expect("topology");
-    let registry = Arc::new(OperativeRegistry::new());
-    let instance = OperativeInstance::new(Arc::clone(&topology), Arc::from("single-cell-bench"));
+    let topology = build_topology_for::<SingleCellOperator>().expect("topology");
+    let registry = Arc::new(OperatorRegistry::new());
+    let instance = OperatorInstance::new(Arc::clone(&topology), Arc::from("single-cell-bench"));
     registry.register(instance);
 
-    let handle = bi::OperativeDispatchHandle {
+    let handle = bi::OperatorDispatchHandle {
         registry: Arc::clone(&registry),
     };
     let stream = stream_pair().0;
@@ -176,10 +176,10 @@ impl Tasklet for FanoutTasklet {
     }
 }
 
-struct StaticFanoutOperative;
-impl StreamOperative for StaticFanoutOperative {
+struct StaticFanoutOperator;
+impl UnboundedOperator for StaticFanoutOperator {
     fn factory_id() -> &'static str {
-        "static_fanout_operative"
+        "static_fanout_operator"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<Vec<u8>>("input")
@@ -193,12 +193,12 @@ fn throughput_static_fanout(c: &mut Criterion) {
     let fan_out = FANOUT_KEYS.len();
     let expected_runs = inputs_per_iter * fan_out;
 
-    let topology = build_topology_for::<StaticFanoutOperative>().expect("topology");
-    let registry = Arc::new(OperativeRegistry::new());
-    let instance = OperativeInstance::new(Arc::clone(&topology), Arc::from("static-fanout-bench"));
+    let topology = build_topology_for::<StaticFanoutOperator>().expect("topology");
+    let registry = Arc::new(OperatorRegistry::new());
+    let instance = OperatorInstance::new(Arc::clone(&topology), Arc::from("static-fanout-bench"));
     registry.register(instance);
 
-    let handle = bi::OperativeDispatchHandle {
+    let handle = bi::OperatorDispatchHandle {
         registry: Arc::clone(&registry),
     };
     let stream = stream_pair().0;
@@ -241,7 +241,7 @@ fn throughput_static_fanout(c: &mut Criterion) {
 
 // ----- Effectively-once tier: tier-on vs tier-off emit throughput -----
 //
-// Two identical stateful keyed-emit operatives, differing only in the
+// Two identical stateful keyed-emit operators, differing only in the
 // `effectively_once()` declaration. The pair publishes the tier's cost
 // (`effectively-once-output` §6.3); the tier-off number doubles as the
 // zero-delta guard for the default path.
@@ -295,10 +295,10 @@ macro_rules! tier_bench_tasklet {
 tier_bench_tasklet!(TierOffTasklet, "tier_off_tasklet", TIER_OFF_COUNTER);
 tier_bench_tasklet!(TierOnTasklet, "tier_on_tasklet", TIER_ON_COUNTER);
 
-struct TierOffOperative;
-impl StreamOperative for TierOffOperative {
+struct TierOffOperator;
+impl UnboundedOperator for TierOffOperator {
     fn factory_id() -> &'static str {
-        "tier_off_bench_operative"
+        "tier_off_bench_operator"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<Vec<u8>>("input")
@@ -309,10 +309,10 @@ impl StreamOperative for TierOffOperative {
     }
 }
 
-struct TierOnOperative;
-impl StreamOperative for TierOnOperative {
+struct TierOnOperator;
+impl UnboundedOperator for TierOnOperator {
     fn factory_id() -> &'static str {
-        "tier_on_bench_operative"
+        "tier_on_bench_operator"
     }
     fn channels(c: &ChannelBuilder) {
         c.effectively_once();
@@ -333,23 +333,23 @@ fn throughput_effectively_once_tiers(c: &mut Criterion) {
         Arc::new(|_pid: &str, _frame: &[u8]| -> Result<(), SendError> { Ok(()) });
     state_sink::install_global_sink(sink);
 
-    let registry = Arc::new(OperativeRegistry::new());
+    let registry = Arc::new(OperatorRegistry::new());
 
     for (factory, id) in [
         (
-            build_topology_for::<TierOffOperative>().expect("topology"),
+            build_topology_for::<TierOffOperator>().expect("topology"),
             "tier-off-bench",
         ),
         (
-            build_topology_for::<TierOnOperative>().expect("topology"),
+            build_topology_for::<TierOnOperator>().expect("topology"),
             "tier-on-bench",
         ),
     ] {
-        let instance = OperativeInstance::new(factory, Arc::from(id));
+        let instance = OperatorInstance::new(factory, Arc::from(id));
         registry.register(instance);
     }
 
-    let handle = bi::OperativeDispatchHandle {
+    let handle = bi::OperatorDispatchHandle {
         registry: Arc::clone(&registry),
     };
     let stream = drained_pair();

@@ -1,9 +1,9 @@
 //! The named bounds on the values the runtime writes down: `Change` and its
 //! `NoChange` zero-variant default, the `CoalesceKey` newtype (per
-//! `operative-state-persistence/design.md` Decisions 3 and 4), and
+//! `operator-state-persistence/design.md` Decisions 3 and 4), and
 //! `JournalValue`, the bound a Tasklet's `Output` carries.
 //!
-//! The `Change` trait is a marker workflow on
+//! The `Change` trait is a marker bounded operator on
 //! `Serialize + DeserializeOwned + Send + Sync + 'static` with one
 //! defaulted method: `coalesce_key(&self) -> Option<CoalesceKey>`. The
 //! default returns `None`, meaning records are kept verbatim by the
@@ -33,7 +33,7 @@ pub trait Change: Serialize + DeserializeOwned + Send + Sync + 'static {
 }
 
 /// Uninhabited enum used as the default `Tasklet::Change`. Detected at
-/// operative-build time via `TypeId` so the runtime can skip flush-buffer
+/// operator-build time via `TypeId` so the runtime can skip flush-buffer
 /// allocation for Tasklets that did not opt into persistence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NoChange {}
@@ -64,10 +64,10 @@ impl Change for NoChange {
 ///
 /// [`Tasklet::Output`](crate::tasklet::Tasklet::Output) carries this
 /// bound because one tasklet's output is the handoff to the next, and a
-/// durable structured workflow journals that handoff at its commit barrier so
+/// durable structured bounded journals that handoff at its commit barrier so
 /// a resumed run can seed the next tasklet instead of re-running the chain
 /// from the top. Whether a class journals is not settled where it is compiled
-/// — an operator overrides persistence per class at deploy time — so the bound
+/// — a user overrides persistence per class at deploy time — so the bound
 /// is unconditional, like the one `Tasklet::State` already carries.
 ///
 /// Nothing implements this by hand. The blanket implementation covers every
@@ -79,7 +79,7 @@ impl Change for NoChange {
 #[diagnostic::on_unimplemented(
     message = "`{Self}` cannot be written down, so it cannot be a tasklet's `Output`",
     label = "this output has no byte form",
-    note = "a tasklet's output is the handoff to the next tasklet, and a durable workflow \
+    note = "a tasklet's output is the handoff to the next tasklet, and a durable bounded \
             journals that handoff at its commit barrier and re-seeds from it on crash-resume",
     note = "add `#[derive(serde::Serialize, serde::Deserialize)]` to `{Self}`"
 )]

@@ -1,6 +1,6 @@
-//! Tasklet trait + TaskletCtx + TaskletError per `operative-architecture/design.md`
-//! Decision 1, `operative-mvp-rust/design.md` Decision 1, and
-//! `operative-state-persistence/design.md` Decisions 1, 4, 5, 8, 9.
+//! Tasklet trait + TaskletCtx + TaskletError per `operator-architecture/design.md`
+//! Decision 1, `operator-mvp-rust/design.md` Decision 1, and
+//! `operator-state-persistence/design.md` Decisions 1, 4, 5, 8, 9.
 
 pub mod change;
 pub mod clock;
@@ -49,12 +49,12 @@ pub const DEFAULT_TASKLET_ON_TIMER_PANIC_MESSAGE: &str =
 
 /// Default per-Cell bound on pending timers, used by
 /// [`Tasklet::max_timers_per_cell`]. A per-Cell timer set is
-/// author-controlled memory multiplied by a stream Cell count; the cap
+/// author-controlled memory multiplied by an unbounded Cell count; the cap
 /// is what keeps a runaway registration a refusal rather than an OOM.
 pub const DEFAULT_MAX_TIMERS_PER_CELL: usize = 10_000;
-pub use flz_core::operative::topology::DEFAULT_COMPACT_AFTER_BYTES;
+pub use flz_core::operator::topology::DEFAULT_COMPACT_AFTER_BYTES;
 
-/// One Tasklet in a StreamOperative topology. Stateless dispatcher; per-cell
+/// One Tasklet in an UnboundedOperator topology. Stateless dispatcher; per-cell
 /// State is held by the runtime and threaded through `run` via a
 /// [`StateHandle`].
 ///
@@ -73,9 +73,9 @@ pub use flz_core::operative::topology::DEFAULT_COMPACT_AFTER_BYTES;
 /// [`TaskletCtx::stable_id`]. `TaskletTestHarness::replay_emits_equal`
 /// verifies the output side of the contract; `replay_equals` the state side.
 ///
-/// State persistence (added by `operative-state-persistence`):
+/// State persistence (added by `operator-state-persistence`):
 ///
-/// - [`Self::Change`] — associated type workflow on
+/// - [`Self::Change`] — associated type bounded operator on
 ///   `Serialize + DeserializeOwned + Send + Sync + 'static`. Default
 ///   [`NoChange`] opts out of persistence machinery.
 /// - [`Self::Clock`] — sealed trait. Default [`WallClock`].
@@ -88,7 +88,7 @@ pub use flz_core::operative::topology::DEFAULT_COMPACT_AFTER_BYTES;
 /// - [`Self::apply_change`] — fold a Change into the State; MUST be
 ///   deterministic; verified by `TaskletTestHarness::replay_equals`.
 /// - [`Self::compact_after_bytes`] — per-Cell WAL compaction
-///   threshold reported to the controller at operative-start time. Default 64 MiB.
+///   threshold reported to the controller at operator-start time. Default 64 MiB.
 /// - [`Self::from_config`] — constructor from typed Config. Default
 ///   `Self::default()` for `Config = ()`.
 pub trait Tasklet: Send + Sync + 'static + Default {
@@ -99,7 +99,7 @@ pub trait Tasklet: Send + Sync + 'static + Default {
     /// shared-Arc case (`Arc::unwrap_or_clone`).
     type Input: Send + Sync + 'static + Clone;
     /// Per-cell output value, handed to every consumer of this node's
-    /// channel. Bound on [`JournalValue`] — a workflow journals the handoff
+    /// channel. Bound on [`JournalValue`] — a bounded journals the handoff
     /// between two tasklets, so the runtime derives the channel's byte
     /// codec from this type and no declaration exists to forget.
     ///
@@ -108,9 +108,9 @@ pub trait Tasklet: Send + Sync + 'static + Default {
     /// anyway, so the requirement reaches it where it matters. `State` keeps
     /// its raw serde bounds, which say the same thing for a different reader.
     type Output: Send + Sync + 'static + JournalValue;
-    /// Per-Cell state. Workflow on `Serialize + DeserializeOwned` so
+    /// Per-Cell state. Bounded operator on `Serialize + DeserializeOwned` so
     /// the runtime can serialize state for `CellState` /
-    /// `MigrationSerialization` and seed it from `AddOperative.init_values`
+    /// `MigrationSerialization` and seed it from `AddOperator.init_values`
     /// without going through the user's `init_state`.
     type State: Send + Sync + 'static + Serialize + DeserializeOwned;
 
@@ -130,7 +130,7 @@ pub trait Tasklet: Send + Sync + 'static + Default {
     /// `type Clock = WallClock;`.
     type Clock: ClockFor<Self::Input>;
 
-    /// Startup-time configuration deserialized from operative-start metadata
+    /// Startup-time configuration deserialized from operator-start metadata
     /// (postcard). Use `()` for the no-config default; impls write
     /// `type Config = ();` explicitly.
     type Config: DeserializeOwned + Send + Sync + 'static;
@@ -205,10 +205,10 @@ pub trait Tasklet: Send + Sync + 'static + Default {
         ))
     }
 
-    /// Stable identifier within the StreamOperative class. Must be unique per StreamOperative.
+    /// Stable identifier within the UnboundedOperator class. Must be unique per UnboundedOperator.
     fn name() -> &'static str;
 
-    /// Per-cell state factory. Called once per Cell at StreamOperative
+    /// Per-cell state factory. Called once per Cell at UnboundedOperator
     /// startup. `cell_key` is `None` in single-cell mode and
     /// `Some(k)` for static mode where `k` is one of the values returned
     /// by `cell_keys()`.
@@ -238,7 +238,7 @@ pub trait Tasklet: Send + Sync + 'static + Default {
 
     /// Per-Cell WAL size threshold reported to the controller. The
     /// runtime never compacts on the SDK side — compaction is controller-
-    /// driven per `operative-state-persistence`. Default 8 MiB,
+    /// driven per `operator-state-persistence`. Default 8 MiB,
     /// in lockstep with the controller's `:default_compact_after_bytes`.
     fn compact_after_bytes() -> usize {
         DEFAULT_COMPACT_AFTER_BYTES
@@ -250,7 +250,7 @@ pub trait Tasklet: Send + Sync + 'static + Default {
     ///
     /// This is the sanctioned path for a **parameterized tasklet** — one
     /// class serving several configurations, each instance constructed from
-    /// the typed config carried in the operative-start metadata:
+    /// the typed config carried in the operator-start metadata:
     ///
     /// ```
     /// use flezha_runner::tasklet::{Tasklet, TaskletCtx, TaskletError};
@@ -307,7 +307,7 @@ pub trait Tasklet: Send + Sync + 'static + Default {
     ///
     /// Static-mode tasklets (`cell_keys()` non-empty) MUST override this
     /// AND set `CELLS_FOR_OVERRIDDEN = true`; the topology builder
-    /// refuses the operative otherwise.
+    /// refuses the operator otherwise.
     fn cells_for(_input: &Self::Input) -> Vec<&'static str> {
         Vec::new()
     }
@@ -319,7 +319,7 @@ pub trait Tasklet: Send + Sync + 'static + Default {
     const CELLS_FOR_OVERRIDDEN: bool = false;
 
     /// Dynamic-mode idle eviction window. `None` (default) = no eviction:
-    /// Cells live as long as the StreamOperative, like static ones. `Some(ttl)`
+    /// Cells live as long as the UnboundedOperator, like static ones. `Some(ttl)`
     /// opts a per-Tasklet reaper in; eviction is destructive (in-memory slot +
     /// on-disk WAL/snapshot dropped) and a later input cold-starts fresh —
     /// no restore-from-disk. Ignored for single/static Tasklets.
@@ -339,7 +339,7 @@ pub trait Tasklet: Send + Sync + 'static + Default {
     const MAX_CELLS_OVERRIDDEN: bool = false;
 
     /// Per-Cell mailbox capacity. The consumer Cell allocates
-    /// one bounded ring buffer of this size at operative startup. Static-mode
+    /// one bounded ring buffer of this size at operator startup. Static-mode
     /// Tasklets allocate one mailbox per declared cell key, all sharing
     /// the same capacity.
     ///
@@ -369,7 +369,7 @@ pub trait Tasklet: Send + Sync + 'static + Default {
     /// Compute. Receives the typed input, a [`StateHandle`] to read state
     /// via `Deref` and mutate via `state.apply(change)`, and a context for
     /// emitting outputs. Producing zero outputs == no `ctx.emit(...)` call.
-    /// Returning Err logs against `(operative, tasklet, cell)` and discards
+    /// Returning Err logs against `(operator, tasklet, cell)` and discards
     /// any partial emits.
     fn run(
         &mut self,
@@ -421,10 +421,10 @@ pub trait Tasklet: Send + Sync + 'static + Default {
         DEFAULT_MAX_TIMERS_PER_CELL
     }
 
-    /// Optional saga **compensation** hook (workflow operatives only). An
+    /// Optional saga **compensation** hook (bounded operators only). An
     /// tasklet whose `run` commits a reversible side effect declares this to
-    /// undo it. The workflow fires it ONLY during abnormal-termination
-    /// rollback — never on a clean `ok`, never for a stream operative — once
+    /// undo it. The bounded operator fires it ONLY during abnormal-termination
+    /// rollback — never on a clean `ok`, never for an unbounded operator — once
     /// per cell that ran, in reverse completion order, handing back that
     /// cell's own collected outputs (zero-copy `Arc`s) and its
     /// [`StateHandle`], so it can reverse precisely. Compensation MUST be
@@ -432,7 +432,7 @@ pub trait Tasklet: Send + Sync + 'static + Default {
     ///
     /// The default is a no-op; a tasklet that overrides this MUST also set
     /// [`COMPENSATE_OVERRIDDEN`](Self::COMPENSATE_OVERRIDDEN) `= true` so the
-    /// workflow registers it as compensable (hookless tasklets are
+    /// bounded operator registers it as compensable (hookless tasklets are
     /// skipped during rollback).
     fn compensate(
         &mut self,
@@ -445,7 +445,7 @@ pub trait Tasklet: Send + Sync + 'static + Default {
 
     /// Override-detection sentinel for [`Self::compensate`]. Default `false`; an
     /// tasklet that overrides `compensate` MUST set this to `true` so the
-    /// workflow knows the tasklet participates in saga rollback.
+    /// bounded operator knows the tasklet participates in saga rollback.
     const COMPENSATE_OVERRIDDEN: bool = false;
 }
 

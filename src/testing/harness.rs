@@ -23,7 +23,7 @@ use flz_core::header::RestoreError;
 
 use crate::cell::restore::{init_cell_with_payload, RestoreInitPayload};
 use crate::cell::timer::{PendingTimers, TimerKind, TimerOp, TimerSession};
-use crate::operative::dispatcher::emit_sink::apply_identity_stamps;
+use crate::operator::dispatcher::emit_sink::apply_identity_stamps;
 use crate::tasklet::clock::{wall_now_ms, ClockFor};
 use crate::tasklet::ctx::EmitSink;
 use crate::tasklet::{StateHandle, Tasklet, TaskletCtx, TaskletError};
@@ -629,7 +629,7 @@ impl<'a> EmitSink for RecordingEmitSink<'a> {
         self.keyed
     }
 
-    /// The harness runs a workflow's tasklet as readily as a stream's, so
+    /// The harness runs a bounded operator's tasklet as readily as an unbounded operator's, so
     /// it accepts a completion and, like a checkpoint, records nothing.
     fn complete(&mut self, _result: Vec<u8>) -> Result<(), TaskletError> {
         Ok(())

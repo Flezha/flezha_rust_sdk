@@ -6,12 +6,12 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use flezha_runner::__dispatch_internals::OperativeDispatchHandle;
+use flezha_runner::__dispatch_internals::OperatorDispatchHandle;
 use flezha_runner::cell::header::HeaderTemplate;
 use flezha_runner::channel::ChannelBuilder;
 use flezha_runner::state::{RestoreInitPayload, StateHandle, WallClock};
 use flezha_runner::tasklet::{Tasklet, TaskletCtx, TaskletError};
-use flezha_runner::StreamOperative;
+use flezha_runner::UnboundedOperator;
 
 use super::dummy_stream;
 
@@ -56,10 +56,10 @@ impl Tasklet for KeyedStampTasklet {
     }
 }
 
-pub struct KeyedStampOperative;
-impl StreamOperative for KeyedStampOperative {
+pub struct KeyedStampOperator;
+impl UnboundedOperator for KeyedStampOperator {
     fn factory_id() -> &'static str {
-        "keyed_stamp_operative"
+        "keyed_stamp_operator"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
@@ -118,10 +118,10 @@ impl Tasklet for TierStampTasklet {
     }
 }
 
-pub struct TierOperative;
-impl StreamOperative for TierOperative {
+pub struct TierOperator;
+impl UnboundedOperator for TierOperator {
     fn factory_id() -> &'static str {
-        "tier_operative"
+        "tier_operator"
     }
     fn channels(c: &ChannelBuilder) {
         c.effectively_once();
@@ -170,7 +170,7 @@ pub fn install_capturing_tier_sink() {
     state_sink::install_global_sink(sink);
 }
 
-pub fn dispatch_at(handle: &OperativeDispatchHandle, instance: &str, offset: u64, body: &str) {
+pub fn dispatch_at(handle: &OperatorDispatchHandle, instance: &str, offset: u64, body: &str) {
     let mut md = HashMap::new();
     md.insert("channel".to_string(), "input".to_string());
     md.insert("flz.offset".to_string(), offset.to_string());

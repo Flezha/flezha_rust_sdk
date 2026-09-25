@@ -1,10 +1,10 @@
 //! Starts a runner: a process that connects to the controller and serves your
-//! operatives.
+//! operators.
 //!
-//! Declare every operative you want served before `start()`. One runner can
-//! serve several, and the same call takes a workflow operative.
+//! Declare every operator you want served before `start()`. One runner can
+//! serve several, and the same call takes a bounded operator.
 
-mod operative;
+mod operator;
 mod tasklet;
 
 use flezha_runner::Flezha;
@@ -19,22 +19,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The runner is bound to a name because a chained temporary would be
     // dropped, and shut down, at the end of the statement.
     let runner = Flezha::create_runner(namespace)?;
-    runner
-        .register_factory(operative::EchoOperative)?
-        .start()?;
+    runner.register_factory(operator::EchoOperator)?.start()?;
 
-    // Everything `flz operative` and `flz plugin` do is also a method here.
+    // Everything `flz operator` and `flz plugin` do is also a method here.
     // Uncomment to drive this namespace from the application instead of from a
     // terminal:
     //
     // let admin = runner.admin();
-    // admin.start_operative(&flezha_runner::OperativeSpec::new("echo").id("my_echo"))?;
+    // admin.start_operator(&flezha_runner::OperatorSpec::new("echo").id("my_echo"))?;
     // admin.enable_plugin(
     //     "writer",
     //     serde_json::json!({
     //         "id": "writer",
-    //         "provider": "operative_file_sink",
-    //         "operative_id": "my_echo",
+    //         "provider": "operator_file_sink",
+    //         "operator_id": "my_echo",
     //         "opts": { "path": "echo-out.txt" },
     //         "hooks": [["on_output", {}]],
     //     }),

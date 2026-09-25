@@ -6,9 +6,9 @@ use serde::{Deserialize, Serialize};
 use super::{LatestRouter, RouteLatestInput};
 use crate::channel::builder::TopologyIssue;
 use crate::channel::ChannelBuilder;
-use crate::operative::builder::build_topology_for;
-use crate::operative::topology::CellMode;
-use crate::operative::StreamOperative;
+use crate::operator::builder::build_topology_for;
+use crate::operator::topology::CellMode;
+use crate::operator::UnboundedOperator;
 use crate::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
 use crate::tasklet::{Tasklet, TaskletCtx, TaskletError};
 use crate::testing::TaskletTestHarness;
@@ -43,7 +43,7 @@ fn harness() -> TaskletTestHarness<LatestRouter<Thresholds>> {
 }
 
 /// fails when: a changed document stops reaching a key on that key's own next
-/// traffic item — every per-key consumer of an operative-wide document would
+/// traffic item — every per-key consumer of an operator-wide document would
 /// keep computing against a stale one, silently.
 #[test]
 fn a_changed_document_reaches_each_key_on_its_own_next_traffic() {
@@ -196,9 +196,9 @@ impl Tasklet for Detector {
 }
 
 /// The canonical shape: a document stream, a traffic stream, a keyed consumer.
-struct RoutedOperative;
+struct RoutedOperator;
 
-impl StreamOperative for RoutedOperative {
+impl UnboundedOperator for RoutedOperator {
     fn factory_id() -> &'static str {
         "route_latest_expansion"
     }
@@ -215,11 +215,11 @@ impl StreamOperative for RoutedOperative {
 /// fails when: the block stops expanding to one single-cell node fed by both
 /// streams with the key function on the traffic edge. Every guarantee the block
 /// carries rests on that shape: single-cell (one retained document per
-/// operative), and the traffic payload replaced by its key at the routing seam
+/// operator), and the traffic payload replaced by its key at the routing seam
 /// (so the router never holds application values).
 #[test]
 fn the_block_expands_to_one_single_cell_node_fed_by_both_streams() {
-    let topology = build_topology_for::<RoutedOperative>().expect("topology");
+    let topology = build_topology_for::<RoutedOperator>().expect("topology");
 
     let router_id = topology.tasklet_name_to_id["route_latest"];
     let router = &topology.tasklets[router_id as usize];
@@ -255,9 +255,9 @@ fn the_block_expands_to_one_single_cell_node_fed_by_both_streams() {
     );
 }
 
-struct TwoUnnamedRouterOperative;
+struct TwoUnnamedRouterOperator;
 
-impl StreamOperative for TwoUnnamedRouterOperative {
+impl UnboundedOperator for TwoUnnamedRouterOperator {
     fn factory_id() -> &'static str {
         "route_latest_twice"
     }
@@ -276,9 +276,9 @@ impl StreamOperative for TwoUnnamedRouterOperative {
     }
 }
 
-struct TwoNamedRouterOperative;
+struct TwoNamedRouterOperator;
 
-impl StreamOperative for TwoNamedRouterOperative {
+impl UnboundedOperator for TwoNamedRouterOperator {
     fn factory_id() -> &'static str {
         "route_latest_twice_named"
     }
@@ -296,8 +296,8 @@ impl StreamOperative for TwoNamedRouterOperative {
     }
 }
 
-/// Declaration errors this operative's `channels(...)` collected.
-fn issues<R: StreamOperative>() -> Vec<TopologyIssue> {
+/// Declaration errors this operator's `channels(...)` collected.
+fn issues<R: UnboundedOperator>() -> Vec<TopologyIssue> {
     build_topology_for::<R>()
         .err()
         .map(|e| e.errors)
@@ -310,7 +310,7 @@ fn issues<R: StreamOperative>() -> Vec<TopologyIssue> {
 #[test]
 fn a_second_router_needs_a_node_name() {
     assert!(
-        issues::<TwoUnnamedRouterOperative>()
+        issues::<TwoUnnamedRouterOperator>()
             .iter()
             .any(|e| matches!(
                 e,
@@ -320,15 +320,15 @@ fn a_second_router_needs_a_node_name() {
         "the shared traffic edge must be refused, not silently re-wired"
     );
 
-    let two = build_topology_for::<TwoNamedRouterOperative>().expect("topology");
+    let two = build_topology_for::<TwoNamedRouterOperator>().expect("topology");
     assert!(two.tasklet_name_to_id.contains_key("primary"));
     assert!(two.tasklet_name_to_id.contains_key("secondary"));
     assert!(!two.tasklet_name_to_id.contains_key("route_latest"));
 }
 
-struct SelfRoutedOperative;
+struct SelfRoutedOperator;
 
-impl StreamOperative for SelfRoutedOperative {
+impl UnboundedOperator for SelfRoutedOperator {
     fn factory_id() -> &'static str {
         "route_latest_self"
     }
@@ -346,7 +346,7 @@ impl StreamOperative for SelfRoutedOperative {
 #[test]
 fn one_channel_cannot_be_both_streams() {
     assert!(
-        issues::<SelfRoutedOperative>().iter().any(
+        issues::<SelfRoutedOperator>().iter().any(
             |e| matches!(e, TopologyIssue::DuplicateMergeSource { channel } if channel == "trades")
         ),
         "one channel serving as both streams must be refused"

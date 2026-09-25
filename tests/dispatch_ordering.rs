@@ -1,6 +1,6 @@
 //! Per-cell ordering and stickiness: one Cell is never dispatched
 //! concurrently, its inputs keep enqueue order, different cells run in
-//! parallel, and two operatives' same-named channels stay independent.
+//! parallel, and two operators' same-named channels stay independent.
 
 mod common;
 use common::prelude::*;
@@ -14,10 +14,10 @@ test_tasklet!(AppendTasklet, "append_tasklet", String => String, (), |input, _st
     Ok(())
 });
 
-struct AppendOperative;
-impl StreamOperative for AppendOperative {
+struct AppendOperator;
+impl UnboundedOperator for AppendOperator {
     fn factory_id() -> &'static str {
-        "append_operative"
+        "append_operator"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input").into::<AppendTasklet>();
@@ -27,7 +27,7 @@ impl StreamOperative for AppendOperative {
 #[test]
 fn per_cell_input_order_preserved() {
     APPEND_OBSERVED.lock().unwrap().clear();
-    let (handle, _instance) = setup::<AppendOperative>("append-instance");
+    let (handle, _instance) = setup::<AppendOperator>("append-instance");
     let stream = dummy_stream();
 
     let n = 1000usize;
@@ -83,10 +83,10 @@ test_tasklet!(ConcurrencyProbeTasklet, "concurrency_probe_tasklet", String => St
     Ok(())
 });
 
-struct ConcurrencyProbeOperative;
-impl StreamOperative for ConcurrencyProbeOperative {
+struct ConcurrencyProbeOperator;
+impl UnboundedOperator for ConcurrencyProbeOperator {
     fn factory_id() -> &'static str {
-        "concurrency_probe_operative"
+        "concurrency_probe_operator"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input").into::<ConcurrencyProbeTasklet>();
@@ -98,11 +98,11 @@ fn same_cell_never_runs_concurrently() {
     APPEND_CONCURRENT.store(0, Ordering::Release);
     APPEND_MAX_CONCURRENT.store(0, Ordering::Release);
 
-    let topology = build_topology_for::<ConcurrencyProbeOperative>().expect("topology");
-    let registry = Arc::new(OperativeRegistry::new());
-    let instance = OperativeInstance::new(topology, Arc::from("conc-instance"));
+    let topology = build_topology_for::<ConcurrencyProbeOperator>().expect("topology");
+    let registry = Arc::new(OperatorRegistry::new());
+    let instance = OperatorInstance::new(topology, Arc::from("conc-instance"));
     registry.register(instance);
-    let handle = OperativeDispatchHandle {
+    let handle = OperatorDispatchHandle {
         registry: Arc::clone(&registry),
     };
     let stream = dummy_stream();
@@ -144,7 +144,7 @@ fn same_cell_never_runs_concurrently() {
     );
 }
 
-fn registry_instance(registry: &Arc<OperativeRegistry>, id: &str) -> Arc<OperativeInstance> {
+fn registry_instance(registry: &Arc<OperatorRegistry>, id: &str) -> Arc<OperatorInstance> {
     registry.get(id).expect("registered instance")
 }
 
@@ -213,10 +213,10 @@ impl Tasklet for ParallelStaticTasklet {
     }
 }
 
-struct ParallelOperative;
-impl StreamOperative for ParallelOperative {
+struct ParallelOperator;
+impl UnboundedOperator for ParallelOperator {
     fn factory_id() -> &'static str {
-        "parallel_operative"
+        "parallel_operator"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input").into::<ParallelStaticTasklet>();
@@ -226,7 +226,7 @@ impl StreamOperative for ParallelOperative {
 #[test]
 fn static_cells_dispatch_independently() {
     parallel_observed().lock().unwrap().clear();
-    let (handle, _instance) = setup::<ParallelOperative>("parallel-instance");
+    let (handle, _instance) = setup::<ParallelOperator>("parallel-instance");
     let stream = dummy_stream();
 
     let prefixes = ["a", "b", "c", "d"];
@@ -263,7 +263,7 @@ fn static_cells_dispatch_independently() {
     }
 }
 
-// ----- Per-operative namespace isolation -----
+// ----- Per-operator namespace isolation -----
 
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 struct CountingState {
@@ -274,20 +274,20 @@ test_tasklet!(CountingTasklet, "counting_tasklet", String => String, CountingSta
     Ok(())
 });
 
-struct StreamA;
-impl StreamOperative for StreamA {
+struct UnboundedA;
+impl UnboundedOperator for UnboundedA {
     fn factory_id() -> &'static str {
-        "ns_operative_a"
+        "ns_operator_a"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input").into::<CountingTasklet>();
     }
 }
 
-struct StreamB;
-impl StreamOperative for StreamB {
+struct UnboundedB;
+impl UnboundedOperator for UnboundedB {
     fn factory_id() -> &'static str {
-        "ns_operative_b"
+        "ns_operator_b"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input").into::<CountingTasklet>();
@@ -295,13 +295,13 @@ impl StreamOperative for StreamB {
 }
 
 #[test]
-fn per_operative_namespace_isolation() {
-    let topology_a = build_topology_for::<StreamA>().expect("topology a");
-    let topology_b = build_topology_for::<StreamB>().expect("topology b");
+fn per_operator_namespace_isolation() {
+    let topology_a = build_topology_for::<UnboundedA>().expect("topology a");
+    let topology_b = build_topology_for::<UnboundedB>().expect("topology b");
     assert_ne!(topology_a.factory_id, topology_b.factory_id);
 
     // Same channel name on each is a separate ChannelDescriptor with id 0
-    // in its own topology — interning is per-operative.
+    // in its own topology — interning is per-operator.
     assert_eq!(topology_a.lookup_channel_id("input"), Some(0));
     assert_eq!(topology_b.lookup_channel_id("input"), Some(0));
     assert!(!std::ptr::eq(
@@ -328,10 +328,10 @@ test_tasklet!(MetaConsumerTasklet, "meta_consumer_tasklet", String => (), (), |_
     Ok(())
 });
 
-struct MetaRejectOperative;
-impl StreamOperative for MetaRejectOperative {
+struct MetaRejectOperator;
+impl UnboundedOperator for MetaRejectOperator {
     fn factory_id() -> &'static str {
-        "meta_reject_operative"
+        "meta_reject_operator"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
@@ -344,7 +344,7 @@ impl StreamOperative for MetaRejectOperative {
 #[test]
 fn emit_with_meta_rejected_on_inter_tasklet() {
     *META_REJECT_OBSERVED.lock().unwrap() = None;
-    let (handle, _instance) = setup::<MetaRejectOperative>("meta-instance");
+    let (handle, _instance) = setup::<MetaRejectOperator>("meta-instance");
     let stream = dummy_stream();
 
     let mut md = HashMap::new();

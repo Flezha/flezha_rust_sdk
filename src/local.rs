@@ -1,12 +1,12 @@
-//! Running a declared operative graph in this process, with no controller.
+//! Running a declared operator graph in this process, with no controller.
 //!
-//! [`LocalOperative::start`] takes the operative type you deploy, runs the
+//! [`LocalOperator::start`] takes the operator type you deploy, runs the
 //! `channels()` graph it already declares, and drives it on the crate's own
 //! poll workers — the same ones a started runner uses. Nothing about the
 //! class changes: no local-mode member, no second declaration.
 //!
 //! ```ignore
-//! let run = LocalOperative::start::<WordCount>()?;
+//! let run = LocalOperator::start::<WordCount>()?;
 //! run.on_sink("totals", |output| println!("{:?}", output.payload))?;
 //! run.feed("lines", "the quick brown fox")?;
 //! run.run_until_idle(Duration::from_secs(5))?;
@@ -23,21 +23,21 @@ use std::time::Duration;
 use flz_core::local::LocalRun;
 pub use flz_core::local::{SinkOutput, NON_DURABILITY_NOTICE};
 
-use crate::operative::StreamOperative;
+use crate::operator::UnboundedOperator;
 use crate::runner_handle::FlezhaError;
 
-/// One operative graph running in this process. Dropping it stops the run.
-pub struct LocalOperative {
+/// One operator graph running in this process. Dropping it stops the run.
+pub struct LocalOperator {
     run: LocalRun,
 }
 
-impl LocalOperative {
+impl LocalOperator {
     /// Register `R`'s declared graph and start it locally. Refuses a
     /// declaration that needs a controller, naming the capability.
-    pub fn start<R: StreamOperative>() -> Result<Self, FlezhaError> {
-        crate::register_class::<crate::StreamKind, R>()?;
-        crate::operative::poll_pool::ensure_poll_workers();
-        Ok(LocalOperative {
+    pub fn start<R: UnboundedOperator>() -> Result<Self, FlezhaError> {
+        crate::register_class::<crate::UnboundedKind, R>()?;
+        crate::operator::poll_pool::ensure_poll_workers();
+        Ok(LocalOperator {
             run: LocalRun::start(R::factory_id(), &format!("{}-local", R::factory_id()))?,
         })
     }

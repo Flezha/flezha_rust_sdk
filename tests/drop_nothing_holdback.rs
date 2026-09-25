@@ -64,10 +64,10 @@ fn note_inflight() {
     DEEPEST_INFLIGHT.fetch_max(now, Ordering::AcqRel);
 }
 
-struct ChainOperative;
-impl StreamOperative for ChainOperative {
+struct ChainOperator;
+impl UnboundedOperator for ChainOperator {
     fn factory_id() -> &'static str {
-        "nonparking_chain_operative"
+        "nonparking_chain_operator"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
@@ -91,7 +91,7 @@ fn a_chain_of_full_mailboxes_drains_on_a_single_pinned_worker() {
     CHAIN_MID.store(0, Ordering::Release);
     DEEPEST_INFLIGHT.store(0, Ordering::Release);
 
-    let (handle, instance) = setup::<ChainOperative>("nonparking-chain");
+    let (handle, instance) = setup::<ChainOperator>("nonparking-chain");
     let stream = dummy_stream();
     dispatch_input(
         &handle,
@@ -151,10 +151,10 @@ test_tasklet!(OrderedTail, "nonparking_ordered_tail", String => (), (), cap 1, |
     Ok(())
 });
 
-struct OrderedOperative;
-impl StreamOperative for OrderedOperative {
+struct OrderedOperator;
+impl UnboundedOperator for OrderedOperator {
     fn factory_id() -> &'static str {
-        "nonparking_ordered_operative"
+        "nonparking_ordered_operator"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
@@ -172,7 +172,7 @@ fn per_producer_emit_order_survives_the_holdback() {
     let _serial = pin_single_worker_host();
     ORDERED_SEEN.lock().unwrap().clear();
 
-    let (handle, _instance) = setup::<OrderedOperative>("nonparking-ordered");
+    let (handle, _instance) = setup::<OrderedOperator>("nonparking-ordered");
     let stream = dummy_stream();
     dispatch_input(
         &handle,
@@ -212,10 +212,10 @@ test_tasklet!(GateTail, "nonparking_gate_tail", String => (), (), cap 1, |_input
     Ok(())
 });
 
-struct GateOperative;
-impl StreamOperative for GateOperative {
+struct GateOperator;
+impl UnboundedOperator for GateOperator {
     fn factory_id() -> &'static str {
-        "nonparking_gate_operative"
+        "nonparking_gate_operator"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
@@ -246,7 +246,7 @@ fn a_gated_producer_holds_its_round_and_is_reported() {
     let _serial = pin_single_worker_host();
     GATED_SEEN.store(0, Ordering::Release);
 
-    let (handle, instance) = setup::<GateOperative>("nonparking-gate");
+    let (handle, instance) = setup::<GateOperator>("nonparking-gate");
     let head = Arc::clone(&instance.cells[0][0]);
     let tail = Arc::clone(&instance.cells[1][0]);
     let stream = dummy_stream();
@@ -283,7 +283,7 @@ fn a_gated_producer_holds_its_round_and_is_reported() {
     assert_eq!(
         head.counters().pushes_total.load(Ordering::Relaxed),
         1,
-        "only the operative's own input landed on the producer"
+        "only the operator's own input landed on the producer"
     );
 
     // Let the consumer run: its first pop re-arms the producer, and the

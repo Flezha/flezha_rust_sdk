@@ -2,7 +2,7 @@
 //! `sink` / `sealed` / `named` / `codec` / `keyed` stay on a tasklet's
 //! output stream.
 struct Op;
-impl flezha_runner::StreamOperative for Op {
+impl flezha_runner::UnboundedOperator for Op {
     fn factory_id() -> &'static str {
         "entry_no_sink"
     }

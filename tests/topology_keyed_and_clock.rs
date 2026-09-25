@@ -18,10 +18,10 @@ test_tasklet!(KeyedConsumerTasklet, "keyed_consumer_tasklet", String => (), (), 
 });
 
 /// `.keyed()` with a pure plugin wire is accepted and recorded.
-struct KeyedPluginOperative;
-impl StreamOperative for KeyedPluginOperative {
+struct KeyedPluginOperator;
+impl UnboundedOperator for KeyedPluginOperator {
     fn factory_id() -> &'static str {
-        "keyed_plugin_operative"
+        "keyed_plugin_operator"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("inp")
@@ -33,17 +33,17 @@ impl StreamOperative for KeyedPluginOperative {
 
 #[test]
 fn keyed_plugin_channel_is_accepted_and_marked() {
-    let topology = build_topology_for::<KeyedPluginOperative>().expect("topology");
+    let topology = build_topology_for::<KeyedPluginOperator>().expect("topology");
     let out = topology.lookup_channel_id("out").unwrap();
     assert!(topology.channels[out as usize].keyed);
     assert!(!topology.channels[0].keyed, "entry channel is not keyed");
 }
 
 /// `.keyed()` on a hybrid (`sink_with`) channel is accepted.
-struct KeyedHybridOperative;
-impl StreamOperative for KeyedHybridOperative {
+struct KeyedHybridOperator;
+impl UnboundedOperator for KeyedHybridOperator {
     fn factory_id() -> &'static str {
-        "keyed_hybrid_operative"
+        "keyed_hybrid_operator"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("inp")
@@ -56,7 +56,7 @@ impl StreamOperative for KeyedHybridOperative {
 
 #[test]
 fn keyed_hybrid_channel_is_accepted_and_marked() {
-    let topology = build_topology_for::<KeyedHybridOperative>().expect("topology");
+    let topology = build_topology_for::<KeyedHybridOperator>().expect("topology");
     let out = topology.lookup_channel_id("out").unwrap();
     assert!(topology.channels[out as usize].keyed);
     assert!(topology.channels[out as usize].plugin_sink.is_some());
@@ -64,10 +64,10 @@ fn keyed_hybrid_channel_is_accepted_and_marked() {
 
 /// `.keyed()` on a channel with no plugin wire fails the build with a
 /// typed error naming the channel.
-struct KeyedInterTaskletOperative;
-impl StreamOperative for KeyedInterTaskletOperative {
+struct KeyedInterTaskletOperator;
+impl UnboundedOperator for KeyedInterTaskletOperator {
     fn factory_id() -> &'static str {
-        "keyed_inter_tasklet_operative"
+        "keyed_inter_tasklet_operator"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("inp")
@@ -80,7 +80,7 @@ impl StreamOperative for KeyedInterTaskletOperative {
 
 #[test]
 fn keyed_channel_without_plugin_wire_is_rejected() {
-    let err = match build_topology_for::<KeyedInterTaskletOperative>() {
+    let err = match build_topology_for::<KeyedInterTaskletOperator>() {
         Ok(_) => panic!("keyed inter-tasklet channel must fail the build"),
         Err(e) => e,
     };
@@ -116,10 +116,10 @@ impl Tasklet for FrozenLogicalTasklet {
     }
 }
 
-struct FrozenLogicalOperative;
-impl StreamOperative for FrozenLogicalOperative {
+struct FrozenLogicalOperator;
+impl UnboundedOperator for FrozenLogicalOperator {
     fn factory_id() -> &'static str {
-        "frozen_logical_operative"
+        "frozen_logical_operator"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("inp").into::<FrozenLogicalTasklet>();
@@ -128,7 +128,7 @@ impl StreamOperative for FrozenLogicalOperative {
 
 #[test]
 fn logical_clock_without_persistent_changes_is_rejected_at_build() {
-    let err = match build_topology_for::<FrozenLogicalOperative>() {
+    let err = match build_topology_for::<FrozenLogicalOperator>() {
         Ok(_) => panic!("LogicalClock + NoChange must fail the build"),
         Err(e) => e,
     };

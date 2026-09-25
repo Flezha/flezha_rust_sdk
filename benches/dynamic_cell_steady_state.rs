@@ -8,12 +8,12 @@ use std::time::{Duration, Instant};
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use flezha_runner::channel::ChannelBuilder;
-use flezha_runner::operative::builder::build_topology_for;
-use flezha_runner::operative::registry::OperativeRegistry;
-use flezha_runner::operative::OperativeInstance;
+use flezha_runner::operator::builder::build_topology_for;
+use flezha_runner::operator::registry::OperatorRegistry;
+use flezha_runner::operator::OperatorInstance;
 use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
 use flezha_runner::tasklet::{Tasklet, TaskletCtx, TaskletError};
-use flezha_runner::{__dispatch_internals as bi, OverflowPolicy, StreamOperative};
+use flezha_runner::{__dispatch_internals as bi, OverflowPolicy, UnboundedOperator};
 use flz_core::bench_support::{fan_in, stream_pair, Settle};
 
 static DYN_COUNTER: Settle = Settle::new();
@@ -44,10 +44,10 @@ impl Tasklet for SteadyDynTasklet {
     }
 }
 
-struct SteadyDynOperative;
-impl StreamOperative for SteadyDynOperative {
+struct SteadyDynOperator;
+impl UnboundedOperator for SteadyDynOperator {
     fn factory_id() -> &'static str {
-        "steady_dyn_operative"
+        "steady_dyn_operator"
     }
     fn channels(c: &ChannelBuilder) {
         // First 8 bytes (hex-ish) are the key; cheap and deterministic.
@@ -67,13 +67,13 @@ fn steady_state_bench(c: &mut Criterion) {
         .and_then(|s| s.parse().ok())
         .unwrap_or(200_000usize);
 
-    let topology = build_topology_for::<SteadyDynOperative>().expect("topology");
-    let registry = Arc::new(OperativeRegistry::new());
-    registry.register(OperativeInstance::new(
+    let topology = build_topology_for::<SteadyDynOperator>().expect("topology");
+    let registry = Arc::new(OperatorRegistry::new());
+    registry.register(OperatorInstance::new(
         Arc::clone(&topology),
         Arc::from("steady-dyn-0"),
     ));
-    let handle = bi::OperativeDispatchHandle {
+    let handle = bi::OperatorDispatchHandle {
         registry: Arc::clone(&registry),
     };
     let stream = stream_pair().0;

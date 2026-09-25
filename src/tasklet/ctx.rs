@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use flz_core::operative::instance::{fnv1a128, FNV128_OFFSET_BASIS};
+use flz_core::operator::instance::{fnv1a128, FNV128_OFFSET_BASIS};
 
 use crate::cell::timer::{TimerKind, TimerSession};
 use crate::tasklet::error::TaskletError;
@@ -19,7 +19,7 @@ pub const RESERVED_METADATA_PREFIX: &str = "flz.";
 /// per-cell routing tables. Not Send/Sync — lives only across one
 /// `Tasklet::run` call.
 ///
-/// The dispatcher stamps `output_channel_id` (cached at operative-build time)
+/// The dispatcher stamps `output_channel_id` (cached at operator-build time)
 /// so emit incurs zero channel-name lookups on the hot path. It also
 /// evaluates the Tasklet's declared `Clock` once at dispatch entry —
 /// [`Self::now`] serves that single value for the whole invocation — and
@@ -47,7 +47,7 @@ pub struct TaskletCtx<'a> {
 /// `cell identity ‖ change seq ‖ per-invocation call ordinal` — the
 /// algorithm is fixed by spec, independent of any library version.
 /// `Display` renders 32 lowercase hex chars. The drop-in replacement for
-/// `Uuid::new_v4()` in operative code.
+/// `Uuid::new_v4()` in operator code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct StableId(pub u128);
 
@@ -70,7 +70,7 @@ impl StableId {
 /// non-generic while the underlying dispatcher carries the typed wiring.
 pub(crate) trait EmitSink {
     /// Emit one value on this Tasklet's output channel. Where it goes —
-    /// consumer mailboxes, the plugin wire, a workflow stage handoff, or
+    /// consumer mailboxes, the plugin wire, a bounded stage handoff, or
     /// several of those — is the channel's shape, resolved inside the
     /// implementation. `meta` and `key` arrive already validated by
     /// [`TaskletCtx::route`].
@@ -100,10 +100,10 @@ pub(crate) trait EmitSink {
         false
     }
 
-    /// Ask to end the instance with `result`; only a workflow stage can.
+    /// Ask to end the instance with `result`; only a bounded stage can.
     fn complete(&mut self, _result: Vec<u8>) -> Result<(), TaskletError> {
         Err(TaskletError::non_retryable(
-            flz_core::workflow::COMPLETE_OUTSIDE_WORKFLOW,
+            flz_core::bounded::COMPLETE_OUTSIDE_BOUNDED,
         ))
     }
 }
@@ -146,18 +146,18 @@ impl<'a> TaskletCtx<'a> {
 
     /// Mark the invocation as a replay of already-processed input. Set by the
     /// dispatcher from the cell payload; it is what makes
-    /// [`Self::spawn_workflow`] a live-processing-only side effect.
+    /// [`Self::spawn_bounded`] a live-processing-only side effect.
     pub(crate) fn during_replay(mut self, replay: bool) -> Self {
         self.replay = replay;
         self
     }
 
-    /// End this workflow instance with `result` once the current iteration
+    /// End this bounded instance with `result` once the current iteration
     /// commits. The rest of the iteration still runs; the instance then
     /// completes instead of waiting for its next input. A later call in the
-    /// same invocation replaces the result. A stream operative never
+    /// same invocation replaces the result. An unbounded operator never
     /// completes, so there the call fails the input naming
-    /// `CompleteOutsideWorkflow`.
+    /// `CompleteOutsideBounded`.
     pub fn complete(&mut self, result: impl Into<Vec<u8>>) -> Result<(), TaskletError> {
         self.emitter.complete(result.into())
     }
@@ -166,10 +166,10 @@ impl<'a> TaskletCtx<'a> {
     /// last checkpoint — this one included — is acknowledged, and the state
     /// they accumulated is made durable, as one atomic record.
     ///
-    /// Only meaningful under `ChannelBuilder::checkpoint_ack()`. An operative
+    /// Only meaningful under `ChannelBuilder::checkpoint_ack()`. An operator
     /// on the default per-input granularity already acknowledges every input,
     /// so the call is a no-op there rather than an error — a checkpointing
-    /// Tasklet stays correct if its operative later drops the declaration.
+    /// Tasklet stays correct if its operator later drops the declaration.
     ///
     /// Call it where the accumulated state is genuinely coherent (a closed
     /// window, a completed batch): the interval you leave open is the work a
@@ -213,7 +213,7 @@ impl<'a> TaskletCtx<'a> {
         StableId::derive(self.cell_identity, self.invocation_seq, ordinal)
     }
 
-    /// Ask the controller for a new workflow instance of `factory_id`, under an
+    /// Ask the controller for a new bounded instance of `factory_id`, under an
     /// id it generates. `payload` is the instance's first input. The handle
     /// resolves to [`SpawnResult`](crate::tasklet::SpawnResult), whose `id` is
     /// the generated one.
@@ -222,7 +222,7 @@ impl<'a> TaskletCtx<'a> {
     /// into a running one. Reissuing it after a lost or timed-out answer starts
     /// a second instance, and a replay of it answers an empty id, because the
     /// generated id exists only in the live run's answer. A caller who needs at
-    /// most one instance, or the id on replay, uses [`Self::spawn_workflow_with`].
+    /// most one instance, or the id on replay, uses [`Self::spawn_bounded_with`].
     ///
     /// Returns immediately. The request cannot fault this tasklet: a refusal,
     /// an unreachable controller, or an unknown factory surfaces only through
@@ -238,7 +238,7 @@ impl<'a> TaskletCtx<'a> {
     /// The timer calls on this same context behave the OPPOSITE way and
     /// deliberately so: a timer is internal state, so a replay registers it,
     /// where skipping would rebuild a pending set the live run never had.
-    pub fn spawn_workflow(
+    pub fn spawn_bounded(
         &self,
         factory_id: impl Into<String>,
         payload: impl Into<Vec<u8>>,
@@ -246,7 +246,7 @@ impl<'a> TaskletCtx<'a> {
         flz_core::spawn::request(factory_id.into(), payload.into(), None, self.replay)
     }
 
-    /// [`Self::spawn_workflow`] under the id `options` names: start
+    /// [`Self::spawn_bounded`] under the id `options` names: start
     /// `factory_id` under that id if it is free, otherwise apply its
     /// [`IfRunning`](crate::tasklet::IfRunning) (`Deliver`, the default, feeds
     /// the running instance; `Error` reports
@@ -254,7 +254,7 @@ impl<'a> TaskletCtx<'a> {
     /// Concurrent requests for one id race-resolve controller-side: exactly one
     /// spawns and every other payload is delivered to it. A replay answers the
     /// id it was given.
-    pub fn spawn_workflow_with(
+    pub fn spawn_bounded_with(
         &self,
         factory_id: impl Into<String>,
         payload: impl Into<Vec<u8>>,
@@ -295,7 +295,7 @@ impl<'a> TaskletCtx<'a> {
     /// The anchor is `ctx.now()` — the declared Clock — not an ambient read,
     /// which is what makes a replayed invocation register the same absolute
     /// timestamp the live one did. Under an `EventTimeFrom` clock the anchor is
-    /// therefore the input's event time; a stream that is caught up schedules
+    /// therefore the input's event time; an unbounded operator that is caught up schedules
     /// the same instant a wall clock would, and one replaying history schedules
     /// a past instant, which fires at once.
     pub fn timer_after(&self, delay: Duration) -> Result<u64, TaskletError> {
@@ -326,7 +326,7 @@ impl<'a> TaskletCtx<'a> {
 
     /// Emit a typed value on the producer-edge channel for this Tasklet.
     /// `C` must match `Tasklet::Output`; the channel id was cached at
-    /// operative-build time from the producer's output-stream wiring
+    /// operator-build time from the producer's output-stream wiring
     /// (`.into::<S>()`), so this call performs no name lookups.
     ///
     /// On a `.keyed()` channel the emit carries this Cell's own key

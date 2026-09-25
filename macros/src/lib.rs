@@ -3,14 +3,14 @@
 //! - `#[flezha::tasklet]` — attribute macro on a `run` function; infers the six
 //!   `Tasklet` associated types from the signature and generates the impl and
 //!   the PascalCase tasklet type.
-//! - `#[flezha::stream_operative]` / `#[flezha::workflow_operative]`: the §5
-//!   short form on a `run` function, emitting the operative type under the
+//! - `#[flezha::unbounded_operator]` / `#[flezha::bounded_operator]`: the §5
+//!   short form on a `run` function, emitting the operator type under the
 //!   author's PascalCase name, which the author registers with
 //!   `runner.register_factory(Name)`, and the tasklet type beside it, suffixed
 //!   `Tasklet`.
 //! - `#[derive(flezha::State)]` — generates a field-granular `Change` enum +
 //!   `apply_change` + journaling mutators on the state handle.
-//! - `flezha::operative!` — declarative macro lowering a strictly linear pipeline
+//! - `flezha::operator!` — declarative macro lowering a strictly linear pipeline
 //!   to a `channels()` body on the type it declares, which the author
 //!   registers with `runner.register_factory(Name)`.
 //!
@@ -19,7 +19,7 @@
 
 use proc_macro::TokenStream;
 
-mod operative;
+mod operator;
 mod state;
 mod tasklet;
 mod util;
@@ -32,16 +32,16 @@ pub fn tasklet(attr: TokenStream, item: TokenStream) -> TokenStream {
     on_run_fn(Declares::Tasklet, attr, item)
 }
 
-/// `#[flezha::stream_operative(...)]` short-form attribute. See module docs.
+/// `#[flezha::unbounded_operator(...)]` short-form attribute. See module docs.
 #[proc_macro_attribute]
-pub fn stream_operative(attr: TokenStream, item: TokenStream) -> TokenStream {
-    on_run_fn(Declares::Operative(operative::Kind::Stream), attr, item)
+pub fn unbounded_operator(attr: TokenStream, item: TokenStream) -> TokenStream {
+    on_run_fn(Declares::Operator(operator::Kind::Unbounded), attr, item)
 }
 
-/// `#[flezha::workflow_operative(...)]` short-form attribute. See module docs.
+/// `#[flezha::bounded_operator(...)]` short-form attribute. See module docs.
 #[proc_macro_attribute]
-pub fn workflow_operative(attr: TokenStream, item: TokenStream) -> TokenStream {
-    on_run_fn(Declares::Operative(operative::Kind::Workflow), attr, item)
+pub fn bounded_operator(attr: TokenStream, item: TokenStream) -> TokenStream {
+    on_run_fn(Declares::Operator(operator::Kind::Bounded), attr, item)
 }
 
 /// The three attributes on a `run` function share one expansion.
@@ -59,10 +59,10 @@ pub fn derive_state(item: TokenStream) -> TokenStream {
         .into()
 }
 
-/// `flezha::operative! { id: "...", pipeline: ... }` declarative macro.
+/// `flezha::operator! { id: "...", pipeline: ... }` declarative macro.
 #[proc_macro]
-pub fn operative(item: TokenStream) -> TokenStream {
-    operative::expand(item.into())
+pub fn operator(item: TokenStream) -> TokenStream {
+    operator::expand(item.into())
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
 }

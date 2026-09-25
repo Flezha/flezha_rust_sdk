@@ -221,7 +221,7 @@ mod tests {
             ts: 0,
             value: 42,
         };
-        let identity = encode_cell_identity("MarketOperative", "OhlcTasklet", "M1");
+        let identity = encode_cell_identity("MarketOperator", "OhlcTasklet", "M1");
         let frame = build_cell_state_change_frame::<TestChange>(&identity, 99, &template, &change);
 
         let body_bytes = postcard::to_allocvec(&change).unwrap();
@@ -431,13 +431,13 @@ mod tests {
 
     #[test]
     fn encode_cell_identity_round_trips_three_fields() {
-        let id = encode_cell_identity("MarketOperative", "OhlcTasklet", "M1");
-        // [oc_len:u8 = 15][oc][task_len:u8 = 11][task][sk_len:u16 BE = 2][sk]
-        assert_eq!(id[0], 15);
-        assert_eq!(&id[1..16], b"MarketOperative");
-        assert_eq!(id[16], 11);
-        assert_eq!(&id[17..28], b"OhlcTasklet");
-        assert_eq!(&id[28..30], &2u16.to_be_bytes());
-        assert_eq!(&id[30..32], b"M1");
+        let id = encode_cell_identity("MarketOperator", "OhlcTasklet", "M1");
+        // [oc_len:u8 = 14][oc][task_len:u8 = 11][task][sk_len:u16 BE = 2][sk]
+        assert_eq!(id[0], 14);
+        assert_eq!(&id[1..15], b"MarketOperator");
+        assert_eq!(id[15], 11);
+        assert_eq!(&id[16..27], b"OhlcTasklet");
+        assert_eq!(&id[27..29], &2u16.to_be_bytes());
+        assert_eq!(&id[29..31], b"M1");
     }
 }

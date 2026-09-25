@@ -2,7 +2,7 @@
 //! every item, DropNewest and DropOldest each shed their own end, and every
 //! outcome is counted.
 
-use flezha_runner::{OverflowPolicy, StreamOperative};
+use flezha_runner::{OverflowPolicy, UnboundedOperator};
 
 mod common;
 use common::prelude::*;
@@ -33,10 +33,10 @@ test_tasklet!(DropNothingStressTasklet, "drop_nothing_stress_tasklet", Vec<u8> =
     Ok(())
 });
 
-struct DropNothingStressOperative;
-impl StreamOperative for DropNothingStressOperative {
+struct DropNothingStressOperator;
+impl UnboundedOperator for DropNothingStressOperator {
     fn factory_id() -> &'static str {
-        "drop_nothing_stress_operative"
+        "drop_nothing_stress_operator"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<Vec<u8>>("input")
@@ -54,7 +54,7 @@ impl StreamOperative for DropNothingStressOperative {
 #[test]
 fn drop_nothing_stress_100_producers_no_loss() {
     DROP_NOTHING_STRESS_RECEIVED.store(0, Ordering::Release);
-    let (handle, instance) = setup::<DropNothingStressOperative>("block-stress-instance");
+    let (handle, instance) = setup::<DropNothingStressOperator>("block-stress-instance");
     let stream = dummy_stream();
 
     let producers = 100usize;
@@ -116,10 +116,10 @@ test_tasklet!(DropNewestTasklet, "drop_newest_tasklet", Vec<u8> => (), (), cap 2
     Ok(())
 });
 
-struct DropNewestOperative;
-impl StreamOperative for DropNewestOperative {
+struct DropNewestOperator;
+impl UnboundedOperator for DropNewestOperator {
     fn factory_id() -> &'static str {
-        "drop_newest_operative"
+        "drop_newest_operator"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<Vec<u8>>("input")
@@ -138,7 +138,7 @@ fn drop_newest_discards_when_full_and_only_bumps_newest_counter() {
     let _serial = serial_drops();
     DROP_NEWEST_RECEIVED.store(0, Ordering::Release);
     let drops_newest_before = flezha_runner::cell::drops_newest_total();
-    let (handle, instance) = setup::<DropNewestOperative>("drop-newest-instance");
+    let (handle, instance) = setup::<DropNewestOperator>("drop-newest-instance");
     let slot = Arc::clone(&instance.cells[0][0]);
 
     // Pre-acquire inflight: subsequent enqueue paths skip submit_drain
@@ -204,10 +204,10 @@ test_tasklet!(DropOldestTasklet, "drop_oldest_tasklet", Vec<u8> => (), (), cap 2
     Ok(())
 });
 
-struct DropOldestOperative;
-impl StreamOperative for DropOldestOperative {
+struct DropOldestOperator;
+impl UnboundedOperator for DropOldestOperator {
     fn factory_id() -> &'static str {
-        "drop_oldest_operative"
+        "drop_oldest_operator"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<Vec<u8>>("input")
@@ -224,7 +224,7 @@ fn drop_oldest_evicts_head_and_bumps_oldest_counter() {
     let _serial = serial_drops();
     DROP_OLDEST_OBSERVED.lock().unwrap().clear();
     let drops_oldest_before = flezha_runner::cell::drops_oldest_total();
-    let (handle, instance) = setup::<DropOldestOperative>("drop-oldest-instance");
+    let (handle, instance) = setup::<DropOldestOperator>("drop-oldest-instance");
     let slot = Arc::clone(&instance.cells[0][0]);
 
     // Pre-acquire inflight so no drain runs during the deterministic
@@ -274,7 +274,7 @@ fn drop_oldest_evicts_head_and_bumps_oldest_counter() {
     assert_eq!(surviving, vec![b"new1".to_vec(), b"new2".to_vec()]);
 }
 
-/// Spec (`operative-tasklet-cell-model`) "A replay slice is never shed": a
+/// Spec (`operator-tasklet-cell-model`) "A replay slice is never shed": a
 /// correction's answer may not depend on arrival timing, so a slice member
 /// takes the `DropNothing` path whatever the channel declared. A dropped
 /// member would leave `replay_open` set and `replay_depth` short, the slice
@@ -284,7 +284,7 @@ fn drop_oldest_evicts_head_and_bumps_oldest_counter() {
 fn a_replay_slice_member_is_never_shed_by_a_dropping_channel() {
     let _serial = serial_drops();
     DROP_NEWEST_RECEIVED.store(0, Ordering::Release);
-    let (handle, instance) = setup::<DropNewestOperative>("drop-newest-replay-instance");
+    let (handle, instance) = setup::<DropNewestOperator>("drop-newest-replay-instance");
     let slot = Arc::clone(&instance.cells[0][0]);
     assert!(slot.mailbox.claim_inflight());
 
@@ -344,7 +344,7 @@ fn a_replay_slice_member_is_never_shed_by_a_dropping_channel() {
 /// exposes a counters() accessor with all four atomics at 0.
 #[test]
 fn fresh_cell_counters_start_at_zero() {
-    let (_handle, instance) = setup::<DropOldestOperative>("counters-fresh-instance");
+    let (_handle, instance) = setup::<DropOldestOperator>("counters-fresh-instance");
     let counters = instance.cells[0][0].counters();
     assert_eq!(counters.pushes_total.load(Ordering::Relaxed), 0);
     assert_eq!(counters.pushes_blocked_total.load(Ordering::Relaxed), 0);
@@ -364,10 +364,10 @@ test_tasklet!(DropOldestStressTasklet, "drop_oldest_stress_tasklet", Vec<u8> => 
     Ok(())
 });
 
-struct DropOldestStressOperative;
-impl StreamOperative for DropOldestStressOperative {
+struct DropOldestStressOperator;
+impl UnboundedOperator for DropOldestStressOperator {
     fn factory_id() -> &'static str {
-        "drop_oldest_stress_operative"
+        "drop_oldest_stress_operator"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<Vec<u8>>("input")
@@ -397,7 +397,7 @@ fn drop_oldest_stress_admitted_never_below_processed() {
     for round in 1..=4 {
         DROP_OLDEST_PROCESSED.store(0, Ordering::Release);
         let id = format!("drop-oldest-stress-{round}");
-        let (handle, instance) = setup::<DropOldestStressOperative>(&id);
+        let (handle, instance) = setup::<DropOldestStressOperator>(&id);
         let stream = dummy_stream();
 
         let mut threads = Vec::new();
@@ -495,10 +495,10 @@ test_tasklet!(InterTaskletConsumer, "inter_tasklet_consumer", String => (), (), 
     Ok(())
 });
 
-struct InterTaskletDefaultBlockOperative;
-impl StreamOperative for InterTaskletDefaultBlockOperative {
+struct InterTaskletDefaultBlockOperator;
+impl UnboundedOperator for InterTaskletDefaultBlockOperator {
     fn factory_id() -> &'static str {
-        "inter_tasklet_default_block_operative"
+        "inter_tasklet_default_block_operator"
     }
     fn channels(c: &ChannelBuilder) {
         // No `.on_full(...)` — exercises the default `Block` for inter-tasklet.
@@ -509,17 +509,17 @@ impl StreamOperative for InterTaskletDefaultBlockOperative {
     }
 }
 
-// ----- Sticky ordering preserved under workflow Block (WorkflowOperative 8.3) -----
+// ----- Sticky ordering preserved under bounded operator Block (BoundedOperator 8.3) -----
 
-static STICKY_WORKFLOW_CONCURRENT: AtomicUsize = AtomicUsize::new(0);
-static STICKY_WORKFLOW_MAX_CONCURRENT: AtomicUsize = AtomicUsize::new(0);
-static STICKY_WORKFLOW_DELIVERED: AtomicUsize = AtomicUsize::new(0);
+static STICKY_BOUNDED_CONCURRENT: AtomicUsize = AtomicUsize::new(0);
+static STICKY_BOUNDED_MAX_CONCURRENT: AtomicUsize = AtomicUsize::new(0);
+static STICKY_BOUNDED_DELIVERED: AtomicUsize = AtomicUsize::new(0);
 
-test_tasklet!(StickyWorkflowTasklet, "sticky_workflow_tasklet", Vec<u8> => (), (), cap 16, |_input, _state, _ctx| {
-    let cur = STICKY_WORKFLOW_CONCURRENT.fetch_add(1, Ordering::AcqRel) + 1;
-    let mut prev = STICKY_WORKFLOW_MAX_CONCURRENT.load(Ordering::Acquire);
+test_tasklet!(StickyBoundedTasklet, "sticky_bounded_tasklet", Vec<u8> => (), (), cap 16, |_input, _state, _ctx| {
+    let cur = STICKY_BOUNDED_CONCURRENT.fetch_add(1, Ordering::AcqRel) + 1;
+    let mut prev = STICKY_BOUNDED_MAX_CONCURRENT.load(Ordering::Acquire);
     while cur > prev {
-        match STICKY_WORKFLOW_MAX_CONCURRENT.compare_exchange_weak(
+        match STICKY_BOUNDED_MAX_CONCURRENT.compare_exchange_weak(
             prev,
             cur,
             Ordering::AcqRel,
@@ -532,20 +532,20 @@ test_tasklet!(StickyWorkflowTasklet, "sticky_workflow_tasklet", Vec<u8> => (), (
     for _ in 0..32 {
         std::hint::spin_loop();
     }
-    STICKY_WORKFLOW_CONCURRENT.fetch_sub(1, Ordering::AcqRel);
-    STICKY_WORKFLOW_DELIVERED.fetch_add(1, Ordering::Relaxed);
+    STICKY_BOUNDED_CONCURRENT.fetch_sub(1, Ordering::AcqRel);
+    STICKY_BOUNDED_DELIVERED.fetch_add(1, Ordering::Relaxed);
     Ok(())
 });
 
-struct StickyWorkflowOperative;
-impl StreamOperative for StickyWorkflowOperative {
+struct StickyBoundedOperator;
+impl UnboundedOperator for StickyBoundedOperator {
     fn factory_id() -> &'static str {
-        "sticky_workflow_operative"
+        "sticky_bounded_operator"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<Vec<u8>>("input")
             .on_full(OverflowPolicy::DropNothing)
-            .into::<StickyWorkflowTasklet>();
+            .into::<StickyBoundedTasklet>();
     }
 }
 
@@ -556,11 +556,11 @@ impl StreamOperative for StickyWorkflowOperative {
 /// parked at the entry edge.
 #[test]
 fn sticky_ordering_holds_under_drop_nothing_entry() {
-    STICKY_WORKFLOW_CONCURRENT.store(0, Ordering::Release);
-    STICKY_WORKFLOW_MAX_CONCURRENT.store(0, Ordering::Release);
-    STICKY_WORKFLOW_DELIVERED.store(0, Ordering::Release);
+    STICKY_BOUNDED_CONCURRENT.store(0, Ordering::Release);
+    STICKY_BOUNDED_MAX_CONCURRENT.store(0, Ordering::Release);
+    STICKY_BOUNDED_DELIVERED.store(0, Ordering::Release);
 
-    let (handle, instance) = setup::<StickyWorkflowOperative>("sticky-workflow-instance");
+    let (handle, instance) = setup::<StickyBoundedOperator>("sticky-bounded-instance");
     let stream = dummy_stream();
 
     let producers = 4usize;
@@ -576,7 +576,7 @@ fn sticky_ordering_holds_under_drop_nothing_entry() {
                 let mut md = HashMap::new();
                 md.insert("channel".to_string(), "input".to_string());
                 handle.dispatch(
-                    "sticky-workflow-instance",
+                    "sticky-bounded-instance",
                     format!("{tid}-{i}").into_bytes(),
                     &md,
                     Arc::clone(&stream),
@@ -589,12 +589,12 @@ fn sticky_ordering_holds_under_drop_nothing_entry() {
     }
 
     assert!(wait_until(
-        || STICKY_WORKFLOW_DELIVERED.load(Ordering::Acquire) == total,
+        || STICKY_BOUNDED_DELIVERED.load(Ordering::Acquire) == total,
         Duration::from_secs(60)
     ));
 
     assert_eq!(
-        STICKY_WORKFLOW_MAX_CONCURRENT.load(Ordering::Acquire),
+        STICKY_BOUNDED_MAX_CONCURRENT.load(Ordering::Acquire),
         1,
         "bounded-mailbox single-cell allowed concurrent dispatch"
     );
@@ -617,7 +617,7 @@ fn sticky_ordering_holds_under_drop_nothing_entry() {
 fn default_inter_tasklet_policy_is_block_and_pushes_total_increments() {
     INTER_TASKLET_DOWNSTREAM.store(0, Ordering::Release);
     let (handle, instance) =
-        setup::<InterTaskletDefaultBlockOperative>("inter-tasklet-default-instance");
+        setup::<InterTaskletDefaultBlockOperator>("inter-tasklet-default-instance");
     let stream = dummy_stream();
 
     let n = 200usize;

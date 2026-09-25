@@ -27,7 +27,7 @@ type ChannelShape = (
 
 /// Flatten a frozen topology to a comparable shape: channels as
 /// `(name, kind, producer, consumers)` plus the tasklet identity list.
-fn topo_shape(t: &flezha_runner::operative::OperativeTopology) -> (Vec<ChannelShape>, Vec<String>) {
+fn topo_shape(t: &flezha_runner::operator::OperatorTopology) -> (Vec<ChannelShape>, Vec<String>) {
     (
         t.channels
             .iter()
@@ -49,7 +49,7 @@ fn topo_shape(t: &flezha_runner::operative::OperativeTopology) -> (Vec<ChannelSh
 #[test]
 fn branch_builds_the_identical_topology() {
     struct ByHandles;
-    impl StreamOperative for ByHandles {
+    impl UnboundedOperator for ByHandles {
         fn factory_id() -> &'static str {
             "graph_by_handles"
         }
@@ -60,7 +60,7 @@ fn branch_builds_the_identical_topology() {
         }
     }
     struct ByBranch;
-    impl StreamOperative for ByBranch {
+    impl UnboundedOperator for ByBranch {
         fn factory_id() -> &'static str {
             "graph_by_branch"
         }
@@ -83,7 +83,7 @@ fn branch_builds_the_identical_topology() {
 #[test]
 fn branch_with_fewer_than_two_arms_is_refused() {
     struct OneArm;
-    impl StreamOperative for OneArm {
+    impl UnboundedOperator for OneArm {
         fn factory_id() -> &'static str {
             "graph_one_arm"
         }
@@ -109,7 +109,7 @@ fn branch_with_fewer_than_two_arms_is_refused() {
 #[test]
 fn named_nodes_reuse_one_class_at_two_positions() {
     struct TwoFilters;
-    impl StreamOperative for TwoFilters {
+    impl UnboundedOperator for TwoFilters {
         fn factory_id() -> &'static str {
             "graph_two_filters"
         }
@@ -142,7 +142,7 @@ fn named_nodes_reuse_one_class_at_two_positions() {
 #[test]
 fn unnamed_mentions_unify_into_a_fan_in() {
     struct FanInGraph;
-    impl StreamOperative for FanInGraph {
+    impl UnboundedOperator for FanInGraph {
         fn factory_id() -> &'static str {
             "graph_fan_in"
         }
@@ -165,7 +165,7 @@ fn unnamed_mentions_unify_into_a_fan_in() {
 #[test]
 fn node_identity_collision_is_refused() {
     struct Colliding;
-    impl StreamOperative for Colliding {
+    impl UnboundedOperator for Colliding {
         fn factory_id() -> &'static str {
             "graph_identity_collision"
         }
@@ -193,7 +193,7 @@ fn node_identity_collision_is_refused() {
 #[test]
 fn channel_names_derive_from_the_producer_identity() {
     struct Derived;
-    impl StreamOperative for Derived {
+    impl UnboundedOperator for Derived {
         fn factory_id() -> &'static str {
             "graph_derived_names"
         }
@@ -216,7 +216,7 @@ fn channel_names_derive_from_the_producer_identity() {
     );
 
     struct NameClash;
-    impl StreamOperative for NameClash {
+    impl UnboundedOperator for NameClash {
         fn factory_id() -> &'static str {
             "graph_name_clash"
         }
@@ -241,7 +241,7 @@ fn channel_names_derive_from_the_producer_identity() {
 #[test]
 fn a_cycle_is_refused() {
     struct Cyclic;
-    impl StreamOperative for Cyclic {
+    impl UnboundedOperator for Cyclic {
         fn factory_id() -> &'static str {
             "graph_cyclic"
         }
@@ -264,12 +264,12 @@ fn a_cycle_is_refused() {
 
 #[test]
 fn multiple_entry_channels_build() {
-    // A single operative may declare several entry channels — one per external
+    // A single operator may declare several entry channels — one per external
     // source (e.g. a market pipeline reading a trade feed and an order-book
     // feed on distinct channels). The controller routes each frame to its
     // entry by `metadata["channel"]`. Both entries and their subgraphs resolve.
     struct TwoEntries;
-    impl StreamOperative for TwoEntries {
+    impl UnboundedOperator for TwoEntries {
         fn factory_id() -> &'static str {
             "graph_two_entries"
         }
@@ -308,7 +308,7 @@ test_tasklet!(OrderConsumer, "order_consumer", OrderEvent => String, (), |_input
 #[test]
 fn typed_entry_decodes_json_at_the_edge() {
     struct TypedEntry;
-    impl StreamOperative for TypedEntry {
+    impl UnboundedOperator for TypedEntry {
         fn factory_id() -> &'static str {
             "graph_typed_entry"
         }
@@ -340,7 +340,7 @@ fn typed_entry_decodes_json_at_the_edge() {
 #[test]
 fn a_custom_parser_replaces_the_default_json() {
     struct CustomEntry;
-    impl StreamOperative for CustomEntry {
+    impl UnboundedOperator for CustomEntry {
         fn factory_id() -> &'static str {
             "graph_custom_entry"
         }
@@ -371,7 +371,7 @@ fn a_custom_parser_replaces_the_default_json() {
 /// the drop-and-log path, not the DLQ ladder).
 #[test]
 fn bytes_and_string_entries_stay_passthrough() {
-    let t = build_topology_for::<SingleOperative>().expect("string entry builds");
+    let t = build_topology_for::<SingleOperator>().expect("string entry builds");
     let entry = &t.channels[0];
     assert!(!entry.entry_parsed, "String is not a parser");
     let wrap = entry.wrap_input.as_ref().unwrap();
@@ -383,7 +383,7 @@ fn bytes_and_string_entries_stay_passthrough() {
         Ok(())
     });
     struct BytesEntry;
-    impl StreamOperative for BytesEntry {
+    impl UnboundedOperator for BytesEntry {
         fn factory_id() -> &'static str {
             "graph_bytes_entry"
         }
@@ -403,20 +403,20 @@ fn bytes_and_string_entries_stay_passthrough() {
 
 /// A topology's channel names in declaration order; the entry channel is
 /// first, so a shorthand's whole naming answer is one vector.
-fn channel_names(t: &flezha_runner::operative::OperativeTopology) -> Vec<String> {
+fn channel_names(t: &flezha_runner::operator::OperatorTopology) -> Vec<String> {
     t.channels.iter().map(|c| c.name.to_string()).collect()
 }
 
 /// The short form: `sink = "..."` is the only naming call the author writes,
 /// and it is the channel's name.
-#[flezha_runner::stream_operative(id = "generated_naming", sink = "items_output")]
+#[flezha_runner::unbounded_operator(id = "generated_naming", sink = "items_output")]
 fn generated_naming(input: String) -> Option<String> {
     Some(input)
 }
 
-/// The same operative spelled by hand, around the short form's own tasklet.
+/// The same operator spelled by hand, around the short form's own tasklet.
 struct HandWrittenNaming;
-impl StreamOperative for HandWrittenNaming {
+impl UnboundedOperator for HandWrittenNaming {
     fn factory_id() -> &'static str {
         "hand_written_naming"
     }
@@ -428,7 +428,7 @@ impl StreamOperative for HandWrittenNaming {
 }
 
 /// fails when: the generator and a hand-written declaration disagree about a
-/// channel's name again — the disagreement that made a sugared operative ship
+/// channel's name again — the disagreement that made a sugared operator ship
 /// frames under one name and a hand-written one under another.
 #[test]
 fn the_generated_and_hand_written_spellings_name_one_channel() {
@@ -444,25 +444,25 @@ fn the_generated_and_hand_written_spellings_name_one_channel() {
 struct Roles<T>(std::marker::PhantomData<T>);
 trait NoRole {
     const TASKLET: bool = false;
-    const STREAM: bool = false;
+    const OPERATOR: bool = false;
 }
 impl<T> NoRole for Roles<T> {}
 impl<T: flezha_runner::Tasklet> Roles<T> {
     const TASKLET: bool = true;
 }
-impl<T: StreamOperative> Roles<T> {
-    const STREAM: bool = true;
+impl<T: UnboundedOperator> Roles<T> {
+    const OPERATOR: bool = true;
 }
 
 /// fails when: the short form makes one type play both roles again, so the
 /// name the author registers is also a tasklet.
 #[test]
-fn a_short_form_is_an_operative_beside_its_tasklet() {
+fn a_short_form_is_an_operator_beside_its_tasklet() {
     const {
-        assert!(<Roles<GeneratedNaming>>::STREAM);
+        assert!(<Roles<GeneratedNaming>>::OPERATOR);
         assert!(!<Roles<GeneratedNaming>>::TASKLET);
         assert!(<Roles<GeneratedNamingTasklet>>::TASKLET);
-        assert!(!<Roles<GeneratedNamingTasklet>>::STREAM);
+        assert!(!<Roles<GeneratedNamingTasklet>>::OPERATOR);
     }
     // The tasklet is named after the factory id, so ejecting to the full
     // form keeps every cell's state path.
@@ -473,7 +473,7 @@ fn a_short_form_is_an_operative_beside_its_tasklet() {
 }
 
 /// The short form's entry channel carries the overflow policy it declares.
-#[flezha_runner::stream_operative(id = "shedding_entry", sink = "shed_items", on_full = drop_oldest)]
+#[flezha_runner::unbounded_operator(id = "shedding_entry", sink = "shed_items", on_full = drop_oldest)]
 fn shedding_entry(input: String) -> Vec<u8> {
     input.into_bytes()
 }
@@ -499,14 +499,14 @@ struct CounterState {
 }
 
 /// A short form that only keeps state: no `sink`, so no plugin channel.
-#[flezha_runner::stream_operative(id = "sinkless_counter", input = "ticks")]
+#[flezha_runner::unbounded_operator(id = "sinkless_counter", input = "ticks")]
 fn sinkless_counter(input: String, state: &mut CounterState) {
     state.push_seen(input);
 }
 
-/// The same operative spelled by hand: a channel ending at a tasklet.
+/// The same operator spelled by hand: a channel ending at a tasklet.
 struct HandWrittenCounter;
-impl StreamOperative for HandWrittenCounter {
+impl UnboundedOperator for HandWrittenCounter {
     fn factory_id() -> &'static str {
         "hand_written_counter"
     }
@@ -530,13 +530,13 @@ fn a_short_form_with_no_sink_declares_only_its_entry_channel() {
     let runner = Flezha::create_runner("ns_sinkless_short_form").expect("create");
     runner
         .register_factory(SinklessCounter)
-        .expect("a stream short form registers through the one method");
+        .expect("an unbounded short form registers through the one method");
 }
 
 // ---- the shorthand's entry channel takes the name the author writes ------
 
 /// The attribute shorthand, naming its entry channel.
-#[flezha_runner::stream_operative(
+#[flezha_runner::unbounded_operator(
     id = "named_entry_attribute",
     sink = "attr_items",
     input = "prices"
@@ -546,8 +546,8 @@ fn named_entry_attribute(input: String) -> Vec<u8> {
 }
 
 /// The attribute shorthand with no name written: the entry channel keeps the
-/// default address every existing operative already ships under.
-#[flezha_runner::stream_operative(id = "default_entry_attribute", sink = "default_items")]
+/// default address every existing operator already ships under.
+#[flezha_runner::unbounded_operator(id = "default_entry_attribute", sink = "default_items")]
 fn default_entry_attribute(input: String) -> Vec<u8> {
     input.into_bytes()
 }
@@ -557,20 +557,20 @@ fn pipeline_hop(input: String) -> Vec<u8> {
     input.into_bytes()
 }
 
-flezha_runner::operative! {
+flezha_runner::operator! {
     pub struct NamedEntryPipeline;
     id: "named_entry_pipeline",
     pipeline: input::<String>("quotes") -> PipelineHop -> plugin::<Vec<u8>>("pipeline_items")
 }
 
-flezha_runner::operative! {
+flezha_runner::operator! {
     pub struct DefaultEntryPipeline;
     id: "default_entry_pipeline",
     pipeline: input::<String> -> PipelineHop -> plugin::<Vec<u8>>("pipeline_items")
 }
 
 /// fails when: the shorthand stops honouring the entry channel name the author
-/// wrote, so the address an operator injects on is not the one declared.
+/// wrote, so the address a user injects on is not the one declared.
 #[test]
 fn both_shorthands_name_their_entry_channel() {
     let attr =
@@ -583,7 +583,7 @@ fn both_shorthands_name_their_entry_channel() {
 }
 
 /// fails when: an unnamed shorthand stops naming its entry channel `input` —
-/// the address §6's conformance table and every existing operative ship under.
+/// the address §6's conformance table and every existing operator ship under.
 #[test]
 fn an_unnamed_shorthand_keeps_the_default_entry_channel_name() {
     let attr = build_topology_for::<DefaultEntryAttribute>()
@@ -609,7 +609,7 @@ fn a_frame_reaches_a_shorthand_on_the_channel_it_named() {
 }
 
 /// fails when: an unnamed shorthand stops accepting a frame addressed to
-/// `input` — every operative in the tree is reached that way.
+/// `input` — every operator in the tree is reached that way.
 #[test]
 fn a_frame_reaches_an_unnamed_shorthand_on_input() {
     let (handle, _instance) = setup::<DefaultEntryAttribute>("default-entry");
@@ -627,23 +627,23 @@ fn a_frame_reaches_an_unnamed_shorthand_on_input() {
     assert_eq!(frames[0].message, b"hello");
 }
 
-// ---- the workflow short form -------------------------------------------
+// ---- the bounded short form -------------------------------------------
 
-/// A workflow short form: one declaration is a whole `once` workflow, with
-/// every workflow setting at its default.
-#[flezha_runner::workflow_operative(id = "place_order", sink = "placed", input = "order")]
+/// A bounded short form: one declaration is a whole `once` bounded operator, with
+/// every bounded setting at its default.
+#[flezha_runner::bounded_operator(id = "place_order", sink = "placed", input = "order")]
 fn place_order(order: String) -> String {
     order
 }
 
-/// fails when: the workflow attribute stops producing a workflow operative, or the
+/// fails when: the bounded attribute stops producing a bounded operator, or the
 /// entry and sink names the declaration wrote stop reaching the spec — the
 /// short form would then declare a shape the author never wrote.
 #[test]
-fn a_workflow_short_form_is_a_once_workflow_wiring_its_entry_to_its_sink() {
+fn a_bounded_short_form_is_a_once_bounded_wiring_its_entry_to_its_sink() {
     let class =
-        flezha_runner::workflow::spec::build_spec::<PlaceOrder>().expect("the short form builds");
-    let spec = class.workflow.as_ref().expect("a workflow class");
+        flezha_runner::bounded::spec::build_spec::<PlaceOrder>().expect("the short form builds");
+    let spec = class.bounded.as_ref().expect("a bounded class");
 
     assert_eq!(channel_names(&class), vec!["order", "placed"]);
     assert_eq!(spec.loop_mode, flezha_runner::LoopMode::Once);
@@ -651,8 +651,8 @@ fn a_workflow_short_form_is_a_once_workflow_wiring_its_entry_to_its_sink() {
     assert_eq!(spec.max_duration, None);
 
     // The kind is read from the declaration, never named by the call.
-    let runner = Flezha::create_runner("ns_workflow_short_form").expect("create");
+    let runner = Flezha::create_runner("ns_bounded_short_form").expect("create");
     runner
         .register_factory(PlaceOrder)
-        .expect("a workflow short form registers through the one method");
+        .expect("a bounded short form registers through the one method");
 }

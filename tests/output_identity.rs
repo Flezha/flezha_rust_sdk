@@ -17,7 +17,7 @@ use common::prelude::*;
 #[test]
 fn keyed_channel_emits_carry_identity_stamps() {
     let _serial = WAL_TEST_LOCK.lock().unwrap();
-    let (handle, _instance) = setup::<KeyedStampOperative>("keyed-stamps-instance");
+    let (handle, _instance) = setup::<KeyedStampOperator>("keyed-stamps-instance");
     let (stream, mut observer) = stream_pair();
 
     dispatch_input(
@@ -56,12 +56,12 @@ fn keyed_channel_emits_carry_identity_stamps() {
 /// to `payloader::build_from_binary` with only the `channel` stamp.
 #[test]
 fn non_keyed_frame_is_byte_identical_to_prechange_layout() {
-    // MetaProducerTasklet-free operative: reuse FlushOrderOperative's shape
-    // via a minimal pure-plugin operative.
-    struct PlainPluginOperative;
-    impl StreamOperative for PlainPluginOperative {
+    // MetaProducerTasklet-free operator: reuse FlushOrderOperator's shape
+    // via a minimal pure-plugin operator.
+    struct PlainPluginOperator;
+    impl UnboundedOperator for PlainPluginOperator {
         fn factory_id() -> &'static str {
-            "plain_plugin_operative"
+            "plain_plugin_operator"
         }
         fn channels(c: &ChannelBuilder) {
             c.input::<String>("input")
@@ -70,7 +70,7 @@ fn non_keyed_frame_is_byte_identical_to_prechange_layout() {
         }
     }
 
-    let (handle, _instance) = setup::<PlainPluginOperative>("plain-plugin-instance");
+    let (handle, _instance) = setup::<PlainPluginOperator>("plain-plugin-instance");
     let (stream, mut observer) = stream_pair();
 
     dispatch_input(
@@ -109,7 +109,7 @@ test_tasklet!(PlainPluginTasklet, "plain_plugin_tasklet", String => String, (), 
 fn keyed_stamps_replay_identically_after_crash_restore() {
     let _serial = WAL_TEST_LOCK.lock().unwrap();
     // Original run: two inputs, two changes, two stamped frames.
-    let (handle_a, _instance_a) = setup::<KeyedStampOperative>("restore-stamps-instance");
+    let (handle_a, _instance_a) = setup::<KeyedStampOperator>("restore-stamps-instance");
     let (stream_a, mut observer_a) = stream_pair();
     dispatch_input(
         &handle_a,
@@ -130,7 +130,7 @@ fn keyed_stamps_replay_identically_after_crash_restore() {
     // Crash after "x"'s change (seq 0) became durable; "y" is replayed.
     // Fresh instance, same identity: restore state from the WAL and
     // re-arm change_seq exactly like `RestoreInitState` does.
-    let (handle_b, instance_b) = setup::<KeyedStampOperative>("restore-stamps-instance");
+    let (handle_b, instance_b) = setup::<KeyedStampOperator>("restore-stamps-instance");
     let slot = Arc::clone(&instance_b.cells[0][0]);
     let change_bytes = postcard::to_allocvec(&TickChange).expect("encode change");
     let change_log = wal_record(0, &change_bytes, header_template_for::<KeyedStampTasklet>());

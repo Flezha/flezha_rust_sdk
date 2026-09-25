@@ -31,24 +31,24 @@ fn ui_compile_fail() {
     t.compile_fail("tests/ui/tasklet_init_without_state.rs");
     t.compile_fail("tests/ui/state_on_enum.rs");
     t.compile_fail("tests/ui/state_on_tuple_struct.rs");
-    t.compile_fail("tests/ui/operative_fan_out.rs");
-    t.compile_fail("tests/ui/operative_empty_entry_name.rs");
+    t.compile_fail("tests/ui/operator_fan_out.rs");
+    t.compile_fail("tests/ui/operator_empty_entry_name.rs");
     t.compile_fail("tests/ui/register_factory_of_both_kinds.rs");
-    t.compile_fail("tests/ui/tasklet_operative_keys.rs");
+    t.compile_fail("tests/ui/tasklet_operator_keys.rs");
 
-    // The short-form attributes (`#[flezha::stream_operative]` /
-    // `#[flezha::workflow_operative]`).
-    t.compile_fail("tests/ui/operative_sink_without_output.rs");
-    t.compile_fail("tests/ui/operative_no_id.rs");
-    t.compile_fail("tests/ui/operative_empty_input.rs");
-    t.compile_fail("tests/ui/operative_with_hand_written_impl.rs");
-    t.compile_fail("tests/ui/operative_shared_ref_state.rs");
-    t.compile_fail("tests/ui/operative_unknown_loop_mode.rs");
+    // The short-form attributes (`#[flezha::unbounded_operator]` /
+    // `#[flezha::bounded_operator]`).
+    t.compile_fail("tests/ui/operator_sink_without_output.rs");
+    t.compile_fail("tests/ui/operator_no_id.rs");
+    t.compile_fail("tests/ui/operator_empty_input.rs");
+    t.compile_fail("tests/ui/operator_with_hand_written_impl.rs");
+    t.compile_fail("tests/ui/operator_shared_ref_state.rs");
+    t.compile_fail("tests/ui/operator_unknown_loop_mode.rs");
 
-    // A workflow declares its graph in `channels` and its retry ladder on the
-    // edge, as a stream does.
-    t.compile_fail("tests/ui/workflow_tasklets_body.rs");
-    t.compile_fail("tests/ui/workflow_retry_attempts.rs");
+    // A bounded operator declares its graph in `channels` and its retry ladder on the
+    // edge, as an unbounded operator does.
+    t.compile_fail("tests/ui/bounded_tasklets_body.rs");
+    t.compile_fail("tests/ui/bounded_retry_attempts.rs");
 
     // Keyed/collection journaling (`expressive-state-journaling`).
     t.compile_fail("tests/ui/state_map_without_journal.rs");

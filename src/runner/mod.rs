@@ -1,5 +1,5 @@
 //! Re-export shim: the runner kernel lives in `flz_core`; the typed layer's
-//! poll workers live in `operative::poll_pool`.
+//! poll workers live in `operator::poll_pool`.
 
 pub(crate) use flz_core::poll_core;
 pub(crate) use flz_core::runner::*;

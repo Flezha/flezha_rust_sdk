@@ -1,4 +1,4 @@
-//! Authoring-sugar twins. Each mirrors a hand-written operative to prove the
+//! Authoring-sugar twins. Each mirrors a hand-written operator to prove the
 //! macros expand to the same trait surface and interoperate with raw
 //! tasklets.
 
@@ -6,35 +6,35 @@ use crate::*;
 
 // ---------------------------------------------------------------------------
 // Authoring-sugar twins (`simplify-sdk-authoring`). Each mirrors a
-// hand-written operative above to prove the macros expand to the same trait
+// hand-written operator above to prove the macros expand to the same trait
 // surface and interoperate with raw tasklets. See
 // `docs/sdk/authoring_contract.md`.
 // ---------------------------------------------------------------------------
 
 // Single-tasklet stateless short form, twin of `DoNothingTasklet` /
-// `DoNothingOperative`. One declaration is the whole operative: it generates
-// the operative `SugarDoNothing`, which `main.rs` registers, and the tasklet
+// `DoNothingOperator`. One declaration is the whole operator: it generates
+// the operator `SugarDoNothing`, which `main.rs` registers, and the tasklet
 // `SugarDoNothingTasklet` beside it.
-#[flezha_runner::stream_operative(id = "sugar_do_nothing", sink = "sugar_do_nothing_echo")]
+#[flezha_runner::unbounded_operator(id = "sugar_do_nothing", sink = "sugar_do_nothing_echo")]
 pub(crate) fn sugar_do_nothing(input: String) -> Vec<u8> {
     input.into_bytes()
 }
 
 // Single-tasklet stateful sugar with `#[derive(flezha::State)]`, twin of
-// `StoreInputTasklet` / `StoreInputOperative`.
+// `StoreInputTasklet` / `StoreInputOperator`.
 #[derive(Serialize, Deserialize, Clone, Default, PartialEq, Debug, flezha_runner::State)]
 pub(crate) struct SugarStoreState {
     text_inputs: Vec<String>,
 }
 
-#[flezha_runner::stream_operative(id = "sugar_store_input", sink = "sugar_store_sink")]
+#[flezha_runner::unbounded_operator(id = "sugar_store_input", sink = "sugar_store_sink")]
 pub(crate) fn sugar_store_input(input: String, state: &mut SugarStoreState) -> String {
     state.push_text_inputs(input.clone());
     input
 }
 
 // The short form naming its entry channel: `prices`, not the default `input`.
-#[flezha_runner::stream_operative(
+#[flezha_runner::unbounded_operator(
     id = "sugar_named_input",
     sink = "sugar_named_input_sink",
     input = "prices"
@@ -43,25 +43,25 @@ pub(crate) fn sugar_named_input(input: String) -> Vec<u8> {
     input.into_bytes()
 }
 
-// The workflow short form: one declaration is a whole `once` workflow, run on
+// The bounded short form: one declaration is a whole `once` bounded operator, run on
 // its first message on `order` and completing after one run.
-#[flezha_runner::workflow_operative(
-    id = "sugar_workflow",
-    sink = "sugar_workflow_placed",
+#[flezha_runner::bounded_operator(
+    id = "sugar_bounded",
+    sink = "sugar_bounded_placed",
     input = "order"
 )]
-pub(crate) fn sugar_workflow(order: String) -> Vec<u8> {
+pub(crate) fn sugar_bounded(order: String) -> Vec<u8> {
     order.into_bytes()
 }
 
-// A workflow short form that loops: one pass per message on `input`, and the
+// A bounded short form that loops: one pass per message on `input`, and the
 // instance stays after each.
-#[flezha_runner::workflow_operative(
-    id = "sugar_workflow_per_input",
-    sink = "sugar_workflow_per_input_out",
+#[flezha_runner::bounded_operator(
+    id = "sugar_bounded_per_input",
+    sink = "sugar_bounded_per_input_out",
     loop_mode = "per_input"
 )]
-pub(crate) fn sugar_workflow_per_input(message: String) -> Vec<u8> {
+pub(crate) fn sugar_bounded_per_input(message: String) -> Vec<u8> {
     message.into_bytes()
 }
 
@@ -71,12 +71,12 @@ pub(crate) struct SugarStateOnlyState {
     seen: Vec<String>,
 }
 
-#[flezha_runner::stream_operative(id = "sugar_state_only", input = "ticks")]
+#[flezha_runner::unbounded_operator(id = "sugar_state_only", input = "ticks")]
 pub(crate) fn sugar_state_only(input: String, state: &mut SugarStateOnlyState) {
     state.push_seen(input);
 }
 
-// `operative!` linear-pipeline twin of `StaticCellOperative`.
+// `operator!` linear-pipeline twin of `StaticCellOperator`.
 #[derive(Serialize, Deserialize, Clone, Default, PartialEq, Debug, flezha_runner::State)]
 struct MacroStaticEntryState {
     seen: Vec<String>,
@@ -106,13 +106,13 @@ fn macro_static_downstream(input: String) -> Vec<u8> {
     input.into_bytes()
 }
 
-flezha_runner::operative! {
+flezha_runner::operator! {
     pub(crate) struct SugarStaticCell;
     id: "sugar_static_cell",
     pipeline: input::<String> -> MacroStaticEntry -> MacroStaticDownstream -> plugin::<Vec<u8>>("test_kafka")
 }
 
-// Mixed operative: one `#[flezha::tasklet]` tasklet wired to one hand-written
+// Mixed operator: one `#[flezha::tasklet]` tasklet wired to one hand-written
 // `impl Tasklet` tasklet in an explicit `channels()` body.
 #[flezha_runner::tasklet(id = "mixed_macro_entry_tasklet")]
 fn mixed_macro_entry(input: String) -> String {
@@ -142,10 +142,10 @@ impl Tasklet for MixedHandDownstream {
     }
 }
 
-pub(crate) struct MixedOperative;
-impl StreamOperative for MixedOperative {
+pub(crate) struct MixedOperator;
+impl UnboundedOperator for MixedOperator {
     fn factory_id() -> &'static str {
-        "mixed_operative"
+        "mixed_operator"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
@@ -335,10 +335,10 @@ mod macro_twin_tests {
     }
 
     // Cross-SDK conformance (`docs/sdk/authoring_contract.md` §6): the reference
-    // operative's tasklets expand to this exact associated-type mapping. A divergence
+    // operator's tasklets expand to this exact associated-type mapping. A divergence
     // is a compile error, not a silent drift. The Java SugarTwinTest asserts the
     // same mapping at runtime.
-    fn _reference_operative_conformance()
+    fn _reference_operator_conformance()
     where
         MacroStaticEntry: Tasklet<
             Input = String,
@@ -429,10 +429,10 @@ mod macro_twin_tests {
     }
 
     #[test]
-    fn sugar_operatives_register() {
-        // Nothing is harvested: every short form and `operative!` type is a
+    fn sugar_operators_register() {
+        // Nothing is harvested: every short form and `operator!` type is a
         // named value the author hands to `register_factory`, exactly as a
-        // hand-written operative is.
+        // hand-written operator is.
         let runner = Flezha::create_runner("sugar_test").unwrap();
         runner
             .register_factory(SugarDoNothing)
@@ -441,40 +441,39 @@ mod macro_twin_tests {
             .unwrap()
             .register_factory(SugarNamedInput)
             .unwrap()
-            .register_factory(SugarWorkflow)
+            .register_factory(SugarBounded)
             .unwrap()
-            .register_factory(SugarWorkflowPerInput)
+            .register_factory(SugarBoundedPerInput)
             .unwrap()
             .register_factory(SugarStateOnly)
             .unwrap()
             .register_factory(SugarStaticCell)
             .unwrap()
-            .register_factory(MixedOperative)
+            .register_factory(MixedOperator)
             .unwrap();
 
-        let ids = flezha_runner::operative::registry::class_factory_ids();
+        let ids = flezha_runner::operator::registry::class_factory_ids();
         for id in [
             "sugar_do_nothing",
             "sugar_store_input",
             "sugar_named_input",
             "sugar_state_only",
             "sugar_static_cell",
-            "mixed_operative",
+            "mixed_operator",
         ] {
-            assert!(ids.contains(&id), "registered operative `{id}` missing");
+            assert!(ids.contains(&id), "registered operator `{id}` missing");
         }
-        let class = flezha_runner::operative::registry::get_class;
+        let class = flezha_runner::operator::registry::get_class;
         assert!(
-            class("sugar_workflow").is_some_and(|c| c.workflow.is_some()),
-            "the workflow short form registers as a workflow class"
+            class("sugar_bounded").is_some_and(|c| c.bounded.is_some()),
+            "the bounded short form registers as a bounded class"
         );
-        let per_input =
-            class("sugar_workflow_per_input").expect("the looping short form registers");
+        let per_input = class("sugar_bounded_per_input").expect("the looping short form registers");
         assert_eq!(
             per_input
-                .workflow
+                .bounded
                 .as_ref()
-                .expect("a workflow class")
+                .expect("a bounded class")
                 .loop_mode,
             LoopMode::PerInput,
             "the short form carries the loop mode it wrote"

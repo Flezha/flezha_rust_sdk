@@ -1,5 +1,0 @@
-error: #[flezha::workflow_operative] `loop_mode` must be one of: "once", "per_input", "chained"
- --> tests/ui/operative_unknown_loop_mode.rs:1:80
-  |
-1 | #[flezha_runner::workflow_operative(id = "chat", sink = "replies", loop_mode = "forever")]
-  |                                                                                ^^^^^^^^^

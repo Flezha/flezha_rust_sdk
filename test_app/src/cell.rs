@@ -1,12 +1,12 @@
-//! Stream fixtures distinguished by cell shape: dynamic cells, keyed
+//! Unbounded fixtures distinguished by cell shape: dynamic cells, keyed
 //! relays, session timeouts, static fan-out, the two pass-through classes and
 //! the four-stage stress pipeline.
 
 use crate::*;
 
-// -- DynamicCellOperative ----------------------------------------------------
+// -- DynamicCellOperator ----------------------------------------------------
 //
-// Dynamic-mode operative shared by the e2e correctness test and `mix bench
+// Dynamic-mode operator shared by the e2e correctness test and `mix bench
 // --shape dynamic`. Key = text before the first ':' (`"drop"` → None, drop).
 // Eviction TTL is read from `DYN_TEST_TTL_MS` (the e2e sets 200ms to exercise
 // reap + delete; the bench leaves it unset → no eviction, pure routing).
@@ -63,8 +63,8 @@ pub(crate) fn key_prefix(value: &str) -> String {
     value.split(':').next().unwrap_or_default().to_string()
 }
 
-pub(crate) struct DynamicCellOperative;
-impl StreamOperative for DynamicCellOperative {
+pub(crate) struct DynamicCellOperator;
+impl UnboundedOperator for DynamicCellOperator {
     fn factory_id() -> &'static str {
         "dynamic_cell"
     }
@@ -78,9 +78,9 @@ impl StreamOperative for DynamicCellOperative {
     }
 }
 
-// -- PartitionRelayOperative --------------------------------------------------
+// -- PartitionRelayOperator --------------------------------------------------
 //
-// The partitioned-operatives e2e's upstream: keyed on the wiring (so it can be
+// The partitioned-operators e2e's upstream: keyed on the wiring (so it can be
 // partitioned at all) AND emitting keyed (so a partitioned forward target can
 // resolve the owning member). Key = text before the first ':', the same
 // convention as `dynamic_cell`, so one fixture's key groups line up with the
@@ -128,15 +128,15 @@ impl Tasklet for PartitionRelayTasklet {
     }
 }
 
-pub(crate) struct PartitionRelayOperative;
-impl StreamOperative for PartitionRelayOperative {
+pub(crate) struct PartitionRelayOperator;
+impl UnboundedOperator for PartitionRelayOperator {
     fn factory_id() -> &'static str {
         "partition_relay"
     }
     fn channels(c: &ChannelBuilder) {
         // The plugin channel is named `input` because a forwarded frame keeps
         // its producing channel's name in metadata, and that is what selects
-        // the receiving operative's channel — the downstream fixture's entry
+        // the receiving operator's channel — the downstream fixture's entry
         // channel. The entry channel here is `in` so the two names cannot
         // collide inside this class.
         c.input::<String>("in")
@@ -147,7 +147,7 @@ impl StreamOperative for PartitionRelayOperative {
     }
 }
 
-// -- SessionTimeoutOperative --------------------------------------------------
+// -- SessionTimeoutOperator --------------------------------------------------
 //
 // The worked session-timeout shape (`cell-timers`): each input pushes the
 // idle deadline out, and the firing closes the session. Single-cell so the
@@ -219,8 +219,8 @@ impl Tasklet for SessionTimeoutTasklet {
     }
 }
 
-pub(crate) struct SessionTimeoutOperative;
-impl StreamOperative for SessionTimeoutOperative {
+pub(crate) struct SessionTimeoutOperator;
+impl UnboundedOperator for SessionTimeoutOperator {
     fn factory_id() -> &'static str {
         "session_timeout"
     }
@@ -231,7 +231,7 @@ impl StreamOperative for SessionTimeoutOperative {
     }
 }
 
-// -- DoNothingOperative -----------------------------------------------------------
+// -- DoNothingOperator -----------------------------------------------------------
 //
 // Echoes the input bytes on the plugin-bound `echo` channel. Stateless;
 // inherits `Change = NoChange` so the runtime skips flush-buffer registration.
@@ -259,8 +259,8 @@ impl Tasklet for DoNothingTasklet {
     }
 }
 
-pub(crate) struct DoNothingOperative;
-impl StreamOperative for DoNothingOperative {
+pub(crate) struct DoNothingOperator;
+impl UnboundedOperator for DoNothingOperator {
     fn factory_id() -> &'static str {
         "do_nothing"
     }
@@ -271,7 +271,7 @@ impl StreamOperative for DoNothingOperative {
     }
 }
 
-// -- StoreInputOperative ----------------------------------------------------------
+// -- StoreInputOperator ----------------------------------------------------------
 
 #[derive(Serialize, Deserialize, Clone, Default)]
 struct StoreInputState {
@@ -319,8 +319,8 @@ impl Tasklet for StoreInputTasklet {
     }
 }
 
-pub(crate) struct StoreInputOperative;
-impl StreamOperative for StoreInputOperative {
+pub(crate) struct StoreInputOperator;
+impl UnboundedOperator for StoreInputOperator {
     fn factory_id() -> &'static str {
         "store_input"
     }
@@ -331,7 +331,7 @@ impl StreamOperative for StoreInputOperative {
     }
 }
 
-// -- CompareFilterOperative -------------------------------------------------------
+// -- CompareFilterOperator -------------------------------------------------------
 
 #[derive(Serialize, Deserialize, Clone)]
 struct CompareFilterState {
@@ -379,8 +379,8 @@ impl Tasklet for CompareFilterTasklet {
     }
 }
 
-pub(crate) struct CompareFilterOperative;
-impl StreamOperative for CompareFilterOperative {
+pub(crate) struct CompareFilterOperator;
+impl UnboundedOperator for CompareFilterOperator {
     fn factory_id() -> &'static str {
         "compare_filter"
     }
@@ -391,7 +391,7 @@ impl StreamOperative for CompareFilterOperative {
     }
 }
 
-// -- StaticCellOperative -----------------------------------------------------
+// -- StaticCellOperator -----------------------------------------------------
 
 #[derive(Serialize, Deserialize, Clone, Default)]
 struct StaticEntryState {
@@ -473,8 +473,8 @@ impl Tasklet for StaticDownstreamTasklet {
     }
 }
 
-pub(crate) struct StaticCellOperative;
-impl StreamOperative for StaticCellOperative {
+pub(crate) struct StaticCellOperator;
+impl UnboundedOperator for StaticCellOperator {
     fn factory_id() -> &'static str {
         "static_cell"
     }
@@ -487,7 +487,7 @@ impl StreamOperative for StaticCellOperative {
     }
 }
 
-// -- CellStressOperative --------------------------------------------------
+// -- CellStressOperator --------------------------------------------------
 
 const STRESS_KEYS: &[&str] = &["p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7"];
 
@@ -611,8 +611,8 @@ impl Tasklet for StressTaskletD {
     }
 }
 
-pub(crate) struct CellStressOperative;
-impl StreamOperative for CellStressOperative {
+pub(crate) struct CellStressOperator;
+impl UnboundedOperator for CellStressOperator {
     fn factory_id() -> &'static str {
         "cell_stress"
     }

@@ -2,7 +2,7 @@
 //!
 //! A dynamically-keyed tasklet cannot receive a broadcast — every merge key
 //! is total, and inside a partitioned member a computed key is admitted against
-//! that member's key-group range. So an operative-wide document (a threshold
+//! that member's key-group range. So an operator-wide document (a threshold
 //! table, a feature flag) needs a bridge, and the obvious one is unsafe:
 //! fanning out over a remembered key set emits keys this member may no longer
 //! own, which parks against the partition guard after a rescale.
@@ -24,7 +24,7 @@ use crate::channel::builder::{ChannelBuilder, Stream, StreamTarget};
 use crate::tasklet::{Change, StateHandle, Tasklet, TaskletCtx, TaskletError, WallClock};
 
 impl ChannelBuilder {
-    /// Turn an operative-wide document stream into per-key deliveries: every
+    /// Turn an operator-wide document stream into per-key deliveries: every
     /// key seen on `traffic` receives each distinct document exactly once, on
     /// that key's own next traffic item, as a `(key, document)` pair the
     /// consumer keys by.
@@ -64,7 +64,7 @@ impl ChannelBuilder {
     /// tasklet whose `{document, version, delivered}` state rides the
     /// standard change journal — it is authoring sugar, not a runtime feature.
     /// The node is named `route_latest` like any tasklet node, so a second
-    /// router in one operative needs [`route_latest_named`] to name it. The
+    /// router in one operator needs [`route_latest_named`] to name it. The
     /// returned stream is an ordinary inter-tasklet stream whose value
     /// carries its own key; `.keyed()` on it has no Cell key to stamp (the
     /// router is single-cell), so output identity belongs downstream, where
@@ -88,7 +88,7 @@ impl ChannelBuilder {
     }
 
     /// [`route_latest`](ChannelBuilder::route_latest) with an explicit node
-    /// identity, so one operative may carry several routers (the
+    /// identity, so one operator may carry several routers (the
     /// `sdk-graph-authoring` node-identity rule — unnamed mentions of one class
     /// are one node).
     pub fn route_latest_named<'b, D, T, K1, K2, F>(

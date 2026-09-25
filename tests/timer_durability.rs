@@ -72,7 +72,7 @@ fn a_compaction_re_states_the_pending_timers_above_the_snapshot_seq() {
     take_order();
     let frames = recording_sink();
 
-    let (handle, instance) = setup::<WindowOperative>("timers-compaction");
+    let (handle, instance) = setup::<WindowOperator>("timers-compaction");
     let stream = dummy_stream();
     dispatch_input(&handle, "timers-compaction", "in", tick(50), &stream);
     let slot = Arc::clone(&instance.cells[0][0]);
@@ -126,7 +126,7 @@ fn a_registration_outside_the_tier_ships_a_timer_ops_record() {
     take_order();
     let frames = recording_sink();
 
-    let (handle, instance) = setup::<WindowOperative>("timers-record");
+    let (handle, instance) = setup::<WindowOperator>("timers-record");
     let stream = dummy_stream();
     dispatch_input(&handle, "timers-record", "in", tick(50), &stream);
     assert!(wait_until(
@@ -173,7 +173,7 @@ fn a_tier_firing_writes_one_record_with_no_consumed_offset() {
     take_firings();
     let frames = recording_sink();
 
-    let (handle, _instance) = setup::<TierSessionOperative>("timers-tier");
+    let (handle, _instance) = setup::<TierSessionOperator>("timers-tier");
     let stream = dummy_stream();
     dispatch_marked(
         &handle,
@@ -270,10 +270,10 @@ impl Tasklet for TierSessionTask {
     }
 }
 
-struct TierSessionOperative;
-impl StreamOperative for TierSessionOperative {
+struct TierSessionOperator;
+impl UnboundedOperator for TierSessionOperator {
     fn factory_id() -> &'static str {
-        "timers_tier_session_operative"
+        "timers_tier_session_operator"
     }
     fn channels(c: &ChannelBuilder) {
         c.effectively_once();
@@ -288,7 +288,7 @@ impl StreamOperative for TierSessionOperative {
 
 /// Spec: "Replay registers the same timers" — the pending set is folded state,
 /// so `replay_equals` (which covers it) is the gate. A registration is NOT
-/// skipped on replay, unlike `spawn_workflow`.
+/// skipped on replay, unlike `spawn_bounded`.
 #[test]
 fn replay_rebuilds_the_identical_pending_set() {
     let mut harness = TaskletTestHarness::<SurfaceTask>::new().with_wall_clock(1_000);
@@ -372,7 +372,7 @@ fn a_restore_re_arms_the_wake_list_and_fires_what_is_already_due() {
         flezha_runner::transport::FlezhaStream::Unix(sock),
     )));
 
-    let (_handle, instance) = setup::<SessionOperative>("timers-restore");
+    let (_handle, instance) = setup::<SessionOperator>("timers-restore");
     let registry = Arc::clone(instance.dynamic_registries[0].as_ref().expect("dynamic"));
     let slot = registry.get_or_create("carol").expect("cell");
 

@@ -41,11 +41,11 @@
 //!         .run()?;
 //!
 //! then feed it:
-//!     flz operative send candles --channel trades --text '{"symbol":"AAPL","price":190.2,"qty":3.0}'
+//!     flz operator send candles --channel trades --text '{"symbol":"AAPL","price":190.2,"qty":3.0}'
 
 use flezha_runner::state::{Change, RestoreInitPayload, StateHandle, WallClock};
 use flezha_runner::tasklet::{Tasklet, TaskletCtx, TaskletError};
-use flezha_runner::{ChannelBuilder, StreamOperative};
+use flezha_runner::{ChannelBuilder, UnboundedOperator};
 use serde::{Deserialize, Serialize};
 
 /// The timeframes every trade is folded into.
@@ -143,7 +143,7 @@ impl Tasklet for Candle {
 
 struct Candles;
 
-impl StreamOperative for Candles {
+impl UnboundedOperator for Candles {
     fn factory_id() -> &'static str {
         "candles"
     }
@@ -163,7 +163,7 @@ fn main() {
     // Declaration-only example: `build_topology_for::<Candles>()` is what the
     // runner does at `register_factory`, and it is what proves the wiring above
     // is legal without needing a live controller.
-    flezha_runner::operative::builder::build_topology_for::<Candles>()
+    flezha_runner::operator::builder::build_topology_for::<Candles>()
         .expect("the candle topology builds");
     println!("candles topology builds: 1 tasklet, 4 Cells per symbol");
 }
