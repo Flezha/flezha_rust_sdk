@@ -4,5 +4,4 @@ error[E0599]: no method named `sink` found for struct `Stream<'_, String, EntryT
 10 |         c.input::<String>("in").sink();
    |                                 ^^^^ method not found in `Stream<'_, String, EntryTarget>`
    |
-   = note: the method was found for
-           - `Stream<'b, T>`
+   = note: the method was found for `Stream<'b, T>`
