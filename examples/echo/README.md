@@ -10,7 +10,7 @@ Three files, one for each part the guides describe:
 |---|---|---|
 | `src/tasklet.rs` | the tasklet | the processing stage: prefixes each message |
 | `src/operator.rs` | the operator | the graph: `in` feeds the tasklet, output lands on `out` |
-| `src/main.rs` | the runner | this process: offers the operator and waits |
+| `src/main.rs` | the runner | this process: registers the echo factory and waits |
 
 ## Run it
 
