@@ -34,6 +34,10 @@ pub struct TaskletCtx<'a> {
     /// keyed-channel emit that supplies none.
     cell_key: Option<&'a str>,
     stable_id_ordinal: Cell<u32>,
+    /// The input-log offset this invocation is taking and how many spawns it
+    /// asked for so far: the origin a spawn request carries.
+    offset: Option<u64>,
+    spawn_ordinal: Cell<u32>,
     checkpoint: bool,
     replay: bool,
     /// Timer surface for this invocation. `None` in a `compensate` hook,
@@ -122,6 +126,8 @@ impl<'a> TaskletCtx<'a> {
             cell_identity,
             cell_key: None,
             stable_id_ordinal: Cell::new(0),
+            offset: None,
+            spawn_ordinal: Cell::new(0),
             checkpoint: false,
             replay: false,
             timers: None,
@@ -135,6 +141,23 @@ impl<'a> TaskletCtx<'a> {
     pub(crate) fn with_cell_key(mut self, cell_key: Option<&'a str>) -> Self {
         self.cell_key = cell_key;
         self
+    }
+
+    /// Attach the input-log offset this invocation is taking.
+    pub(crate) fn taking(mut self, offset: Option<u64>) -> Self {
+        self.offset = offset;
+        self
+    }
+
+    /// Where the next spawn of this invocation comes from.
+    fn spawn_origin(&self) -> flz_core::spawn::SpawnOrigin<'_> {
+        let position = self.spawn_ordinal.get();
+        self.spawn_ordinal.set(position + 1);
+        flz_core::spawn::SpawnOrigin {
+            cell_identity: self.cell_identity,
+            offset: self.offset,
+            position,
+        }
     }
 
     /// Attach this invocation's timer session. Set by the stream dispatcher
@@ -243,7 +266,13 @@ impl<'a> TaskletCtx<'a> {
         factory_id: impl Into<String>,
         payload: impl Into<Vec<u8>>,
     ) -> SpawnHandle {
-        flz_core::spawn::request(factory_id.into(), payload.into(), None, self.replay)
+        flz_core::spawn::request(
+            factory_id.into(),
+            payload.into(),
+            None,
+            self.replay,
+            self.spawn_origin(),
+        )
     }
 
     /// [`Self::spawn_bounded`] under the id `options` names: start
@@ -265,6 +294,7 @@ impl<'a> TaskletCtx<'a> {
             payload.into(),
             Some(options),
             self.replay,
+            self.spawn_origin(),
         )
     }
 

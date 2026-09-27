@@ -94,6 +94,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register_factory(SessionTimeoutOperator)?
         .register_factory(MixedOperator)?
         .register_factory(TierStoreOperator)?
+        .register_factory(TierChainOperator)?
         .register_factory(BenchEchoOperator)?
         .register_factory(BenchKeyedOperator)?
         .register_factory(BenchKeyedNoPersistOperator)?
@@ -104,6 +105,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register_factory(WedgeProbeOperator)?
         .register_factory(CandleOperator)?
         .register_factory(SpawnRequesterOperator)?
+        .register_factory(SpawnHoldRequesterOperator)?
         .register_factory(SpawnOnceRequesterOperator)?
         .register_factory(SugarDoNothing)?
         .register_factory(SugarStoreInput)?

@@ -47,6 +47,8 @@ pub(crate) mod fixtures {
             stream: Arc::clone(stream),
             consumed_offset: None,
             replay: false,
+            forwarded: false,
+            hold: None,
         })
     }
 

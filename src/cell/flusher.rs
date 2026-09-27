@@ -298,6 +298,7 @@ mod tests {
                 crate::cell::timer::TimerKind::ProcessingTime,
                 31_000,
             )],
+            edges: Vec::new(),
         };
         let template = HeaderTemplate::new(0x010203, 1);
         let identity = encode_cell_identity("Task", "stage", "k");
@@ -372,6 +373,12 @@ mod tests {
                 crate::cell::timer::TimerKind::ProcessingTime,
                 31_000,
             )],
+            edges: vec![EdgeRecord {
+                channel: 2,
+                consumer: 1,
+                origin: Some(4711),
+                payload: vec![9],
+            }],
         };
         let bytes = postcard::to_allocvec(&body).unwrap();
         assert_eq!(
@@ -387,6 +394,8 @@ mod tests {
                 0xFB, 0xD0, 0x95, 0xFF, 0xBC, 0x31, // event_time: 1700000000123
                 0x01, 0x01, 0x98, 0xF2, 0x01,
                 0x01, // timers: 1 × register ProcessingTime @ 31000
+                0x01, 0x02, 0x01, 0x01, 0xE7, 0x24, 0x01,
+                0x09, // edges: 1 × channel 2, consumer 1, Some(4711), [9]
             ]
         );
     }
@@ -411,6 +420,7 @@ mod tests {
             consumed_offset: Some(ts),
             dlq: None,
             timers: Vec::new(),
+            edges: Vec::new(),
         };
         let mut buffer = TypedBuffer::<EffTask> {
             effects: vec![mk(1), mk(2)],

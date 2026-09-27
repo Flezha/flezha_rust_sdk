@@ -213,6 +213,64 @@ impl UnboundedOperator for SpawnRequesterOperator {
     }
 }
 
+// -- SpawnHoldRequesterOperator ---------------------------------------------------
+//
+// `spawn_hold_requester`: an effectively-once stream whose tasklet spawns
+// `stateless_loop_bounded` with no id, prints the answer as
+// `spawn_result hold <id> <outcome>`, then blocks until the release env is set,
+// so a runner killed there dies with the spawn answered and its input not
+// durably consumed.
+
+#[derive(Default)]
+struct SpawnHoldRequester;
+impl Tasklet for SpawnHoldRequester {
+    type Input = String;
+    type Output = String;
+    type State = ();
+    type Change = NoChange;
+    type Clock = WallClock;
+    type Config = ();
+    fn name() -> &'static str {
+        "spawn_hold_requester"
+    }
+    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
+    fn run(
+        &mut self,
+        input: String,
+        _: StateHandle<'_, Self>,
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
+        match ctx
+            .spawn_bounded(StatelessLoopBounded::factory_id(), input)
+            .wait()
+        {
+            Ok(result) => println!(
+                "spawn_result hold {} {}",
+                result.id,
+                result.outcome.as_wire()
+            ),
+            Err(e) => println!("spawn_result hold error {e}"),
+        }
+        block_until_released();
+        Ok(())
+    }
+}
+
+pub(crate) struct SpawnHoldRequesterOperator;
+impl UnboundedOperator for SpawnHoldRequesterOperator {
+    fn factory_id() -> &'static str {
+        "spawn_hold_requester"
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.effectively_once();
+        c.input::<String>("in")
+            .on_full(OverflowPolicy::DropNothing)
+            .into::<SpawnHoldRequester>()
+            .keyed()
+            .sink_named("out");
+    }
+}
+
 // -- SpawnOnceRequesterOperator / TypedOnceBounded --------------------------------
 //
 // `spawn_once_requester`: on each input it spawns `typed_once_bounded` once

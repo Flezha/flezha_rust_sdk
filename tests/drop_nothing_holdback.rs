@@ -228,12 +228,10 @@ impl UnboundedOperator for GateOperator {
 
 /// One erased payload, pushed straight onto a mailbox to saturate it.
 fn blob(stream: &Arc<flz_transport::transport::FlezhaStream>) -> flz_core::cell::CellItem {
-    flz_core::cell::CellItem::Input(flz_core::cell::CellPayload {
-        value: Arc::new(String::from("saturate")) as Arc<dyn std::any::Any + Send + Sync>,
-        stream: Arc::clone(stream),
-        consumed_offset: None,
-        replay: false,
-    })
+    let value = Arc::new(String::from("saturate")) as Arc<dyn std::any::Any + Send + Sync>;
+    flz_core::cell::CellItem::Input(flz_core::cell::make_cell_payload(
+        &value, stream, None, false,
+    ))
 }
 
 /// A producer held on a consumer whose round nobody is running: it keeps its

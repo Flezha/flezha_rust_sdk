@@ -158,15 +158,15 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
         }
     }
 
-    /// Drain the buffer, then re-state the pending timers ABOVE the seq the
-    /// snapshot carries. The drain comes first, so the snapshot's state and
+    /// Drain the buffer, then re-state the pending timers and the consumed
+    /// offset ABOVE the seq the snapshot carries. The drain comes first, so the snapshot's state and
     /// its seq are captured together and `change_seq - 1` is exactly the
     /// highest record the snapshot folds — which is what lets the controller's
     /// `truncate_up_to`, keeping records strictly above it, drop exactly what
-    /// the snapshot folds and no more. The timers are re-stated AFTER the seq
-    /// is read, landing at `snapshot_seq + 1`, which that truncation keeps; a
+    /// the snapshot folds and no more. Both are re-stated AFTER the seq is
+    /// read, landing at `snapshot_seq + 1`, which that truncation keeps; a
     /// crash between the two leaves an untruncated log that still holds the
-    /// originals, so neither order can lose a timer.
+    /// originals, so neither order can lose a timer or the offset.
     fn drain_for_snapshot(
         &self,
         flush_buffer: &mut Box<dyn FlushableBuffer>,
@@ -178,12 +178,12 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
             .change_seq
             .load(Ordering::Acquire)
             .saturating_sub(1);
-        if !timers.is_empty() {
-            flush_buffer
-                .as_any_mut()
-                .downcast_mut::<TypedBuffer<S>>()
-                .expect("snapshot_frame: flush buffer type mismatch for tasklet")
-                .timer_ops = timers.as_register_ops();
+        let owed = flush_buffer
+            .as_any_mut()
+            .downcast_mut::<TypedBuffer<S>>()
+            .expect("snapshot_frame: flush buffer type mismatch for tasklet")
+            .restate_above_snapshot(timers.as_register_ops());
+        if owed {
             self.flush_now(&mut **flush_buffer);
         }
         seq
@@ -231,6 +231,8 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
             stream,
             consumed_offset,
             replay,
+            forwarded,
+            hold: _,
         } = payload;
         let Some(input) = Self::typed_input(value) else {
             return ItemDisposition::Done { ops: Vec::new() };
@@ -255,6 +257,8 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
                     stream,
                     consumed_offset,
                     replay,
+                    forwarded,
+                    hold: None,
                 }),
                 error,
             },
@@ -323,7 +327,27 @@ impl<S: Tasklet> TaskletDispatcher for TaskletDispatcherImpl<S> {
         };
         match item {
             CellItem::Timer(fire) => self.dispatch_firing(fire, attempt, is_final, scope),
-            CellItem::Input(payload) => self.dispatch_input(payload, now, attempt, is_final, scope),
+            // The input's hold outlives the run: kept with the buffer once it
+            // settled, handed back with the item when it retries.
+            CellItem::Input(mut payload) => {
+                let hold = payload.hold.take();
+                match self.dispatch_input(payload, now, attempt, is_final, scope) {
+                    ItemDisposition::RetryLater {
+                        item: CellItem::Input(mut retried),
+                        error,
+                    } => {
+                        retried.hold = hold;
+                        ItemDisposition::RetryLater {
+                            item: CellItem::Input(retried),
+                            error,
+                        }
+                    }
+                    settled => {
+                        flz_core::cell::keep_hold(slot, &mut **flush_buffer, hold);
+                        settled
+                    }
+                }
+            }
             CellItem::CloseInterval => unreachable!(),
         }
     }

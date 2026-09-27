@@ -87,6 +87,94 @@ impl UnboundedOperator for TierStoreOperator {
     }
 }
 
+// -- TierChainOperator (effectively-once, inter-tasklet) ------------------------
+//
+// `tier_chain`: an effectively-once stream of two tasklets. `tier_relay` counts
+// what it relays and passes each `key:value` on; `tier_tally` counts each key's
+// inputs and emits `key=count`. Until the release env is set the tally fails
+// the value `hold` and keeps retrying it, so a runner killed there has made the
+// relay's record durable and not the tally's.
+
+#[derive(Default)]
+struct TierRelayTasklet;
+impl Tasklet for TierRelayTasklet {
+    type Input = String;
+    type Output = String;
+    type State = CounterState;
+    type Change = CounterChange;
+    type Clock = WallClock;
+    type Config = ();
+    fn name() -> &'static str {
+        "tier_relay"
+    }
+    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> CounterState {
+        CounterState::default()
+    }
+    fn apply_change(state: &mut CounterState, change: &CounterChange) {
+        state.value += change.delta;
+    }
+    fn run(
+        &mut self,
+        input: String,
+        mut state: StateHandle<'_, Self>,
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
+        state.apply(CounterChange { delta: 1 });
+        ctx.emit::<String>(input)
+    }
+}
+
+#[derive(Default)]
+struct TierTallyTasklet;
+impl Tasklet for TierTallyTasklet {
+    type Input = String;
+    type Output = String;
+    type State = CounterState;
+    type Change = CounterChange;
+    type Clock = WallClock;
+    type Config = ();
+    fn name() -> &'static str {
+        "tier_tally"
+    }
+    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> CounterState {
+        CounterState::default()
+    }
+    fn apply_change(state: &mut CounterState, change: &CounterChange) {
+        state.value += change.delta;
+    }
+    fn run(
+        &mut self,
+        input: String,
+        mut state: StateHandle<'_, Self>,
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
+        let (key, value) = input.split_once(':').unwrap_or((input.as_str(), ""));
+        if value == "hold" && std::env::var("FLEZHA_BOUNDED_E2E_RELEASE").is_err() {
+            return Err(TaskletError::Custom("held until released".into()));
+        }
+        state.apply(CounterChange { delta: 1 });
+        ctx.emit_keyed::<String>(key.to_string(), format!("{key}={}", state.value))
+    }
+}
+
+pub(crate) struct TierChainOperator;
+impl UnboundedOperator for TierChainOperator {
+    fn factory_id() -> &'static str {
+        "tier_chain"
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.effectively_once();
+        c.input::<String>("input")
+            .on_full(OverflowPolicy::DropNothing)
+            .into::<TierRelayTasklet>()
+            .key_by(|input: &String| crate::cell::key_prefix(input))
+            .retry_max(1_000)
+            .into::<TierTallyTasklet>()
+            .keyed()
+            .sink_named("sink");
+    }
+}
+
 // -- BenchKeyedOperator (mix bench.roundtrip, --workload keyed) -------------
 //
 // `tier_store` minus the effectively-once declaration, so the round-trip bench

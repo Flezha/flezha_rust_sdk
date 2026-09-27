@@ -23,11 +23,13 @@ use crate::tasklet::state_handle::StateHandle;
 use crate::tasklet::{Tasklet, TaskletCtx, TaskletError};
 
 impl<S: Tasklet> TaskletDispatcherImpl<S> {
-    /// Fresh per-invocation output capture: `Some` only for a Cell that
-    /// records effects (plugin emits then form the atomic effect record
-    /// instead of leaving on a wire path).
-    fn effect_capture(&self) -> Option<RefCell<Vec<crate::cell::flusher::OutputRecord>>> {
-        self.flush.records_effects.then(|| RefCell::new(Vec::new()))
+    /// Fresh per-invocation capture: `Some` where the Cell's record keeps the
+    /// invocation's inter-tasklet values ([`CellSlot::keeps_edges`]); a Cell
+    /// that records effects captures its plugin emits there too, for the
+    /// atomic effect record, instead of leaving them on a wire path.
+    fn effect_capture(slot: &CellSlot, offset: Option<u64>) -> Option<RefCell<Captured>> {
+        slot.keeps_edges(offset)
+            .then(|| RefCell::new(Captured::default()))
     }
 
     /// Per-invocation determinism inputs, computed once at entry: the
@@ -73,13 +75,16 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
     /// sink writes the matching output frame, so change N reaches the
     /// controller's WAL before N's output reaches Kafka. `None` when there is
     /// nothing to order against: a `NoChange` / non-persistent operator keeps
-    /// the zero-cost inline emit, and a Cell that records effects ships the
-    /// changes and the outputs in ONE effect record.
+    /// the zero-cost inline emit, a Cell that records effects ships the
+    /// changes and the outputs in ONE effect record, and a Cell that consumes
+    /// input offsets ships its changes in the record carrying the offset.
     fn flush_before_emit<'a>(
         &self,
         changes: &'a RefCell<Vec<S::Change>>,
+        consumes_offsets: bool,
     ) -> Option<FlushBeforeEmit<'a>> {
         if self.flush.records_effects
+            || consumes_offsets
             || !self.flush.persistence_enabled
             || !flush_before_emit_enabled()
         {
@@ -103,7 +108,7 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
         &'a self,
         scope: &CellScope<'a, S>,
         consumed_offset: Option<u64>,
-        effect_outputs: Option<&'a RefCell<Vec<crate::cell::flusher::OutputRecord>>>,
+        effect_capture: Option<&'a RefCell<Captured>>,
         changes: &'a RefCell<Vec<S::Change>>,
     ) -> CellEmitSink<'a> {
         CellEmitSink {
@@ -116,9 +121,13 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
             emit_ordinal: 0,
             instance: scope.instance.upgrade(),
             stream: Arc::clone(scope.stream),
-            flush_before_emit: self.flush_before_emit(changes),
+            flush_before_emit: self.flush_before_emit(
+                changes,
+                consumed_offset.is_some() || !scope.buffer.effects.is_empty(),
+            ),
             consumed_offset,
-            effect_outputs,
+            effect_capture: effect_capture.filter(|_| self.flush.records_effects),
+            edge_capture: effect_capture,
         }
     }
 
@@ -134,7 +143,7 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
         now: u64,
         scope: &mut CellScope<'_, S>,
         changes: &RefCell<Vec<S::Change>>,
-        captured: Option<&RefCell<Vec<crate::cell::flusher::OutputRecord>>>,
+        captured: Option<&RefCell<Captured>>,
     ) -> Result<(Vec<TimerOp>, bool), (String, bool)> {
         let invocation_seq = self.flush.change_seq.load(Ordering::Relaxed);
         let replay = call.replay();
@@ -147,6 +156,7 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
         let session = self.timers.session(live_timers, now, firing);
         let ctx = TaskletCtx::new(&mut sink, now, invocation_seq, &self.flush.cell_identity)
             .with_cell_key(self.cell_key.as_deref())
+            .taking(call.consumed_offset())
             .during_replay(replay);
         // A rollback is no place to arm a deadline: `compensate` answers
         // `TimersUnavailable`, in either kind.
@@ -184,16 +194,19 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
         now: u64,
         is_final: bool,
         scope: &mut CellScope<'_, S>,
-        captured: Option<RefCell<Vec<crate::cell::flusher::OutputRecord>>>,
+        captured: Option<RefCell<Captured>>,
     ) -> Result<Settled, String> {
         let (error, retryable) = match outcome {
             Ok((timers, checkpointed)) => {
+                let Captured { outputs, edges } =
+                    captured.map(RefCell::into_inner).unwrap_or_default();
                 return Ok(Settled {
                     timers,
-                    outputs: captured.map(RefCell::into_inner).unwrap_or_default(),
+                    outputs,
+                    edges,
                     checkpointed,
                     park_error: None,
-                })
+                });
             }
             Err(failure) => failure,
         };
@@ -214,6 +227,7 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
         Ok(Settled {
             timers,
             outputs: Vec::new(),
+            edges: Vec::new(),
             checkpointed: false,
             park_error: Some(error),
         })
@@ -255,8 +269,8 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
     /// Settle one attempt into this Cell's buffer through the one settlement
     /// rule the erased host also calls, then act on what it hands back: a
     /// bounded operator Cell's record ships at once and is named on its pass sheet, a
-    /// class with no flusher entry has nothing that would ever drain its timer
-    /// ops, so it drains them here, and a tier-off park holds the Cell until
+    /// class with no flusher entry has nothing that would ever drain what it
+    /// buffered, so it drains it here, and a tier-off park holds the Cell until
     /// the controller acks the dead-letter append.
     fn settle(
         &self,
@@ -279,9 +293,7 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
         );
         if self.flush.bounded && self.flush.records_effects {
             flz_core::bounded::ship_stage_record(slot, buffer, &self.flush.header, channels);
-        } else if !buffer.timer_ops.is_empty()
-            && !flusher_registered::<S>(self.flush.records_effects)
-        {
+        } else if !buffer.is_empty() && !flusher_registered::<S>(self.flush.records_effects) {
             self.flush_now(buffer);
         }
         if let Some(entry) = tier_off_dlq {
@@ -324,7 +336,7 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
         let offset = call.consumed_offset();
         let firing = call.firing();
         let changes = RefCell::new(self.carry_over(scope.buffer));
-        let captured = self.effect_capture();
+        let captured = Self::effect_capture(scope.slot, offset);
 
         let outcome = self.call_contained(call, now, &mut scope, &changes, captured.as_ref());
         let mut settled =
@@ -519,12 +531,22 @@ pub(super) struct CellScope<'a, S: Tasklet> {
     pub(super) instance: &'a Weak<OperatorInstance>,
 }
 
+/// What a Cell that records effects captures from one attempt for its
+/// effect record: the plugin outputs, and the inter-tasklet values a restore
+/// may have to deliver again.
+#[derive(Default)]
+pub(super) struct Captured {
+    pub(super) outputs: Vec<crate::cell::flusher::OutputRecord>,
+    pub(super) edges: Vec<crate::cell::flusher::EdgeRecord>,
+}
+
 /// What one settling attempt left. `park_error` is set when the item parks —
 /// so the park rides the same record as the consumed-offset advance it
 /// acknowledges.
 struct Settled {
     timers: Vec<TimerOp>,
     outputs: Vec<crate::cell::flusher::OutputRecord>,
+    edges: Vec<crate::cell::flusher::EdgeRecord>,
     checkpointed: bool,
     park_error: Option<String>,
 }
@@ -543,6 +565,7 @@ impl Settled {
             changes,
             timers: self.timers,
             outputs: self.outputs,
+            edges: self.edges,
             offset,
             event_time,
             checkpointed: self.checkpointed,

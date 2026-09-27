@@ -180,7 +180,7 @@ fn a_restore_discards_the_open_interval() {
         "an open interval must not look flushable to the flusher"
     );
 
-    buf.discard_staged();
+    buf.discard_unshipped();
     assert!(
         buf.staged.changes.is_empty() && !buf.staged.is_open(),
         "a restore must drop the open interval"
@@ -190,8 +190,9 @@ fn a_restore_discards_the_open_interval() {
 /// Spec "Journaled input may be discarded" / "Un-journaled input is not
 /// silently destroyed": the restore-time mailbox clear is conditional on the
 /// controller re-forwarding what it drops. It journals inputs before
-/// forwarding for the effectively-once tier and for nothing else, so a plain
-/// stateful class's queue is the only copy its input has.
+/// forwarding for the effectively-once tier and a class that sleeps, and for
+/// nothing else, so a plain stateful class's queue is the only copy its input
+/// has.
 #[test]
 fn a_restore_discards_queued_input_only_where_the_controller_re_forwards_it() {
     use flezha_runner::cell::{make_cell_payload, restore_discarded_inputs};

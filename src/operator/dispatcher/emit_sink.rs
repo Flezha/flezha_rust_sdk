@@ -57,7 +57,10 @@ pub(super) struct CellEmitSink<'a> {
     /// `Some` for a Cell that records effects: plugin emits are pushed here
     /// (for the invocation's atomic effect record) instead of being written
     /// to the primary stream.
-    pub(super) effect_outputs: Option<&'a RefCell<Vec<crate::cell::flusher::OutputRecord>>>,
+    pub(super) effect_capture: Option<&'a RefCell<super::invocation::Captured>>,
+    /// `Some` where the Cell's record carries the offset it took: each
+    /// inter-tasklet value is recorded here for that record.
+    pub(super) edge_capture: Option<&'a RefCell<super::invocation::Captured>>,
 }
 
 impl<'a> CellEmitSink<'a> {
@@ -138,8 +141,8 @@ impl<'a> CellEmitSink<'a> {
             }
         };
 
-        if let Some(outputs) = self.effect_outputs {
-            push_effect_output(outputs, &descriptor.name, key, meta, bytes);
+        if let Some(captured) = self.effect_capture {
+            push_effect_output(captured, &descriptor.name, key, meta, bytes);
             return Ok(());
         }
 
@@ -190,6 +193,21 @@ impl<'a> EmitSink for CellEmitSink<'a> {
             false,
             Some(self.producer),
         );
+        if let Some(captured) = self
+            .edge_capture
+            .filter(|_| !descriptor.consumers.is_empty())
+        {
+            captured
+                .borrow_mut()
+                .edges
+                .extend(flz_core::routing::edge_records(
+                    &instance,
+                    descriptor,
+                    cid,
+                    self.consumed_offset,
+                    &value,
+                ));
+        }
         if let Some(sink) = descriptor.plugin_sink.as_ref() {
             self.emit_plugin_sink(&instance, descriptor, sink, &value, meta, key)?;
         }
@@ -271,7 +289,7 @@ pub(crate) fn apply_identity_stamps(
 /// the reserved `channel` key is dropped like `channel_metadata` does, and
 /// identity stamps are derived controller-side from the durable record.
 fn push_effect_output(
-    outputs: &RefCell<Vec<crate::cell::flusher::OutputRecord>>,
+    captured: &RefCell<super::invocation::Captured>,
     channel: &str,
     key: Option<String>,
     meta: Option<HashMap<String, String>>,
@@ -283,8 +301,9 @@ fn push_effect_output(
         .filter(|(k, _)| k != "channel")
         .collect();
     metadata.sort();
-    outputs
+    captured
         .borrow_mut()
+        .outputs
         .push(crate::cell::flusher::OutputRecord {
             channel: channel.to_string(),
             key: key.unwrap_or_default(),

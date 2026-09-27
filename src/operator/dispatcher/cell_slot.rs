@@ -110,6 +110,7 @@ pub(super) fn flusher_registered<S: Tasklet>(records_effects: bool) -> bool {
 /// + consumed-offset, possibly with no change) drain through the same buffer.
 fn register_flusher<S: Tasklet>(
     parts: &flz_core::cell::SlotParts,
+    prefix: &Option<Arc<flz_core::prefix::PrefixLedger>>,
     flush_buffer: &Arc<Mutex<Box<dyn FlushableBuffer>>>,
     persistence_enabled: bool,
     records_effects: bool,
@@ -117,6 +118,7 @@ fn register_flusher<S: Tasklet>(
     flusher_registered::<S>(records_effects).then(|| {
         CellFlusher::instance().register(
             Arc::clone(&parts.cell_identity),
+            prefix.clone(),
             Arc::clone(flush_buffer),
             persistence_enabled,
             Arc::clone(&parts.change_seq),
@@ -205,6 +207,7 @@ pub fn build_cell_slot<S: Tasklet>(args: BuildCellArgs<'_>) -> Arc<CellSlot> {
 
     let flusher_entry_id = register_flusher::<S>(
         &parts,
+        &args.prefix,
         &flush_buffer,
         args.persistence_enabled,
         topology.records_effects(args.persistence_enabled),

@@ -114,6 +114,112 @@ fn tier_emits_ride_the_state_sink_as_one_effect_record() {
     );
 }
 
+/// Relays each input to [`Drain`] and counts it.
+#[derive(Default)]
+struct Relay;
+impl Tasklet for Relay {
+    type Input = String;
+    type Output = String;
+    type State = i64;
+    type Change = TickChange;
+    type Clock = WallClock;
+    type Config = ();
+    fn name() -> &'static str {
+        "relay"
+    }
+    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> i64 {
+        0
+    }
+    fn apply_change(state: &mut i64, _change: &TickChange) {
+        *state += 1;
+    }
+    fn run(
+        &mut self,
+        input: String,
+        mut state: StateHandle<'_, Self>,
+        ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
+        state.apply(TickChange);
+        ctx.emit::<String>(input)
+    }
+}
+
+#[derive(Default)]
+struct Drain;
+impl Tasklet for Drain {
+    type Input = String;
+    type Output = String;
+    type State = ();
+    type Change = NoChange;
+    type Clock = WallClock;
+    type Config = ();
+    fn name() -> &'static str {
+        "drain"
+    }
+    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
+    fn run(
+        &mut self,
+        _input: String,
+        _state: StateHandle<'_, Self>,
+        _ctx: &mut TaskletCtx<'_>,
+    ) -> Result<(), TaskletError> {
+        Ok(())
+    }
+}
+
+struct TierRelayOperator;
+impl UnboundedOperator for TierRelayOperator {
+    fn factory_id() -> &'static str {
+        "tier_relay_operator"
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.effectively_once();
+        c.input::<String>("input").into::<Relay>().into::<Drain>();
+    }
+}
+
+struct PlainRelayOperator;
+impl UnboundedOperator for PlainRelayOperator {
+    fn factory_id() -> &'static str {
+        "plain_relay_operator"
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("input").into::<Relay>().into::<Drain>();
+    }
+}
+
+/// An inter-tasklet value rides the record that carries its producer's
+/// offset, on the tier and off it, so a restore can deliver it again to a
+/// consumer that lost it.
+#[test]
+fn an_edge_value_rides_the_record_that_carries_its_producer_offset() {
+    pinned_pool();
+    let _serial = WAL_TEST_LOCK.lock().unwrap();
+
+    for (id, tier) in [("edge-tier", true), ("edge-plain", false)] {
+        install_capturing_tier_sink();
+        let (handle, _instance) = if tier {
+            setup::<TierRelayOperator>(id)
+        } else {
+            setup::<PlainRelayOperator>(id)
+        };
+        dispatch_at(&handle, id, 9, "v");
+
+        let kept = || {
+            captured_effect_bodies()
+                .into_iter()
+                .find(|b| b.consumed_offset == Some(9) && !b.edges.is_empty())
+        };
+        assert!(
+            wait_until(|| kept().is_some(), Duration::from_secs(5)),
+            "{id}: the relay's record never kept its edge value"
+        );
+        let body = kept().unwrap();
+        assert_eq!(body.edges.len(), 1, "{id}");
+        assert_eq!(body.edges[0].origin, Some(9), "{id}");
+    }
+}
+
 /// Spec "Replay after crash" (SDK half): the restored consumed-floor makes
 /// the Cell skip re-forwarded inputs it already durably consumed, and
 /// process everything above — never double-applied, never lost.

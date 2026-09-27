@@ -235,6 +235,7 @@ mod tests {
             consumed_offset: Some(4711),
             dlq: None,
             timers: Vec::new(),
+            edges: Vec::new(),
         };
         let effect = wal_record(
             1,
@@ -548,6 +549,7 @@ mod tests {
             consumed_offset: Some(1),
             dlq: None,
             timers: Vec::new(),
+            edges: Vec::new(),
         };
         let change_log = wal_record_at(
             0,

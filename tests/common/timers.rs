@@ -358,6 +358,7 @@ pub fn effect_record<S: Tasklet>(seq: u64, changes: Vec<Vec<u8>>, timers: Vec<Ti
         dlq: None,
         event_time: 0,
         timers,
+        edges: Vec::new(),
     })
     .expect("encode effect body");
     wal_record(

@@ -88,6 +88,7 @@
     ],
     "effectively_once": [
       "tier_store",
+      "tier_chain",
       "checkpoint_store",
       "checkpoint_batched_store",
       "bench_checkpoint"
@@ -103,6 +104,7 @@
     ],
     "bounded": [
       "spawn_requester",
+      "spawn_hold_requester",
       "spawn_once_requester",
       "echo_bounded",
       "timer_loop_bounded",
