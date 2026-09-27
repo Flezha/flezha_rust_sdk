@@ -97,19 +97,19 @@ struct Params<'a> {
     input_pat: &'a Pat,
     input_ty: &'a Type,
     state: Option<(&'a Pat, &'a Type)>,
-    ctx: Option<&'a Pat>,
+    ctx: Option<(&'a Pat, &'a Type)>,
 }
 
 enum Role<'a> {
     Input(&'a Pat, &'a Type),
     State(&'a Pat, &'a Type),
-    Ctx(&'a Pat),
+    Ctx(&'a Pat, &'a Type),
 }
 
 fn classify_params<'a>(sig: &'a Signature, attr: &str) -> syn::Result<Params<'a>> {
     let mut input: Option<(&Pat, &Type)> = None;
     let mut state: Option<(&Pat, &Type)> = None;
-    let mut ctx: Option<&Pat> = None;
+    let mut ctx: Option<(&Pat, &Type)> = None;
     for arg in &sig.inputs {
         let FnArg::Typed(pt) = arg else {
             return Err(syn::Error::new_spanned(
@@ -124,7 +124,7 @@ fn classify_params<'a>(sig: &'a Signature, attr: &str) -> syn::Result<Params<'a>
             ));
         }
         match classify_arg(pt, attr)? {
-            Role::Ctx(pat) => ctx = Some(pat),
+            Role::Ctx(pat, ty) => ctx = Some((pat, ty)),
             Role::State(pat, ty) => claim_once(
                 &mut state,
                 (pat, ty),
@@ -173,7 +173,7 @@ fn claim_once<'a>(
 fn classify_arg<'a>(pt: &'a PatType, attr: &str) -> syn::Result<Role<'a>> {
     Ok(match &*pt.ty {
         Type::Reference(r) if r.mutability.is_some() && is_tasklet_ctx(&r.elem) => {
-            Role::Ctx(&pt.pat)
+            Role::Ctx(&pt.pat, &pt.ty)
         }
         Type::Reference(r) if r.mutability.is_some() => Role::State(&pt.pat, &r.elem),
         Type::Reference(_) => {
@@ -371,9 +371,10 @@ fn resolve_output_ty(args: &TaskletArgs, output: &Output) -> TokenStream {
     }
 }
 
-fn resolve_ctx_binding(ctx: Option<&Pat>, output: &Output) -> TokenStream {
+fn resolve_ctx_binding(ctx: Option<(&Pat, &Type)>, output: &Output) -> TokenStream {
     match (ctx, output.emits()) {
-        (Some(pat), _) => quote! { #pat: &mut ::flezha_runner::TaskletCtx<'_> },
+        // The type as written, so an imported `TaskletCtx` is used.
+        (Some((pat, ty)), _) => quote! { #pat: #ty },
         (None, true) => quote! { __flezha_ctx: &mut ::flezha_runner::TaskletCtx<'_> },
         (None, false) => quote! { _flezha_ctx: &mut ::flezha_runner::TaskletCtx<'_> },
     }

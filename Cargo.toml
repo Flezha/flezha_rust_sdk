@@ -186,6 +186,10 @@ name = "sugar_emit"
 required-features = ["testing"]
 
 [[test]]
+name = "sugar_ctx_import"
+required-features = ["testing"]
+
+[[test]]
 name = "state_evolution"
 required-features = ["testing"]
 
