@@ -4,6 +4,13 @@ All notable changes to the Rust SDK crate.
 
 ## Unreleased
 
+### Removed: the `sealed()` terminator and `Channel<T>`
+
+**Breaking.** `Stream::sealed()` and the `Channel<T>` handle it returned are
+removed, with no replacement. A channel is terminal by having no further
+wiring: end the chain at `sink_named("...")` (or any other `sink` form) and
+drop the `.sealed()` call. The declared topology is unchanged.
+
 ### Changed: one tasklet form, on the author's own type (`give-rust-one-tasklet-form`)
 
 **Breaking.** A tasklet is the author's own type, `impl Tasklet for T` under

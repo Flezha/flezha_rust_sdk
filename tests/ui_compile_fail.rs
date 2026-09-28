@@ -11,8 +11,6 @@ fn ui_compile_fail() {
     let t = trybuild::TestCases::new();
     t.compile_fail("tests/ui/wire_wrong_input.rs");
     t.compile_fail("tests/ui/entry_channel_disallowed_type.rs");
-    t.compile_fail("tests/ui/sealed_disallows_on_full.rs");
-    t.compile_fail("tests/ui/sealed_disallows_wiring.rs");
     t.compile_fail("tests/ui/stream_handle_cannot_escape.rs");
     t.compile_fail("tests/ui/entry_stream_has_no_plugin_sink.rs");
     t.compile_fail("tests/ui/output_without_byte_form.rs");

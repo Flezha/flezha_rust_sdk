@@ -140,8 +140,7 @@ identity. Graphs must be acyclic; per-channel config (`keyed`, `on_full`,
 `retry_max`, `retry_backoff_ms`) chains on the handle; the hybrid
 tap is the SAME method — `sink()` / `sink_named(name)` / `sink_with(serializer)`
 / `sink_named_with(name, serializer)` all return the handle, so a consumer wires
-after it. A channel is terminal by having none; `.sealed()` states that in the
-type.
+after it. A channel is terminal by having none.
 
 A tasklet that needs **two feeds** — a data stream plus a live config
 stream, a join of two computed streams — subscribes them with `merge`, which

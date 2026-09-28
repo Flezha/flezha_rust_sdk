@@ -238,18 +238,12 @@ pub use cell::timer::TimerKind;                            # ADDED by `cell-time
 #     # CHANGED by `unify-plugin-sink-api`: `also_output_with` -> `sink_with`,
 #     # `also_output` -> `sink`, and the terminal `output` is REMOVED (no
 #     # coexistence). One egress method, always returning the handle; a channel
-#     # is terminal by having no further wiring. `sealed()` is the opt-in
-#     # compile-time statement of that, and the only source of `Channel<T>`.
+#     # is terminal by having no further wiring.
 #     pub fn sink_with<F>(self, plugin_name: &'static str, serializer: F) -> Self
 #       where F: Fn(&T) -> Vec<u8> + Send + Sync + 'static;
 #     pub fn sink(self, plugin_name: &'static str) -> Self where T: Serialize;
-#     pub fn sealed(self) -> Channel<T>;   # no builder methods; no topology effect
-#
-#   pub struct Channel<T>;   # Copy; returned ONLY by `Stream::sealed`
-#     # CHANGED by `unify-plugin-sink-api`: the `pub id: ChannelId` field is
-#     # REMOVED. Nothing read it, and a stateless marker is what makes
-#     # "sealing records nothing" true by construction — a `sealed()` able to
-#     # reach the builder would materialize a leaf node's absent output channel.
+#     # REMOVED: `sealed()` and `Channel<T>`; a channel is terminal by having
+#     # no further wiring.
 #
 #   Multi-input tasklets (`add-multi-input-tasklets`):
 #

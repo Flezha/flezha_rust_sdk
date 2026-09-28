@@ -253,10 +253,8 @@ impl UnboundedOperator for TwoUnnamedRouterOperator {
         // Two unnamed mentions of one class are ONE node by the node-identity
         // rule, so the second declaration re-wires the traffic edge it already
         // owns.
-        c.route_latest(docs, trades, |t: &Trade| t.symbol.clone())
-            .sealed();
-        c.route_latest(alt, trades, |t: &Trade| t.symbol.clone())
-            .sealed();
+        c.route_latest(docs, trades, |t: &Trade| t.symbol.clone());
+        c.route_latest(alt, trades, |t: &Trade| t.symbol.clone());
     }
 }
 
@@ -272,11 +270,9 @@ impl UnboundedOperator for TwoNamedRouterOperator {
         let trades = c.input::<Trade>("trades");
         let alt = c.input::<Thresholds>("alt_thresholds");
         c.route_latest_named(docs, trades, |t: &Trade| t.symbol.clone(), "primary")
-            .named("primary_out")
-            .sealed();
+            .named("primary_out");
         c.route_latest_named(alt, trades, |t: &Trade| t.symbol.clone(), "secondary")
-            .named("secondary_out")
-            .sealed();
+            .named("secondary_out");
     }
 }
 
@@ -319,8 +315,7 @@ impl UnboundedOperator for SelfRoutedOperator {
 
     fn channels(c: &ChannelBuilder) {
         let both = c.input::<Trade>("trades");
-        c.route_latest(both, both, |t: &Trade| t.symbol.clone())
-            .sealed();
+        c.route_latest(both, both, |t: &Trade| t.symbol.clone());
     }
 }
 

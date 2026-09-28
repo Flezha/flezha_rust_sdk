@@ -42,9 +42,6 @@ impl UnboundedOperator for TradeWatcherOperator {
     /// evaluated on whatever the transforms above it produced. Only the first
     /// stage is keyed: a plain `into` leaves its consumer single-cell, which is
     /// right for a stage that keeps nothing per symbol.
-    ///
-    /// `sealed()` states that the signals channel is where the desk's output
-    /// ends: a later `into` on this chain no longer compiles.
     fn channels(c: &ChannelBuilder) {
         c.input::<TradeMessage>("trades")
             .filter(|message| message.channel == "trade") // trade messages only
@@ -53,7 +50,6 @@ impl UnboundedOperator for TradeWatcherOperator {
             .key_by(|trade| trade.symbol.clone()) // one cell per symbol
             .into::<TrackPrices>()
             .into::<BuyAboveAverage>()
-            .sink_named("signals")
-            .sealed();
+            .sink_named("signals");
     }
 }

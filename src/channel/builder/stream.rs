@@ -9,7 +9,7 @@ use flz_core::host::HostLink;
 
 use super::state::{erase, erase_transform, BuilderState, PluginSink};
 use super::ChannelBuilder;
-use crate::channel::{Channel, EdgeKeyFn, EdgeTransformFn, EdgeYield, OverflowPolicy};
+use crate::channel::{EdgeKeyFn, EdgeTransformFn, EdgeYield, OverflowPolicy};
 use crate::tasklet::Tasklet;
 
 /// What a stream handle points at. The two markers are what keep the
@@ -319,7 +319,7 @@ impl<'b, T: 'static + Send + Sync> Stream<'b, T, NodeTarget> {
     /// it and the value then reaches both the consumer mailboxes (typed) and
     /// the sink (as bytes). A channel with no consumers is the plugin-bound
     /// terminal — terminality is the absence of further wiring, not a
-    /// different method. [`sealed`](Stream::sealed) states that in the type.
+    /// different method.
     ///
     /// The serializer runs once per emit regardless of consumer count.
     /// Declaring a second sink on one channel is a registration error
@@ -363,14 +363,6 @@ impl<'b, T: 'static + Send + Sync> Stream<'b, T, NodeTarget> {
             Some(name),
             erase::<T, _, _>("plugin serializer", serializer),
         )
-    }
-
-    /// State that nothing follows this channel: the returned [`Channel`]
-    /// exposes no builder methods, so a later consumer or transform is a
-    /// compile error. Purely type-level — it touches no builder state, so the
-    /// topology is identical with or without it.
-    pub fn sealed(self) -> Channel<T> {
-        Channel::new()
     }
 
     fn attach_plugin_sink(

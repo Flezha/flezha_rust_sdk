@@ -475,7 +475,7 @@ fn emit_with_meta_on_pure_inter_tasklet_channel_is_rejected() {
     );
 }
 
-// ---------- one `sink`: terminal, sealed and hybrid are one declaration ----------
+// ---------- one `sink`: terminal and hybrid are one declaration ----------
 
 fn unified_consumer_observed() -> &'static Mutex<Vec<String>> {
     static C: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
@@ -504,20 +504,6 @@ impl UnboundedOperator for TerminalSinkOperator {
     }
 }
 
-/// The same declaration with the optional type-level terminator.
-struct SealedSinkOperator;
-impl UnboundedOperator for SealedSinkOperator {
-    fn factory_id() -> &'static str {
-        "unified_sealed"
-    }
-    fn channels(c: &ChannelBuilder) {
-        c.input::<String>("input")
-            .into::<UnifiedProducer>()
-            .sink_named("unified_out")
-            .sealed();
-    }
-}
-
 /// The same sink with a consumer wired after it — what `also_output` declared.
 struct HybridSinkOperator;
 impl UnboundedOperator for HybridSinkOperator {
@@ -530,53 +516,6 @@ impl UnboundedOperator for HybridSinkOperator {
             .sink_named("unified_out")
             .into::<UnifiedConsumer>();
     }
-}
-
-/// A leaf node sealed with no sink at all — the case where "sealing changes
-/// no topology" is falsifiable: a leaf's output channel is created lazily, so
-/// a `sealed()` that reached the builder would conjure one.
-struct SealedLeafOperator;
-impl UnboundedOperator for SealedLeafOperator {
-    fn factory_id() -> &'static str {
-        "unified_sealed_leaf"
-    }
-    fn channels(c: &ChannelBuilder) {
-        c.input::<String>("input")
-            .into::<UnifiedProducer>()
-            .sealed();
-    }
-}
-
-/// The same graph with the `sealed()` call removed.
-struct BareLeafOperator;
-impl UnboundedOperator for BareLeafOperator {
-    fn factory_id() -> &'static str {
-        "unified_bare_leaf"
-    }
-    fn channels(c: &ChannelBuilder) {
-        c.input::<String>("input").into::<UnifiedProducer>();
-    }
-}
-
-/// Every channel in the topology, in declaration order.
-fn channel_names<R: UnboundedOperator>() -> Vec<String> {
-    build_topology_for::<R>()
-        .expect("topology")
-        .channels
-        .iter()
-        .map(|c| c.name.to_string())
-        .collect()
-}
-
-/// fails when: `sealed()` reaches the builder — a leaf node would then carry
-/// the phantom output channel the lazy creation exists to avoid, and the
-/// "purely type-level" contract would be false wherever no sink precedes it.
-#[test]
-fn sealing_a_leaf_declares_no_channel() {
-    assert_eq!(
-        channel_names::<SealedLeafOperator>(),
-        channel_names::<BareLeafOperator>()
-    );
 }
 
 /// Everything about one channel the sink declaration decides.
@@ -597,18 +536,12 @@ fn sink_shape<R: UnboundedOperator>(channel: &str) -> (ChannelKind, usize, Optio
 
 /// Terminality is the absence of consumers, not a second method: the same
 /// `.sink(...)` call yields the plugin-bound terminal or the hybrid channel
-/// depending only on what is wired after it — and `.sealed()` is a statement
-/// in the type system that changes neither.
+/// depending only on what is wired after it.
 #[test]
-fn terminality_is_derived_from_the_wiring_and_sealed_changes_nothing() {
+fn terminality_is_derived_from_the_wiring() {
     let terminal = sink_shape::<TerminalSinkOperator>("unified_out");
-    let sealed = sink_shape::<SealedSinkOperator>("unified_out");
     let hybrid = sink_shape::<HybridSinkOperator>("unified_out");
 
-    assert_eq!(
-        terminal, sealed,
-        "`.sealed()` must add no topology difference"
-    );
     assert_eq!(
         terminal,
         (

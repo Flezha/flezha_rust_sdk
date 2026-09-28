@@ -62,7 +62,7 @@ pub use cell::timer::TimerKind;
 pub use cell::{RestoreError, RestoreInitPayload};
 pub use channel::builder::TopologyIssue;
 pub use channel::{
-    Channel, ChannelBuilder, EntryStream, Merge, MergeSource, OverflowPolicy, RetryPolicy, Stream,
+    ChannelBuilder, EntryStream, Merge, MergeSource, OverflowPolicy, RetryPolicy, Stream,
 };
 /// Authoring sugar. `#[flezha::tasklet]` on an `impl Tasklet` block, the
 /// short-form `#[flezha::unbounded_operator]` / `#[flezha::bounded_operator]`

@@ -9,7 +9,6 @@
 //! What the types enforce: `.into::<S>()` requires `S: Tasklet<Input = T>`,
 //! so a mismatched consumer fires at the call site; channel payload types come
 //! from the producer's declared `Output`, never a user-supplied token;
-//! `.sealed()` returns a finalized [`Channel`] with no further builder methods;
 //! and a handle borrows the builder (`Stream<'b, T>` is `Copy`), so using one
 //! after the topology freezes at registration is a compile error rather than a
 //! runtime failure.
