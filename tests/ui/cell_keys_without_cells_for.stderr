@@ -1,5 +1,13 @@
-error: #[flezha::tasklet] static cell requires both `keys = [..]` and `cells_for = fn`
- --> tests/ui/cell_keys_without_cells_for.rs:2:1
+error: #[flezha::tasklet] a static cell needs both its keys (`keys = [..]` or a written `fn cell_keys`) and a written `fn cells_for`
+ --> tests/ui/cell_keys_without_cells_for.rs:8:18
   |
-2 | fn f(a: String) -> Vec<u8> {
-  | ^^
+8 | impl Tasklet for F {
+  |                  ^
+
+warning: unused imports: `Ctx`, `TaskletError`, and `Tasklet`
+ --> tests/ui/cell_keys_without_cells_for.rs:2:30
+  |
+2 | use flezha_runner::{tasklet, Ctx, Tasklet, TaskletError};
+  |                              ^^^  ^^^^^^^  ^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

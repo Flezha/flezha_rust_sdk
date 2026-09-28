@@ -32,7 +32,7 @@ pub enum TaskletError {
 
     #[error(
         "tasklet `{tasklet}` declares clock `{clock}`, which does not derive time from the \
-         input; an event-time timer needs `type Clock = EventTimeFrom<_>`"
+         input; an event-time timer needs a tasklet that writes `event_time`"
     )]
     EventTimeTimerWithoutEventTimeClock { tasklet: String, clock: String },
 

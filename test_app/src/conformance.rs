@@ -42,7 +42,6 @@ use flezha_runner::channel::{
 };
 use flezha_runner::operator::builder::{build_topology_for, DEFAULT_MAILBOX_CAPACITY};
 use flezha_runner::operator::topology::OperatorTopology;
-use flezha_runner::tasklet::LogicalClock;
 use flezha_runner::{Flezha, FlezhaRunner};
 use serde_json::{json, Value};
 
@@ -136,9 +135,10 @@ fn mailbox_of(role: &str) -> usize {
     })
 }
 
-/// One palette tasklet: `String → String`, with the role's own facts.
+/// One palette tasklet: `String → String`, with the role's own facts. Written
+/// without the attribute, since a role may declare what registration refuses.
 macro_rules! palette_tasklet {
-    ($ty:ident, $role:literal, $name:literal, { $($facts:tt)* }) => {
+    ($ty:ident, $role:literal, $name:literal, $clock:ident, { $($facts:tt)* }) => {
         #[derive(Default)]
         pub(crate) struct $ty;
 
@@ -146,12 +146,10 @@ macro_rules! palette_tasklet {
             type Input = String;
             type Output = String;
             type State = ();
-            type Config = ();
+            type Change = NoChange;
+            const NAME: &'static str = $name;
+            const CLOCK: ClockKind = ClockKind::$clock;
             $($facts)*
-
-            fn name() -> &'static str {
-                $name
-            }
 
             // A row declares the capacity on the role; the resolver reads it
             // here, which is the only place a Rust tasklet can carry one.
@@ -161,49 +159,29 @@ macro_rules! palette_tasklet {
                 mailbox_of($role)
             }
 
-            fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
+            fn init_state(_: Option<&str>) {}
 
-            fn run(
-                &mut self,
-                _input: String,
-                _state: StateHandle<'_, Self>,
-                _ctx: &mut TaskletCtx<'_>,
-            ) -> Result<(), TaskletError> {
+            fn run(&mut self, _input: String, _ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
                 Ok(())
             }
         }
     };
 }
 
-palette_tasklet!(Plain, "plain", "plain", {
-    type Change = NoChange;
-    type Clock = WallClock;
-});
+palette_tasklet!(Plain, "plain", "plain", Wall, {});
 
-palette_tasklet!(Second, "second", "second", {
-    type Change = NoChange;
-    type Clock = WallClock;
-});
+palette_tasklet!(Second, "second", "second", Wall, {});
 
 // A distinct class declaring the SAME name as `plain`: that IS the collision.
-palette_tasklet!(Twin, "twin", "plain", {
-    type Change = NoChange;
-    type Clock = WallClock;
-});
+palette_tasklet!(Twin, "twin", "plain", Wall, {});
 
-palette_tasklet!(StaticKeys, "static", "static", {
-    type Change = NoChange;
-    type Clock = WallClock;
-
+palette_tasklet!(StaticKeys, "static", "static", Wall, {
     fn cell_keys() -> Vec<&'static str> {
         vec!["a", "b"]
     }
 });
 
-palette_tasklet!(Routed, "routed", "routed", {
-    type Change = NoChange;
-    type Clock = WallClock;
-
+palette_tasklet!(Routed, "routed", "routed", Wall, {
     fn cell_keys() -> Vec<&'static str> {
         vec!["a", "b"]
     }
@@ -215,29 +193,16 @@ palette_tasklet!(Routed, "routed", "routed", {
     }
 });
 
-// Dynamic mode is read off the WIRING in this SDK — a tasklet reached by a
-// keyed chain is dynamic — so the role's own declaration is a plain one.
-palette_tasklet!(Dynamic, "dynamic", "dynamic", {
-    type Change = NoChange;
-    type Clock = WallClock;
-});
+// Dynamic mode is read off the WIRING in this SDK: a tasklet reached by a
+// keyed chain is dynamic, so the role's own declaration is a plain one.
+palette_tasklet!(Dynamic, "dynamic", "dynamic", Wall, {});
 
-palette_tasklet!(NoChangeLogical, "nochange", "nochange", {
-    type Change = NoChange;
-    type Clock = LogicalClock;
-});
+palette_tasklet!(NoChangeLogical, "nochange", "nochange", Logical, {});
 
-/// The event-time extractor the `eventtime` role's clock is served by.
-pub(crate) struct FirstByte;
-impl TimeExtractor<String> for FirstByte {
-    fn extract(input: &String) -> u64 {
+palette_tasklet!(EventTime, "eventtime", "eventtime", EventTime, {
+    fn event_time(input: &String) -> u64 {
         input.len() as u64
     }
-}
-
-palette_tasklet!(EventTime, "eventtime", "eventtime", {
-    type Change = NoChange;
-    type Clock = EventTimeFrom<FirstByte>;
 });
 
 // ---------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-//! Reshaping and keying on the wiring (`stream-transforms`).
+//! Reshaping and keying on the wiring.
 //!
 //! One trade feed, four candle timeframes, one candle Cell per
 //! symbol-and-timeframe. Written with Tasklets alone that is a filter class
@@ -19,7 +19,7 @@
 //! The whole topology contains exactly ONE Tasklet node. The transforms add
 //! no Cell, no mailbox and no dispatch hop: everything declared before
 //! `.into` composes into a single closure stored on that one consumer edge.
-//! Fusion is structural — `.into` IS the boundary — so there is no optimizer to
+//! Fusion is structural (`.into` IS the boundary), so there is no optimizer to
 //! second-guess and nothing to disable.
 //!
 //! Two obligations come with running on the edge, and they are the whole
@@ -33,7 +33,7 @@
 //!   from. Reshaping a value is cheap; parsing a megabyte is not.
 //!
 //! `key_by` is **total**: it names a Cell, it never declines. Discarding an
-//! input is `filter`'s job — which is why the qty check comes first.
+//! input is `filter`'s job, which is why the qty check comes first.
 //!
 //! Run it with:
 //!     Flezha::create_runner("default")?
@@ -41,10 +41,10 @@
 //!         .run()?;
 //!
 //! then feed it:
-//!     flz operator send candles --channel trades --text '{"symbol":"AAPL","price":190.2,"qty":3.0}'
+//!     flz operator send candles --channel trades --text '{"symbol":"BTC/USD","price":64100.0,"qty":0.5}'
 
-use flezha_runner::state::{Change, RestoreInitPayload, StateHandle, WallClock};
-use flezha_runner::tasklet::{Tasklet, TaskletCtx, TaskletError};
+use flezha_runner::state::Change;
+use flezha_runner::tasklet::{Ctx, Tasklet, TaskletError};
 use flezha_runner::{ChannelBuilder, UnboundedOperator};
 use serde::{Deserialize, Serialize};
 
@@ -89,28 +89,29 @@ struct CandleState {
 #[derive(Clone, Serialize, Deserialize)]
 struct Tick(f64);
 
-impl Change for Tick {}
+impl Change<CandleState> for Tick {
+    fn apply_to(&self, state: &mut CandleState) {
+        state.high = state.high.max(self.0);
+        state.low = state.low.min(self.0);
+        state.trades += 1;
+    }
+}
 
 /// The one Tasklet in the graph. Note what it does NOT declare: no
 /// `cell_keys()`, no keying member of any kind. It is dynamic-mode because a
-/// keyed edge feeds it — and its Cells are created on first sight of each
+/// keyed edge feeds it, and its Cells are created on first sight of each
 /// key.
 #[derive(Default)]
 struct Candle;
 
+#[flezha_runner::tasklet(name = "candle")]
 impl Tasklet for Candle {
     type Input = Slot;
     type Output = String;
     type State = CandleState;
     type Change = Tick;
-    type Clock = WallClock;
-    type Config = ();
 
-    fn name() -> &'static str {
-        "candle"
-    }
-
-    fn init_state(_key: Option<&str>, _payload: Option<RestoreInitPayload<'_>>) -> CandleState {
+    fn init_state(_key: Option<&str>) -> CandleState {
         CandleState {
             high: f64::MIN,
             low: f64::MAX,
@@ -118,25 +119,17 @@ impl Tasklet for Candle {
         }
     }
 
-    fn apply_change(state: &mut CandleState, change: &Tick) {
-        state.high = state.high.max(change.0);
-        state.low = state.low.min(change.0);
-        state.trades += 1;
-    }
-
-    fn run(
-        &mut self,
-        input: Slot,
-        mut state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
-        state.apply(Tick(input.price));
+    fn run(&mut self, input: Slot, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        ctx.change(Tick(input.price));
         // The Cell IS the candle, so the plain emit already carries the
-        // Cell's own key — `key_by`'s value — and cannot drift from it.
+        // Cell's own key (`key_by`'s value) and cannot drift from it.
         // `emit_keyed` is for the output whose key is a different one.
         ctx.emit(format!(
             "{} {} h={} l={}",
-            input.symbol, input.tf, state.high, state.low
+            input.symbol,
+            input.tf,
+            ctx.state().high,
+            ctx.state().low
         ))
     }
 }

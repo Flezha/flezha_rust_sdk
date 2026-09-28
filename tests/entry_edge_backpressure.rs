@@ -14,12 +14,12 @@ static WIRE_TEST_LOCK: Mutex<()> = Mutex::new(());
 static WIRE_A_DELIVERED: AtomicUsize = AtomicUsize::new(0);
 static WIRE_B_DELIVERED: AtomicUsize = AtomicUsize::new(0);
 
-test_tasklet!(WireSlowATasklet, "wire_slow_a_tasklet", Vec<u8> => (), (), cap 2, |_input, _state, _ctx| {
+test_tasklet!(WireSlowATasklet, "wire_slow_a_tasklet", Vec<u8> => (), (), cap 2, |_input, _ctx| {
     WIRE_A_DELIVERED.fetch_add(1, Ordering::Relaxed);
     Ok(())
 });
 
-test_tasklet!(WireFastBTasklet, "wire_fast_b_tasklet", Vec<u8> => (), (), |_input, _state, _ctx| {
+test_tasklet!(WireFastBTasklet, "wire_fast_b_tasklet", Vec<u8> => (), (), |_input, _ctx| {
     WIRE_B_DELIVERED.fetch_add(1, Ordering::Relaxed);
     Ok(())
 });

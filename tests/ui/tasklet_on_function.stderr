@@ -1,0 +1,5 @@
+error: #[flezha::tasklet] sits on an `impl Tasklet for YourType` block; a one-tasklet operator written as a function takes `#[flezha::unbounded_operator(..)]` or `#[flezha::bounded_operator(..)]`
+ --> tests/ui/tasklet_on_function.rs:4:1
+  |
+4 | fn echo(input: String) -> String {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

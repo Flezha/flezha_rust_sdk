@@ -1,51 +1,32 @@
-//! Tasklet trait + TaskletCtx + TaskletError per `operator-architecture/design.md`
-//! Decision 1, `operator-mvp-rust/design.md` Decision 1, and
-//! `operator-state-persistence/design.md` Decisions 1, 4, 5, 8, 9.
+//! The `Tasklet` trait, its context and its errors.
 
 pub mod change;
 pub mod clock;
 pub mod ctx;
 pub mod error;
-pub mod simple;
-pub mod state_handle;
 
 use std::sync::Arc;
 
-pub use change::{Change, CoalesceKey, DerivedState, JournalValue, NoChange};
-pub use clock::{Clock, ClockFor, EventTimeFrom, LogicalClock, TimeExtractor, WallClock};
+pub use change::{Change, CoalesceKey, JournalValue, NoChange};
+pub use clock::ClockKind;
 #[allow(unused_imports)]
 pub(crate) use ctx::EmitSink;
-pub use ctx::{StableId, TaskletCtx};
+pub use ctx::{Ctx, StableId};
 pub use error::TaskletError;
 pub use flz_core::spawn::{
     IfRunning, SpawnError, SpawnHandle, SpawnOptions, SpawnOutcome, SpawnResult,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-pub use simple::SimpleTasklet;
-pub use state_handle::StateHandle;
-
-use crate::cell::restore::RestoreInitPayload;
-
-/// Default panic message stamped on `Tasklet::apply_change` for Tasklets
-/// that declare a non-`NoChange` Change without overriding
-/// `apply_change`. Public-but-hidden so the runtime's CellFlusher
-/// can grep for the same string in tests.
-#[doc(hidden)]
-pub const DEFAULT_TASKLET_APPLY_CHANGE_PANIC_MESSAGE: &str =
-    "Tasklet declared a non-NoChange `type Change` but did not override `apply_change`. \
-     Implement `fn apply_change(state: &mut Self::State, change: &Self::Change)` to fold \
-     the Change into the State deterministically.";
 
 /// Default panic message stamped on `Tasklet::on_timer` for Tasklets that
 /// register a timer without handling it. Registration is a runtime call, so
-/// the omission cannot be caught at build time — the failure mode is the one
-/// [`DEFAULT_TASKLET_APPLY_CHANGE_PANIC_MESSAGE`] already teaches.
+/// the omission cannot be caught at build time.
 #[doc(hidden)]
 pub const DEFAULT_TASKLET_ON_TIMER_PANIC_MESSAGE: &str =
-    "Tasklet registered a timer but did not override `on_timer`. Implement \
-     `fn on_timer(&mut self, fired_at: u64, kind: TimerKind, state: StateHandle<'_, Self>, \
-     ctx: &mut TaskletCtx<'_>)` to handle the firing.";
+    "Tasklet registered a timer but did not write `on_timer`. Write \
+     `fn on_timer(&mut self, fired_at: u64, kind: TimerKind, ctx: &mut Ctx<'_, Self>)` \
+     to handle the firing.";
 
 /// Default per-Cell bound on pending timers, used by
 /// [`Tasklet::max_timers_per_cell`]. A per-Cell timer set is
@@ -54,43 +35,31 @@ pub const DEFAULT_TASKLET_ON_TIMER_PANIC_MESSAGE: &str =
 pub const DEFAULT_MAX_TIMERS_PER_CELL: usize = 10_000;
 pub use flz_core::operator::topology::DEFAULT_COMPACT_AFTER_BYTES;
 
-/// One Tasklet in an UnboundedOperator topology. Stateless dispatcher; per-cell
-/// State is held by the runtime and threaded through `run` via a
-/// [`StateHandle`].
+/// One tasklet: the author's own type, whose `run` the runtime calls for each
+/// input a Cell receives. The Cell's state is held by the runtime and reached
+/// through the [`Ctx`] every call takes.
+///
+/// The everyday form writes `#[flezha::tasklet(name = "...")]` on the
+/// `impl Tasklet for MyType` block. The attribute generates no type: it only
+/// adds the items the block leaves out ([`Self::NAME`], [`Self::CLOCK`], the
+/// settings given as keys, the `*_OVERRIDDEN` flags from the hooks the block
+/// writes, a default [`Self::init_state`], and `State = ()`,
+/// `Change = NoChange`, `Output = ()`). A block without the attribute writes
+/// every one of those items itself.
 ///
 /// # Determinism contract
 ///
 /// Replay is Flezha's recovery primitive: crash-resume, retry-replay, and
-/// the effectively-once / rewind capabilities all re-run Tasklets over
+/// the effectively-once / rewind capabilities all re-run tasklets over
 /// restored state and rely on the results coming out the same. [`Self::run`],
-/// [`Self::apply_change`], and [`Self::compensate`] MUST therefore be
+/// [`Change::apply_to`] and [`Self::compensate`] MUST therefore be
 /// deterministic: given the same Cell state and the same input sequence
 /// they produce identical state changes and identical emitted outputs.
-/// Ambient non-determinism inside these functions — `SystemTime::now()`,
-/// random numbers / `Uuid::new_v4()`, reads of external mutable state — is
-/// a contract violation. Obtain time via [`TaskletCtx::now`] (served from
-/// the declared [`Self::Clock`]) and identifiers via
-/// [`TaskletCtx::stable_id`]. `TaskletTestHarness::replay_emits_equal`
-/// verifies the output side of the contract; `replay_equals` the state side.
-///
-/// State persistence (added by `operator-state-persistence`):
-///
-/// - [`Self::Change`] — associated type bounded operator on
-///   `Serialize + DeserializeOwned + Send + Sync + 'static`. Default
-///   [`NoChange`] opts out of persistence machinery.
-/// - [`Self::Clock`] — sealed trait. Default [`WallClock`].
-/// - [`Self::Config`] — typed startup config bound to `DeserializeOwned`.
-///   Default `()` invokes `Self::default()`.
-/// - [`Self::SCHEMA_VERSION`] — bump on non-additive `State` or `Change`
-///   schema edits; [`Self::MIN_READABLE_SCHEMA_VERSION`] plus
-///   [`Self::migrate_state`] / [`Self::migrate_change`] read what an earlier
-///   version wrote.
-/// - [`Self::apply_change`] — fold a Change into the State; MUST be
-///   deterministic; verified by `TaskletTestHarness::replay_equals`.
-/// - [`Self::compact_after_bytes`] — per-Cell WAL compaction
-///   threshold reported to the controller at operator-start time. Default 64 MiB.
-/// - [`Self::from_config`] — constructor from typed Config. Default
-///   `Self::default()` for `Config = ()`.
+/// Ambient non-determinism inside these functions (`SystemTime::now()`,
+/// random numbers, `Uuid::new_v4()`, reads of external mutable state) is
+/// a contract violation. Obtain time via [`Ctx::now`] and identifiers via
+/// [`Ctx::stable_id`]. `TaskletTestHarness::replay_emits_equal` verifies the
+/// output side of the contract; `replay_equals` the state side.
 pub trait Tasklet: Send + Sync + 'static + Default {
     /// Inter-tasklet transport is `Arc<Self::Input>`-zero-copy; the
     /// runtime hands the consumer the unique Arc when possible and
@@ -114,26 +83,21 @@ pub trait Tasklet: Send + Sync + 'static + Default {
     /// without going through the user's `init_state`.
     type State: Send + Sync + 'static + Serialize + DeserializeOwned;
 
-    /// Persistent mutation record. Use [`NoChange`] (the uninhabited
-    /// default) to opt out of persistence machinery — the runtime
-    /// detects `NoChange` via TypeId and skips flush-buffer allocation.
-    /// Stable Rust does not yet stabilize `associated_type_defaults`, so
-    /// every impl declares this; persistence-free Tasklets write
-    /// `type Change = NoChange;` explicitly.
-    type Change: Change;
+    /// The change this tasklet records against its state, applied with
+    /// [`Ctx::change`] and folded back on restore through
+    /// [`Change::apply_to`]. [`NoChange`] keeps no state: the runtime
+    /// detects it via `TypeId` and allocates no flush buffer.
+    type Change: Change<Self::State>;
 
-    /// Time source. Sealed trait; evaluated by the runtime once per `run`
-    /// invocation and served via [`TaskletCtx::now`]. The
-    /// `ClockFor<Self::Input>` bound makes an unservable configuration
-    /// (e.g. `EventTimeFrom<F>` whose `F` lacks a `TimeExtractor` for this
-    /// Input) a compile error. Persistence-free Tasklets write
-    /// `type Clock = WallClock;`.
-    type Clock: ClockFor<Self::Input>;
+    /// The tasklet's name within its operator, unique there. Saved state is
+    /// keyed by it, never by the Rust type, so renaming the type keeps the
+    /// state.
+    const NAME: &'static str;
 
-    /// Startup-time configuration deserialized from operator-start metadata
-    /// (postcard). Use `()` for the no-config default; impls write
-    /// `type Config = ();` explicitly.
-    type Config: DeserializeOwned + Send + Sync + 'static;
+    /// Where `ctx.now()` comes from: `EventTime` when the tasklet writes
+    /// [`Self::event_time`], `Logical` for the durable change seq, `Wall`
+    /// otherwise. `#[flezha::tasklet]` sets it from what the block writes.
+    const CLOCK: ClockKind;
 
     /// Per-Tasklet schema version stamped into every persisted record this
     /// Tasklet writes — change records and state snapshots alike.
@@ -186,11 +150,11 @@ pub trait Tasklet: Send + Sync + 'static + Default {
     ///
     /// Must be deterministic: crash-resume, retry-replay and rewind all
     /// re-enter the restore fold, and the same bytes must produce the same
-    /// state every time — the contract [`Self::apply_change`] already carries.
+    /// state every time, the contract [`Change::apply_to`] already carries.
     fn migrate_state(from_version: u32, _bytes: &[u8]) -> Result<Self::State, String> {
         Err(format!(
             "tasklet `{}` declares no state migration from schema_version {from_version}",
-            Self::name()
+            Self::NAME
         ))
     }
 
@@ -201,39 +165,27 @@ pub trait Tasklet: Send + Sync + 'static + Default {
     fn migrate_change(from_version: u32, _bytes: &[u8]) -> Result<Self::Change, String> {
         Err(format!(
             "tasklet `{}` declares no change migration from schema_version {from_version}",
-            Self::name()
+            Self::NAME
         ))
     }
 
-    /// Stable identifier within the UnboundedOperator class. Must be unique per UnboundedOperator.
-    fn name() -> &'static str;
+    /// Per-cell state factory, called once for every new Cell: `cell_key` is
+    /// `None` in single-cell mode and the Cell's key otherwise. On a warm
+    /// restart the runtime applies the persisted snapshot and change log after
+    /// this returns. `#[flezha::tasklet]` writes it as `Default::default()`
+    /// when the block does not.
+    fn init_state(cell_key: Option<&str>) -> Self::State;
 
-    /// Per-cell state factory. Called once per Cell at UnboundedOperator
-    /// startup. `cell_key` is `None` in single-cell mode and
-    /// `Some(k)` for static mode where `k` is one of the values returned
-    /// by `cell_keys()`.
-    ///
-    /// `init_payload` is `None` for cold starts. For warm restarts the
-    /// runtime hands the user a borrowed view of the snapshot +
-    /// change-log bytes; the user MAY inspect them for instrumentation
-    /// but does not have to decode them — the runtime applies the
-    /// payload automatically AFTER `init_state` returns.
-    fn init_state(
-        cell_key: Option<&str>,
-        init_payload: Option<RestoreInitPayload<'_>>,
-    ) -> Self::State;
-
-    /// Fold a Change into the per-Cell state. Default panics for
-    /// non-`NoChange` Change types; Tasklets declaring a Change MUST
-    /// override. Determinism is convention-enforced; verified by
-    /// `TaskletTestHarness::replay_equals`.
-    fn apply_change(_state: &mut Self::State, _change: &Self::Change) {
-        if std::any::TypeId::of::<Self::Change>() == std::any::TypeId::of::<NoChange>() {
-            // No-op: NoChange is uninhabited so this branch never runs
-            // in practice; included for completeness.
-            return;
-        }
-        panic!("{}", DEFAULT_TASKLET_APPLY_CHANGE_PANIC_MESSAGE);
+    /// The event time of `input`, served as `ctx.now()` and the clock
+    /// event-time timers fire against. Writing it is what makes
+    /// `#[flezha::tasklet]` declare [`ClockKind::EventTime`]. It MUST depend
+    /// only on the input. The default panics naming the tasklet, since only an
+    /// event-time clock calls it.
+    fn event_time(_input: &Self::Input) -> u64 {
+        panic!(
+            "tasklet `{}` declares an event-time clock but does not write `event_time`",
+            Self::NAME
+        );
     }
 
     /// Per-Cell WAL size threshold reported to the controller. The
@@ -242,56 +194,6 @@ pub trait Tasklet: Send + Sync + 'static + Default {
     /// in lockstep with the controller's `:default_compact_after_bytes`.
     fn compact_after_bytes() -> usize {
         DEFAULT_COMPACT_AFTER_BYTES
-    }
-
-    /// Constructor from typed Config. Default invokes `Self::default()`,
-    /// which requires `Config = ()` (`Self: Default` is already part of
-    /// the trait bound).
-    ///
-    /// This is the sanctioned path for a **parameterized tasklet** — one
-    /// class serving several configurations, each instance constructed from
-    /// the typed config carried in the operator-start metadata:
-    ///
-    /// ```
-    /// use flezha_runner::tasklet::{Tasklet, TaskletCtx, TaskletError};
-    /// use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
-    ///
-    /// #[derive(serde::Deserialize)]
-    /// struct SmaConfig {
-    ///     window: usize,
-    /// }
-    ///
-    /// #[derive(Default)]
-    /// struct Sma {
-    ///     window: usize,
-    /// }
-    ///
-    /// impl Tasklet for Sma {
-    ///     type Input = f64;
-    ///     type Output = f64;
-    ///     type State = ();
-    ///     type Change = NoChange;
-    ///     type Clock = WallClock;
-    ///     type Config = SmaConfig;
-    ///     fn name() -> &'static str { "sma" }
-    ///     fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    ///     fn from_config(cfg: SmaConfig) -> Self {
-    ///         Sma { window: cfg.window }
-    ///     }
-    ///     fn run(
-    ///         &mut self,
-    ///         _input: f64,
-    ///         _state: StateHandle<'_, Self>,
-    ///         _ctx: &mut TaskletCtx<'_>,
-    ///     ) -> Result<(), TaskletError> {
-    ///         Ok(())
-    ///     }
-    /// }
-    /// ```
-    fn from_config(_cfg: Self::Config) -> Self {
-        // The default impl is monomorphized per Tasklet; Tasklets with a
-        // non-`()` Config must override.
-        Self::default()
     }
 
     /// Static-cell declaration. Empty (the default) means
@@ -305,17 +207,16 @@ pub trait Tasklet: Send + Sync + 'static + Default {
     /// tasklets inherit the default `vec![]`; the runtime skips this call
     /// for them.
     ///
-    /// Static-mode tasklets (`cell_keys()` non-empty) MUST override this
-    /// AND set `CELLS_FOR_OVERRIDDEN = true`; the topology builder
-    /// refuses the operator otherwise.
+    /// Static-mode tasklets (`cell_keys()` non-empty) MUST write this;
+    /// `#[flezha::tasklet]` then sets `CELLS_FOR_OVERRIDDEN`, and the topology
+    /// builder refuses the operator otherwise.
     fn cells_for(_input: &Self::Input) -> Vec<&'static str> {
         Vec::new()
     }
 
-    /// Override-detection sentinel. Default `false`; static-mode Tasklets
-    /// MUST set this to `true` alongside their `cells_for` override.
-    /// `build_topology` checks the const+`cell_keys()` consistency at
-    /// startup and refuses mismatched declarations.
+    /// Whether the tasklet writes [`Self::cells_for`]. `#[flezha::tasklet]`
+    /// derives it; `build_topology` checks it against `cell_keys()` at startup
+    /// and refuses mismatched declarations.
     const CELLS_FOR_OVERRIDDEN: bool = false;
 
     /// Dynamic-mode idle eviction window. `None` (default) = no eviction:
@@ -335,7 +236,7 @@ pub trait Tasklet: Send + Sync + 'static + Default {
         100_000
     }
 
-    /// Override-detection sentinel for [`Self::max_cells`].
+    /// Whether the tasklet sets [`Self::max_cells`].
     const MAX_CELLS_OVERRIDDEN: bool = false;
 
     /// Per-Cell mailbox capacity. The consumer Cell allocates
@@ -348,10 +249,9 @@ pub trait Tasklet: Send + Sync + 'static + Default {
     ///   2. `FLEZHA_MAILBOX_CAPACITY` env var (parsed as `usize`).
     ///   3. The built-in default (`DEFAULT_MAILBOX_CAPACITY`).
     ///
-    /// Implementors overriding the default MUST also set
-    /// `MAILBOX_CAPACITY_OVERRIDDEN = true` so the runtime can tell an
-    /// explicit-but-equal-to-default override from the inherited default.
-    /// Capacity must be in `1..=1_048_576`; out-of-range values fail
+    /// `#[flezha::tasklet]` sets the flag from the `capacity` key or a written
+    /// `mailbox_capacity`, so the runtime can tell an explicit value equal to
+    /// the default from the inherited default. Capacity must be in `1..=1_048_576`; out-of-range values fail
     /// `register_factory(R)` with the offending Tasklet name.
     fn mailbox_capacity() -> usize {
         Self::DEFAULT_MAILBOX_CAPACITY
@@ -360,35 +260,28 @@ pub trait Tasklet: Send + Sync + 'static + Default {
     /// Default mailbox capacity used by [`Self::mailbox_capacity`].
     const DEFAULT_MAILBOX_CAPACITY: usize = 1024;
 
-    /// Override-detection sentinel for `mailbox_capacity`. Default `false`;
-    /// implementors that override `mailbox_capacity()` MUST set this to
-    /// `true` so the runtime applies the Tasklet value over any
-    /// `FLEZHA_MAILBOX_CAPACITY` env override.
+    /// Whether the tasklet sets [`Self::mailbox_capacity`], so the runtime
+    /// applies it over any `FLEZHA_MAILBOX_CAPACITY` env override.
     const MAILBOX_CAPACITY_OVERRIDDEN: bool = false;
 
-    /// Compute. Receives the typed input, a [`StateHandle`] to read state
-    /// via `Deref` and mutate via `state.apply(change)`, and a context for
-    /// emitting outputs. Producing zero outputs == no `ctx.emit(...)` call.
+    /// Compute. Receives the typed input and the context, which reads the
+    /// state with `ctx.state()`, changes it with `ctx.change(..)` and emits
+    /// with `ctx.emit(..)`. Producing zero outputs is calling no emit.
     /// Returning Err logs against `(operator, tasklet, cell)` and discards
     /// any partial emits.
-    fn run(
-        &mut self,
-        input: Self::Input,
-        state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError>;
+    fn run(&mut self, input: Self::Input, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError>;
 
-    /// Handle a timer this Tasklet registered via
-    /// [`TaskletCtx::timer_at_event_time`] / [`TaskletCtx::timer_after`].
-    /// Receives the same [`StateHandle`] and [`TaskletCtx`] as [`Self::run`],
-    /// so it may apply Changes, emit, and register further timers.
+    /// Handle a timer this tasklet registered via
+    /// [`Ctx::timer_at_event_time`] / [`Ctx::timer_after`]. Receives the same
+    /// [`Ctx`] as [`Self::run`], so it may change state, emit, and register
+    /// further timers.
     ///
     /// `fired_at` is the timestamp the timer was **scheduled at**, never the
     /// wall clock at which it actually fired: a processing-time timer set for
     /// T that fires at T+δ still reports T. Passing T+δ would make a replay
     /// observe a different value and break the determinism contract in exactly
     /// the way `SystemTime::now()` inside `run` does. For the same reason
-    /// [`TaskletCtx::now`] equals `fired_at` inside this call, so a chained
+    /// [`Ctx::now`] equals `fired_at` inside this call, so a chained
     /// `ctx.timer_after(..)` schedules off the timer that woke it.
     ///
     /// A failure here climbs the input channel's retry ladder and parks to the
@@ -396,20 +289,19 @@ pub trait Tasklet: Send + Sync + 'static + Default {
     /// removal is durable either way, so a poison timer parks once instead of
     /// firing forever.
     ///
-    /// The default panics naming the Tasklet: registering a timer without
+    /// The default panics naming the tasklet: registering a timer without
     /// handling it is an authoring error, and registration is a runtime call,
     /// so no build-time check can catch it.
     fn on_timer(
         &mut self,
         _fired_at: u64,
         _kind: crate::cell::timer::TimerKind,
-        _state: StateHandle<'_, Self>,
-        _ctx: &mut TaskletCtx<'_>,
+        _ctx: &mut Ctx<'_, Self>,
     ) -> Result<(), TaskletError> {
         panic!(
             "{} (tasklet `{}`)",
             DEFAULT_TASKLET_ON_TIMER_PANIC_MESSAGE,
-            Self::name()
+            Self::NAME
         );
     }
 
@@ -421,31 +313,28 @@ pub trait Tasklet: Send + Sync + 'static + Default {
         DEFAULT_MAX_TIMERS_PER_CELL
     }
 
-    /// Optional saga **compensation** hook (bounded operators only). An
-    /// tasklet whose `run` commits a reversible side effect declares this to
+    /// Optional saga **compensation** hook (bounded operators only). A
+    /// tasklet whose `run` commits a reversible side effect writes this to
     /// undo it. The bounded operator fires it ONLY during abnormal-termination
-    /// rollback — never on a clean `ok`, never for an unbounded operator — once
+    /// rollback (never on a clean `ok`, never for an unbounded operator), once
     /// per cell that ran, in reverse completion order, handing back that
-    /// cell's own collected outputs (zero-copy `Arc`s) and its
-    /// [`StateHandle`], so it can reverse precisely. Compensation MUST be
-    /// idempotent by author contract: a crash mid-rollback may re-invoke it.
+    /// cell's own collected outputs (zero-copy `Arc`s) and its [`Ctx`], so it
+    /// can reverse precisely. Compensation MUST be idempotent by author
+    /// contract: a crash mid-rollback may re-invoke it.
     ///
-    /// The default is a no-op; a tasklet that overrides this MUST also set
-    /// [`COMPENSATE_OVERRIDDEN`](Self::COMPENSATE_OVERRIDDEN) `= true` so the
-    /// bounded operator registers it as compensable (hookless tasklets are
-    /// skipped during rollback).
+    /// The default is a no-op. Writing it in a `#[flezha::tasklet]` block sets
+    /// [`COMPENSATE_OVERRIDDEN`](Self::COMPENSATE_OVERRIDDEN), which is what
+    /// makes the bounded operator register the tasklet as compensable.
     fn compensate(
         &mut self,
         _completed_output: Vec<Arc<Self::Output>>,
-        _state: StateHandle<'_, Self>,
-        _ctx: &mut TaskletCtx<'_>,
+        _ctx: &mut Ctx<'_, Self>,
     ) -> Result<(), TaskletError> {
         Ok(())
     }
 
-    /// Override-detection sentinel for [`Self::compensate`]. Default `false`; an
-    /// tasklet that overrides `compensate` MUST set this to `true` so the
-    /// bounded operator knows the tasklet participates in saga rollback.
+    /// Whether the tasklet writes [`Self::compensate`]; hookless tasklets are
+    /// skipped during rollback.
     const COMPENSATE_OVERRIDDEN: bool = false;
 }
 

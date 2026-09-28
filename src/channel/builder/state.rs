@@ -17,8 +17,8 @@ use crate::tasklet::Tasklet;
 /// `BuilderState::tasklets` and consumed by `build_topology` to produce
 /// per-cell slots in each `OperatorInstance`.
 pub(crate) struct TaskletEntry {
-    /// Node identity: the tasklet's `name()`, or the explicit node name
-    /// given at wiring time (`into_named`). Feeds everything `name()` feeds —
+    /// Node identity: the tasklet's `NAME`, or the explicit node name
+    /// given at wiring time (`into_named`). Feeds everything `NAME` feeds —
     /// state directories, journal entries, the derived channel name,
     /// diagnostics.
     pub name: &'static str,
@@ -44,15 +44,12 @@ pub(crate) struct TaskletEntry {
     /// Erased output-type marker: matches the producer-edge's payload type.
     pub output_type_id: std::any::TypeId,
 
-    /// `Tasklet::Clock::type_name()` captured at registration time, plus
-    /// whether the Tasklet's `Change` is `NoChange`. `build_topology`
-    /// refuses clock configurations the runtime cannot serve (a
-    /// `LogicalClock` without persistent changes never advances).
-    pub clock_type_name: &'static str,
-    /// `Clock::IS_EVENT_TIME` — whether this tasklet's clock yields a time
-    /// carried by the input rather than one read off the wall or the WAL.
-    /// Late-input correction is only definable against such a clock.
-    pub clock_is_event_time: bool,
+    /// `Tasklet::CLOCK` captured at registration time, plus whether the
+    /// tasklet's `Change` is `NoChange`. `build_topology` refuses clock
+    /// configurations the runtime cannot serve (a logical clock without
+    /// persistent changes never advances), and late-input correction is only
+    /// definable against an event-time clock.
+    pub clock: crate::tasklet::ClockKind,
     pub change_is_nochange: bool,
 
     /// `Tasklet::mailbox_capacity()` captured at registration time. The
@@ -241,10 +238,10 @@ impl BuilderState {
     /// Resolve or create the node for `S` under the node-identity rule: two
     /// unnamed mentions of one class are the same node; an explicit node name
     /// creates/refers to a distinct node whose identity string replaces
-    /// `S::name()`. An identity claimed by a *different* declaration is a
+    /// `S::NAME`. An identity claimed by a *different* declaration is a
     /// collision.
     pub(super) fn resolve_node<S: Tasklet>(&mut self, node_name: Option<&'static str>) -> u32 {
-        let identity = node_name.unwrap_or_else(S::name);
+        let identity = node_name.unwrap_or(S::NAME);
         let named = node_name.is_some();
         if let Some(&id) = self.tasklet_name_to_id.get(identity) {
             let existing = &self.tasklets[id as usize];
@@ -451,8 +448,7 @@ fn tasklet_entry<S: Tasklet>(name: &'static str, named: bool) -> TaskletEntry {
         output_channel_id: None,
         input_type_id: std::any::TypeId::of::<S::Input>(),
         output_type_id: std::any::TypeId::of::<S::Output>(),
-        clock_type_name: <S::Clock as crate::tasklet::Clock>::type_name(),
-        clock_is_event_time: <S::Clock as crate::tasklet::Clock>::IS_EVENT_TIME,
+        clock: S::CLOCK,
         change_is_nochange: std::any::TypeId::of::<S::Change>()
             == std::any::TypeId::of::<crate::tasklet::NoChange>(),
         mailbox_capacity: S::mailbox_capacity(),

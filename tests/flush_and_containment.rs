@@ -18,40 +18,29 @@ static FLUSH_ORDER_LOG: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct AddChange(i64);
-impl flezha_runner::state::Change for AddChange {}
+impl flezha_runner::state::Change<i64> for AddChange {
+    fn apply_to(&self, state: &mut i64) {
+        *state += self.0;
+    }
+}
 
 #[derive(Default)]
 struct FlushOrderTasklet;
+#[flezha_runner::tasklet(name = "flush_order_tasklet")]
 impl Tasklet for FlushOrderTasklet {
     type Input = String;
     type Output = String;
     type State = i64;
     type Change = AddChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "flush_order_tasklet"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> i64 {
-        0
-    }
-    fn apply_change(state: &mut i64, change: &AddChange) {
-        *state += change.0;
-    }
-    fn run(
-        &mut self,
-        _: String,
-        mut state: StateHandle<'_, FlushOrderTasklet>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
-        state.apply(AddChange(1));
-        let total = *state;
-        ctx.emit::<String>(format!("{total}"))?;
+    fn run(&mut self, _: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        ctx.change(AddChange(1));
+        let total = *ctx.state();
+        ctx.emit(format!("{total}"))?;
         Ok(())
     }
 }
 
-test_tasklet!(FlushOrderSinkTasklet, "flush_order_sink_tasklet", String => (), (), |_input, _state, _ctx| {
+test_tasklet!(FlushOrderSinkTasklet, "flush_order_sink_tasklet", String => (), (), |_input, _ctx| {
     Ok(())
 });
 
@@ -120,7 +109,7 @@ fn change_is_flushed_before_output_is_emitted() {
 
 static PANIC_AFTER: AtomicUsize = AtomicUsize::new(0);
 
-test_tasklet!(PanicTasklet, "panic_tasklet", String => (), (), |input, _state, _ctx| {
+test_tasklet!(PanicTasklet, "panic_tasklet", String => (), (), |input, _ctx| {
     if input == "boom" {
         panic!("induced tasklet panic");
     }
@@ -203,14 +192,14 @@ fn tasklet_panic_does_not_wedge_the_cell() {
 
 static BLOCKED_CONSUMED: AtomicUsize = AtomicUsize::new(0);
 
-test_tasklet!(BlockProducerTasklet, "block_producer_tasklet", String => String, (), |_input, _state, ctx| {
+test_tasklet!(BlockProducerTasklet, "block_producer_tasklet", String => String, (), |_input, ctx| {
     for i in 0..8 {
         ctx.emit(format!("v{}", i))?;
     }
     Ok(())
 });
 
-test_tasklet!(BlockedConsumerTasklet, "blocked_consumer_tasklet", String => String, (), cap 1, |_input, _state, _ctx| {
+test_tasklet!(BlockedConsumerTasklet, "blocked_consumer_tasklet", String => String, (), cap 1, |_input, _ctx| {
     BLOCKED_CONSUMED.fetch_add(1, Ordering::AcqRel);
     Ok(())
 });

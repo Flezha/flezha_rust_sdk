@@ -1,0 +1,5 @@
+error[E0594]: cannot assign to data in a `&` reference
+  --> tests/ui/state_direct_mutation.rs:29:9
+   |
+29 |         ctx.state().seen = 1;
+   |         ^^^^^^^^^^^^^^^^^^^^ cannot assign

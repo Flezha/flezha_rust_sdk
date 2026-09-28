@@ -5,11 +5,8 @@ use std::sync::Arc;
 
 use super::*;
 use crate::bounded::*;
-use crate::cell::restore::RestoreInitPayload;
 use crate::channel::ChannelBuilder;
-use crate::tasklet::change::NoChange;
-use crate::tasklet::clock::WallClock;
-use crate::tasklet::{StateHandle, Tasklet, TaskletCtx, TaskletError};
+use crate::tasklet::{Ctx, Tasklet, TaskletError};
 
 // ---- staged-commit / transactional-outbox tasks --------------------------
 
@@ -38,32 +35,18 @@ impl BoundedOperator for LeakBounded {
 /// produces plugin-bound undo output (staged for the `compensated` entry).
 #[derive(Default)]
 pub(crate) struct UndoEmit;
+#[flezha_runner::tasklet(name = "bounded_undo_emit")]
 impl Tasklet for UndoEmit {
     type Input = String;
     type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "bounded_undo_emit"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: String,
-        _state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         ctx.emit(format!("did:{input}"))?;
         Ok(())
     }
-    const COMPENSATE_OVERRIDDEN: bool = true;
     fn compensate(
         &mut self,
         completed_output: Vec<Arc<String>>,
-        _state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
+        ctx: &mut Ctx<'_, Self>,
     ) -> Result<(), TaskletError> {
         for out in &completed_output {
             ctx.emit(format!("undo:{out}"))?;

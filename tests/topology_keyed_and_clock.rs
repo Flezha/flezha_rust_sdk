@@ -1,19 +1,17 @@
 //! Keyed-channel declaration and the build-time clock check: what a keyed
 //! edge must carry, and which clock a class may ask for.
 
-use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle};
-
 mod common;
 use common::prelude::*;
 
 // ----- Keyed channel declaration + build-time clock validation -----
 
-test_tasklet!(KeyedProducerTasklet, "keyed_producer_tasklet", String => String, (), |input, _state, ctx| {
-    ctx.emit_keyed::<String>(input.clone(), input)?;
+test_tasklet!(KeyedProducerTasklet, "keyed_producer_tasklet", String => String, (), |input, ctx| {
+    ctx.emit_keyed(input.clone(), input)?;
     Ok(())
 });
 
-test_tasklet!(KeyedConsumerTasklet, "keyed_consumer_tasklet", String => (), (), |_input, _state, _ctx| {
+test_tasklet!(KeyedConsumerTasklet, "keyed_consumer_tasklet", String => (), (), |_input, _ctx| {
     Ok(())
 });
 
@@ -91,27 +89,15 @@ fn keyed_channel_without_plugin_wire_is_rejected() {
     )));
 }
 
-/// LogicalClock with `Change = NoChange` cannot be served (the durable
+/// A logical clock with `Change = NoChange` cannot be served (the durable
 /// change seq never advances) and fails the build naming the clock.
 #[derive(Default)]
 struct FrozenLogicalTasklet;
+#[flezha_runner::tasklet(name = "frozen_logical_tasklet", logical_clock)]
 impl Tasklet for FrozenLogicalTasklet {
     type Input = String;
     type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = flezha_runner::state::LogicalClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "frozen_logical_tasklet"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        _: String,
-        _state: StateHandle<'_, Self>,
-        _: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, _: String, _: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         Ok(())
     }
 }
@@ -129,7 +115,7 @@ impl UnboundedOperator for FrozenLogicalOperator {
 #[test]
 fn logical_clock_without_persistent_changes_is_rejected_at_build() {
     let err = match build_topology_for::<FrozenLogicalOperator>() {
-        Ok(_) => panic!("LogicalClock + NoChange must fail the build"),
+        Ok(_) => panic!("a logical clock with NoChange must fail the build"),
         Err(e) => e,
     };
     assert!(err.errors.iter().any(|e| matches!(

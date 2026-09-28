@@ -5,14 +5,14 @@
 //!
 //! The whole reason a timer exists is the last line of `run`: without it,
 //! nothing would ever close a session whose user simply stopped clicking.
-//! There is no input to carry that decision — only the passage of time.
+//! There is no input to carry that decision, only the passage of time.
 
 use std::time::Duration;
 
 use flezha_runner::channel::ChannelBuilder;
 use flezha_runner::operator::UnboundedOperator;
-use flezha_runner::state::{Change, RestoreInitPayload, TimerKind, WallClock};
-use flezha_runner::tasklet::{StateHandle, Tasklet, TaskletCtx, TaskletError};
+use flezha_runner::state::{Change, TimerKind};
+use flezha_runner::tasklet::{Ctx, Tasklet, TaskletError};
 use flezha_runner::Flezha;
 use serde::{Deserialize, Serialize};
 
@@ -24,7 +24,14 @@ enum SessionChange {
     Clicked(String),
     Closed { at: u64, clicks: usize },
 }
-impl Change for SessionChange {}
+impl Change<SessionState> for SessionChange {
+    fn apply_to(&self, state: &mut SessionState) {
+        match self {
+            SessionChange::Clicked(page) => state.clicks.push(page.clone()),
+            SessionChange::Closed { .. } => state.closed = true,
+        }
+    }
+}
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct SessionState {
@@ -46,38 +53,18 @@ struct SessionWindow {
     deadline: Option<u64>,
 }
 
+#[flezha_runner::tasklet(name = "session_window")]
 impl Tasklet for SessionWindow {
     type Input = String;
     type Output = ClosedSession;
     type State = SessionState;
     type Change = SessionChange;
-    // A WALL clock, deliberately. `timer_after` is anchored on `ctx.now()`, and
-    // the deadline this Tasklet wants is "30s of real silence".
-    type Clock = WallClock;
-    type Config = ();
 
-    fn name() -> &'static str {
-        "session_window"
-    }
-
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> SessionState {
-        SessionState::default()
-    }
-
-    fn apply_change(state: &mut SessionState, change: &SessionChange) {
-        match change {
-            SessionChange::Clicked(page) => state.clicks.push(page.clone()),
-            SessionChange::Closed { .. } => state.closed = true,
-        }
-    }
-
-    fn run(
-        &mut self,
-        input: String,
-        mut state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
-        state.apply(SessionChange::Clicked(input));
+    // No `event_time`, so the clock is the wall clock, deliberately:
+    // `timer_after` is anchored on `ctx.now()`, and the deadline this tasklet
+    // wants is "30s of real silence".
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        ctx.change(SessionChange::Clicked(input));
 
         // Retract the deadline this click supersedes, then set the new one.
         // Both are durable ops on the pending set, so a crash between them is
@@ -93,14 +80,13 @@ impl Tasklet for SessionWindow {
         &mut self,
         fired_at: u64,
         _kind: TimerKind,
-        mut state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
+        ctx: &mut Ctx<'_, Self>,
     ) -> Result<(), TaskletError> {
         self.deadline = None;
-        let clicks = state.clicks.len();
-        // `fired_at` is the SCHEDULED instant, not the wall clock at firing —
+        let clicks = ctx.state().clicks.len();
+        // `fired_at` is the SCHEDULED instant, not the wall clock at firing,
         // so this record is identical on a replay.
-        state.apply(SessionChange::Closed {
+        ctx.change(SessionChange::Closed {
             at: fired_at,
             clicks,
         });

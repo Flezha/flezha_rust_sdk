@@ -19,8 +19,7 @@ use crate::cell::flusher::{FlushableBuffer, TypedBodies, TypedBuffer};
 use crate::cell::timer::{PendingTimers, TimerKind, TimerOp};
 use crate::cell::CellSlot;
 use crate::operator::instance::OperatorInstance;
-use crate::tasklet::state_handle::StateHandle;
-use crate::tasklet::{Tasklet, TaskletCtx, TaskletError};
+use crate::tasklet::{Ctx, Tasklet, TaskletError};
 
 impl<S: Tasklet> TaskletDispatcherImpl<S> {
     /// Fresh per-invocation capture: `Some` where the Cell's record keeps the
@@ -33,17 +32,14 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
     }
 
     /// Per-invocation determinism inputs, computed once at entry: the
-    /// declared Clock's value (served by `ctx.now()`) and the durable
+    /// declared clock's value (served by `ctx.now()`) and the durable
     /// change seq (`stable_id` derivation). `input` is `None` only for
-    /// `compensate`. Wall time is lazy — only WallClock pays the
+    /// `compensate`. Wall time is lazy: only the wall clock pays the
     /// `SystemTime::now()`.
     pub(super) fn invocation_inputs(&self, input: Option<&S::Input>) -> (u64, u64) {
         let seq = self.flush.change_seq.load(Ordering::Relaxed);
-        let now = <S::Clock as crate::tasklet::ClockFor<S::Input>>::evaluate(
-            input,
-            crate::tasklet::clock::wall_now_ms,
-            || seq,
-        );
+        let now =
+            crate::tasklet::clock::evaluate::<S>(input, crate::tasklet::clock::wall_now_ms, || seq);
         (now, seq)
     }
 
@@ -154,10 +150,17 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
         let state = &mut *scope.state;
         let live_timers = &mut *scope.timers;
         let session = self.timers.session(live_timers, now, firing);
-        let ctx = TaskletCtx::new(&mut sink, now, invocation_seq, &self.flush.cell_identity)
-            .with_cell_key(self.cell_key.as_deref())
-            .taking(call.consumed_offset())
-            .during_replay(replay);
+        let ctx = Ctx::<S>::new(
+            &mut state.state,
+            changes,
+            &mut sink,
+            now,
+            invocation_seq,
+            &self.flush.cell_identity,
+        )
+        .with_cell_key(self.cell_key.as_deref())
+        .taking(call.consumed_offset())
+        .during_replay(replay);
         // A rollback is no place to arm a deadline: `compensate` answers
         // `TimersUnavailable`, in either kind.
         let mut ctx = if matches!(call, Call::Compensate { .. }) {
@@ -165,14 +168,11 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
         } else {
             ctx.with_timers(&session)
         };
-        let handle = StateHandle::<S>::new(&mut state.state, changes);
-
+        let tasklet = &mut state.tasklet;
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match call {
-            Call::Input { input, .. } => state.tasklet.run(input, handle, &mut ctx),
-            Call::Timer { fired_at, kind } => {
-                state.tasklet.on_timer(fired_at, kind, handle, &mut ctx)
-            }
-            Call::Compensate { outputs } => state.tasklet.compensate(outputs, handle, &mut ctx),
+            Call::Input { input, .. } => tasklet.run(input, &mut ctx),
+            Call::Timer { fired_at, kind } => tasklet.on_timer(fired_at, kind, &mut ctx),
+            Call::Compensate { outputs } => tasklet.compensate(outputs, &mut ctx),
         }));
         match outcome {
             Ok(Ok(())) => {
@@ -247,7 +247,7 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
         crate::cell::park::PARKED_TOTAL.fetch_add(1, Ordering::Relaxed);
         eprintln!(
             "[flezha] tasklet {} parking poison payload to DLQ after {} attempt(s): {}",
-            S::name(),
+            S::NAME,
             attempt,
             error
         );
@@ -356,7 +356,7 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
             Some(error) if self.flush.bounded => {
                 flz_core::bounded::note_failure(
                     scope.slot,
-                    BoundedError::from(format!("tasklet {} failed: {error}", S::name())),
+                    BoundedError::from(format!("tasklet {} failed: {error}", S::NAME)),
                     None,
                     attempt,
                 );

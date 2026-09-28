@@ -1,5 +1,13 @@
 error: #[flezha::tasklet]: `cell_key` no longer exists; declare the Cell key on the wiring instead: `.key_by(f)` on the stream that feeds this tasklet
- --> tests/ui/tasklet_cell_key_removed.rs:3:36
+ --> tests/ui/tasklet_cell_key_removed.rs:8:23
   |
-3 | #[flezha_runner::tasklet(id = "p", cell_key = sk)]
-  |                                    ^^^^^^^^
+8 | #[tasklet(name = "p", cell_key = sk)]
+  |                       ^^^^^^^^
+
+warning: unused imports: `Ctx`, `TaskletError`, and `Tasklet`
+ --> tests/ui/tasklet_cell_key_removed.rs:3:30
+  |
+3 | use flezha_runner::{tasklet, Ctx, Tasklet, TaskletError};
+  |                              ^^^  ^^^^^^^  ^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

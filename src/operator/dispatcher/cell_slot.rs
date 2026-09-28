@@ -105,7 +105,7 @@ pub(super) fn flusher_registered<S: Tasklet>(records_effects: bool) -> bool {
 /// never give it anything. A `Change == NoChange` class registers nothing,
 /// because registering one would spawn the drain thread for a program that
 /// will never produce a record; its CellSlot still carries an (always empty)
-/// flush buffer so the dispatcher constructs a `StateHandle<'_, S>` uniformly.
+/// flush buffer so the dispatcher constructs a `Ctx<'_, S>` uniformly.
 /// A Cell that records effects always registers: its effect records (outputs
 /// + consumed-offset, possibly with no change) drain through the same buffer.
 fn register_flusher<S: Tasklet>(
@@ -185,7 +185,7 @@ pub fn build_cell_slot<S: Tasklet>(args: BuildCellArgs<'_>) -> Arc<CellSlot> {
     // and calls a richer constructor.
     let typed_state = CellState::<S> {
         tasklet: S::default(),
-        state: S::init_state(args.cell_key, None),
+        state: S::init_state(args.cell_key),
     };
 
     let topology = Arc::clone(&args.topology);
@@ -223,4 +223,58 @@ pub fn build_cell_slot<S: Tasklet>(args: BuildCellArgs<'_>) -> Arc<CellSlot> {
         flusher_entry_id,
         mailbox_capacity,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use serde::{Deserialize, Serialize};
+
+    use super::flusher_registered;
+    use crate::tasklet::{Change, Ctx, Tasklet, TaskletError};
+
+    #[derive(Default)]
+    struct Stateless;
+
+    #[flezha_runner::tasklet(name = "stateless")]
+    impl Tasklet for Stateless {
+        type Input = ();
+
+        fn run(&mut self, _: (), _: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+            Ok(())
+        }
+    }
+
+    #[derive(Serialize, Deserialize)]
+    struct Bump;
+
+    impl Change<u64> for Bump {
+        fn apply_to(&self, state: &mut u64) {
+            *state += 1;
+        }
+    }
+
+    #[derive(Default)]
+    struct Stateful;
+
+    #[flezha_runner::tasklet(name = "stateful")]
+    impl Tasklet for Stateful {
+        type Input = ();
+        type State = u64;
+        type Change = Bump;
+
+        fn run(&mut self, _: (), ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+            ctx.change(Bump);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn only_a_tasklet_that_journals_joins_the_flusher() {
+        assert!(!flusher_registered::<Stateless>(false));
+        assert!(flusher_registered::<Stateful>(false));
+        assert!(
+            flusher_registered::<Stateless>(true),
+            "effect records ship through it"
+        );
+    }
 }

@@ -98,7 +98,7 @@ pub struct TaskletDispatcherImpl<S: Tasklet> {
     /// as `flz.cell` on keyed-channel emits.
     cell_label: Arc<str>,
     /// The key this Cell was routed by, `None` in single-cell mode.
-    /// Served to every invocation's `TaskletCtx`, where it is both
+    /// Served to every invocation's `Ctx`, where it is both
     /// `ctx.cell_key()` and the default key of a keyed-channel emit.
     cell_key: Option<Arc<str>>,
     /// Flush-before-emit wiring, mirrored from the owning `CellSlot`
@@ -275,7 +275,7 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
             Err(_) => {
                 eprintln!(
                     "[flezha] dispatcher: payload type mismatch for tasklet {}",
-                    S::name()
+                    S::NAME
                 );
                 None
             }
@@ -393,7 +393,7 @@ impl<S: Tasklet> TaskletDispatcher for TaskletDispatcherImpl<S> {
     }
 
     fn tasklet_name(&self) -> &'static str {
-        S::name()
+        S::NAME
     }
 
     fn retry_policy(&self) -> RetryPolicy {
@@ -401,7 +401,7 @@ impl<S: Tasklet> TaskletDispatcher for TaskletDispatcherImpl<S> {
     }
 
     fn is_event_time(&self) -> bool {
-        <S::Clock as crate::tasklet::Clock>::IS_EVENT_TIME
+        S::CLOCK == crate::tasklet::ClockKind::EventTime
     }
 
     fn correction_policy(&self) -> Option<crate::operator::topology::CorrectionPolicy> {
@@ -413,15 +413,11 @@ impl<S: Tasklet> TaskletDispatcher for TaskletDispatcherImpl<S> {
     }
 
     fn event_time_of(&self, payload: &CellPayload) -> Option<u64> {
-        if !<S::Clock as crate::tasklet::Clock>::IS_EVENT_TIME {
+        if S::CLOCK != crate::tasklet::ClockKind::EventTime {
             return None;
         }
         let input = payload.value.downcast_ref::<S::Input>()?;
-        Some(<S::Clock as crate::tasklet::ClockFor<S::Input>>::evaluate(
-            Some(input),
-            crate::tasklet::clock::wall_now_ms,
-            || 0,
-        ))
+        Some(S::event_time(input))
     }
 
     fn compensate(&self, slot: &Arc<CellSlot>, outputs: Vec<Arc<dyn Any + Send + Sync>>) {
@@ -451,7 +447,7 @@ impl<S: Tasklet> TaskletDispatcher for TaskletDispatcherImpl<S> {
             stream: &stream,
             instance: &instance,
         };
-        // Compensation has no current input: EventTimeFrom yields 0 here. A
+        // Compensation has no current input: an event-time clock yields 0 here. A
         // failing hook is the undo's to report, never a retry.
         let _ = self.invoke_once(
             Invocation::compensation(typed, self.invocation_inputs(None).0),
@@ -479,7 +475,7 @@ impl<S: Tasklet> TaskletDispatcher for TaskletDispatcherImpl<S> {
         };
 
         // Rebuild the typed state from snapshot + change-log replay. This runs
-        // the same path as cold-start `init_state` + `apply_change`, so a
+        // the same path as cold-start `init_state` + `apply_to`, so a
         // counter that summed to N comes back at N rather than 0.
         let (new_state, restored_timers, migrated) =
             init_cell_with_payload::<S>(cell_key, Some(&payload))?;

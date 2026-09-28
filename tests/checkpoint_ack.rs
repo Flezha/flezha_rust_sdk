@@ -12,42 +12,27 @@ use common::prelude::*;
 /// Folds every input into state; `commit` closes the interval, `poison` parks.
 #[derive(Default)]
 struct CheckpointTasklet;
+#[flezha_runner::tasklet(name = "checkpoint_tasklet")]
 impl Tasklet for CheckpointTasklet {
     type Input = String;
     type Output = String;
     type State = i64;
     type Change = TickChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "checkpoint_tasklet"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> i64 {
-        0
-    }
-    fn apply_change(state: &mut i64, _change: &TickChange) {
-        *state += 1;
-    }
-    fn run(
-        &mut self,
-        input: String,
-        mut state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         match input.as_str() {
             "poison" => Err(TaskletError::non_retryable("poison")),
             "commit" => {
-                state.apply(TickChange);
+                ctx.change(TickChange);
                 ctx.checkpoint();
                 Ok(())
             }
             "emit" => {
-                state.apply(TickChange);
-                ctx.emit_keyed::<String>("k".to_string(), input)
+                ctx.change(TickChange);
+                ctx.emit_keyed("k".to_string(), input)
             }
             // Pure accumulation: nothing durable, nothing emitted.
             _ => {
-                state.apply(TickChange);
+                ctx.change(TickChange);
                 Ok(())
             }
         }

@@ -34,7 +34,7 @@ static DEEPEST_INFLIGHT: AtomicUsize = AtomicUsize::new(0);
 
 const FANOUT: usize = 20;
 
-test_tasklet!(ChainHead, "nonparking_chain_head", String => String, (), |_input, _state, ctx| {
+test_tasklet!(ChainHead, "nonparking_chain_head", String => String, (), |_input, ctx| {
     for i in 0..FANOUT {
         ctx.emit(format!("v{i}"))?;
     }
@@ -43,14 +43,14 @@ test_tasklet!(ChainHead, "nonparking_chain_head", String => String, (), |_input,
 
 // Capacity 1 on both hops: every emit past the first has nowhere to go, so the
 // producer defers on all but one of them.
-test_tasklet!(ChainMid, "nonparking_chain_mid", String => String, (), cap 1, |input, _state, ctx| {
+test_tasklet!(ChainMid, "nonparking_chain_mid", String => String, (), cap 1, |input, ctx| {
     CHAIN_MID.fetch_add(1, Ordering::AcqRel);
     note_inflight();
     ctx.emit(input)?;
     Ok(())
 });
 
-test_tasklet!(ChainTail, "nonparking_chain_tail", String => (), (), cap 1, |_input, _state, _ctx| {
+test_tasklet!(ChainTail, "nonparking_chain_tail", String => (), (), cap 1, |_input, _ctx| {
     CHAIN_TAIL.fetch_add(1, Ordering::AcqRel);
     note_inflight();
     Ok(())
@@ -139,14 +139,14 @@ fn a_chain_of_full_mailboxes_drains_on_a_single_pinned_worker() {
 
 static ORDERED_SEEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
-test_tasklet!(OrderedHead, "nonparking_ordered_head", String => String, (), |_input, _state, ctx| {
+test_tasklet!(OrderedHead, "nonparking_ordered_head", String => String, (), |_input, ctx| {
     for i in 0..FANOUT {
         ctx.emit(format!("e{i}"))?;
     }
     Ok(())
 });
 
-test_tasklet!(OrderedTail, "nonparking_ordered_tail", String => (), (), cap 1, |input, _state, _ctx| {
+test_tasklet!(OrderedTail, "nonparking_ordered_tail", String => (), (), cap 1, |input, _ctx| {
     ORDERED_SEEN.lock().unwrap().push(input);
     Ok(())
 });
@@ -200,14 +200,14 @@ fn per_producer_emit_order_survives_the_holdback() {
 
 static GATED_SEEN: AtomicUsize = AtomicUsize::new(0);
 
-test_tasklet!(GateHead, "nonparking_gate_head", String => String, (), |_input, _state, ctx| {
+test_tasklet!(GateHead, "nonparking_gate_head", String => String, (), |_input, ctx| {
     for i in 0..FANOUT {
         ctx.emit(format!("g{i}"))?;
     }
     Ok(())
 });
 
-test_tasklet!(GateTail, "nonparking_gate_tail", String => (), (), cap 1, |_input, _state, _ctx| {
+test_tasklet!(GateTail, "nonparking_gate_tail", String => (), (), cap 1, |_input, _ctx| {
     GATED_SEEN.fetch_add(1, Ordering::AcqRel);
     Ok(())
 });

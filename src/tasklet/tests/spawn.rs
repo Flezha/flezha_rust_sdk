@@ -6,7 +6,8 @@ use std::any::Any;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::tasklet::ctx::{EmitSink, TaskletCtx};
+use super::ProbeCell;
+use crate::tasklet::ctx::EmitSink;
 use crate::tasklet::error::TaskletError;
 use crate::tasklet::{IfRunning, SpawnError, SpawnOptions, SpawnOutcome, SpawnResult};
 
@@ -66,7 +67,8 @@ fn without_a_control_plane_the_request_resolves_instead_of_blocking_the_tasklet(
     drop(capture_control_requests());
 
     let mut sink = NullSink;
-    let ctx = TaskletCtx::new(&mut sink, 0, 0, IDENTITY);
+    let mut cell = ProbeCell::default();
+    let ctx = cell.ctx(&mut sink, 0, 0, IDENTITY);
     assert_eq!(
         ctx.spawn_bounded("worker", b"payload".to_vec()).wait(),
         Err(SpawnError::Unavailable)
@@ -78,7 +80,8 @@ fn an_unbounded_factory_is_answered_by_name() {
     let _guard = crate::runner::env_test_guard();
     let rx = capture_control_requests();
     let mut sink = NullSink;
-    let ctx = TaskletCtx::new(&mut sink, 0, 0, IDENTITY);
+    let mut cell = ProbeCell::default();
+    let ctx = cell.ctx(&mut sink, 0, 0, IDENTITY);
 
     let handle = ctx.spawn_bounded("prices", b"p".to_vec());
     let (reference_id, request) = shipped(&rx);
@@ -101,7 +104,8 @@ fn a_dropped_handle_is_not_an_error_for_the_tasklet() {
     // Fire-and-forget: dropping the handle must neither panic nor block. The
     // failure it carries is reported to the log, not to the caller.
     let mut sink = NullSink;
-    let ctx = TaskletCtx::new(&mut sink, 0, 0, IDENTITY);
+    let mut cell = ProbeCell::default();
+    let ctx = cell.ctx(&mut sink, 0, 0, IDENTITY);
     let _ = ctx.spawn_bounded_with("worker", b"payload".to_vec(), SpawnOptions::id("w1"));
 }
 
@@ -111,7 +115,8 @@ fn a_replayed_invocation_issues_no_request_and_answers_the_id_it_was_given() {
     let rx = capture_control_requests();
 
     let mut sink = NullSink;
-    let ctx = TaskletCtx::new(&mut sink, 0, 0, IDENTITY).during_replay(true);
+    let mut cell = ProbeCell::default();
+    let ctx = cell.ctx(&mut sink, 0, 0, IDENTITY).during_replay(true);
     let named = ctx.spawn_bounded_with("worker", b"payload".to_vec(), SpawnOptions::id("w1"));
     let unnamed = ctx.spawn_bounded("worker", b"payload".to_vec());
 
@@ -139,7 +144,8 @@ fn a_spawn_with_options_ships_its_id_and_policy() {
     let rx = capture_control_requests();
 
     let mut sink = NullSink;
-    let ctx = TaskletCtx::new(&mut sink, 0, 0, IDENTITY);
+    let mut cell = ProbeCell::default();
+    let ctx = cell.ctx(&mut sink, 0, 0, IDENTITY);
     let handle = ctx.spawn_bounded_with(
         "worker",
         b"payload".to_vec(),
@@ -165,7 +171,8 @@ fn an_id_alone_delivers_and_no_id_asks_for_a_generated_one() {
     let rx = capture_control_requests();
 
     let mut sink = NullSink;
-    let ctx = TaskletCtx::new(&mut sink, 0, 0, IDENTITY);
+    let mut cell = ProbeCell::default();
+    let ctx = cell.ctx(&mut sink, 0, 0, IDENTITY);
     let named = ctx.spawn_bounded_with("worker", b"p".to_vec(), SpawnOptions::id("w1"));
     let unnamed = ctx.spawn_bounded("worker", b"p".to_vec());
 

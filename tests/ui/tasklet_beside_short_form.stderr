@@ -1,0 +1,13 @@
+error: #[flezha::unbounded_operator] already completes this block and names its tasklet; a block takes one of `#[flezha::tasklet]`, `#[flezha::unbounded_operator]` and `#[flezha::bounded_operator]`
+ --> tests/ui/tasklet_beside_short_form.rs:9:1
+  |
+9 | #[tasklet(name = "counter")]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `Ctx`, `TaskletError`, `Tasklet`, and `tasklet`
+ --> tests/ui/tasklet_beside_short_form.rs:3:21
+  |
+3 | use flezha_runner::{tasklet, Ctx, Tasklet, TaskletError};
+  |                     ^^^^^^^  ^^^  ^^^^^^^  ^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

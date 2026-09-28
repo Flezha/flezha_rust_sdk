@@ -11,9 +11,8 @@ use flezha_runner::channel::ChannelBuilder;
 use flezha_runner::operator::builder::build_topology_for;
 use flezha_runner::operator::registry::OperatorRegistry;
 use flezha_runner::operator::OperatorInstance;
-use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_runner::tasklet::{Tasklet, TaskletCtx, TaskletError};
-use flezha_runner::{__dispatch_internals as bi, OverflowPolicy, UnboundedOperator};
+use flezha_runner::tasklet::{Tasklet, TaskletError};
+use flezha_runner::{__dispatch_internals as bi, Ctx, OverflowPolicy, UnboundedOperator};
 use flz_core::bench_support::{fan_in, stream_pair, Settle};
 
 static DYN_COUNTER: Settle = Settle::new();
@@ -22,23 +21,10 @@ static DYN_COUNTER: Settle = Settle::new();
 /// so the steady-state bench measures routing only, not reaping.
 #[derive(Default)]
 struct SteadyDynTasklet;
+#[flezha_runner::tasklet(name = "steady_dyn_tasklet")]
 impl Tasklet for SteadyDynTasklet {
     type Input = Vec<u8>;
-    type Output = ();
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "steady_dyn_tasklet"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        _: Vec<u8>,
-        _: StateHandle<'_, Self>,
-        _: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, _: Vec<u8>, _: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         DYN_COUNTER.add(1);
         Ok(())
     }

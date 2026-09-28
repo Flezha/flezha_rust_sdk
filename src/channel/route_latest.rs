@@ -19,9 +19,8 @@ use std::marker::PhantomData;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use crate::cell::restore::RestoreInitPayload;
 use crate::channel::builder::{ChannelBuilder, Stream, StreamTarget};
-use crate::tasklet::{Change, StateHandle, Tasklet, TaskletCtx, TaskletError, WallClock};
+use crate::tasklet::{Change, ClockKind, Ctx, Tasklet, TaskletError};
 
 impl ChannelBuilder {
     /// Turn an operator-wide document stream into per-key deliveries: every
@@ -167,7 +166,22 @@ pub(crate) enum RouterChange<D> {
     Delivered { key: String, version: u64 },
 }
 
-impl<D: Serialize + DeserializeOwned + Send + Sync + 'static> Change for RouterChange<D> {}
+impl<D> Change<RouterState<D>> for RouterChange<D>
+where
+    D: Clone + Serialize + DeserializeOwned + Send + Sync + 'static,
+{
+    fn apply_to(&self, state: &mut RouterState<D>) {
+        match self {
+            RouterChange::Retain(document) => {
+                state.document = Some(document.clone());
+                state.version += 1;
+            }
+            RouterChange::Delivered { key, version } => {
+                state.delivered.insert(key.clone(), *version);
+            }
+        }
+    }
+}
 
 /// The single-cell tasklet [`ChannelBuilder::route_latest`] expands to.
 /// Not public: the block is the whole authoring surface, and the guarantee it
@@ -193,14 +207,10 @@ where
     type Output = (String, D);
     type State = RouterState<D>;
     type Change = RouterChange<D>;
-    type Clock = WallClock;
-    type Config = ();
+    const NAME: &'static str = "route_latest";
+    const CLOCK: ClockKind = ClockKind::Wall;
 
-    fn name() -> &'static str {
-        "route_latest"
-    }
-
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> Self::State {
+    fn init_state(_: Option<&str>) -> Self::State {
         RouterState {
             document: None,
             version: 0,
@@ -208,33 +218,17 @@ where
         }
     }
 
-    fn apply_change(state: &mut Self::State, change: &Self::Change) {
-        match change {
-            RouterChange::Retain(document) => {
-                state.document = Some(document.clone());
-                state.version += 1;
-            }
-            RouterChange::Delivered { key, version } => {
-                state.delivered.insert(key.clone(), *version);
-            }
-        }
-    }
-
-    fn run(
-        &mut self,
-        input: Self::Input,
-        mut state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: Self::Input, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         match input {
             RouteLatestInput::Document(document) => {
                 // Version 0 means "nothing retained", so the first document
                 // lands at 1 and every key's absent entry is already behind it.
-                if state.document.as_ref() != Some(&document) {
-                    state.apply(RouterChange::Retain(document));
+                if ctx.state().document.as_ref() != Some(&document) {
+                    ctx.change(RouterChange::Retain(document));
                 }
             }
             RouteLatestInput::Traffic(key) => {
+                let state = ctx.state();
                 let Some(document) = state.document.as_ref() else {
                     return Ok(());
                 };
@@ -246,11 +240,12 @@ where
                 {
                     return Ok(());
                 }
+                let document = document.clone();
                 // Emit first: a failed emit rides the channel's retry ladder,
                 // and recording the delivery before it would make the retry
                 // silent.
-                ctx.emit((key.clone(), document.clone()))?;
-                state.apply(RouterChange::Delivered { key, version });
+                ctx.emit((key.clone(), document))?;
+                ctx.change(RouterChange::Delivered { key, version });
             }
         }
         Ok(())

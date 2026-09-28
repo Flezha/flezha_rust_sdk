@@ -1,29 +1,37 @@
 error: #[flezha::tasklet] declares a tasklet; `sink` belongs to an operator declaration: write the short form as `#[flezha::unbounded_operator(..)]` or `#[flezha::bounded_operator(..)]`, or wire it in a full form's topology
- --> tests/ui/tasklet_operator_keys.rs:3:36
-  |
-3 | #[flezha_runner::tasklet(id = "a", sink = "echo")]
-  |                                    ^^^^
+  --> tests/ui/tasklet_operator_keys.rs:21:13
+   |
+21 | refused!(A, sink = "echo");
+   |             ^^^^
 
 error: #[flezha::tasklet] declares a tasklet; `input` belongs to an operator declaration: write the short form as `#[flezha::unbounded_operator(..)]` or `#[flezha::bounded_operator(..)]`, or wire it in a full form's topology
- --> tests/ui/tasklet_operator_keys.rs:8:36
-  |
-8 | #[flezha_runner::tasklet(id = "b", input = "prices")]
-  |                                    ^^^^^
+  --> tests/ui/tasklet_operator_keys.rs:22:13
+   |
+22 | refused!(B, input = "prices");
+   |             ^^^^^
 
 error: #[flezha::tasklet] declares a tasklet; `kind` belongs to an operator declaration: write the short form as `#[flezha::unbounded_operator(..)]` or `#[flezha::bounded_operator(..)]`, or wire it in a full form's topology
-  --> tests/ui/tasklet_operator_keys.rs:13:36
+  --> tests/ui/tasklet_operator_keys.rs:23:13
    |
-13 | #[flezha_runner::tasklet(id = "c", kind = "unbounded")]
-   |                                    ^^^^
+23 | refused!(C, kind = "unbounded");
+   |             ^^^^
 
 error: #[flezha::tasklet] declares a tasklet; `on_full` belongs to an operator declaration: write the short form as `#[flezha::unbounded_operator(..)]` or `#[flezha::bounded_operator(..)]`, or wire it in a full form's topology
-  --> tests/ui/tasklet_operator_keys.rs:18:36
+  --> tests/ui/tasklet_operator_keys.rs:24:13
    |
-18 | #[flezha_runner::tasklet(id = "e", on_full = drop_oldest)]
-   |                                    ^^^^^^^
+24 | refused!(E, on_full = drop_oldest);
+   |             ^^^^^^^
 
-error: #[flezha::unbounded_operator]: unknown attribute `kind`
-  --> tests/ui/tasklet_operator_keys.rs:23:47
+error: #[flezha::unbounded_operator]: unknown attribute `kind`; accepted: id, sink, input, on_full, loop_mode, keys, capacity, max_cells, idle_ttl_seconds, schema_version, min_readable_schema_version, compact_after_bytes, max_timers_per_cell, logical_clock
+  --> tests/ui/tasklet_operator_keys.rs:26:47
    |
-23 | #[flezha_runner::unbounded_operator(id = "d", kind = "unbounded", sink = "echo")]
+26 | #[flezha_runner::unbounded_operator(id = "d", kind = "unbounded", sink = "echo")]
    |                                               ^^^^
+
+warning: unused imports: `Ctx`, `TaskletError`, and `Tasklet`
+ --> tests/ui/tasklet_operator_keys.rs:3:30
+  |
+3 | use flezha_runner::{tasklet, Ctx, Tasklet, TaskletError};
+  |                              ^^^  ^^^^^^^  ^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

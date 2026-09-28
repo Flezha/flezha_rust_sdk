@@ -1,0 +1,5 @@
+error: ShortFormStateOnFunction: #[flezha::unbounded_operator] on a function takes one input and returns its output; a tasklet with state or a context is written as `impl Tasklet for YourType` under the same attribute
+ --> tests/ui/short_form_state_on_function.rs:9:31
+  |
+9 | fn store_input(input: String, state: &mut Seen) -> String {
+  |                               ^^^^^^^^^^^^^^^^

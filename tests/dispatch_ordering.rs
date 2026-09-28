@@ -9,7 +9,7 @@ use common::prelude::*;
 
 static APPEND_OBSERVED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-test_tasklet!(AppendTasklet, "append_tasklet", String => String, (), |input, _state, _ctx| {
+test_tasklet!(AppendTasklet, "append_tasklet", String => String, (), |input, _ctx| {
     APPEND_OBSERVED.lock().unwrap().push(input);
     Ok(())
 });
@@ -62,7 +62,7 @@ fn per_cell_input_order_preserved() {
 static APPEND_CONCURRENT: AtomicUsize = AtomicUsize::new(0);
 static APPEND_MAX_CONCURRENT: AtomicUsize = AtomicUsize::new(0);
 
-test_tasklet!(ConcurrencyProbeTasklet, "concurrency_probe_tasklet", String => String, (), |_input, _state, _ctx| {
+test_tasklet!(ConcurrencyProbeTasklet, "concurrency_probe_tasklet", String => String, (), |_input, _ctx| {
     let cur = APPEND_CONCURRENT.fetch_add(1, Ordering::AcqRel) + 1;
     let mut prev = APPEND_MAX_CONCURRENT.load(Ordering::Acquire);
     while cur > prev {
@@ -159,17 +159,12 @@ fn parallel_observed() -> &'static Mutex<HashMap<&'static str, Vec<String>>> {
 
 #[derive(Default)]
 struct ParallelStaticTasklet;
+#[flezha_runner::tasklet(name = "parallel_static_tasklet", keys = ["a", "b", "c", "d"])]
 impl Tasklet for ParallelStaticTasklet {
     type Input = String;
     type Output = String;
     type State = String;
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "parallel_static_tasklet"
-    }
-    fn init_state(cell_key: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) -> String {
+    fn init_state(cell_key: Option<&str>) -> String {
         match cell_key {
             Some("a") => "a".to_string(),
             Some("b") => "b".to_string(),
@@ -178,10 +173,6 @@ impl Tasklet for ParallelStaticTasklet {
             _ => "?".to_string(),
         }
     }
-    fn cell_keys() -> Vec<&'static str> {
-        vec!["a", "b", "c", "d"]
-    }
-    const CELLS_FOR_OVERRIDDEN: bool = true;
     fn cells_for(input: &String) -> Vec<&'static str> {
         match input.chars().next() {
             Some('a') => vec!["a"],
@@ -190,13 +181,8 @@ impl Tasklet for ParallelStaticTasklet {
             _ => vec!["d"],
         }
     }
-    fn run(
-        &mut self,
-        input: String,
-        state: StateHandle<'_, ParallelStaticTasklet>,
-        _: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
-        let key: &'static str = match state.as_str() {
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        let key: &'static str = match ctx.state().as_str() {
             "a" => "a",
             "b" => "b",
             "c" => "c",
@@ -270,7 +256,7 @@ struct CountingState {
     n: usize,
 }
 
-test_tasklet!(CountingTasklet, "counting_tasklet", String => String, CountingState, |_input, _state, _ctx| {
+test_tasklet!(CountingTasklet, "counting_tasklet", String => String, CountingState, |_input, _ctx| {
     Ok(())
 });
 
@@ -314,17 +300,17 @@ fn per_operator_namespace_isolation() {
 
 static META_REJECT_OBSERVED: Mutex<Option<String>> = Mutex::new(None);
 
-test_tasklet!(MetaProducerTasklet, "meta_producer_tasklet", String => String, (), |input, _state, ctx| {
+test_tasklet!(MetaProducerTasklet, "meta_producer_tasklet", String => String, (), |input, ctx| {
     let mut meta = HashMap::new();
     meta.insert("k".to_string(), "v".to_string());
-    let res = ctx.emit_with_meta::<String>(input, meta);
+    let res = ctx.emit_with_meta(input, meta);
     if let Err(err) = res {
         *META_REJECT_OBSERVED.lock().unwrap() = Some(err.to_string());
     }
     Ok(())
 });
 
-test_tasklet!(MetaConsumerTasklet, "meta_consumer_tasklet", String => (), (), |_input, _state, _ctx| {
+test_tasklet!(MetaConsumerTasklet, "meta_consumer_tasklet", String => (), (), |_input, _ctx| {
     Ok(())
 });
 

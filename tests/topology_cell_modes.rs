@@ -1,7 +1,7 @@
 //! Cell modes: one cell for a tasklet that declares none, the static
 //! set created at startup, and a dynamic declaration classified as such.
 
-use flezha_runner::state::{Change, NoChange, RestoreInitPayload, StateHandle, WallClock};
+use flezha_runner::state::{Change, ClockKind};
 
 mod common;
 use common::prelude::*;
@@ -21,30 +21,23 @@ fn single_mode_cell_creation() {
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
 struct AppendChange(String);
-impl Change for AppendChange {}
+impl Change<Vec<String>> for AppendChange {
+    fn apply_to(&self, state: &mut Vec<String>) {
+        state.push(self.0.clone());
+    }
+}
 
 #[derive(Default)]
 struct StaticTasklet;
+#[flezha_runner::tasklet(name = "static_tasklet", keys = ["a", "b", "c"])]
 impl Tasklet for StaticTasklet {
     type Input = String;
     type Output = String;
     type State = Vec<String>;
     type Change = AppendChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "static_tasklet"
-    }
-    fn init_state(cell_key: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> Vec<String> {
+    fn init_state(cell_key: Option<&str>) -> Vec<String> {
         vec![cell_key.unwrap_or("none").to_string()]
     }
-    fn apply_change(state: &mut Vec<String>, change: &AppendChange) {
-        state.push(change.0.clone());
-    }
-    fn cell_keys() -> Vec<&'static str> {
-        vec!["a", "b", "c"]
-    }
-    const CELLS_FOR_OVERRIDDEN: bool = true;
     fn cells_for(input: &String) -> Vec<&'static str> {
         if input.starts_with('a') {
             vec!["a"]
@@ -54,13 +47,8 @@ impl Tasklet for StaticTasklet {
             vec!["c"]
         }
     }
-    fn run(
-        &mut self,
-        input: String,
-        mut state: StateHandle<'_, Self>,
-        _: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
-        state.apply(AppendChange(input));
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        ctx.change(AppendChange(input));
         Ok(())
     }
 }
@@ -87,23 +75,11 @@ fn static_mode_cell_creation() {
 /// the wiring is what classifies it as `CellMode::Dynamic`.
 #[derive(Default)]
 struct DynamicOnlyTasklet;
+#[flezha_runner::tasklet(name = "dynamic_only_tasklet")]
 impl Tasklet for DynamicOnlyTasklet {
     type Input = String;
     type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "dynamic_only_tasklet"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        _: String,
-        _: StateHandle<'_, Self>,
-        _: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, _: String, _: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         Ok(())
     }
 }
@@ -130,8 +106,9 @@ fn dynamic_mode_is_accepted_and_classified() {
     assert!(topology.channels[0].consumers[0].key.is_some());
 }
 
-/// Static-mode tasklet whose `cells_for` override is missing the
-/// matching `CELLS_FOR_OVERRIDDEN = true` const.
+/// Static-mode tasklet in the reference form whose `cells_for` is missing
+/// the matching `CELLS_FOR_OVERRIDDEN = true` const. The attribute derives the
+/// flag, so only a block written without it can leave it out.
 #[derive(Default)]
 struct UnannotatedStaticTasklet;
 impl Tasklet for UnannotatedStaticTasklet {
@@ -139,24 +116,16 @@ impl Tasklet for UnannotatedStaticTasklet {
     type Output = String;
     type State = ();
     type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "unannotated_static_tasklet"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
+    const NAME: &'static str = "unannotated_static_tasklet";
+    const CLOCK: ClockKind = ClockKind::Wall;
+    fn init_state(_: Option<&str>) {}
     fn cell_keys() -> Vec<&'static str> {
         vec!["a"]
     }
     fn cells_for(_: &String) -> Vec<&'static str> {
         vec!["a"]
     }
-    fn run(
-        &mut self,
-        _: String,
-        _: StateHandle<'_, Self>,
-        _: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, _: String, _: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         Ok(())
     }
 }
@@ -184,7 +153,7 @@ fn unannotated_static_mode_rejection() {
 
 // Tasklet whose `mailbox_capacity()` returns 0; `build_topology` must
 // reject the operator with the offending Tasklet's name.
-test_tasklet!(ZeroCapacityTasklet, "zero_capacity_tasklet", String => String, (), cap 0, |_input, _state, _ctx| {
+test_tasklet!(ZeroCapacityTasklet, "zero_capacity_tasklet", String => String, (), cap 0, |_input, _ctx| {
     Ok(())
 });
 
@@ -215,7 +184,7 @@ fn capacity_zero_is_rejected_at_operator_startup() {
 
 // Tasklet with explicit override of 4096 — the resolved capacity must
 // equal that value when threaded through `build_topology`.
-test_tasklet!(ExplicitCapTasklet, "explicit_cap_tasklet", String => String, (), cap 4096, |_input, _state, _ctx| {
+test_tasklet!(ExplicitCapTasklet, "explicit_cap_tasklet", String => String, (), cap 4096, |_input, _ctx| {
     Ok(())
 });
 

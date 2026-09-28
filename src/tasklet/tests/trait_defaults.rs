@@ -1,37 +1,16 @@
 //! Section 2.6: assert that the trait's default `compact_after_bytes`
 //! and `SCHEMA_VERSION` values match the umbrella's per-Tasklet contract.
 
-use crate::cell::restore::RestoreInitPayload;
-use crate::tasklet::change::NoChange;
-use crate::tasklet::clock::WallClock;
-use crate::tasklet::ctx::TaskletCtx;
-use crate::tasklet::error::TaskletError;
-use crate::tasklet::state_handle::StateHandle;
-use crate::tasklet::Tasklet;
+use crate::tasklet::{Ctx, Tasklet, TaskletError};
 
 #[derive(Default)]
 struct DefaultsTasklet;
 
+#[flezha_runner::tasklet(name = "defaults_tasklet")]
 impl Tasklet for DefaultsTasklet {
     type Input = ();
-    type Output = ();
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
 
-    fn name() -> &'static str {
-        "defaults_tasklet"
-    }
-
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-
-    fn run(
-        &mut self,
-        _: (),
-        _state: StateHandle<'_, Self>,
-        _: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, _: (), _: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         Ok(())
     }
 }
@@ -46,31 +25,12 @@ fn compact_after_bytes_override_wins_over_default() {
     #[derive(Default)]
     struct OverridingTasklet;
 
+    #[flezha_runner::tasklet(name = "overriding_tasklet", compact_after_bytes = 16 * 1024 * 1024)]
     impl Tasklet for OverridingTasklet {
         type Input = ();
-        type Output = ();
-        type State = ();
-        type Change = NoChange;
-        type Clock = WallClock;
-        type Config = ();
 
-        fn name() -> &'static str {
-            "overriding_tasklet"
-        }
-
-        fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-
-        fn run(
-            &mut self,
-            _: (),
-            _state: StateHandle<'_, Self>,
-            _: &mut TaskletCtx<'_>,
-        ) -> Result<(), TaskletError> {
+        fn run(&mut self, _: (), _: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
             Ok(())
-        }
-
-        fn compact_after_bytes() -> usize {
-            16 * 1024 * 1024
         }
     }
 

@@ -89,7 +89,7 @@ impl ChannelBuilder {
     /// keyed changelog sinks overwrite the stale rows by natural key.
     ///
     /// Requires `effectively_once()` (correction replays the durable input
-    /// log) and an `EventTimeFrom` clock (there is nothing else to order by).
+    /// log) and an event-time clock (there is nothing else to order by).
     /// `build_topology` refuses the declaration otherwise. The controller
     /// additionally refuses to start the operator unless its input-log hold
     /// window and snapshot age-floor both cover `window_ms` — you cannot
@@ -137,7 +137,7 @@ impl ChannelBuilder {
     }
 
     /// Advance the durable consumed-offset only at an explicit
-    /// [`TaskletCtx::checkpoint`], instead of once per input.
+    /// [`Ctx::checkpoint`], instead of once per input.
     ///
     /// For an operator that folds many inputs into one state push — a window
     /// that only closes on its boundary — the per-input default is not merely
@@ -158,19 +158,19 @@ impl ChannelBuilder {
     /// checkpointing moves the *acknowledgement*, not the output. To hold them
     /// for the interval too, see [`outputs_at_checkpoint`].
     ///
-    /// [`TaskletCtx::checkpoint`]: crate::tasklet::TaskletCtx::checkpoint
+    /// [`Ctx::checkpoint`]: crate::tasklet::Ctx::checkpoint
     /// [`outputs_at_checkpoint`]: ChannelBuilder::outputs_at_checkpoint
     pub fn checkpoint_ack(&self) {
         self.state.borrow_mut().checkpoint_ack = true;
     }
 
     /// Close the checkpoint interval once `inputs` inputs have folded into it,
-    /// instead of waiting for an explicit [`TaskletCtx::checkpoint`].
+    /// instead of waiting for an explicit [`Ctx::checkpoint`].
     ///
     /// An explicit checkpoint still closes the interval early; this is the
     /// ceiling, not the only closer. Implies `checkpoint_ack()`.
     ///
-    /// [`TaskletCtx::checkpoint`]: crate::tasklet::TaskletCtx::checkpoint
+    /// [`Ctx::checkpoint`]: crate::tasklet::Ctx::checkpoint
     pub fn checkpoint_every(&self, inputs: u32) {
         self.state.borrow_mut().checkpoint_every = Some(inputs);
     }

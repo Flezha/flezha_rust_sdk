@@ -1,0 +1,19 @@
+error: #[flezha::tasklet]: `NAME` is written twice: the attribute's name key sets it; remove one
+  --> tests/ui/tasklet_item_written_twice.rs:11:11
+   |
+11 |     const NAME: &'static str = "named";
+   |           ^^^^
+
+error: #[flezha::tasklet]: `max_cells` is written twice: the `max_cells` key sets it; remove one
+  --> tests/ui/tasklet_item_written_twice.rs:25:8
+   |
+25 |     fn max_cells() -> usize {
+   |        ^^^^^^^^^
+
+warning: unused imports: `Ctx`, `TaskletError`, and `Tasklet`
+ --> tests/ui/tasklet_item_written_twice.rs:3:30
+  |
+3 | use flezha_runner::{tasklet, Ctx, Tasklet, TaskletError};
+  |                              ^^^  ^^^^^^^  ^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

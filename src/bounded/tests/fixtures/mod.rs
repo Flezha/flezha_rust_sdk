@@ -6,26 +6,14 @@ macro_rules! string_task {
     ($ty:ident, $name:literal, |$input:ident, $ctx:ident| $body:expr) => {
         #[derive(Default)]
         pub(crate) struct $ty;
+        #[flezha_runner::tasklet(name = $name)]
         impl crate::tasklet::Tasklet for $ty {
             type Input = String;
             type Output = String;
-            type State = ();
-            type Change = crate::tasklet::change::NoChange;
-            type Clock = crate::tasklet::clock::WallClock;
-            type Config = ();
-            fn name() -> &'static str {
-                $name
-            }
-            fn init_state(
-                _: Option<&str>,
-                _: Option<crate::cell::restore::RestoreInitPayload<'_>>,
-            ) {
-            }
             fn run(
                 &mut self,
                 $input: String,
-                _state: crate::tasklet::StateHandle<'_, Self>,
-                $ctx: &mut crate::tasklet::TaskletCtx<'_>,
+                $ctx: &mut crate::tasklet::Ctx<'_, Self>,
             ) -> Result<(), crate::tasklet::TaskletError> {
                 $body
             }

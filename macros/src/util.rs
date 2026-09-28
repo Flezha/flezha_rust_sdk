@@ -24,18 +24,12 @@ pub fn generic_args<'a>(ty: &'a Type, name: &str) -> impl Iterator<Item = &'a Ty
     })
 }
 
-/// `do_nothing` → `DoNothing`. Used for the generated tasklet type name and for
-/// `Set<Field>` / `Push<Field>` change-variant names.
+/// `do_nothing` → `DoNothing`: the operator type a function short form
+/// declares.
 pub fn snake_ident_to_pascal(ident: &Ident) -> Ident {
-    let pascal = snake_to_pascal(&ident.to_string());
-    Ident::new(&pascal, ident.span())
-}
-
-/// `do_nothing` → `DoNothing`.
-pub fn snake_to_pascal(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
+    let mut out = String::new();
     let mut upper_next = true;
-    for c in s.chars() {
+    for c in ident.to_string().chars() {
         if c == '_' {
             upper_next = true;
         } else if upper_next {
@@ -45,5 +39,5 @@ pub fn snake_to_pascal(s: &str) -> String {
             out.push(c);
         }
     }
-    out
+    Ident::new(&out, ident.span())
 }

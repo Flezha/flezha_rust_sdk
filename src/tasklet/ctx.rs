@@ -8,24 +8,30 @@ use flz_core::operator::instance::{fnv1a128, FNV128_OFFSET_BASIS};
 
 use crate::cell::timer::{TimerKind, TimerSession};
 use crate::tasklet::error::TaskletError;
-use crate::tasklet::{SpawnHandle, SpawnOptions};
+use crate::tasklet::{Change, SpawnHandle, SpawnOptions, Tasklet};
 
 /// Reserved metadata namespace: runtime identity stamps (`flz.cell`,
 /// `flz.seq`, `flz.key`) live here; user-supplied keys with this prefix
 /// are refused at emit time so stamps can never be spoofed or clobbered.
 pub const RESERVED_METADATA_PREFIX: &str = "flz.";
 
-/// Per-invocation context for a Tasklet's `run` method. Borrows the runner's
-/// per-cell routing tables. Not Send/Sync — lives only across one
-/// `Tasklet::run` call.
+/// The context one invocation of a tasklet `S` runs in: its Cell's state,
+/// read with [`Self::state`] and changed only through [`Self::change`], and
+/// everything the invocation may do, emits typed as `S::Output`. Lives only
+/// across one `run`, `on_timer` or `compensate` call.
 ///
-/// The dispatcher stamps `output_channel_id` (cached at operator-build time)
-/// so emit incurs zero channel-name lookups on the hot path. It also
-/// evaluates the Tasklet's declared `Clock` once at dispatch entry —
-/// [`Self::now`] serves that single value for the whole invocation — and
+/// There is no way to reach the state mutably, so a mutation the runtime did
+/// not record cannot compile. The dispatcher evaluates the tasklet's declared
+/// clock once at dispatch entry ([`Self::now`] serves that single value) and
 /// carries the replay-stable inputs [`Self::stable_id`] derives from.
-pub struct TaskletCtx<'a> {
-    pub(crate) emitter: &'a mut dyn EmitSink,
+pub struct Ctx<'a, S: Tasklet> {
+    state: &'a mut S::State,
+    /// Shared with the emit sink, which drains just-recorded changes onto the
+    /// durable path before the matching output frame is written. Both run on
+    /// the one dispatch thread inside one invocation, so the borrows never
+    /// overlap.
+    changes: &'a RefCell<Vec<S::Change>>,
+    emitter: &'a mut dyn EmitSink,
     now: u64,
     invocation_seq: u64,
     cell_identity: &'a [u8],
@@ -46,7 +52,7 @@ pub struct TaskletCtx<'a> {
     timers: Option<&'a RefCell<TimerSession>>,
 }
 
-/// Replay-stable 128-bit identifier returned by [`TaskletCtx::stable_id`].
+/// Replay-stable 128-bit identifier returned by [`Ctx::stable_id`].
 /// Derived by a frozen FNV-1a-128 over
 /// `cell identity ‖ change seq ‖ per-invocation call ordinal` — the
 /// algorithm is fixed by spec, independent of any library version.
@@ -70,14 +76,14 @@ impl StableId {
     }
 }
 
-/// Internal trait the runtime implements per-cell. Lets TaskletCtx stay
-/// non-generic while the underlying dispatcher carries the typed wiring.
+/// Internal trait the runtime implements per-cell: where an emit goes, kept
+/// out of the typed context so one sink serves every tasklet type.
 pub(crate) trait EmitSink {
     /// Emit one value on this Tasklet's output channel. Where it goes —
     /// consumer mailboxes, the plugin wire, a bounded stage handoff, or
     /// several of those — is the channel's shape, resolved inside the
     /// implementation. `meta` and `key` arrive already validated by
-    /// [`TaskletCtx::route`].
+    /// [`Ctx::route`].
     ///
     /// One method, because the shape is one question: the authoring surface
     /// declares egress with a single `sink(...)`, and a channel is the
@@ -112,14 +118,18 @@ pub(crate) trait EmitSink {
     }
 }
 
-impl<'a> TaskletCtx<'a> {
+impl<'a, S: Tasklet> Ctx<'a, S> {
     pub(crate) fn new(
+        state: &'a mut S::State,
+        changes: &'a RefCell<Vec<S::Change>>,
         emitter: &'a mut dyn EmitSink,
         now: u64,
         invocation_seq: u64,
         cell_identity: &'a [u8],
     ) -> Self {
         Self {
+            state,
+            changes,
             emitter,
             now,
             invocation_seq,
@@ -132,6 +142,19 @@ impl<'a> TaskletCtx<'a> {
             replay: false,
             timers: None,
         }
+    }
+
+    /// The Cell's state. Reading it records nothing and allocates nothing.
+    pub fn state(&self) -> &S::State {
+        self.state
+    }
+
+    /// Apply `change` to the Cell's state and record it for the flusher, which
+    /// makes it durable. The change is recorded whether or not the operator
+    /// persists, so `TaskletTestHarness::replay_equals` sees every one.
+    pub fn change(&mut self, change: S::Change) {
+        change.apply_to(self.state);
+        self.changes.borrow_mut().push(change);
     }
 
     /// Attach the key this Cell was routed by. Set by every dispatch path
@@ -207,9 +230,9 @@ impl<'a> TaskletCtx<'a> {
     }
 
     /// The invocation's time value, computed once by the runtime from the
-    /// Tasklet's declared `Clock` before `run` executes: epoch
-    /// milliseconds for `WallClock`, the extracted input timestamp for
-    /// `EventTimeFrom`, the durable change seq for `LogicalClock`. Every
+    /// tasklet's declared clock before `run` executes: epoch milliseconds for
+    /// the wall clock, [`Tasklet::event_time`] of the input for event time,
+    /// the durable change seq for the logical clock. Every
     /// call within one invocation returns the same value. This is the
     /// determinism-contract replacement for `SystemTime::now()`.
     pub fn now(&self) -> u64 {
@@ -305,8 +328,8 @@ impl<'a> TaskletCtx<'a> {
     /// [`Self::timer_after`] is the answer to "nothing has arrived".
     ///
     /// Refused with [`TaskletError::EventTimeTimerWithoutEventTimeClock`]
-    /// unless the Tasklet declares `type Clock = EventTimeFrom<_>`: without
-    /// one there is no high-water to fire against.
+    /// unless the tasklet writes [`Tasklet::event_time`]: without it there is
+    /// no high-water to fire against.
     ///
     /// Registering the same timestamp twice is idempotent — pending timers are
     /// a set. Handle the firing in [`Tasklet::on_timer`].
@@ -322,9 +345,9 @@ impl<'a> TaskletCtx<'a> {
     /// Register a **processing-time** timer `delay` after [`Self::now`],
     /// returning the absolute timestamp it is scheduled at.
     ///
-    /// The anchor is `ctx.now()` — the declared Clock — not an ambient read,
+    /// The anchor is `ctx.now()` (the declared clock), not an ambient read,
     /// which is what makes a replayed invocation register the same absolute
-    /// timestamp the live one did. Under an `EventTimeFrom` clock the anchor is
+    /// timestamp the live one did. Under an event-time clock the anchor is
     /// therefore the input's event time; an unbounded operator that is caught up schedules
     /// the same instant a wall clock would, and one replaying history schedules
     /// a past instant, which fires at once.
@@ -354,9 +377,8 @@ impl<'a> TaskletCtx<'a> {
         self.timers.ok_or(TaskletError::TimersUnavailable)
     }
 
-    /// Emit a typed value on the producer-edge channel for this Tasklet.
-    /// `C` must match `Tasklet::Output`; the channel id was cached at
-    /// operator-build time from the producer's output-stream wiring
+    /// Emit a value on this tasklet's output channel. The channel id was
+    /// cached at operator-build time from the producer's output-stream wiring
     /// (`.into::<S>()`), so this call performs no name lookups.
     ///
     /// On a `.keyed()` channel the emit carries this Cell's own key
@@ -364,10 +386,7 @@ impl<'a> TaskletCtx<'a> {
     /// it cannot drift from it. A single-cell Tasklet has no such key and
     /// fails with `KeyRequiredOnKeyedChannel`; an output whose natural key
     /// differs from the Cell's uses [`Self::emit_keyed`].
-    pub fn emit<C>(&mut self, value: C) -> Result<(), TaskletError>
-    where
-        C: 'static + Send + Sync,
-    {
+    pub fn emit(&mut self, value: S::Output) -> Result<(), TaskletError> {
         self.route(Arc::new(value), None, None)
     }
 
@@ -375,14 +394,11 @@ impl<'a> TaskletCtx<'a> {
     /// carrying a `sink(...)`. Pure inter-tasklet channels with
     /// no plugin sink return `MetadataNotAllowedOnInterTaskletChannel`.
     /// Keys in the reserved `flz.` namespace are refused.
-    pub fn emit_with_meta<C>(
+    pub fn emit_with_meta(
         &mut self,
-        value: C,
+        value: S::Output,
         meta: HashMap<String, String>,
-    ) -> Result<(), TaskletError>
-    where
-        C: 'static + Send + Sync,
-    {
+    ) -> Result<(), TaskletError> {
         self.route(Arc::new(value), Some(meta), None)
     }
 
@@ -393,25 +409,23 @@ impl<'a> TaskletCtx<'a> {
     /// replay-stable by the determinism contract (derived from
     /// input/state/ctx, never from ambient sources). Fails with
     /// `KeyNotAllowedOnNonKeyedChannel` on channels not declared `.keyed()`.
-    pub fn emit_keyed<C>(&mut self, key: impl Into<String>, value: C) -> Result<(), TaskletError>
-    where
-        C: 'static + Send + Sync,
-    {
+    pub fn emit_keyed(
+        &mut self,
+        key: impl Into<String>,
+        value: S::Output,
+    ) -> Result<(), TaskletError> {
         self.route(Arc::new(value), None, Some(key.into()))
     }
 
     /// [`Self::emit_keyed`] with user metadata. Identity stamps are
     /// appended after user metadata so they can never be clobbered; keys
     /// in the reserved `flz.` namespace are refused.
-    pub fn emit_keyed_with_meta<C>(
+    pub fn emit_keyed_with_meta(
         &mut self,
         key: impl Into<String>,
-        value: C,
+        value: S::Output,
         meta: HashMap<String, String>,
-    ) -> Result<(), TaskletError>
-    where
-        C: 'static + Send + Sync,
-    {
+    ) -> Result<(), TaskletError> {
         self.route(Arc::new(value), Some(meta), Some(key.into()))
     }
 

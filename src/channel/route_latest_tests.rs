@@ -9,8 +9,7 @@ use crate::channel::ChannelBuilder;
 use crate::operator::builder::build_topology_for;
 use crate::operator::topology::CellMode;
 use crate::operator::UnboundedOperator;
-use crate::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
-use crate::tasklet::{Tasklet, TaskletCtx, TaskletError};
+use crate::tasklet::{Ctx, Tasklet, TaskletError};
 use crate::testing::TaskletTestHarness;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -58,7 +57,7 @@ fn a_changed_document_reaches_each_key_on_its_own_next_traffic() {
         traffic("MSFT"),
         traffic("AAPL"),
     ]);
-    h.expect_emits::<Delivery>(&[
+    h.expect_emits(&[
         delivery("AAPL", 10),
         delivery("MSFT", 10),
         delivery("MSFT", 20),
@@ -82,7 +81,7 @@ fn a_repeated_identical_document_is_inert() {
         document(10),
         traffic("AAPL"),
     ]);
-    h.expect_emits::<Delivery>(&[delivery("AAPL", 10)]);
+    h.expect_emits(&[delivery("AAPL", 10)]);
 }
 
 /// fails when: a key first seen after the document was retained never receives
@@ -98,7 +97,7 @@ fn a_first_seen_key_receives_the_current_document_once() {
         traffic("NVDA"),
         traffic("NVDA"),
     ]);
-    h.expect_emits::<Delivery>(&[delivery("AAPL", 10), delivery("NVDA", 10)]);
+    h.expect_emits(&[delivery("AAPL", 10), delivery("NVDA", 10)]);
 }
 
 /// fails when: a delivery is made for a key that produced no traffic — a
@@ -116,7 +115,7 @@ fn only_keys_proven_by_traffic_are_emitted() {
         document(20),
         traffic("AAPL"),
     ]);
-    h.expect_emits::<Delivery>(&[
+    h.expect_emits(&[
         delivery("AAPL", 10),
         delivery("MSFT", 10),
         delivery("AAPL", 20),
@@ -156,7 +155,7 @@ fn router_state_replays_deterministically() {
 fn traffic_before_the_first_document_delivers_nothing() {
     let mut h = harness();
     h.apply_inputs(vec![traffic("AAPL"), traffic("MSFT")]);
-    h.expect_emits::<Delivery>(&[]);
+    h.expect_emits(&[]);
 }
 
 // ----- The expansion -----
@@ -171,26 +170,11 @@ struct Trade {
 #[derive(Default)]
 struct Detector;
 
+#[flezha_runner::tasklet(name = "detector")]
 impl Tasklet for Detector {
     type Input = Delivery;
-    type Output = ();
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
 
-    fn name() -> &'static str {
-        "detector"
-    }
-
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-
-    fn run(
-        &mut self,
-        _input: Self::Input,
-        _state: StateHandle<'_, Self>,
-        _ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, _input: Self::Input, _ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         Ok(())
     }
 }

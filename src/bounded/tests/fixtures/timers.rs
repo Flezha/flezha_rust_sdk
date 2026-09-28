@@ -5,11 +5,8 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use crate::bounded::*;
-use crate::cell::restore::RestoreInitPayload;
 use crate::channel::ChannelBuilder;
-use crate::tasklet::change::NoChange;
-use crate::tasklet::clock::WallClock;
-use crate::tasklet::{StateHandle, Tasklet, TaskletCtx, TaskletError};
+use crate::tasklet::{Ctx, Tasklet, TaskletError};
 
 /// Every timestamp a fixture here armed, in registration order.
 pub(crate) static ARMED: Mutex<Vec<u64>> = Mutex::new(Vec::new());
@@ -18,7 +15,7 @@ pub(crate) fn drain_armed() -> Vec<u64> {
     std::mem::take(&mut *ARMED.lock().unwrap())
 }
 
-fn arm(ctx: &mut TaskletCtx<'_>, after: Duration) -> Result<u64, TaskletError> {
+fn arm<S: Tasklet>(ctx: &mut Ctx<'_, S>, after: Duration) -> Result<u64, TaskletError> {
     let at = ctx.timer_after(after)?;
     ARMED.lock().unwrap().push(at);
     Ok(at)
@@ -35,23 +32,11 @@ string_task!(Front, "timer_front", |input, ctx| ctx.emit(input));
 /// long. A firing emits `fired:<at>`.
 #[derive(Default)]
 pub(crate) struct Tick;
+#[flezha_runner::tasklet(name = "timer_tick")]
 impl Tasklet for Tick {
     type Input = String;
     type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "timer_tick"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: String,
-        _state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         if let Some(hold) = input.strip_prefix("hold:") {
             std::thread::sleep(millis(hold));
         }
@@ -69,8 +54,7 @@ impl Tasklet for Tick {
         &mut self,
         fired_at: u64,
         _kind: crate::cell::timer::TimerKind,
-        _state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
+        ctx: &mut Ctx<'_, Self>,
     ) -> Result<(), TaskletError> {
         ctx.emit(format!("fired:{fired_at}"))
     }
@@ -114,23 +98,11 @@ impl BoundedOperator for TimerLoop {
 /// its firing releases nothing.
 #[derive(Default)]
 pub(crate) struct ArmOnce;
+#[flezha_runner::tasklet(name = "timer_arm_once")]
 impl Tasklet for ArmOnce {
     type Input = String;
     type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "timer_arm_once"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: String,
-        _state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         if input == "3" {
             arm(ctx, Duration::from_millis(20))?;
         }
@@ -140,8 +112,7 @@ impl Tasklet for ArmOnce {
         &mut self,
         _fired_at: u64,
         _kind: crate::cell::timer::TimerKind,
-        _state: StateHandle<'_, Self>,
-        _ctx: &mut TaskletCtx<'_>,
+        _ctx: &mut Ctx<'_, Self>,
     ) -> Result<(), TaskletError> {
         Ok(())
     }

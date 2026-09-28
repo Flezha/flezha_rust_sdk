@@ -6,32 +6,18 @@ mod remove_factory_tests {
     //! (`RunnerNode::remove_factory`): a factory with live instances refuses
     //! and stays registered; once the last instance stops, the removal
     //! unregisters the class.
-    use flz_core::restore::RestoreInitPayload;
     use flz_core::runner::*;
 
-    use crate::tasklet::state_handle::StateHandle;
-    use crate::tasklet::{NoChange, Tasklet, TaskletCtx, TaskletError, WallClock};
+    use crate::tasklet::{Ctx, Tasklet, TaskletError};
     use crate::{ChannelBuilder, UnboundedOperator};
 
     #[derive(Default)]
     struct SeamTask;
+    #[flezha_runner::tasklet(name = "remove_factory_seam_op")]
     impl Tasklet for SeamTask {
         type Input = String;
         type Output = String;
-        type State = ();
-        type Change = NoChange;
-        type Clock = WallClock;
-        type Config = ();
-        fn name() -> &'static str {
-            "remove_factory_seam_op"
-        }
-        fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-        fn run(
-            &mut self,
-            _: String,
-            _: StateHandle<'_, Self>,
-            _: &mut TaskletCtx<'_>,
-        ) -> Result<(), TaskletError> {
+        fn run(&mut self, _: String, _: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
             Ok(())
         }
     }

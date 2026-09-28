@@ -1,0 +1,18 @@
+# Standalone on purpose: no workspace, and dependencies on released versions, so
+# this builds the way your own project would rather than the way a crate inside
+# the SDK's workspace does.
+[package]
+name = "tradedesk"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+flezha_runner = "0.1.0"
+# The records the desk reads and hands on are JSON on the wire.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Its own workspace, so the Flezha repository's workspace around this folder
+# does not claim it. Harmless in a copy of its own.
+[workspace]

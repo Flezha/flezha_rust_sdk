@@ -27,17 +27,12 @@ fn key_of(input: &str) -> String {
 /// trivial ones plus a paired single-entry UnboundedOperator. Extra trait items (TTL,
 /// cap) are appended verbatim.
 macro_rules! dyn_tasklet_base {
-    ($tasklet:ident, $operator:ident, $name:literal, $factory:literal, { $($item:item)* }) => {
+    ($tasklet:ident, $operator:ident, $name:tt, $factory:literal, { $($item:item)* }) => {
         #[derive(Default)]
         struct $tasklet;
+        #[flezha_runner::tasklet(name = $name)]
         impl Tasklet for $tasklet {
             type Input = String;
-            type Output = ();
-            type State = ();
-            type Change = NoChange;
-            type Clock = WallClock;
-            type Config = ();
-            fn name() -> &'static str { $name }
             $($item)*
         }
         struct $operator;
@@ -54,11 +49,11 @@ macro_rules! dyn_tasklet_base {
 }
 
 macro_rules! dyn_tasklet {
-    ($tasklet:ident, $operator:ident, $name:literal, $factory:literal $($extra:item)*) => {
+    ($tasklet:ident, $operator:ident, $name:tt, $factory:literal $($extra:item)*) => {
         dyn_tasklet_base!($tasklet, $operator, $name, $factory, {
-            fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-            fn run(&mut self, _: String, _: StateHandle<'_, Self>, _: &mut TaskletCtx<'_>)
-                -> Result<(), TaskletError> { Ok(()) }
+            fn run(&mut self, _: String, _: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+                Ok(())
+            }
             $($extra)*
         });
     };
@@ -67,7 +62,6 @@ macro_rules! dyn_tasklet {
 dyn_tasklet!(DynTasklet, DynOperator, "dyn_tasklet", "dyn_operator");
 dyn_tasklet!(CappedTasklet, CappedOperator, "capped_tasklet", "capped_operator"
     fn max_cells() -> usize { 2 }
-    const MAX_CELLS_OVERRIDDEN: bool = true;
 );
 dyn_tasklet!(TtlTasklet, TtlOperator, "ttl_tasklet", "ttl_operator"
     fn cell_idle_ttl() -> Option<Duration> { Some(Duration::from_millis(100)) }
@@ -82,13 +76,7 @@ dyn_tasklet_base!(
     "sleep_tasklet",
     "sleep_operator",
     {
-        fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-        fn run(
-            &mut self,
-            _: String,
-            _: StateHandle<'_, Self>,
-            _: &mut TaskletCtx<'_>,
-        ) -> Result<(), TaskletError> {
+        fn run(&mut self, _: String, _: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
             // Held until the test releases it: a run that lasts exactly as
             // long as the sweep it must survive.
             SLEEP_RUN_STARTED.store(true, Ordering::Release);
@@ -109,17 +97,12 @@ dyn_tasklet_base!(
     "init_track_tasklet",
     "init_track_operator",
     {
-        fn init_state(key: Option<&str>, _: Option<RestoreInitPayload<'_>>) {
+        fn init_state(key: Option<&str>) {
             if let Some(k) = key {
                 INIT_KEYS.lock().unwrap().push(k.to_string());
             }
         }
-        fn run(
-            &mut self,
-            _: String,
-            _: StateHandle<'_, Self>,
-            _: &mut TaskletCtx<'_>,
-        ) -> Result<(), TaskletError> {
+        fn run(&mut self, _: String, _: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
             Ok(())
         }
     }

@@ -1,5 +1,0 @@
-error: #[flezha::tasklet] `init` requires a `&mut State` parameter; a stateless tasklet has no state to initialize
- --> tests/ui/tasklet_init_without_state.rs:2:1
-  |
-2 | fn f(a: String) -> Vec<u8> {
-  | ^^

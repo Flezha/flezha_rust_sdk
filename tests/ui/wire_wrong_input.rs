@@ -4,8 +4,7 @@
 // call — the channel payload type comes from the producer's `Output`.
 
 use flezha_runner::channel::ChannelBuilder;
-use flezha_runner::tasklet::{Tasklet, TaskletCtx, TaskletError};
-use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
+use flezha_runner::{tasklet, Ctx, Tasklet, TaskletError};
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct TradeMsg;
@@ -14,32 +13,21 @@ struct Candle;
 
 #[derive(Default)]
 struct ProducesTrade;
+#[tasklet(name = "produces_trade")]
 impl Tasklet for ProducesTrade {
     type Input = String;
     type Output = TradeMsg;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str { "produces_trade" }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(&mut self, _: String, _: StateHandle<'_, Self>, _: &mut TaskletCtx<'_>) -> Result<(), TaskletError> {
+    fn run(&mut self, _: String, _: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         Ok(())
     }
 }
 
 #[derive(Default)]
 struct ConsumesCandle;
+#[tasklet(name = "consumes_candle")]
 impl Tasklet for ConsumesCandle {
     type Input = Candle;
-    type Output = ();
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str { "consumes_candle" }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(&mut self, _: Candle, _: StateHandle<'_, Self>, _: &mut TaskletCtx<'_>) -> Result<(), TaskletError> {
+    fn run(&mut self, _: Candle, _: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         Ok(())
     }
 }

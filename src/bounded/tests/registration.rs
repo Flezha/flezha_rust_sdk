@@ -5,12 +5,9 @@ use std::sync::Arc;
 
 use super::fixtures::*;
 use crate::bounded::*;
-use crate::cell::restore::RestoreInitPayload;
 use crate::channel::{ChannelBuilder, ChannelKind};
 use crate::operator::registry::OperatorRegistry;
-use crate::tasklet::change::NoChange;
-use crate::tasklet::clock::WallClock;
-use crate::tasklet::{StateHandle, Tasklet, TaskletCtx, TaskletError};
+use crate::tasklet::{Ctx, Tasklet, TaskletError};
 
 #[test]
 fn bounded_error_conversions() {
@@ -518,23 +515,11 @@ fn dag_topology_is_validated() {
 fn a_keyed_edge_makes_a_bounded_tasklet_dynamic() {
     #[derive(Default)]
     struct DynTask;
+    #[flezha_runner::tasklet(name = "bounded_dyn_op")]
     impl Tasklet for DynTask {
         type Input = String;
         type Output = String;
-        type State = ();
-        type Change = NoChange;
-        type Clock = WallClock;
-        type Config = ();
-        fn name() -> &'static str {
-            "bounded_dyn_op"
-        }
-        fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-        fn run(
-            &mut self,
-            _input: String,
-            _state: StateHandle<'_, Self>,
-            _ctx: &mut TaskletCtx<'_>,
-        ) -> Result<(), TaskletError> {
+        fn run(&mut self, _input: String, _ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
             Ok(())
         }
     }

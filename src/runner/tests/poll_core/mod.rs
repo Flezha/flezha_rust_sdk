@@ -96,7 +96,6 @@ mod support {
     use std::time::Duration;
 
     use flz_core::poll_core::{EngineActivation, PollCore, Polled};
-    use flz_core::restore::RestoreInitPayload;
     use flz_transport::transport::FlezhaStream;
 
     use super::fixtures::{build_slot_of, payload, unix_stream};
@@ -105,32 +104,15 @@ mod support {
     use crate::channel::ChannelBuilder;
     use crate::operator::instance::OperatorInstance;
     use crate::operator::UnboundedOperator;
-    use crate::tasklet::change::NoChange;
-    use crate::tasklet::clock::WallClock;
-    use crate::tasklet::ctx::TaskletCtx;
     use crate::tasklet::error::TaskletError;
-    use crate::tasklet::state_handle::StateHandle;
-    use crate::tasklet::Tasklet;
+    use crate::tasklet::{Ctx, Tasklet};
 
     #[derive(Default)]
     pub(super) struct PollTask;
+    #[flezha_runner::tasklet(name = "poll_core_exclusivity_task")]
     impl Tasklet for PollTask {
         type Input = usize;
-        type Output = ();
-        type State = ();
-        type Change = NoChange;
-        type Clock = WallClock;
-        type Config = ();
-        fn name() -> &'static str {
-            "poll_core_exclusivity_task"
-        }
-        fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-        fn run(
-            &mut self,
-            _: usize,
-            _: StateHandle<'_, Self>,
-            _: &mut TaskletCtx<'_>,
-        ) -> Result<(), TaskletError> {
+        fn run(&mut self, _: usize, _: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
             Ok(())
         }
     }
@@ -149,27 +131,13 @@ mod support {
     /// promoted against it always meets the no-room path.
     #[derive(Default)]
     pub(super) struct TinyTask;
+    #[flezha_runner::tasklet(name = "poll_core_tiny_mailbox_task")]
     impl Tasklet for TinyTask {
         type Input = usize;
-        type Output = ();
-        type State = ();
-        type Change = NoChange;
-        type Clock = WallClock;
-        type Config = ();
-        fn name() -> &'static str {
-            "poll_core_tiny_mailbox_task"
-        }
         fn mailbox_capacity() -> usize {
             1
         }
-        const MAILBOX_CAPACITY_OVERRIDDEN: bool = true;
-        fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-        fn run(
-            &mut self,
-            _: usize,
-            _: StateHandle<'_, Self>,
-            _: &mut TaskletCtx<'_>,
-        ) -> Result<(), TaskletError> {
+        fn run(&mut self, _: usize, _: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
             Ok(())
         }
     }

@@ -256,26 +256,40 @@ still runs exactly once. Cycles are refused at registration; a chained loop
 terminal that releases an output channel, since that handoff is what seeds the
 next iteration.
 
-Parameterized tasklets use the `Config` associated type: declare
-`type Config = MyConfig` and build the instance from it in `from_config` —
-the sanctioned path for one class serving several configurations (see the
-`Tasklet::from_config` rustdoc for a compiling worked example).
+### Writing a tasklet
 
-### Declaring less: `SimpleTasklet`
+A tasklet is your own type: `#[flezha::tasklet(name = "...")]` on its
+`impl Tasklet` block (`examples/echo/src/tasklet.rs`). The attribute generates
+no type. It writes the items the block leaves out: `NAME`, the settings given
+as keys, the flags that say which hooks the block writes, the clock, a default
+`init_state`, and `State = ()`, `Change = NoChange`, `Output = ()`.
 
-A tasklet is usually a function under `#[flezha::tasklet]`
-(`examples/echo/src/tasklet.rs`), which generates the `Tasklet` impl.
-Stable Rust has no associated-type defaults, so a hand-written `Tasklet` impl
-spells all six even when three of them are the near-universal values.
-`SimpleTasklet` is the shorthand — `Input`, `Output`, `State` plus `name`,
-`init_state` and `run` — lifted to `Tasklet` by a blanket impl with
-`Clock = WallClock`, `Config = ()` and the `State` type's derived change
-(`type State = ()` for a stateless tasklet). It registers and dispatches exactly like any other
-`Tasklet`; the wiring cannot tell which tier authored a node.
+```rust
+#[derive(Default)]
+struct CountTrades;
 
-Implement `Tasklet` directly for anything the shorthand does not cover — a
-non-default clock, a typed config, a hand-written `Change`, static cell keys.
-A type cannot do both: the two impls overlap and the compiler says so.
+#[tasklet(name = "count_trades")]
+impl Tasklet for CountTrades {
+    type Input = Trade;
+    type Output = u64;
+    type State = Totals;
+    type Change = Counted;
+
+    fn run(&mut self, _: Trade, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        ctx.change(Counted);                 // applied through `Counted::apply_to`, journaled
+        ctx.emit(ctx.state().count)
+    }
+}
+```
+
+`ctx.state()` reads the Cell's state; `ctx.change(..)` is the only way to
+change it, so a mutation the runtime did not record does not compile. A hook
+is declared by writing it: `event_time` (which makes the clock event time),
+`on_timer`, `compensate`, `cells_for`, `init_state`, `migrate_state`,
+`migrate_change`. A one-tasklet operator is shorter still: the short-form
+attributes go on a stateless function, or on the `impl Tasklet` block of one
+with state. `docs/sdk/rust_operator_architecture.md` has the whole surface,
+including the block written without the attribute.
 
 ## Public API workflow
 

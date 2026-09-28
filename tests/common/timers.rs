@@ -12,8 +12,8 @@ use flezha_runner::cell::state_sink;
 use flezha_runner::cell::timer::{PendingTimers, TimerKind, TimerOp};
 use flezha_runner::channel::ChannelBuilder;
 use flezha_runner::operator::UnboundedOperator;
-use flezha_runner::state::{NoChange, RestoreInitPayload};
-use flezha_runner::tasklet::{StateHandle, Tasklet, TaskletCtx, TaskletError};
+use flezha_runner::state::{Change, ClockKind, RestoreInitPayload};
+use flezha_runner::tasklet::{Ctx, Tasklet, TaskletError};
 use flezha_runner::testing::TaskletTestHarness;
 use flezha_runner::OverflowPolicy;
 
@@ -53,7 +53,14 @@ pub enum SessionChange {
     Touched(u64),
     Closed(u64),
 }
-impl flezha_runner::state::Change for SessionChange {}
+impl Change<SessionState> for SessionChange {
+    fn apply_to(&self, state: &mut SessionState) {
+        match self {
+            SessionChange::Touched(_) => state.touches += 1,
+            SessionChange::Closed(at) => state.closed_at.push(*at),
+        }
+    }
+}
 
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct SessionState {
@@ -89,7 +96,8 @@ pub fn note_firing(key: &str, kind: TimerKind, fired_at: u64) {
 /// The worked session-timeout shape: each input pushes the idle deadline out,
 /// and the firing closes the session. Wall clock, so `timer_after` anchors on
 /// real time and a due promotion is what fires it. `CAP` overrides the
-/// mailbox capacity; `0` keeps the Tasklet default.
+/// mailbox capacity; `0` keeps the Tasklet default. Written without the
+/// attribute, because whether the capacity is set depends on `CAP`.
 #[derive(Default)]
 pub struct SessionTask<const CAP: usize = 0> {
     key: String,
@@ -99,11 +107,8 @@ impl<const CAP: usize> Tasklet for SessionTask<CAP> {
     type Output = String;
     type State = SessionState;
     type Change = SessionChange;
-    type Clock = flezha_runner::state::WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "timers_session_tasklet"
-    }
+    const NAME: &'static str = "timers_session_tasklet";
+    const CLOCK: ClockKind = ClockKind::Wall;
     fn mailbox_capacity() -> usize {
         if CAP == 0 {
             Self::DEFAULT_MAILBOX_CAPACITY
@@ -112,23 +117,13 @@ impl<const CAP: usize> Tasklet for SessionTask<CAP> {
         }
     }
     const MAILBOX_CAPACITY_OVERRIDDEN: bool = CAP != 0;
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> SessionState {
+    fn init_state(_: Option<&str>) -> SessionState {
         SessionState::default()
     }
-    fn apply_change(state: &mut SessionState, change: &SessionChange) {
-        match change {
-            SessionChange::Touched(_) => state.touches += 1,
-            SessionChange::Closed(at) => state.closed_at.push(*at),
-        }
-    }
-    fn run(
-        &mut self,
-        input: String,
-        mut state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         self.key = input.clone();
-        state.apply(SessionChange::Touched(ctx.now()));
+        let now = ctx.now();
+        ctx.change(SessionChange::Touched(now));
         ctx.timer_after(Duration::from_millis(TIMEOUT_MS))?;
         Ok(())
     }
@@ -136,12 +131,11 @@ impl<const CAP: usize> Tasklet for SessionTask<CAP> {
         &mut self,
         fired_at: u64,
         kind: TimerKind,
-        mut state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
+        ctx: &mut Ctx<'_, Self>,
     ) -> Result<(), TaskletError> {
         note_firing(&self.key, kind, fired_at);
-        state.apply(SessionChange::Closed(fired_at));
-        ctx.emit::<String>(format!("closed@{fired_at}"))?;
+        ctx.change(SessionChange::Closed(fired_at));
+        ctx.emit(format!("closed@{fired_at}"))?;
         Ok(())
     }
 }
@@ -180,13 +174,6 @@ pub struct Tick {
     pub at: u64,
 }
 
-pub struct TickTime;
-impl flezha_runner::state::TimeExtractor<Tick> for TickTime {
-    fn extract(input: &Tick) -> u64 {
-        input.at
-    }
-}
-
 /// Records the interleaving of `run` and `on_timer` so a case can assert the
 /// before-the-input rule rather than infer it.
 pub static ORDER: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
@@ -214,25 +201,15 @@ pub fn note_order(entry: String) {
 /// later input crosses two of them.
 #[derive(Default)]
 pub struct WindowTask;
+#[flezha_runner::tasklet(name = "timers_window_tasklet")]
 impl Tasklet for WindowTask {
     type Input = Tick;
     type Output = u64;
     type State = Vec<u64>;
-    type Change = NoChange;
-    type Clock = flezha_runner::state::EventTimeFrom<TickTime>;
-    type Config = ();
-    fn name() -> &'static str {
-        "timers_window_tasklet"
+    fn event_time(input: &Tick) -> u64 {
+        input.at
     }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> Vec<u64> {
-        Vec::new()
-    }
-    fn run(
-        &mut self,
-        input: Tick,
-        _state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: Tick, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         note_order(format!("run@{}", input.at));
         if input.at == 50 {
             for at in [300u64, 100, 200] {
@@ -245,8 +222,7 @@ impl Tasklet for WindowTask {
         &mut self,
         fired_at: u64,
         _kind: TimerKind,
-        _state: StateHandle<'_, Self>,
-        _ctx: &mut TaskletCtx<'_>,
+        _ctx: &mut Ctx<'_, Self>,
     ) -> Result<(), TaskletError> {
         note_order(format!("timer@{fired_at}"));
         Ok(())
@@ -273,26 +249,10 @@ pub enum SurfaceCmd {
 
 #[derive(Default)]
 pub struct SurfaceTask;
+#[flezha_runner::tasklet(name = "timers_surface_tasklet", max_timers_per_cell = 3)]
 impl Tasklet for SurfaceTask {
     type Input = SurfaceCmd;
-    type Output = ();
-    type State = ();
-    type Change = NoChange;
-    type Clock = flezha_runner::state::WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "timers_surface_tasklet"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn max_timers_per_cell() -> usize {
-        3
-    }
-    fn run(
-        &mut self,
-        input: SurfaceCmd,
-        _state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: SurfaceCmd, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         match input {
             SurfaceCmd::Register => {
                 let at = ctx.timer_after(Duration::from_secs(30))?;
@@ -316,8 +276,7 @@ impl Tasklet for SurfaceTask {
         &mut self,
         _fired_at: u64,
         _kind: TimerKind,
-        _state: StateHandle<'_, Self>,
-        _ctx: &mut TaskletCtx<'_>,
+        _ctx: &mut Ctx<'_, Self>,
     ) -> Result<(), TaskletError> {
         Ok(())
     }

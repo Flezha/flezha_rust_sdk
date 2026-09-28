@@ -9,37 +9,26 @@
 // "method not found" shape on a name std does not claim.
 
 use flezha_runner::channel::ChannelBuilder;
-use flezha_runner::tasklet::{Tasklet, TaskletCtx, TaskletError};
-use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
+use flezha_runner::{tasklet, Ctx, Tasklet, TaskletError};
 
 #[derive(Default)]
 struct PluginProducer;
+#[tasklet(name = "plugin_producer")]
 impl Tasklet for PluginProducer {
     type Input = String;
     type Output = Vec<u8>;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str { "plugin_producer" }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(&mut self, _: String, _: StateHandle<'_, Self>, _: &mut TaskletCtx<'_>) -> Result<(), TaskletError> {
+    fn run(&mut self, _: String, _: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         Ok(())
     }
 }
 
 #[derive(Default)]
 struct Downstream;
+#[tasklet(name = "downstream")]
 impl Tasklet for Downstream {
     type Input = Vec<u8>;
     type Output = Vec<u8>;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str { "downstream" }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(&mut self, _: Vec<u8>, _: StateHandle<'_, Self>, _: &mut TaskletCtx<'_>) -> Result<(), TaskletError> {
+    fn run(&mut self, _: Vec<u8>, _: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         Ok(())
     }
 }

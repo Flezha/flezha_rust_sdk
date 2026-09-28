@@ -1,5 +1,0 @@
-error: #[flezha::tasklet] `emits` declares the output type of a `&mut TaskletCtx` `run`; without that parameter the return type declares it
- --> tests/ui/tasklet_emits_without_ctx.rs:4:1
-  |
-4 | fn p(input: u64) -> u64 {
-  | ^^

@@ -9,11 +9,8 @@ use serde::{Deserialize, Serialize};
 
 use super::*;
 use crate::bounded::*;
-use crate::cell::restore::RestoreInitPayload;
 use crate::channel::ChannelBuilder;
-use crate::tasklet::change::NoChange;
-use crate::tasklet::clock::WallClock;
-use crate::tasklet::{StateHandle, Tasklet, TaskletCtx, TaskletError};
+use crate::tasklet::{Ctx, Tasklet, TaskletError};
 
 /// Held until the running-pass sweep scenario releases it.
 pub(crate) static KEYED_BLOCK_RELEASE: AtomicBool = AtomicBool::new(false);
@@ -52,38 +49,26 @@ pub(crate) struct KeyState {
 /// undo logs `undo-keyed:<key>` once per Cell.
 #[derive(Default)]
 pub(crate) struct KeyedUndo;
+#[flezha_runner::tasklet(name = "keyed_undo")]
 impl Tasklet for KeyedUndo {
     type Input = String;
     type Output = String;
     type State = KeyState;
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "keyed_undo"
-    }
-    fn init_state(cell_key: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> KeyState {
+    fn init_state(cell_key: Option<&str>) -> KeyState {
         KeyState {
             key: cell_key.unwrap_or("").to_string(),
         }
     }
-    fn run(
-        &mut self,
-        input: String,
-        state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
-        ctx.emit(format!("{}:{input}", state.key))?;
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        ctx.emit(format!("{}:{input}", ctx.state().key))?;
         Ok(())
     }
-    const COMPENSATE_OVERRIDDEN: bool = true;
     fn compensate(
         &mut self,
         _completed_output: Vec<Arc<String>>,
-        state: StateHandle<'_, Self>,
-        _ctx: &mut TaskletCtx<'_>,
+        ctx: &mut Ctx<'_, Self>,
     ) -> Result<(), TaskletError> {
-        comp_log(format!("undo-keyed:{}", state.key));
+        comp_log(format!("undo-keyed:{}", ctx.state().key));
         Ok(())
     }
 }
@@ -91,27 +76,14 @@ impl Tasklet for KeyedUndo {
 /// Keyed, capped at two live Cells.
 #[derive(Default)]
 pub(crate) struct CappedKeyed;
+#[flezha_runner::tasklet(name = "capped_keyed")]
 impl Tasklet for CappedKeyed {
     type Input = String;
     type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "capped_keyed"
-    }
     fn max_cells() -> usize {
         2
     }
-    const MAX_CELLS_OVERRIDDEN: bool = true;
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: String,
-        _state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         ctx.emit(input)?;
         Ok(())
     }
@@ -120,30 +92,14 @@ impl Tasklet for CappedKeyed {
 /// Static, its keys declared out of alphabetical order, every value to both.
 #[derive(Default)]
 pub(crate) struct ZyStatic;
+#[flezha_runner::tasklet(name = "zy_static", keys = ["z", "y"])]
 impl Tasklet for ZyStatic {
     type Input = String;
     type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "zy_static"
-    }
-    fn cell_keys() -> Vec<&'static str> {
-        vec!["z", "y"]
-    }
-    const CELLS_FOR_OVERRIDDEN: bool = true;
     fn cells_for(_input: &String) -> Vec<&'static str> {
         vec!["y", "z"]
     }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        _input: String,
-        _state: StateHandle<'_, Self>,
-        _ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, _input: String, _ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         Ok(())
     }
 }

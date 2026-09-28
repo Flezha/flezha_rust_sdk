@@ -17,14 +17,14 @@ const BOUND: usize = 2;
 
 static SEEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
-test_tasklet!(BoundHead, "holdback_bound_head", String => String, (), |_input, _state, ctx| {
+test_tasklet!(BoundHead, "holdback_bound_head", String => String, (), |_input, ctx| {
     for i in 0..EMITS {
         ctx.emit(format!("b{i}"))?;
     }
     Ok(())
 });
 
-test_tasklet!(BoundTail, "holdback_bound_tail", String => (), (), cap 1, |input, _state, _ctx| {
+test_tasklet!(BoundTail, "holdback_bound_tail", String => (), (), cap 1, |input, _ctx| {
     SEEN.lock().unwrap().push(input);
     Ok(())
 });
@@ -111,12 +111,12 @@ const LOAD_TOTAL: usize = FEEDERS * PER_FEEDER;
 
 // Capacity 1 on the hop: every emit past the one in flight has to be held, so
 // the Cell gates and un-gates once per message rather than once per burst.
-test_tasklet!(LoadHead, "holdback_load_head", String => String, (), cap 1, |input, _state, ctx| {
+test_tasklet!(LoadHead, "holdback_load_head", String => String, (), cap 1, |input, ctx| {
     ctx.emit(input)?;
     Ok(())
 });
 
-test_tasklet!(LoadTail, "holdback_load_tail", String => (), (), cap 1, |_input, _state, _ctx| {
+test_tasklet!(LoadTail, "holdback_load_tail", String => (), (), cap 1, |_input, _ctx| {
     LOAD_SEEN.fetch_add(1, Ordering::AcqRel);
     Ok(())
 });

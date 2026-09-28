@@ -4,8 +4,6 @@
 use flezha_runner::cell::header::FORMAT_ID_TIMER_OPS;
 use flezha_runner::cell::state_sink;
 use flezha_runner::cell::timer::{TimerKind, TimerOp};
-use flezha_runner::state::{NoChange, RestoreInitPayload};
-use flezha_runner::tasklet::{StateHandle, Tasklet, TaskletCtx, TaskletError};
 use flezha_runner::testing::TaskletTestHarness;
 
 mod common;
@@ -229,30 +227,15 @@ fn a_tier_firing_writes_one_record_with_no_consumed_offset() {
 struct TierSessionTask {
     key: String,
 }
+#[flezha_runner::tasklet(name = "timers_tier_session_tasklet")]
 impl Tasklet for TierSessionTask {
     type Input = String;
     type Output = String;
     type State = SessionState;
     type Change = SessionChange;
-    type Clock = flezha_runner::state::WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "timers_tier_session_tasklet"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> SessionState {
-        SessionState::default()
-    }
-    fn apply_change(state: &mut SessionState, change: &SessionChange) {
-        <SessionTask as Tasklet>::apply_change(state, change)
-    }
-    fn run(
-        &mut self,
-        input: String,
-        mut state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         self.key = input.clone();
-        state.apply(SessionChange::Touched(ctx.now()));
+        ctx.change(SessionChange::Touched(ctx.now()));
         ctx.timer_after(Duration::from_millis(TIMEOUT_MS))?;
         Ok(())
     }
@@ -260,12 +243,11 @@ impl Tasklet for TierSessionTask {
         &mut self,
         fired_at: u64,
         kind: TimerKind,
-        mut state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
+        ctx: &mut Ctx<'_, Self>,
     ) -> Result<(), TaskletError> {
         note_firing(&self.key, kind, fired_at);
-        state.apply(SessionChange::Closed(fired_at));
-        ctx.emit_keyed::<String>("k".to_string(), format!("closed@{fired_at}"))?;
+        ctx.change(SessionChange::Closed(fired_at));
+        ctx.emit_keyed("k".to_string(), format!("closed@{fired_at}"))?;
         Ok(())
     }
 }
@@ -328,23 +310,10 @@ fn on_timer_may_chain_a_further_timer_anchored_on_fired_at() {
 
 #[derive(Default)]
 struct ChainTask;
+#[flezha_runner::tasklet(name = "timers_chain_tasklet")]
 impl Tasklet for ChainTask {
     type Input = ();
-    type Output = ();
-    type State = ();
-    type Change = NoChange;
-    type Clock = flezha_runner::state::WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "timers_chain_tasklet"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        _input: (),
-        _state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, _input: (), ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         ctx.timer_after(Duration::from_millis(100))?;
         Ok(())
     }
@@ -352,8 +321,7 @@ impl Tasklet for ChainTask {
         &mut self,
         _fired_at: u64,
         _kind: TimerKind,
-        _state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
+        ctx: &mut Ctx<'_, Self>,
     ) -> Result<(), TaskletError> {
         ctx.timer_after(Duration::from_millis(100))?;
         Ok(())

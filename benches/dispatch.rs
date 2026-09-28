@@ -20,9 +20,8 @@ use flezha_runner::channel::ChannelBuilder;
 use flezha_runner::operator::builder::build_topology_for;
 use flezha_runner::operator::registry::OperatorRegistry;
 use flezha_runner::operator::OperatorInstance;
-use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_runner::tasklet::{Tasklet, TaskletCtx, TaskletError};
-use flezha_runner::{__dispatch_internals as bi, OverflowPolicy, UnboundedOperator};
+use flezha_runner::tasklet::{Tasklet, TaskletError};
+use flezha_runner::{__dispatch_internals as bi, Ctx, OverflowPolicy, UnboundedOperator};
 use flz_core::bench_support::{
     allocations, fan_in, measurement_secs_default, report, stream_pair, Counting, Settle,
 };
@@ -53,23 +52,11 @@ static REG_COUNTER: Settle = Settle::new();
 
 #[derive(Default)]
 struct RegressionTasklet;
+#[flezha_runner::tasklet(name = "regression_tasklet")]
 impl Tasklet for RegressionTasklet {
     type Input = Vec<u8>;
     type Output = Vec<u8>;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "regression_tasklet"
-    }
-    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        _: Vec<u8>,
-        _: StateHandle<'_, RegressionTasklet>,
-        _: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, _: Vec<u8>, _: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         REG_COUNTER.add(1);
         Ok(())
     }
@@ -176,123 +163,71 @@ fn pipeline_cells_for(_: &Vec<u8>) -> Vec<&'static str> {
 
 #[derive(Default)]
 struct StressBenchTaskletA;
+#[flezha_runner::tasklet(name = "stress_bench_a")]
 impl Tasklet for StressBenchTaskletA {
     type Input = Vec<u8>;
     type Output = Vec<u8>;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "stress_bench_a"
-    }
-    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
     fn cell_keys() -> Vec<&'static str> {
         STRESS_KEYS.to_vec()
     }
-    const CELLS_FOR_OVERRIDDEN: bool = true;
     fn cells_for(input: &Vec<u8>) -> Vec<&'static str> {
         entry_cells_for(input)
     }
-    fn run(
-        &mut self,
-        input: Vec<u8>,
-        _: StateHandle<'_, StressBenchTaskletA>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: Vec<u8>, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         PART_COUNTER.add(1);
-        ctx.emit::<Vec<u8>>(input)
+        ctx.emit(input)
     }
 }
 
 #[derive(Default)]
 struct StressBenchTaskletB;
+#[flezha_runner::tasklet(name = "stress_bench_b")]
 impl Tasklet for StressBenchTaskletB {
     type Input = Vec<u8>;
     type Output = Vec<u8>;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "stress_bench_b"
-    }
-    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
     fn cell_keys() -> Vec<&'static str> {
         STRESS_KEYS.to_vec()
     }
-    const CELLS_FOR_OVERRIDDEN: bool = true;
     fn cells_for(input: &Vec<u8>) -> Vec<&'static str> {
         pipeline_cells_for(input)
     }
-    fn run(
-        &mut self,
-        input: Vec<u8>,
-        _: StateHandle<'_, StressBenchTaskletB>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: Vec<u8>, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         PART_COUNTER.add(1);
-        ctx.emit::<Vec<u8>>(input)
+        ctx.emit(input)
     }
 }
 
 #[derive(Default)]
 struct StressBenchTaskletC;
+#[flezha_runner::tasklet(name = "stress_bench_c")]
 impl Tasklet for StressBenchTaskletC {
     type Input = Vec<u8>;
     type Output = Vec<u8>;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "stress_bench_c"
-    }
-    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
     fn cell_keys() -> Vec<&'static str> {
         STRESS_KEYS.to_vec()
     }
-    const CELLS_FOR_OVERRIDDEN: bool = true;
     fn cells_for(input: &Vec<u8>) -> Vec<&'static str> {
         pipeline_cells_for(input)
     }
-    fn run(
-        &mut self,
-        input: Vec<u8>,
-        _: StateHandle<'_, StressBenchTaskletC>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: Vec<u8>, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         PART_COUNTER.add(1);
-        ctx.emit::<Vec<u8>>(input)
+        ctx.emit(input)
     }
 }
 
 #[derive(Default)]
 struct StressBenchTaskletD;
+#[flezha_runner::tasklet(name = "stress_bench_d")]
 impl Tasklet for StressBenchTaskletD {
     type Input = Vec<u8>;
     type Output = Vec<u8>;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "stress_bench_d"
-    }
-    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
     fn cell_keys() -> Vec<&'static str> {
         STRESS_KEYS.to_vec()
     }
-    const CELLS_FOR_OVERRIDDEN: bool = true;
     fn cells_for(input: &Vec<u8>) -> Vec<&'static str> {
         pipeline_cells_for(input)
     }
-    fn run(
-        &mut self,
-        _: Vec<u8>,
-        _: StateHandle<'_, StressBenchTaskletD>,
-        _: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, _: Vec<u8>, _: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         PART_COUNTER.add(1);
         Ok(())
     }

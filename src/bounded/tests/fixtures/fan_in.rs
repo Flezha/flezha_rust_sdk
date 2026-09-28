@@ -5,11 +5,8 @@ use std::sync::{Arc, Mutex};
 
 use super::*;
 use crate::bounded::*;
-use crate::cell::restore::RestoreInitPayload;
 use crate::channel::ChannelBuilder;
-use crate::tasklet::change::NoChange;
-use crate::tasklet::clock::WallClock;
-use crate::tasklet::{StateHandle, Tasklet, TaskletCtx, TaskletError};
+use crate::tasklet::{Ctx, Tasklet, TaskletError};
 
 // ---- fan-in / diamond tasks (`bounded-branching` fan-in accumulates) ------
 
@@ -27,33 +24,19 @@ macro_rules! diamond_op {
     ($ty:ident, $name:literal, $tag:literal) => {
         #[derive(Default)]
         struct $ty;
+        #[flezha_runner::tasklet(name = $name)]
         impl Tasklet for $ty {
             type Input = String;
             type Output = String;
-            type State = ();
-            type Change = NoChange;
-            type Clock = WallClock;
-            type Config = ();
-            fn name() -> &'static str {
-                $name
-            }
-            fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-            fn run(
-                &mut self,
-                input: String,
-                _state: StateHandle<'_, Self>,
-                ctx: &mut TaskletCtx<'_>,
-            ) -> Result<(), TaskletError> {
+            fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
                 diamond_log(format!("{}:{input}", $tag));
                 ctx.emit(format!("{}:{input}", $tag))?;
                 Ok(())
             }
-            const COMPENSATE_OVERRIDDEN: bool = true;
             fn compensate(
                 &mut self,
                 completed_output: Vec<Arc<String>>,
-                _state: StateHandle<'_, Self>,
-                _ctx: &mut TaskletCtx<'_>,
+                _ctx: &mut Ctx<'_, Self>,
             ) -> Result<(), TaskletError> {
                 for out in &completed_output {
                     comp_log(format!("undo-{}:{out}", $tag));
@@ -132,23 +115,11 @@ pub(crate) enum MergedJoinInput {
 /// node consumes one sum type and learns its source from the mapping.
 #[derive(Default)]
 pub(crate) struct MergeJoinTask;
+#[flezha_runner::tasklet(name = "bounded_merge_join_op")]
 impl Tasklet for MergeJoinTask {
     type Input = MergedJoinInput;
     type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "bounded_merge_join_op"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: MergedJoinInput,
-        _state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: MergedJoinInput, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         let label = match input {
             MergedJoinInput::B(s) => format!("mb:{s}"),
             MergedJoinInput::C(s) => format!("mc:{s}"),

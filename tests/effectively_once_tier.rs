@@ -117,52 +117,25 @@ fn tier_emits_ride_the_state_sink_as_one_effect_record() {
 /// Relays each input to [`Drain`] and counts it.
 #[derive(Default)]
 struct Relay;
+#[flezha_runner::tasklet(name = "relay")]
 impl Tasklet for Relay {
     type Input = String;
     type Output = String;
     type State = i64;
     type Change = TickChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "relay"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> i64 {
-        0
-    }
-    fn apply_change(state: &mut i64, _change: &TickChange) {
-        *state += 1;
-    }
-    fn run(
-        &mut self,
-        input: String,
-        mut state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
-        state.apply(TickChange);
-        ctx.emit::<String>(input)
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        ctx.change(TickChange);
+        ctx.emit(input)
     }
 }
 
 #[derive(Default)]
 struct Drain;
+#[flezha_runner::tasklet(name = "drain")]
 impl Tasklet for Drain {
     type Input = String;
     type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "drain"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        _input: String,
-        _state: StateHandle<'_, Self>,
-        _ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, _input: String, _ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         Ok(())
     }
 }
@@ -282,44 +255,29 @@ fn tier_replay_skips_inputs_at_or_below_the_consumed_floor() {
     assert_eq!(effect_count, 1, "skipped offsets must not re-apply");
 }
 
-// ----- LogicalClock: ctx.now() == durable change seq, restore re-arm -----
+// ----- Logical clock: ctx.now() == durable change seq, restore re-arm -----
 
 static LOGICAL_OBSERVED: Mutex<Vec<u64>> = Mutex::new(Vec::new());
 
 #[derive(Default)]
 struct LogicalNowTasklet;
+#[flezha_runner::tasklet(name = "logical_now_tasklet", logical_clock)]
 impl Tasklet for LogicalNowTasklet {
     type Input = String;
     type Output = String;
     type State = i64;
     type Change = TickChange;
-    type Clock = flezha_runner::state::LogicalClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "logical_now_tasklet"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> i64 {
-        0
-    }
-    fn apply_change(state: &mut i64, _change: &TickChange) {
-        *state += 1;
-    }
-    fn run(
-        &mut self,
-        input: String,
-        mut state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         LOGICAL_OBSERVED.lock().unwrap().push(ctx.now());
-        state.apply(TickChange);
+        ctx.change(TickChange);
         // Emit so flush-before-emit ships the change deterministically
         // (the background flusher's linger would otherwise race the test).
-        ctx.emit::<String>(input)?;
+        ctx.emit(input)?;
         Ok(())
     }
 }
 
-test_tasklet!(LogicalNowSinkTasklet, "logical_now_sink_tasklet", String => (), (), |_input, _state, _ctx| {
+test_tasklet!(LogicalNowSinkTasklet, "logical_now_sink_tasklet", String => (), (), |_input, _ctx| {
     Ok(())
 });
 
@@ -336,7 +294,7 @@ impl UnboundedOperator for LogicalNowOperator {
     }
 }
 
-/// Spec "LogicalClock serves the durable change sequence": ctx.now() is
+/// Spec "the logical clock serves the durable change sequence": ctx.now() is
 /// the change seq at dispatch entry — advancing with applied changes —
 /// and a restored instance continues from the re-armed seq rather than a
 /// reset counter.

@@ -148,7 +148,9 @@ impl Parse for OperatorDef {
 /// the stream sunk under it. The operator is a type the author can name, so
 /// registration is a call they write.
 pub(crate) struct Wiring<'a> {
-    pub vis: &'a Visibility,
+    /// The operator type's visibility; `None` when the author declared the
+    /// type and the wiring only implements the trait on it.
+    pub vis: Option<&'a Visibility>,
     /// The operator type, the one the author registers.
     pub ident: &'a Ident,
     /// Which authoring trait the impl states.
@@ -182,6 +184,14 @@ pub(crate) enum Kind {
 }
 
 impl Kind {
+    /// The short-form attribute that declares this kind.
+    pub(crate) fn attribute(self) -> &'static str {
+        match self {
+            Kind::Unbounded => "#[flezha::unbounded_operator]",
+            Kind::Bounded => "#[flezha::bounded_operator]",
+        }
+    }
+
     /// The trait the impl states — the one place the two kinds differ, since
     /// both declare their graph in `channels` on the same builder.
     fn operator_trait(self) -> TokenStream {
@@ -222,6 +232,7 @@ pub(crate) fn operator_item(wiring: Wiring<'_>) -> syn::Result<TokenStream> {
     } = wiring;
     let entry = entry_channel_name(input_name)?;
     let operator_trait = kind.operator_trait();
+    let declared = vis.map(|vis| quote! { #vis struct #ident; });
     // Pins the declared sink payload type against the terminal tasklet's
     // `Output`; with no sink the tasklet's output is left unconsumed, as a
     // hand-written channel ending at a tasklet leaves it.
@@ -233,7 +244,7 @@ pub(crate) fn operator_item(wiring: Wiring<'_>) -> syn::Result<TokenStream> {
         None => quote! { let _ = stream; },
     };
     Ok(quote! {
-        #vis struct #ident;
+        #declared
         impl #operator_trait for #ident {
             fn factory_id() -> &'static str { #id }
             fn channels(c: &::flezha_runner::ChannelBuilder) {
@@ -265,7 +276,7 @@ pub fn expand(item: TokenStream) -> syn::Result<TokenStream> {
         .collect();
 
     operator_item(Wiring {
-        vis: &def.vis,
+        vis: Some(&def.vis),
         ident: &def.ident,
         kind: Kind::Unbounded,
         id: &def.id,

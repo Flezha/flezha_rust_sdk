@@ -4,6 +4,36 @@ All notable changes to the Rust SDK crate.
 
 ## Unreleased
 
+### Changed: one tasklet form, on the author's own type (`give-rust-one-tasklet-form`)
+
+**Breaking.** A tasklet is the author's own type, `impl Tasklet for T` under
+`#[flezha::tasklet(name = "...")]`. The attribute moves from the function to
+the `impl` block and generates no type: it writes `NAME`, the settings given as
+keys (`keys`, `capacity`, `max_cells`, `idle_ttl_seconds`, `schema_version`,
+`min_readable_schema_version`, `compact_after_bytes`, `max_timers_per_cell`,
+`logical_clock`), the `*_OVERRIDDEN` flags from the hooks the block writes,
+`CLOCK`, a default `init_state`, and `State = ()`, `Change = NoChange`,
+`Output = ()`. `run`, `on_timer` and `compensate` take one `Ctx<'_, Self>`,
+which reads the state with `state()`, changes it with `change(..)` and emits
+values typed as `Output`. `Change<S>` applies itself with `apply_to`; the
+tasklet has no `apply_change`. Writing `event_time(&Input) -> u64` makes the
+clock event time, and `compensate` is available in the everyday form.
+`init_state(cell_key)` loses the restore payload. The short-form attributes
+take either a stateless function, as before, or an `impl Tasklet` block, where
+they implement the operator trait on the author's type; a function with a
+`&mut` parameter is refused with `ShortFormStateOnFunction`.
+`TaskletTestHarness::replay` folds each change encoded and decoded as the
+runtime persists it, and `expect_emits` is typed as `Output`.
+
+Removed: `#[flezha::tasklet]` on a function and its `id`, `init`, `key`,
+`emits`, `cells_for`, `idle_ttl` and `clock` keys, `SimpleTasklet`,
+`#[derive(State)]` and its `#[journal]` modes, `DerivedState`, the `Clock` and
+`Config` associated types, `from_config`, `name()`, `EventTimeFrom`,
+`TimeExtractor`, `ClockFor`, `WallClock`, `LogicalClock`, `StateHandle` and
+`TaskletCtx`. Saved state is keyed by `NAME`, never by the type, so renaming a
+type keeps it. Local saved state whose change type came from `#[derive(State)]`
+must be cleared once.
+
 ### Changed: a workflow is declared like a stream (`declare-a-workflow-like-a-stream`)
 
 **Breaking.** `WorkflowOperative::tasklets` is renamed `channels`, required as

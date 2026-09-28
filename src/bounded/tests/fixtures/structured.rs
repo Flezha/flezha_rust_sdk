@@ -8,11 +8,9 @@ use serde::{Deserialize, Serialize};
 
 use super::*;
 use crate::bounded::*;
-use crate::cell::restore::RestoreInitPayload;
 use crate::channel::ChannelBuilder;
-use crate::tasklet::change::{Change, NoChange};
-use crate::tasklet::clock::WallClock;
-use crate::tasklet::{StateHandle, Tasklet, TaskletCtx, TaskletError};
+use crate::tasklet::change::Change;
+use crate::tasklet::{Ctx, Tasklet, TaskletError};
 
 // ---- structured tasklets + operators ----------------------------------
 
@@ -95,32 +93,18 @@ impl BoundedOperator for ChatLoop {
 /// handle lives in Cell state.
 #[derive(Default)]
 pub(crate) struct LoopReserve;
+#[flezha_runner::tasklet(name = "loop_reserve")]
 impl Tasklet for LoopReserve {
     type Input = String;
     type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "loop_reserve"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: String,
-        _state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         ctx.emit(format!("reserved:{input}"))?;
         Ok(())
     }
-    const COMPENSATE_OVERRIDDEN: bool = true;
     fn compensate(
         &mut self,
         completed_output: Vec<Arc<String>>,
-        _state: StateHandle<'_, Self>,
-        _ctx: &mut TaskletCtx<'_>,
+        _ctx: &mut Ctx<'_, Self>,
     ) -> Result<(), TaskletError> {
         comp_log(format!("undo-loop:{}", completed_output.len()));
         Ok(())
@@ -238,26 +222,22 @@ pub(crate) struct CountState {
 }
 #[derive(Serialize, Deserialize, Clone)]
 pub(crate) struct Inc;
-impl Change for Inc {}
+impl Change<CountState> for Inc {
+    fn apply_to(&self, state: &mut CountState) {
+        state.n += 1;
+    }
+}
 
 /// Static-cell tasklet: routes items to `even`/`odd` cells by
 /// length parity, counts per-cell (independent state), emits `<n>:<item>`.
 #[derive(Default)]
 pub(crate) struct FanTask;
+#[flezha_runner::tasklet(name = "bounded_fan_op", keys = ["even", "odd"])]
 impl Tasklet for FanTask {
     type Input = String;
     type Output = String;
     type State = CountState;
     type Change = Inc;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "bounded_fan_op"
-    }
-    fn cell_keys() -> Vec<&'static str> {
-        vec!["even", "odd"]
-    }
-    const CELLS_FOR_OVERRIDDEN: bool = true;
     fn cells_for(input: &String) -> Vec<&'static str> {
         if input.len().is_multiple_of(2) {
             vec!["even"]
@@ -265,20 +245,9 @@ impl Tasklet for FanTask {
             vec!["odd"]
         }
     }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> CountState {
-        CountState::default()
-    }
-    fn apply_change(state: &mut CountState, _: &Inc) {
-        state.n += 1;
-    }
-    fn run(
-        &mut self,
-        input: String,
-        mut state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
-        state.apply(Inc);
-        let n = state.n;
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        ctx.change(Inc);
+        let n = ctx.state().n;
         ctx.emit(format!("{n}:{input}"))?;
         Ok(())
     }

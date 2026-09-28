@@ -23,7 +23,7 @@ fn serial_drops() -> std::sync::MutexGuard<'static, ()> {
 
 static DROP_NOTHING_STRESS_RECEIVED: AtomicUsize = AtomicUsize::new(0);
 
-test_tasklet!(DropNothingStressTasklet, "drop_nothing_stress_tasklet", Vec<u8> => (), (), cap 16, |_input, _state, _ctx| {
+test_tasklet!(DropNothingStressTasklet, "drop_nothing_stress_tasklet", Vec<u8> => (), (), cap 16, |_input, _ctx| {
     // Tiny pause so producers actually get to park rather than
     // repeatedly winning the push race uncontested.
     for _ in 0..32 {
@@ -111,7 +111,7 @@ fn drop_nothing_stress_100_producers_no_loss() {
 
 static DROP_NEWEST_RECEIVED: AtomicUsize = AtomicUsize::new(0);
 
-test_tasklet!(DropNewestTasklet, "drop_newest_tasklet", Vec<u8> => (), (), cap 2, |_input, _state, _ctx| {
+test_tasklet!(DropNewestTasklet, "drop_newest_tasklet", Vec<u8> => (), (), cap 2, |_input, _ctx| {
     DROP_NEWEST_RECEIVED.fetch_add(1, Ordering::Relaxed);
     Ok(())
 });
@@ -199,7 +199,7 @@ fn drop_newest_discards_when_full_and_only_bumps_newest_counter() {
 
 static DROP_OLDEST_OBSERVED: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
 
-test_tasklet!(DropOldestTasklet, "drop_oldest_tasklet", Vec<u8> => (), (), cap 2, |input, _state, _ctx| {
+test_tasklet!(DropOldestTasklet, "drop_oldest_tasklet", Vec<u8> => (), (), cap 2, |input, _ctx| {
     DROP_OLDEST_OBSERVED.lock().unwrap().push(input);
     Ok(())
 });
@@ -354,7 +354,7 @@ fn fresh_cell_counters_start_at_zero() {
 
 static DROP_OLDEST_PROCESSED: AtomicUsize = AtomicUsize::new(0);
 
-test_tasklet!(DropOldestStressTasklet, "drop_oldest_stress_tasklet", Vec<u8> => (), (), cap 2, |_input, _state, _ctx| {
+test_tasklet!(DropOldestStressTasklet, "drop_oldest_stress_tasklet", Vec<u8> => (), (), cap 2, |_input, _ctx| {
     // Slow the drain just enough that producers genuinely race it, which is
     // what makes `force_push` fire and what made the counters disagree.
     for _ in 0..64 {
@@ -485,12 +485,12 @@ fn drop_oldest_stress_admitted_never_below_processed() {
 
 static INTER_TASKLET_DOWNSTREAM: AtomicUsize = AtomicUsize::new(0);
 
-test_tasklet!(InterTaskletProducer, "inter_tasklet_producer", String => String, (), |input, _state, ctx| {
-    ctx.emit::<String>(input)?;
+test_tasklet!(InterTaskletProducer, "inter_tasklet_producer", String => String, (), |input, ctx| {
+    ctx.emit(input)?;
     Ok(())
 });
 
-test_tasklet!(InterTaskletConsumer, "inter_tasklet_consumer", String => (), (), |_input, _state, _ctx| {
+test_tasklet!(InterTaskletConsumer, "inter_tasklet_consumer", String => (), (), |_input, _ctx| {
     INTER_TASKLET_DOWNSTREAM.fetch_add(1, Ordering::Relaxed);
     Ok(())
 });
@@ -515,7 +515,7 @@ static STICKY_BOUNDED_CONCURRENT: AtomicUsize = AtomicUsize::new(0);
 static STICKY_BOUNDED_MAX_CONCURRENT: AtomicUsize = AtomicUsize::new(0);
 static STICKY_BOUNDED_DELIVERED: AtomicUsize = AtomicUsize::new(0);
 
-test_tasklet!(StickyBoundedTasklet, "sticky_bounded_tasklet", Vec<u8> => (), (), cap 16, |_input, _state, _ctx| {
+test_tasklet!(StickyBoundedTasklet, "sticky_bounded_tasklet", Vec<u8> => (), (), cap 16, |_input, _ctx| {
     let cur = STICKY_BOUNDED_CONCURRENT.fetch_add(1, Ordering::AcqRel) + 1;
     let mut prev = STICKY_BOUNDED_MAX_CONCURRENT.load(Ordering::Acquire);
     while cur > prev {

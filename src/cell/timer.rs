@@ -5,10 +5,5 @@ pub use flz_core::timer::*;
 
 /// Resolve a Tasklet's declared timer policy.
 pub fn timer_policy_for<S: crate::tasklet::Tasklet>() -> TimerPolicy {
-    TimerPolicy::new(
-        S::max_timers_per_cell(),
-        S::name(),
-        <S::Clock as crate::tasklet::Clock>::IS_EVENT_TIME,
-        <S::Clock as crate::tasklet::Clock>::type_name(),
-    )
+    TimerPolicy::new(S::max_timers_per_cell(), S::NAME, S::CLOCK)
 }

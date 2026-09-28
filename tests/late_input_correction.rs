@@ -1,7 +1,6 @@
 //! Late-input correction: a replayed slice is re-forwarded in event-time
 //! order, not arrival order, and the replay never lowers the high-water.
 
-use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle};
 use flz_transport::transport::FlezhaStream;
 
 mod common;
@@ -17,32 +16,16 @@ use common::prelude::*;
 
 static REPLAY_OBSERVED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-struct TradeTime;
-impl flezha_runner::tasklet::TimeExtractor<String> for TradeTime {
-    fn extract(input: &String) -> u64 {
-        input.parse().unwrap_or(0)
-    }
-}
-
 #[derive(Default)]
 struct ReplayTasklet;
+#[flezha_runner::tasklet(name = "replay_tasklet")]
 impl Tasklet for ReplayTasklet {
     type Input = String;
     type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = flezha_runner::tasklet::EventTimeFrom<TradeTime>;
-    type Config = ();
-    fn name() -> &'static str {
-        "replay_tasklet"
+    fn event_time(input: &String) -> u64 {
+        input.parse().unwrap_or(0)
     }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: String,
-        _state: StateHandle<'_, Self>,
-        _ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: String, _ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         REPLAY_OBSERVED.lock().unwrap().push(input);
         Ok(())
     }
@@ -138,23 +121,14 @@ static HIGHWATER_OBSERVED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 #[derive(Default)]
 struct HighWaterTasklet;
+#[flezha_runner::tasklet(name = "high_water_tasklet")]
 impl Tasklet for HighWaterTasklet {
     type Input = String;
     type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = flezha_runner::tasklet::EventTimeFrom<TradeTime>;
-    type Config = ();
-    fn name() -> &'static str {
-        "high_water_tasklet"
+    fn event_time(input: &String) -> u64 {
+        input.parse().unwrap_or(0)
     }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: String,
-        _state: StateHandle<'_, Self>,
-        _ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: String, _ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         HIGHWATER_OBSERVED.lock().unwrap().push(input);
         Ok(())
     }

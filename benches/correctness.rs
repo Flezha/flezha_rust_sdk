@@ -32,9 +32,8 @@ use flezha_runner::channel::ChannelBuilder;
 use flezha_runner::operator::builder::build_topology_for;
 use flezha_runner::operator::registry::OperatorRegistry;
 use flezha_runner::operator::OperatorInstance;
-use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_runner::tasklet::{Tasklet, TaskletCtx, TaskletError};
-use flezha_runner::{__dispatch_internals as bi, OverflowPolicy, UnboundedOperator};
+use flezha_runner::tasklet::{Tasklet, TaskletError};
+use flezha_runner::{__dispatch_internals as bi, Ctx, OverflowPolicy, UnboundedOperator};
 use flz_core::bench_support::{
     allocations, drained_pair, fan_in, report, stream_pair, Counting, Settle,
 };
@@ -50,23 +49,11 @@ static SINGLE_COUNTER: Settle = Settle::new();
 
 #[derive(Default)]
 struct SingleCellTasklet;
+#[flezha_runner::tasklet(name = "single_cell_tasklet")]
 impl Tasklet for SingleCellTasklet {
     type Input = Vec<u8>;
     type Output = Vec<u8>;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "single_cell_tasklet"
-    }
-    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        _: Vec<u8>,
-        _: StateHandle<'_, SingleCellTasklet>,
-        _: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, _: Vec<u8>, _: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         SINGLE_COUNTER.add(1);
         Ok(())
     }
@@ -147,30 +134,17 @@ const FANOUT_KEYS: &[&str] = &["k0", "k1", "k2", "k3"];
 
 #[derive(Default)]
 struct FanoutTasklet;
+#[flezha_runner::tasklet(name = "fanout_tasklet")]
 impl Tasklet for FanoutTasklet {
     type Input = Vec<u8>;
     type Output = Vec<u8>;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "fanout_tasklet"
-    }
-    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
     fn cell_keys() -> Vec<&'static str> {
         FANOUT_KEYS.to_vec()
     }
-    const CELLS_FOR_OVERRIDDEN: bool = true;
     fn cells_for(_: &Vec<u8>) -> Vec<&'static str> {
         FANOUT_KEYS.to_vec()
     }
-    fn run(
-        &mut self,
-        _: Vec<u8>,
-        _: StateHandle<'_, FanoutTasklet>,
-        _: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, _: Vec<u8>, _: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         FANOUT_COUNTER.add(1);
         Ok(())
     }
@@ -255,36 +229,25 @@ static TIER_ON_COUNTER: Settle = Settle::new();
 
 #[derive(Serialize, Deserialize)]
 struct BumpChange;
-impl flezha_runner::state::Change for BumpChange {}
+impl flezha_runner::state::Change<i64> for BumpChange {
+    fn apply_to(&self, state: &mut i64) {
+        *state += 1;
+    }
+}
 
 macro_rules! tier_bench_tasklet {
-    ($task:ident, $name:literal, $counter:ident) => {
+    ($task:ident, $name:tt, $counter:ident) => {
         #[derive(Default)]
         struct $task;
+        #[flezha_runner::tasklet(name = $name)]
         impl Tasklet for $task {
             type Input = Vec<u8>;
             type Output = Vec<u8>;
             type State = i64;
             type Change = BumpChange;
-            type Clock = WallClock;
-            type Config = ();
-            fn name() -> &'static str {
-                $name
-            }
-            fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> i64 {
-                0
-            }
-            fn apply_change(state: &mut i64, _: &BumpChange) {
-                *state += 1;
-            }
-            fn run(
-                &mut self,
-                input: Vec<u8>,
-                mut state: StateHandle<'_, Self>,
-                ctx: &mut TaskletCtx<'_>,
-            ) -> Result<(), TaskletError> {
-                state.apply(BumpChange);
-                ctx.emit_keyed::<Vec<u8>>("k".to_string(), input)?;
+            fn run(&mut self, input: Vec<u8>, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+                ctx.change(BumpChange);
+                ctx.emit_keyed("k".to_string(), input)?;
                 $counter.add(1);
                 Ok(())
             }

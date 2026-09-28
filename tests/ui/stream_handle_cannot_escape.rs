@@ -4,22 +4,16 @@
 // compile error, not a runtime failure.
 
 use flezha_runner::channel::ChannelBuilder;
-use flezha_runner::tasklet::{Tasklet, TaskletCtx, TaskletError};
-use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
+use flezha_runner::{tasklet, Ctx, Tasklet, TaskletError};
 use flezha_runner::Stream;
 
 #[derive(Default)]
 struct PassTask;
+#[tasklet(name = "pass_op")]
 impl Tasklet for PassTask {
     type Input = String;
     type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str { "pass_op" }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(&mut self, _: String, _: StateHandle<'_, Self>, _: &mut TaskletCtx<'_>) -> Result<(), TaskletError> {
+    fn run(&mut self, _: String, _: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         Ok(())
     }
 }

@@ -15,117 +15,60 @@ struct BoundedTaskletState {
 enum BoundedChange {
     Inc,
 }
-impl Change for BoundedChange {}
-
-fn apply_inc(state: &mut BoundedTaskletState, _: &BoundedChange) {
-    state.processed += 1;
+impl Change<BoundedTaskletState> for BoundedChange {
+    fn apply_to(&self, state: &mut BoundedTaskletState) {
+        state.processed += 1;
+    }
 }
 
 #[derive(Default)]
 struct DropNothingTestTasklet;
+#[flezha_runner::tasklet(name = "drop_nothing_test_tasklet")]
 impl Tasklet for DropNothingTestTasklet {
     type Input = String;
     type Output = Vec<u8>;
     type State = BoundedTaskletState;
     type Change = BoundedChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "drop_nothing_test_tasklet"
-    }
-    fn init_state(
-        _: Option<&str>,
-        _init_payload: Option<RestoreInitPayload<'_>>,
-    ) -> BoundedTaskletState {
-        BoundedTaskletState::default()
-    }
-    fn apply_change(state: &mut BoundedTaskletState, change: &BoundedChange) {
-        apply_inc(state, change);
-    }
     fn mailbox_capacity() -> usize {
         4
     }
-    const MAILBOX_CAPACITY_OVERRIDDEN: bool = true;
-    fn run(
-        &mut self,
-        input: String,
-        mut state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
-        state.apply(BoundedChange::Inc);
-        ctx.emit::<Vec<u8>>(input.into_bytes())
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        ctx.change(BoundedChange::Inc);
+        ctx.emit(input.into_bytes())
     }
 }
 
 #[derive(Default)]
 struct DropNewestTestTasklet;
+#[flezha_runner::tasklet(name = "drop_newest_test_tasklet")]
 impl Tasklet for DropNewestTestTasklet {
     type Input = String;
     type Output = Vec<u8>;
     type State = BoundedTaskletState;
     type Change = BoundedChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "drop_newest_test_tasklet"
-    }
-    fn init_state(
-        _: Option<&str>,
-        _init_payload: Option<RestoreInitPayload<'_>>,
-    ) -> BoundedTaskletState {
-        BoundedTaskletState::default()
-    }
-    fn apply_change(state: &mut BoundedTaskletState, change: &BoundedChange) {
-        apply_inc(state, change);
-    }
     fn mailbox_capacity() -> usize {
         4
     }
-    const MAILBOX_CAPACITY_OVERRIDDEN: bool = true;
-    fn run(
-        &mut self,
-        input: String,
-        mut state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
-        state.apply(BoundedChange::Inc);
-        ctx.emit::<Vec<u8>>(input.into_bytes())
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        ctx.change(BoundedChange::Inc);
+        ctx.emit(input.into_bytes())
     }
 }
 
 #[derive(Default)]
 struct DropOldestTestTasklet;
+#[flezha_runner::tasklet(name = "drop_oldest_test_tasklet")]
 impl Tasklet for DropOldestTestTasklet {
     type Input = String;
     type Output = Vec<u8>;
     type State = BoundedTaskletState;
     type Change = BoundedChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "drop_oldest_test_tasklet"
-    }
-    fn init_state(
-        _: Option<&str>,
-        _init_payload: Option<RestoreInitPayload<'_>>,
-    ) -> BoundedTaskletState {
-        BoundedTaskletState::default()
-    }
-    fn apply_change(state: &mut BoundedTaskletState, change: &BoundedChange) {
-        apply_inc(state, change);
-    }
     fn mailbox_capacity() -> usize {
         4
     }
-    const MAILBOX_CAPACITY_OVERRIDDEN: bool = true;
-    fn run(
-        &mut self,
-        input: String,
-        mut state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
-        state.apply(BoundedChange::Inc);
-        ctx.emit::<Vec<u8>>(input.into_bytes())
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        ctx.change(BoundedChange::Inc);
+        ctx.emit(input.into_bytes())
     }
 }
 
@@ -181,25 +124,13 @@ impl UnboundedOperator for BoundedMailboxDropOldestOperator {
 
 #[derive(Default)]
 struct HybridProducerTasklet;
+#[flezha_runner::tasklet(name = "hybrid_producer_tasklet")]
 impl Tasklet for HybridProducerTasklet {
     type Input = String;
     type Output = u32;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "hybrid_producer_tasklet"
-    }
-    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: String,
-        _: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         let n: u32 = input.parse().unwrap_or(0);
-        match ctx.emit::<u32>(n) {
+        match ctx.emit(n) {
             Ok(()) => Ok(()),
             Err(TaskletError::PluginSerializerPanic { channel, message }) => {
                 eprintln!("hybrid_producer_tasklet: serializer panic on `{channel}`: {message}");
@@ -212,23 +143,10 @@ impl Tasklet for HybridProducerTasklet {
 
 #[derive(Default)]
 struct HybridConsumerTasklet;
+#[flezha_runner::tasklet(name = "hybrid_consumer_tasklet")]
 impl Tasklet for HybridConsumerTasklet {
     type Input = u32;
-    type Output = ();
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "hybrid_consumer_tasklet"
-    }
-    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: u32,
-        _: StateHandle<'_, Self>,
-        _: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: u32, _: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         println!("hybrid_consumer_tasklet: received {input}");
         Ok(())
     }
@@ -275,23 +193,11 @@ fn tagged(source: &'static str) -> impl Fn(String) -> MergedInput + Send + Sync 
 
 #[derive(Default)]
 struct MergeLabelTasklet;
+#[flezha_runner::tasklet(name = "merge_label_tasklet")]
 impl Tasklet for MergeLabelTasklet {
     type Input = MergedInput;
     type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "merge_label_tasklet"
-    }
-    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: MergedInput,
-        _: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: MergedInput, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         ctx.emit(format!("{}:{}", input.source, input.payload))
     }
 }
@@ -321,23 +227,11 @@ impl UnboundedOperator for MergedInputOperator {
 
 #[derive(Default)]
 struct TransformLabelTasklet;
+#[flezha_runner::tasklet(name = "transform_label_tasklet")]
 impl Tasklet for TransformLabelTasklet {
     type Input = String;
     type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "transform_label_tasklet"
-    }
-    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: String,
-        _: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         ctx.emit(input)
     }
 }

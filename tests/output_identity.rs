@@ -96,8 +96,8 @@ fn non_keyed_frame_is_byte_identical_to_prechange_layout() {
     );
 }
 
-test_tasklet!(PlainPluginTasklet, "plain_plugin_tasklet", String => String, (), |input, _state, ctx| {
-    ctx.emit::<String>(input)?;
+test_tasklet!(PlainPluginTasklet, "plain_plugin_tasklet", String => String, (), |input, ctx| {
+    ctx.emit(input)?;
     Ok(())
 });
 

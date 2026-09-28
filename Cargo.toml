@@ -186,15 +186,11 @@ name = "sugar_emit"
 required-features = ["testing"]
 
 [[test]]
-name = "sugar_ctx_import"
-required-features = ["testing"]
-
-[[test]]
 name = "state_evolution"
 required-features = ["testing"]
 
 [[test]]
-name = "simple_tasklet"
+name = "reference_form"
 required-features = ["bench-internals", "testing"]
 
 [[test]]

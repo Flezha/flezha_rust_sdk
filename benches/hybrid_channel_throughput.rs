@@ -23,9 +23,8 @@ use flezha_runner::channel::ChannelBuilder;
 use flezha_runner::operator::builder::build_topology_for;
 use flezha_runner::operator::registry::OperatorRegistry;
 use flezha_runner::operator::OperatorInstance;
-use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_runner::tasklet::{Tasklet, TaskletCtx, TaskletError};
-use flezha_runner::{__dispatch_internals as bi, OverflowPolicy, UnboundedOperator};
+use flezha_runner::tasklet::{Tasklet, TaskletError};
+use flezha_runner::{__dispatch_internals as bi, Ctx, OverflowPolicy, UnboundedOperator};
 use flz_core::bench_support::{fan_in, stream_pair, Settle};
 
 const MSGS_PER_ITER: usize = 5_000;
@@ -42,46 +41,21 @@ static HYBRID_3C_COUNT: Settle = Settle::new();
 
 #[derive(Default)]
 struct Pure1Producer;
+#[flezha_runner::tasklet(name = "pure1_producer")]
 impl Tasklet for Pure1Producer {
     type Input = Vec<u8>;
     type Output = u32;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "pure1_producer"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        _: Vec<u8>,
-        _: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
-        ctx.emit::<u32>(1)
+    fn run(&mut self, _: Vec<u8>, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        ctx.emit(1)
     }
 }
 
 #[derive(Default)]
 struct Pure1Consumer;
+#[flezha_runner::tasklet(name = "pure1_consumer")]
 impl Tasklet for Pure1Consumer {
     type Input = u32;
-    type Output = ();
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "pure1_consumer"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        _: u32,
-        _: StateHandle<'_, Self>,
-        _: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, _: u32, _: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         PURE_1C_COUNT.add(1);
         Ok(())
     }
@@ -105,48 +79,23 @@ impl UnboundedOperator for Pure1Operator {
 
 #[derive(Default)]
 struct Pure3Producer;
+#[flezha_runner::tasklet(name = "pure3_producer")]
 impl Tasklet for Pure3Producer {
     type Input = Vec<u8>;
     type Output = u32;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "pure3_producer"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        _: Vec<u8>,
-        _: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
-        ctx.emit::<u32>(1)
+    fn run(&mut self, _: Vec<u8>, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        ctx.emit(1)
     }
 }
 
 macro_rules! pure3_consumer {
-    ($name:ident, $static:literal) => {
+    ($name:ident, $static:tt) => {
         #[derive(Default)]
         struct $name;
+        #[flezha_runner::tasklet(name = $static)]
         impl Tasklet for $name {
             type Input = u32;
-            type Output = ();
-            type State = ();
-            type Change = NoChange;
-            type Clock = WallClock;
-            type Config = ();
-            fn name() -> &'static str {
-                $static
-            }
-            fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-            fn run(
-                &mut self,
-                _: u32,
-                _: StateHandle<'_, Self>,
-                _: &mut TaskletCtx<'_>,
-            ) -> Result<(), TaskletError> {
+            fn run(&mut self, _: u32, _: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
                 PURE_3C_COUNT.add(1);
                 Ok(())
             }
@@ -179,25 +128,13 @@ impl UnboundedOperator for Pure3Operator {
 
 #[derive(Default)]
 struct PluginBoundProducer;
+#[flezha_runner::tasklet(name = "plugin_bound_producer")]
 impl Tasklet for PluginBoundProducer {
     type Input = Vec<u8>;
     type Output = Vec<u8>;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "plugin_bound_producer"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        _: Vec<u8>,
-        _: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, _: Vec<u8>, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         PLUGIN_BOUND_PRODUCE_COUNT.add(1);
-        ctx.emit::<Vec<u8>>(b"x".to_vec())
+        ctx.emit(b"x".to_vec())
     }
 }
 
@@ -218,46 +155,21 @@ impl UnboundedOperator for PluginBoundOperator {
 
 #[derive(Default)]
 struct Hybrid1Producer;
+#[flezha_runner::tasklet(name = "hybrid1_producer")]
 impl Tasklet for Hybrid1Producer {
     type Input = Vec<u8>;
     type Output = u32;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "hybrid1_producer"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        _: Vec<u8>,
-        _: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
-        ctx.emit::<u32>(1)
+    fn run(&mut self, _: Vec<u8>, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        ctx.emit(1)
     }
 }
 
 #[derive(Default)]
 struct Hybrid1Consumer;
+#[flezha_runner::tasklet(name = "hybrid1_consumer")]
 impl Tasklet for Hybrid1Consumer {
     type Input = u32;
-    type Output = ();
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "hybrid1_consumer"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        _: u32,
-        _: StateHandle<'_, Self>,
-        _: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, _: u32, _: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         HYBRID_1C_COUNT.add(1);
         Ok(())
     }
@@ -281,48 +193,23 @@ impl UnboundedOperator for Hybrid1Operator {
 
 #[derive(Default)]
 struct Hybrid3Producer;
+#[flezha_runner::tasklet(name = "hybrid3_producer")]
 impl Tasklet for Hybrid3Producer {
     type Input = Vec<u8>;
     type Output = u32;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "hybrid3_producer"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        _: Vec<u8>,
-        _: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
-        ctx.emit::<u32>(1)
+    fn run(&mut self, _: Vec<u8>, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        ctx.emit(1)
     }
 }
 
 macro_rules! hybrid3_consumer {
-    ($name:ident, $static:literal) => {
+    ($name:ident, $static:tt) => {
         #[derive(Default)]
         struct $name;
+        #[flezha_runner::tasklet(name = $static)]
         impl Tasklet for $name {
             type Input = u32;
-            type Output = ();
-            type State = ();
-            type Change = NoChange;
-            type Clock = WallClock;
-            type Config = ();
-            fn name() -> &'static str {
-                $static
-            }
-            fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-            fn run(
-                &mut self,
-                _: u32,
-                _: StateHandle<'_, Self>,
-                _: &mut TaskletCtx<'_>,
-            ) -> Result<(), TaskletError> {
+            fn run(&mut self, _: u32, _: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
                 HYBRID_3C_COUNT.add(1);
                 Ok(())
             }

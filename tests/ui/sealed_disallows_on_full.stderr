@@ -1,16 +1,16 @@
 error[E0599]: no method named `on_full` found for struct `Channel<T>` in the current scope
-  --> tests/ui/sealed_disallows_on_full.rs:34:10
+  --> tests/ui/sealed_disallows_on_full.rs:28:10
    |
-30 |       c.input::<String>("in")
+24 |       c.input::<String>("in")
    |       - --------------------- method `on_full` is available on `Stream<'_, String, EntryTarget>`
    |  _____|
    | |
-31 | |         .into::<PluginProducer>()
+25 | |         .into::<PluginProducer>()
    | |          ------------------------ method `on_full` is available on `Stream<'_, Vec<u8>>`
-32 | |         .sink()
+26 | |         .sink()
    | |          ------ method `on_full` is available on `Stream<'_, Vec<u8>>`
-33 | |         .sealed()
-34 | |         .on_full(OverflowPolicy::DropNothing);
+27 | |         .sealed()
+28 | |         .on_full(OverflowPolicy::DropNothing);
    | |         -^^^^^^^ method not found in `Channel<Vec<u8>>`
    | |_________|
    |

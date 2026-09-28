@@ -13,7 +13,7 @@ use crate::channel::ChannelBuilder;
 /// One bounded operator class: a static DAG of Tasklets/Channels/Cells
 /// declared in [`channels`](Self::channels), on the same graph builder a
 /// unbounded operator uses. A tasklet ends its instance with
-/// [`TaskletCtx::complete`](crate::TaskletCtx::complete). Capabilities
+/// [`Ctx::complete`](crate::Ctx::complete). Capabilities
 /// attach to the kind, not here; choosing the bounded kind is sufficient.
 /// A worked example: `sdk/rust/examples/spawn_bounded_worker.rs`.
 pub trait BoundedOperator: Send + Sync + 'static {

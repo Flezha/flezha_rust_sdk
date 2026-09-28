@@ -1,5 +1,4 @@
-//! Reading a Cell's live state with `flz state get`
-//! (`cell-state-live-query`).
+//! Reading a Cell's live state with `flz state get`.
 //!
 //! The pattern this exists for: something outside the pipeline needs the
 //! CURRENT value of one key — a dashboard, an ops question, a health check.
@@ -56,10 +55,8 @@
 //! diagnoses on purpose: eviction unlinks the Cell's files, so after the fact
 //! only the SDK's bounded operator eviction trace can tell you the key ever existed.
 
-use std::time::Duration;
-
-use flezha_runner::state::{Change, RestoreInitPayload, StateHandle, WallClock};
-use flezha_runner::tasklet::{Tasklet, TaskletCtx, TaskletError};
+use flezha_runner::state::Change;
+use flezha_runner::tasklet::{Ctx, Tasklet, TaskletError};
 use flezha_runner::{ChannelBuilder, UnboundedOperator};
 use serde::{Deserialize, Serialize};
 
@@ -84,50 +81,30 @@ struct Traded {
     price: f64,
     qty: f64,
 }
-impl Change for Traded {}
+impl Change<Candle> for Traded {
+    fn apply_to(&self, state: &mut Candle) {
+        state.high = state.high.max(self.price);
+        state.volume += self.qty;
+        state.trades += 1;
+    }
+}
 
 #[derive(Default)]
 struct CandleTasklet;
 
+// A quiet symbol is evicted after ten idle minutes. Eviction is destructive,
+// so a later read of that key is refused with `cell_evicted` rather than
+// served a stale value.
+#[flezha_runner::tasklet(name = "candle", idle_ttl_seconds = 600)]
 impl Tasklet for CandleTasklet {
     type Input = Trade;
-    type Output = ();
     type State = Candle;
     type Change = Traded;
-    type Clock = WallClock;
-    type Config = ();
 
-    fn name() -> &'static str {
-        // The middle path segment of `flz state get <operator>/<tasklet>/<key>`.
-        "candle"
-    }
-
-    fn init_state(_key: Option<&str>, _p: Option<RestoreInitPayload<'_>>) -> Candle {
-        Candle::default()
-    }
-
-    fn apply_change(state: &mut Candle, change: &Traded) {
-        state.high = state.high.max(change.price);
-        state.volume += change.qty;
-        state.trades += 1;
-    }
-
-    /// A quiet symbol is evicted after ten idle minutes. Eviction is
-    /// destructive, so a later read of that key is refused with
-    /// `cell_evicted` rather than served a stale value.
-    fn cell_idle_ttl() -> Option<Duration> {
-        Some(Duration::from_secs(600))
-    }
-
-    fn run(
-        &mut self,
-        trade: Trade,
-        mut state: StateHandle<'_, Self>,
-        _ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, trade: Trade, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         // Applied here, visible to a read immediately — before the flusher has
         // shipped it, and before any sink has seen it.
-        state.apply(Traded {
+        ctx.change(Traded {
             price: trade.price,
             qty: trade.qty,
         });

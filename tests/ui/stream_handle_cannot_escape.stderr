@@ -1,7 +1,7 @@
 error[E0277]: `RefCell<flezha_runner::channel::builder::state::BuilderState>` cannot be shared between threads safely
-  --> tests/ui/stream_handle_cannot_escape.rs:27:15
+  --> tests/ui/stream_handle_cannot_escape.rs:21:15
    |
-27 | static STASH: std::sync::Mutex<Option<Stream<'static, String>>> = std::sync::Mutex::new(None);
+21 | static STASH: std::sync::Mutex<Option<Stream<'static, String>>> = std::sync::Mutex::new(None);
    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `RefCell<flezha_runner::channel::builder::state::BuilderState>` cannot be shared between threads safely
    |
    = help: within `ChannelBuilder`, the trait `Sync` is not implemented for `RefCell<flezha_runner::channel::builder::state::BuilderState>`
@@ -23,14 +23,14 @@ note: required because it appears within the type `Option<Stream<'static, String
    = note: shared static variables must have a type that implements `Sync`
 
 error[E0521]: borrowed data escapes outside of function
-  --> tests/ui/stream_handle_cannot_escape.rs:31:6
+  --> tests/ui/stream_handle_cannot_escape.rs:25:6
    |
-29 | fn declare(c: &ChannelBuilder) {
+23 | fn declare(c: &ChannelBuilder) {
    |            -  - let's call the lifetime of this reference `'1`
    |            |
    |            `c` is a reference that is only valid in the function body
-30 |     let stream = c.input::<String>("in").into::<PassTask>();
-31 |     *STASH.lock().unwrap() = Some(stream);
+24 |     let stream = c.input::<String>("in").into::<PassTask>();
+25 |     *STASH.lock().unwrap() = Some(stream);
    |      ^^^^^^^^^^^^
    |      |
    |      `c` escapes the function body here

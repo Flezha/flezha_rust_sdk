@@ -54,7 +54,7 @@ fn registration_past_the_cap_is_refused_naming_the_tasklet_and_the_bound() {
 fn an_event_time_timer_under_a_wall_clock_is_refused_naming_the_clock() {
     let err = refusal_of(SurfaceCmd::RegisterEventTime);
     assert!(
-        err.contains("timers_surface_tasklet") && err.contains("WallClock"),
+        err.contains("timers_surface_tasklet") && err.contains("`wall`"),
         "the refusal names the tasklet and its clock: {err}"
     );
 }

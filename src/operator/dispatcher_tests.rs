@@ -7,8 +7,7 @@ use crate::cell::restore::RestoreInitPayload;
 use crate::channel::ChannelBuilder;
 use crate::operator::UnboundedOperator;
 use crate::tasklet::ctx::EmitSink;
-use crate::tasklet::state_handle::StateHandle;
-use crate::tasklet::{Tasklet, TaskletCtx, TaskletError};
+use crate::tasklet::{Ctx, Tasklet, TaskletError};
 
 /// The worker's guard, on exactly the path it exists for. Per-cell
 /// exclusivity IS the handout, so a worker that leaves without answering —
@@ -55,23 +54,11 @@ fn an_unwinding_worker_re_hands_its_activation_instead_of_retiring_the_cell() {
 
 #[derive(Default)]
 struct KeyedTask;
+#[flezha_runner::tasklet(name = "bounded_keyed_op")]
 impl Tasklet for KeyedTask {
     type Input = String;
     type Output = String;
-    type State = ();
-    type Change = crate::tasklet::NoChange;
-    type Clock = crate::tasklet::WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "bounded_keyed_op"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        _: String,
-        _state: StateHandle<'_, Self>,
-        _: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, _: String, _: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         Ok(())
     }
 }
@@ -121,7 +108,8 @@ impl EmitSink for NoSink {
 #[test]
 fn a_context_without_a_timer_session_refuses_rather_than_dropping() {
     let mut sink = NoSink;
-    let ctx = TaskletCtx::new(&mut sink, 0, 0, b"bounded/keyed/");
+    let (mut state, changes) = (0, std::cell::RefCell::new(Vec::new()));
+    let ctx = Ctx::<CounterTask>::new(&mut state, &changes, &mut sink, 0, 0, b"bounded/keyed/");
     let err = ctx
         .timer_after(std::time::Duration::from_secs(1))
         .expect_err("a session-less context must refuse");
@@ -133,32 +121,24 @@ fn a_context_without_a_timer_session_refuses_rather_than_dropping() {
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct AddChange(i64);
-impl crate::tasklet::change::Change for AddChange {}
+impl crate::tasklet::change::Change<i64> for AddChange {
+    fn apply_to(&self, state: &mut i64) {
+        *state += self.0;
+    }
+}
 
 #[derive(Default)]
 struct CounterTask;
+#[flezha_runner::tasklet(name = "snapshot_counter_op")]
 impl Tasklet for CounterTask {
     type Input = String;
     type Output = String;
     type State = i64;
     type Change = AddChange;
-    type Clock = crate::tasklet::WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "snapshot_counter_op"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> i64 {
+    fn init_state(_: Option<&str>) -> i64 {
         0
     }
-    fn apply_change(state: &mut i64, change: &AddChange) {
-        *state += change.0;
-    }
-    fn run(
-        &mut self,
-        _: String,
-        _: StateHandle<'_, Self>,
-        _: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, _: String, _: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         Ok(())
     }
 }

@@ -3,9 +3,10 @@
 //! migration against bytes the previous version wrote — without a controller.
 
 use flezha_runner::cell::header::header_template_for;
-use flezha_runner::state::{Change, RestoreInitPayload, StateHandle, WallClock};
-use flezha_runner::tasklet::{Tasklet, TaskletCtx, TaskletError};
+use flezha_runner::state::{Change, RestoreInitPayload};
+use flezha_runner::tasklet::{Tasklet, TaskletError};
 use flezha_runner::testing::TaskletTestHarness;
+use flezha_runner::Ctx;
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug, Default, PartialEq)]
@@ -21,34 +22,29 @@ struct Basket {
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 struct AddItems(u32);
-impl Change for AddItems {}
+impl Change<BasketV1> for AddItems {
+    fn apply_to(&self, state: &mut BasketV1) {
+        state.items += self.0;
+    }
+}
+
+impl Change<Basket> for AddItems {
+    fn apply_to(&self, state: &mut Basket) {
+        state.items += self.0;
+    }
+}
 
 /// The deployed v1, kept only to write the fixture bytes this test restores
 /// from — in a real repo those bytes are already on disk.
 #[derive(Default)]
 struct BasketV1Tasklet;
+#[flezha_runner::tasklet(name = "basket")]
 impl Tasklet for BasketV1Tasklet {
     type Input = String;
     type Output = String;
     type State = BasketV1;
     type Change = AddItems;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "basket"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> BasketV1 {
-        BasketV1::default()
-    }
-    fn apply_change(state: &mut BasketV1, change: &AddItems) {
-        state.items += change.0;
-    }
-    fn run(
-        &mut self,
-        _: String,
-        _: StateHandle<'_, Self>,
-        _: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, _: String, _: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         Ok(())
     }
 }
@@ -57,24 +53,14 @@ impl Tasklet for BasketV1Tasklet {
 /// migration to back the claim.
 #[derive(Default)]
 struct BasketTasklet;
+#[flezha_runner::tasklet(name = "basket")]
 impl Tasklet for BasketTasklet {
     type Input = String;
     type Output = String;
     type State = Basket;
     type Change = AddItems;
-    type Clock = WallClock;
-    type Config = ();
     const SCHEMA_VERSION: u32 = 2;
     const MIN_READABLE_SCHEMA_VERSION: u32 = 1;
-    fn name() -> &'static str {
-        "basket"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> Basket {
-        Basket::default()
-    }
-    fn apply_change(state: &mut Basket, change: &AddItems) {
-        state.items += change.0;
-    }
     fn migrate_state(from_version: u32, bytes: &[u8]) -> Result<Basket, String> {
         match from_version {
             1 => {
@@ -87,12 +73,7 @@ impl Tasklet for BasketTasklet {
             v => Err(format!("no migration from {v}")),
         }
     }
-    fn run(
-        &mut self,
-        _: String,
-        _: StateHandle<'_, Self>,
-        _: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, _: String, _: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         Ok(())
     }
 }

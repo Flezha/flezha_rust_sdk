@@ -40,8 +40,8 @@ pub mod prelude {
     pub use flezha_runner::operator::builder::build_topology_for;
     pub use flezha_runner::operator::registry::OperatorRegistry;
     pub use flezha_runner::operator::{OperatorInstance, UnboundedOperator};
-    pub use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
-    pub use flezha_runner::tasklet::{Tasklet, TaskletCtx, TaskletError};
+    pub use flezha_runner::state::{NoChange, RestoreInitPayload};
+    pub use flezha_runner::tasklet::{Ctx, Tasklet, TaskletError};
 
     pub use super::*;
 }
@@ -92,61 +92,39 @@ pub fn setup_partitioned<R: UnboundedOperator>(
 }
 
 /// Declare a trivial test Tasklet: `State` built via `Default`, no cell
-/// keys / change type. The run body sees `(input, state, ctx)`. Use the
-/// `cap N` form to set a non-default mailbox capacity.
+/// keys / change type. The run body sees `(input, ctx)`. Use the `cap N` form
+/// to set a non-default mailbox capacity.
 #[macro_export]
 macro_rules! test_tasklet {
-    ($tasklet:ident, $name:literal, $input:ty => $output:ty, $state:ty,
-     |$inp:tt, $st:tt, $ctx:tt| $body:block) => {
+    ($tasklet:ident, $name:tt, $input:ty => $output:ty, $state:ty,
+     |$inp:tt, $ctx:tt| $body:block) => {
         #[derive(Default)]
         struct $tasklet;
+        #[flezha_runner::tasklet(name = $name)]
         impl flezha_runner::tasklet::Tasklet for $tasklet {
             type Input = $input;
             type Output = $output;
             type State = $state;
-            type Change = flezha_runner::state::NoChange;
-            type Clock = flezha_runner::state::WallClock;
-            type Config = ();
-            fn name() -> &'static str { $name }
-            fn init_state(
-                _: ::std::option::Option<&str>,
-                _: ::std::option::Option<flezha_runner::state::RestoreInitPayload<'_>>,
-            ) -> $state {
-                ::std::default::Default::default()
-            }
             fn run(
                 &mut self,
                 $inp: $input,
-                $st: flezha_runner::tasklet::StateHandle<'_, Self>,
-                $ctx: &mut flezha_runner::tasklet::TaskletCtx<'_>,
+                $ctx: &mut flezha_runner::Ctx<'_, Self>,
             ) -> ::std::result::Result<(), flezha_runner::tasklet::TaskletError> $body
         }
     };
-    ($tasklet:ident, $name:literal, $input:ty => $output:ty, $state:ty, cap $cap:literal,
-     |$inp:tt, $st:tt, $ctx:tt| $body:block) => {
+    ($tasklet:ident, $name:tt, $input:ty => $output:ty, $state:ty, cap $cap:literal,
+     |$inp:tt, $ctx:tt| $body:block) => {
         #[derive(Default)]
         struct $tasklet;
+        #[flezha_runner::tasklet(name = $name, capacity = $cap)]
         impl flezha_runner::tasklet::Tasklet for $tasklet {
             type Input = $input;
             type Output = $output;
             type State = $state;
-            type Change = flezha_runner::state::NoChange;
-            type Clock = flezha_runner::state::WallClock;
-            type Config = ();
-            fn name() -> &'static str { $name }
-            fn init_state(
-                _: ::std::option::Option<&str>,
-                _: ::std::option::Option<flezha_runner::state::RestoreInitPayload<'_>>,
-            ) -> $state {
-                ::std::default::Default::default()
-            }
-            fn mailbox_capacity() -> usize { $cap }
-            const MAILBOX_CAPACITY_OVERRIDDEN: bool = true;
             fn run(
                 &mut self,
                 $inp: $input,
-                $st: flezha_runner::tasklet::StateHandle<'_, Self>,
-                $ctx: &mut flezha_runner::tasklet::TaskletCtx<'_>,
+                $ctx: &mut flezha_runner::Ctx<'_, Self>,
             ) -> ::std::result::Result<(), flezha_runner::tasklet::TaskletError> $body
         }
     };
@@ -224,22 +202,14 @@ pub fn decode_park_body(frame: &[u8]) -> Result<ParkBody, String> {
 /// associated `type Input` may not leak a private one.
 #[derive(Default)]
 pub struct EchoTasklet;
+#[flezha_runner::tasklet(name = "echo_tasklet")]
 impl flezha_runner::tasklet::Tasklet for EchoTasklet {
     type Input = String;
     type Output = String;
-    type State = ();
-    type Change = flezha_runner::state::NoChange;
-    type Clock = flezha_runner::state::WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "echo_tasklet"
-    }
-    fn init_state(_: Option<&str>, _: Option<flezha_runner::state::RestoreInitPayload<'_>>) {}
     fn run(
         &mut self,
         _input: String,
-        _state: flezha_runner::tasklet::StateHandle<'_, Self>,
-        _ctx: &mut flezha_runner::tasklet::TaskletCtx<'_>,
+        _ctx: &mut flezha_runner::Ctx<'_, Self>,
     ) -> Result<(), flezha_runner::tasklet::TaskletError> {
         Ok(())
     }

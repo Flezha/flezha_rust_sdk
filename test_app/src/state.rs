@@ -23,36 +23,25 @@ struct TierStoreState {
 enum TierStoreChange {
     Set(String, String),
 }
-impl Change for TierStoreChange {}
-
-#[derive(Default)]
-struct TierStoreTasklet;
-impl Tasklet for TierStoreTasklet {
-    type Input = String;
-    type Output = String;
-    type State = TierStoreState;
-    type Change = TierStoreChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "tier_store_tasklet"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> TierStoreState {
-        TierStoreState::default()
-    }
-    fn apply_change(state: &mut TierStoreState, change: &TierStoreChange) {
-        match change {
+impl Change<TierStoreState> for TierStoreChange {
+    fn apply_to(&self, state: &mut TierStoreState) {
+        match self {
             TierStoreChange::Set(key, value) => {
                 state.values.insert(key.clone(), value.clone());
             }
         }
     }
-    fn run(
-        &mut self,
-        input: String,
-        mut state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+}
+
+#[derive(Default)]
+struct TierStoreTasklet;
+#[flezha_runner::tasklet(name = "tier_store_tasklet")]
+impl Tasklet for TierStoreTasklet {
+    type Input = String;
+    type Output = String;
+    type State = TierStoreState;
+    type Change = TierStoreChange;
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         let (key, value) = input.split_once(':').unwrap_or((input.as_str(), ""));
         let (key, value) = (key.to_string(), value.to_string());
         // Dead-letter e2e: a "poison" value fails every attempt, exhausting
@@ -61,8 +50,8 @@ impl Tasklet for TierStoreTasklet {
         if value == "poison" {
             return Err(TaskletError::Custom("poison value".into()));
         }
-        state.apply(TierStoreChange::Set(key.clone(), value.clone()));
-        ctx.emit_keyed::<String>(key.clone(), format!("{key}={value}"))
+        ctx.change(TierStoreChange::Set(key.clone(), value.clone()));
+        ctx.emit_keyed(key.clone(), format!("{key}={value}"))
     }
 }
 
@@ -97,63 +86,33 @@ impl UnboundedOperator for TierStoreOperator {
 
 #[derive(Default)]
 struct TierRelayTasklet;
+#[flezha_runner::tasklet(name = "tier_relay")]
 impl Tasklet for TierRelayTasklet {
     type Input = String;
     type Output = String;
     type State = CounterState;
     type Change = CounterChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "tier_relay"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> CounterState {
-        CounterState::default()
-    }
-    fn apply_change(state: &mut CounterState, change: &CounterChange) {
-        state.value += change.delta;
-    }
-    fn run(
-        &mut self,
-        input: String,
-        mut state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
-        state.apply(CounterChange { delta: 1 });
-        ctx.emit::<String>(input)
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        ctx.change(CounterChange { delta: 1 });
+        ctx.emit(input)
     }
 }
 
 #[derive(Default)]
 struct TierTallyTasklet;
+#[flezha_runner::tasklet(name = "tier_tally")]
 impl Tasklet for TierTallyTasklet {
     type Input = String;
     type Output = String;
     type State = CounterState;
     type Change = CounterChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "tier_tally"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> CounterState {
-        CounterState::default()
-    }
-    fn apply_change(state: &mut CounterState, change: &CounterChange) {
-        state.value += change.delta;
-    }
-    fn run(
-        &mut self,
-        input: String,
-        mut state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         let (key, value) = input.split_once(':').unwrap_or((input.as_str(), ""));
         if value == "hold" && std::env::var("FLEZHA_BOUNDED_E2E_RELEASE").is_err() {
             return Err(TaskletError::Custom("held until released".into()));
         }
-        state.apply(CounterChange { delta: 1 });
-        ctx.emit_keyed::<String>(key.to_string(), format!("{key}={}", state.value))
+        ctx.change(CounterChange { delta: 1 });
+        ctx.emit_keyed(key.to_string(), format!("{key}={}", ctx.state().value))
     }
 }
 
@@ -242,40 +201,21 @@ impl UnboundedOperator for BenchKeyedNoPersistOperator {
 
 #[derive(Default)]
 struct CheckpointStoreTasklet;
+#[flezha_runner::tasklet(name = "checkpoint_store_tasklet")]
 impl Tasklet for CheckpointStoreTasklet {
     type Input = String;
     type Output = String;
     type State = TierStoreState;
     type Change = TierStoreChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "checkpoint_store_tasklet"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> TierStoreState {
-        TierStoreState::default()
-    }
-    fn apply_change(state: &mut TierStoreState, change: &TierStoreChange) {
-        match change {
-            TierStoreChange::Set(key, value) => {
-                state.values.insert(key.clone(), value.clone());
-            }
-        }
-    }
-    fn run(
-        &mut self,
-        input: String,
-        mut state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         let (key, value) = input.split_once(':').unwrap_or((input.as_str(), ""));
         let (key, value) = (key.to_string(), value.to_string());
         if key == "commit" {
             ctx.checkpoint();
             return Ok(());
         }
-        state.apply(TierStoreChange::Set(key.clone(), value.clone()));
-        ctx.emit_keyed::<String>(key.clone(), format!("{key}={value}"))
+        ctx.change(TierStoreChange::Set(key.clone(), value.clone()));
+        ctx.emit_keyed(key.clone(), format!("{key}={value}"))
     }
 }
 
@@ -327,36 +267,17 @@ impl UnboundedOperator for CheckpointBatchedOperator {
 // until it closes, which is the part-2 opt-in under measurement.
 #[derive(Default)]
 struct BenchCheckpointTasklet;
+#[flezha_runner::tasklet(name = "bench_checkpoint_tasklet")]
 impl Tasklet for BenchCheckpointTasklet {
     type Input = String;
     type Output = String;
     type State = TierStoreState;
     type Change = TierStoreChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "bench_checkpoint_tasklet"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> TierStoreState {
-        TierStoreState::default()
-    }
-    fn apply_change(state: &mut TierStoreState, change: &TierStoreChange) {
-        match change {
-            TierStoreChange::Set(key, value) => {
-                state.values.insert(key.clone(), value.clone());
-            }
-        }
-    }
-    fn run(
-        &mut self,
-        input: String,
-        mut state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         let (key, value) = input.split_once(':').unwrap_or((input.as_str(), ""));
         let (key, value) = (key.to_string(), value.to_string());
-        state.apply(TierStoreChange::Set(key.clone(), value.clone()));
-        ctx.emit_keyed::<String>(key.clone(), format!("{key}={value}"))
+        ctx.change(TierStoreChange::Set(key.clone(), value.clone()));
+        ctx.emit_keyed(key.clone(), format!("{key}={value}"))
     }
 }
 
@@ -389,7 +310,7 @@ impl UnboundedOperator for BenchCheckpointOperator {
 // -- StatefulCounterOperator (Section 6.1) --------------------------------------
 //
 // One Tasklet `CounterTasklet` with `Change = CounterChange { delta: i64 }`,
-// `apply_change` mutating `state.value += change.delta`, `coalesce_key()`
+// whose `apply_to` adds the delta to `state.value`, and `coalesce_key()`
 // returning `None` (verbatim retention).
 
 #[derive(Serialize, Deserialize, Clone, Default, Debug, PartialEq, Eq)]
@@ -401,33 +322,21 @@ pub struct CounterState {
 pub struct CounterChange {
     pub delta: i64,
 }
-impl Change for CounterChange {}
+impl Change<CounterState> for CounterChange {
+    fn apply_to(&self, state: &mut CounterState) {
+        state.value = state.value.saturating_add(self.delta);
+    }
+}
 
 #[derive(Default)]
 struct CounterTasklet;
+#[flezha_runner::tasklet(name = "counter_tasklet")]
 impl Tasklet for CounterTasklet {
     type Input = i64;
-    type Output = ();
     type State = CounterState;
     type Change = CounterChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "counter_tasklet"
-    }
-    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) -> CounterState {
-        CounterState::default()
-    }
-    fn apply_change(state: &mut CounterState, change: &CounterChange) {
-        state.value = state.value.saturating_add(change.delta);
-    }
-    fn run(
-        &mut self,
-        input: i64,
-        mut state: StateHandle<'_, Self>,
-        _: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
-        state.apply(CounterChange { delta: input });
+    fn run(&mut self, input: i64, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        ctx.change(CounterChange { delta: input });
         Ok(())
     }
 }
@@ -447,25 +356,13 @@ impl UnboundedOperator for StatefulCounterOperator {
 
 #[derive(Default)]
 struct CounterEntryTasklet;
+#[flezha_runner::tasklet(name = "counter_entry_tasklet")]
 impl Tasklet for CounterEntryTasklet {
     type Input = String;
     type Output = i64;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "counter_entry_tasklet"
-    }
-    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: String,
-        _: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         let delta: i64 = input.parse().unwrap_or(0);
-        ctx.emit::<i64>(delta)
+        ctx.emit(delta)
     }
 }
 
@@ -478,33 +375,18 @@ impl Tasklet for CounterEntryTasklet {
 
 #[derive(Default)]
 struct SleepingCounterTasklet;
+#[flezha_runner::tasklet(name = "sleeping_counter_tasklet")]
 impl Tasklet for SleepingCounterTasklet {
     type Input = String;
     type Output = String;
     type State = CounterState;
     type Change = CounterChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "sleeping_counter_tasklet"
-    }
-    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) -> CounterState {
-        CounterState::default()
-    }
-    fn apply_change(state: &mut CounterState, change: &CounterChange) {
-        state.value = state.value.saturating_add(change.delta);
-    }
-    fn run(
-        &mut self,
-        input: String,
-        mut state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         let (key, delta) = input.split_once(':').unwrap_or((input.as_str(), "0"));
-        state.apply(CounterChange {
+        ctx.change(CounterChange {
             delta: delta.parse().unwrap_or(0),
         });
-        ctx.emit::<String>(format!("{key}={}", state.value))
+        ctx.emit(format!("{key}={}", ctx.state().value))
     }
 }
 
@@ -539,7 +421,11 @@ pub struct TickChange {
     pub ts: u64,
     pub delta: i64,
 }
-impl Change for TickChange {
+impl Change<TickState> for TickChange {
+    fn apply_to(&self, state: &mut TickState) {
+        state.last = self.delta;
+    }
+
     fn coalesce_key(&self) -> Option<CoalesceKey> {
         Some(CoalesceKey::from_hash(&(self.interval, self.ts)))
     }
@@ -547,29 +433,13 @@ impl Change for TickChange {
 
 #[derive(Default)]
 struct TickTasklet;
+#[flezha_runner::tasklet(name = "tick_tasklet")]
 impl Tasklet for TickTasklet {
     type Input = TickInput;
-    type Output = ();
     type State = TickState;
     type Change = TickChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "tick_tasklet"
-    }
-    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) -> TickState {
-        TickState::default()
-    }
-    fn apply_change(state: &mut TickState, change: &TickChange) {
-        state.last = change.delta;
-    }
-    fn run(
-        &mut self,
-        input: TickInput,
-        mut state: StateHandle<'_, Self>,
-        _: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
-        state.apply(TickChange {
+    fn run(&mut self, input: TickInput, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        ctx.change(TickChange {
             interval: input.interval,
             ts: input.ts,
             delta: input.delta,
@@ -587,23 +457,11 @@ pub struct TickInput {
 
 #[derive(Default)]
 struct TickEntryTasklet;
+#[flezha_runner::tasklet(name = "tick_entry_tasklet")]
 impl Tasklet for TickEntryTasklet {
     type Input = String;
     type Output = TickInput;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "tick_entry_tasklet"
-    }
-    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: String,
-        _: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         // Wire format: `<interval>:<ts>:<delta>`.
         let mut parts = input.splitn(3, ':');
         let interval = parts.next().and_then(|s| s.parse::<u8>().ok()).unwrap_or(0);
@@ -615,7 +473,7 @@ impl Tasklet for TickEntryTasklet {
             .next()
             .and_then(|s| s.parse::<i64>().ok())
             .unwrap_or(0);
-        ctx.emit::<TickInput>(TickInput {
+        ctx.emit(TickInput {
             interval,
             ts,
             delta,
@@ -658,53 +516,25 @@ impl UnboundedOperator for PersistenceOffOperator {
 
 #[derive(Default)]
 struct PersistenceOffEntryTasklet;
+#[flezha_runner::tasklet(name = "persistence_off_entry_tasklet")]
 impl Tasklet for PersistenceOffEntryTasklet {
     type Input = String;
     type Output = i64;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "persistence_off_entry_tasklet"
-    }
-    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: String,
-        _: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         let delta: i64 = input.parse().unwrap_or(0);
-        ctx.emit::<i64>(delta)
+        ctx.emit(delta)
     }
 }
 
 #[derive(Default)]
 struct PersistenceOffCounterTasklet;
+#[flezha_runner::tasklet(name = "persistence_off_counter_tasklet")]
 impl Tasklet for PersistenceOffCounterTasklet {
     type Input = i64;
-    type Output = ();
     type State = CounterState;
     type Change = CounterChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "persistence_off_counter_tasklet"
-    }
-    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) -> CounterState {
-        CounterState::default()
-    }
-    fn apply_change(state: &mut CounterState, change: &CounterChange) {
-        state.value = state.value.saturating_add(change.delta);
-    }
-    fn run(
-        &mut self,
-        input: i64,
-        mut state: StateHandle<'_, Self>,
-        _: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
-        state.apply(CounterChange { delta: input });
+    fn run(&mut self, input: i64, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        ctx.change(CounterChange { delta: input });
         Ok(())
     }
 }

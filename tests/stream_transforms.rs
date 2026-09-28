@@ -64,7 +64,7 @@ static OBSERVED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 /// not become three edges the runtime walks in turn.
 static TRAVERSALS: AtomicUsize = AtomicUsize::new(0);
 
-test_tasklet!(Recorder, "transform_recorder", String => (), (), |input, _state, _ctx| {
+test_tasklet!(Recorder, "transform_recorder", String => (), (), |input, _ctx| {
     OBSERVED.lock().unwrap().push(input);
     Ok(())
 });
@@ -143,7 +143,7 @@ fn a_transform_chain_is_one_closure_on_one_edge() {
 
 static FANNED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-test_tasklet!(FanRecorder, "transform_fan_recorder", Slot => (), (), |input, _state, _ctx| {
+test_tasklet!(FanRecorder, "transform_fan_recorder", Slot => (), (), |input, _ctx| {
     FANNED.lock().unwrap().push(input.timeframe.to_string());
     Ok(())
 });
@@ -265,7 +265,7 @@ fn a_replayed_slice_transforms_exactly_as_the_live_run_did() {
 
 static AFTER_PARK: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-test_tasklet!(PoisonRecorder, "transform_poison_recorder", String => (), (), |input, _state, _ctx| {
+test_tasklet!(PoisonRecorder, "transform_poison_recorder", String => (), (), |input, _ctx| {
     AFTER_PARK.lock().unwrap().push(input);
     Ok(())
 });
@@ -330,7 +330,7 @@ fn a_panicking_transform_parks_and_routing_continues() {
 
 // ----- 5: definition-time refusals -----
 
-test_tasklet!(PlainTarget, "transform_plain_target", String => Vec<u8>, (), |input, _s, ctx| {
+test_tasklet!(PlainTarget, "transform_plain_target", String => Vec<u8>, (), |input, ctx| {
     ctx.emit(input.into_bytes())
 });
 
@@ -368,7 +368,7 @@ refusal!(AfterTerminalOperator, "refuse_after_terminal", |c| {
         .into::<Recorder2>();
 });
 
-test_tasklet!(Recorder2, "transform_recorder_2", Vec<u8> => (), (), |_i, _s, _c| { Ok(()) });
+test_tasklet!(Recorder2, "transform_recorder_2", Vec<u8> => (), (), |_i, _c| { Ok(()) });
 
 refusal!(AfterKeyByOperator, "refuse_after_key", |c| {
     c.input::<String>("in")
@@ -470,30 +470,13 @@ fn transform_declarations_are_validated() {
 
 #[derive(Default)]
 struct StaticFan;
+#[flezha_runner::tasklet(name = "transform_static_fan", keys = ["a", "b"])]
 impl Tasklet for StaticFan {
     type Input = String;
-    type Output = ();
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "transform_static_fan"
-    }
-    fn cell_keys() -> Vec<&'static str> {
-        vec!["a", "b"]
-    }
-    const CELLS_FOR_OVERRIDDEN: bool = true;
     fn cells_for(_input: &String) -> Vec<&'static str> {
         vec!["a", "b"]
     }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        _: String,
-        _: StateHandle<'_, Self>,
-        _: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, _: String, _: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         Ok(())
     }
 }

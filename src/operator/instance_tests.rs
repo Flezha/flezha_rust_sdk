@@ -5,37 +5,19 @@ mod tests {
     use std::sync::Arc;
 
     use flz_core::operator::instance::*;
-    use flz_core::restore::RestoreInitPayload;
 
     use crate::channel::ChannelBuilder;
     use crate::operator::builder::build_topology_with_persistence;
     use crate::operator::UnboundedOperator;
-    use crate::tasklet::change::NoChange;
-    use crate::tasklet::clock::WallClock;
-    use crate::tasklet::ctx::TaskletCtx;
     use crate::tasklet::error::TaskletError;
-    use crate::tasklet::state_handle::StateHandle;
-    use crate::tasklet::Tasklet;
+    use crate::tasklet::{Ctx, Tasklet};
 
     #[derive(Default)]
     struct DummyTasklet;
+    #[flezha_runner::tasklet(name = "dummy_tasklet_persistence_test")]
     impl Tasklet for DummyTasklet {
         type Input = String;
-        type Output = ();
-        type State = ();
-        type Change = NoChange;
-        type Clock = WallClock;
-        type Config = ();
-        fn name() -> &'static str {
-            "dummy_tasklet_persistence_test"
-        }
-        fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-        fn run(
-            &mut self,
-            _: String,
-            _: StateHandle<'_, Self>,
-            _: &mut TaskletCtx<'_>,
-        ) -> Result<(), TaskletError> {
+        fn run(&mut self, _: String, _: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
             Ok(())
         }
     }

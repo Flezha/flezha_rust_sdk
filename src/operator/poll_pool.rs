@@ -219,12 +219,10 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize};
 
     use super::*;
-    use crate::cell::restore::RestoreInitPayload;
     use crate::channel::ChannelBuilder;
     use crate::operator::UnboundedOperator;
     use crate::runner::poll_core_tests::fixtures::{build_slot_of, push_input, wait_until};
-    use crate::tasklet::state_handle::StateHandle;
-    use crate::tasklet::{Tasklet, TaskletCtx, TaskletError};
+    use crate::tasklet::{Ctx, Tasklet, TaskletError};
 
     /// Blocks on a process-wide gate for input `0`, returns immediately for
     /// anything else: the two halves of "one cell stuck in user code must
@@ -237,23 +235,10 @@ mod tests {
     /// The gate and the counter are process-global, so the cases take turns.
     static POOL_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    #[flezha_runner::tasklet(name = "poll_pool_gated_task")]
     impl Tasklet for GatedTask {
         type Input = usize;
-        type Output = ();
-        type State = ();
-        type Change = crate::tasklet::NoChange;
-        type Clock = crate::tasklet::WallClock;
-        type Config = ();
-        fn name() -> &'static str {
-            "poll_pool_gated_task"
-        }
-        fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-        fn run(
-            &mut self,
-            input: usize,
-            _: StateHandle<'_, Self>,
-            _: &mut TaskletCtx<'_>,
-        ) -> Result<(), TaskletError> {
+        fn run(&mut self, input: usize, _: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
             while input == 0 && GATE_HELD.load(Ordering::Acquire) {
                 std::thread::yield_now();
             }

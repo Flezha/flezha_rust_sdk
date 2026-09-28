@@ -1,15 +1,14 @@
-//! A detector fed by both its data feed and a live config channel
-//! (`multi-input-tasklets`).
+//! A detector fed by both its data feed and a live config channel.
 //!
 //! The pattern this exists for: a tasklet whose behaviour must change while
 //! it runs. Without a merge the only ways to reconfigure are to restart the
-//! operator with new env, or to bolt the config onto every data payload —
+//! operator with new env, or to bolt the config onto every data payload ,
 //! the first loses the state you were accumulating, the second couples the
 //! producer to the consumer's knobs.
 //!
 //! `c.merge::<I>()` declares the tasklet's `Input` as one sum type and gives
-//! each source channel a mapping into it. Everything downstream — `run`,
-//! `cells_for`, state, emit — sees exactly one type, so nothing else about
+//! each source channel a mapping into it. Everything downstream , `run`,
+//! `cells_for`, state, emit , sees exactly one type, so nothing else about
 //! the tasklet changes.
 //!
 //! Two things worth knowing before you reach for it:
@@ -29,7 +28,9 @@
 //!     flz operator send thermostat --channel readings --text '{"sensor":"kiln","celsius":812.0}'
 //!     flz operator send thermostat --channel config   --text '{"max_celsius":800.0}'
 
-use flezha_runner::{tasklet, ChannelBuilder, UnboundedOperator};
+use flezha_runner::{
+    tasklet, Change, ChannelBuilder, Ctx, Tasklet, TaskletError, UnboundedOperator,
+};
 use serde::{Deserialize, Serialize};
 
 // -- the two feeds ----------------------------------------------------------
@@ -46,7 +47,7 @@ struct Threshold {
 }
 
 /// The merged input: one sum type over everything the detector consumes. Its
-/// variants are the mappings — `DetectorInput::Reading` is already an
+/// variants are the mappings , `DetectorInput::Reading` is already an
 /// `Fn(Reading) -> DetectorInput`, so the declaration below reads as the wiring
 /// diagram it is.
 #[derive(Clone, Debug)]
@@ -57,7 +58,7 @@ enum DetectorInput {
 
 // -- the detector -----------------------------------------------------------
 
-#[derive(Clone, Debug, Serialize, Deserialize, flezha_runner::State)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct DetectorState {
     max_celsius: f64,
     alerts: u64,
@@ -74,21 +75,45 @@ impl Default for DetectorState {
     }
 }
 
-#[tasklet(id = "detector")]
-fn detector(input: DetectorInput, state: &mut DetectorState) -> Option<String> {
-    match input {
-        // A config frame is an ordinary input: it lands in the same
-        // durable state as the readings, so a restart resumes with the
-        // threshold that was in force.
-        DetectorInput::Threshold(t) => {
-            state.set_max_celsius(t.max_celsius);
-            None
+/// What the detector records: a new threshold, or one more alert.
+#[derive(Serialize, Deserialize)]
+enum DetectorChange {
+    Threshold(f64),
+    Alerted,
+}
+
+impl Change<DetectorState> for DetectorChange {
+    fn apply_to(&self, state: &mut DetectorState) {
+        match self {
+            DetectorChange::Threshold(max) => state.max_celsius = *max,
+            DetectorChange::Alerted => state.alerts += 1,
         }
-        DetectorInput::Reading(r) if r.celsius > state.max_celsius => {
-            state.set_alerts(state.alerts + 1);
-            Some(format!("{} over threshold at {:.1}C", r.sensor, r.celsius))
+    }
+}
+
+#[derive(Default)]
+struct Detector;
+
+#[tasklet(name = "detector")]
+impl Tasklet for Detector {
+    type Input = DetectorInput;
+    type Output = String;
+    type State = DetectorState;
+    type Change = DetectorChange;
+
+    fn run(&mut self, input: DetectorInput, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        match input {
+            // A config frame is an ordinary input: it lands in the same
+            // durable state as the readings, so a restart resumes with the
+            // threshold that was in force.
+            DetectorInput::Threshold(t) => ctx.change(DetectorChange::Threshold(t.max_celsius)),
+            DetectorInput::Reading(r) if r.celsius > ctx.state().max_celsius => {
+                ctx.change(DetectorChange::Alerted);
+                ctx.emit(format!("{} over threshold at {:.1}C", r.sensor, r.celsius))?;
+            }
+            DetectorInput::Reading(_) => {}
         }
-        DetectorInput::Reading(_) => None,
+        Ok(())
     }
 }
 
@@ -103,7 +128,7 @@ impl UnboundedOperator for Thermostat {
 
     fn channels(c: &ChannelBuilder) {
         // Two entry channels, one consumer. Either source may equally be
-        // another tasklet's output stream — `.from` takes both.
+        // another tasklet's output stream , `.from` takes both.
         c.merge::<DetectorInput>()
             .from(c.input::<Reading>("readings"), DetectorInput::Reading)
             .from(c.input::<Threshold>("config"), DetectorInput::Threshold)

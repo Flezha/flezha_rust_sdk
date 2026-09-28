@@ -5,31 +5,17 @@
 //! `test/fixtures/reference_topologies.txt`.
 
 use super::*;
-use crate::cell::restore::RestoreInitPayload;
 use crate::channel::ChannelBuilder;
 use crate::operator::topology::BeyondWindowPolicy;
-use crate::tasklet::state_handle::StateHandle;
-use crate::tasklet::{NoChange, Tasklet, TaskletCtx, TaskletError, WallClock};
+use crate::tasklet::{Ctx, Tasklet, TaskletError};
 
 #[derive(Default)]
 struct TierTask;
+#[flezha_runner::tasklet(name = "tier_builder_test_op")]
 impl Tasklet for TierTask {
     type Input = String;
     type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "tier_builder_test_op"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        _: String,
-        _: StateHandle<'_, Self>,
-        _: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, _: String, _: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         Ok(())
     }
 }
@@ -199,32 +185,16 @@ fn an_overridden_zero_wins_over_the_env_var() {
 
 // ---------- Late-input correction: the declaration's prerequisites ----------
 
-struct TradeTime;
-impl crate::tasklet::TimeExtractor<String> for TradeTime {
-    fn extract(input: &String) -> u64 {
-        input.parse().unwrap_or(0)
-    }
-}
-
 #[derive(Default)]
 struct EventTimeTask;
+#[flezha_runner::tasklet(name = "correction_builder_test_op")]
 impl Tasklet for EventTimeTask {
     type Input = String;
     type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = crate::tasklet::EventTimeFrom<TradeTime>;
-    type Config = ();
-    fn name() -> &'static str {
-        "correction_builder_test_op"
+    fn event_time(input: &String) -> u64 {
+        input.parse().unwrap_or(0)
     }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        _: String,
-        _: StateHandle<'_, Self>,
-        _: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, _: String, _: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         Ok(())
     }
 }
@@ -433,7 +403,7 @@ fn correction_without_the_tier_is_refused() {
 
 #[test]
 fn correction_without_an_event_time_clock_is_refused() {
-    // TierTask declares WallClock: there is no event time to order a replayed
+    // TierTask declares the wall clock: there is no event time to order a replayed
     // slice by, so lateness is not even definable.
     let err = build_topology(
         "correction_wall_clock",

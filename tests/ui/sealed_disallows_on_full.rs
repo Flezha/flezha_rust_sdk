@@ -6,22 +6,16 @@
 // call site.
 
 use flezha_runner::channel::ChannelBuilder;
-use flezha_runner::tasklet::{Tasklet, TaskletCtx, TaskletError};
-use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
+use flezha_runner::{tasklet, Ctx, Tasklet, TaskletError};
 use flezha_runner::OverflowPolicy;
 
 #[derive(Default)]
 struct PluginProducer;
+#[tasklet(name = "plugin_producer")]
 impl Tasklet for PluginProducer {
     type Input = String;
     type Output = Vec<u8>;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str { "plugin_producer" }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(&mut self, _: String, _: StateHandle<'_, Self>, _: &mut TaskletCtx<'_>) -> Result<(), TaskletError> {
+    fn run(&mut self, _: String, _: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         Ok(())
     }
 }

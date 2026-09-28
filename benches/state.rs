@@ -1,6 +1,6 @@
 //! `state_apply_throughput` Criterion bench per design.md Decision 10.
 //!
-//! Records nanoseconds-per-`state.apply(...)` call across the
+//! Records nanoseconds-per-`ctx.change(...)` call across the
 //! `[SmallChange (8B), LargeChange (1KB)] × [NoCoalesceKey, WithCoalesceKey]
 //! × [no_prealloc, prealloc_1024]` matrix. Asserts the umbrella's
 //! "Vec::push only" hot-path commitment.
@@ -13,14 +13,22 @@ use serde::{Deserialize, Serialize};
 struct SmallChange {
     delta: i64,
 }
-impl Change for SmallChange {}
+impl Change<i64> for SmallChange {
+    fn apply_to(&self, state: &mut i64) {
+        *state = state.wrapping_add(1);
+    }
+}
 
 #[derive(Serialize, Deserialize, Clone)]
 struct SmallChangeKeyed {
     delta: i64,
     key: u64,
 }
-impl Change for SmallChangeKeyed {
+impl Change<i64> for SmallChangeKeyed {
+    fn apply_to(&self, state: &mut i64) {
+        *state = state.wrapping_add(1);
+    }
+
     fn coalesce_key(&self) -> Option<CoalesceKey> {
         Some(CoalesceKey::from_hash(&self.key))
     }
@@ -30,24 +38,31 @@ impl Change for SmallChangeKeyed {
 struct LargeChange {
     payload: Vec<u8>,
 }
-impl Change for LargeChange {}
+impl Change<i64> for LargeChange {
+    fn apply_to(&self, state: &mut i64) {
+        *state = state.wrapping_add(1);
+    }
+}
 
 #[derive(Serialize, Deserialize, Clone)]
 struct LargeChangeKeyed {
     payload: Vec<u8>,
     key: u64,
 }
-impl Change for LargeChangeKeyed {
+impl Change<i64> for LargeChangeKeyed {
+    fn apply_to(&self, state: &mut i64) {
+        *state = state.wrapping_add(1);
+    }
+
     fn coalesce_key(&self) -> Option<CoalesceKey> {
         Some(CoalesceKey::from_hash(&self.key))
     }
 }
 
-/// Apply 1024 changes to a buffer (with optional pre-allocation) and
-/// pretend-apply by mutating an `i64` counter. This mirrors the
-/// `StateHandle::apply` hot path: one `Vec::push` plus a tight user
-/// closure for `apply_change`.
-fn run_dimension<C: Change + Clone>(
+/// Apply 1024 changes to an `i64` counter and push each onto a buffer (with
+/// optional pre-allocation). This mirrors the `ctx.change` hot path: the
+/// change's `apply_to` plus one `Vec::push`.
+fn run_dimension<C: Change<i64> + Clone>(
     c: &mut Criterion,
     label: &str,
     sample: C,
@@ -63,8 +78,9 @@ fn run_dimension<C: Change + Clone>(
                 None => Vec::new(),
             };
             for _ in 0..1024 {
-                state = state.wrapping_add(1);
-                buffer.push(sample.clone());
+                let change = sample.clone();
+                change.apply_to(&mut state);
+                buffer.push(change);
             }
             criterion::black_box((state, buffer));
         });

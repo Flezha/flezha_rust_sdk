@@ -14,8 +14,7 @@ use std::sync::Arc;
 
 use flz_core::host::{
     check, DerivedChannel, HostAckGranularity, HostBeyondWindow, HostCellModeDecl, HostChannelDecl,
-    HostChannelKind, HostCheckpointOutputs, HostClassDecl, HostClock, HostLink, HostOverflow,
-    HostTaskletDecl,
+    HostChannelKind, HostCheckpointOutputs, HostClassDecl, HostLink, HostOverflow, HostTaskletDecl,
 };
 
 use crate::channel::builder::{
@@ -207,24 +206,13 @@ fn tasklet_decl(
         max_cells: Some(entry.max_cells),
         cells_for_overridden: entry.cells_for_overridden,
         compensate_overridden: entry.compensate_overridden,
-        clock: clock_of(entry),
+        clock: entry.clock,
         mailbox_capacity,
         change_is_nochange: entry.change_is_nochange,
         // No rule reads either: a typed class stamps `S::SCHEMA_VERSION` on the
         // records it writes, which is not a topology fact.
         schema_version: 1,
         min_readable_schema_version: None,
-    }
-}
-
-/// The record names the clock the runtime serves, not the Rust type behind it.
-fn clock_of(entry: &TaskletEntry) -> HostClock {
-    if entry.clock_is_event_time {
-        HostClock::EventTime
-    } else if entry.clock_type_name == "LogicalClock" {
-        HostClock::Logical
-    } else {
-        HostClock::Wall
     }
 }
 

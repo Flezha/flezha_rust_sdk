@@ -67,12 +67,12 @@ fn single_consumer_observed() -> &'static Mutex<Vec<u32>> {
     OBSERVED.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-test_tasklet!(SingleProducer, "hybrid_single_producer", String => u32, (), |input, _state, ctx| {
+test_tasklet!(SingleProducer, "hybrid_single_producer", String => u32, (), |input, ctx| {
     let n: u32 = input.parse().unwrap_or(0);
-    ctx.emit::<u32>(n)
+    ctx.emit(n)
 });
 
-test_tasklet!(SingleConsumer, "hybrid_single_consumer", u32 => (), (), |input, _state, _ctx| {
+test_tasklet!(SingleConsumer, "hybrid_single_consumer", u32 => (), (), |input, _ctx| {
     single_consumer_observed().lock().unwrap().push(input);
     Ok(())
 });
@@ -132,20 +132,20 @@ fn three_consumer_observed_c() -> &'static Mutex<Vec<u32>> {
     C.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-test_tasklet!(ThreeProducer, "hybrid_three_producer", String => u32, (), |input, _state, ctx| {
+test_tasklet!(ThreeProducer, "hybrid_three_producer", String => u32, (), |input, ctx| {
     let n: u32 = input.parse().unwrap_or(0);
-    ctx.emit::<u32>(n)
+    ctx.emit(n)
 });
 
-test_tasklet!(ThreeConsumerA, "hybrid_three_a", u32 => (), (), |input, _state, _ctx| {
+test_tasklet!(ThreeConsumerA, "hybrid_three_a", u32 => (), (), |input, _ctx| {
     three_consumer_observed_a().lock().unwrap().push(input);
     Ok(())
 });
-test_tasklet!(ThreeConsumerB, "hybrid_three_b", u32 => (), (), |input, _state, _ctx| {
+test_tasklet!(ThreeConsumerB, "hybrid_three_b", u32 => (), (), |input, _ctx| {
     three_consumer_observed_b().lock().unwrap().push(input);
     Ok(())
 });
-test_tasklet!(ThreeConsumerC, "hybrid_three_c", u32 => (), (), |input, _state, _ctx| {
+test_tasklet!(ThreeConsumerC, "hybrid_three_c", u32 => (), (), |input, _ctx| {
     three_consumer_observed_c().lock().unwrap().push(input);
     Ok(())
 });
@@ -214,14 +214,14 @@ fn panic_emit_results() -> &'static Mutex<Vec<Result<(), String>>> {
     C.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-test_tasklet!(PanicProducer, "hybrid_panic_producer", String => u32, (), |input, _state, ctx| {
+test_tasklet!(PanicProducer, "hybrid_panic_producer", String => u32, (), |input, ctx| {
     let n: u32 = input.parse().unwrap_or(0);
-    let outcome = ctx.emit::<u32>(n).map_err(|e| format!("{e}"));
+    let outcome = ctx.emit(n).map_err(|e| format!("{e}"));
     panic_emit_results().lock().unwrap().push(outcome);
     Ok(())
 });
 
-test_tasklet!(PanicConsumer, "hybrid_panic_consumer", u32 => (), (), |input, _state, _ctx| {
+test_tasklet!(PanicConsumer, "hybrid_panic_consumer", u32 => (), (), |input, _ctx| {
     panic_consumer_observed().lock().unwrap().push(input);
     Ok(())
 });
@@ -295,7 +295,7 @@ fn hybrid_serializer_panic_is_caught() {
 
 // ---------- 2.8: duplicate sink_with rejected at registration ----------
 
-test_tasklet!(DupProducer, "hybrid_dup_producer", String => u32, (), |_input, _state, _ctx| {
+test_tasklet!(DupProducer, "hybrid_dup_producer", String => u32, (), |_input, _ctx| {
     Ok(())
 });
 
@@ -333,17 +333,17 @@ fn meta_consumer_observed() -> &'static Mutex<Vec<u32>> {
     C.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-test_tasklet!(MetaProducer, "hybrid_meta_producer", String => u32, (), |input, _state, ctx| {
+test_tasklet!(MetaProducer, "hybrid_meta_producer", String => u32, (), |input, ctx| {
     let n: u32 = input.parse().unwrap_or(0);
     let mut meta = HashMap::new();
     meta.insert("trace_id".to_string(), "abc123".to_string());
     // Reserved key: must be silently dropped from user-supplied
     // metadata and replaced by the real channel name.
     meta.insert("channel".to_string(), "spoof".to_string());
-    ctx.emit_with_meta::<u32>(n, meta)
+    ctx.emit_with_meta(n, meta)
 });
 
-test_tasklet!(MetaConsumer, "hybrid_meta_consumer", u32 => (), (), |input, _state, _ctx| {
+test_tasklet!(MetaConsumer, "hybrid_meta_consumer", u32 => (), (), |input, _ctx| {
     meta_consumer_observed().lock().unwrap().push(input);
     Ok(())
 });
@@ -406,18 +406,18 @@ fn pure_emit_results() -> &'static Mutex<Vec<Result<(), String>>> {
     C.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-test_tasklet!(PureProducer, "hybrid_pure_producer", String => u32, (), |input, _state, ctx| {
+test_tasklet!(PureProducer, "hybrid_pure_producer", String => u32, (), |input, ctx| {
     let n: u32 = input.parse().unwrap_or(0);
     let mut meta = HashMap::new();
     meta.insert("trace_id".to_string(), "abc123".to_string());
     let outcome = ctx
-        .emit_with_meta::<u32>(n, meta)
+        .emit_with_meta(n, meta)
         .map_err(|e| format!("{e}"));
     pure_emit_results().lock().unwrap().push(outcome);
     Ok(())
 });
 
-test_tasklet!(PureConsumer, "hybrid_pure_consumer", u32 => (), (), |input, _state, _ctx| {
+test_tasklet!(PureConsumer, "hybrid_pure_consumer", u32 => (), (), |input, _ctx| {
     pure_consumer_observed().lock().unwrap().push(input);
     Ok(())
 });
@@ -482,11 +482,11 @@ fn unified_consumer_observed() -> &'static Mutex<Vec<String>> {
     C.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-test_tasklet!(UnifiedProducer, "unified_producer", String => String, (), |input, _state, ctx| {
-    ctx.emit::<String>(input)
+test_tasklet!(UnifiedProducer, "unified_producer", String => String, (), |input, ctx| {
+    ctx.emit(input)
 });
 
-test_tasklet!(UnifiedConsumer, "unified_consumer", String => (), (), |input, _state, _ctx| {
+test_tasklet!(UnifiedConsumer, "unified_consumer", String => (), (), |input, _ctx| {
     unified_consumer_observed().lock().unwrap().push(input);
     Ok(())
 });

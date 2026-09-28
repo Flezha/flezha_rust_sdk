@@ -5,9 +5,9 @@ error[E0277]: `Receipt` cannot be written down, so it cannot be a tasklet's `Out
    |                   ^^^^^^^ this output has no byte form
    |
 help: the trait `JournalValue` is not implemented for `Receipt`
-  --> tests/ui/output_without_byte_form.rs:11:1
+  --> tests/ui/output_without_byte_form.rs:10:1
    |
-11 | struct Receipt;
+10 | struct Receipt;
    | ^^^^^^^^^^^^^^
    = note: a tasklet's output is the handoff to the next tasklet, and a durable bounded journals that handoff at its commit barrier and re-seeds from it on crash-resume
    = note: add `#[derive(serde::Serialize, serde::Deserialize)]` to `Receipt`

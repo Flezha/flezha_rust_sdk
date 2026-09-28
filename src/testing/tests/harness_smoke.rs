@@ -1,20 +1,16 @@
 //! Section 4.4: harness self-test.
 //!
 //! Defines a trivial `CounterTasklet` with `Change = u32` whose
-//! `apply_change` adds the change to the counter. Asserts that
+//! `apply_to` adds the change to the counter. Asserts that
 //! `replay_equals` succeeds for the deterministic tasklet, then injects a
 //! non-deterministic mutation in a sibling Tasklet and asserts
 //! `replay_equals` returns `Err(ReplayMismatch)`.
 
 use serde::{Deserialize, Serialize};
 
-use crate::cell::restore::RestoreInitPayload;
 use crate::tasklet::change::Change;
-use crate::tasklet::clock::WallClock;
-use crate::tasklet::ctx::TaskletCtx;
 use crate::tasklet::error::TaskletError;
-use crate::tasklet::state_handle::StateHandle;
-use crate::tasklet::Tasklet;
+use crate::tasklet::{Ctx, Tasklet};
 use crate::testing::TaskletTestHarness;
 
 #[derive(Default, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -25,35 +21,20 @@ struct CounterState {
 #[derive(Default)]
 struct CounterTasklet;
 
-impl Change for u32 {}
+impl Change<CounterState> for u32 {
+    fn apply_to(&self, state: &mut CounterState) {
+        state.sum = state.sum.saturating_add(*self as u64);
+    }
+}
 
+#[flezha_runner::tasklet(name = "counter_tasklet")]
 impl Tasklet for CounterTasklet {
     type Input = u32;
-    type Output = ();
     type State = CounterState;
     type Change = u32;
-    type Clock = WallClock;
-    type Config = ();
 
-    fn name() -> &'static str {
-        "counter_tasklet"
-    }
-
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> CounterState {
-        CounterState::default()
-    }
-
-    fn apply_change(state: &mut CounterState, change: &u32) {
-        state.sum = state.sum.saturating_add(*change as u64);
-    }
-
-    fn run(
-        &mut self,
-        input: u32,
-        mut state: StateHandle<'_, Self>,
-        _: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
-        state.apply(input);
+    fn run(&mut self, input: u32, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        ctx.change(input);
         Ok(())
     }
 }
@@ -77,7 +58,7 @@ fn expect_changes_chains() {
         .expect_state(&CounterState { sum: 12 });
 }
 
-// -- Non-deterministic tasklet: apply_change reads SystemTime::now() --
+// -- Non-deterministic tasklet: apply_to reads SystemTime::now() --
 
 #[derive(Default, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 struct NoisyState {
@@ -86,28 +67,8 @@ struct NoisyState {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 struct NoisyChange;
-impl Change for NoisyChange {}
-
-#[derive(Default)]
-struct NoisyTasklet;
-
-impl Tasklet for NoisyTasklet {
-    type Input = ();
-    type Output = ();
-    type State = NoisyState;
-    type Change = NoisyChange;
-    type Clock = WallClock;
-    type Config = ();
-
-    fn name() -> &'static str {
-        "noisy_tasklet"
-    }
-
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> NoisyState {
-        NoisyState::default()
-    }
-
-    fn apply_change(state: &mut NoisyState, _change: &NoisyChange) {
+impl Change<NoisyState> for NoisyChange {
+    fn apply_to(&self, state: &mut NoisyState) {
         // Non-deterministic: reads SystemTime::now(). The first
         // application records a non-zero state; the replay records a
         // different value because clock advances.
@@ -117,14 +78,19 @@ impl Tasklet for NoisyTasklet {
             .unwrap_or(0);
         state.seed = state.seed.wrapping_add(nanos);
     }
+}
 
-    fn run(
-        &mut self,
-        _: (),
-        mut state: StateHandle<'_, Self>,
-        _: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
-        state.apply(NoisyChange);
+#[derive(Default)]
+struct NoisyTasklet;
+
+#[flezha_runner::tasklet(name = "noisy_tasklet")]
+impl Tasklet for NoisyTasklet {
+    type Input = ();
+    type State = NoisyState;
+    type Change = NoisyChange;
+
+    fn run(&mut self, _: (), ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        ctx.change(NoisyChange);
         Ok(())
     }
 }
@@ -142,54 +108,40 @@ fn non_deterministic_tasklet_replay_equals_fails() {
     let result = harness.replay_equals();
     assert!(
         result.is_err(),
-        "non-deterministic apply_change should fail replay_equals"
+        "non-deterministic apply_to should fail replay_equals"
     );
 }
 
 // -- Ctx-mediated clocks through the harness --
 
-/// Tasklet over `CounterState` with `Change = u32` (`apply_change`
-/// sums); I/O types, Clock, and run body vary per test.
+/// Tasklet over `CounterState` with `Change = u32` (`apply_to` sums); I/O
+/// types, clock keys, hooks and run body vary per test.
 macro_rules! clock_tasklet {
-    ($task:ident, $name:literal, $input:ty => $output:ty, clock $clock:ty,
-     |$inp:tt, $st:tt, $ctx:tt| $body:block) => {
+    ($task:ident, $input:ty => $output:ty, ($($key:tt)*), { $($hooks:tt)* },
+     |$inp:tt, $ctx:tt| $body:block) => {
         #[derive(Default)]
         struct $task;
+        #[flezha_runner::tasklet($($key)*)]
         impl Tasklet for $task {
             type Input = $input;
             type Output = $output;
             type State = CounterState;
             type Change = u32;
-            type Clock = $clock;
-            type Config = ();
-            fn name() -> &'static str {
-                $name
-            }
-            fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> CounterState {
-                CounterState::default()
-            }
-            fn apply_change(state: &mut CounterState, change: &u32) {
-                state.sum += *change as u64;
-            }
-            fn run(
-                &mut self,
-                $inp: $input,
-                #[allow(unused_mut)] mut $st: StateHandle<'_, Self>,
-                $ctx: &mut TaskletCtx<'_>,
-            ) -> Result<(), TaskletError> {
+            $($hooks)*
+            fn run(&mut self, $inp: $input, $ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
                 $body
             }
         }
     };
 }
 
-// WallClock tasklet emitting the invocation's `ctx.now()` twice, so
+// Wall-clock tasklet emitting the invocation's `ctx.now()` twice, so
 // tests observe both one-value-per-invocation and injected wall values.
-clock_tasklet!(EmitNowTasklet, "emit_now_tasklet", () => u64, clock WallClock,
-    |_input, state, ctx| {
-        state.apply(1);
-        ctx.emit::<u64>(ctx.now())?;
-        ctx.emit::<u64>(ctx.now())?;
+clock_tasklet!(EmitNowTasklet, () => u64, (name = "emit_now_tasklet"), {},
+    |_input, ctx| {
+        ctx.change(1);
+        ctx.emit(ctx.now())?;
+        ctx.emit(ctx.now())?;
         Ok(())
     }
 );
@@ -201,7 +153,7 @@ fn injected_wall_clock_serves_one_value_per_invocation() {
     harness.apply_inputs(vec![(), ()]);
     // Both now() calls inside an invocation observe the same scripted
     // value; the next invocation observes the next value.
-    harness.expect_emits::<u64>(&[100, 100, 200, 200]);
+    harness.expect_emits(&[100, 100, 200, 200]);
 }
 
 #[test]
@@ -212,19 +164,16 @@ fn injected_fixed_wall_clock_makes_wallclock_replay_verifiable() {
         .expect("fixed injected wall clock must replay identically");
 }
 
-/// Event-time extractor: `ctx.now()` comes from the input's first field.
-struct TsField;
-impl crate::tasklet::clock::TimeExtractor<(u64, String)> for TsField {
-    fn extract(input: &(u64, String)) -> u64 {
-        input.0
-    }
-}
-
-clock_tasklet!(EventTimeTasklet, "event_time_tasklet", (u64, String) => u64,
-    clock crate::tasklet::clock::EventTimeFrom<TsField>,
-    |_input, state, ctx| {
-        state.apply(1);
-        ctx.emit::<u64>(ctx.now())?;
+// Event time: `ctx.now()` comes from the input's first field.
+clock_tasklet!(EventTimeTasklet, (u64, String) => u64, (name = "event_time_tasklet"),
+    {
+        fn event_time(input: &(u64, String)) -> u64 {
+            input.0
+        }
+    },
+    |_input, ctx| {
+        ctx.change(1);
+        ctx.emit(ctx.now())?;
         Ok(())
     }
 );
@@ -236,7 +185,7 @@ fn event_time_clock_extracts_the_dispatched_inputs_timestamp() {
         (1720000000000, "a".to_string()),
         (1720000000500, "b".to_string()),
     ]);
-    harness.expect_emits::<u64>(&[1720000000000, 1720000000500]);
+    harness.expect_emits(&[1720000000000, 1720000000500]);
 }
 
 #[test]
@@ -250,13 +199,12 @@ fn event_time_clock_is_replay_stable() {
         .expect("event time depends only on the input");
 }
 
-// LogicalClock tasklet: `ctx.now()` is the change seq at invocation
+// Logical-clock tasklet: `ctx.now()` is the change seq at invocation
 // entry (the harness's stand-in for the durable WAL counter).
-clock_tasklet!(LogicalTasklet, "logical_tasklet", () => u64,
-    clock crate::tasklet::clock::LogicalClock,
-    |_input, state, ctx| {
-        ctx.emit::<u64>(ctx.now())?;
-        state.apply(1);
+clock_tasklet!(LogicalTasklet, () => u64, (name = "logical_tasklet", logical_clock), {},
+    |_input, ctx| {
+        ctx.emit(ctx.now())?;
+        ctx.change(1);
         Ok(())
     }
 );
@@ -267,19 +215,19 @@ fn logical_clock_advances_with_applied_changes() {
     harness.apply_inputs(vec![(), (), ()]);
     // Each invocation applies one change, so entry-time logical values
     // strictly increase across invocations.
-    harness.expect_emits::<u64>(&[0, 1, 2]);
+    harness.expect_emits(&[0, 1, 2]);
 }
 
 // -- Stable identifiers + keyed output identity through the harness --
 
 // Keyed tasklet: emits under a natural key with a stable_id payload.
-clock_tasklet!(KeyedIdTasklet, "keyed_id_tasklet", String => String, clock WallClock,
-    |input, state, ctx| {
-        state.apply(1);
+clock_tasklet!(KeyedIdTasklet, String => String, (name = "keyed_id_tasklet"), {},
+    |input, ctx| {
+        ctx.change(1);
         let id_a = ctx.stable_id();
         let id_b = ctx.stable_id();
         assert_ne!(id_a, id_b, "stable_id must be distinct within an invocation");
-        ctx.emit_keyed::<String>(input.clone(), format!("{id_a}/{id_b}"))?;
+        ctx.emit_keyed(input.clone(), format!("{id_a}/{id_b}"))?;
         Ok(())
     }
 );
@@ -308,9 +256,9 @@ fn stable_ids_and_stamps_replay_identically() {
 // process state (a static counter), violating the determinism contract.
 static AMBIENT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-clock_tasklet!(AmbientCounterTasklet, "ambient_counter_tasklet", () => u64, clock WallClock,
-    |_input, _state, ctx| {
-        ctx.emit::<u64>(AMBIENT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))?;
+clock_tasklet!(AmbientCounterTasklet, () => u64, (name = "ambient_counter_tasklet"), {},
+    |_input, ctx| {
+        ctx.emit(AMBIENT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))?;
         Ok(())
     }
 );

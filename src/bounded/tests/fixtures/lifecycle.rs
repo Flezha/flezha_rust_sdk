@@ -6,11 +6,8 @@ use std::time::Duration;
 
 use super::*;
 use crate::bounded::*;
-use crate::cell::restore::RestoreInitPayload;
 use crate::channel::ChannelBuilder;
-use crate::tasklet::change::NoChange;
-use crate::tasklet::clock::WallClock;
-use crate::tasklet::{StateHandle, Tasklet, TaskletCtx, TaskletError};
+use crate::tasklet::{Ctx, Tasklet, TaskletError};
 
 pub(crate) static EMIT_RUNS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static FAIL_RUNS: AtomicUsize = AtomicUsize::new(0);
@@ -171,30 +168,14 @@ impl BoundedOperator for CompleteThenFail {
 /// Every cell of a static tasklet completes with its own key.
 #[derive(Default)]
 pub(crate) struct KeyedComplete;
+#[flezha_runner::tasklet(name = "bounded_keyed_complete", keys = ["a", "b"])]
 impl Tasklet for KeyedComplete {
     type Input = String;
     type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "bounded_keyed_complete"
-    }
-    fn cell_keys() -> Vec<&'static str> {
-        vec!["a", "b"]
-    }
-    const CELLS_FOR_OVERRIDDEN: bool = true;
     fn cells_for(_input: &String) -> Vec<&'static str> {
         vec!["a", "b"]
     }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        _input: String,
-        _state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, _input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         let key = ctx.cell_key().unwrap_or("-").to_string();
         ctx.complete(key)
     }

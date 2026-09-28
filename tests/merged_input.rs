@@ -45,15 +45,15 @@ enum TunedInput {
 static SIGNALS: Mutex<Vec<SignalInput>> = Mutex::new(Vec::new());
 static SIGNAL_SINK: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-test_tasklet!(TickerTasklet, "merge_ticker_tasklet", String => Ticker, (), |input, _state, ctx| {
+test_tasklet!(TickerTasklet, "merge_ticker_tasklet", String => Ticker, (), |input, ctx| {
     ctx.emit(Ticker(input))
 });
 
-test_tasklet!(CandleTasklet, "merge_candle_tasklet", String => Candle, (), |input, _state, ctx| {
+test_tasklet!(CandleTasklet, "merge_candle_tasklet", String => Candle, (), |input, ctx| {
     ctx.emit(Candle(input.len() as u64))
 });
 
-test_tasklet!(DetectorTasklet, "merge_detector_tasklet", SignalInput => String, (), |input, _state, ctx| {
+test_tasklet!(DetectorTasklet, "merge_detector_tasklet", SignalInput => String, (), |input, ctx| {
     SIGNALS.lock().unwrap().push(input.clone());
     let label = match input {
         SignalInput::Ticker(t) => format!("ticker:{}", t.0),
@@ -62,7 +62,7 @@ test_tasklet!(DetectorTasklet, "merge_detector_tasklet", SignalInput => String, 
     ctx.emit(label)
 });
 
-test_tasklet!(SignalSinkTasklet, "merge_signal_sink_tasklet", String => String, (), |input, _state, _ctx| {
+test_tasklet!(SignalSinkTasklet, "merge_signal_sink_tasklet", String => String, (), |input, _ctx| {
     SIGNAL_SINK.lock().unwrap().push(input);
     Ok(())
 });
@@ -152,7 +152,7 @@ fn tuned_test_guard() -> std::sync::MutexGuard<'static, ()> {
     guard
 }
 
-test_tasklet!(TunedTasklet, "merge_tuned_tasklet", TunedInput => String, (), |input, _state, _ctx| {
+test_tasklet!(TunedTasklet, "merge_tuned_tasklet", TunedInput => String, (), |input, _ctx| {
     TUNED.lock().unwrap().push(input);
     Ok(())
 });
@@ -333,36 +333,22 @@ static PER_CELL: Mutex<Vec<(String, TunedInput)>> = Mutex::new(Vec::new());
 
 #[derive(Default)]
 struct CellTunedTasklet;
+#[flezha_runner::tasklet(name = "merge_cell_tuned_tasklet", keys = ["data", "config"])]
 impl Tasklet for CellTunedTasklet {
     type Input = TunedInput;
     type Output = String;
     type State = String;
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "merge_cell_tuned_tasklet"
-    }
-    fn init_state(cell_key: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> String {
+    fn init_state(cell_key: Option<&str>) -> String {
         cell_key.unwrap_or("?").to_string()
     }
-    fn cell_keys() -> Vec<&'static str> {
-        vec!["data", "config"]
-    }
-    const CELLS_FOR_OVERRIDDEN: bool = true;
     fn cells_for(input: &TunedInput) -> Vec<&'static str> {
         match input {
             TunedInput::Data(_) => vec!["data"],
             TunedInput::Config(_) => vec!["config"],
         }
     }
-    fn run(
-        &mut self,
-        input: TunedInput,
-        state: StateHandle<'_, Self>,
-        _: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
-        PER_CELL.lock().unwrap().push((state.clone(), input));
+    fn run(&mut self, input: TunedInput, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        PER_CELL.lock().unwrap().push((ctx.state().clone(), input));
         Ok(())
     }
 }

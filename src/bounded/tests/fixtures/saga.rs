@@ -8,11 +8,8 @@ use serde::{Deserialize, Serialize};
 
 use super::*;
 use crate::bounded::*;
-use crate::cell::restore::RestoreInitPayload;
 use crate::channel::ChannelBuilder;
-use crate::tasklet::change::NoChange;
-use crate::tasklet::clock::WallClock;
-use crate::tasklet::{StateHandle, Tasklet, TaskletCtx, TaskletError};
+use crate::tasklet::{Ctx, Tasklet, TaskletError};
 
 // ---- saga compensation operators (Phase 2 §4) --------------------------
 
@@ -55,32 +52,18 @@ pub(crate) static STAGE0_RELEASE: AtomicBool = AtomicBool::new(false);
 /// Compensable: reserves (emits `reserved:<arg>`); undo logs `undo-reserve`.
 #[derive(Default)]
 pub(crate) struct SagaReserve;
+#[flezha_runner::tasklet(name = "saga_reserve")]
 impl Tasklet for SagaReserve {
     type Input = String;
     type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "saga_reserve"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: String,
-        _state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         ctx.emit(format!("reserved:{input}"))?;
         Ok(())
     }
-    const COMPENSATE_OVERRIDDEN: bool = true;
     fn compensate(
         &mut self,
         completed_output: Vec<Arc<String>>,
-        _state: StateHandle<'_, Self>,
-        _ctx: &mut TaskletCtx<'_>,
+        _ctx: &mut Ctx<'_, Self>,
     ) -> Result<(), TaskletError> {
         for out in &completed_output {
             comp_log(format!("undo-reserve:{out}"));
@@ -92,32 +75,18 @@ impl Tasklet for SagaReserve {
 /// Compensable: charges (emits `charged:<input>`); undo logs `undo-charge`.
 #[derive(Default)]
 pub(crate) struct SagaCharge;
+#[flezha_runner::tasklet(name = "saga_charge")]
 impl Tasklet for SagaCharge {
     type Input = String;
     type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "saga_charge"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: String,
-        _state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         ctx.emit(format!("charged:{input}"))?;
         Ok(())
     }
-    const COMPENSATE_OVERRIDDEN: bool = true;
     fn compensate(
         &mut self,
         completed_output: Vec<Arc<String>>,
-        _state: StateHandle<'_, Self>,
-        _ctx: &mut TaskletCtx<'_>,
+        _ctx: &mut Ctx<'_, Self>,
     ) -> Result<(), TaskletError> {
         for out in &completed_output {
             comp_log(format!("undo-charge:{out}"));
@@ -137,32 +106,18 @@ string_task!(SagaShipFails, "saga_ship_fails", |_input, _ctx| Err(
 /// undo logs `undo-archive`.
 #[derive(Default)]
 pub(crate) struct SagaArchive;
+#[flezha_runner::tasklet(name = "saga_archive")]
 impl Tasklet for SagaArchive {
     type Input = String;
     type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "saga_archive"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: String,
-        _state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         ctx.emit(format!("archived:{input}"))?;
         Ok(())
     }
-    const COMPENSATE_OVERRIDDEN: bool = true;
     fn compensate(
         &mut self,
         completed_output: Vec<Arc<String>>,
-        _state: StateHandle<'_, Self>,
-        _ctx: &mut TaskletCtx<'_>,
+        _ctx: &mut Ctx<'_, Self>,
     ) -> Result<(), TaskletError> {
         for out in &completed_output {
             comp_log(format!("undo-archive:{out}"));
@@ -258,20 +213,11 @@ pub(crate) struct FanKeyState {
 }
 #[derive(Default)]
 pub(crate) struct SagaFan;
+#[flezha_runner::tasklet(name = "saga_fan", keys = ["even", "odd"])]
 impl Tasklet for SagaFan {
     type Input = String;
     type Output = String;
     type State = FanKeyState;
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "saga_fan"
-    }
-    fn cell_keys() -> Vec<&'static str> {
-        vec!["even", "odd"]
-    }
-    const CELLS_FOR_OVERRIDDEN: bool = true;
     fn cells_for(input: &String) -> Vec<&'static str> {
         if input.len().is_multiple_of(2) {
             vec!["even"]
@@ -279,29 +225,26 @@ impl Tasklet for SagaFan {
             vec!["odd"]
         }
     }
-    fn init_state(cell_key: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> FanKeyState {
+    fn init_state(cell_key: Option<&str>) -> FanKeyState {
         FanKeyState {
             key: cell_key.unwrap_or("").to_string(),
         }
     }
-    fn run(
-        &mut self,
-        input: String,
-        state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
-        ctx.emit(format!("{}:{input}", state.key))?;
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        ctx.emit(format!("{}:{input}", ctx.state().key))?;
         Ok(())
     }
-    const COMPENSATE_OVERRIDDEN: bool = true;
     fn compensate(
         &mut self,
         completed_output: Vec<Arc<String>>,
-        state: StateHandle<'_, Self>,
-        _ctx: &mut TaskletCtx<'_>,
+        ctx: &mut Ctx<'_, Self>,
     ) -> Result<(), TaskletError> {
         let items: Vec<String> = completed_output.iter().map(|o| o.to_string()).collect();
-        comp_log(format!("undo-fan:{}:[{}]", state.key, items.join(",")));
+        comp_log(format!(
+            "undo-fan:{}:[{}]",
+            ctx.state().key,
+            items.join(",")
+        ));
         Ok(())
     }
 }
@@ -334,23 +277,11 @@ impl BoundedOperator for FanSaga {
 /// it completes but before stage 1 (deterministic forced-stop rollback).
 #[derive(Default)]
 pub(crate) struct StopReserve;
+#[flezha_runner::tasklet(name = "saga_stop_reserve")]
 impl Tasklet for StopReserve {
     type Input = String;
     type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "saga_stop_reserve"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: String,
-        _state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         STAGE0_RAN.store(true, Ordering::SeqCst);
         while !STAGE0_RELEASE.load(Ordering::SeqCst) {
             std::thread::yield_now();
@@ -358,12 +289,10 @@ impl Tasklet for StopReserve {
         ctx.emit(format!("reserved:{input}"))?;
         Ok(())
     }
-    const COMPENSATE_OVERRIDDEN: bool = true;
     fn compensate(
         &mut self,
         completed_output: Vec<Arc<String>>,
-        _state: StateHandle<'_, Self>,
-        _ctx: &mut TaskletCtx<'_>,
+        _ctx: &mut Ctx<'_, Self>,
     ) -> Result<(), TaskletError> {
         for out in &completed_output {
             comp_log(format!("undo-stop-reserve:{out}"));
@@ -395,32 +324,18 @@ impl BoundedOperator for StopSaga {
 
 #[derive(Default)]
 pub(crate) struct ResumeUndoA;
+#[flezha_runner::tasklet(name = "resume_undo_a")]
 impl Tasklet for ResumeUndoA {
     type Input = String;
     type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "resume_undo_a"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: String,
-        _state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         ctx.emit(format!("a:{input}"))?;
         Ok(())
     }
-    const COMPENSATE_OVERRIDDEN: bool = true;
     fn compensate(
         &mut self,
         _out: Vec<Arc<String>>,
-        _state: StateHandle<'_, Self>,
-        _ctx: &mut TaskletCtx<'_>,
+        _ctx: &mut Ctx<'_, Self>,
     ) -> Result<(), TaskletError> {
         comp_log("undo-A".to_string());
         Ok(())
@@ -429,32 +344,18 @@ impl Tasklet for ResumeUndoA {
 
 #[derive(Default)]
 pub(crate) struct ResumeUndoB;
+#[flezha_runner::tasklet(name = "resume_undo_b")]
 impl Tasklet for ResumeUndoB {
     type Input = String;
     type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "resume_undo_b"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: String,
-        _state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         ctx.emit(format!("b:{input}"))?;
         Ok(())
     }
-    const COMPENSATE_OVERRIDDEN: bool = true;
     fn compensate(
         &mut self,
         _out: Vec<Arc<String>>,
-        _state: StateHandle<'_, Self>,
-        _ctx: &mut TaskletCtx<'_>,
+        _ctx: &mut Ctx<'_, Self>,
     ) -> Result<(), TaskletError> {
         comp_log("undo-B".to_string());
         Ok(())
@@ -466,32 +367,18 @@ impl Tasklet for ResumeUndoB {
 /// Compensable leaf that finishes at once; its undo names what it emitted.
 #[derive(Default)]
 pub(crate) struct SiblingFast;
+#[flezha_runner::tasklet(name = "sibling_fast")]
 impl Tasklet for SiblingFast {
     type Input = String;
     type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "sibling_fast"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: String,
-        _state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         ctx.emit(format!("fast:{input}"))?;
         Ok(())
     }
-    const COMPENSATE_OVERRIDDEN: bool = true;
     fn compensate(
         &mut self,
         completed_output: Vec<Arc<String>>,
-        _state: StateHandle<'_, Self>,
-        _ctx: &mut TaskletCtx<'_>,
+        _ctx: &mut Ctx<'_, Self>,
     ) -> Result<(), TaskletError> {
         for out in &completed_output {
             comp_log(format!("undo-{out}"));

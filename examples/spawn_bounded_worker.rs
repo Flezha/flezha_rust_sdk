@@ -1,8 +1,8 @@
 //! A stream detector that hands each interesting event to a short-lived
-//! bounded worker (`tasklet-requested-spawn`).
+//! bounded worker.
 //!
 //! The pattern this exists for: an unbounded operator notices something worth
-//! doing real work about, and wants a worker for it — without an external
+//! doing real work about, and wants a worker for it, without an external
 //! dispatcher, and without becoming one itself.
 //!
 //! `ctx.spawn_bounded_with` under an id is spawn-or-deliver: the first alert
@@ -25,8 +25,10 @@
 //! The role also lets this runner's `admin()` start and send to operators in its
 //! namespace, and nothing else.
 
-use flezha_runner::tasklet::{IfRunning, SpawnOptions, TaskletError};
-use flezha_runner::{tasklet, BoundedOperator, ChannelBuilder, UnboundedOperator};
+use flezha_runner::tasklet::{IfRunning, SpawnOptions};
+use flezha_runner::{
+    tasklet, BoundedOperator, ChannelBuilder, Ctx, Tasklet, TaskletError, UnboundedOperator,
+};
 
 // -- the detector: stream, one instance, runs forever ---------------------
 
@@ -44,23 +46,31 @@ impl UnboundedOperator for AlertDetector {
     }
 }
 
-#[tasklet(id = "detect", emits = String)]
-fn detect(input: String, ctx: &mut flezha_runner::TaskletCtx<'_>) -> Result<(), TaskletError> {
-    let Some(subject) = input.strip_prefix("alert:") else {
-        return Ok(());
-    };
+#[derive(Default)]
+struct Detect;
 
-    // One worker per subject: the first alert spawns it with this payload
-    // as its first input, later alerts are delivered to the same instance.
-    // The handle is dropped: a failed request logs itself and this
-    // tasklet carries on emitting.
-    let _ = ctx.spawn_bounded_with(
-        "triage",
-        input.as_bytes().to_vec(),
-        SpawnOptions::id(format!("triage@{subject}")).if_running(IfRunning::Deliver),
-    );
+#[tasklet(name = "detect")]
+impl Tasklet for Detect {
+    type Input = String;
+    type Output = String;
 
-    ctx.emit(format!("detected:{subject}"))
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        let Some(subject) = input.strip_prefix("alert:") else {
+            return Ok(());
+        };
+
+        // One worker per subject: the first alert spawns it with this payload
+        // as its first input, later alerts are delivered to the same instance.
+        // The handle is dropped: a failed request logs itself and this
+        // tasklet carries on emitting.
+        let _ = ctx.spawn_bounded_with(
+            "triage",
+            input.as_bytes().to_vec(),
+            SpawnOptions::id(format!("triage@{subject}")).if_running(IfRunning::Deliver),
+        );
+
+        ctx.emit(format!("detected:{subject}"))
+    }
 }
 
 // -- the worker: bounded operator, one per subject, torn down when its pass ends -----
@@ -79,9 +89,17 @@ impl BoundedOperator for Triage {
     }
 }
 
-#[tasklet(id = "triage_step")]
-fn triage_step(input: String) -> String {
-    format!("triaged:{input}")
+#[derive(Default)]
+struct TriageStep;
+
+#[tasklet(name = "triage_step")]
+impl Tasklet for TriageStep {
+    type Input = String;
+    type Output = String;
+
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        ctx.emit(format!("triaged:{input}"))
+    }
 }
 
 fn main() {

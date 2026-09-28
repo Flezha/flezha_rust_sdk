@@ -10,11 +10,9 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use flezha_runner::state::{NoChange, RestoreInitPayload, WallClock};
 use flezha_runner::transport::FlezhaStream;
 use flezha_runner::{
-    ChannelBuilder, Flezha, FlezhaError, StateHandle, Tasklet, TaskletCtx, TaskletError,
-    UnboundedOperator,
+    ChannelBuilder, Ctx, Flezha, FlezhaError, Tasklet, TaskletError, UnboundedOperator,
 };
 
 /// The bounded short form under `plain`: one tasklet, one sink, nothing else.
@@ -25,23 +23,11 @@ fn plain(input: String) -> String {
 
 #[derive(Default)]
 struct HandWrittenTask;
+#[flezha_runner::tasklet(name = "hand_written")]
 impl Tasklet for HandWrittenTask {
     type Input = String;
     type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "hand_written"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> Self::State {}
-    fn run(
-        &mut self,
-        input: String,
-        _state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         let _ = ctx.emit(input);
         Ok(())
     }

@@ -5,7 +5,7 @@ use flezha_runner::command::cell_state::{
     apply_init_values, serialize_operator_state, serialize_selected_state, StatePurpose,
     StateSelector, CELL_EVICTED, CELL_KEY_WITHOUT_TASKLET, CELL_NOT_FOUND, TASKLET_NOT_FOUND,
 };
-use flezha_runner::state::{Change, NoChange, RestoreInitPayload, StateHandle, WallClock};
+use flezha_runner::state::Change;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -24,33 +24,21 @@ struct CounterState {
 struct CounterChange {
     delta: i64,
 }
-impl Change for CounterChange {}
+impl Change<CounterState> for CounterChange {
+    fn apply_to(&self, state: &mut CounterState) {
+        state.value = state.value.saturating_add(self.delta);
+    }
+}
 
 #[derive(Default)]
 struct CounterTasklet;
+#[flezha_runner::tasklet(name = "counter")]
 impl Tasklet for CounterTasklet {
     type Input = String;
-    type Output = ();
     type State = CounterState;
     type Change = CounterChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "counter"
-    }
-    fn init_state(_: Option<&str>, _p: Option<RestoreInitPayload<'_>>) -> CounterState {
-        CounterState::default()
-    }
-    fn apply_change(state: &mut CounterState, change: &CounterChange) {
-        state.value = state.value.saturating_add(change.delta);
-    }
-    fn run(
-        &mut self,
-        input: String,
-        mut state: StateHandle<'_, Self>,
-        _: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
-        state.apply(CounterChange {
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        ctx.change(CounterChange {
             delta: input.trim().parse().unwrap_or(0),
         });
         Ok(())
@@ -99,32 +87,14 @@ struct OhlcState {
 
 #[derive(Default)]
 struct OhlcTasklet;
+#[flezha_runner::tasklet(name = "ohlc", keys = ["1m", "1h"])]
 impl Tasklet for OhlcTasklet {
     type Input = String;
-    type Output = ();
     type State = OhlcState;
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "ohlc"
-    }
-    fn init_state(_: Option<&str>, _p: Option<RestoreInitPayload<'_>>) -> OhlcState {
-        OhlcState::default()
-    }
-    fn cell_keys() -> Vec<&'static str> {
-        vec!["1m", "1h"]
-    }
-    const CELLS_FOR_OVERRIDDEN: bool = true;
     fn cells_for(_: &String) -> Vec<&'static str> {
         vec!["1m"]
     }
-    fn run(
-        &mut self,
-        _: String,
-        _: StateHandle<'_, Self>,
-        _: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, _: String, _: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         Ok(())
     }
 }
@@ -234,28 +204,14 @@ struct CandleState {
 
 #[derive(Default)]
 struct CandleTasklet;
+#[flezha_runner::tasklet(name = "candle")]
 impl Tasklet for CandleTasklet {
     type Input = String;
-    type Output = ();
     type State = CandleState;
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "candle"
-    }
-    fn init_state(_: Option<&str>, _p: Option<RestoreInitPayload<'_>>) -> CandleState {
-        CandleState::default()
-    }
     fn cell_idle_ttl() -> Option<std::time::Duration> {
         Some(std::time::Duration::from_millis(50))
     }
-    fn run(
-        &mut self,
-        _: String,
-        _: StateHandle<'_, Self>,
-        _: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, _: String, _: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         Ok(())
     }
 }

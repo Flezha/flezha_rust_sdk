@@ -118,7 +118,7 @@ impl<'b, T: 'static + Send + Sync, K: StreamTarget> Stream<'b, T, K> {
     }
 
     /// Like [`into`](Stream::into), but the consumer is a distinct named node:
-    /// its identity string is `node_name` instead of `S::name()`, letting one
+    /// its identity string is `node_name` instead of `S::NAME`, letting one
     /// Tasklet class appear at several graph positions with independent
     /// state (`sdk-graph-authoring` node-identity rule).
     pub fn into_named<S: Tasklet<Input = T>>(

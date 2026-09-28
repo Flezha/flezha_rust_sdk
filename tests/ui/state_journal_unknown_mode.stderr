@@ -1,5 +1,0 @@
-error: #[journal]: unknown mode `bogus`; expected `map_set`, `map_vec`, or `map_deque`
- --> tests/ui/state_journal_unknown_mode.rs:5:15
-  |
-5 |     #[journal(bogus)]
-  |               ^^^^^

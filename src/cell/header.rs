@@ -16,33 +16,19 @@ pub fn header_template_for<S: crate::tasklet::Tasklet>() -> HeaderTemplate {
 
 #[cfg(test)]
 mod tests {
-    use flz_core::restore::RestoreInitPayload;
 
     use super::*;
 
-    #[derive(serde::Serialize, serde::Deserialize)]
-    struct NoChange;
-    impl crate::tasklet::change::Change for NoChange {}
-
     #[derive(Default)]
     struct VersionTask;
+    #[flezha_runner::tasklet(name = "header_version_test_op")]
     impl crate::tasklet::Tasklet for VersionTask {
         type Input = String;
         type Output = String;
-        type State = ();
-        type Change = NoChange;
-        type Clock = crate::tasklet::WallClock;
-        type Config = ();
-        fn name() -> &'static str {
-            "header_version_test_op"
-        }
-        fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-        fn apply_change(_: &mut (), _: &NoChange) {}
         fn run(
             &mut self,
             _: String,
-            _: crate::tasklet::state_handle::StateHandle<'_, Self>,
-            _: &mut crate::tasklet::TaskletCtx<'_>,
+            _: &mut crate::tasklet::Ctx<'_, Self>,
         ) -> Result<(), crate::tasklet::TaskletError> {
             Ok(())
         }

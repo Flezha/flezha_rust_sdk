@@ -17,24 +17,19 @@ fn ui_compile_fail() {
     t.compile_fail("tests/ui/entry_stream_has_no_plugin_sink.rs");
     t.compile_fail("tests/ui/output_without_byte_form.rs");
 
-    // Authoring-sugar macros (`simplify-sdk-authoring`).
-    t.compile_fail("tests/ui/tasklet_zero_inputs.rs");
-    t.compile_fail("tests/ui/tasklet_many_inputs.rs");
-    t.compile_fail("tests/ui/tasklet_shared_ref_state.rs");
+    // `#[flezha::tasklet]` on an `impl Tasklet` block, and the typed context.
+    t.compile_fail("tests/ui/tasklet_on_function.rs");
     t.compile_fail("tests/ui/tasklet_cell_key_removed.rs");
-    t.compile_fail("tests/ui/tasklet_key_unit_return.rs");
-    t.compile_fail("tests/ui/tasklet_ctx_with_key.rs");
-    t.compile_fail("tests/ui/tasklet_ctx_with_value_return.rs");
-    t.compile_fail("tests/ui/tasklet_emits_without_ctx.rs");
-    t.compile_fail("tests/ui/simple_tasklet_is_not_also_a_tasklet.rs");
+    t.compile_fail("tests/ui/tasklet_operator_keys.rs");
     t.compile_fail("tests/ui/cell_keys_without_cells_for.rs");
-    t.compile_fail("tests/ui/tasklet_init_without_state.rs");
-    t.compile_fail("tests/ui/state_on_enum.rs");
-    t.compile_fail("tests/ui/state_on_tuple_struct.rs");
+    t.compile_fail("tests/ui/tasklet_two_clocks.rs");
+    t.compile_fail("tests/ui/tasklet_item_written_twice.rs");
+    t.compile_fail("tests/ui/tasklet_beside_short_form.rs");
+    t.compile_fail("tests/ui/state_direct_mutation.rs");
+    t.compile_fail("tests/ui/emit_wrong_type.rs");
     t.compile_fail("tests/ui/operator_fan_out.rs");
     t.compile_fail("tests/ui/operator_empty_entry_name.rs");
     t.compile_fail("tests/ui/register_factory_of_both_kinds.rs");
-    t.compile_fail("tests/ui/tasklet_operator_keys.rs");
 
     // The short-form attributes (`#[flezha::unbounded_operator]` /
     // `#[flezha::bounded_operator]`).
@@ -44,15 +39,11 @@ fn ui_compile_fail() {
     t.compile_fail("tests/ui/operator_with_hand_written_impl.rs");
     t.compile_fail("tests/ui/operator_shared_ref_state.rs");
     t.compile_fail("tests/ui/operator_unknown_loop_mode.rs");
+    t.compile_fail("tests/ui/short_form_state_on_function.rs");
+    t.compile_fail("tests/ui/short_form_operator_is_not_a_tasklet.rs");
 
     // A bounded operator declares its graph in `channels` and its retry ladder on the
     // edge, as an unbounded operator does.
     t.compile_fail("tests/ui/bounded_tasklets_body.rs");
     t.compile_fail("tests/ui/bounded_retry_attempts.rs");
-
-    // Keyed/collection journaling (`expressive-state-journaling`).
-    t.compile_fail("tests/ui/state_map_without_journal.rs");
-    t.compile_fail("tests/ui/state_journal_type_mismatch.rs");
-    t.compile_fail("tests/ui/state_journal_unknown_mode.rs");
-    t.pass("tests/ui/tasklet_option_output.rs");
 }

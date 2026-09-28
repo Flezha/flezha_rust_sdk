@@ -18,7 +18,7 @@ static SINK_LOCK: Mutex<()> = Mutex::new(());
 static TRANSIENT_ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
 static TRANSIENT_OK: AtomicUsize = AtomicUsize::new(0);
 
-test_tasklet!(TransientTasklet, "transient_tasklet", String => String, (), |_input, _state, _ctx| {
+test_tasklet!(TransientTasklet, "transient_tasklet", String => String, (), |_input, _ctx| {
     if TRANSIENT_ATTEMPTS.fetch_add(1, Ordering::SeqCst) < 2 {
         Err(TaskletError::Custom("transient".into()))
     } else {
@@ -81,7 +81,7 @@ fn transient_failure_recovers_within_retry_budget() {
 static NON_RETRYABLE_RUNS: AtomicUsize = AtomicUsize::new(0);
 static NON_RETRYABLE_OK: AtomicUsize = AtomicUsize::new(0);
 
-test_tasklet!(NonRetryableTasklet, "non_retryable_tasklet", String => String, (), |input, _state, _ctx| {
+test_tasklet!(NonRetryableTasklet, "non_retryable_tasklet", String => String, (), |input, _ctx| {
     NON_RETRYABLE_RUNS.fetch_add(1, Ordering::SeqCst);
     if input == "poison" {
         Err(TaskletError::non_retryable("bad record"))
@@ -150,7 +150,7 @@ fn non_retryable_error_parks_immediately() {
 static PANIC_RUNS: AtomicUsize = AtomicUsize::new(0);
 static PANIC_OK: AtomicUsize = AtomicUsize::new(0);
 
-test_tasklet!(PanickyTasklet, "panicky_tasklet", String => String, (), |input, _state, _ctx| {
+test_tasklet!(PanickyTasklet, "panicky_tasklet", String => String, (), |input, _ctx| {
     PANIC_RUNS.fetch_add(1, Ordering::SeqCst);
     if input == "poison" {
         panic!("kaboom");
@@ -228,7 +228,7 @@ struct TypedOrder {
     id: u64,
 }
 
-test_tasklet!(TypedOrderTasklet, "typed_order_tasklet", TypedOrder => String, (), |_input, _state, _ctx| {
+test_tasklet!(TypedOrderTasklet, "typed_order_tasklet", TypedOrder => String, (), |_input, _ctx| {
     TYPED_OK.fetch_add(1, Ordering::SeqCst);
     Ok(())
 });

@@ -9,11 +9,8 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::bounded::*;
-use crate::cell::restore::RestoreInitPayload;
 use crate::channel::ChannelBuilder;
-use crate::tasklet::change::NoChange;
-use crate::tasklet::clock::WallClock;
-use crate::tasklet::{StateHandle, Tasklet, TaskletCtx, TaskletError};
+use crate::tasklet::{Ctx, Tasklet, TaskletError};
 
 string_task!(ChainA, "entrance_a", |input, ctx| ctx
     .emit(format!("a:{input}")));
@@ -130,26 +127,13 @@ pub(crate) struct Budget {
 /// `init_values` set before the message arrived.
 #[derive(Default)]
 pub(crate) struct BudgetTask;
+#[flezha_runner::tasklet(name = "entrance_budget")]
 impl Tasklet for BudgetTask {
     type Input = String;
     type Output = String;
     type State = Budget;
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "entrance_budget"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> Budget {
-        Budget::default()
-    }
-    fn run(
-        &mut self,
-        input: String,
-        state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
-        ctx.emit(format!("{}:{input}", state.value))
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        ctx.emit(format!("{}:{input}", ctx.state().value))
     }
 }
 

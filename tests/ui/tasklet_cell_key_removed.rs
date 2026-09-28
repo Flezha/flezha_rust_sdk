@@ -1,12 +1,17 @@
-//! Dynamic keying moved to the wiring, so the authoring sugar offers no
-//! `cell_key` hook and declaring one names its replacement.
-#[flezha_runner::tasklet(id = "p", cell_key = sk)]
-fn f(a: String) -> Vec<u8> {
-    a.into_bytes()
-}
+//! Dynamic keying lives on the wiring, so the attribute offers no `cell_key`
+//! hook and declaring one names its replacement.
+use flezha_runner::{tasklet, Ctx, Tasklet, TaskletError};
 
-fn sk(a: &String) -> Option<String> {
-    Some(a.clone())
+#[derive(Default)]
+struct P;
+
+#[tasklet(name = "p", cell_key = sk)]
+impl Tasklet for P {
+    type Input = String;
+
+    fn run(&mut self, _: String, _: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        Ok(())
+    }
 }
 
 fn main() {}

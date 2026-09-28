@@ -4,8 +4,7 @@
 use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 
 use flezha_runner::cell::timer::TimerKind;
-use flezha_runner::state::{NoChange, RestoreInitPayload};
-use flezha_runner::tasklet::{StateHandle, Tasklet, TaskletCtx, TaskletError};
+use flezha_runner::tasklet::{Tasklet, TaskletError};
 
 mod common;
 use common::prelude::*;
@@ -68,28 +67,15 @@ fn an_idle_evicted_cell_loses_its_timers() {
 /// timer-disposable.
 #[derive(Default)]
 struct EvictTask;
+#[flezha_runner::tasklet(name = "timers_evict_tasklet")]
 impl Tasklet for EvictTask {
     type Input = String;
-    type Output = ();
-    type State = ();
-    type Change = NoChange;
-    type Clock = flezha_runner::state::WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "timers_evict_tasklet"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
     fn cell_idle_ttl() -> Option<Duration> {
         // Long enough that the reaper thread never beats the test to the
         // sweep; the case drives `reap_sweep` itself with a short TTL.
         Some(Duration::from_secs(3_600))
     }
-    fn run(
-        &mut self,
-        _input: String,
-        _state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, _input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         ctx.timer_after(Duration::from_secs(3_600))?;
         Ok(())
     }
@@ -97,8 +83,7 @@ impl Tasklet for EvictTask {
         &mut self,
         fired_at: u64,
         kind: TimerKind,
-        _state: StateHandle<'_, Self>,
-        _ctx: &mut TaskletCtx<'_>,
+        _ctx: &mut Ctx<'_, Self>,
     ) -> Result<(), TaskletError> {
         note_firing("gone", kind, fired_at);
         Ok(())
@@ -177,23 +162,10 @@ impl ExclusionTask {
         INSIDE.fetch_sub(1, Ordering::SeqCst);
     }
 }
+#[flezha_runner::tasklet(name = "timers_exclusion_tasklet")]
 impl Tasklet for ExclusionTask {
     type Input = u64;
-    type Output = ();
-    type State = ();
-    type Change = NoChange;
-    type Clock = flezha_runner::state::WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "timers_exclusion_tasklet"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        _input: u64,
-        _state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, _input: u64, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         Self::enter();
         ctx.timer_after(Duration::from_millis(1))?;
         Self::leave();
@@ -203,8 +175,7 @@ impl Tasklet for ExclusionTask {
         &mut self,
         _fired_at: u64,
         _kind: TimerKind,
-        _state: StateHandle<'_, Self>,
-        _ctx: &mut TaskletCtx<'_>,
+        _ctx: &mut Ctx<'_, Self>,
     ) -> Result<(), TaskletError> {
         Self::enter();
         FIRED.fetch_add(1, Ordering::SeqCst);

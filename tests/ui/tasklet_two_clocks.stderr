@@ -1,0 +1,13 @@
+error: #[flezha::tasklet]: `logical_clock` and a written `event_time` are two clocks; a tasklet has one
+  --> tests/ui/tasklet_two_clocks.rs:19:25
+   |
+19 | #[tasklet(name = "seq", logical_clock)]
+   |                         ^^^^^^^^^^^^^
+
+warning: unused imports: `Ctx`, `TaskletError`, and `Tasklet`
+ --> tests/ui/tasklet_two_clocks.rs:2:38
+  |
+2 | use flezha_runner::{tasklet, Change, Ctx, Tasklet, TaskletError};
+  |                                      ^^^  ^^^^^^^  ^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

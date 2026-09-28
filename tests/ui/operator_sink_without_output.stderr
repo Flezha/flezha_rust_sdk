@@ -1,5 +1,11 @@
-error: SinkWithoutOutput: a `sink` requires an output type to feed the plugin: a non-unit return, or `emits = Type` on the context-parameter shape
+error: SinkWithoutOutput: a `sink` requires an output to feed the plugin: a non-unit return, or a written `type Output`
  --> tests/ui/operator_sink_without_output.rs:2:1
   |
 2 | fn f(a: String) {
   | ^^
+
+error: SinkWithoutOutput: a `sink` requires an output to feed the plugin: a non-unit return, or a written `type Output`
+  --> tests/ui/operator_sink_without_output.rs:10:33
+   |
+10 | impl flezha_runner::Tasklet for G {
+   |                                 ^

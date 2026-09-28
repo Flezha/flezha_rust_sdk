@@ -20,41 +20,30 @@ struct DynState {
 enum DynChange {
     Push(String),
 }
-impl Change for DynChange {}
+impl Change<DynState> for DynChange {
+    fn apply_to(&self, state: &mut DynState) {
+        let DynChange::Push(s) = self;
+        state.seen.push(s.clone());
+    }
+}
 
 #[derive(Default)]
 struct DynamicCellTasklet;
+#[flezha_runner::tasklet(name = "dynamic_cell_tasklet")]
 impl Tasklet for DynamicCellTasklet {
     type Input = String;
     type Output = Vec<u8>;
     type State = DynState;
     type Change = DynChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "dynamic_cell_tasklet"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> DynState {
-        DynState::default()
-    }
-    fn apply_change(state: &mut DynState, change: &DynChange) {
-        let DynChange::Push(s) = change;
-        state.seen.push(s.clone());
-    }
     fn cell_idle_ttl() -> Option<Duration> {
         env::var("DYN_TEST_TTL_MS")
             .ok()
             .and_then(|s| s.parse().ok())
             .map(Duration::from_millis)
     }
-    fn run(
-        &mut self,
-        input: String,
-        mut state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
-        state.apply(DynChange::Push(input.clone()));
-        ctx.emit::<Vec<u8>>(input.into_bytes())
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        ctx.change(DynChange::Push(input.clone()));
+        ctx.emit(input.into_bytes())
     }
 }
 
@@ -95,36 +84,25 @@ struct RelayState {
 enum RelayChange {
     Push(String),
 }
-impl Change for RelayChange {}
+impl Change<RelayState> for RelayChange {
+    fn apply_to(&self, state: &mut RelayState) {
+        let RelayChange::Push(s) = self;
+        state.seen.push(s.clone());
+    }
+}
 
 #[derive(Default)]
 struct PartitionRelayTasklet;
+#[flezha_runner::tasklet(name = "partition_relay_tasklet")]
 impl Tasklet for PartitionRelayTasklet {
     type Input = String;
     type Output = String;
     type State = RelayState;
     type Change = RelayChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "partition_relay_tasklet"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> RelayState {
-        RelayState::default()
-    }
-    fn apply_change(state: &mut RelayState, change: &RelayChange) {
-        let RelayChange::Push(s) = change;
-        state.seen.push(s.clone());
-    }
-    fn run(
-        &mut self,
-        input: String,
-        mut state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         let key = key_prefix(&input);
-        state.apply(RelayChange::Push(input.clone()));
-        ctx.emit_keyed::<String>(key, input)
+        ctx.change(RelayChange::Push(input.clone()));
+        ctx.emit_keyed(key, input)
     }
 }
 
@@ -165,7 +143,14 @@ enum SessionChange {
     Touched(String),
     Closed(u64),
 }
-impl Change for SessionChange {}
+impl Change<SessionState> for SessionChange {
+    fn apply_to(&self, state: &mut SessionState) {
+        match self {
+            SessionChange::Touched(s) => state.touched.push(s.clone()),
+            SessionChange::Closed(at) => state.closed_at.push(*at),
+        }
+    }
+}
 
 fn session_timeout_ms() -> u64 {
     env::var("TIMER_TEST_TIMEOUT_MS")
@@ -176,32 +161,14 @@ fn session_timeout_ms() -> u64 {
 
 #[derive(Default)]
 struct SessionTimeoutTasklet;
+#[flezha_runner::tasklet(name = "session_timeout_tasklet")]
 impl Tasklet for SessionTimeoutTasklet {
     type Input = String;
     type Output = Vec<u8>;
     type State = SessionState;
     type Change = SessionChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "session_timeout_tasklet"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> SessionState {
-        SessionState::default()
-    }
-    fn apply_change(state: &mut SessionState, change: &SessionChange) {
-        match change {
-            SessionChange::Touched(s) => state.touched.push(s.clone()),
-            SessionChange::Closed(at) => state.closed_at.push(*at),
-        }
-    }
-    fn run(
-        &mut self,
-        input: String,
-        mut state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
-        state.apply(SessionChange::Touched(input));
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        ctx.change(SessionChange::Touched(input));
         // A processing-time timer, because the answer to "nothing has arrived"
         // cannot be an event-time one: nothing would advance the clock.
         ctx.timer_after(Duration::from_millis(session_timeout_ms()))?;
@@ -211,11 +178,10 @@ impl Tasklet for SessionTimeoutTasklet {
         &mut self,
         fired_at: u64,
         _kind: flezha_runner::state::TimerKind,
-        mut state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
+        ctx: &mut Ctx<'_, Self>,
     ) -> Result<(), TaskletError> {
-        state.apply(SessionChange::Closed(fired_at));
-        ctx.emit::<Vec<u8>>(format!("closed@{fired_at}").into_bytes())
+        ctx.change(SessionChange::Closed(fired_at));
+        ctx.emit(format!("closed@{fired_at}").into_bytes())
     }
 }
 
@@ -238,24 +204,12 @@ impl UnboundedOperator for SessionTimeoutOperator {
 
 #[derive(Default)]
 pub(crate) struct DoNothingTasklet;
+#[flezha_runner::tasklet(name = "do_nothing_tasklet")]
 impl Tasklet for DoNothingTasklet {
     type Input = String;
     type Output = Vec<u8>;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "do_nothing_tasklet"
-    }
-    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: String,
-        _: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
-        ctx.emit::<Vec<u8>>(input.into_bytes())
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        ctx.emit(input.into_bytes())
     }
 }
 
@@ -283,39 +237,25 @@ struct StoreInputState {
 enum StoreInputChange {
     PushText(String),
 }
-impl Change for StoreInputChange {}
+impl Change<StoreInputState> for StoreInputChange {
+    fn apply_to(&self, state: &mut StoreInputState) {
+        match self {
+            StoreInputChange::PushText(s) => state.text_inputs.push(s.clone()),
+        }
+    }
+}
 
 #[derive(Default)]
 struct StoreInputTasklet;
+#[flezha_runner::tasklet(name = "store_input_tasklet")]
 impl Tasklet for StoreInputTasklet {
     type Input = String;
     type Output = String;
     type State = StoreInputState;
     type Change = StoreInputChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "store_input_tasklet"
-    }
-    fn init_state(
-        _: Option<&str>,
-        _init_payload: Option<RestoreInitPayload<'_>>,
-    ) -> StoreInputState {
-        StoreInputState::default()
-    }
-    fn apply_change(state: &mut StoreInputState, change: &StoreInputChange) {
-        match change {
-            StoreInputChange::PushText(s) => state.text_inputs.push(s.clone()),
-        }
-    }
-    fn run(
-        &mut self,
-        input: String,
-        mut state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
-        state.apply(StoreInputChange::PushText(input.clone()));
-        ctx.emit::<String>(input)
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        ctx.change(StoreInputChange::PushText(input.clone()));
+        ctx.emit(input)
     }
 }
 
@@ -350,30 +290,14 @@ impl Default for CompareFilterState {
 
 #[derive(Default)]
 struct CompareFilterTasklet;
+#[flezha_runner::tasklet(name = "compare_filter_tasklet")]
 impl Tasklet for CompareFilterTasklet {
     type Input = String;
     type Output = String;
     type State = CompareFilterState;
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "compare_filter_tasklet"
-    }
-    fn init_state(
-        _: Option<&str>,
-        _init_payload: Option<RestoreInitPayload<'_>>,
-    ) -> CompareFilterState {
-        CompareFilterState::default()
-    }
-    fn run(
-        &mut self,
-        input: String,
-        state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
-        if state.comparable == input {
-            ctx.emit::<String>(input)?;
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        if ctx.state().comparable == input {
+            ctx.emit(input)?;
         }
         Ok(())
     }
@@ -402,35 +326,22 @@ struct StaticEntryState {
 enum StaticEntryChange {
     Push(String),
 }
-impl Change for StaticEntryChange {}
+impl Change<StaticEntryState> for StaticEntryChange {
+    fn apply_to(&self, state: &mut StaticEntryState) {
+        match self {
+            StaticEntryChange::Push(s) => state.seen.push(s.clone()),
+        }
+    }
+}
 
 #[derive(Default)]
 struct StaticEntryTasklet;
+#[flezha_runner::tasklet(name = "static_entry_tasklet", keys = ["a", "b", "c", "d"])]
 impl Tasklet for StaticEntryTasklet {
     type Input = String;
     type Output = String;
     type State = StaticEntryState;
     type Change = StaticEntryChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "static_entry_tasklet"
-    }
-    fn init_state(
-        _: Option<&str>,
-        _init_payload: Option<RestoreInitPayload<'_>>,
-    ) -> StaticEntryState {
-        StaticEntryState::default()
-    }
-    fn apply_change(state: &mut StaticEntryState, change: &StaticEntryChange) {
-        match change {
-            StaticEntryChange::Push(s) => state.seen.push(s.clone()),
-        }
-    }
-    fn cell_keys() -> Vec<&'static str> {
-        vec!["a", "b", "c", "d"]
-    }
-    const CELLS_FOR_OVERRIDDEN: bool = true;
     fn cells_for(input: &String) -> Vec<&'static str> {
         match input.chars().next() {
             Some('a') => vec!["a"],
@@ -439,37 +350,20 @@ impl Tasklet for StaticEntryTasklet {
             _ => vec!["d"],
         }
     }
-    fn run(
-        &mut self,
-        input: String,
-        mut state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
-        state.apply(StaticEntryChange::Push(input.clone()));
-        ctx.emit::<String>(input)
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        ctx.change(StaticEntryChange::Push(input.clone()));
+        ctx.emit(input)
     }
 }
 
 #[derive(Default)]
 struct StaticDownstreamTasklet;
+#[flezha_runner::tasklet(name = "static_downstream_tasklet")]
 impl Tasklet for StaticDownstreamTasklet {
     type Input = String;
     type Output = Vec<u8>;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "static_downstream_tasklet"
-    }
-    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: String,
-        _: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
-        ctx.emit::<Vec<u8>>(input.into_bytes())
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        ctx.emit(input.into_bytes())
     }
 }
 
@@ -493,121 +387,69 @@ const STRESS_KEYS: &[&str] = &["p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7"];
 
 #[derive(Default)]
 struct StressTaskletA;
+#[flezha_runner::tasklet(name = "stress_a")]
 impl Tasklet for StressTaskletA {
     type Input = String;
     type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "stress_a"
-    }
-    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
     fn cell_keys() -> Vec<&'static str> {
         STRESS_KEYS.to_vec()
     }
-    const CELLS_FOR_OVERRIDDEN: bool = true;
     fn cells_for(_: &String) -> Vec<&'static str> {
         STRESS_KEYS.to_vec()
     }
-    fn run(
-        &mut self,
-        input: String,
-        _: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
-        ctx.emit::<String>(input)
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        ctx.emit(input)
     }
 }
 
 #[derive(Default)]
 struct StressTaskletB;
+#[flezha_runner::tasklet(name = "stress_b")]
 impl Tasklet for StressTaskletB {
     type Input = String;
     type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "stress_b"
-    }
-    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
     fn cell_keys() -> Vec<&'static str> {
         STRESS_KEYS.to_vec()
     }
-    const CELLS_FOR_OVERRIDDEN: bool = true;
     fn cells_for(_: &String) -> Vec<&'static str> {
         vec!["p0"]
     }
-    fn run(
-        &mut self,
-        input: String,
-        _: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
-        ctx.emit::<String>(input)
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        ctx.emit(input)
     }
 }
 
 #[derive(Default)]
 struct StressTaskletC;
+#[flezha_runner::tasklet(name = "stress_c")]
 impl Tasklet for StressTaskletC {
     type Input = String;
     type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "stress_c"
-    }
-    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
     fn cell_keys() -> Vec<&'static str> {
         STRESS_KEYS.to_vec()
     }
-    const CELLS_FOR_OVERRIDDEN: bool = true;
     fn cells_for(_: &String) -> Vec<&'static str> {
         vec!["p0"]
     }
-    fn run(
-        &mut self,
-        input: String,
-        _: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
-        ctx.emit::<String>(input)
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        ctx.emit(input)
     }
 }
 
 #[derive(Default)]
 struct StressTaskletD;
+#[flezha_runner::tasklet(name = "stress_d")]
 impl Tasklet for StressTaskletD {
     type Input = String;
     type Output = Vec<u8>;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "stress_d"
-    }
-    fn init_state(_: Option<&str>, _init_payload: Option<RestoreInitPayload<'_>>) {}
     fn cell_keys() -> Vec<&'static str> {
         STRESS_KEYS.to_vec()
     }
-    const CELLS_FOR_OVERRIDDEN: bool = true;
     fn cells_for(_: &String) -> Vec<&'static str> {
         vec!["p0"]
     }
-    fn run(
-        &mut self,
-        input: String,
-        _: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
-        ctx.emit::<Vec<u8>>(input.into_bytes())
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        ctx.emit(input.into_bytes())
     }
 }
 

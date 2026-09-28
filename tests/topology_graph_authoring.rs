@@ -7,13 +7,13 @@ use flezha_runner::Flezha;
 
 // ---- sdk-graph-authoring pins -------------------------------------------
 
-test_tasklet!(GraphStage1, "graph_stage1", String => String, (), |_input, _state, _ctx| {
+test_tasklet!(GraphStage1, "graph_stage1", String => String, (), |_input, _ctx| {
     Ok(())
 });
-test_tasklet!(GraphStage2, "graph_stage2", String => String, (), |_input, _state, _ctx| {
+test_tasklet!(GraphStage2, "graph_stage2", String => String, (), |_input, _ctx| {
     Ok(())
 });
-test_tasklet!(GraphMerge, "graph_merge", String => String, (), |_input, _state, _ctx| {
+test_tasklet!(GraphMerge, "graph_merge", String => String, (), |_input, _ctx| {
     Ok(())
 });
 
@@ -104,7 +104,7 @@ fn branch_with_fewer_than_two_arms_is_refused() {
 }
 
 /// Node identity: an explicit node name creates a distinct node whose
-/// identity replaces `name()` everywhere — descriptor name and the derived
+/// identity replaces `NAME` everywhere — descriptor name and the derived
 /// channel name included — so one class serves several graph positions.
 #[test]
 fn named_nodes_reuse_one_class_at_two_positions() {
@@ -171,7 +171,7 @@ fn node_identity_collision_is_refused() {
         }
         fn channels(c: &ChannelBuilder) {
             let validated = c.input::<String>("in").into::<EchoTasklet>();
-            // A node name equal to another tasklet's `name()`.
+            // A node name equal to another tasklet's `NAME`.
             validated.into_named::<GraphStage2>("graph_stage1");
             validated.into::<GraphStage1>();
         }
@@ -298,7 +298,7 @@ struct OrderEvent {
     sku: String,
 }
 
-test_tasklet!(OrderConsumer, "order_consumer", OrderEvent => String, (), |_input, _state, _ctx| {
+test_tasklet!(OrderConsumer, "order_consumer", OrderEvent => String, (), |_input, _ctx| {
     Ok(())
 });
 
@@ -379,7 +379,7 @@ fn bytes_and_string_entries_stay_passthrough() {
     assert_eq!(ok.downcast_ref::<String>().unwrap(), "plain");
     assert!(wrap(vec![0xff, 0xfe]).is_err(), "invalid UTF-8 still errs");
 
-    test_tasklet!(BytesConsumer, "bytes_consumer", Vec<u8> => String, (), |_input, _state, _ctx| {
+    test_tasklet!(BytesConsumer, "bytes_consumer", Vec<u8> => String, (), |_input, _ctx| {
         Ok(())
     });
     struct BytesEntry;
@@ -467,7 +467,7 @@ fn a_short_form_is_an_operator_beside_its_tasklet() {
     // The tasklet is named after the factory id, so ejecting to the full
     // form keeps every cell's state path.
     assert_eq!(
-        <GeneratedNamingTasklet as flezha_runner::Tasklet>::name(),
+        <GeneratedNamingTasklet as flezha_runner::Tasklet>::NAME,
         "generated_naming"
     );
 }
@@ -491,17 +491,34 @@ fn a_short_form_sets_its_entry_channels_overflow_policy() {
 
 // ---- the short form with no sink ------------------------------------------
 
-#[derive(
-    serde::Serialize, serde::Deserialize, Clone, Default, PartialEq, Debug, flezha_runner::State,
-)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Default, PartialEq, Debug)]
 struct CounterState {
     seen: Vec<String>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Seen(String);
+
+impl flezha_runner::Change<CounterState> for Seen {
+    fn apply_to(&self, state: &mut CounterState) {
+        state.seen.push(self.0.clone());
+    }
+}
+
 /// A short form that only keeps state: no `sink`, so no plugin channel.
+#[derive(Default)]
+struct SinklessCounter;
+
 #[flezha_runner::unbounded_operator(id = "sinkless_counter", input = "ticks")]
-fn sinkless_counter(input: String, state: &mut CounterState) {
-    state.push_seen(input);
+impl flezha_runner::Tasklet for SinklessCounter {
+    type Input = String;
+    type State = CounterState;
+    type Change = Seen;
+
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        ctx.change(Seen(input));
+        Ok(())
+    }
 }
 
 /// The same operator spelled by hand: a channel ending at a tasklet.
@@ -511,7 +528,7 @@ impl UnboundedOperator for HandWrittenCounter {
         "hand_written_counter"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<String>("ticks").into::<SinklessCounterTasklet>();
+        c.input::<String>("ticks").into::<SinklessCounter>();
     }
 }
 
@@ -552,9 +569,17 @@ fn default_entry_attribute(input: String) -> Vec<u8> {
     input.into_bytes()
 }
 
-#[flezha_runner::tasklet(id = "pipeline_hop")]
-fn pipeline_hop(input: String) -> Vec<u8> {
-    input.into_bytes()
+#[derive(Default)]
+struct PipelineHop;
+
+#[flezha_runner::tasklet(name = "pipeline_hop")]
+impl flezha_runner::Tasklet for PipelineHop {
+    type Input = String;
+    type Output = Vec<u8>;
+
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        ctx.emit(input.into_bytes())
+    }
 }
 
 flezha_runner::operator! {

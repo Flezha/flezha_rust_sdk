@@ -48,9 +48,8 @@ use std::time::{Duration, Instant};
 use common::wait_until;
 use crossbeam::channel::Receiver;
 use flezha_runner::channel::ChannelBuilder;
-use flezha_runner::state::{NoChange, RestoreInitPayload, WallClock};
-use flezha_runner::tasklet::{StateHandle, Tasklet, TaskletCtx, TaskletError};
-use flezha_runner::{BoundedOperator, Flezha, LoopMode};
+use flezha_runner::tasklet::{Tasklet, TaskletError};
+use flezha_runner::{BoundedOperator, Ctx, Flezha, LoopMode};
 use flz_core::runner::{install_reconnect_trigger, RunnerMessage, RunnerNode};
 use flz_core::util::env_parse;
 
@@ -67,23 +66,11 @@ static AT_GATE: AtomicUsize = AtomicUsize::new(0);
 /// probe holds it, the way an agent turn parks on a model call.
 #[derive(Default)]
 struct GateTask;
+#[flezha_runner::tasklet(name = "scale_gate")]
 impl Tasklet for GateTask {
     type Input = String;
     type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "scale_gate"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        _input: String,
-        _state: StateHandle<'_, Self>,
-        _ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, _input: String, _ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         let (lock, opened) = &GATE;
         let mut open = lock.lock().unwrap_or_else(|p| p.into_inner());
         AT_GATE.fetch_add(1, Ordering::SeqCst);
@@ -100,23 +87,11 @@ impl Tasklet for GateTask {
 /// commit, teardown — and not the body.
 #[derive(Default)]
 struct ShortTask;
+#[flezha_runner::tasklet(name = "scale_short")]
 impl Tasklet for ShortTask {
     type Input = String;
     type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "scale_short"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: String,
-        _state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         ctx.emit(input)?;
         Ok(())
     }
@@ -147,23 +122,11 @@ impl BoundedOperator for ScaleStepBounded {
 /// instance waits for the next message.
 #[derive(Default)]
 struct IdleTask;
+#[flezha_runner::tasklet(name = "scale_idle")]
 impl Tasklet for IdleTask {
     type Input = String;
     type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "scale_idle"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: String,
-        _state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         ctx.emit(input)?;
         IDLE_PASSES.fetch_add(1, Ordering::SeqCst);
         Ok(())

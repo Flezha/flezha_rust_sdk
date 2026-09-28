@@ -24,7 +24,7 @@ static KEYED_LOCK: Mutex<()> = Mutex::new(());
 static SEEN: Mutex<Vec<String>> = Mutex::new(Vec::new());
 static RUNS: AtomicUsize = AtomicUsize::new(0);
 
-test_tasklet!(KeyedTasklet, "keyed_tasklet", String => String, (), |input, _state, _ctx| {
+test_tasklet!(KeyedTasklet, "keyed_tasklet", String => String, (), |input, _ctx| {
     RUNS.fetch_add(1, Ordering::SeqCst);
     SEEN.lock().unwrap().push(input);
     Ok(())
@@ -47,7 +47,7 @@ impl UnboundedOperator for KeyedOperator {
 // outside its range simply never receive input.
 static STATIC_SEEN: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-test_tasklet!(StaticTasklet, "static_tasklet", String => String, (), |input, _state, _ctx| {
+test_tasklet!(StaticTasklet, "static_tasklet", String => String, (), |input, _ctx| {
     STATIC_SEEN.lock().unwrap().push(input);
     Ok(())
 });

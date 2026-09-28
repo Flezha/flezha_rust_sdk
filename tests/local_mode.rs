@@ -11,35 +11,21 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use flezha_runner::local::SinkOutput;
-use flezha_runner::state::StateHandle;
-use flezha_runner::tasklet::{SimpleTasklet, TaskletCtx, TaskletError};
+use flezha_runner::state::Change;
+use flezha_runner::tasklet::{Ctx, Tasklet, TaskletError};
 use flezha_runner::{ChannelBuilder, Flezha, LocalOperator, UnboundedOperator};
 use serde::{Deserialize, Serialize};
 
 /// One line into its words: the hop to `Tally` is the runtime's job.
-/// Declared at the simplified tier, which is not what
-/// `examples/local_word_count.rs` shows — the two spellings of one graph are
-/// both meant to run locally.
 #[derive(Default)]
 struct Split;
 
-impl SimpleTasklet for Split {
+#[flezha_runner::tasklet(name = "split")]
+impl Tasklet for Split {
     type Input = String;
     type Output = String;
-    type State = ();
 
-    fn name() -> &'static str {
-        "split"
-    }
-
-    fn init_state(_cell_key: Option<&str>) {}
-
-    fn run(
-        &mut self,
-        line: String,
-        _state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, line: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         for word in line.split_whitespace() {
             ctx.emit(word.to_lowercase())?;
         }
@@ -47,36 +33,35 @@ impl SimpleTasklet for Split {
     }
 }
 
-#[derive(Default, Serialize, Deserialize, flezha_runner::State)]
+#[derive(Default, Serialize, Deserialize)]
 struct Count {
     seen: u64,
+}
+
+/// One more sighting of the Cell's word.
+#[derive(Serialize, Deserialize)]
+struct Seen;
+
+impl Change<Count> for Seen {
+    fn apply_to(&self, state: &mut Count) {
+        state.seen += 1;
+    }
 }
 
 /// One Cell per word, minted on first sight of it.
 #[derive(Default)]
 struct Tally;
 
-impl SimpleTasklet for Tally {
+#[flezha_runner::tasklet(name = "tally")]
+impl Tasklet for Tally {
     type Input = String;
     type Output = String;
     type State = Count;
+    type Change = Seen;
 
-    fn name() -> &'static str {
-        "tally"
-    }
-
-    fn init_state(_cell_key: Option<&str>) -> Count {
-        Count::default()
-    }
-
-    fn run(
-        &mut self,
-        word: String,
-        mut state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
-        state.set_seen(state.seen + 1);
-        ctx.emit(format!("{word} {}", state.seen))
+    fn run(&mut self, word: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        ctx.change(Seen);
+        ctx.emit(format!("{word} {}", ctx.state().seen))
     }
 }
 

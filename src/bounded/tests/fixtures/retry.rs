@@ -8,11 +8,8 @@ use serde::{Deserialize, Serialize};
 
 use super::*;
 use crate::bounded::*;
-use crate::cell::restore::RestoreInitPayload;
 use crate::channel::ChannelBuilder;
-use crate::tasklet::change::NoChange;
-use crate::tasklet::clock::WallClock;
-use crate::tasklet::{StateHandle, Tasklet, TaskletCtx, TaskletError};
+use crate::tasklet::{Ctx, Tasklet, TaskletError};
 
 // ---- per-cell retry ladder tasks (`bounded-cell-retry`) -------------
 
@@ -30,32 +27,18 @@ pub(crate) static ODD_NON_RETRYABLE: AtomicBool = AtomicBool::new(false);
 /// was absorbed by the ladder.
 #[derive(Default)]
 pub(crate) struct RetryReserve;
+#[flezha_runner::tasklet(name = "retry_reserve")]
 impl Tasklet for RetryReserve {
     type Input = String;
     type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "retry_reserve"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: String,
-        _state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         ctx.emit(input)?;
         Ok(())
     }
-    const COMPENSATE_OVERRIDDEN: bool = true;
     fn compensate(
         &mut self,
         _completed_output: Vec<Arc<String>>,
-        _state: StateHandle<'_, Self>,
-        _ctx: &mut TaskletCtx<'_>,
+        _ctx: &mut Ctx<'_, Self>,
     ) -> Result<(), TaskletError> {
         comp_log("undo-retry-reserve".to_string());
         Ok(())
@@ -68,20 +51,10 @@ impl Tasklet for RetryReserve {
 /// counts the items it saw.
 #[derive(Default)]
 pub(crate) struct FlakyFan;
+#[flezha_runner::tasklet(name = "flaky_fan", keys = ["even", "odd"])]
 impl Tasklet for FlakyFan {
     type Input = String;
     type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "flaky_fan"
-    }
-    fn cell_keys() -> Vec<&'static str> {
-        vec!["even", "odd"]
-    }
-    const CELLS_FOR_OVERRIDDEN: bool = true;
     fn cells_for(input: &String) -> Vec<&'static str> {
         if input.len().is_multiple_of(2) {
             vec!["even"]
@@ -89,13 +62,7 @@ impl Tasklet for FlakyFan {
             vec!["odd"]
         }
     }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: String,
-        _state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         if input.len().is_multiple_of(2) {
             EVEN_RUNS.fetch_add(1, Ordering::SeqCst);
             ctx.emit(format!("even:{input}"))?;
@@ -193,49 +160,38 @@ pub(crate) struct ProbeState {
 /// records the thread that ran it.
 #[derive(Default)]
 pub(crate) struct StepProbe;
+#[flezha_runner::tasklet(name = "step_probe", keys = probe_keys())]
 impl Tasklet for StepProbe {
     type Input = String;
     type Output = String;
     type State = ProbeState;
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "step_probe"
-    }
-    fn cell_keys() -> Vec<&'static str> {
-        probe_keys().to_vec()
-    }
-    const CELLS_FOR_OVERRIDDEN: bool = true;
     fn cells_for(_input: &String) -> Vec<&'static str> {
         probe_keys().to_vec()
     }
-    fn init_state(cell_key: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> ProbeState {
+    fn init_state(cell_key: Option<&str>) -> ProbeState {
         ProbeState {
             key: cell_key.unwrap_or("").to_string(),
         }
     }
-    fn run(
-        &mut self,
-        input: String,
-        state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         let thread = std::thread::current()
             .name()
             .unwrap_or("<unnamed>")
             .to_string();
         let mut attempts = STEP_ATTEMPTS.lock().unwrap();
-        let prior = attempts.iter().filter(|(key, _)| *key == state.key).count();
-        attempts.push((state.key.clone(), thread));
+        let prior = attempts
+            .iter()
+            .filter(|(key, _)| *key == ctx.state().key)
+            .count();
+        attempts.push((ctx.state().key.clone(), thread));
         drop(attempts);
         if prior == 0 {
             return Err(TaskletError::Custom(format!(
                 "probe {} attempt 1",
-                state.key
+                ctx.state().key
             )));
         }
-        ctx.emit(format!("{}:{input}", state.key))?;
+        ctx.emit(format!("{}:{input}", ctx.state().key))?;
         Ok(())
     }
 }

@@ -8,6 +8,7 @@ use flz_core::schema::TimerOp;
 use flz_core::timer::PendingTimers;
 
 use crate::cell::header::header_template_for;
+use crate::tasklet::Change;
 
 /// Runtime-side restoration helper. Not intended for direct user
 /// invocation — the user's `Tasklet::init_state` is invoked first; this
@@ -20,7 +21,7 @@ use crate::cell::header::header_template_for;
 ///      `S::migrate_state`, replacing `state` either way.
 ///   2. Iterate change-log records via the internal `iter_change_log_records`
 ///      helper; for each record, resolve the header, deserialize (or migrate)
-///      the change body, and call `S::apply_change(&mut state, &change)`.
+///      the change body, and call `change.apply_to(&mut state)`.
 ///   3. Fold every `TimerOp` the log carries — standalone `format_id = 3`
 ///      records and the `timers` an effect record encloses — into the returned
 ///      pending-timer set. Timers are folded state, so they are rebuilt by this
@@ -40,14 +41,7 @@ where
     let mut timers = PendingTimers::default();
     let mut migrated = false;
     let expected = header_template_for::<S>();
-    let mut state = S::init_state(
-        cell_key,
-        payload.map(|p| RestoreInitPayload {
-            snapshot_header: p.snapshot_header,
-            snapshot_bytes: p.snapshot_bytes,
-            change_log_bytes: p.change_log_bytes,
-        }),
-    );
+    let mut state = S::init_state(cell_key);
     if let Some(p) = payload {
         if !p.snapshot_bytes.is_empty() {
             let header = decode_header(p.snapshot_header)?;
@@ -81,6 +75,25 @@ where
     Ok((state, timers, migrated))
 }
 
+/// One change record's body read back as `S::Change`: decoded as this
+/// version wrote it, or handed to `S::migrate_change` for an older one.
+pub(crate) fn decode_change<S: crate::tasklet::Tasklet>(
+    decision: SchemaDecision,
+    bytes: &[u8],
+) -> Result<S::Change, RestoreError> {
+    match decision {
+        SchemaDecision::Decode => {
+            postcard::from_bytes(bytes).map_err(|e| RestoreError::ChangeDecode(e.to_string()))
+        }
+        SchemaDecision::Migrate { from_version } => {
+            S::migrate_change(from_version, bytes).map_err(|reason| RestoreError::MigrationFailed {
+                from_version,
+                reason,
+            })
+        }
+    }
+}
+
 /// The in-process sink: each change body is decoded (or migrated) into the
 /// Tasklet's `Change` and folded straight into its state.
 struct TypedSink<'a, S: crate::tasklet::Tasklet> {
@@ -90,16 +103,7 @@ struct TypedSink<'a, S: crate::tasklet::Tasklet> {
 
 impl<S: crate::tasklet::Tasklet> ChangeLogSink for TypedSink<'_, S> {
     fn change(&mut self, decision: SchemaDecision, bytes: &[u8]) -> Result<(), RestoreError> {
-        let change: S::Change = match decision {
-            SchemaDecision::Decode => postcard::from_bytes(bytes)
-                .map_err(|e| RestoreError::ChangeDecode(e.to_string()))?,
-            SchemaDecision::Migrate { from_version } => S::migrate_change(from_version, bytes)
-                .map_err(|reason| RestoreError::MigrationFailed {
-                    from_version,
-                    reason,
-                })?,
-        };
-        S::apply_change(self.state, &change);
+        decode_change::<S>(decision, bytes)?.apply_to(self.state);
         Ok(())
     }
 
@@ -124,31 +128,24 @@ mod tests {
 
     #[derive(serde::Serialize, serde::Deserialize)]
     struct AddChange(i64);
-    impl crate::tasklet::change::Change for AddChange {}
+    impl crate::tasklet::change::Change<i64> for AddChange {
+        fn apply_to(&self, state: &mut i64) {
+            *state += self.0;
+        }
+    }
 
     #[derive(Default)]
     struct FoldTask;
+    #[flezha_runner::tasklet(name = "restore_fold_test_op")]
     impl crate::tasklet::Tasklet for FoldTask {
         type Input = String;
         type Output = String;
         type State = i64;
         type Change = AddChange;
-        type Clock = crate::tasklet::WallClock;
-        type Config = ();
-        fn name() -> &'static str {
-            "restore_fold_test_op"
-        }
-        fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> i64 {
-            0
-        }
-        fn apply_change(state: &mut i64, change: &AddChange) {
-            *state += change.0;
-        }
         fn run(
             &mut self,
             _: String,
-            _: crate::tasklet::state_handle::StateHandle<'_, Self>,
-            _: &mut crate::tasklet::TaskletCtx<'_>,
+            _: &mut crate::tasklet::Ctx<'_, Self>,
         ) -> Result<(), crate::tasklet::TaskletError> {
             Ok(())
         }
@@ -285,14 +282,27 @@ mod tests {
 
     #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
     struct CartChangeV1(u32);
-    impl crate::tasklet::change::Change for CartChangeV1 {}
+    impl crate::tasklet::change::Change<CartV1> for CartChangeV1 {
+        fn apply_to(&self, state: &mut CartV1) {
+            state.items += self.0;
+        }
+    }
+    impl crate::tasklet::change::Change<CartV2Reordered> for CartChangeV1 {
+        fn apply_to(&self, state: &mut CartV2Reordered) {
+            state.items += self.0;
+        }
+    }
 
     #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
     struct CartChangeV2 {
         items: u32,
         note: String,
     }
-    impl crate::tasklet::change::Change for CartChangeV2 {}
+    impl crate::tasklet::change::Change<CartV2> for CartChangeV2 {
+        fn apply_to(&self, state: &mut CartV2) {
+            state.items += self.items;
+        }
+    }
 
     /// One Tasklet per "deploy": the differences that matter — the state
     /// type, the declared version, the readable floor, the migrations — stay
@@ -301,26 +311,20 @@ mod tests {
         ($task:ident, $state:ty, $change:ty, $v:expr, $min:expr, { $($hooks:tt)* }) => {
             #[derive(Default)]
             struct $task;
+            #[flezha_runner::tasklet(
+                name = "cart_tasklet",
+                schema_version = $v,
+                min_readable_schema_version = $min
+            )]
             impl crate::tasklet::Tasklet for $task {
                 type Input = String;
                 type Output = String;
                 type State = $state;
                 type Change = $change;
-                type Clock = crate::tasklet::WallClock;
-                type Config = ();
-                const SCHEMA_VERSION: u32 = $v;
-                const MIN_READABLE_SCHEMA_VERSION: u32 = $min;
-                fn name() -> &'static str {
-                    "cart_tasklet"
-                }
-                fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> $state {
-                    <$state>::default()
-                }
                 fn run(
                     &mut self,
                     _: String,
-                    _: crate::tasklet::state_handle::StateHandle<'_, Self>,
-                    _: &mut crate::tasklet::TaskletCtx<'_>,
+                    _: &mut crate::tasklet::Ctx<'_, Self>,
                 ) -> Result<(), crate::tasklet::TaskletError> {
                     Ok(())
                 }
@@ -329,18 +333,11 @@ mod tests {
         };
     }
 
-    cart_tasklet!(CartV1Task, CartV1, CartChangeV1, 1, 1, {
-        fn apply_change(state: &mut CartV1, change: &CartChangeV1) {
-            state.items += change.0;
-        }
-    });
+    cart_tasklet!(CartV1Task, CartV1, CartChangeV1, 1, 1, {});
 
     // The author did the work: bumped, declared the floor, wrote both
     // migrations.
     cart_tasklet!(CartV2Task, CartV2, CartChangeV2, 2, 1, {
-        fn apply_change(state: &mut CartV2, change: &CartChangeV2) {
-            state.items += change.items;
-        }
         fn migrate_state(from_version: u32, bytes: &[u8]) -> Result<CartV2, String> {
             match from_version {
                 1 => {
@@ -371,18 +368,10 @@ mod tests {
 
     // The author bumped and stopped there: the default floor reads only what
     // this version wrote.
-    cart_tasklet!(CartV2ReorderedTask, CartV2Reordered, CartChangeV1, 2, 2, {
-        fn apply_change(state: &mut CartV2Reordered, change: &CartChangeV1) {
-            state.items += change.0;
-        }
-    });
+    cart_tasklet!(CartV2ReorderedTask, CartV2Reordered, CartChangeV1, 2, 2, {});
 
     // The author claimed the floor and wrote no migration.
-    cart_tasklet!(CartV2ClaimsTask, CartV2, CartChangeV2, 2, 1, {
-        fn apply_change(state: &mut CartV2, change: &CartChangeV2) {
-            state.items += change.items;
-        }
-    });
+    cart_tasklet!(CartV2ClaimsTask, CartV2, CartChangeV2, 2, 1, {});
 
     /// A v1 snapshot as the controller stores and now ships it: body plus the
     /// 16-byte header it was written with.

@@ -1,12 +1,9 @@
-//! The sugar's emit surface: the `key = fn` opt-in, which names the output's
-//! own natural key for the output whose key is not the key its Cell was
-//! routed by (that one the keyed channel already supplies, and a single-cell
-//! tasklet — which has no key at all — needs the opt-in or its emit is
-//! refused); and the context-parameter shape, where the body owns every emit
-//! and `emits = Type` declares what it emits.
+//! The emit surface of an attributed tasklet: a keyed emit names the
+//! output's own natural key, a plain emit inside a keyed Cell carries the
+//! Cell's key, and a single-cell tasklet has no key to fall back on. The body
+//! owns every emit, so one input can emit several values.
 
-use flezha_runner::state::{NoChange, RestoreInitPayload, StateHandle, WallClock};
-use flezha_runner::tasklet::{Tasklet, TaskletCtx, TaskletError};
+use flezha_runner::tasklet::{Ctx, Tasklet, TaskletError};
 use flezha_runner::testing::TaskletTestHarness;
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -15,18 +12,35 @@ struct Reading {
     value: f64,
 }
 
-fn reading_key(out: &Reading) -> String {
-    out.symbol.clone()
+/// Emits positive readings under their own symbol.
+#[derive(Default)]
+struct KeyedEmit;
+
+#[flezha_runner::tasklet(name = "keyed_emit")]
+impl Tasklet for KeyedEmit {
+    type Input = Reading;
+    type Output = Reading;
+
+    fn run(&mut self, input: Reading, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        if input.value > 0.0 {
+            ctx.emit_keyed(input.symbol.clone(), input)?;
+        }
+        Ok(())
+    }
 }
 
-#[flezha_runner::tasklet(id = "keyed_sugar", key = reading_key)]
-fn keyed_sugar(input: Reading) -> Option<Reading> {
-    (input.value > 0.0).then_some(input)
-}
+/// Emits every reading with no key of its own.
+#[derive(Default)]
+struct PlainEmit;
 
-#[flezha_runner::tasklet(id = "unkeyed_sugar")]
-fn unkeyed_sugar(input: Reading) -> Option<Reading> {
-    Some(input)
+#[flezha_runner::tasklet(name = "plain_emit")]
+impl Tasklet for PlainEmit {
+    type Input = Reading;
+    type Output = Reading;
+
+    fn run(&mut self, input: Reading, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        ctx.emit(input)
+    }
 }
 
 fn reading(symbol: &str, value: f64) -> Reading {
@@ -36,12 +50,12 @@ fn reading(symbol: &str, value: f64) -> Reading {
     }
 }
 
-/// fails when: a `key = fn` sugared tasklet stops stamping the natural key
+/// fails when: a keyed emit stops stamping the natural key
 /// on its emits — the Kafka producer plugin would then publish keyless
 /// records and per-key ordering across a partitioned group's members is lost.
 #[test]
 fn key_opt_in_stamps_the_natural_key_on_every_emit() {
-    let mut harness = TaskletTestHarness::<KeyedSugar>::new().with_keyed_channel();
+    let mut harness = TaskletTestHarness::<KeyedEmit>::new().with_keyed_channel();
     harness.apply_inputs(vec![reading("BTC/USD", 1.0), reading("ETH/USD", 2.0)]);
 
     let keys: Vec<String> = harness
@@ -57,38 +71,37 @@ fn key_opt_in_stamps_the_natural_key_on_every_emit() {
     assert_eq!(keys, vec!["BTC/USD".to_string(), "ETH/USD".to_string()]);
 }
 
-/// fails when: the `None` arm starts emitting — a warmup gate that emitted
-/// anyway would publish an unwarmed indicator value downstream.
+/// fails when: an input the tasklet skips starts emitting: a warmup gate that
+/// emitted anyway would publish an unwarmed indicator value downstream.
 #[test]
 fn a_skipped_output_emits_nothing_to_key() {
-    let mut harness = TaskletTestHarness::<KeyedSugar>::new().with_keyed_channel();
+    let mut harness = TaskletTestHarness::<KeyedEmit>::new().with_keyed_channel();
     harness.apply_inputs(vec![reading("BTC/USD", -1.0)]);
     assert!(harness.emitted_meta().is_empty());
 }
 
 /// fails when: a single-cell tasklet's plain `emit` is accepted on a
-/// keyed channel — it has no Cell key to fall back on, so the guard that
-/// makes `key` load-bearing there would be gone and a keyless record would
-/// ship silently.
+/// keyed channel: it has no Cell key to fall back on, so a keyless record
+/// would ship silently.
 #[test]
 #[should_panic(expected = "is declared .keyed()")]
-fn without_the_key_opt_in_a_keyed_channel_refuses_a_single_cell_emit() {
-    let mut harness = TaskletTestHarness::<UnkeyedSugar>::new().with_keyed_channel();
+fn a_keyed_channel_refuses_a_single_cell_plain_emit() {
+    let mut harness = TaskletTestHarness::<PlainEmit>::new().with_keyed_channel();
     harness.apply_inputs(vec![reading("BTC/USD", 1.0)]);
 }
 
 /// fails when: a key-less emit inside a keyed Cell stops carrying that
-/// Cell's own key, or stamps it differently from the explicit spelling —
-/// the whole point is that the two are one path, so a keyed tasklet never
-/// has to re-supply (and so can never drift from) its routing key.
+/// Cell's own key, or stamps it differently from the explicit spelling: the
+/// two are one path, so a keyed tasklet never has to re-supply (and so can
+/// never drift from) its routing key.
 #[test]
 fn a_keyed_cell_stamps_its_own_key_on_a_key_less_emit() {
-    let mut defaulted = TaskletTestHarness::<UnkeyedSugar>::new()
+    let mut defaulted = TaskletTestHarness::<PlainEmit>::new()
         .with_keyed_channel()
         .with_cell_key("BTC/USD");
     defaulted.apply_inputs(vec![reading("BTC/USD", 1.0)]);
 
-    let mut explicit = TaskletTestHarness::<KeyedSugar>::new()
+    let mut explicit = TaskletTestHarness::<KeyedEmit>::new()
         .with_keyed_channel()
         .with_cell_key("BTC/USD");
     explicit.apply_inputs(vec![reading("BTC/USD", 1.0)]);
@@ -107,9 +120,9 @@ fn a_keyed_cell_stamps_its_own_key_on_a_key_less_emit() {
     defaulted.expect_emits(&[reading("BTC/USD", 1.0)]);
 }
 
-// ---- The context-parameter shape (multi-emit) ----------------------------
+// ---- Several emits per input ---------------------------------------------
 
-/// One input, three emits — the shape the return-type sugar cannot express.
+/// One input, three emits.
 fn split(input: &Reading) -> Vec<(String, Reading)> {
     (1..=3)
         .map(|step| {
@@ -121,38 +134,15 @@ fn split(input: &Reading) -> Vec<(String, Reading)> {
         .collect()
 }
 
-#[flezha_runner::tasklet(id = "fanout_sugar", emits = Reading)]
-fn fanout_sugar(input: Reading, ctx: &mut TaskletCtx) -> Result<(), TaskletError> {
-    for (key, out) in split(&input) {
-        ctx.emit_keyed(key, out)?;
-    }
-    Ok(())
-}
-
-/// The expansion written out by hand — what "ejecting" the sugar produces.
 #[derive(Default)]
-struct FanoutManual;
+struct Fanout;
 
-impl Tasklet for FanoutManual {
+#[flezha_runner::tasklet(name = "fanout")]
+impl Tasklet for Fanout {
     type Input = Reading;
     type Output = Reading;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
 
-    fn name() -> &'static str {
-        "fanout_manual"
-    }
-
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> Self::State {}
-
-    fn run(
-        &mut self,
-        input: Self::Input,
-        _state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: Reading, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         for (key, out) in split(&input) {
             ctx.emit_keyed(key, out)?;
         }
@@ -160,22 +150,24 @@ impl Tasklet for FanoutManual {
     }
 }
 
-/// fails when: the context-parameter expansion stops being the hand-written
-/// implementation it claims to be — the escape hatch (§1) is that a sugared
-/// tasklet can be pasted out as a full impl and behave identically, and a
-/// multi-emit body is where the two could most easily diverge.
+/// fails when: an emit inside a loop is lost or reordered, or a keyed emit
+/// stops stamping each value's own key.
 #[test]
-fn a_context_parameter_emits_every_value_exactly_as_the_hand_written_twin() {
+fn one_input_emits_every_value_in_order_under_its_own_key() {
     let inputs = vec![reading("BTC/USD", 1.0), reading("ETH/USD", 2.0)];
 
-    let mut sugared = TaskletTestHarness::<FanoutSugar>::new().with_keyed_channel();
-    sugared.apply_inputs(inputs.clone());
-    let mut manual = TaskletTestHarness::<FanoutManual>::new().with_keyed_channel();
-    manual.apply_inputs(inputs.clone());
+    let mut harness = TaskletTestHarness::<Fanout>::new().with_keyed_channel();
+    harness.apply_inputs(inputs.clone());
 
-    let expected: Vec<Reading> = inputs.iter().flat_map(split).map(|(_, o)| o).collect();
+    let expected: Vec<(String, Reading)> = inputs.iter().flat_map(split).collect();
     assert_eq!(expected.len(), 6, "one input fans out to three emits");
-    assert_eq!(sugared.emitted_meta(), manual.emitted_meta());
-    sugared.expect_emits(&expected);
-    manual.expect_emits(&expected);
+    let keys: Vec<String> = harness
+        .emitted_meta()
+        .iter()
+        .map(|m| m.expect("stamped").get("flz.key").expect("flz.key").clone())
+        .collect();
+    let expected_keys: Vec<String> = expected.iter().map(|(k, _)| k.clone()).collect();
+    assert_eq!(keys, expected_keys);
+    let values: Vec<Reading> = expected.into_iter().map(|(_, o)| o).collect();
+    harness.expect_emits(&values);
 }

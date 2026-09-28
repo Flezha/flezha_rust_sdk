@@ -9,8 +9,8 @@ use std::sync::{Arc, Mutex};
 use flezha_runner::__dispatch_internals::OperatorDispatchHandle;
 use flezha_runner::cell::header::HeaderTemplate;
 use flezha_runner::channel::ChannelBuilder;
-use flezha_runner::state::{RestoreInitPayload, StateHandle, WallClock};
-use flezha_runner::tasklet::{Tasklet, TaskletCtx, TaskletError};
+use flezha_runner::state::Change;
+use flezha_runner::tasklet::{Ctx, Tasklet, TaskletError};
 use flezha_runner::UnboundedOperator;
 
 use super::dummy_stream;
@@ -22,36 +22,25 @@ pub static WAL_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct TickChange;
-impl flezha_runner::state::Change for TickChange {}
+impl Change<i64> for TickChange {
+    fn apply_to(&self, state: &mut i64) {
+        *state += 1;
+    }
+}
 
 /// Keyed tasklet: applies one change per input, emits the input under
 /// itself as the natural key.
 #[derive(Default)]
 pub struct KeyedStampTasklet;
+#[flezha_runner::tasklet(name = "keyed_stamp_tasklet")]
 impl Tasklet for KeyedStampTasklet {
     type Input = String;
     type Output = String;
     type State = i64;
     type Change = TickChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "keyed_stamp_tasklet"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> i64 {
-        0
-    }
-    fn apply_change(state: &mut i64, _change: &TickChange) {
-        *state += 1;
-    }
-    fn run(
-        &mut self,
-        input: String,
-        mut state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
-        state.apply(TickChange);
-        ctx.emit_keyed::<String>(input.clone(), input)?;
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        ctx.change(TickChange);
+        ctx.emit_keyed(input.clone(), input)?;
         Ok(())
     }
 }
@@ -90,30 +79,15 @@ pub static TIER_SINK_FRAMES: Mutex<Vec<(String, Vec<u8>)>> = Mutex::new(Vec::new
 
 #[derive(Default)]
 pub struct TierStampTasklet;
+#[flezha_runner::tasklet(name = "tier_stamp_tasklet")]
 impl Tasklet for TierStampTasklet {
     type Input = String;
     type Output = String;
     type State = i64;
     type Change = TickChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "tier_stamp_tasklet"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> i64 {
-        0
-    }
-    fn apply_change(state: &mut i64, _change: &TickChange) {
-        *state += 1;
-    }
-    fn run(
-        &mut self,
-        input: String,
-        mut state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
-        state.apply(TickChange);
-        ctx.emit_keyed::<String>(input.clone(), input)?;
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        ctx.change(TickChange);
+        ctx.emit_keyed(input.clone(), input)?;
         Ok(())
     }
 }

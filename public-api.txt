@@ -32,27 +32,18 @@ pub mod state {
     pub use crate::tasklet::change::Change;
     pub use crate::tasklet::change::CoalesceKey;
     pub use crate::tasklet::change::NoChange;
-    pub use crate::tasklet::clock::Clock;
-    pub use crate::tasklet::clock::ClockFor;
-    pub use crate::tasklet::clock::EventTimeFrom;
-    pub use crate::tasklet::clock::LogicalClock;
-    pub use crate::tasklet::clock::TimeExtractor;
-    pub use crate::tasklet::clock::WallClock;
-    pub use crate::tasklet::state_handle::StateHandle;
+    pub use crate::tasklet::clock::ClockKind;
     pub use crate::cell::timer::TimerKind;                 # ADDED by `cell-timers`
 }
 
 pub use cell::RestoreError;
 pub use cell::RestoreInitPayload;
 pub use tasklet::Change;
-pub use tasklet::Clock;
-pub use tasklet::ClockFor;
+pub use tasklet::ClockKind;
 pub use tasklet::CoalesceKey;
-pub use tasklet::EventTimeFrom;
-pub use tasklet::LogicalClock;
+pub use tasklet::Ctx;
 pub use tasklet::NoChange;
 pub use tasklet::Tasklet;
-pub use tasklet::TaskletCtx;
 pub use tasklet::TaskletError;
 pub use tasklet::IfRunning;
 pub use tasklet::SpawnError;
@@ -60,36 +51,46 @@ pub use tasklet::SpawnHandle;
 pub use tasklet::SpawnOptions;
 pub use tasklet::SpawnOutcome;
 pub use tasklet::SpawnResult;
-pub use tasklet::SimpleTasklet;                          # ADDED by `tiered-tasklet-authoring`
 pub use tasklet::StableId;
-pub use tasklet::StateHandle;
-pub use tasklet::TimeExtractor;
-pub use tasklet::WallClock;
 pub use cell::timer::TimerKind;                            # ADDED by `cell-timers`
 
-# Clock surface (runtime-evaluated; no static `Clock::now()`):
+# One tasklet form: the author's type, `impl Tasklet for T`, completed by
+# `#[flezha::tasklet(name = "...")]`, which writes the items marked (attr).
 #
-#   pub trait Clock { type Time; }                          # sealed
-#   pub trait ClockFor<Input>: Clock { /* runtime seam */ } # sealed via Clock
-#   pub trait TimeExtractor<Input> { fn extract(input: &Input) -> u64; }
+#   pub use flz_core::host::HostClock as ClockKind;   # Wall | EventTime | Logical
+#
+#   pub trait Change<S>: Serialize + DeserializeOwned + Send + Sync + 'static {
+#       fn apply_to(&self, state: &mut S);
+#       fn coalesce_key(&self) -> Option<CoalesceKey>;   # default None
+#   }
+#   impl<S> Change<S> for NoChange
 #
 # Trait surface on `Tasklet`:
 #
-#   type Change: Change;
-#   type Clock: ClockFor<Self::Input>;
-#   type Config: DeserializeOwned + Send + Sync + 'static;
+#   type Input: Send + Sync + 'static + Clone;
+#   type Output: Send + Sync + 'static + JournalValue;         # (attr) default ()
+#   type State: Send + Sync + 'static + Serialize + DeserializeOwned;  # (attr) default ()
+#   type Change: Change<Self::State>;                          # (attr) default NoChange
+#   const NAME: &'static str;                                  # (attr) `name` key
+#   const CLOCK: ClockKind;                                    # (attr) from `event_time` / `logical_clock`
 #   const SCHEMA_VERSION: u32 = 1;
-#   fn init_state(cell_key: Option<&str>, init_payload: Option<RestoreInitPayload<'_>>) -> Self::State;
-#   fn apply_change(state: &mut Self::State, change: &Self::Change);
+#   fn init_state(cell_key: Option<&str>) -> Self::State;      # (attr) Default::default()
+#   fn event_time(input: &Self::Input) -> u64;                 # default panics naming the tasklet
 #   fn compact_after_bytes() -> usize;
-#   fn from_config(cfg: Self::Config) -> Self;
-#   fn run(&mut self, input, state: StateHandle<'_, Self>, ctx: &mut TaskletCtx<'_>) -> Result<(), TaskletError>;
-#
-#   ADDED by `cell-timers`:
-#     fn on_timer(&mut self, fired_at: u64, kind: TimerKind, state: StateHandle<'_, Self>, ctx: &mut TaskletCtx<'_>) -> Result<(), TaskletError>;
+#   fn run(&mut self, input: Self::Input, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError>;
+#   fn on_timer(&mut self, fired_at: u64, kind: TimerKind, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError>;
 #       Default PANICS naming the Tasklet (registration is a runtime call, so
 #       an unhandled timer cannot be refused at build time).
-#     fn max_timers_per_cell() -> usize;                    # default 10_000
+#   fn compensate(&mut self, completed_output: Vec<Arc<Self::Output>>, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError>;
+#   fn max_timers_per_cell() -> usize;                         # default 10_000
+#   const COMPENSATE_OVERRIDDEN, CELLS_FOR_OVERRIDDEN,
+#         MAX_CELLS_OVERRIDDEN, MAILBOX_CAPACITY_OVERRIDDEN: bool;  # (attr) from the written fn or key
+#
+#   REMOVED by `give-rust-one-tasklet-form`: the clock and config associated
+#   types, the name function, the tasklet's own change fold, the typed-config
+#   constructor, the `init_state` restore payload, the simplified tier and the
+#   state derive, the clock marker types, the state handle and the untyped
+#   context.
 #
 #   REMOVED by `stream-dsl-keyby-and-transforms`:
 #     fn cell_key(input: &Self::Input) -> Option<String>;
@@ -98,36 +99,17 @@ pub use cell::timer::TimerKind;                            # ADDED by `cell-time
 #   pair (`cell_keys` / `cells_for` / `CELLS_FOR_OVERRIDDEN`) and the
 #   dynamic knobs (`cell_idle_ttl`, `max_cells`) stay on the Tasklet.
 #
-# `SimpleTasklet` — the simplified tier (`tiered-tasklet-authoring`).
-# Stable Rust has no associated-type defaults, so the defaults are a trait
-# lifted to `Tasklet` by a blanket impl; a type implementing both is a
-# coherence error, which is what makes "explicit wins" unambiguous.
+# `Ctx<'a, S: Tasklet>` surface (per-invocation, determinism contract):
 #
-#   pub trait SimpleTasklet: Send + Sync + 'static + Default {
-#       type Input: Send + Sync + 'static + Clone;
-#       type Output: Send + Sync + 'static;
-#       type State: Send + Sync + 'static + Serialize + DeserializeOwned + DerivedState;
-#       fn name() -> &'static str;
-#       fn init_state(cell_key: Option<&str>) -> Self::State;
-#       fn run(&mut self, input, state: StateHandle<'_, Self>, ctx: &mut TaskletCtx<'_>) -> Result<(), TaskletError>
-#           where Self: Tasklet;
-#   }
-#   impl<T: SimpleTasklet> Tasklet for T   # Clock = WallClock, Config = (),
-#                                              # Change = <T::State as DerivedState>::Change
-#
-#   CHANGED by `tiered-tasklet-authoring`: `impl DerivedState for ()` —
-#   the stateless binding (Change = NoChange), so `type State = ()` is
-#   expressible in the simplified tier.
-#
-# `TaskletCtx` surface (per-invocation, determinism contract):
-#
+#   pub fn state(&self) -> &S::State;
+#   pub fn change(&mut self, change: S::Change);
 #   pub fn now(&self) -> u64;
 #   pub fn stable_id(&self) -> StableId;
 #   pub fn cell_key(&self) -> Option<&str>;
-#   pub fn emit<C>(&mut self, value: C) -> Result<(), TaskletError>;
-#   pub fn emit_with_meta<C>(&mut self, value: C, meta: HashMap<String, String>) -> Result<(), TaskletError>;
-#   pub fn emit_keyed<C>(&mut self, key: impl Into<String>, value: C) -> Result<(), TaskletError>;
-#   pub fn emit_keyed_with_meta<C>(&mut self, key: impl Into<String>, value: C, meta: HashMap<String, String>) -> Result<(), TaskletError>;
+#   pub fn emit(&mut self, value: S::Output) -> Result<(), TaskletError>;
+#   pub fn emit_with_meta(&mut self, value: S::Output, meta: HashMap<String, String>) -> Result<(), TaskletError>;
+#   pub fn emit_keyed(&mut self, key: impl Into<String>, value: S::Output) -> Result<(), TaskletError>;
+#   pub fn emit_keyed_with_meta(&mut self, key: impl Into<String>, value: S::Output, meta: HashMap<String, String>) -> Result<(), TaskletError>;
 #
 #   On a `.keyed()` channel `emit` / `emit_with_meta` carry `cell_key()` —
 #   the routing key, by construction — and still fail
@@ -203,6 +185,9 @@ pub use cell::timer::TimerKind;                            # ADDED by `cell-time
 #     pub fn emitted_meta(&self) -> Vec<Option<&HashMap<String, String>>>;
 #     pub fn fire_timer(&mut self, kind: TimerKind, scheduled_at: u64) -> &mut Self;
 #     pub fn advance_event_time(&mut self, high_water: u64) -> &mut Self;
+#   CHANGED by `give-rust-one-tasklet-form`: `new()` starts from
+#   `init_state(None)`; `expect_emits(self, &[S::Output])`; `replay` folds
+#   each change encoded and decoded as the runtime persists it.
 #     pub fn pending_timers(&self, kind: TimerKind) -> Vec<u64>;
 #     pub fn recorded_timer_ops(&self) -> &[TimerOp];
 #     `replay_equals` now compares the pending-timer set too — a timer is folded
@@ -535,8 +520,11 @@ pub use operator::builder::TopologyBuildError;
 #   timers as an unbounded tasklet does, and a sleeping instance wakes at the
 #   earliest pending processing-time one.
 
-# Authoring macros. `unbounded_operator` and `bounded_operator` are the §5 short
-# form: on a `run` function each emits the operator type under the function's
-# PascalCase name and the tasklet type beside it, suffixed `Tasklet`.
+# Authoring macros. `tasklet` completes an `impl Tasklet` block and generates no
+# type. `unbounded_operator` and `bounded_operator` are the §5 short form: on a
+# stateless function each emits the operator type under the function's
+# PascalCase name and the tasklet type beside it, suffixed `Tasklet`; on an
+# `impl Tasklet for T` block each completes the block and implements the
+# operator trait on `T`.
 
-pub use flezha_macros::{operator, tasklet, unbounded_operator, bounded_operator, State};
+pub use flezha_macros::{operator, tasklet, unbounded_operator, bounded_operator};

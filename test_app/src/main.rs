@@ -8,12 +8,8 @@ pub(crate) use std::sync::atomic::{AtomicUsize, Ordering};
 pub(crate) use std::time::Duration;
 pub(crate) use std::{env, io, thread};
 
-pub(crate) use flezha_runner::state::{
-    postcard, Change, CoalesceKey, NoChange, RestoreInitPayload, StateHandle, WallClock,
-};
-pub(crate) use flezha_runner::tasklet::{
-    EventTimeFrom, Tasklet, TaskletCtx, TaskletError, TimeExtractor,
-};
+pub(crate) use flezha_runner::state::{postcard, Change, ClockKind, CoalesceKey, NoChange};
+pub(crate) use flezha_runner::tasklet::{Ctx, Tasklet, TaskletError};
 pub(crate) use flezha_runner::{
     BoundedOperator, ChannelBuilder, Flezha, FlezhaRunner, LoopMode, OverflowPolicy, Stream,
     UnboundedOperator,

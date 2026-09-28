@@ -1,0 +1,17 @@
+error[E0308]: mismatched types
+  --> tests/ui/emit_wrong_type.rs:13:18
+   |
+13 |         ctx.emit(42u64)
+   |             ---- ^^^^^ expected `String`, found `u64`
+   |             |
+   |             arguments to this method are incorrect
+   |
+note: method defined here
+  --> src/tasklet/ctx.rs
+   |
+   |     pub fn emit(&mut self, value: S::Output) -> Result<(), TaskletError> {
+   |            ^^^^
+help: try using a conversion method
+   |
+13 |         ctx.emit(42u64.to_string())
+   |                       ++++++++++++

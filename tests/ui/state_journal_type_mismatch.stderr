@@ -1,5 +1,0 @@
-error: #[journal(map_vec)] requires a `HashMap<K, Vec<U>>` field; hand-write a `Change` for anything richer
- --> tests/ui/state_journal_type_mismatch.rs:6:8
-  |
-6 |     m: HashMap<String, f64>,
-  |        ^^^^^^^^^^^^^^^^^^^^

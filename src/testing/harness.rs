@@ -1,18 +1,19 @@
 //! `TaskletTestHarness::<S>` — replay-equality test harness.
 //!
-//! Tests construct the harness with `new()` (requires `S: Default` and
-//! a `Self::State` derivable from `init_state(None, None)`),
+//! Tests construct the harness with `new()` (requires `S: Default`; the
+//! state comes from `init_state(None)`),
 //! `with_initial_state(state)`, or `with_payload(cell_key, payload)`
 //! (replicates the runtime's snapshot + change-log restoration flow).
 //! The harness owns its state, drives `S::run` for each input via
 //! `apply_inputs`, and records emitted values + Changes for inspection.
 //!
 //! The determinism gate is `replay_equals(&self) -> Result<(), ReplayMismatch>`:
-//! it folds the recorded change log against a fresh re-constructed initial
-//! state and asserts byte-equality with the harness's terminal state (via
-//! `serde::Serialize` round-trip). Panics from `Tasklet::apply_change`
-//! surface as test failures; non-determinism surfaces as a `ReplayMismatch`
-//! carrying serialized expected and actual states for hex-diff inspection.
+//! it encodes the recorded changes as the runtime's flusher does, decodes them
+//! as a restore does, folds them through `Change::apply_to` against a fresh
+//! re-constructed initial state, and asserts equality with the harness's
+//! terminal state. A change the runtime could not persist fails there, and
+//! non-determinism surfaces as a `ReplayMismatch` carrying serialized
+//! expected and actual states for hex-diff inspection.
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};
@@ -21,12 +22,14 @@ use std::sync::Arc;
 
 use flz_core::header::RestoreError;
 
-use crate::cell::restore::{init_cell_with_payload, RestoreInitPayload};
+use crate::cell::flusher::encode_change;
+use crate::cell::header::SchemaDecision;
+use crate::cell::restore::{decode_change, init_cell_with_payload, RestoreInitPayload};
 use crate::cell::timer::{PendingTimers, TimerKind, TimerOp, TimerSession};
 use crate::operator::dispatcher::emit_sink::apply_identity_stamps;
-use crate::tasklet::clock::{wall_now_ms, ClockFor};
+use crate::tasklet::clock::{evaluate, wall_now_ms};
 use crate::tasklet::ctx::EmitSink;
-use crate::tasklet::{StateHandle, Tasklet, TaskletCtx, TaskletError};
+use crate::tasklet::{Change, Ctx, Tasklet, TaskletError};
 
 /// Cell identity the harness stands in for the runtime's per-slot
 /// identity: feeds `ctx.stable_id()` derivation and the `flz.cell`
@@ -37,6 +40,16 @@ const HARNESS_CELL_IDENTITY: &[u8] = b"<harness>";
 struct Emit {
     value: Arc<dyn Any + Send + Sync>,
     meta: Option<HashMap<String, String>>,
+}
+
+impl Emit {
+    /// The emitted value; `Ctx` types every emit as the tasklet's `Output`.
+    fn output<S: Tasklet>(&self) -> &S::Output {
+        let value: &dyn Any = &*self.value;
+        value
+            .downcast_ref::<S::Output>()
+            .expect("Ctx emits only the tasklet's Output")
+    }
 }
 
 /// Replay-equality failure. Carries the expected and actual serialized
@@ -89,7 +102,7 @@ pub struct TaskletTestHarness<S: Tasklet> {
     /// single-cell Tasklet, where a keyed channel still refuses a
     /// key-less emit.
     cell_key: Option<String>,
-    /// Injected wall-clock values served to `WallClock` evaluation in
+    /// Injected wall-clock values served to wall-clock evaluation in
     /// order (last value repeats). `None` = real `SystemTime`.
     wall_script: Option<Vec<u64>>,
     wall_pos: Cell<usize>,
@@ -110,9 +123,9 @@ impl<S: Tasklet> TaskletTestHarness<S>
 where
     S::State: serde::Serialize + serde::de::DeserializeOwned,
 {
-    /// Construct a harness with state from `S::init_state(None, None)`.
+    /// Construct a harness with state from `S::init_state(None)`.
     pub fn new() -> Self {
-        let state = S::init_state(None, None);
+        let state = S::init_state(None);
         let initial_state_bytes = serialize_snapshot(&state);
         Self::from_state(state, initial_state_bytes)
     }
@@ -189,7 +202,7 @@ impl<S: Tasklet> TaskletTestHarness<S> {
         self
     }
 
-    /// Inject a fixed wall-clock value: every `WallClock` evaluation in
+    /// Inject a fixed wall-clock value: every wall-clock evaluation in
     /// this harness observes `ms` instead of `SystemTime::now()`.
     pub fn with_wall_clock(self, ms: u64) -> Self {
         self.with_wall_clock_script(vec![ms])
@@ -225,42 +238,57 @@ impl<S: Tasklet> TaskletTestHarness<S> {
 
     /// Drive `S::run` for each input. Records emits + Changes on the
     /// harness; mutations on the harness's owned state are visible
-    /// after the call. The declared Clock is evaluated per invocation
+    /// after the call. The declared clock is evaluated per invocation
     /// exactly like the dispatcher does: wall time from the injected
     /// script (or real time), logical time from the count of recorded
     /// changes, event time from the input.
     pub fn apply_inputs(&mut self, inputs: impl IntoIterator<Item = S::Input>) -> &mut Self {
-        let recorded = RefCell::new(std::mem::take(&mut self.recorded_changes));
         for input in inputs {
-            let invocation_seq = recorded.borrow().len() as u64;
-            let now = <S::Clock as ClockFor<S::Input>>::evaluate(
-                Some(&input),
-                || self.next_wall_ms(),
-                || invocation_seq,
-            );
-            let session = self.open_timer_session(now, None);
-            let mut sink = RecordingEmitSink {
-                emits: &mut self.recorded_emits,
-                channel_name: "<harness>",
-                keyed: self.keyed,
-                seq: invocation_seq,
-                ordinal: 0,
-            };
-            let mut ctx = TaskletCtx::new(&mut sink, now, invocation_seq, HARNESS_CELL_IDENTITY)
-                .with_cell_key(self.cell_key.as_deref())
-                .with_timers(&session);
-            let handle = StateHandle::<S>::new(&mut self.state, &recorded);
-            // Errors are surfaced as panics in the harness; tests that
-            // want to exercise the error path should drive `S::run`
-            // directly.
-            if let Err(e) = self.tasklet.run(input, handle, &mut ctx) {
-                panic!("TaskletTestHarness: Tasklet::run returned Err: {e}");
-            }
-            self.recorded_timer_ops
-                .extend(session.into_inner().commit(&mut self.timers));
+            let seq = self.recorded_changes.len() as u64;
+            let now = evaluate::<S>(Some(&input), || self.next_wall_ms(), || seq);
+            self.invoke("run", now, None, |tasklet, ctx| tasklet.run(input, ctx));
         }
-        self.recorded_changes = recorded.into_inner();
         self
+    }
+
+    /// One invocation of the author's code, as the dispatcher makes it: a
+    /// context over the harness's state and change log, and a timer session
+    /// seeded with `firing`, committed once the call returns. Errors are
+    /// surfaced as panics; tests that want to exercise the error path drive
+    /// the tasklet directly.
+    fn invoke(
+        &mut self,
+        hook: &str,
+        now: u64,
+        firing: Option<(TimerKind, u64)>,
+        call: impl FnOnce(&mut S, &mut Ctx<'_, S>) -> Result<(), TaskletError>,
+    ) {
+        let recorded = RefCell::new(std::mem::take(&mut self.recorded_changes));
+        let invocation_seq = recorded.borrow().len() as u64;
+        let session = self.open_timer_session(now, firing);
+        let mut sink = RecordingEmitSink {
+            emits: &mut self.recorded_emits,
+            channel_name: "<harness>",
+            keyed: self.keyed,
+            seq: invocation_seq,
+            ordinal: 0,
+        };
+        let mut ctx = Ctx::<S>::new(
+            &mut self.state,
+            &recorded,
+            &mut sink,
+            now,
+            invocation_seq,
+            HARNESS_CELL_IDENTITY,
+        )
+        .with_cell_key(self.cell_key.as_deref())
+        .with_timers(&session);
+        if let Err(e) = call(&mut self.tasklet, &mut ctx) {
+            panic!("TaskletTestHarness: Tasklet::{hook} returned Err: {e}");
+        }
+        self.recorded_timer_ops
+            .extend(session.into_inner().commit(&mut self.timers));
+        self.recorded_changes = recorded.into_inner();
     }
 
     /// Fire one pending timer through `S::on_timer`, exactly as the runtime
@@ -274,31 +302,12 @@ impl<S: Tasklet> TaskletTestHarness<S> {
             "TaskletTestHarness::fire_timer: no {} timer pending at {scheduled_at}",
             kind.as_str(),
         );
-        let recorded = RefCell::new(std::mem::take(&mut self.recorded_changes));
-        let invocation_seq = recorded.borrow().len() as u64;
-        let session = self.open_timer_session(scheduled_at, Some((kind, scheduled_at)));
-        let mut sink = RecordingEmitSink {
-            emits: &mut self.recorded_emits,
-            channel_name: "<harness>",
-            keyed: self.keyed,
-            seq: invocation_seq,
-            ordinal: 0,
-        };
-        let mut ctx = TaskletCtx::new(
-            &mut sink,
+        self.invoke(
+            "on_timer",
             scheduled_at,
-            invocation_seq,
-            HARNESS_CELL_IDENTITY,
-        )
-        .with_cell_key(self.cell_key.as_deref())
-        .with_timers(&session);
-        let handle = StateHandle::<S>::new(&mut self.state, &recorded);
-        if let Err(e) = self.tasklet.on_timer(scheduled_at, kind, handle, &mut ctx) {
-            panic!("TaskletTestHarness: Tasklet::on_timer returned Err: {e}");
-        }
-        self.recorded_timer_ops
-            .extend(session.into_inner().commit(&mut self.timers));
-        self.recorded_changes = recorded.into_inner();
+            Some((kind, scheduled_at)),
+            |tasklet, ctx| tasklet.on_timer(scheduled_at, kind, ctx),
+        );
         self
     }
 
@@ -347,26 +356,16 @@ impl<S: Tasklet> TaskletTestHarness<S> {
         self
     }
 
-    /// Consuming assertion: recorded emits of type `C` equal `expected`.
-    /// Emits of other types are ignored.
-    pub fn expect_emits<C>(self, expected: &[C]) -> Self
+    /// Consuming assertion: the recorded emits equal `expected`, in order.
+    pub fn expect_emits(self, expected: &[S::Output]) -> Self
     where
-        C: 'static + PartialEq + std::fmt::Debug,
+        S::Output: PartialEq + std::fmt::Debug,
     {
-        let observed: Vec<&C> = self
-            .recorded_emits
-            .iter()
-            .filter_map(|e| {
-                let any_ref: &dyn Any = &*e.value;
-                any_ref.downcast_ref::<C>()
-            })
-            .collect();
+        let observed: Vec<&S::Output> = self.recorded_emits.iter().map(Emit::output::<S>).collect();
         assert_eq!(
             observed.len(),
             expected.len(),
-            "TaskletTestHarness::expect_emits: emits of type {} count diverges \
-             (observed {}, expected {})",
-            std::any::type_name::<C>(),
+            "TaskletTestHarness::expect_emits: emit count diverges (observed {}, expected {})",
             observed.len(),
             expected.len(),
         );
@@ -391,12 +390,19 @@ impl<S: Tasklet> TaskletTestHarness<S> {
         self
     }
 
-    /// Replay a change log against an initial state. Static helper —
-    /// useful for constructing expected states in tests.
+    /// Replay a change log against an initial state, the way a restart does:
+    /// each change is encoded as the flusher writes it, decoded as the restore
+    /// fold reads it, and folded through [`Change::apply_to`] in order.
+    /// Panics naming the change when it does not survive that round trip.
     pub fn replay(initial: S::State, log: &[S::Change]) -> S::State {
         let mut state = initial;
-        for change in log {
-            S::apply_change(&mut state, change);
+        for (i, change) in log.iter().enumerate() {
+            let bytes = encode_change(change);
+            decode_change::<S>(SchemaDecision::Decode, &bytes)
+                .unwrap_or_else(|e| {
+                    panic!("TaskletTestHarness: change {i} does not survive persistence: {e}")
+                })
+                .apply_to(&mut state);
         }
         state
     }
@@ -499,20 +505,11 @@ impl<S: Tasklet> TaskletTestHarness<S> {
 
         let mut out = Vec::with_capacity(pass.recorded_emits.len());
         for (i, emit) in pass.recorded_emits.iter().enumerate() {
-            let any_ref: &dyn Any = &*emit.value;
-            let typed = any_ref
-                .downcast_ref::<S::Output>()
-                .ok_or_else(|| EmitStreamMismatch {
+            let bytes =
+                postcard::to_allocvec(emit.output::<S>()).map_err(|e| EmitStreamMismatch {
                     index: i,
-                    detail: format!(
-                        "emit {i} is not the Tasklet's Output type and cannot be \
-                         serialized for comparison"
-                    ),
+                    detail: format!("emit {i} failed to serialize: {e}"),
                 })?;
-            let bytes = postcard::to_allocvec(typed).map_err(|e| EmitStreamMismatch {
-                index: i,
-                detail: format!("emit {i} failed to serialize: {e}"),
-            })?;
             // BTreeMap: metadata compares (and debugs) in stable key order.
             let meta = emit.meta.as_ref().map(|m| m.clone().into_iter().collect());
             out.push(SerializedEmit { bytes, meta });

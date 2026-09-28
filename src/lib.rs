@@ -28,13 +28,17 @@ mod util;
 
 pub(crate) use flz_core::shutdown;
 
+// The attribute macros expand to `::flezha_runner::...` paths; this lets the
+// crate's own tests use them.
+#[cfg(test)]
+extern crate self as flezha_runner;
+
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 
-/// One-stop import path for the `operator-state-persistence` trait
-/// surface. Bring everything into scope with
-/// `use flezha_runner::state::*;` to write Tasklets that declare
-/// `Change` types and route mutations through `state.apply(...)`.
+/// One-stop import path for the state persistence surface: bring it into
+/// scope with `use flezha_runner::state::*;` to write tasklets that declare
+/// `Change` types and record them through `ctx.change(...)`.
 pub mod state {
     pub use flz_core::header::RestoreError;
     pub use flz_core::restore::RestoreInitPayload;
@@ -47,10 +51,7 @@ pub mod state {
 
     pub use crate::cell::timer::TimerKind;
     pub use crate::tasklet::change::{Change, CoalesceKey, NoChange};
-    pub use crate::tasklet::clock::{
-        Clock, ClockFor, EventTimeFrom, LogicalClock, TimeExtractor, WallClock,
-    };
-    pub use crate::tasklet::state_handle::StateHandle;
+    pub use crate::tasklet::clock::ClockKind;
 }
 
 /// Administering the namespace a runner's connection proved.
@@ -63,22 +64,18 @@ pub use channel::builder::TopologyIssue;
 pub use channel::{
     Channel, ChannelBuilder, EntryStream, Merge, MergeSource, OverflowPolicy, RetryPolicy, Stream,
 };
-/// Authoring sugar. `#[flezha::tasklet]`, the short-form
-/// `#[flezha::unbounded_operator]` / `#[flezha::bounded_operator]`,
-/// `#[derive(flezha::State)]` and `flezha::operator!` expand to the trait
-/// surface above; see `docs/sdk/authoring_contract.md`.
-pub use flezha_macros::{bounded_operator, operator, tasklet, unbounded_operator, State};
+/// Authoring sugar. `#[flezha::tasklet]` on an `impl Tasklet` block, the
+/// short-form `#[flezha::unbounded_operator]` / `#[flezha::bounded_operator]`
+/// and `flezha::operator!` expand to the trait surface above; see
+/// `docs/sdk/authoring_contract.md`.
+pub use flezha_macros::{bounded_operator, operator, tasklet, unbounded_operator};
 pub use flz_core::pb;
 pub use flz_transport::{service, transport};
 pub use local::LocalOperator;
 pub use operator::builder::TopologyBuildError;
 pub use operator::{BoundedKind, Operator, UnboundedKind, UnboundedOperator};
 pub use runner_handle::{Flezha, FlezhaError, FlezhaRunner};
-pub use tasklet::{
-    Change, Clock, ClockFor, CoalesceKey, DerivedState, EventTimeFrom, LogicalClock, NoChange,
-    SimpleTasklet, StableId, StateHandle, Tasklet, TaskletCtx, TaskletError, TimeExtractor,
-    WallClock,
-};
+pub use tasklet::{Change, ClockKind, CoalesceKey, Ctx, NoChange, StableId, Tasklet, TaskletError};
 
 /// Build a class of kind `K` and install it in that kind's process-global
 /// registry, with no runner involved — the body

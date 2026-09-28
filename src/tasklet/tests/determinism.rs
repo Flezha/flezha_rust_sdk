@@ -6,7 +6,8 @@ use std::any::Any;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::tasklet::ctx::{EmitSink, StableId, TaskletCtx};
+use super::ProbeCell;
+use crate::tasklet::ctx::{EmitSink, StableId};
 use crate::tasklet::error::TaskletError;
 
 /// Minimal sink: records what reached it, configurable channel shape.
@@ -48,7 +49,8 @@ const IDENTITY: &[u8] = b"instance/op/key";
 #[test]
 fn now_returns_the_injected_per_invocation_value_on_every_call() {
     let mut sink = StubSink::default();
-    let ctx = TaskletCtx::new(&mut sink, 1720000000000, 7, IDENTITY);
+    let mut cell = ProbeCell::default();
+    let ctx = cell.ctx(&mut sink, 1720000000000, 7, IDENTITY);
     assert_eq!(ctx.now(), 1720000000000);
     assert_eq!(ctx.now(), 1720000000000);
 }
@@ -56,7 +58,8 @@ fn now_returns_the_injected_per_invocation_value_on_every_call() {
 #[test]
 fn stable_id_is_distinct_within_an_invocation() {
     let mut sink = StubSink::default();
-    let ctx = TaskletCtx::new(&mut sink, 0, 7, IDENTITY);
+    let mut cell = ProbeCell::default();
+    let ctx = cell.ctx(&mut sink, 0, 7, IDENTITY);
     let a = ctx.stable_id();
     let b = ctx.stable_id();
     assert_ne!(a, b, "two calls in one invocation must differ");
@@ -66,8 +69,10 @@ fn stable_id_is_distinct_within_an_invocation() {
 fn stable_id_is_identical_for_identical_replay_inputs() {
     let mut sink_a = StubSink::default();
     let mut sink_b = StubSink::default();
-    let ctx_a = TaskletCtx::new(&mut sink_a, 0, 42, IDENTITY);
-    let ctx_b = TaskletCtx::new(&mut sink_b, 0, 42, IDENTITY);
+    let mut cell_a = ProbeCell::default();
+    let ctx_a = cell_a.ctx(&mut sink_a, 0, 42, IDENTITY);
+    let mut cell_b = ProbeCell::default();
+    let ctx_b = cell_b.ctx(&mut sink_b, 0, 42, IDENTITY);
     // The n-th call in a replayed invocation equals the n-th original call.
     assert_eq!(ctx_a.stable_id(), ctx_b.stable_id());
     assert_eq!(ctx_a.stable_id(), ctx_b.stable_id());
@@ -118,14 +123,17 @@ fn plain_emit_in_a_keyed_cell_carries_the_cell_key() {
         plugin_sink: true,
         ..Default::default()
     };
-    let mut ctx = TaskletCtx::new(&mut sink, 0, 0, IDENTITY).with_cell_key(Some("BTC/USD"));
+    let mut cell = ProbeCell::default();
+    let mut ctx = cell
+        .ctx(&mut sink, 0, 0, IDENTITY)
+        .with_cell_key(Some("BTC/USD"));
     assert_eq!(ctx.cell_key(), Some("BTC/USD"));
-    ctx.emit::<String>("candle".into())
+    ctx.emit("candle".into())
         .expect("a keyed cell emits under its own key");
-    ctx.emit_with_meta::<String>("candle".into(), HashMap::new())
+    ctx.emit_with_meta("candle".into(), HashMap::new())
         .expect("the metadata spelling defaults identically");
     // An explicit key still wins — the divergent-key emit is untouched.
-    ctx.emit_keyed::<String>("BTC/1m", "candle".into())
+    ctx.emit_keyed("BTC/1m", "candle".into())
         .expect("explicit keys remain available");
     assert_eq!(
         sink.keys_seen,
@@ -147,16 +155,15 @@ fn plain_emit_on_keyed_channel_is_rejected() {
         plugin_sink: true,
         ..Default::default()
     };
-    let mut ctx = TaskletCtx::new(&mut sink, 0, 0, IDENTITY);
+    let mut cell = ProbeCell::default();
+    let mut ctx = cell.ctx(&mut sink, 0, 0, IDENTITY);
     assert_eq!(ctx.cell_key(), None, "single-cell mode has no key");
-    let err = ctx.emit::<String>("v".into()).unwrap_err();
+    let err = ctx.emit("v".into()).unwrap_err();
     assert!(matches!(
         err,
         TaskletError::KeyRequiredOnKeyedChannel { .. }
     ));
-    let err = ctx
-        .emit_with_meta::<String>("v".into(), HashMap::new())
-        .unwrap_err();
+    let err = ctx.emit_with_meta("v".into(), HashMap::new()).unwrap_err();
     assert!(matches!(
         err,
         TaskletError::KeyRequiredOnKeyedChannel { .. }
@@ -172,13 +179,16 @@ fn emit_keyed_on_non_keyed_channel_is_rejected() {
     };
     // Being in a keyed Cell changes nothing here: the channel declaration
     // is the single source of truth for whether output identity exists.
-    let mut ctx = TaskletCtx::new(&mut sink, 0, 0, IDENTITY).with_cell_key(Some("BTC/USD"));
-    let err = ctx.emit_keyed::<String>("k", "v".into()).unwrap_err();
+    let mut cell = ProbeCell::default();
+    let mut ctx = cell
+        .ctx(&mut sink, 0, 0, IDENTITY)
+        .with_cell_key(Some("BTC/USD"));
+    let err = ctx.emit_keyed("k", "v".into()).unwrap_err();
     assert!(matches!(
         err,
         TaskletError::KeyNotAllowedOnNonKeyedChannel { .. }
     ));
-    ctx.emit::<String>("v".into())
+    ctx.emit("v".into())
         .expect("a plain emit on a non-keyed channel is unchanged");
     assert_eq!(
         sink.keys_seen,
@@ -194,8 +204,9 @@ fn emit_keyed_passes_the_natural_key_to_the_sink() {
         plugin_sink: true,
         ..Default::default()
     };
-    let mut ctx = TaskletCtx::new(&mut sink, 0, 0, IDENTITY);
-    ctx.emit_keyed::<String>("BTC/1m/1720000000", "candle".into())
+    let mut cell = ProbeCell::default();
+    let mut ctx = cell.ctx(&mut sink, 0, 0, IDENTITY);
+    ctx.emit_keyed("BTC/1m/1720000000", "candle".into())
         .expect("keyed emit on keyed channel");
     assert_eq!(sink.keys_seen, vec![Some("BTC/1m/1720000000".to_string())]);
 }
@@ -209,10 +220,9 @@ fn reserved_flz_metadata_keys_are_rejected_on_all_meta_variants() {
     let mut meta = HashMap::new();
     meta.insert("flz.seq".to_string(), "999.0".to_string());
     {
-        let mut ctx = TaskletCtx::new(&mut sink, 0, 0, IDENTITY);
-        let err = ctx
-            .emit_with_meta::<String>("v".into(), meta.clone())
-            .unwrap_err();
+        let mut cell = ProbeCell::default();
+        let mut ctx = cell.ctx(&mut sink, 0, 0, IDENTITY);
+        let err = ctx.emit_with_meta("v".into(), meta.clone()).unwrap_err();
         assert!(matches!(err, TaskletError::ReservedMetadataKey { key } if key == "flz.seq"));
     }
     let mut keyed_sink = StubSink {
@@ -221,10 +231,9 @@ fn reserved_flz_metadata_keys_are_rejected_on_all_meta_variants() {
         ..Default::default()
     };
     {
-        let mut ctx = TaskletCtx::new(&mut keyed_sink, 0, 0, IDENTITY);
-        let err = ctx
-            .emit_keyed_with_meta::<String>("k", "v".into(), meta)
-            .unwrap_err();
+        let mut keyed_cell = ProbeCell::default();
+        let mut ctx = keyed_cell.ctx(&mut keyed_sink, 0, 0, IDENTITY);
+        let err = ctx.emit_keyed_with_meta("k", "v".into(), meta).unwrap_err();
         assert!(matches!(err, TaskletError::ReservedMetadataKey { key } if key == "flz.seq"));
     }
     assert!(sink.keys_seen.is_empty());
@@ -240,8 +249,9 @@ fn non_reserved_metadata_still_flows() {
     };
     let mut meta = HashMap::new();
     meta.insert("user".to_string(), "v".to_string());
-    let mut ctx = TaskletCtx::new(&mut sink, 0, 0, IDENTITY);
-    ctx.emit_keyed_with_meta::<String>("k", "v".into(), meta)
+    let mut cell = ProbeCell::default();
+    let mut ctx = cell.ctx(&mut sink, 0, 0, IDENTITY);
+    ctx.emit_keyed_with_meta("k", "v".into(), meta)
         .expect("user metadata without flz. prefix is fine");
     assert_eq!(sink.metas_seen.len(), 1);
     assert_eq!(
@@ -253,7 +263,8 @@ fn non_reserved_metadata_still_flows() {
 #[test]
 fn a_stream_context_refuses_to_complete_without_a_retry() {
     let mut sink = StubSink::default();
-    let mut ctx = TaskletCtx::new(&mut sink, 0, 7, IDENTITY);
+    let mut cell = ProbeCell::default();
+    let mut ctx = cell.ctx(&mut sink, 0, 7, IDENTITY);
     let err = ctx
         .complete("3")
         .expect_err("an unbounded operator never completes");

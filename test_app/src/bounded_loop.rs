@@ -3,6 +3,7 @@
 //! `mix bench.bounded` drives.
 
 use flezha_runner::tasklet::SpawnOptions;
+use flezha_runner::Ctx;
 
 use crate::bounded::{block_until_released, durable_step, stateless_step, Insert, SeenState};
 use crate::*;
@@ -27,45 +28,30 @@ const BYE_TURN: &str = "bye";
 
 #[derive(Default)]
 struct ChatTurn;
+#[flezha_runner::tasklet(name = "chat_turn")]
 impl Tasklet for ChatTurn {
     type Input = String;
     type Output = String;
     type State = SeenState;
     type Change = Insert;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "chat_turn"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> SeenState {
-        SeenState::default()
-    }
-    fn apply_change(state: &mut SeenState, change: &Insert) {
-        state.items.insert(change.0.clone());
-    }
-    fn run(
-        &mut self,
-        input: String,
-        mut state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         if input == CRASH_TURN {
             block_until_released();
         }
         if input == BYE_TURN {
-            ctx.complete(state.items.len().to_string())?;
+            ctx.complete(ctx.state().items.len().to_string())?;
         } else {
             // Keyed by the turn, so the WAL record count is the number of
             // DISTINCT turns that ran — a re-run of a committed iteration
             // would show up.
-            state.apply(Insert(input.clone()));
+            ctx.change(Insert(input.clone()));
         }
-        ctx.emit::<String>(input)
+        ctx.emit(input)
     }
 }
 
 stateless_step!(ChatReply, "chat_reply", |input, ctx| ctx
-    .emit::<String>(format!("reply:{input}")));
+    .emit(format!("reply:{input}")));
 
 // -- StatelessLoopBounded -------------------------------------------------------
 //
@@ -106,31 +92,16 @@ impl BoundedOperator for StatelessLoopBounded {
 
 #[derive(Default)]
 struct KeyedLoopCount;
+#[flezha_runner::tasklet(name = "keyed_loop_count")]
 impl Tasklet for KeyedLoopCount {
     type Input = String;
     type Output = String;
     type State = CounterState;
     type Change = CounterChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "keyed_loop_count"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> CounterState {
-        CounterState::default()
-    }
-    fn apply_change(state: &mut CounterState, change: &CounterChange) {
-        state.value += change.delta;
-    }
-    fn run(
-        &mut self,
-        input: String,
-        mut state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         let symbol = key_prefix(&input);
-        state.apply(CounterChange { delta: 1 });
-        ctx.emit::<String>(format!("{symbol}:{}", state.value))
+        ctx.change(CounterChange { delta: 1 });
+        ctx.emit(format!("{symbol}:{}", ctx.state().value))
     }
 }
 
@@ -164,23 +135,11 @@ impl BoundedOperator for KeyedLoopBounded {
 
 #[derive(Default)]
 struct SpawnRequester;
+#[flezha_runner::tasklet(name = "spawn_requester")]
 impl Tasklet for SpawnRequester {
     type Input = String;
     type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "spawn_requester"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: String,
-        _: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         let unnamed = ctx.spawn_bounded(StatelessLoopBounded::factory_id(), input.clone());
         let named = ctx.spawn_bounded_with(
             StatelessLoopBounded::factory_id(),
@@ -223,23 +182,11 @@ impl UnboundedOperator for SpawnRequesterOperator {
 
 #[derive(Default)]
 struct SpawnHoldRequester;
+#[flezha_runner::tasklet(name = "spawn_hold_requester")]
 impl Tasklet for SpawnHoldRequester {
     type Input = String;
     type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "spawn_hold_requester"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: String,
-        _: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         match ctx
             .spawn_bounded(StatelessLoopBounded::factory_id(), input)
             .wait()
@@ -288,23 +235,11 @@ pub(crate) struct Ticket {
 
 #[derive(Default)]
 struct SpawnOnceRequester;
+#[flezha_runner::tasklet(name = "spawn_once_requester")]
 impl Tasklet for SpawnOnceRequester {
     type Input = String;
     type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "spawn_once_requester"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: String,
-        _: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         let ticket = serde_json::to_string(&Ticket { text: input }).expect("a ticket serializes");
         match ctx
             .spawn_bounded(TypedOnceBounded::factory_id(), ticket)
@@ -335,26 +270,14 @@ impl UnboundedOperator for SpawnOnceRequesterOperator {
 
 #[derive(Default)]
 struct OncePlaced;
+#[flezha_runner::tasklet(name = "once_placed")]
 impl Tasklet for OncePlaced {
     type Input = Ticket;
     type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "once_placed"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        ticket: Ticket,
-        _: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, ticket: Ticket, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         println!("once_ran {}", ticket.text);
         ctx.complete(ticket.text.clone())?;
-        ctx.emit::<String>(format!("placed:{}", ticket.text))
+        ctx.emit(format!("placed:{}", ticket.text))
     }
 }
 
@@ -383,7 +306,7 @@ stateless_step!(BlockingReply, "blocking_reply", |input, ctx| {
     if input == REPLY_CRASH_TURN {
         block_until_released();
     }
-    ctx.emit::<String>(format!("reply:{input}"))
+    ctx.emit(format!("reply:{input}"))
 });
 
 pub(crate) struct ReplyBlockLoopBounded;
@@ -428,52 +351,39 @@ enum ReplyChange {
     Said(String),
     Retracted,
 }
-impl Change for ReplyChange {}
-
-#[derive(Default)]
-struct ChatReplyUndoable;
-impl Tasklet for ChatReplyUndoable {
-    type Input = String;
-    type Output = String;
-    type State = ReplyLog;
-    type Change = ReplyChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "chat_reply_undoable"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> ReplyLog {
-        ReplyLog::default()
-    }
-    fn apply_change(state: &mut ReplyLog, change: &ReplyChange) {
-        match change {
+impl Change<ReplyLog> for ReplyChange {
+    fn apply_to(&self, state: &mut ReplyLog) {
+        match self {
             ReplyChange::Said(turn) => state.said.push(turn.clone()),
             ReplyChange::Retracted => {
                 state.said.pop();
             }
         }
     }
-    fn run(
-        &mut self,
-        input: String,
-        mut state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
-        state.apply(ReplyChange::Said(input.clone()));
-        ctx.emit::<String>(format!("reply:{input}"))
+}
+
+#[derive(Default)]
+struct ChatReplyUndoable;
+#[flezha_runner::tasklet(name = "chat_reply_undoable")]
+impl Tasklet for ChatReplyUndoable {
+    type Input = String;
+    type Output = String;
+    type State = ReplyLog;
+    type Change = ReplyChange;
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        ctx.change(ReplyChange::Said(input.clone()));
+        ctx.emit(format!("reply:{input}"))
     }
-    const COMPENSATE_OVERRIDDEN: bool = true;
     fn compensate(
         &mut self,
         _completed_output: Vec<std::sync::Arc<String>>,
-        mut state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
+        ctx: &mut Ctx<'_, Self>,
     ) -> Result<(), TaskletError> {
-        let Some(turn) = state.said.last().cloned() else {
+        let Some(turn) = ctx.state().said.last().cloned() else {
             return Ok(());
         };
-        state.apply(ReplyChange::Retracted);
-        ctx.emit::<String>(format!("retract:{turn}"))
+        ctx.change(ReplyChange::Retracted);
+        ctx.emit(format!("retract:{turn}"))
     }
 }
 
@@ -617,50 +527,38 @@ struct BenchTurnState {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 struct BenchTurnSeen(String);
-impl Change for BenchTurnSeen {}
+impl Change<BenchTurnState> for BenchTurnSeen {
+    fn apply_to(&self, state: &mut BenchTurnState) {
+        state.turns += 1;
+        state.last = self.0.clone();
+    }
+}
 
 #[derive(Default)]
 struct BenchTurn;
+#[flezha_runner::tasklet(name = "bench_turn")]
 impl Tasklet for BenchTurn {
     type Input = String;
     type Output = String;
     type State = BenchTurnState;
     type Change = BenchTurnSeen;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "bench_turn"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> BenchTurnState {
-        BenchTurnState::default()
-    }
-    fn apply_change(state: &mut BenchTurnState, change: &BenchTurnSeen) {
-        state.turns += 1;
-        state.last = change.0.clone();
-    }
-    fn run(
-        &mut self,
-        input: String,
-        mut state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
-        state.apply(BenchTurnSeen(input.clone()));
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        ctx.change(BenchTurnSeen(input.clone()));
         if let Some(after) = env::var("FLEZHA_BENCH_WAKE_AFTER_MS")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
         {
             ctx.timer_after(Duration::from_millis(after))?;
         }
-        ctx.emit::<String>(input)
+        ctx.emit(input)
     }
     fn on_timer(
         &mut self,
         fired_at: u64,
         _kind: flezha_runner::state::TimerKind,
-        _state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
+        ctx: &mut Ctx<'_, Self>,
     ) -> Result<(), TaskletError> {
-        ctx.emit::<String>(format!("wake:{fired_at}"))
+        ctx.emit(format!("wake:{fired_at}"))
     }
 }
 

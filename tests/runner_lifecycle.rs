@@ -18,11 +18,9 @@ use std::thread;
 mod common;
 use common::prelude::*;
 use common::{stays_quiet, wait_until};
-use flezha_runner::state::{NoChange, RestoreInitPayload, WallClock};
 use flezha_runner::transport::FlezhaStream;
 use flezha_runner::{
-    ChannelBuilder, Flezha, FlezhaError, StateHandle, Tasklet, TaskletCtx, TaskletError,
-    UnboundedOperator,
+    ChannelBuilder, Flezha, FlezhaError, Tasklet, TaskletError, UnboundedOperator,
 };
 use prost::Message;
 
@@ -31,25 +29,15 @@ struct EmptyState;
 
 #[derive(Default)]
 struct PassTask;
+#[flezha_runner::tasklet(name = "lifecycle_pass")]
 impl Tasklet for PassTask {
     type Input = String;
     type Output = String;
     type State = EmptyState;
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "lifecycle_pass"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> EmptyState {
+    fn init_state(_: Option<&str>) -> EmptyState {
         EmptyState
     }
-    fn run(
-        &mut self,
-        _input: String,
-        _state: StateHandle<'_, Self>,
-        _ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, _input: String, _ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         Ok(())
     }
 }

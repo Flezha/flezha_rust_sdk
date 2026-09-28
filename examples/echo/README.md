@@ -54,7 +54,8 @@ flz_transport = { path = "../../../../flz_transport" }
 EOF
 ```
 
-A copy of this folder outside the checkout names the checkout's `sdk/rust`,
+Then build with `cargo run --release --offline`, so Cargo does not look for the
+missing tag. A copy of this folder outside the checkout names the checkout's `sdk/rust`,
 `flz_core` and `flz_transport` instead of the relative paths. Git ignores the `.cargo` folder, and once the crate is
 published the step goes away and `cargo run --release` is all you need.
 

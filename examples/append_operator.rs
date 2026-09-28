@@ -2,9 +2,9 @@
 //!
 //! The crate's worked example: one entry channel feeding one tasklet that
 //! appends every input it sees to its own durable state. It is the smallest
-//! class that exercises all four halves of the authoring surface: a tasklet
-//! with state, an `UnboundedOperator` that wires it, a runner that registers the
-//! class, and the derived state whose recorder journals the mutation.
+//! class that exercises all four parts of the authoring surface: a tasklet
+//! with state, the change that records its mutation, an `UnboundedOperator`
+//! that wires it, and a runner that registers the class.
 //!
 //! The invariant it demonstrates: when 10,000 messages targeting one
 //! `appender` Cell arrive on the entry channel, `state.seen` ends up holding
@@ -20,19 +20,42 @@
 //! then feed it:
 //!     flz operator send appender --channel input --text '"first"'
 
-use flezha_runner::{tasklet, ChannelBuilder, UnboundedOperator};
+use flezha_runner::{
+    tasklet, Change, ChannelBuilder, Ctx, Tasklet, TaskletError, UnboundedOperator,
+};
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize, Clone, Default, flezha_runner::State)]
+#[derive(Serialize, Deserialize, Clone, Default)]
 struct AppendState {
     seen: Vec<String>,
 }
 
-#[tasklet(id = "append_tasklet")]
-fn append(input: String, state: &mut AppendState) {
-    // Every mutation goes through a generated recorder, never through the
-    // state directly: that is what makes it durable and replayable.
-    state.push_seen(input);
+/// One input appended. The change applies itself, on the live run and on
+/// every restore.
+#[derive(Serialize, Deserialize)]
+struct Appended(String);
+
+impl Change<AppendState> for Appended {
+    fn apply_to(&self, state: &mut AppendState) {
+        state.seen.push(self.0.clone());
+    }
+}
+
+#[derive(Default)]
+struct Append;
+
+#[tasklet(name = "append_tasklet")]
+impl Tasklet for Append {
+    type Input = String;
+    type State = AppendState;
+    type Change = Appended;
+
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        // Every mutation goes through `ctx.change`, never through the state
+        // directly: that is what makes it durable and replayable.
+        ctx.change(Appended(input));
+        Ok(())
+    }
 }
 
 struct AppendOperator;

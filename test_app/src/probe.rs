@@ -27,53 +27,42 @@ enum CandleChange {
     Fold(u64),
 }
 
-impl Change for CandleChange {}
-
-pub(crate) struct TradeEventTime;
-impl TimeExtractor<String> for TradeEventTime {
-    fn extract(input: &String) -> u64 {
-        input
-            .split_once(':')
-            .map(|(ts, _)| ts)
-            .unwrap_or(input.as_str())
-            .parse()
-            .unwrap_or(0)
+impl Change<CandleState> for CandleChange {
+    fn apply_to(&self, state: &mut CandleState) {
+        match self {
+            CandleChange::Fold(event_time) => state.folded.push(*event_time),
+        }
     }
+}
+
+pub(crate) fn trade_event_time(input: &str) -> u64 {
+    input
+        .split_once(':')
+        .map(|(ts, _)| ts)
+        .unwrap_or(input)
+        .parse()
+        .unwrap_or(0)
 }
 
 #[derive(Default)]
 struct CandleTasklet;
+#[flezha_runner::tasklet(name = "candle_tasklet")]
 impl Tasklet for CandleTasklet {
     type Input = String;
     type Output = String;
     type State = CandleState;
     type Change = CandleChange;
-    type Clock = EventTimeFrom<TradeEventTime>;
-    type Config = ();
-    fn name() -> &'static str {
-        "candle_tasklet"
+    fn event_time(input: &String) -> u64 {
+        trade_event_time(input)
     }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> CandleState {
-        CandleState::default()
-    }
-    fn apply_change(state: &mut CandleState, change: &CandleChange) {
-        match change {
-            CandleChange::Fold(event_time) => state.folded.push(*event_time),
-        }
-    }
-    fn run(
-        &mut self,
-        input: String,
-        mut state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
-        // `ctx.now()` IS the extracted event time under an EventTimeFrom clock.
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        // `ctx.now()` IS the extracted event time under an event-time clock.
         let event_time = ctx.now();
-        state.apply(CandleChange::Fold(event_time));
+        ctx.change(CandleChange::Fold(event_time));
         // One row per candle bucket, so a corrected replay overwrites by key
         // rather than appending a second row.
         let bucket = event_time / 1_000;
-        ctx.emit_keyed::<String>(format!("candle/{bucket}"), format!("{bucket}={input}"))
+        ctx.emit_keyed(format!("candle/{bucket}"), format!("{bucket}={input}"))
     }
 }
 
@@ -103,23 +92,11 @@ static POISON_ANTIDOTE: std::sync::atomic::AtomicBool = std::sync::atomic::Atomi
 
 #[derive(Default)]
 struct PoisonProbeTasklet;
+#[flezha_runner::tasklet(name = "poison_probe_tasklet")]
 impl Tasklet for PoisonProbeTasklet {
     type Input = String;
     type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "poison_probe_tasklet"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: String,
-        _state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         if input == "antidote" {
             POISON_ANTIDOTE.store(true, std::sync::atomic::Ordering::SeqCst);
         } else if input == "poison" && !POISON_ANTIDOTE.load(std::sync::atomic::Ordering::SeqCst) {
@@ -169,23 +146,11 @@ static WEDGE_PROBE_ABORTED: std::sync::atomic::AtomicBool =
 
 #[derive(Default)]
 struct WedgeProbeTasklet;
+#[flezha_runner::tasklet(name = "wedge_probe_tasklet")]
 impl Tasklet for WedgeProbeTasklet {
     type Input = String;
     type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "wedge_probe_tasklet"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: String,
-        _state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         if input == "wedge" {
             loop {
                 thread::sleep(Duration::from_secs(3600));
@@ -229,43 +194,32 @@ struct ResumeProbeState {
 enum ResumeProbeChange {
     Add(i64),
 }
-impl Change for ResumeProbeChange {}
+impl Change<ResumeProbeState> for ResumeProbeChange {
+    fn apply_to(&self, state: &mut ResumeProbeState) {
+        match self {
+            ResumeProbeChange::Add(d) => state.total = state.total.saturating_add(*d),
+        }
+    }
+}
 
 #[derive(Default)]
 struct ResumeProbeTasklet;
+#[flezha_runner::tasklet(name = "resume_probe_tasklet")]
 impl Tasklet for ResumeProbeTasklet {
     type Input = String;
     type Output = Vec<u8>;
     type State = ResumeProbeState;
     type Change = ResumeProbeChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "resume_probe_tasklet"
-    }
-    fn init_state(
-        _: Option<&str>,
-        _init_payload: Option<RestoreInitPayload<'_>>,
-    ) -> ResumeProbeState {
+    fn init_state(_: Option<&str>) -> ResumeProbeState {
         // Default + change replay rebuilds the total on restore (same pattern
         // as stateful_counter); no snapshot fast-path needed.
         ResumeProbeState::default()
     }
-    fn apply_change(state: &mut ResumeProbeState, change: &ResumeProbeChange) {
-        match change {
-            ResumeProbeChange::Add(d) => state.total = state.total.saturating_add(*d),
-        }
-    }
-    fn run(
-        &mut self,
-        input: String,
-        mut state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         let delta: i64 = input.parse().unwrap_or(0);
-        let new_total = state.total.saturating_add(delta);
-        state.apply(ResumeProbeChange::Add(delta));
-        ctx.emit::<Vec<u8>>(new_total.to_string().into_bytes())
+        let new_total = ctx.state().total.saturating_add(delta);
+        ctx.change(ResumeProbeChange::Add(delta));
+        ctx.emit(new_total.to_string().into_bytes())
     }
 }
 
@@ -301,7 +255,13 @@ struct EvolvingCartV1 {
 enum EvolvingCartChangeV1 {
     Add(i64),
 }
-impl Change for EvolvingCartChangeV1 {}
+impl Change<EvolvingCartV1> for EvolvingCartChangeV1 {
+    fn apply_to(&self, state: &mut EvolvingCartV1) {
+        match self {
+            EvolvingCartChangeV1::Add(d) => state.total = state.total.saturating_add(*d),
+        }
+    }
+}
 
 #[derive(Serialize, Deserialize, Clone, Default)]
 struct EvolvingCartV2 {
@@ -313,58 +273,42 @@ struct EvolvingCartV2 {
 enum EvolvingCartChangeV2 {
     Add { delta: i64, note: String },
 }
-impl Change for EvolvingCartChangeV2 {}
+impl Change<EvolvingCartV2> for EvolvingCartChangeV2 {
+    fn apply_to(&self, state: &mut EvolvingCartV2) {
+        match self {
+            EvolvingCartChangeV2::Add { delta, .. } => {
+                state.total = state.total.saturating_add(*delta)
+            }
+        }
+    }
+}
 
 #[derive(Default)]
 struct SchemaEvolutionV1Tasklet;
+#[flezha_runner::tasklet(name = "evolving_cart")]
 impl Tasklet for SchemaEvolutionV1Tasklet {
     type Input = String;
     type Output = Vec<u8>;
     type State = EvolvingCartV1;
     type Change = EvolvingCartChangeV1;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "evolving_cart"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> EvolvingCartV1 {
-        EvolvingCartV1::default()
-    }
-    fn apply_change(state: &mut EvolvingCartV1, change: &EvolvingCartChangeV1) {
-        match change {
-            EvolvingCartChangeV1::Add(d) => state.total = state.total.saturating_add(*d),
-        }
-    }
-    fn run(
-        &mut self,
-        input: String,
-        mut state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         let delta: i64 = input.parse().unwrap_or(0);
-        let total = state.total.saturating_add(delta);
-        state.apply(EvolvingCartChangeV1::Add(delta));
-        ctx.emit::<Vec<u8>>(format!("{total}:").into_bytes())
+        let total = ctx.state().total.saturating_add(delta);
+        ctx.change(EvolvingCartChangeV1::Add(delta));
+        ctx.emit(format!("{total}:").into_bytes())
     }
 }
 
 #[derive(Default)]
 struct SchemaEvolutionV2Tasklet;
+#[flezha_runner::tasklet(name = "evolving_cart")]
 impl Tasklet for SchemaEvolutionV2Tasklet {
     type Input = String;
     type Output = Vec<u8>;
     type State = EvolvingCartV2;
     type Change = EvolvingCartChangeV2;
-    type Clock = WallClock;
-    type Config = ();
     const SCHEMA_VERSION: u32 = 2;
     const MIN_READABLE_SCHEMA_VERSION: u32 = 1;
-    fn name() -> &'static str {
-        "evolving_cart"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> EvolvingCartV2 {
-        EvolvingCartV2::default()
-    }
     fn migrate_state(from_version: u32, bytes: &[u8]) -> Result<EvolvingCartV2, String> {
         match from_version {
             1 => {
@@ -391,31 +335,19 @@ impl Tasklet for SchemaEvolutionV2Tasklet {
             v => Err(format!("no migration from {v}")),
         }
     }
-    fn apply_change(state: &mut EvolvingCartV2, change: &EvolvingCartChangeV2) {
-        match change {
-            EvolvingCartChangeV2::Add { delta, .. } => {
-                state.total = state.total.saturating_add(*delta)
-            }
-        }
-    }
-    fn run(
-        &mut self,
-        input: String,
-        mut state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         let delta: i64 = input.parse().unwrap_or(0);
-        let total = state.total.saturating_add(delta);
-        let currency = if state.currency.is_empty() {
+        let total = ctx.state().total.saturating_add(delta);
+        let currency = if ctx.state().currency.is_empty() {
             "EUR".to_string()
         } else {
-            state.currency.clone()
+            ctx.state().currency.clone()
         };
-        state.apply(EvolvingCartChangeV2::Add {
+        ctx.change(EvolvingCartChangeV2::Add {
             delta,
             note: "live".to_string(),
         });
-        ctx.emit::<Vec<u8>>(format!("{total}:{currency}").into_bytes())
+        ctx.emit(format!("{total}:{currency}").into_bytes())
     }
 }
 

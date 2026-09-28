@@ -22,30 +22,30 @@ impl<S: Tasklet> Bodies for TypedBodies<S> {
     type Change = S::Change;
 
     fn coalesce(changes: Vec<S::Change>) -> Vec<S::Change> {
-        coalesce(changes)
+        coalesce::<S::State, _>(changes)
     }
 
     fn into_bodies(changes: Vec<S::Change>) -> Vec<Vec<u8>> {
-        changes
-            .iter()
-            .map(|c| {
-                postcard::to_allocvec(c)
-                    .expect("postcard serialization of Change failed; Change must be Serialize")
-            })
-            .collect()
+        changes.iter().map(encode_change).collect()
     }
+}
+
+/// One change's record body: the bytes the restore fold decodes back.
+pub(crate) fn encode_change<C: serde::Serialize>(change: &C) -> Vec<u8> {
+    postcard::to_allocvec(change)
+        .expect("postcard serialization of Change failed; Change must be Serialize")
 }
 
 /// The per-Cell flush buffer on a Tasklet's own change type. The
 /// dispatcher downcasts the type-erased `dyn FlushableBuffer` back to this to
-/// reach `&mut Vec<S::Change>` for `StateHandle::new`.
+/// reach `&mut Vec<S::Change>` for `Ctx::new`.
 pub type TypedBuffer<S> = EffectBuffer<TypedBodies<S>>;
 
 /// Drain-time coalesce: keep the latest record per `coalesce_key`, preserve
 /// order of kept records, and retain `coalesce_key() == None` records
 /// verbatim. Nothing is allocated until the first keyed record appears, so a
 /// buffer with no keys at all comes back as the same allocation.
-pub fn coalesce<C: Change>(buf: Vec<C>) -> Vec<C> {
+pub fn coalesce<S, C: Change<S>>(buf: Vec<C>) -> Vec<C> {
     let mut latest: HashMap<CoalesceKey, usize> = HashMap::new();
     // Empty until the first key: also the flag that says nothing is collapsed.
     let mut keep_mask: Vec<bool> = Vec::new();
@@ -74,14 +74,13 @@ pub fn coalesce<C: Change>(buf: Vec<C>) -> Vec<C> {
 }
 
 /// Build one wire frame matching `Flezha.State.Wire.decode_frame/1`.
-pub fn build_cell_state_change_frame<C: Change>(
+pub fn build_cell_state_change_frame<C: serde::Serialize>(
     cell_identity: &[u8],
     seq: u64,
     header: &HeaderTemplate,
     change: &C,
 ) -> Vec<u8> {
-    let change_bytes = postcard::to_allocvec(change)
-        .expect("postcard serialization of Change failed; Change must be Serialize");
+    let change_bytes = encode_change(change);
     let header_bytes = header.stamp(&change_bytes);
     build_cell_frame(cell_identity, seq, &header_bytes, &change_bytes)
 }
@@ -124,7 +123,9 @@ mod tests {
         ts: u64,
         value: i64,
     }
-    impl Change for TestChange {
+    impl Change<()> for TestChange {
+        fn apply_to(&self, _: &mut ()) {}
+
         fn coalesce_key(&self) -> Option<CoalesceKey> {
             self.key.map(|k| CoalesceKey::from_hash(&k))
         }
@@ -139,7 +140,7 @@ mod tests {
                 value: i as i64,
             })
             .collect();
-        let out = coalesce(buf);
+        let out = coalesce::<(), _>(buf);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].ts, 49);
         assert_eq!(out[0].value, 49);
@@ -154,7 +155,7 @@ mod tests {
                 value: i as i64,
             })
             .collect();
-        let out = coalesce(buf);
+        let out = coalesce::<(), _>(buf);
         assert_eq!(out.len(), 50);
         for (i, c) in out.iter().enumerate() {
             assert_eq!(c.ts, i as u64);
@@ -174,7 +175,7 @@ mod tests {
             })
             .collect();
         let allocation = buf.as_ptr();
-        let out = coalesce(buf);
+        let out = coalesce::<(), _>(buf);
         assert_eq!(out.as_ptr(), allocation, "a keyless coalesce is a move");
         assert_eq!(out.len(), 50);
     }
@@ -208,7 +209,7 @@ mod tests {
                 value: 5,
             }, // E: kept
         ];
-        let out = coalesce(buf);
+        let out = coalesce::<(), _>(buf);
         let ts: Vec<u64> = out.iter().map(|c| c.ts).collect();
         assert_eq!(ts, vec![1, 3, 4, 5]);
     }
@@ -255,22 +256,15 @@ mod tests {
 
     #[derive(Default)]
     struct EffTask;
+    #[flezha_runner::tasklet(name = "effect_test_op")]
     impl crate::tasklet::Tasklet for EffTask {
         type Input = String;
         type Output = String;
-        type State = ();
         type Change = TestChange;
-        type Clock = crate::tasklet::WallClock;
-        type Config = ();
-        fn name() -> &'static str {
-            "effect_test_op"
-        }
-        fn init_state(_: Option<&str>, _: Option<crate::cell::restore::RestoreInitPayload<'_>>) {}
         fn run(
             &mut self,
             _: String,
-            _: crate::tasklet::state_handle::StateHandle<'_, Self>,
-            _: &mut crate::tasklet::TaskletCtx<'_>,
+            _: &mut crate::tasklet::Ctx<'_, Self>,
         ) -> Result<(), crate::tasklet::TaskletError> {
             Ok(())
         }

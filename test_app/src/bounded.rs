@@ -37,7 +37,11 @@ pub(crate) struct SeenState {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Insert(pub(crate) String);
-impl Change for Insert {}
+impl Change<SeenState> for Insert {
+    fn apply_to(&self, state: &mut SeenState) {
+        state.items.insert(self.0.clone());
+    }
+}
 
 // A durable `String -> String` step: commits one idempotent Change to the WAL
 // (keyed by the task name, so a resume re-run is a no-op) and passes the input on.
@@ -46,44 +50,31 @@ impl Change for Insert {}
 // the `commit_a` form omits it so a clean crash-resume re-runs forward instead
 // of undoing.
 macro_rules! durable_step {
-    ($ty:ident, $name:literal $(, compensate: |$ctx:ident| $comp:expr)?) => {
+    ($ty:ident, $name:tt $(, compensate: |$ctx:ident| $comp:expr)?) => {
         #[derive(Default)]
         struct $ty;
+        #[flezha_runner::tasklet(name = $name)]
         impl Tasklet for $ty {
             type Input = String;
             type Output = String;
             type State = SeenState;
             type Change = Insert;
-            type Clock = WallClock;
-            type Config = ();
-            fn name() -> &'static str {
-                $name
-            }
-            fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> SeenState {
-                SeenState::default()
-            }
-            fn apply_change(state: &mut SeenState, change: &Insert) {
-                state.items.insert(change.0.clone());
-            }
             fn run(
                 &mut self,
                 input: String,
-                mut state: StateHandle<'_, Self>,
-                ctx: &mut TaskletCtx<'_>,
+                ctx: &mut Ctx<'_, Self>,
             ) -> Result<(), TaskletError> {
-                state.apply(Insert($name.to_string()));
-                ctx.emit::<String>(input)
+                ctx.change(Insert($name.to_string()));
+                ctx.emit(input)
             }
             $(
                 // A crash-resumed compensation reconstructs completed stages with
                 // EMPTY outputs (a tasklet's collected output was never
                 // durable), so a hook that records an undo does so unconditionally.
-                const COMPENSATE_OVERRIDDEN: bool = true;
                 fn compensate(
                     &mut self,
                     _out: Vec<std::sync::Arc<String>>,
-                    _state: StateHandle<'_, Self>,
-                    $ctx: &mut TaskletCtx<'_>,
+                    $ctx: &mut Ctx<'_, Self>,
                 ) -> Result<(), TaskletError> {
                     $comp
                 }
@@ -97,25 +88,17 @@ pub(crate) use durable_step;
 // A stateless `String -> String` step whose whole behaviour is `$run`, over
 // the input and ctx it names.
 macro_rules! stateless_step {
-    ($ty:ident, $name:literal, |$input:ident, $ctx:ident| $run:expr) => {
+    ($ty:ident, $name:tt, |$input:ident, $ctx:ident| $run:expr) => {
         #[derive(Default)]
         struct $ty;
+        #[flezha_runner::tasklet(name = $name)]
         impl Tasklet for $ty {
             type Input = String;
             type Output = String;
-            type State = ();
-            type Change = NoChange;
-            type Clock = WallClock;
-            type Config = ();
-            fn name() -> &'static str {
-                $name
-            }
-            fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
             fn run(
                 &mut self,
                 $input: String,
-                _: StateHandle<'_, Self>,
-                $ctx: &mut TaskletCtx<'_>,
+                $ctx: &mut Ctx<'_, Self>,
             ) -> Result<(), TaskletError> {
                 $run
             }
@@ -130,7 +113,7 @@ pub(crate) use stateless_step;
 // One tasklet, run once (the `bounded-kind` e2e): emits its first message
 // back, so the pass ends and the controller deregisters the instance.
 stateless_step!(EchoStep, "echo", |input, ctx| ctx
-    .emit::<String>(format!("echo:{input}")));
+    .emit(format!("echo:{input}")));
 
 pub(crate) struct EchoBounded;
 impl BoundedOperator for EchoBounded {
@@ -158,48 +141,32 @@ fn hold_at(point: &str) {
 
 #[derive(Default)]
 struct Tick;
+#[flezha_runner::tasklet(name = "tick")]
 impl Tasklet for Tick {
     type Input = String;
     type Output = String;
     type State = SeenState;
     type Change = Insert;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "tick"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> SeenState {
-        SeenState::default()
-    }
-    fn apply_change(state: &mut SeenState, change: &Insert) {
-        state.items.insert(change.0.clone());
-    }
-    fn run(
-        &mut self,
-        input: String,
-        mut state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         let millis = |text: &str| Duration::from_millis(text.parse().unwrap_or(0));
         if let Some(delay) = input.strip_prefix("after:") {
             let at = ctx.timer_after(millis(delay))?;
-            state.apply(Insert(format!("armed:{at}")));
-            return ctx.emit::<String>(format!("armed:{at}"));
+            ctx.change(Insert(format!("armed:{at}")));
+            return ctx.emit(format!("armed:{at}"));
         }
         if let Some(pause) = input.strip_prefix("slow:") {
             thread::sleep(millis(pause));
         }
-        ctx.emit::<String>(input)
+        ctx.emit(input)
     }
     fn on_timer(
         &mut self,
         fired_at: u64,
         _kind: flezha_runner::state::TimerKind,
-        _state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
+        ctx: &mut Ctx<'_, Self>,
     ) -> Result<(), TaskletError> {
         hold_at("timer");
-        ctx.emit::<String>(format!("fired:{fired_at}"))
+        ctx.emit(format!("fired:{fired_at}"))
     }
 }
 
@@ -207,7 +174,7 @@ stateless_step!(Relay, "relay", |input, ctx| {
     if input.starts_with("fired:") {
         hold_at("relay");
     }
-    ctx.emit::<String>(format!("relay:{input}"))
+    ctx.emit(format!("relay:{input}"))
 });
 
 pub(crate) struct TimerLoopBounded;
@@ -235,40 +202,27 @@ impl BoundedOperator for TimerLoopBounded {
 // emits `seen:<t>`, and the firing emits `fired:<at>`.
 #[derive(Default)]
 struct EventTick;
+#[flezha_runner::tasklet(name = "event_tick")]
 impl Tasklet for EventTick {
     type Input = String;
     type Output = String;
     type State = SeenState;
     type Change = Insert;
-    type Clock = EventTimeFrom<TradeEventTime>;
-    type Config = ();
-    fn name() -> &'static str {
-        "event_tick"
+    fn event_time(input: &String) -> u64 {
+        trade_event_time(input)
     }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> SeenState {
-        SeenState::default()
-    }
-    fn apply_change(state: &mut SeenState, change: &Insert) {
-        state.items.insert(change.0.clone());
-    }
-    fn run(
-        &mut self,
-        _input: String,
-        mut state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, _input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         let at = ctx.timer_at_event_time(ctx.now() + 100)?;
-        state.apply(Insert(format!("armed:{at}")));
-        ctx.emit::<String>(format!("seen:{}", ctx.now()))
+        ctx.change(Insert(format!("armed:{at}")));
+        ctx.emit(format!("seen:{}", ctx.now()))
     }
     fn on_timer(
         &mut self,
         fired_at: u64,
         _kind: flezha_runner::state::TimerKind,
-        _state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
+        ctx: &mut Ctx<'_, Self>,
     ) -> Result<(), TaskletError> {
-        ctx.emit::<String>(format!("fired:{fired_at}"))
+        ctx.emit(format!("fired:{fired_at}"))
     }
 }
 
@@ -295,32 +249,16 @@ impl BoundedOperator for EventTimerBounded {
 // emits `<cell key>:<message>`, so one message yields exactly two outputs.
 #[derive(Default)]
 struct StaticCellStep;
+#[flezha_runner::tasklet(name = "static_cell_step", keys = ["a", "b", "c"])]
 impl Tasklet for StaticCellStep {
     type Input = String;
     type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "static_cell_step"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn cell_keys() -> Vec<&'static str> {
-        vec!["a", "b", "c"]
-    }
-    const CELLS_FOR_OVERRIDDEN: bool = true;
     fn cells_for(_: &String) -> Vec<&'static str> {
         vec!["a", "b"]
     }
-    fn run(
-        &mut self,
-        input: String,
-        _: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         let key = ctx.cell_key().unwrap_or_default().to_string();
-        ctx.emit::<String>(format!("{key}:{input}"))
+        ctx.emit(format!("{key}:{input}"))
     }
 }
 
@@ -413,30 +351,15 @@ impl BoundedOperator for OptOutCommitBlockBounded {
 // release env.
 #[derive(Default)]
 struct TierCommitA;
+#[flezha_runner::tasklet(name = "tier_commit_a")]
 impl Tasklet for TierCommitA {
     type Input = String;
     type Output = String;
     type State = SeenState;
     type Change = Insert;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "tier_commit_a"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> SeenState {
-        SeenState::default()
-    }
-    fn apply_change(state: &mut SeenState, change: &Insert) {
-        state.items.insert(change.0.clone());
-    }
-    fn run(
-        &mut self,
-        input: String,
-        mut state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
-        state.apply(Insert("tier_commit_a".to_string()));
-        ctx.emit::<String>(format!("committed:{input}"))
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        ctx.change(Insert("tier_commit_a".to_string()));
+        ctx.emit(format!("committed:{input}"))
     }
 }
 
@@ -488,7 +411,7 @@ impl BoundedOperator for SagaBlockBounded {
 // release env, or fails, so the keyed stage is rolled back once per key.
 stateless_step!(KeySplit, "key_split", |input, ctx| {
     for key in input.split(',') {
-        ctx.emit::<String>(key.to_string())?;
+        ctx.emit(key.to_string())?;
     }
     Ok(())
 });
@@ -533,31 +456,16 @@ impl BoundedOperator for KeyedSagaBounded {
 // unfinished.
 #[derive(Default)]
 struct OutboxA;
+#[flezha_runner::tasklet(name = "commit_a")]
 impl Tasklet for OutboxA {
     type Input = String;
     type Output = String;
     type State = SeenState;
     type Change = Insert;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "commit_a"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> SeenState {
-        SeenState::default()
-    }
-    fn apply_change(state: &mut SeenState, change: &Insert) {
-        state.items.insert(change.0.clone());
-    }
-    fn run(
-        &mut self,
-        input: String,
-        mut state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
-        state.apply(Insert("commit_a".to_string()));
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        ctx.change(Insert("commit_a".to_string()));
         let meta = std::collections::HashMap::from([("trace".to_string(), "t1".to_string())]);
-        ctx.emit_keyed_with_meta::<String>("k", input, meta)
+        ctx.emit_keyed_with_meta("k", input, meta)
     }
 }
 
@@ -586,7 +494,7 @@ impl BoundedOperator for OutboxBlockBounded {
 // UA's Cell.
 durable_step!(UndoOutboxA, "undo_outbox_a", compensate: |ctx| {
     block_until_released();
-    ctx.emit::<String>("undone".to_string())
+    ctx.emit("undone".to_string())
 });
 
 stateless_step!(UndoC, "undo_outbox_c", |_input, _ctx| Err(
@@ -614,7 +522,7 @@ stateless_step!(FailedStage, "failed_stage", |input, ctx| {
     if input == "b" {
         return Err(TaskletError::Custom("failed_stage fails on b".into()));
     }
-    ctx.emit::<String>(input)
+    ctx.emit(input)
 });
 
 pub(crate) struct FailedStageBounded;
@@ -652,74 +560,45 @@ impl BoundedOperator for FailedStageBounded {
 const BRANCH_FAIL_ENV: &str = "FLEZHA_BRANCH_FAIL";
 
 durable_step!(BranchA, "branch_a", compensate: |ctx| ctx
-    .emit::<String>("undo-a".to_string()));
+    .emit("undo-a".to_string()));
 durable_step!(BranchB, "branch_b", compensate: |ctx| ctx
-    .emit::<String>("undo-b".to_string()));
+    .emit("undo-b".to_string()));
 
 // The sibling leaf: emits straight to the sink, and its undo does too.
 #[derive(Default)]
 struct BranchC;
+#[flezha_runner::tasklet(name = "branch_c")]
 impl Tasklet for BranchC {
     type Input = String;
     type Output = String;
     type State = SeenState;
     type Change = Insert;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "branch_c"
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        ctx.change(Insert("branch_c".to_string()));
+        ctx.emit(format!("c:{input}"))
     }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> SeenState {
-        SeenState::default()
-    }
-    fn apply_change(state: &mut SeenState, change: &Insert) {
-        state.items.insert(change.0.clone());
-    }
-    fn run(
-        &mut self,
-        input: String,
-        mut state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
-        state.apply(Insert("branch_c".to_string()));
-        ctx.emit::<String>(format!("c:{input}"))
-    }
-    const COMPENSATE_OVERRIDDEN: bool = true;
     fn compensate(
         &mut self,
         _out: Vec<std::sync::Arc<String>>,
-        _state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
+        ctx: &mut Ctx<'_, Self>,
     ) -> Result<(), TaskletError> {
-        ctx.emit::<String>("undo-c".to_string())
+        ctx.emit("undo-c".to_string())
     }
 }
 
 // The deep leaf under BranchB: blocks (crash-resume), or fails (compensation).
 #[derive(Default)]
 struct BranchD;
+#[flezha_runner::tasklet(name = "branch_d")]
 impl Tasklet for BranchD {
     type Input = String;
     type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "branch_d"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: String,
-        _state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         if env::var(BRANCH_FAIL_ENV).is_ok() {
             return Err(TaskletError::Custom("branch_d failed".into()));
         }
         block_until_released();
-        ctx.emit::<String>(format!("d:{input}"))
+        ctx.emit(format!("d:{input}"))
     }
 }
 
@@ -765,84 +644,42 @@ durable_step!(DiamB1, "diam_b1");
 // B2 is always the uncommitted producer while the sibling arm committed.
 #[derive(Default)]
 struct DiamB2;
+#[flezha_runner::tasklet(name = "diam_b2")]
 impl Tasklet for DiamB2 {
     type Input = String;
     type Output = String;
     type State = SeenState;
     type Change = Insert;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "diam_b2"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> SeenState {
-        SeenState::default()
-    }
-    fn apply_change(state: &mut SeenState, change: &Insert) {
-        state.items.insert(change.0.clone());
-    }
-    fn run(
-        &mut self,
-        input: String,
-        mut state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         block_until_released();
-        state.apply(Insert("diam_b".to_string()));
-        ctx.emit::<String>(format!("b:{input}"))
+        ctx.change(Insert("diam_b".to_string()));
+        ctx.emit(format!("b:{input}"))
     }
 }
 
 #[derive(Default)]
 struct DiamC;
+#[flezha_runner::tasklet(name = "diam_c")]
 impl Tasklet for DiamC {
     type Input = String;
     type Output = String;
     type State = SeenState;
     type Change = Insert;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "diam_c"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) -> SeenState {
-        SeenState::default()
-    }
-    fn apply_change(state: &mut SeenState, change: &Insert) {
-        state.items.insert(change.0.clone());
-    }
-    fn run(
-        &mut self,
-        input: String,
-        mut state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
-        state.apply(Insert("diam_c".to_string()));
-        ctx.emit::<String>(format!("c:{input}"))
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        ctx.change(Insert("diam_c".to_string()));
+        ctx.emit(format!("c:{input}"))
     }
 }
 
 // The join: one `j:`-tagged record per accumulated contribution.
 #[derive(Default)]
 struct DiamJoin;
+#[flezha_runner::tasklet(name = "diam_join")]
 impl Tasklet for DiamJoin {
     type Input = String;
     type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "diam_join"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: String,
-        _state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
-        ctx.emit::<String>(format!("j:{input}"))
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        ctx.emit(format!("j:{input}"))
     }
 }
 
@@ -892,32 +729,20 @@ fn armed_failures() -> usize {
 }
 
 durable_step!(RetryA, "retry_a", compensate: |ctx| ctx
-    .emit::<String>("undone".to_string()));
+    .emit("undone".to_string()));
 
 #[derive(Default)]
 struct RetryFlaky;
+#[flezha_runner::tasklet(name = "retry_flaky")]
 impl Tasklet for RetryFlaky {
     type Input = String;
     type Output = String;
-    type State = ();
-    type Change = NoChange;
-    type Clock = WallClock;
-    type Config = ();
-    fn name() -> &'static str {
-        "retry_flaky"
-    }
-    fn init_state(_: Option<&str>, _: Option<RestoreInitPayload<'_>>) {}
-    fn run(
-        &mut self,
-        input: String,
-        _state: StateHandle<'_, Self>,
-        ctx: &mut TaskletCtx<'_>,
-    ) -> Result<(), TaskletError> {
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         let attempt = RETRY_ATTEMPTS.fetch_add(1, Ordering::SeqCst) + 1;
         if attempt <= armed_failures() {
             return Err(TaskletError::Custom(format!("flaky attempt {attempt}")));
         }
-        ctx.emit::<String>(format!("attempt:{attempt}:{input}"))
+        ctx.emit(format!("attempt:{attempt}:{input}"))
     }
 }
 
