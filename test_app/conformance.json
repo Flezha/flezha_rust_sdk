@@ -125,6 +125,8 @@
       "stateless_loop_bounded",
       "keyed_loop_bounded",
       "chat_rewind_bounded",
+      "failing_turn_loop_bounded",
+      "failing_turn_all_or_nothing_bounded",
       "reply_block_loop_bounded",
       "retry_bounded",
       "branch_bounded",

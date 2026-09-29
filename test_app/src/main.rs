@@ -11,8 +11,8 @@ pub(crate) use std::{env, io, thread};
 pub(crate) use flezha_runner::state::{postcard, Change, ClockKind, CoalesceKey, NoChange};
 pub(crate) use flezha_runner::tasklet::{Ctx, Tasklet, TaskletError};
 pub(crate) use flezha_runner::{
-    BoundedOperator, ChannelBuilder, Flezha, FlezhaRunner, LoopMode, OverflowPolicy, Stream,
-    UnboundedOperator,
+    BoundedOperator, ChannelBuilder, Flezha, FlezhaRunner, LoopMode, OverflowPolicy, RollbackMode,
+    Stream, UnboundedOperator,
 };
 pub(crate) use serde::{Deserialize, Serialize};
 
@@ -128,6 +128,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register_factory(StatelessLoopBounded)?
         .register_factory(KeyedLoopBounded)?
         .register_factory(ChatRewindBounded)?
+        .register_factory(FailingTurnLoopBounded)?
+        .register_factory(FailingTurnAllOrNothingBounded)?
         .register_factory(ReplyBlockLoopBounded)?
         .register_factory(TypedOnceBounded)?
         .register_factory(RetryBounded)?

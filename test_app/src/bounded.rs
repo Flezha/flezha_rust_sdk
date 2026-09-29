@@ -16,7 +16,7 @@ use crate::*;
 
 const E2E_RELEASE_ENV: &str = "FLEZHA_BOUNDED_E2E_RELEASE";
 
-fn e2e_released() -> bool {
+pub(crate) fn e2e_released() -> bool {
     env::var(E2E_RELEASE_ENV).is_ok()
 }
 

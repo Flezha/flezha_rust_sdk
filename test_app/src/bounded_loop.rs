@@ -5,7 +5,9 @@
 use flezha_runner::tasklet::SpawnOptions;
 use flezha_runner::Ctx;
 
-use crate::bounded::{block_until_released, durable_step, stateless_step, Insert, SeenState};
+use crate::bounded::{
+    block_until_released, durable_step, e2e_released, stateless_step, Insert, SeenState,
+};
 use crate::*;
 
 // `chat_loop_bounded`: the durable-loop + suspension shape
@@ -431,6 +433,141 @@ impl BoundedOperator for ChatLoopBounded {
             .sink_named("out");
     }
 }
+
+// -- FailingTurnLoopBounded -------------------------------------------------------
+//
+// `failing_turn_loop_bounded`: a session whose turn can fail after `note`
+// committed. `note` records each message in its state and its undo moves the
+// latest one to `undone`; `answer` replies `re:<message>` on the sink `answer`.
+// `answer` fails every attempt on `boom`, on `boom-once` while the release env
+// is unset (so it fails on the first runner of a crash drill only), and on
+// `boom-until-healed` until a `heal` turn set its state.
+// `failing_turn_all_or_nothing_bounded` is the same under all-or-nothing.
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+struct NoteLog {
+    notes: Vec<String>,
+    undone: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+enum NoteChange {
+    Noted(String),
+    Undone,
+}
+impl Change<NoteLog> for NoteChange {
+    fn apply_to(&self, state: &mut NoteLog) {
+        match self {
+            NoteChange::Noted(message) => state.notes.push(message.clone()),
+            NoteChange::Undone => {
+                if let Some(message) = state.notes.pop() {
+                    state.undone.push(message);
+                }
+            }
+        }
+    }
+}
+
+#[derive(Default)]
+struct Note;
+#[flezha_runner::tasklet(name = "note")]
+impl Tasklet for Note {
+    type Input = String;
+    type Output = String;
+    type State = NoteLog;
+    type Change = NoteChange;
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        ctx.change(NoteChange::Noted(input.clone()));
+        ctx.emit(input)
+    }
+    fn compensate(
+        &mut self,
+        _completed_output: Vec<std::sync::Arc<String>>,
+        ctx: &mut Ctx<'_, Self>,
+    ) -> Result<(), TaskletError> {
+        ctx.change(NoteChange::Undone);
+        Ok(())
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+struct Healed {
+    healed: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct Heal;
+impl Change<Healed> for Heal {
+    fn apply_to(&self, state: &mut Healed) {
+        state.healed = true;
+    }
+}
+
+#[derive(Default)]
+struct Answer;
+#[flezha_runner::tasklet(name = "answer")]
+impl Tasklet for Answer {
+    type Input = String;
+    type Output = String;
+    type State = Healed;
+    type Change = Heal;
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        let fails = match input.as_str() {
+            "boom" => true,
+            "boom-once" => !e2e_released(),
+            "boom-until-healed" => !ctx.state().healed,
+            _ => false,
+        };
+        if fails {
+            return Err(TaskletError::Custom(format!("answer refused {input}")));
+        }
+        if input == "heal" {
+            ctx.change(Heal);
+        }
+        ctx.emit(format!("re:{input}"))
+    }
+}
+
+macro_rules! failing_turn_loop {
+    ($ty:ident, $factory:literal, $rollback:expr) => {
+        pub(crate) struct $ty;
+        impl BoundedOperator for $ty {
+            fn factory_id() -> &'static str {
+                $factory
+            }
+            fn loop_mode() -> LoopMode {
+                LoopMode::PerInput
+            }
+            fn rollback_mode() -> RollbackMode {
+                $rollback
+            }
+            fn self_terminating() -> bool {
+                false
+            }
+            fn max_duration() -> Option<Duration> {
+                Some(Duration::from_secs(600))
+            }
+            fn channels(c: &ChannelBuilder) {
+                c.input::<String>("in")
+                    .into::<Note>()
+                    .named("noted")
+                    .into::<Answer>()
+                    .sink_named("answer");
+            }
+        }
+    };
+}
+
+failing_turn_loop!(
+    FailingTurnLoopBounded,
+    "failing_turn_loop_bounded",
+    RollbackMode::KeepProgress
+);
+failing_turn_loop!(
+    FailingTurnAllOrNothingBounded,
+    "failing_turn_all_or_nothing_bounded",
+    RollbackMode::AllOrNothing
+);
 
 // -- Bench bounded fixtures (`mix bench.bounded`) -------------------------------
 //

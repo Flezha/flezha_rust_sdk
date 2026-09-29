@@ -257,6 +257,7 @@ pub(crate) fn start_resumable(
         expected: expected as usize,
         owed_inbox,
         journal,
+        dead_letter_turns: false,
     };
     bind(
         node,

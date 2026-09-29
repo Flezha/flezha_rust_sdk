@@ -63,7 +63,9 @@ pub trait BoundedOperator: Send + Sync + 'static {
     /// [`RollbackMode::KeepProgress`] keeps each finished loop iteration and
     /// undoes only the in-flight one. The mode is irrelevant for a single-pass
     /// chain (where both behave all-or-nothing) and for an operator with no
-    /// compensation hooks.
+    /// compensation hooks. A [`LoopMode::PerInput`] loop declaring
+    /// `KeepProgress` does not terminate on a failed turn: the turn's message
+    /// is dead-lettered, its tasklets are undone and the next message runs.
     fn rollback_mode() -> RollbackMode {
         RollbackMode::AllOrNothing
     }
