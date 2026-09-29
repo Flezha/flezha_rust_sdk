@@ -172,7 +172,7 @@ fn admin_answer(admin: &flezha_runner::Admin, verb: &str, args: &[serde_json::Va
             Err(flezha_runner::admin::AdminError::Unavailable) => {
                 thread::sleep(Duration::from_millis(50));
             }
-            Err(e) => return format!("err {e}"),
+            Err(e) => return format!("err {}: {e}", flezha_runner::ErrorModel::code(&e)),
         }
     }
     "err no control plane within 30s".to_string()

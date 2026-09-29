@@ -8,6 +8,7 @@ use crate::bounded::*;
 use crate::channel::{ChannelBuilder, ChannelKind};
 use crate::operator::registry::OperatorRegistry;
 use crate::tasklet::{Ctx, Tasklet, TaskletError};
+use crate::ErrorModel;
 
 #[test]
 fn bounded_error_conversions() {
@@ -72,7 +73,8 @@ fn a_bounded_without_tasklets_is_refused() {
         matches!(err, spec::BuildBoundedError::NoTasklets { .. }),
         "expected NoTasklets, got {err:?}"
     );
-    assert!(err.to_string().contains("test-no-tasklets"), "{err}");
+    assert_eq!(err.code(), "topology.no_tasklets");
+    assert_eq!(err.to_error().details["factory_id"], "test-no-tasklets");
 }
 
 #[test]
@@ -98,8 +100,8 @@ fn external_stop_only_authoring_is_rejected() {
         matches!(err, spec::BuildBoundedError::ExternalStopOnly { .. }),
         "expected ExternalStopOnly, got {err:?}"
     );
-    // Naming the missing terminal condition is part of the contract.
-    assert!(err.to_string().contains("terminal condition"));
+    assert_eq!(err.code(), "topology.external_stop_only");
+    assert!(err.to_string().contains("max_duration"), "{err}");
 }
 
 #[test]
@@ -197,7 +199,7 @@ fn the_retry_policy_is_the_edges() {
         }
     }
     let refused = spec::build_spec::<NoAttempt>().expect_err("an edge needs one attempt");
-    assert!(refused.to_string().contains("RetryMaxZero"), "{refused}");
+    assert_eq!(refused.code(), "topology.retry_max_zero", "{refused}");
 }
 
 /// A sleeping instance is evicted and restored from its durable state, so a
@@ -239,14 +241,16 @@ fn sleeping_without_persistence_is_refused_by_name_for_either_kind() {
     }
 
     let bounded = spec::build_spec::<SleepyBounded>().expect_err("refused");
-    assert!(
-        bounded.to_string().contains("SleepWithoutPersistence"),
+    assert_eq!(
+        bounded.code(),
+        "topology.sleep_without_persistence",
         "{bounded}"
     );
     let stream =
         crate::operator::builder::build_topology_for::<SleepyUnbounded>().expect_err("refused");
-    assert!(
-        stream.to_string().contains("SleepWithoutPersistence"),
+    assert_eq!(
+        crate::ErrorModel::code(&stream),
+        "topology.sleep_without_persistence",
         "{stream}"
     );
     let opted_out = spec::build_spec::<OptedOut>().expect("an opted-out bounded registers");
@@ -302,11 +306,10 @@ fn a_stream_setting_on_a_bounded_is_refused_by_name() {
         correction,
         spec::BuildBoundedError::CorrectionWindowOnBounded { .. }
     ));
-    assert!(
-        correction
-            .to_string()
-            .starts_with("CorrectionWindowOnBounded"),
-        "the author reads the name: {correction}"
+    assert_eq!(
+        correction.code(),
+        "topology.correction_window_on_bounded",
+        "{correction}"
     );
 }
 
@@ -432,15 +435,12 @@ fn dag_topology_is_validated() {
                 .into::<Stage1>();
         }
     }
-    match spec::build_spec::<Cyclic>().expect_err("a cycle is refused") {
-        spec::BuildBoundedError::Topology { detail, .. } => {
-            assert!(
-                detail.contains("Cycle") || detail.contains("cycle"),
-                "the refusal identifies the cycle: {detail}"
-            );
-        }
-        other => panic!("expected the shared cycle refusal, got {other:?}"),
-    }
+    let refused = spec::build_spec::<Cyclic>().expect_err("a cycle is refused");
+    assert!(
+        matches!(refused, spec::BuildBoundedError::Topology { .. }),
+        "expected the shared topology's refusal, got {refused:?}"
+    );
+    assert_eq!(refused.code(), "topology.cycle");
 
     // `multi-input-tasklets`: every message carries the channel it arrived
     // on, so an entry channel is a merge source on a bounded operator as on a
@@ -504,8 +504,10 @@ fn dag_topology_is_validated() {
     match spec::build_spec::<BranchingChained>()
         .expect_err("a chained loop needs one terminal tasklet")
     {
-        spec::BuildBoundedError::BranchingChainedLoop { leaves, .. } => {
-            assert_eq!(leaves, 2);
+        spec::BuildBoundedError::BranchingChainedLoop {
+            channel, leaves, ..
+        } => {
+            assert_eq!((channel.as_str(), leaves), ("in", 2));
         }
         other => panic!("expected BranchingChainedLoop, got {other:?}"),
     }

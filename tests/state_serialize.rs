@@ -3,9 +3,10 @@
 
 use flezha_runner::command::cell_state::{
     apply_init_values, serialize_operator_state, serialize_selected_state, StatePurpose,
-    StateSelector, CELL_EVICTED, CELL_KEY_WITHOUT_TASKLET, CELL_NOT_FOUND, TASKLET_NOT_FOUND,
+    StateSelector,
 };
 use flezha_runner::state::Change;
+use flezha_runner::ErrorModel;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -330,11 +331,10 @@ fn a_cell_key_without_a_tasklet_is_refused() {
         },
         StatePurpose::LiveRead,
     )
-    .expect_err("a Cell key is unique only within its Tasklet")
-    .to_string();
+    .expect_err("a Cell key is unique only within its Tasklet");
 
     assert!(
-        err.starts_with(CELL_KEY_WITHOUT_TASKLET),
+        err.code() == "state.cell_key_without_tasklet",
         "refusal leads with its canonical token, got: {err}"
     );
 }
@@ -350,10 +350,9 @@ fn an_unknown_tasklet_is_refused() {
         },
         StatePurpose::LiveRead,
     )
-    .expect_err("no such Tasklet")
-    .to_string();
+    .expect_err("no such Tasklet");
 
-    assert!(err.starts_with(TASKLET_NOT_FOUND), "got: {err}");
+    assert!(err.code() == "state.tasklet_not_found", "got: {err}");
 }
 
 #[test]
@@ -372,9 +371,8 @@ fn an_unknown_key_is_refused_distinctly_from_an_evicted_one() {
         },
         StatePurpose::LiveRead,
     )
-    .expect_err("no Cell by that key")
-    .to_string();
-    assert!(never.starts_with(CELL_NOT_FOUND), "got: {never}");
+    .expect_err("no Cell by that key");
+    assert!(never.code() == "state.cell_not_found", "got: {never}");
 
     // Evict destructively, then read the same key back. Backdating the
     // activity stamp makes the sweep decide on the TTL, not on the clock.
@@ -395,10 +393,9 @@ fn an_unknown_key_is_refused_distinctly_from_an_evicted_one() {
         },
         StatePurpose::LiveRead,
     )
-    .expect_err("an evicted Cell is refused, not resurrected")
-    .to_string();
+    .expect_err("an evicted Cell is refused, not resurrected");
     assert!(
-        evicted.starts_with(CELL_EVICTED),
+        evicted.code() == "state.cell_evicted",
         "eviction is a distinct diagnosis, got: {evicted}"
     );
 

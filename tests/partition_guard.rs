@@ -114,7 +114,7 @@ fn a_mis_routed_key_parks_naming_the_contract_and_creates_no_cell() {
     assert!(error.contains("BTC-USD"), "{error}");
     assert!(error.contains("key group 129"), "{error}");
     assert!(error.contains("partition 0 of 3"), "{error}");
-    assert!(error.contains("groups 0..84"), "{error}");
+    assert!(error.contains("groups 0 to 84"), "{error}");
     assert!(
         error.contains("key_by"),
         "the park must state the contract that was violated: {error}"

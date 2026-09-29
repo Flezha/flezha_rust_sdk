@@ -404,18 +404,34 @@ pub use operator::builder::TopologyBuildError;
 #       pub fn await_termination(&self) -> Result<(), FlezhaError>;
 #   }
 #
-#   pub enum FlezhaError {                 # thiserror; the ONE chain error
+#   pub enum FlezhaError {                 # the ONE chain error; Display is the catalogue message
 #       InvalidNamespace,
 #       AlreadyRunning { namespace: String },
 #       ConnectFailed(String),
-#       InvalidTopology(#[from] TopologyBuildError),
-#       InvalidBounded(#[from] BuildBoundedError),
+#       Refused(flz_transport::errors::FlezhaError),   # the controller's connect refusal
+#       InvalidTopology(TopologyBuildError),           # From<TopologyBuildError>
+#       InvalidBounded(BuildBoundedError),             # From<BuildBoundedError>
 #       DuplicateFactoryId { factory_id: String },
 #       NotDefined { factory_id: String },
 #       OperatorTypeInUse { factory_id: String, live_instances: usize },
 #       NotStarted,
 #       RunnerUnavailable(String),
+#       Local(flz_core::Error),                        # From<flz_core::Error>
 #   }
+#
+#   # The error model's fields, implemented for FlezhaError, TaskletError,
+#   # TopologyBuildError, TopologyIssue, BuildBoundedError, AdminError and
+#   # SpawnError. `code` is the catalogue code (`topology.duplicate_factory_id`).
+#   # Re-exported from `flz_transport::errors`, where the core's own error types
+#   # implement it.
+#   pub use errors::ErrorModel;   # pub trait ErrorModel {
+#       fn to_error(&self) -> errors::FlezhaError;
+#       fn code(&self) -> String;
+#       fn class(&self) -> errors::Class;
+#       fn details(&self) -> serde_json::Map<String, serde_json::Value>;
+#       fn hint(&self) -> Option<String>;
+#   }
+#   pub use flz_transport::errors;         # the catalogue, Class, the model's FlezhaError
 #
 #   # The shared base of both kinds: the SDK implements it for every
 #   # UnboundedOperator and every BoundedOperator, so one method takes either.

@@ -42,7 +42,7 @@ use flezha_runner::channel::{
 };
 use flezha_runner::operator::builder::{build_topology_for, DEFAULT_MAILBOX_CAPACITY};
 use flezha_runner::operator::topology::OperatorTopology;
-use flezha_runner::{Flezha, FlezhaRunner};
+use flezha_runner::{ErrorModel, Flezha, FlezhaRunner};
 use serde_json::{json, Value};
 
 use crate::bounded::TierCommitBlockBounded;
@@ -628,11 +628,11 @@ fn parse_shorthand(step: &str) -> Option<Shorthand> {
 fn citation(s: &Shorthand) -> (&'static str, &'static str) {
     match s {
         Shorthand::WithTopology => (
-            "ShortFormWithTopology",
+            "topology.short_form_with_topology",
             "sdk/rust/tests/ui/operator_with_hand_written_impl.rs",
         ),
         Shorthand::NoOutput => (
-            "SinkWithoutOutput",
+            "topology.sink_without_output",
             "sdk/rust/tests/ui/operator_sink_without_output.stderr",
         ),
         Shorthand::Plain => {
@@ -654,8 +654,8 @@ fn shorthand_dup_bounded(input: String) -> Vec<u8> {
     input.into_bytes()
 }
 
-/// Register the duplicate row's pair on `runner` and answer what the second
-/// call was told. `Ok(())` means the runner accepted a second operator under a
+/// Register the duplicate row's pair on `runner` and answer the code the
+/// second call was refused with. `Ok(())` means the runner accepted a second operator under a
 /// factory id it already held, which is the shape the contract refuses.
 fn drive_duplicate(runner: &FlezhaRunner) -> Result<(), String> {
     runner
@@ -663,33 +663,22 @@ fn drive_duplicate(runner: &FlezhaRunner) -> Result<(), String> {
         .map_err(|e| format!("the first registration must succeed, got: {e}"))?;
     match runner.register_factory(ShorthandDupBounded) {
         Ok(_) => Ok(()),
-        // The refusal's own name, read off the display the author reads.
-        Err(refusal) => Err(refusal.to_string()),
+        Err(refusal) => Err(refusal.code()),
     }
-}
-
-/// The leading refusal name of a message the contract requires to begin with one.
-fn refusal_name(message: &str) -> String {
-    message
-        .split(':')
-        .next()
-        .unwrap_or(message)
-        .trim()
-        .to_string()
 }
 
 // ---------------------------------------------------------------------------
 // Driving a row, and the report.
 
 /// What a row's topology answered: the derived declaration, or the refusal
-/// names the core handed back as data.
+/// codes the core handed back as data.
 fn topology_of(row: &Row) -> Result<Arc<OperatorTopology>, Vec<String>> {
     if row.steps == "cited above" {
         return cited(&row.topology);
     }
     load(row);
     if is_bounded(row) {
-        return build_spec::<RowBounded>().map_err(|e| vec![refusal_name(&e.to_string())]);
+        return build_spec::<RowBounded>().map_err(|e| vec![e.code().to_string()]);
     }
     let built = match stream_consts(row) {
         (true, false) => build_topology_for::<RowClass>(),
@@ -700,7 +689,7 @@ fn topology_of(row: &Row) -> Result<Arc<OperatorTopology>, Vec<String>> {
     built.map_err(|e| {
         e.errors
             .iter()
-            .map(|issue| issue.name().to_string())
+            .map(|issue| issue.code().to_string())
             .collect()
     })
 }
@@ -710,9 +699,9 @@ fn topology_of(row: &Row) -> Result<Arc<OperatorTopology>, Vec<String>> {
 fn cited(topology: &str) -> Result<Arc<OperatorTopology>, Vec<String>> {
     match topology {
         "hybrid_channel" => build_topology_for::<HybridChannelOperator>()
-            .map_err(|e| e.errors.iter().map(|i| i.name().to_string()).collect()),
+            .map_err(|e| e.errors.iter().map(|i| i.code().to_string()).collect()),
         "commit_block_chain" => {
-            build_spec::<TierCommitBlockBounded>().map_err(|e| vec![e.to_string()])
+            build_spec::<TierCommitBlockBounded>().map_err(|e| vec![e.code().to_string()])
         }
         other => panic!("the fixture cites a topology this app does not declare: {other}"),
     }
@@ -775,9 +764,7 @@ fn judge_shorthand(row: &Row, declarations: &[Shorthand]) -> Value {
         let runner = Flezha::create_runner("conformance_shorthand").expect("create a runner");
         return match drive_duplicate(&runner) {
             Ok(()) => json!({"topology": row.topology, "outcome": "accepted"}),
-            Err(message) => {
-                json!({"topology": row.topology, "outcome": "refused", "names": [refusal_name(&message)]})
-            }
+            Err(code) => json!({"topology": row.topology, "outcome": "refused", "names": [code]}),
         };
     }
     let (name, path) = citation(&declarations[0]);
@@ -863,7 +850,7 @@ pub(crate) fn register_only(
         }
     };
     if let Err(refusal) = defined {
-        eprintln!("{topology}: {refusal}");
+        eprintln!("{topology}: {}: {refusal}", ErrorModel::code(&refusal));
         std::process::exit(1);
     }
     Ok(())

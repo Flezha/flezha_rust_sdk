@@ -20,7 +20,7 @@ use common::prelude::*;
 use common::{stays_quiet, wait_until};
 use flezha_runner::transport::FlezhaStream;
 use flezha_runner::{
-    ChannelBuilder, Flezha, FlezhaError, Tasklet, TaskletError, UnboundedOperator,
+    ChannelBuilder, ErrorModel, Flezha, FlezhaError, Tasklet, TaskletError, UnboundedOperator,
 };
 use prost::Message;
 
@@ -212,6 +212,7 @@ fn refuses_before_any_start() {
         matches!(err, FlezhaError::InvalidTopology(_)),
         "expected InvalidTopology, got: {err}"
     );
+    assert_eq!(err.code(), "topology.keyed_channel_without_plugin_wire");
     assert!(
         err.to_string().contains("dangling"),
         "error should name the offending channel, got: {err}"

@@ -12,6 +12,7 @@ use super::super::fixtures::*;
 use crate::command::CommandAction;
 use crate::pb::{AddOperator, BoundedStop};
 use crate::runner::RunnerMessage;
+use crate::ErrorModel;
 
 pub(super) fn lifecycle(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
     // --- a once pass: args echoed, status "ok" ---
@@ -256,7 +257,11 @@ pub(super) fn add_operator_routing(node: &mut RunnerNode, rx: &Receiver<RunnerMe
     let mut errors_text = Vec::new();
     add_text.handle(node, "", &mut errors_text);
     assert_eq!(errors_text.len(), 1, "{errors_text:?}");
-    assert!(errors_text[0].contains("init_values"), "{errors_text:?}");
+    assert_eq!(
+        errors_text[0].code(),
+        "state.init_values_invalid_json",
+        "{errors_text:?}"
+    );
     assert!(
         instance(node, "bounded-text-init").is_none(),
         "a refused document starts nothing"
@@ -271,10 +276,12 @@ pub(super) fn add_operator_routing(node: &mut RunnerNode, rx: &Receiver<RunnerMe
     let mut errors_bad = Vec::new();
     add_bad.handle(node, "", &mut errors_bad);
     assert_eq!(errors_bad.len(), 1);
-    assert!(
-        errors_bad[0].contains("factory_id test-unregistered is not registered"),
+    assert_eq!(
+        errors_bad[0].code(),
+        "runtime.class_not_registered",
         "{errors_bad:?}"
     );
+    assert!(errors_bad[0].to_string().contains("test-unregistered"));
 
     // --- the class says what it is: the wire's kind string is not read ---
     let add_other_kind = AddOperator {

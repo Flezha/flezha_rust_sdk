@@ -70,11 +70,11 @@ pub use channel::{
 /// `docs/sdk/authoring_contract.md`.
 pub use flezha_macros::{bounded_operator, operator, tasklet, unbounded_operator};
 pub use flz_core::pb;
-pub use flz_transport::{service, transport};
+pub use flz_transport::{errors, service, transport};
 pub use local::LocalOperator;
 pub use operator::builder::TopologyBuildError;
 pub use operator::{BoundedKind, Operator, UnboundedKind, UnboundedOperator};
-pub use runner_handle::{Flezha, FlezhaError, FlezhaRunner};
+pub use runner_handle::{ErrorModel, Flezha, FlezhaError, FlezhaRunner};
 pub use tasklet::{Change, ClockKind, CoalesceKey, Ctx, NoChange, StableId, Tasklet, TaskletError};
 
 /// Build a class of kind `K` and install it in that kind's process-global

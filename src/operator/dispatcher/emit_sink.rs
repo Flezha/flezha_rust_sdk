@@ -239,7 +239,7 @@ impl<'a> EmitSink for CellEmitSink<'a> {
     fn complete(&mut self, result: Vec<u8>) -> Result<(), TaskletError> {
         if self.instance.as_ref().is_none_or(|i| i.bounded.is_none()) {
             return Err(TaskletError::non_retryable(
-                flz_core::bounded::COMPLETE_OUTSIDE_BOUNDED,
+                flz_core::bounded::complete_outside_bounded().text(),
             ));
         }
         flz_core::bounded::complete(self.producer, result);

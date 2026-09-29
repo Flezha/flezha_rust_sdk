@@ -456,7 +456,7 @@ fn emit_with_meta_on_pure_inter_tasklet_channel_is_rejected() {
     let outcomes = pure_emit_results().lock().unwrap().clone();
     let msg = outcomes[0].as_ref().expect_err("emit_with_meta must error");
     assert!(
-        msg.contains("metadata is only valid") && msg.contains("pure_out"),
+        msg.contains("only a plugin-bound channel carries metadata") && msg.contains("pure_out"),
         "expected MetadataNotAllowedOnInterTaskletChannel; got: {msg}"
     );
 

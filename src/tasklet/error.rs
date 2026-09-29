@@ -1,59 +1,95 @@
-use thiserror::Error;
-
-#[derive(Debug, Error)]
+/// A tasklet's failure: the author's own (`Custom`, `NonRetryable`) or a
+/// refusal of what the tasklet asked the runtime for. `Display` is the
+/// catalogue message, and [`ErrorModel`](crate::ErrorModel) gives its code.
+#[derive(Debug)]
 pub enum TaskletError {
-    #[error(
-        "metadata is only valid on plugin-bound channels; channel `{channel}` is inter-tasklet"
-    )]
-    MetadataNotAllowedOnInterTaskletChannel { channel: String },
-
-    #[error("channel `{channel}` is not declared on this operator")]
-    UnknownChannel { channel: String },
-
-    #[error("plugin serializer for channel `{channel}` panicked: {message}")]
-    PluginSerializerPanic { channel: String, message: String },
-
-    #[error(
-        "channel `{channel}` is declared .keyed() and this tasklet is single-cell, so \
-         there is no Cell key to emit under; use ctx.emit_keyed(key, value)"
-    )]
-    KeyRequiredOnKeyedChannel { channel: String },
-
-    #[error(
-        "channel `{channel}` is not declared .keyed(); emit_keyed is only valid on keyed channels"
-    )]
-    KeyNotAllowedOnNonKeyedChannel { channel: String },
-
-    #[error(
-        "metadata key `{key}` uses the reserved `flz.` namespace; runtime stamps cannot be \
-             set by operator code"
-    )]
-    ReservedMetadataKey { key: String },
-
-    #[error(
-        "tasklet `{tasklet}` declares clock `{clock}`, which does not derive time from the \
-         input; an event-time timer needs a tasklet that writes `event_time`"
-    )]
-    EventTimeTimerWithoutEventTimeClock { tasklet: String, clock: String },
-
-    #[error(
-        "tasklet `{tasklet}` already holds its maximum of {max} pending timers for this \
-         Cell; cancel one or raise `max_timers_per_cell()`"
-    )]
-    TimerCapExceeded { tasklet: String, max: usize },
-
-    #[error(
-        "TimersUnavailable: timers are not available in this context; only a tasklet's \
-         `run` / `on_timer` may register them"
-    )]
+    MetadataNotAllowedOnInterTaskletChannel {
+        channel: String,
+    },
+    UnknownChannel {
+        channel: String,
+    },
+    PluginSerializerPanic {
+        channel: String,
+        message: String,
+    },
+    KeyRequiredOnKeyedChannel {
+        channel: String,
+    },
+    KeyNotAllowedOnNonKeyedChannel {
+        channel: String,
+    },
+    ReservedMetadataKey {
+        key: String,
+    },
+    EventTimeTimerWithoutEventTimeClock {
+        tasklet: String,
+        clock: String,
+    },
+    TimerCapExceeded {
+        tasklet: String,
+        max: usize,
+    },
+    /// Only a tasklet's `run` / `on_timer` may register timers.
     TimersUnavailable,
-
-    #[error("tasklet error: {0}")]
     Custom(String),
-
-    #[error("non-retryable tasklet error: {0}")]
     NonRetryable(String),
 }
+
+impl crate::ErrorModel for TaskletError {
+    fn to_error(&self) -> flz_core::FlezhaError {
+        use flz_core::FlezhaError as E;
+        let channel =
+            |code, channel: &String| E::with(code, [("channel", channel.as_str().into())]);
+        match self {
+            Self::MetadataNotAllowedOnInterTaskletChannel { channel: c } => {
+                channel("runtime.metadata_on_inter_tasklet_channel", c)
+            }
+            Self::UnknownChannel { channel: c } => channel("runtime.unknown_channel", c),
+            Self::PluginSerializerPanic { channel, message } => E::with(
+                "runtime.plugin_serializer_panicked",
+                [
+                    ("channel", channel.as_str().into()),
+                    ("reason", message.as_str().into()),
+                ],
+            ),
+            Self::KeyRequiredOnKeyedChannel { channel: c } => {
+                channel("runtime.key_required_on_keyed_channel", c)
+            }
+            Self::KeyNotAllowedOnNonKeyedChannel { channel: c } => {
+                channel("runtime.key_not_allowed_on_non_keyed_channel", c)
+            }
+            Self::ReservedMetadataKey { key } => E::with(
+                "runtime.reserved_metadata_key",
+                [("key", key.as_str().into())],
+            ),
+            Self::EventTimeTimerWithoutEventTimeClock { tasklet, clock } => {
+                flz_core::timer::TimerRefusal::EventTimeWithoutEventTimeClock {
+                    tasklet: tasklet.clone(),
+                    clock: clock.clone(),
+                }
+                .to_error()
+            }
+            Self::TimerCapExceeded { tasklet, max } => flz_core::timer::TimerRefusal::CapExceeded {
+                tasklet: tasklet.clone(),
+                max: *max,
+            }
+            .to_error(),
+            Self::TimersUnavailable => E::with("runtime.timers_unavailable", []),
+            Self::Custom(error) | Self::NonRetryable(error) => {
+                E::with("runtime.tasklet_failed", [("error", error.as_str().into())])
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for TaskletError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::ErrorModel::to_error(self).message)
+    }
+}
+
+impl std::error::Error for TaskletError {}
 
 impl TaskletError {
     /// Classify a domain failure as non-retryable: the dispatcher parks the

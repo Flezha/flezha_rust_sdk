@@ -164,14 +164,18 @@ impl Admin {
 
     fn answer<T: DeserializeOwned>(&self, verb: &str, args: &[Value]) -> Result<T, AdminError> {
         let args = Value::Array(args.to_vec()).to_string();
-        read(&admin::call(verb, &args)?)
+        read(verb, &admin::call(verb, &args)?)
     }
 }
 
 /// The controller's answer, read as the shape the call promises.
-fn read<T: DeserializeOwned>(answer: &str) -> Result<T, AdminError> {
-    serde_json::from_str(answer)
-        .map_err(|e| AdminError::Refused(format!("controller answered unreadable JSON: {e}")))
+fn read<T: DeserializeOwned>(verb: &str, answer: &str) -> Result<T, AdminError> {
+    serde_json::from_str(answer).map_err(|e| {
+        AdminError::Refused(flz_core::FlezhaError::with(
+            "admin.unreadable_answer",
+            [("verb", verb.into()), ("reason", e.to_string().into())],
+        ))
+    })
 }
 
 #[cfg(test)]
@@ -194,14 +198,20 @@ mod tests {
     #[test]
     fn a_start_answer_reads_as_its_id_and_outcome() {
         assert_eq!(
-            read::<StartResult>(r#"{"id":"echo-k7m2qzxw4pd3fn2a","outcome":"started"}"#),
+            read::<StartResult>(
+                "Operator.start",
+                r#"{"id":"echo-k7m2qzxw4pd3fn2a","outcome":"started"}"#
+            ),
             Ok(StartResult {
                 id: "echo-k7m2qzxw4pd3fn2a".to_string(),
                 outcome: StartOutcome::Started,
             })
         );
         assert_eq!(
-            read::<StartResult>(r#"{"id":"my_echo","outcome":"already_running"}"#),
+            read::<StartResult>(
+                "Operator.start",
+                r#"{"id":"my_echo","outcome":"already_running"}"#
+            ),
             Ok(StartResult {
                 id: "my_echo".to_string(),
                 outcome: StartOutcome::AlreadyRunning,
@@ -211,9 +221,14 @@ mod tests {
 
     #[test]
     fn a_start_answer_of_another_shape_is_refused_naming_what_is_wrong() {
-        let refused = read::<StartResult>(r#"{"id":"my_echo","outcome":"duplicate"}"#);
+        let refused = read::<StartResult>(
+            "Operator.start",
+            r#"{"id":"my_echo","outcome":"duplicate"}"#,
+        );
         assert!(
-            matches!(&refused, Err(AdminError::Refused(m)) if m.contains("duplicate")),
+            matches!(&refused, Err(AdminError::Refused(e))
+                if e.code == "admin.unreadable_answer"
+                    && e.details["reason"].as_str().is_some_and(|r| r.contains("duplicate"))),
             "{refused:?}"
         );
     }

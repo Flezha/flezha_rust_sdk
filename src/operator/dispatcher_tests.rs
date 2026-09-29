@@ -113,7 +113,11 @@ fn a_context_without_a_timer_session_refuses_rather_than_dropping() {
     let err = ctx
         .timer_after(std::time::Duration::from_secs(1))
         .expect_err("a session-less context must refuse");
-    assert!(err.to_string().contains("not available"), "{err}");
+    assert_eq!(
+        crate::ErrorModel::code(&err),
+        "runtime.timers_unavailable",
+        "{err}"
+    );
     assert!(ctx.timer_at_event_time(1).is_err());
     assert!(ctx.cancel_processing_time_timer(1).is_err());
     assert!(ctx.cancel_event_time_timer(1).is_err());

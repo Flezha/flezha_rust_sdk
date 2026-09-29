@@ -34,13 +34,13 @@ pub fn build_spec<T: BoundedOperator>(
         build_topology_with_persistence(factory_id, cb, T::PERSISTENCE_ENABLED, T::SLEEP_WHEN_IDLE)
             .map_err(|e| BuildBoundedError::Topology {
                 factory_id,
-                detail: format!("{e}"),
+                error: flz_core::host::render_issues(&e.errors),
             })?;
     let mut topology =
         std::sync::Arc::into_inner(topology).expect("a topology just built is shared with nobody");
     let dag = build_dag(factory_id, &topology)?;
 
-    refuse_chained_loop_shape::<T>(factory_id, &dag)?;
+    refuse_chained_loop_shape::<T>(factory_id, &topology, &dag)?;
     if T::PERSISTENCE_ENABLED {
         refuse_loop_terminal_without_handoff::<T>(factory_id, &topology, &dag)?;
     }
@@ -61,14 +61,19 @@ pub fn build_spec<T: BoundedOperator>(
 /// to carry forward.
 fn refuse_chained_loop_shape<T: BoundedOperator>(
     factory_id: &'static str,
+    topology: &OperatorTopology,
     dag: &TaskDag,
 ) -> Result<(), BuildBoundedError> {
     if T::loop_mode() != LoopMode::Chained {
         return Ok(());
     }
     match dag.branching_chain() {
-        Some((_, branching)) => Err(BuildBoundedError::BranchingChainedLoop {
+        Some((channel_id, branching)) => Err(BuildBoundedError::BranchingChainedLoop {
             factory_id,
+            channel: topology
+                .channel(channel_id)
+                .map(|c| c.name.to_string())
+                .unwrap_or_default(),
             leaves: branching.leaves(dag).count(),
         }),
         None => Ok(()),

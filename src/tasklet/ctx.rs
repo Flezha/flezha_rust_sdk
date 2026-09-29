@@ -113,7 +113,7 @@ pub(crate) trait EmitSink {
     /// Ask to end the instance with `result`; only a bounded stage can.
     fn complete(&mut self, _result: Vec<u8>) -> Result<(), TaskletError> {
         Err(TaskletError::non_retryable(
-            flz_core::bounded::COMPLETE_OUTSIDE_BOUNDED,
+            flz_core::bounded::complete_outside_bounded().text(),
         ))
     }
 }

@@ -94,8 +94,8 @@ booking stays:
 
 ```
 [book] EUR/USD 500 as ord-0e7ee9553cfe5eac606fd232fd7ab33c
-[flezha] tasklet confirm_fill attempt 1/3 failed (retrying in 30 ms): tasklet error: the exchange fills at most 100 a time, and this is 500
-[flezha] tasklet confirm_fill attempt 2/3 failed (retrying in 77 ms): tasklet error: the exchange fills at most 100 a time, and this is 500
+[flezha] tasklet confirm_fill attempt 1/3 failed (retrying in 30 ms): the exchange fills at most 100 a time, and this is 500
+[flezha] tasklet confirm_fill attempt 2/3 failed (retrying in 77 ms): the exchange fills at most 100 a time, and this is 500
 [undo] cancelled ord-0e7ee9553cfe5eac606fd232fd7ab33c
 [undo] released res-54e4641a002cc27f8d030507d8d5aea5
 ```
@@ -110,7 +110,7 @@ Operator: order_2
   Kind: bounded
   Phase: finished
   Status: error
-  Error: tasklet confirm_fill failed: tasklet error: the exchange fills at most 100 a time, and this is 500
+  Error: tasklet confirm_fill failed: the exchange fills at most 100 a time, and this is 500
   Finished At (unix s): 1790583874
 ```
 

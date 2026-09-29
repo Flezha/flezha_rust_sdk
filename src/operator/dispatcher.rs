@@ -510,12 +510,17 @@ impl<S: Tasklet> TaskletDispatcher for TaskletDispatcherImpl<S> {
     ) -> Result<(Vec<u8>, u64, usize), flz_core::Error> {
         let seq = self.drain_for_snapshot(flush_buffer, timers);
         let typed = state.downcast_ref::<CellState<S>>().ok_or_else(|| {
-            flz_core::Error::State("snapshot_frame: state type mismatch for tasklet".to_string())
+            flz_core::Error::State(
+                flz_core::Code::SnapshotFailed
+                    .with([("reason", "the state is not this tasklet's type".into())]),
+            )
         })?;
         // Postcard — the codec `cell/restore.rs` decodes — NOT the JSON
         // migration serializer `build_state_fns` produces.
         let body = postcard::to_allocvec(&typed.state).map_err(|e| {
-            flz_core::Error::State(format!("snapshot_frame: postcard state encode failed: {e}"))
+            flz_core::Error::State(
+                flz_core::Code::SnapshotFailed.with([("reason", e.to_string().into())]),
+            )
         })?;
         let header = self.flush.header.stamp(&body);
         let frame =

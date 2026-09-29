@@ -343,7 +343,7 @@ fn emit_with_meta_rejected_on_inter_tasklet() {
     ));
     let msg = META_REJECT_OBSERVED.lock().unwrap().clone().unwrap();
     assert!(
-        msg.contains("inter-tasklet"),
+        msg.contains("between two tasklets"),
         "expected inter-tasklet rejection, got {msg}"
     );
 }

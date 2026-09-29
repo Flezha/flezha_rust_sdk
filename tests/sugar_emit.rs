@@ -84,7 +84,7 @@ fn a_skipped_output_emits_nothing_to_key() {
 /// keyed channel: it has no Cell key to fall back on, so a keyless record
 /// would ship silently.
 #[test]
-#[should_panic(expected = "is declared .keyed()")]
+#[should_panic(expected = "is keyed and this tasklet is single-cell")]
 fn a_keyed_channel_refuses_a_single_cell_plain_emit() {
     let mut harness = TaskletTestHarness::<PlainEmit>::new().with_keyed_channel();
     harness.apply_inputs(vec![reading("BTC/USD", 1.0)]);

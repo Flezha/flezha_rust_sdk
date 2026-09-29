@@ -19,61 +19,125 @@ use crate::{operator, pb, runner, shutdown, BuildBoundedError, TopologyBuildErro
 /// The ONE public error of the entry-point chain: every fallible call on
 /// [`FlezhaRunner`] returns `Result<_, FlezhaError>`, so
 /// `Flezha::create_runner(ns)?.register_factory(A)?.run()?` compiles
-/// under a single `?`. Java throws the identically-named failure classes
-/// (naming rule 6 in `docs/sdk/naming_conventions.md`).
-#[derive(Debug, thiserror::Error)]
+/// under a single `?`. Its [`ErrorModel`] accessors carry the catalogue code a
+/// program branches on; `Display` is the catalogue message.
+#[derive(Debug)]
 pub enum FlezhaError {
     /// [`Flezha::create_runner`] was given an empty namespace.
-    #[error("namespace must not be empty")]
     InvalidNamespace,
     /// The process-wide singleton guard: a runner is already started in this
     /// process (or `.start()` was called twice on one runner). Close (drop)
     /// it before starting another.
-    #[error(
-        "a Flezha runner is already running in this process for namespace `{namespace}`; \
-         at most one runner may be started per process"
-    )]
     AlreadyRunning { namespace: String },
     /// The connect handshake failed: the runner thread exited before
     /// delivering its connection confirmation.
-    #[error("controller connection failed: {0}")]
     ConnectFailed(String),
+    /// The controller refused the connect, under its own code.
+    Refused(flz_core::FlezhaError),
     /// `register_factory` found an invalid topology (duplicate channel names,
     /// unwired channels, type mismatches, ...) — reported at the declaring
     /// call site, never a panic.
-    #[error(transparent)]
-    InvalidTopology(#[from] TopologyBuildError),
+    InvalidTopology(TopologyBuildError),
     /// `register_factory` found invalid bounded operator authoring.
-    #[error(transparent)]
-    InvalidBounded(#[from] BuildBoundedError),
+    InvalidBounded(BuildBoundedError),
     /// The factory id is already in this runner's declared set, whichever kind
-    /// either operator is. The display begins with the refusal's contract name
-    /// (`docs/sdk/authoring_contract.md` §5.2), which is what the author reads.
-    #[error("DuplicateFactoryId: factory `{factory_id}` is already defined on this runner")]
+    /// either operator is.
     DuplicateFactoryId { factory_id: String },
     /// `unregister_factory` named a factory that is not in this runner's declared set.
-    #[error("factory `{factory_id}` is not defined on this runner")]
     NotDefined { factory_id: String },
     /// `unregister_factory` refused: live operator instances of the factory
     /// exist. The type remains defined.
-    #[error(
-        "factory `{factory_id}` has {live_instances} live operator instance(s); \
-         stop them before removing the type"
-    )]
     OperatorTypeInUse {
         factory_id: String,
         live_instances: usize,
     },
     /// The call requires a started runner (`await_termination`, `operators`).
-    #[error("runner not started")]
     NotStarted,
     /// The runner thread is gone or replied with an unexpected message.
-    #[error("runner unavailable: {0}")]
     RunnerUnavailable(String),
     /// A local run the core refused: an unregistered class, a declaration
     /// that needs a controller, or a channel name nothing matches.
-    #[error(transparent)]
-    Local(#[from] flz_core::Error),
+    Local(flz_core::Error),
+}
+
+pub use flz_core::ErrorModel;
+
+impl ErrorModel for FlezhaError {
+    fn to_error(&self) -> flz_core::FlezhaError {
+        use flz_core::FlezhaError as E;
+        match self {
+            FlezhaError::InvalidNamespace => {
+                E::with("namespace.invalid_name", [("namespace", "".into())])
+            }
+            FlezhaError::AlreadyRunning { namespace } => E::with(
+                "runtime.runner_already_running",
+                [("namespace", namespace.as_str().into())],
+            ),
+            FlezhaError::ConnectFailed(reason) => E::with(
+                "runner.controller_unreachable",
+                [("reason", reason.as_str().into())],
+            ),
+            FlezhaError::Refused(error) => error.clone(),
+            FlezhaError::InvalidTopology(e) => e.to_error(),
+            FlezhaError::InvalidBounded(e) => e.to_error(),
+            FlezhaError::DuplicateFactoryId { factory_id } => E::with(
+                "topology.duplicate_factory_id",
+                [("factory_id", factory_id.as_str().into())],
+            ),
+            FlezhaError::NotDefined { factory_id } => E::with(
+                "runtime.class_not_registered",
+                [("factory", factory_id.as_str().into())],
+            ),
+            FlezhaError::OperatorTypeInUse {
+                factory_id,
+                live_instances,
+            } => E::with(
+                "runtime.operator_type_in_use",
+                [
+                    ("factory_id", factory_id.as_str().into()),
+                    ("live_instances", (*live_instances).into()),
+                ],
+            ),
+            FlezhaError::NotStarted => E::with("runtime.runner_not_started", []),
+            FlezhaError::RunnerUnavailable(reason) => E::with(
+                "runtime.runner_unavailable",
+                [("reason", reason.as_str().into())],
+            ),
+            FlezhaError::Local(e) => e.to_error(),
+        }
+    }
+}
+
+impl ErrorModel for TopologyBuildError {
+    fn to_error(&self) -> flz_core::FlezhaError {
+        flz_core::host::render_issues(&self.errors)
+    }
+}
+
+impl std::fmt::Display for FlezhaError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.to_error().message)
+    }
+}
+
+impl std::error::Error for FlezhaError {}
+
+impl From<TopologyBuildError> for FlezhaError {
+    fn from(e: TopologyBuildError) -> Self {
+        FlezhaError::InvalidTopology(e)
+    }
+}
+
+impl From<BuildBoundedError> for FlezhaError {
+    fn from(e: BuildBoundedError) -> Self {
+        FlezhaError::InvalidBounded(e)
+    }
+}
+
+impl From<flz_core::Error> for FlezhaError {
+    fn from(e: flz_core::Error) -> Self {
+        FlezhaError::Local(e)
+    }
 }
 
 /// The one runner slot this process has. `namespace` backs the
@@ -154,6 +218,7 @@ impl Flezha {
 fn await_confirmation(irx: &Receiver<ClientResponseMessage>) -> Result<(), FlezhaError> {
     match irx.recv() {
         Ok(ClientResponseMessage::RunnerIdConfirmation) => Ok(()),
+        Ok(ClientResponseMessage::ConnectRefused(error)) => Err(FlezhaError::Refused(error)),
         Ok(_) => Err(FlezhaError::ConnectFailed(
             "unexpected confirmation message from the runner thread".to_string(),
         )),

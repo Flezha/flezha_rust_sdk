@@ -10,6 +10,7 @@ use super::ProbeCell;
 use crate::tasklet::ctx::EmitSink;
 use crate::tasklet::error::TaskletError;
 use crate::tasklet::{IfRunning, SpawnError, SpawnOptions, SpawnOutcome, SpawnResult};
+use crate::ErrorModel;
 
 const IDENTITY: &[u8] = b"spawn/test/";
 
@@ -86,15 +87,18 @@ fn an_unbounded_factory_is_answered_by_name() {
     let handle = ctx.spawn_bounded("prices", b"p".to_vec());
     let (reference_id, request) = shipped(&rx);
     assert_eq!(request.factory_id, "prices");
-    flz_core::shutdown::signal_result(
-        &reference_id,
-        Ok(flz_core::spawn::encode_ack("factory_not_bounded", "")),
+    let refusal = flz_core::FlezhaError::with(
+        "operator.factory_not_bounded",
+        [("factory", "prices".into())],
     );
+    flz_core::shutdown::signal_result(&reference_id, Err(refusal.clone()));
 
+    let answer = handle.wait();
+    assert_eq!(answer, Err(SpawnError::Refused(refusal)));
     assert_eq!(
-        handle.wait(),
-        Err(SpawnError::FactoryNotBounded("prices".to_string())),
-        "an unbounded factory is neither unknown nor refused"
+        answer.unwrap_err().code(),
+        "operator.factory_not_bounded",
+        "an unbounded factory is refused under the controller's own code"
     );
 }
 

@@ -107,7 +107,7 @@ fn required_id(kind: Kind, keys: &OperatorKeys, span: proc_macro2::Span) -> syn:
 fn sink_without_output(span: proc_macro2::Span) -> syn::Error {
     syn::Error::new(
         span,
-        "SinkWithoutOutput: a `sink` requires an output to feed the plugin: a non-unit \
+        "topology.sink_without_output: a `sink` requires an output to feed the plugin: a non-unit \
          return, or a written `type Output`",
     )
 }

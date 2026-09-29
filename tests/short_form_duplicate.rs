@@ -12,7 +12,7 @@ use std::thread;
 
 use flezha_runner::transport::FlezhaStream;
 use flezha_runner::{
-    ChannelBuilder, Ctx, Flezha, FlezhaError, Tasklet, TaskletError, UnboundedOperator,
+    ChannelBuilder, Ctx, ErrorModel, Flezha, FlezhaError, Tasklet, TaskletError, UnboundedOperator,
 };
 
 /// The bounded short form under `plain`: one tasklet, one sink, nothing else.
@@ -124,10 +124,8 @@ fn a_bounded_short_form_colliding_with_a_stream_is_refused() {
         matches!(err, FlezhaError::DuplicateFactoryId { ref factory_id } if factory_id == "plain"),
         "expected DuplicateFactoryId naming `plain`, got: {err}"
     );
-    assert!(
-        err.to_string().starts_with("DuplicateFactoryId"),
-        "the author reads the refusal's name first, got: {err}"
-    );
+    assert_eq!(err.code(), "topology.duplicate_factory_id", "{err}");
+    assert_eq!(err.class(), flezha_runner::errors::Class::Invalid);
 
     // The refused registration left the declared set exactly as it was.
     runner.start().expect("start");

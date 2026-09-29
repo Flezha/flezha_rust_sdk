@@ -1,7 +1,7 @@
 //! `OperatorMessage` is answered with the canonical refusal. Per-Tasklet
 //! `handle_message` is not implemented (`operator-message-handlers` owes it),
 //! and until it is, every request must come back with an empty payload and the
-//! one refusal string — never with silence, and never with a decode error.
+//! one refusal code — never with silence, and never with a decode error.
 
 use flezha_runner::command::CommandAction;
 use flezha_runner::pb::{OperatorMessage, OperatorMessageResponse};
@@ -25,5 +25,8 @@ fn operator_message_always_returns_unsupported() {
     assert_eq!(reply.payload_id, "operator_message");
     let decoded = OperatorMessageResponse::decode(reply.bytes.as_slice()).expect("decode");
     assert_eq!(decoded.payload, Vec::<u8>::new());
-    assert_eq!(decoded.error, "operator does not support handle_message");
+    assert_eq!(
+        decoded.error.map(|e| e.code).as_deref(),
+        Some("runtime.operator_message_unsupported")
+    );
 }

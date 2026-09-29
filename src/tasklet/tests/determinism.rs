@@ -269,5 +269,8 @@ fn a_stream_context_refuses_to_complete_without_a_retry() {
         .complete("3")
         .expect_err("an unbounded operator never completes");
     assert!(err.is_non_retryable(), "{err:?}");
-    assert!(err.to_string().contains("CompleteOutsideBounded"), "{err}");
+    assert!(
+        err.to_string().contains("runtime.complete_outside_bounded"),
+        "{err}"
+    );
 }
