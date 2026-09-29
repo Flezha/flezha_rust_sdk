@@ -46,6 +46,7 @@ pub(crate) mod fixtures {
             value: Arc::new(ordinal) as Arc<dyn Any + Send + Sync>,
             stream: Arc::clone(stream),
             consumed_offset: None,
+            call: None,
             replay: false,
             forwarded: false,
             hold: None,

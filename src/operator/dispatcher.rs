@@ -230,6 +230,7 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
             value,
             stream,
             consumed_offset,
+            call,
             replay,
             forwarded,
             hold: _,
@@ -241,14 +242,21 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
         let now = now.unwrap_or_else(|| self.invocation_inputs(Some(&input)).0);
 
         if is_final {
-            let last = Invocation::last_input(input, consumed_offset, replay, now, attempt);
+            let last = Invocation::last_input(input, consumed_offset, call, replay, now, attempt);
             let ops = self.invoke_once(last, scope);
             debug_assert!(ops.is_ok(), "a final attempt parks instead of retrying");
             return ItemDisposition::Done {
                 ops: ops.unwrap_or_default(),
             };
         }
-        let again = Invocation::retryable_input(&input, consumed_offset, replay, now, attempt);
+        let again = Invocation::retryable_input(
+            &input,
+            consumed_offset,
+            call.clone(),
+            replay,
+            now,
+            attempt,
+        );
         match self.invoke_once(again, scope) {
             Ok(ops) => ItemDisposition::Done { ops },
             Err(error) => ItemDisposition::RetryLater {
@@ -256,6 +264,7 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
                     value: input as Arc<dyn Any + Send + Sync>,
                     stream,
                     consumed_offset,
+                    call,
                     replay,
                     forwarded,
                     hold: None,

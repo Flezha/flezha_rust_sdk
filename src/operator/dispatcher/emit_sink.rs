@@ -54,6 +54,10 @@ pub(super) struct CellEmitSink<'a> {
     /// inter-tasklet emits so downstream Cells' effect records carry
     /// the origin offset.
     pub(super) consumed_offset: Option<u64>,
+    /// The outside call the invocation's input carried (a bounded pass's for
+    /// every stage), inherited by inter-tasklet emits and stamped on every
+    /// output of a `response()` end.
+    pub(super) reply_to: Option<Arc<str>>,
     /// `Some` for a Cell that records effects: plugin emits are pushed here
     /// (for the invocation's atomic effect record) instead of being written
     /// to the primary stream.
@@ -140,6 +144,13 @@ impl<'a> CellEmitSink<'a> {
                 });
             }
         };
+        let mut meta = meta;
+        if descriptor.response {
+            meta.get_or_insert_with(HashMap::new).insert(
+                flz_core::routing::CALL_KEY.to_string(),
+                self.reply_to.as_deref().unwrap_or_default().to_string(),
+            );
+        }
 
         if let Some(captured) = self.effect_capture {
             push_effect_output(captured, &descriptor.name, key, meta, bytes);
@@ -190,6 +201,7 @@ impl<'a> EmitSink for CellEmitSink<'a> {
             &value,
             &self.stream,
             self.consumed_offset,
+            self.reply_to.as_ref(),
             false,
             Some(self.producer),
         );

@@ -55,12 +55,13 @@ const FIXTURE: &str = "test/fixtures/reference_topologies.txt";
 /// The authoring surfaces this builder carries — the same set the app's
 /// `conformance.json` declares. A row needing anything else is skipped BY NAME,
 /// which is what makes the skip checkable.
-const SURFACES: [&str; 5] = [
+const SURFACES: [&str; 6] = [
     "merge",
     "branch",
     "bounded",
     "shorthand",
     "shorthand_typed_output",
+    "response",
 ];
 
 /// A row of the four-column refusal table. The refusal NAME is the fixture's
@@ -529,6 +530,7 @@ fn producer_link(s: Stream<'_, String, NodeTarget>, link: &str) {
         "named" => s.named(leak(arg)),
         "sink" if arg.is_empty() => s.sink(),
         "sink" => s.sink_named(leak(arg)),
+        "response" => s.response(),
         "keyed" => s.keyed(),
         other => panic!("the fixture spells a link this interpreter does not map: {other}"),
     };
@@ -721,7 +723,11 @@ fn derived(topology: &OperatorTopology) -> Value {
                 "kind": kind_name(channel),
                 "producer": channel.producer,
                 "consumers": channel.consumer_ids().collect::<Vec<_>>(),
-                "sink": channel.plugin_sink.as_ref().map(|_| channel.name.to_string()),
+                "sink": channel
+                    .plugin_sink
+                    .as_ref()
+                    .filter(|_| !channel.response)
+                    .map(|_| channel.name.to_string()),
             })
         })
         .collect();

@@ -280,6 +280,7 @@ fn channel_descriptor(entry: ChannelEntry, derived: DerivedChannel) -> ChannelDe
         plugin_sink: entry.plugin_sink.map(|sink| PluginSink {
             serializer: sink.serializer,
         }),
+        response: derived.response,
         keyed: entry.keyed,
         overflow_policy: entry.overflow_policy,
         retry: entry.retry,

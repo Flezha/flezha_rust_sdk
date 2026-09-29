@@ -242,6 +242,11 @@ pub use cell::timer::TimerKind;                            # ADDED by `cell-time
 #     pub fn sink_with<F>(self, plugin_name: &'static str, serializer: F) -> Self
 #       where F: Fn(&T) -> Vec<u8> + Send + Sync + 'static;
 #     pub fn sink(self, plugin_name: &'static str) -> Self where T: Serialize;
+#     # A channel's other plugin end: its outputs answer the outside call their
+#     # input carried. No name; one end per channel.
+#     pub fn response(self) -> Self where T: Serialize;
+#     pub fn response_with<F>(self, serializer: F) -> Self
+#       where F: Fn(&T) -> Vec<u8> + Send + Sync + 'static;
 #     # REMOVED: `sealed()` and `Channel<T>`; a channel is terminal by having
 #     # no further wiring.
 #
@@ -347,6 +352,7 @@ pub use cell::timer::TimerKind;                            # ADDED by `cell-time
 #       # representation of plugin egress for both shapes, and `kind` is
 #       # DERIVED at build time (a sink with no consumers => PluginBound).
 #       pub plugin_sink: Option<PluginSink>,
+#       pub response: bool,                     # the plugin end is `response()`
 #       pub keyed: bool,
 #       pub consumers: Vec<ConsumerEdge>,
 #   }

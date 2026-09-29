@@ -104,6 +104,7 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
         &'a self,
         scope: &CellScope<'a, S>,
         consumed_offset: Option<u64>,
+        reply_to: Option<Arc<str>>,
         effect_capture: Option<&'a RefCell<Captured>>,
         changes: &'a RefCell<Vec<S::Change>>,
     ) -> CellEmitSink<'a> {
@@ -122,6 +123,7 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
                 consumed_offset.is_some() || !scope.buffer.effects.is_empty(),
             ),
             consumed_offset,
+            reply_to,
             effect_capture: effect_capture.filter(|_| self.flush.records_effects),
             edge_capture: effect_capture,
         }
@@ -146,7 +148,13 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
         // The removal is op 0 for a firing, so it rides the same durable
         // record as whatever `on_timer` goes on to apply and emit.
         let firing = call.firing();
-        let mut sink = self.emit_sink(scope, call.consumed_offset(), captured, changes);
+        // A bounded pass's call is the pass's, whichever stage emits.
+        let reply_to = if self.flush.bounded {
+            flz_core::bounded::pass_call(scope.slot)
+        } else {
+            call.reply_to().cloned()
+        };
+        let mut sink = self.emit_sink(scope, call.consumed_offset(), reply_to, captured, changes);
         let state = &mut *scope.state;
         let live_timers = &mut *scope.timers;
         let session = self.timers.session(live_timers, now, firing);
@@ -278,6 +286,7 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
         buffer: &mut TypedBuffer<S>,
         effects: crate::cell::flusher::InvocationEffects<S::Change>,
         dlq: Option<crate::cell::flusher::DlqEntryBody>,
+        reply_to: Option<&Arc<str>>,
     ) {
         let consumed_offset = effects.offset;
         let channels: Vec<String> = effects.outputs.iter().map(|o| o.channel.clone()).collect();
@@ -304,6 +313,7 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
                 &self.flush.cell_identity,
                 &self.cell_label,
                 consumed_offset,
+                reply_to,
                 entry,
             );
         }
@@ -334,6 +344,7 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
             retained_input,
         } = invocation;
         let offset = call.consumed_offset();
+        let reply_to = call.reply_to().cloned();
         let firing = call.firing();
         let changes = RefCell::new(self.carry_over(scope.buffer));
         let captured = Self::effect_capture(scope.slot, offset);
@@ -370,7 +381,7 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
         let committed = settled.timers.clone();
         flz_core::timer::hold_firing_removal(scope.slot, &mut settled.timers, firing);
         let effects = settled.into_effects(changes.into_inner(), offset, now);
-        self.settle(scope.slot, scope.buffer, effects, dlq);
+        self.settle(scope.slot, scope.buffer, effects, dlq, reply_to.as_ref());
         Ok(committed)
     }
 }
@@ -385,6 +396,9 @@ pub(super) enum Call<S: Tasklet> {
         /// carries none — it consumes no input — which is why it lives on the
         /// variant rather than beside it.
         consumed_offset: Option<u64>,
+        /// The outside call waiting on the input (`flz.reply_to`), which a
+        /// `response()` end's output answers. A firing answers nobody.
+        reply_to: Option<Arc<str>>,
         replay: bool,
     },
     Timer {
@@ -403,6 +417,13 @@ impl<S: Tasklet> Call<S> {
             Call::Input {
                 consumed_offset, ..
             } => *consumed_offset,
+            Call::Timer { .. } | Call::Compensate { .. } => None,
+        }
+    }
+
+    fn reply_to(&self) -> Option<&Arc<str>> {
+        match self {
+            Call::Input { reply_to, .. } => reply_to.as_ref(),
             Call::Timer { .. } | Call::Compensate { .. } => None,
         }
     }
@@ -475,6 +496,7 @@ impl<'a, S: Tasklet> Invocation<'a, S> {
     pub(super) fn last_input(
         input: Arc<S::Input>,
         consumed_offset: Option<u64>,
+        reply_to: Option<Arc<str>>,
         replay: bool,
         now: u64,
         attempt: u32,
@@ -484,6 +506,7 @@ impl<'a, S: Tasklet> Invocation<'a, S> {
             call: Call::Input {
                 input: Arc::unwrap_or_clone(input),
                 consumed_offset,
+                reply_to,
                 replay,
             },
             now,
@@ -499,6 +522,7 @@ impl<'a, S: Tasklet> Invocation<'a, S> {
     pub(super) fn retryable_input(
         input: &'a Arc<S::Input>,
         consumed_offset: Option<u64>,
+        reply_to: Option<Arc<str>>,
         replay: bool,
         now: u64,
         attempt: u32,
@@ -507,6 +531,7 @@ impl<'a, S: Tasklet> Invocation<'a, S> {
             call: Call::Input {
                 input: (**input).clone(),
                 consumed_offset,
+                reply_to,
                 replay,
             },
             now,

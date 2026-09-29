@@ -18,6 +18,7 @@ pub(crate) use serde::{Deserialize, Serialize};
 
 mod bounded;
 mod bounded_loop;
+mod call;
 mod cell;
 mod channel;
 mod conformance;
@@ -27,6 +28,7 @@ mod sugar;
 
 use crate::bounded::*;
 use crate::bounded_loop::*;
+use crate::call::*;
 use crate::cell::*;
 use crate::channel::*;
 use crate::probe::*;
@@ -82,6 +84,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register_factory(HybridChannelOperator)?
         .register_factory(MergedInputOperator)?
         .register_factory(TransformChainOperator)?
+        .register_factory(CallEchoOperator)?
+        .register_factory(CallDownstreamOperator)?
+        .register_factory(CallSplitOperator)?
+        .register_factory(CallTurnBounded)?
         .register_factory(ResumeProbeOperator)?
         .register_factory(SchemaEvolutionV1Operator)?
         .register_factory(SchemaEvolutionV2Operator)?
