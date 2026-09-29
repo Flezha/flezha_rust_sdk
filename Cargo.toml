@@ -158,6 +158,10 @@ name = "response_end"
 required-features = ["bench-internals"]
 
 [[test]]
+name = "parts"
+required-features = ["bench-internals"]
+
+[[test]]
 name = "dynamic_cell"
 required-features = ["bench-internals"]
 

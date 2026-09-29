@@ -281,6 +281,7 @@ fn channel_descriptor(entry: ChannelEntry, derived: DerivedChannel) -> ChannelDe
             serializer: sink.serializer,
         }),
         response: derived.response,
+        sink: derived.sink.is_some(),
         keyed: entry.keyed,
         overflow_policy: entry.overflow_policy,
         retry: entry.retry,

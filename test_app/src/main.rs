@@ -22,6 +22,7 @@ mod call;
 mod cell;
 mod channel;
 mod conformance;
+mod part;
 mod probe;
 mod state;
 mod sugar;
@@ -31,6 +32,7 @@ use crate::bounded_loop::*;
 use crate::call::*;
 use crate::cell::*;
 use crate::channel::*;
+use crate::part::*;
 use crate::probe::*;
 use crate::state::*;
 use crate::sugar::*;
@@ -88,6 +90,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register_factory(CallDownstreamOperator)?
         .register_factory(CallSplitOperator)?
         .register_factory(CallTurnBounded)?
+        .register_factory(PartEchoOperator)?
+        .register_factory(PartEchoBounded)?
         .register_factory(ResumeProbeOperator)?
         .register_factory(SchemaEvolutionV1Operator)?
         .register_factory(SchemaEvolutionV2Operator)?

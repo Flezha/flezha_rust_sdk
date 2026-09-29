@@ -5,8 +5,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use flz_core::operator::instance::{fnv1a128, FNV128_OFFSET_BASIS};
+use flz_transport::transport::FlezhaStream;
 
-use crate::cell::timer::{TimerKind, TimerSession};
+use crate::cell::timer::{TimerFire, TimerKind, TimerSession};
+use crate::cell::{CellItem, CellPayload, CellSlot};
+use crate::runner::poll_core::ItemAttempt;
 use crate::tasklet::error::TaskletError;
 use crate::tasklet::{Change, SpawnHandle, SpawnOptions, Tasklet};
 
@@ -50,6 +53,81 @@ pub struct Ctx<'a, S: Tasklet> {
     /// where timers do not apply, so the refusal is structural, not a
     /// runtime check.
     timers: Option<&'a RefCell<TimerSession>>,
+    /// Where a part goes, and the parts this attempt has sent so far, which
+    /// numbers the next one.
+    part: PartRoute<'a>,
+    part_sequence: Cell<u32>,
+}
+
+/// Where [`Ctx::part`] sends.
+pub(crate) enum PartRoute<'a> {
+    /// The invocation's work item, which the core previews.
+    Item(PartSource<'a>),
+    /// No work item: a `compensate` hook, which the core refuses as outside
+    /// any invocation.
+    NoItem,
+    /// The testing harness, which has no controller and sends nothing.
+    #[cfg(any(test, feature = "testing"))]
+    Harness,
+}
+
+/// What [`Ctx::part`] sends through: the invocation's Cell, the connection
+/// its work item came in on, the firing it is if it is one, and its attempt.
+pub(crate) struct PartSource<'a> {
+    pub(crate) slot: &'a Arc<CellSlot>,
+    pub(crate) stream: &'a Arc<FlezhaStream>,
+    pub(crate) firing: Option<(TimerKind, u64)>,
+    pub(crate) attempt: u32,
+}
+
+impl PartSource<'_> {
+    /// `value` encoded as an emit of it on the tasklet's output channel would
+    /// be. A channel with no plugin end has no encoding, and the core refuses
+    /// its part before reading a byte.
+    fn encode(&self, value: &dyn Any) -> Result<Vec<u8>, TaskletError> {
+        let topology = &self.slot.topology;
+        let channel = topology
+            .tasklet(self.slot.tasklet_id)
+            .and_then(|tasklet| tasklet.output_channel_id)
+            .and_then(|id| topology.channel(id));
+        match channel.and_then(|c| c.plugin_sink.as_ref().map(|sink| (c, sink))) {
+            Some((channel, sink)) => crate::operator::dispatcher::emit_sink::serialize_contained(
+                &sink.serializer,
+                &channel.name,
+                value,
+            ),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// The work item the core stamps a part from: its connection, its replay
+    /// mark and its attempt. The input value is the call's, and a part never
+    /// reads it.
+    fn work(&self, replay: bool) -> ItemAttempt {
+        let stream = Arc::clone(self.stream);
+        let item = match self.firing {
+            Some((kind, scheduled_at)) => CellItem::Timer(TimerFire {
+                kind,
+                scheduled_at,
+                stream,
+            }),
+            None => CellItem::Input(CellPayload {
+                value: Arc::new(()),
+                stream,
+                consumed_offset: None,
+                call: None,
+                replay,
+                forwarded: false,
+                hold: None,
+            }),
+        };
+        ItemAttempt {
+            item,
+            now: None,
+            attempt: self.attempt,
+            is_final: false,
+        }
+    }
 }
 
 /// Replay-stable 128-bit identifier returned by [`Ctx::stable_id`].
@@ -141,6 +219,8 @@ impl<'a, S: Tasklet> Ctx<'a, S> {
             checkpoint: false,
             replay: false,
             timers: None,
+            part: PartRoute::NoItem,
+            part_sequence: Cell::new(0),
         }
     }
 
@@ -187,6 +267,13 @@ impl<'a, S: Tasklet> Ctx<'a, S> {
     /// for `run` and `on_timer`; every other construction site leaves it off.
     pub(crate) fn with_timers(mut self, timers: &'a RefCell<TimerSession>) -> Self {
         self.timers = Some(timers);
+        self
+    }
+
+    /// Attach where this invocation's parts go. Set by the dispatcher for
+    /// `run` and `on_timer`, and by the testing harness.
+    pub(crate) fn with_part(mut self, route: PartRoute<'a>) -> Self {
+        self.part = route;
         self
     }
 
@@ -388,6 +475,44 @@ impl<'a, S: Tasklet> Ctx<'a, S> {
     /// differs from the Cell's uses [`Self::emit_keyed`].
     pub fn emit(&mut self, value: S::Output) -> Result<(), TaskletError> {
         self.route(Arc::new(value), None, None)
+    }
+
+    /// Send `value` as a part: a preview of the output this invocation is
+    /// producing, which leaves the runner now rather than when `run` returns.
+    /// It previews the tasklet's own output channel and is encoded as an emit
+    /// of the same value on it would be. The operator's listeners receive it
+    /// before the output; a sink never does, and it is never durable or
+    /// replayed. Parts are numbered from 0 within each attempt, so a retry
+    /// starts its preview again.
+    ///
+    /// It never waits: a part that cannot leave at once (no connection to
+    /// the controller, a local run, a stream that would block, a frame over
+    /// the size limit) is dropped and counted, and a replayed input sends
+    /// none. Fails with `part.no_sink` when the output channel does not end
+    /// in a sink, as for a channel that only feeds another tasklet or ends in
+    /// `response()`, and with `part.outside_invocation` in `compensate`,
+    /// which previews no work item. In the testing harness it sends nothing.
+    pub fn part(&self, value: S::Output) -> Result<(), TaskletError> {
+        let source = match &self.part {
+            PartRoute::Item(source) => source,
+            #[cfg(any(test, feature = "testing"))]
+            PartRoute::Harness => return Ok(()),
+            PartRoute::NoItem => {
+                let refusal = flz_core::part::outside_invocation(Some(S::NAME));
+                return Err(TaskletError::Part(flz_core::ErrorModel::to_error(&refusal)));
+            }
+        };
+        let payload = source.encode(&value)?;
+        let mut sequence = self.part_sequence.get();
+        let sent = flz_core::part::send(
+            source.slot,
+            &source.work(self.replay),
+            &mut sequence,
+            &payload,
+        );
+        self.part_sequence.set(sequence);
+        sent.map(drop)
+            .map_err(|refusal| TaskletError::Part(flz_core::ErrorModel::to_error(&refusal)))
     }
 
     /// Emit with user-attached string-keyed metadata. Valid on any channel

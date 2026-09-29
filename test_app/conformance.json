@@ -147,6 +147,10 @@
       "call_split",
       "call_turn"
     ],
+    "parts": [
+      "part_echo",
+      "part_echo_bounded"
+    ],
     "partitioned": [
       "partition_relay",
       "dynamic_cell",

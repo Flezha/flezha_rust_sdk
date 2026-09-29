@@ -32,6 +32,9 @@ pub enum TaskletError {
     },
     /// Only a tasklet's `run` / `on_timer` may register timers.
     TimersUnavailable,
+    /// A part the runtime refused, carrying its catalogue error
+    /// (`part.no_sink`, `part.outside_invocation`).
+    Part(flz_core::FlezhaError),
     Custom(String),
     NonRetryable(String),
 }
@@ -76,6 +79,7 @@ impl crate::ErrorModel for TaskletError {
             }
             .to_error(),
             Self::TimersUnavailable => E::with("runtime.timers_unavailable", []),
+            Self::Part(error) => error.clone(),
             Self::Custom(error) | Self::NonRetryable(error) => {
                 E::with("runtime.tasklet_failed", [("error", error.as_str().into())])
             }

@@ -290,6 +290,12 @@ attributes go on a stateless function, or on the `impl Tasklet` block of one
 with state. `docs/sdk/rust_operator_architecture.md` has the whole surface,
 including the block written without the attribute.
 
+`ctx.part(value)` sends a preview of the output while `run` is still working,
+encoded as `ctx.emit(value)` would be. Listeners attached to the operator see
+it before the output; a sink never does. It never waits: a part that cannot
+leave at once is dropped. A channel that does not end in a sink refuses it
+with `part.no_sink`.
+
 ## Public API workflow
 
 The public API surface baseline lives at `sdk/rust/public-api.txt`.

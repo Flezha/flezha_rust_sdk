@@ -110,6 +110,9 @@ pub use cell::timer::TimerKind;                            # ADDED by `cell-time
 #   pub fn emit_with_meta(&mut self, value: S::Output, meta: HashMap<String, String>) -> Result<(), TaskletError>;
 #   pub fn emit_keyed(&mut self, key: impl Into<String>, value: S::Output) -> Result<(), TaskletError>;
 #   pub fn emit_keyed_with_meta(&mut self, key: impl Into<String>, value: S::Output, meta: HashMap<String, String>) -> Result<(), TaskletError>;
+#   pub fn part(&self, value: S::Output) -> Result<(), TaskletError>;   # ADDED by `send-a-part-while-it-runs`
+#
+#   New `TaskletError` variant: Part(FlezhaError), a refused part (`part.no_sink`).
 #
 #   On a `.keyed()` channel `emit` / `emit_with_meta` carry `cell_key()` —
 #   the routing key, by construction — and still fail

@@ -16,7 +16,7 @@ const IDENTITY: &[u8] = b"spawn/test/";
 
 /// Minimal sink: `spawn_bounded` touches nothing on the emit path, which is
 /// exactly what these tests pin.
-struct NullSink;
+pub(super) struct NullSink;
 
 impl EmitSink for NullSink {
     fn emit(

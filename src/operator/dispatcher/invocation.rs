@@ -19,6 +19,7 @@ use crate::cell::flusher::{FlushableBuffer, TypedBodies, TypedBuffer};
 use crate::cell::timer::{PendingTimers, TimerKind, TimerOp};
 use crate::cell::CellSlot;
 use crate::operator::instance::OperatorInstance;
+use crate::tasklet::ctx::{PartRoute, PartSource};
 use crate::tasklet::{Ctx, Tasklet, TaskletError};
 
 impl<S: Tasklet> TaskletDispatcherImpl<S> {
@@ -139,6 +140,7 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
         &self,
         call: Call<S>,
         now: u64,
+        attempt: u32,
         scope: &mut CellScope<'_, S>,
         changes: &RefCell<Vec<S::Change>>,
         captured: Option<&RefCell<Captured>>,
@@ -155,6 +157,12 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
             call.reply_to().cloned()
         };
         let mut sink = self.emit_sink(scope, call.consumed_offset(), reply_to, captured, changes);
+        let part = PartRoute::Item(PartSource {
+            slot: scope.slot,
+            stream: scope.stream,
+            firing,
+            attempt,
+        });
         let state = &mut *scope.state;
         let live_timers = &mut *scope.timers;
         let session = self.timers.session(live_timers, now, firing);
@@ -170,11 +178,11 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
         .taking(call.consumed_offset())
         .during_replay(replay);
         // A rollback is no place to arm a deadline: `compensate` answers
-        // `TimersUnavailable`, in either kind.
+        // `TimersUnavailable`, in either kind, and has no work item to preview.
         let mut ctx = if matches!(call, Call::Compensate { .. }) {
             ctx
         } else {
-            ctx.with_timers(&session)
+            ctx.with_timers(&session).with_part(part)
         };
         let tasklet = &mut state.tasklet;
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match call {
@@ -349,7 +357,8 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
         let changes = RefCell::new(self.carry_over(scope.buffer));
         let captured = Self::effect_capture(scope.slot, offset);
 
-        let outcome = self.call_contained(call, now, &mut scope, &changes, captured.as_ref());
+        let outcome =
+            self.call_contained(call, now, attempt, &mut scope, &changes, captured.as_ref());
         let mut settled =
             match self.resolve_attempt(outcome, firing, now, is_final, &mut scope, captured) {
                 Ok(settled) => settled,

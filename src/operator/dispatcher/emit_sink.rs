@@ -130,20 +130,7 @@ impl<'a> CellEmitSink<'a> {
         meta: Option<HashMap<String, String>>,
         key: Option<String>,
     ) -> Result<(), TaskletError> {
-        let serializer = Arc::clone(&sink.serializer);
-        let value_for_panic = Arc::clone(value);
-        let bytes_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            (serializer)(value_for_panic.as_ref())
-        }));
-        let bytes = match bytes_result {
-            Ok(b) => b,
-            Err(panic) => {
-                return Err(TaskletError::PluginSerializerPanic {
-                    channel: descriptor.name.to_string(),
-                    message: crate::tasklet::error::format_panic(panic),
-                });
-            }
-        };
+        let bytes = serialize_contained(&sink.serializer, &descriptor.name, value.as_ref())?;
         let mut meta = meta;
         if descriptor.response {
             meta.get_or_insert_with(HashMap::new).insert(
@@ -257,6 +244,22 @@ impl<'a> EmitSink for CellEmitSink<'a> {
         flz_core::bounded::complete(self.producer, result);
         Ok(())
     }
+}
+
+/// Serialize `value` for the plugin end of `channel` inside `catch_unwind`:
+/// a serializer panic surfaces as the producing tasklet's
+/// `PluginSerializerPanic`, and the dispatch thread is unaffected.
+pub(crate) fn serialize_contained(
+    serializer: &crate::channel::PluginSerializeFn,
+    channel: &str,
+    value: &dyn Any,
+) -> Result<Vec<u8>, TaskletError> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| serializer(value))).map_err(|panic| {
+        TaskletError::PluginSerializerPanic {
+            channel: channel.to_string(),
+            message: crate::tasklet::error::format_panic(panic),
+        }
+    })
 }
 
 /// Build the emit wire metadata: drop any caller-supplied reserved

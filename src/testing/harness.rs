@@ -28,7 +28,7 @@ use crate::cell::restore::{decode_change, init_cell_with_payload, RestoreInitPay
 use crate::cell::timer::{PendingTimers, TimerKind, TimerOp, TimerSession};
 use crate::operator::dispatcher::emit_sink::apply_identity_stamps;
 use crate::tasklet::clock::{evaluate, wall_now_ms};
-use crate::tasklet::ctx::EmitSink;
+use crate::tasklet::ctx::{EmitSink, PartRoute};
 use crate::tasklet::{Change, Ctx, Tasklet, TaskletError};
 
 /// Cell identity the harness stands in for the runtime's per-slot
@@ -282,7 +282,8 @@ impl<S: Tasklet> TaskletTestHarness<S> {
             HARNESS_CELL_IDENTITY,
         )
         .with_cell_key(self.cell_key.as_deref())
-        .with_timers(&session);
+        .with_timers(&session)
+        .with_part(PartRoute::Harness);
         if let Err(e) = call(&mut self.tasklet, &mut ctx) {
             panic!("TaskletTestHarness: Tasklet::{hook} returned Err: {e}");
         }

@@ -481,3 +481,51 @@ pub(super) fn barrier_resend(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>
     );
     std::env::remove_var("FLEZHA_BOUNDED_ACK_TIMEOUT_MS");
 }
+
+pub(super) fn parts_before_the_answer(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
+    // --- output-parts: a `per_input` stage's parts leave on the runner's
+    // connection while it runs, numbered per turn, and the answer is still
+    // released only at the turn's commit ---
+    std::env::set_var("FLEZHA_PARK_IDLE_MS", "300");
+    let (stream, mut observer) = flz_core::bench_support::stream_pair();
+    observer
+        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .unwrap();
+    crate::cell::state_sink::set_secondary_stream(Some(std::sync::Arc::clone(&stream)));
+    assert!(start(node, "test-part-loop".into(), "part-1".into(), "")
+        .expect("init_values is a JSON object"));
+    for turn in ["x", "y"] {
+        node.operator_dispatch_handle().dispatch(
+            "part-1",
+            turn.as_bytes().to_vec(),
+            &Default::default(),
+            std::sync::Arc::clone(&stream),
+        );
+    }
+    // The next turn runs once this one's commit is acked, which `drain` does.
+    let reader = std::thread::spawn(move || {
+        std::iter::from_fn(|| {
+            flz_transport::service::payloader::extract_payload(&mut observer).ok()
+        })
+        .filter(|(payload_id, _, _)| payload_id == flz_core::part::PART_PAYLOAD_ID)
+        .take(4)
+        .map(|(_, payload, meta)| {
+            assert_eq!(meta["channel"], "answer");
+            let text = String::from_utf8(payload).unwrap();
+            format!("{text}:{}:{}", meta["flz.part"], meta["flz.part_attempt"])
+        })
+        .collect::<Vec<_>>()
+    });
+    let (outs, done) = drain(rx, "part-1");
+    assert_eq!(
+        reader.join().unwrap(),
+        ["x-a:0:1", "x-b:1:1", "y-a:0:1", "y-b:1:1"]
+    );
+    assert_eq!(done.0, "parked");
+    assert_eq!(outs, vec![b"done:x".to_vec(), b"done:y".to_vec()]);
+    let _ = drain_task_commits();
+    let _ = drain_iter_commits();
+    let _ = drain_iter_parks();
+    crate::cell::state_sink::set_secondary_stream(Some(capturing_wire()));
+    std::env::remove_var("FLEZHA_PARK_IDLE_MS");
+}

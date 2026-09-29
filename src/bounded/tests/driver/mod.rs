@@ -81,6 +81,7 @@ fn bounded_driver_scenarios() {
     crate::register_class::<crate::BoundedKind, LeakBounded>().unwrap();
     crate::register_class::<crate::BoundedKind, UndoSaga>().unwrap();
     crate::register_class::<crate::BoundedKind, ChatLoop>().unwrap();
+    crate::register_class::<crate::BoundedKind, PartLoop>().unwrap();
     crate::register_class::<crate::BoundedKind, LoopSagaAllOrNothing>().unwrap();
     crate::register_class::<crate::BoundedKind, LoopSagaKeepProgress>().unwrap();
     crate::register_class::<crate::BoundedKind, RetryBounded>().unwrap();
@@ -136,6 +137,7 @@ fn bounded_driver_scenarios() {
     saga::sibling_commit(&mut node, &rx);
     fan_in::branching_resume(&mut node, &rx);
     durable_loop::barrier_resend(&mut node, &rx);
+    durable_loop::parts_before_the_answer(&mut node, &rx);
     entrance::entrance(&mut node, &rx);
     entrance::once_waits(&mut node, &rx);
     keyed::keyed_cells(&mut node, &rx);

@@ -85,6 +85,34 @@ impl BoundedOperator for ChatLoop {
     }
 }
 
+string_task!(PartTurn, "bounded_part_turn", |input, ctx| {
+    ctx.part(format!("{input}-a"))?;
+    ctx.part(format!("{input}-b"))?;
+    ctx.emit(format!("done:{input}"))
+});
+
+/// A `per_input` loop whose one stage sends two parts before its answer.
+pub(crate) struct PartLoop;
+impl BoundedOperator for PartLoop {
+    fn factory_id() -> &'static str {
+        "test-part-loop"
+    }
+    fn loop_mode() -> LoopMode {
+        LoopMode::PerInput
+    }
+    fn self_terminating() -> bool {
+        false
+    }
+    fn max_duration() -> Option<Duration> {
+        Some(Duration::from_secs(30))
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("in")
+            .into::<PartTurn>()
+            .sink_named("answer");
+    }
+}
+
 /// Compensable stage-0 task of the loop saga. Its undo logs the number of
 /// retained outputs it was handed, which is how the test tells the two
 /// rollback sources apart: the in-flight iteration carries its outputs in
