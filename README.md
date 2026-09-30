@@ -2,6 +2,11 @@
 
 Rust SDK for the Flezha runner platform.
 
+**Support tier:**
+[tier 1](https://github.com/flezha/flezha/blob/main/docs/publishing/maturity.md#sdk-rust),
+run by the maintainer in a live deployment, passes the full conformance run in CI and is
+permanently supported.
+
 ## Local mode: run a graph with no controller
 
 The shortest way to see an operator work. `LocalOperator::start::<R>()` takes
