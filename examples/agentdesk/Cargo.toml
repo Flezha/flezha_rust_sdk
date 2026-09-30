@@ -1,0 +1,17 @@
+# Standalone on purpose: no workspace, and dependencies on released versions, so
+# this builds the way your own project would rather than the way a crate inside
+# the SDK's workspace does.
+[package]
+name = "agentdesk"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+flezha_runner = "0.1.0"
+# The messages, answers and HTTP envelopes are JSON on the wire.
+serde = { version = "1", features = ["derive"] }
+
+# Its own workspace, so the Flezha repository's workspace around this folder
+# does not claim it. Harmless in a copy of its own.
+[workspace]

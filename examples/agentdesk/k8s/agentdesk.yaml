@@ -1,0 +1,86 @@
+# agentdesk on Kubernetes: one pod holding a controller and its runner, the images
+# `docker build` makes from this project, and a service in front of the gateway's HTTP port.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: agentdesk
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: agentdesk
+  namespace: agentdesk
+spec:
+  serviceName: agentdesk
+  replicas: 1
+  selector:
+    matchLabels:
+      app: agentdesk
+  template:
+    metadata:
+      labels:
+        app: agentdesk
+    spec:
+      terminationGracePeriodSeconds: 75                # time for the controller's own stop
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: controller
+          image: agentdesk/controller:0.1.0
+          imagePullPolicy: Never                       # imported into the cluster, not pulled
+          env:
+            - name: FLEZHA_AUTHZ_ENABLED
+              value: "false"
+            - name: FLEZHA_DURABILITY_BACKEND
+              value: none
+            - name: FLEZHA_SOCKET_FILES_PATH           # the controller makes this folder its own
+              value: /flezha/run/sockets
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            exec:
+              command: ["/flezha/bin/flz", "boot", "await", "--timeout", "0"]
+            periodSeconds: 5
+          volumeMounts:
+            - name: app-data
+              mountPath: /flezha/app_data
+            - name: run
+              mountPath: /flezha/run
+        - name: runner
+          image: agentdesk/runner:0.1.0
+          imagePullPolicy: Never
+          env:
+            - name: FLEZHA_SOCKET_FILES_PATH
+              value: /flezha/run/sockets
+            - name: FLEZHA_PARK_IDLE_MS
+              value: "10000"
+          volumeMounts:
+            - name: run
+              mountPath: /flezha/run
+      volumes:
+        - name: run                                    # shared by the two containers
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: app-data
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agentdesk
+  namespace: agentdesk
+spec:
+  selector:
+    app: agentdesk
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

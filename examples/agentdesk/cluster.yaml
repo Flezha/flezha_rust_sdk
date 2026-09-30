@@ -1,0 +1,65 @@
+# A second controller and its runner beside compose.yaml's, the two controllers one cluster,
+# and a PostgreSQL database both keep a copy of their state in. Used with compose.yaml:
+# COMPOSE_FILE=compose.yaml:cluster.yaml.
+services:
+  controller:
+    environment: &cluster
+      RELEASE_COOKIE: ${RELEASE_COOKIE:?set RELEASE_COOKIE, the same for every controller}
+      FLEZHA_NODE_HOST: controller.agentdesk
+      FLEZHA_INITIAL_NODES: flezha@controller.agentdesk,flezha@controller-2.agentdesk
+      FLEZHA_DURABILITY_BACKEND: postgres
+      FLEZHA_DURABILITY_PG_HOST: postgres
+      FLEZHA_DURABILITY_PG_PASSWORD_ENV: DURABILITY_PASSWORD
+      DURABILITY_PASSWORD: ${DURABILITY_PASSWORD:?set DURABILITY_PASSWORD}
+    networks:
+      default:
+        aliases: [controller.agentdesk]    # a node name needs a host name with a dot
+    depends_on: &postgres
+      postgres:
+        condition: service_healthy
+    stop_grace_period: 75s                 # time to hand its operators over
+
+  controller-2:
+    build: controller
+    environment:
+      <<: *cluster
+      FLEZHA_NODE_HOST: controller-2.agentdesk
+      FLEZHA_AUTHZ_ENABLED: "false"
+    ports:
+      - "127.0.0.1:8081:8080"              # the gateway's HTTP port, when it runs here
+    volumes:
+      - app_data_2:/flezha/app_data
+      - sockets_2:/flezha/app_data/sockets
+    networks:
+      default:
+        aliases: [controller-2.agentdesk]
+    depends_on: *postgres
+    stop_grace_period: 75s
+
+  runner-2:
+    build: .
+    environment:
+      FLEZHA_SOCKET_FILES_PATH: /flezha/app_data/sockets
+      FLEZHA_PARK_IDLE_MS: "10000"
+    volumes:
+      - sockets_2:/flezha/app_data/sockets
+    depends_on:
+      controller-2:
+        condition: service_healthy
+    restart: on-failure
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: flezha
+      POSTGRES_PASSWORD: ${DURABILITY_PASSWORD}
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "flezha"]
+      interval: 2s
+    volumes:
+      - durable:/var/lib/postgresql/data
+
+volumes:
+  app_data_2:
+  sockets_2:
+  durable:

@@ -1,0 +1,28 @@
+# agentdesk in Docker Compose: one controller and one runner.
+services:
+  controller:
+    build: controller
+    environment:
+      FLEZHA_AUTHZ_ENABLED: "false"
+      FLEZHA_DURABILITY_BACKEND: none
+    ports:
+      - "127.0.0.1:8080:8080"              # the gateway's HTTP port, on this machine only
+    volumes:
+      - app_data:/flezha/app_data
+      - sockets:/flezha/app_data/sockets
+
+  runner:
+    build: .
+    environment:
+      FLEZHA_SOCKET_FILES_PATH: /flezha/app_data/sockets
+      FLEZHA_PARK_IDLE_MS: "10000"         # an idle session sleeps after 10 s
+    volumes:
+      - sockets:/flezha/app_data/sockets
+    depends_on:
+      controller:
+        condition: service_healthy
+    restart: on-failure
+
+volumes:
+  app_data:
+  sockets:
