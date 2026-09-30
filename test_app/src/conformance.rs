@@ -55,13 +55,14 @@ const FIXTURE: &str = "test/fixtures/reference_topologies.txt";
 /// The authoring surfaces this builder carries — the same set the app's
 /// `conformance.json` declares. A row needing anything else is skipped BY NAME,
 /// which is what makes the skip checkable.
-const SURFACES: [&str; 6] = [
+const SURFACES: [&str; 7] = [
     "merge",
     "branch",
     "bounded",
     "shorthand",
     "shorthand_typed_output",
     "response",
+    "call",
 ];
 
 /// A row of the four-column refusal table. The refusal NAME is the fixture's
@@ -415,7 +416,7 @@ impl<'b> Interp<'b> {
             }
             Handle::Node(s) => {
                 let s = reshape(s, reshaping);
-                if !self.terminate(s, last) {
+                if !self.terminate(s, last) && !crate::operator_call::call_step(s, head, last) {
                     producer_link(s, last);
                 }
             }
@@ -538,7 +539,10 @@ fn producer_link(s: Stream<'_, String, NodeTarget>, link: &str) {
 
 /// `<x>.into(<role>)` — the palette role bound to its fixture tasklet. The
 /// consumer is a type argument here, so the binding is a match and not a table.
-fn wire<'b, K: StreamTarget>(s: Stream<'b, String, K>, role: &str) -> Stream<'b, String> {
+pub(crate) fn wire<'b, K: StreamTarget>(
+    s: Stream<'b, String, K>,
+    role: &str,
+) -> Stream<'b, String> {
     match role {
         "plain" => s.into::<Plain>(),
         "second" => s.into::<Second>(),
@@ -723,11 +727,7 @@ fn derived(topology: &OperatorTopology) -> Value {
                 "kind": kind_name(channel),
                 "producer": channel.producer,
                 "consumers": channel.consumer_ids().collect::<Vec<_>>(),
-                "sink": channel
-                    .plugin_sink
-                    .as_ref()
-                    .filter(|_| !channel.response)
-                    .map(|_| channel.name.to_string()),
+                "sink": channel.sink.then(|| channel.name.to_string()),
             })
         })
         .collect();

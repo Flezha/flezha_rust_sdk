@@ -6,9 +6,11 @@
 //! time and frozen with the topology.
 
 pub mod builder;
+pub(crate) mod call;
 mod route_latest;
 
 pub use builder::{
     ChannelBuilder, EntryStream, EntryTarget, Merge, MergeSource, NodeTarget, Stream, StreamTarget,
 };
+pub use call::{CallTarget, Response};
 pub use flz_core::channel::*;

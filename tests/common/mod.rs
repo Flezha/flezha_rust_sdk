@@ -6,6 +6,7 @@
 // of it, so an unused item here is the normal case, not a defect.
 #![allow(dead_code, unused_imports)]
 
+pub mod contract;
 mod tier;
 mod timers;
 mod wire;

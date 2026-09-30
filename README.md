@@ -255,6 +255,29 @@ still runs exactly once. Cycles are refused at registration; a chained loop
 terminal that releases an output channel, since that handoff is what seeds the
 next iteration.
 
+### Calling another operator
+
+`call` ends a chain on a call to another operator: each value that reaches it,
+after the chain's `filter`/`map`/`key_by`, is one request, and the outcome comes
+back later as a `Response` on the entry channel `<channel>.response`. Nothing
+waits for it; wire that channel into any tasklet, the calling one included.
+
+```rust
+use flezha_runner::{CallTarget, Response};
+
+c.input::<String>("in")
+    .into::<Turn>()
+    .named("turn")
+    .key_by(|line: &String| line.split(':').next().unwrap_or_default().to_string())
+    .call::<String>(CallTarget::factory("agent").create(false), 60_000)
+    .into::<Meter>(); // Meter: Tasklet<Input = Response<String, String>>
+```
+
+A `Response<Req, Ans>` carries `request`, `result: Result<Ans, FlezhaError>`
+(`call.timeout` among the errors), `target` (the instance that answered) and
+`created`. `CallTarget::id("pricing")` calls an instance or a partition group by
+name. See `docs/sdk/calls.md` in the core repository.
+
 ### Writing a tasklet
 
 A tasklet is your own type: `#[flezha::tasklet(name = "...")]` on its

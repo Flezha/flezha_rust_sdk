@@ -117,10 +117,10 @@ impl<'a> CellEmitSink<'a> {
         }
     }
 
-    /// Plugin-sink tail: serialize once inside `catch_unwind` and forward the
-    /// bytes through the plugin-wire framing path. A serializer panic surfaces
-    /// as `TaskletError::PluginSerializerPanic` to the producing Tasklet;
-    /// the dispatcher thread is unaffected.
+    /// Plugin-sink tail: serialize once inside `catch_unwind` and write the
+    /// bytes as the channel's plugin output. A serializer panic surfaces as
+    /// `TaskletError::PluginSerializerPanic` to the producing Tasklet; the
+    /// dispatcher thread is unaffected.
     fn emit_plugin_sink(
         &mut self,
         instance: &OperatorInstance,
@@ -138,15 +138,52 @@ impl<'a> CellEmitSink<'a> {
                 self.reply_to.as_deref().unwrap_or_default().to_string(),
             );
         }
+        self.write_plugin_output(instance, descriptor, bytes, meta, key)
+    }
 
+    /// A call end's tail: each request the value makes (the chain's transform
+    /// and key applied) serialized once and written with the end's stamps, its
+    /// deadline read off the wall clock now. The ctx refuses a tasklet's own
+    /// `flz.` keys, so the stamps are the only ones.
+    fn emit_call(
+        &mut self,
+        instance: &OperatorInstance,
+        descriptor: &crate::channel::ChannelDescriptor,
+        end: &crate::channel::CallEnd,
+        sink: &crate::channel::PluginSink,
+        value: &Arc<dyn Any + Send + Sync>,
+        meta: Option<HashMap<String, String>>,
+    ) -> Result<(), TaskletError> {
+        let requests = end
+            .requests(value)
+            .map_err(|error| TaskletError::non_retryable(error.to_string()))?;
+        let now_ms = flz_core::util::wall_now_ms();
+        for (request, key) in requests {
+            let bytes = serialize_contained(&sink.serializer, &descriptor.name, request.as_ref())?;
+            let mut metadata = meta.clone().unwrap_or_default();
+            metadata.extend(end.stamps(key.as_deref(), now_ms));
+            self.write_plugin_output(instance, descriptor, bytes, Some(metadata), key)?;
+        }
+        Ok(())
+    }
+
+    /// One plugin output: into the invocation's effect record for a Cell that
+    /// records effects, else framed and written to the wire with the channel's
+    /// name and, on a keyed channel, the identity stamps.
+    fn write_plugin_output(
+        &mut self,
+        instance: &OperatorInstance,
+        descriptor: &crate::channel::ChannelDescriptor,
+        bytes: Vec<u8>,
+        meta: Option<HashMap<String, String>>,
+        key: Option<String>,
+    ) -> Result<(), TaskletError> {
         if let Some(captured) = self.effect_capture {
             push_effect_output(captured, &descriptor.name, key, meta, bytes);
             return Ok(());
         }
-
         let mut metadata = channel_metadata(meta, &descriptor.name);
         self.stamp_identity(&mut metadata, key);
-
         send_plugin_frame(&self.stream, &instance.instance_id, &bytes, &metadata)
             .map_err(|error| TaskletError::non_retryable(error.to_string()))
     }
@@ -207,10 +244,15 @@ impl<'a> EmitSink for CellEmitSink<'a> {
                     &value,
                 ));
         }
-        if let Some(sink) = descriptor.plugin_sink.as_ref() {
-            self.emit_plugin_sink(&instance, descriptor, sink, &value, meta, key)?;
+        match (descriptor.call.as_ref(), descriptor.plugin_sink.as_ref()) {
+            (Some(end), Some(sink)) => {
+                self.emit_call(&instance, descriptor, end, sink, &value, meta)
+            }
+            (None, Some(sink)) => {
+                self.emit_plugin_sink(&instance, descriptor, sink, &value, meta, key)
+            }
+            _ => Ok(()),
         }
-        Ok(())
     }
 
     fn channel_name(&self) -> &str {

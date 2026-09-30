@@ -322,6 +322,43 @@ impl BuilderState {
         }
     }
 
+    /// Close `pending`'s chain on a call end and declare the Response channel
+    /// the outcome enters on, answering its id. The chain's closures are the
+    /// end's, as an edge's are the edge's.
+    pub(super) fn attach_call(
+        &mut self,
+        channel: ChannelId,
+        pending: Option<u32>,
+        target: crate::CallTarget,
+        deadline_ms: u64,
+        serializer: crate::channel::PluginSerializeFn,
+        decode: crate::channel::EntryWrapFn,
+    ) -> u32 {
+        let (mut links, transform, key) = self.close_pending(pending);
+        // Declared once per class registration, so the name lives as long as
+        // the topology that holds it.
+        let response: &'static str = Box::leak(
+            format!("{}.response", self.channels[channel as usize].name).into_boxed_str(),
+        );
+        links.push(HostLink::Call(flz_core::host::HostCall {
+            target: target.target,
+            factory: target.factory,
+            deadline_ms,
+            create: target.create,
+            channel: target.channel,
+            response: response.to_string(),
+        }));
+        self.push_chain(channel, links, transform, key);
+        let entry = &mut self.channels[channel as usize];
+        if entry.plugin_sink.is_none() {
+            entry.plugin_sink = Some(PluginSink { serializer });
+        }
+        let id = self.push_channel(response, ChannelKind::Entry);
+        self.channels[id as usize].wrap_input = Some(decode);
+        self.channels[id as usize].entry_parsed = true;
+        id
+    }
+
     /// Record one link that stands on its own — `.named(...)`, `.sink(...)`,
     /// the `branch(...)` arity — as its own chain, carrying no closures.
     pub(super) fn record_link(&mut self, channel: ChannelId, link: HostLink) {

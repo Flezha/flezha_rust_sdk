@@ -270,6 +270,14 @@ fn channel_descriptor(entry: ChannelEntry, derived: DerivedChannel) -> ChannelDe
             }
         })
         .collect();
+    let call = derived.call.as_ref().map(|call| {
+        let (transform, key) = entry.chain_edges[call.chain].clone();
+        flz_core::channel::CallEnd {
+            transform,
+            key,
+            ..flz_core::host::call_end(call)
+        }
+    });
     ChannelDescriptor {
         name: Arc::from(entry.name),
         kind,
@@ -282,6 +290,7 @@ fn channel_descriptor(entry: ChannelEntry, derived: DerivedChannel) -> ChannelDe
         }),
         response: derived.response,
         sink: derived.sink.is_some(),
+        call,
         keyed: entry.keyed,
         overflow_policy: entry.overflow_policy,
         retry: entry.retry,

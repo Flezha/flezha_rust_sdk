@@ -313,7 +313,7 @@ impl ChannelBuilder {
 /// The default entry decode for `T`: passthrough for `Vec<u8>`, UTF-8 for
 /// `String`, the SDK's default JSON codec otherwise. The bool is the "real
 /// parser" flag driving the retry→DLQ classification of a failing decode.
-fn default_entry_wrap<T: DeserializeOwned + Send + Sync + 'static>(
+pub(crate) fn default_entry_wrap<T: DeserializeOwned + Send + Sync + 'static>(
 ) -> (crate::channel::EntryWrapFn, bool) {
     if TypeId::of::<T>() == TypeId::of::<Vec<u8>>() {
         (

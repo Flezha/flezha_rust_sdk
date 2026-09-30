@@ -391,6 +391,43 @@ impl<'b, T: 'static + Send + Sync> Stream<'b, T, NodeTarget> {
         )
     }
 
+    /// End this chain in a call to another operator: every value that reaches
+    /// it, after this chain's transforms and key, is one request, serialized
+    /// as [`sink`](Stream::sink) serializes it. The call waits for nothing:
+    /// its outcome arrives later as a [`Response`](crate::Response) on the
+    /// entry channel this answers, named `<this channel>.response`, which
+    /// must feed a tasklet (the one that made the call included) and decodes
+    /// the answer as `input::<A>` decodes. The caller hears of the outcome
+    /// within `deadline_ms` milliseconds of the emit, `call.timeout` at the
+    /// latest. A channel ends in one sink, one response or one call.
+    pub fn call<A>(
+        self,
+        target: crate::CallTarget,
+        deadline_ms: u64,
+    ) -> EntryStream<'b, crate::Response<T, A>>
+    where
+        T: serde::Serialize + serde::de::DeserializeOwned,
+        A: serde::de::DeserializeOwned + Send + Sync + 'static,
+    {
+        let pending = self.pending;
+        let response = self.with_channel(|st, cid| {
+            st.attach_call(
+                cid,
+                pending,
+                target,
+                deadline_ms,
+                default_plugin_serializer::<T>(),
+                crate::channel::call::response_wrap::<T, A>(),
+            )
+        });
+        Stream {
+            builder: self.builder,
+            target: response,
+            pending: None,
+            _phantom: PhantomData,
+        }
+    }
+
     fn attach_plugin_sink(
         self,
         name: Option<&'static str>,

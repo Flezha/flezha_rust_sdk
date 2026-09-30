@@ -4,6 +4,15 @@ All notable changes to the Rust SDK crate.
 
 ## Unreleased
 
+### Added: `Stream::call` and `Response`
+
+A chain ends on a call to another operator with
+`.call::<Answer>(CallTarget::id("pricing") | CallTarget::factory("agent"), deadline_ms)`,
+answering an `EntryStream<Response<T, Answer>>` on `<channel>.response`. The call
+end keeps its chain's transform and key, and each request leaves stamped with
+the call's facts. A `:once` or `:chained` bounded class that calls is refused
+`BuildBoundedError::CallOutsidePerInputLoop`.
+
 ### Removed: the `sealed()` terminator and `Channel<T>`
 
 **Breaking.** `Stream::sealed()` and the `Channel<T>` handle it returned are

@@ -41,6 +41,7 @@ pub fn build_spec<T: BoundedOperator>(
     let dag = build_dag(factory_id, &topology)?;
 
     refuse_chained_loop_shape::<T>(factory_id, &topology, &dag)?;
+    refuse_call_outside_per_input::<T>(factory_id, &topology)?;
     if T::PERSISTENCE_ENABLED {
         refuse_loop_terminal_without_handoff::<T>(factory_id, &topology, &dag)?;
     }
@@ -53,6 +54,22 @@ pub fn build_spec<T: BoundedOperator>(
         sync_durability: T::SYNC_DURABILITY,
     });
     Ok(std::sync::Arc::new(topology))
+}
+
+/// Only a `:per_input` loop reads the later message a call's `Response` is.
+fn refuse_call_outside_per_input<T: BoundedOperator>(
+    factory_id: &'static str,
+    topology: &OperatorTopology,
+) -> Result<(), BuildBoundedError> {
+    match topology.channels.iter().find(|c| c.call.is_some()) {
+        Some(channel) if T::loop_mode() != LoopMode::PerInput => {
+            Err(BuildBoundedError::CallOutsidePerInputLoop {
+                factory_id,
+                channel: channel.name.to_string(),
+            })
+        }
+        _ => Ok(()),
+    }
 }
 
 /// A handoff-chained loop re-seeds iteration N+1 from iteration N's terminal

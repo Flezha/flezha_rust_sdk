@@ -49,6 +49,8 @@ pub use tasklet::IfRunning;
 pub use tasklet::SpawnError;
 pub use tasklet::SpawnHandle;
 pub use tasklet::SpawnOptions;
+pub use channel::CallTarget;                             # ADDED by `call-an-operator-and-get-its-response`
+pub use channel::Response;                               # ADDED by `call-an-operator-and-get-its-response`
 pub use tasklet::SpawnOutcome;
 pub use tasklet::SpawnResult;
 pub use tasklet::StableId;
@@ -250,6 +252,26 @@ pub use cell::timer::TimerKind;                            # ADDED by `cell-time
 #     pub fn response(self) -> Self where T: Serialize;
 #     pub fn response_with<F>(self, serializer: F) -> Self
 #       where F: Fn(&T) -> Vec<u8> + Send + Sync + 'static;
+#     # ADDED by `call-an-operator-and-get-its-response`: the third plugin end.
+#     # Every value, after the chain's transforms and key, is one request; the
+#     # outcome arrives on the entry channel `<channel>.response`.
+#     pub fn call<A>(self, target: CallTarget, deadline_ms: u64)
+#       -> EntryStream<'b, Response<T, A>>
+#       where T: Serialize + DeserializeOwned, A: DeserializeOwned + Send + Sync + 'static;
+#
+#   pub struct CallTarget { /* private */ }
+#     pub fn id(id: impl Into<String>) -> Self;          # an instance or a partition group
+#     pub fn factory(factory: impl Into<String>) -> Self;
+#     pub fn create(self, create: bool) -> Self;         # default true
+#     pub fn channel(self, channel: impl Into<String>) -> Self;
+#
+#   pub struct Response<Req, Ans> {
+#       pub request: Req,
+#       pub result: Result<Ans, flz_transport::errors::FlezhaError>,
+#       pub target: String,
+#       pub created: bool,
+#   }
+#     pub fn decode(bytes: &[u8]) -> Result<Self, String>;
 #     # REMOVED: `sealed()` and `Channel<T>`; a channel is terminal by having
 #     # no further wiring.
 #
@@ -334,6 +356,7 @@ pub use cell::timer::TimerKind;                            # ADDED by `cell-time
 #   pub enum BuildBoundedError {
 #       /* existing variants unchanged */
 #       MergeFromEntryChannel { factory_id: &'static str, channel: String, tasklet: String },
+#       CallOutsidePerInputLoop { factory_id: &'static str, channel: String },   # ADDED
 #   }
 #
 # `TaskletError` variants:
@@ -356,6 +379,7 @@ pub use cell::timer::TimerKind;                            # ADDED by `cell-time
 #       # DERIVED at build time (a sink with no consumers => PluginBound).
 #       pub plugin_sink: Option<PluginSink>,
 #       pub response: bool,                     # the plugin end is `response()`
+#       pub call: Option<CallEnd>,              # ADDED: the plugin end is `call(...)`
 #       pub keyed: bool,
 #       pub consumers: Vec<ConsumerEdge>,
 #   }
