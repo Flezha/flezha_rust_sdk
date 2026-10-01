@@ -1,0 +1,5 @@
+error[E0599]: no variant, associated function, or constant named `Bounded` found for enum `Run` in the current scope
+ --> tests/ui/settings_kind_literal.rs:6:18
+  |
+6 |     let _ = Run::Bounded;
+  |                  ^^^^^^^ variant, associated function, or constant not found in `Run`

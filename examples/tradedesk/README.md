@@ -11,10 +11,10 @@ write them one tasklet at a time.
 | File | What is in it |
 |---|---|
 | `src/main.rs` | the runner: this process joins the `trading` namespace and registers both factories |
-| `src/trade_watcher.rs` | the ETL stream, an unbounded operator: the exchange's trade messages in, a cell per symbol, buy signals out |
+| `src/trade_watcher.rs` | the ETL stream, a flow operator: the exchange's trade messages in, a cell per symbol, buy signals out |
 | `src/track_prices.rs` | keeps each symbol's last ten prices, and compares a new price with their average |
 | `src/buy_above_average.rs` | starts an order when a price is 2 % or more above its average |
-| `src/order_executor.rs` | the workflow, a bounded operator: two steps in order, then two side by side. The order an instance is started with is the `OrderTicket` struct here |
+| `src/order_executor.rs` | the workflow, a steps operator: two steps in order, then two side by side. The order an instance is started with is the `OrderTicket` struct here |
 | `src/reserve_funds.rs` | step one: puts the money aside, and releases it again if the order is undone |
 | `src/place_order.rs` | step two: places the paper order, and cancels it if the order is undone |
 | `src/confirm_fill.rs` | waits ten seconds for the exchange, confirms the fill and ends the order with its result, and refuses an order above the exchange's limit |
@@ -71,7 +71,7 @@ flz operator info order_1 --namespace trading
 ```
 ...
 Operator: order_1
-  Kind: bounded
+  Run: steps
   Phase: finished
   Status: ok
   Finished At (unix s): 1790583840
@@ -107,7 +107,7 @@ flz operator info order_2 --namespace trading
 ```
 ...
 Operator: order_2
-  Kind: bounded
+  Run: steps
   Phase: finished
   Status: error
   Error: tasklet confirm_fill failed: the exchange fills at most 100 a time, and this is 500

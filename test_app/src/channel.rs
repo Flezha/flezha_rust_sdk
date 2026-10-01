@@ -7,16 +7,16 @@ use crate::*;
 // -- BoundedMailboxOperator ------------------------------------------------------
 
 #[derive(Serialize, Deserialize, Clone, Default)]
-struct BoundedTaskletState {
+struct StepsTaskletState {
     pub processed: u64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-enum BoundedChange {
+enum StepsChange {
     Inc,
 }
-impl Change<BoundedTaskletState> for BoundedChange {
-    fn apply_to(&self, state: &mut BoundedTaskletState) {
+impl Change<StepsTaskletState> for StepsChange {
+    fn apply_to(&self, state: &mut StepsTaskletState) {
         state.processed += 1;
     }
 }
@@ -27,13 +27,13 @@ struct DropNothingTestTasklet;
 impl Tasklet for DropNothingTestTasklet {
     type Input = String;
     type Output = Vec<u8>;
-    type State = BoundedTaskletState;
-    type Change = BoundedChange;
+    type State = StepsTaskletState;
+    type Change = StepsChange;
     fn mailbox_capacity() -> usize {
         4
     }
     fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
-        ctx.change(BoundedChange::Inc);
+        ctx.change(StepsChange::Inc);
         ctx.emit(input.into_bytes())
     }
 }
@@ -44,13 +44,13 @@ struct DropNewestTestTasklet;
 impl Tasklet for DropNewestTestTasklet {
     type Input = String;
     type Output = Vec<u8>;
-    type State = BoundedTaskletState;
-    type Change = BoundedChange;
+    type State = StepsTaskletState;
+    type Change = StepsChange;
     fn mailbox_capacity() -> usize {
         4
     }
     fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
-        ctx.change(BoundedChange::Inc);
+        ctx.change(StepsChange::Inc);
         ctx.emit(input.into_bytes())
     }
 }
@@ -61,13 +61,13 @@ struct DropOldestTestTasklet;
 impl Tasklet for DropOldestTestTasklet {
     type Input = String;
     type Output = Vec<u8>;
-    type State = BoundedTaskletState;
-    type Change = BoundedChange;
+    type State = StepsTaskletState;
+    type Change = StepsChange;
     fn mailbox_capacity() -> usize {
         4
     }
     fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
-        ctx.change(BoundedChange::Inc);
+        ctx.change(StepsChange::Inc);
         ctx.emit(input.into_bytes())
     }
 }
@@ -76,7 +76,7 @@ impl Tasklet for DropOldestTestTasklet {
 // (`sdk-graph-authoring`) allows exactly one entry channel per operator, so
 // the former three-entry BoundedMailboxOperator is now three classes.
 pub(crate) struct BoundedMailboxDropNothingOperator;
-impl UnboundedOperator for BoundedMailboxDropNothingOperator {
+impl Operator for BoundedMailboxDropNothingOperator {
     fn factory_id() -> &'static str {
         "bounded_mailbox_drop_nothing"
     }
@@ -89,7 +89,7 @@ impl UnboundedOperator for BoundedMailboxDropNothingOperator {
 }
 
 pub(crate) struct BoundedMailboxDropNewestOperator;
-impl UnboundedOperator for BoundedMailboxDropNewestOperator {
+impl Operator for BoundedMailboxDropNewestOperator {
     fn factory_id() -> &'static str {
         "bounded_mailbox_drop_newest"
     }
@@ -102,7 +102,7 @@ impl UnboundedOperator for BoundedMailboxDropNewestOperator {
 }
 
 pub(crate) struct BoundedMailboxDropOldestOperator;
-impl UnboundedOperator for BoundedMailboxDropOldestOperator {
+impl Operator for BoundedMailboxDropOldestOperator {
     fn factory_id() -> &'static str {
         "bounded_mailbox_drop_oldest"
     }
@@ -153,7 +153,7 @@ impl Tasklet for HybridConsumerTasklet {
 }
 
 pub(crate) struct HybridChannelOperator;
-impl UnboundedOperator for HybridChannelOperator {
+impl Operator for HybridChannelOperator {
     fn factory_id() -> &'static str {
         "hybrid_channel"
     }
@@ -203,7 +203,7 @@ impl Tasklet for MergeLabelTasklet {
 }
 
 pub(crate) struct MergedInputOperator;
-impl UnboundedOperator for MergedInputOperator {
+impl Operator for MergedInputOperator {
     fn factory_id() -> &'static str {
         "merged_input"
     }
@@ -237,7 +237,7 @@ impl Tasklet for TransformLabelTasklet {
 }
 
 pub(crate) struct TransformChainOperator;
-impl UnboundedOperator for TransformChainOperator {
+impl Operator for TransformChainOperator {
     fn factory_id() -> &'static str {
         "transform_chain"
     }

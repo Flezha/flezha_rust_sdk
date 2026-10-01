@@ -158,7 +158,7 @@ impl StableId {
 /// out of the typed context so one sink serves every tasklet type.
 pub(crate) trait EmitSink {
     /// Emit one value on this Tasklet's output channel. Where it goes —
-    /// consumer mailboxes, the plugin wire, a bounded stage handoff, or
+    /// consumer mailboxes, the plugin wire, a steps stage handoff, or
     /// several of those — is the channel's shape, resolved inside the
     /// implementation. `meta` and `key` arrive already validated by
     /// [`Ctx::route`].
@@ -188,11 +188,10 @@ pub(crate) trait EmitSink {
         false
     }
 
-    /// Ask to end the instance with `result`; only a bounded stage can.
+    /// Ask to end the instance with `result`. A sink that runs no instance
+    /// has nothing to end.
     fn complete(&mut self, _result: Vec<u8>) -> Result<(), TaskletError> {
-        Err(TaskletError::non_retryable(
-            flz_core::bounded::complete_outside_bounded().text(),
-        ))
+        Ok(())
     }
 }
 
@@ -279,18 +278,17 @@ impl<'a, S: Tasklet> Ctx<'a, S> {
 
     /// Mark the invocation as a replay of already-processed input. Set by the
     /// dispatcher from the cell payload; it is what makes
-    /// [`Self::spawn_bounded`] a live-processing-only side effect.
+    /// [`Self::spawn_steps`] a live-processing-only side effect.
     pub(crate) fn during_replay(mut self, replay: bool) -> Self {
         self.replay = replay;
         self
     }
 
-    /// End this bounded instance with `result` once the current iteration
-    /// commits. The rest of the iteration still runs; the instance then
-    /// completes instead of waiting for its next input. A later call in the
-    /// same invocation replaces the result. An unbounded operator never
-    /// completes, so there the call fails the input naming
-    /// `CompleteOutsideBounded`.
+    /// End this instance with `result`. In steps it ends once the current
+    /// iteration commits: the rest of the iteration still runs, and a later
+    /// call in the same invocation replaces the result. In flow it ends once
+    /// its Cells have run what they already hold to its outputs, as an
+    /// external stop drains them.
     pub fn complete(&mut self, result: impl Into<Vec<u8>>) -> Result<(), TaskletError> {
         self.emitter.complete(result.into())
     }
@@ -299,7 +297,7 @@ impl<'a, S: Tasklet> Ctx<'a, S> {
     /// last checkpoint — this one included — is acknowledged, and the state
     /// they accumulated is made durable, as one atomic record.
     ///
-    /// Only meaningful under `ChannelBuilder::checkpoint_ack()`. An operator
+    /// Only meaningful under `ack: checkpoint` in the class's run. An operator
     /// on the default per-input granularity already acknowledges every input,
     /// so the call is a no-op there rather than an error — a checkpointing
     /// Tasklet stays correct if its operator later drops the declaration.
@@ -346,7 +344,7 @@ impl<'a, S: Tasklet> Ctx<'a, S> {
         StableId::derive(self.cell_identity, self.invocation_seq, ordinal)
     }
 
-    /// Ask the controller for a new bounded instance of `factory_id`, under an
+    /// Ask the controller for a new steps instance of `factory_id`, under an
     /// id it generates. `payload` is the instance's first input. The handle
     /// resolves to [`SpawnResult`](crate::tasklet::SpawnResult), whose `id` is
     /// the generated one.
@@ -355,7 +353,7 @@ impl<'a, S: Tasklet> Ctx<'a, S> {
     /// into a running one. Reissuing it after a lost or timed-out answer starts
     /// a second instance, and a replay of it answers an empty id, because the
     /// generated id exists only in the live run's answer. A caller who needs at
-    /// most one instance, or the id on replay, uses [`Self::spawn_bounded_with`].
+    /// most one instance, or the id on replay, uses [`Self::spawn_steps_with`].
     ///
     /// Returns immediately. The request cannot fault this tasklet: a refusal,
     /// an unreachable controller, or an unknown factory surfaces only through
@@ -371,7 +369,7 @@ impl<'a, S: Tasklet> Ctx<'a, S> {
     /// The timer calls on this same context behave the OPPOSITE way and
     /// deliberately so: a timer is internal state, so a replay registers it,
     /// where skipping would rebuild a pending set the live run never had.
-    pub fn spawn_bounded(
+    pub fn spawn_steps(
         &self,
         factory_id: impl Into<String>,
         payload: impl Into<Vec<u8>>,
@@ -385,7 +383,7 @@ impl<'a, S: Tasklet> Ctx<'a, S> {
         )
     }
 
-    /// [`Self::spawn_bounded`] under the id `options` names: start
+    /// [`Self::spawn_steps`] under the id `options` names: start
     /// `factory_id` under that id if it is free, otherwise apply its
     /// [`IfRunning`](crate::tasklet::IfRunning) (`Deliver`, the default, feeds
     /// the running instance; `Error` reports
@@ -393,7 +391,7 @@ impl<'a, S: Tasklet> Ctx<'a, S> {
     /// Concurrent requests for one id race-resolve controller-side: exactly one
     /// spawns and every other payload is delivered to it. A replay answers the
     /// id it was given.
-    pub fn spawn_bounded_with(
+    pub fn spawn_steps_with(
         &self,
         factory_id: impl Into<String>,
         payload: impl Into<Vec<u8>>,
@@ -435,7 +433,7 @@ impl<'a, S: Tasklet> Ctx<'a, S> {
     /// The anchor is `ctx.now()` (the declared clock), not an ambient read,
     /// which is what makes a replayed invocation register the same absolute
     /// timestamp the live one did. Under an event-time clock the anchor is
-    /// therefore the input's event time; an unbounded operator that is caught up schedules
+    /// therefore the input's event time; a flow operator that is caught up schedules
     /// the same instant a wall clock would, and one replaying history schedules
     /// a past instant, which fires at once.
     pub fn timer_after(&self, delay: Duration) -> Result<u64, TaskletError> {

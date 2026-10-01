@@ -1,7 +1,7 @@
 //! One invocation of the author's code, from the call to the settle.
 //!
 //! The retry ladder, the emit sink, the effect record and the DLQ park are the
-//! same machinery for an input, a timer firing and a bounded operator undo; only
+//! same machinery for an input, a timer firing and a steps operator undo; only
 //! [`Call`] differs, which is why all three reach `invoke_once`.
 
 use std::any::Any;
@@ -14,7 +14,7 @@ use flz_transport::transport::FlezhaStream;
 use super::cell_slot::flusher_registered;
 use super::emit_sink::{flush_before_emit_enabled, CellEmitSink, FlushBeforeEmit};
 use super::{CellState, TaskletDispatcherImpl};
-use crate::bounded::BoundedError;
+use crate::steps::StepsError;
 use crate::cell::flusher::{FlushableBuffer, TypedBodies, TypedBuffer};
 use crate::cell::timer::{PendingTimers, TimerKind, TimerOp};
 use crate::cell::CellSlot;
@@ -53,7 +53,7 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
             &self.flush.cell_identity,
             &self.flush.change_seq,
             &self.flush.header,
-            self.flush.persistence_enabled,
+            self.flush.keeps_state,
         );
     }
 
@@ -82,7 +82,7 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
     ) -> Option<FlushBeforeEmit<'a>> {
         if self.flush.records_effects
             || consumes_offsets
-            || !self.flush.persistence_enabled
+            || !self.flush.keeps_state
             || !flush_before_emit_enabled()
         {
             return None;
@@ -150,9 +150,9 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
         // The removal is op 0 for a firing, so it rides the same durable
         // record as whatever `on_timer` goes on to apply and emit.
         let firing = call.firing();
-        // A bounded pass's call is the pass's, whichever stage emits.
-        let reply_to = if self.flush.bounded {
-            flz_core::bounded::pass_call(scope.slot)
+        // A steps pass's call is the pass's, whichever stage emits.
+        let reply_to = if self.flush.steps {
+            flz_core::steps::pass_call(scope.slot)
         } else {
             call.reply_to().cloned()
         };
@@ -284,7 +284,7 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
 
     /// Settle one attempt into this Cell's buffer through the one settlement
     /// rule the erased host also calls, then act on what it hands back: a
-    /// bounded operator Cell's record ships at once and is named on its pass sheet, a
+    /// steps operator Cell's record ships at once and is named on its pass sheet, a
     /// class with no flusher entry has nothing that would ever drain what it
     /// buffered, so it drains it here, and a tier-off park holds the Cell until
     /// the controller acks the dead-letter append.
@@ -308,8 +308,8 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
             effects,
             dlq,
         );
-        if self.flush.bounded && self.flush.records_effects {
-            flz_core::bounded::ship_stage_record(slot, buffer, &self.flush.header, channels);
+        if self.flush.steps && self.flush.records_effects {
+            flz_core::steps::ship_stage_record(slot, buffer, &self.flush.header, channels);
         } else if !buffer.is_empty() && !flusher_registered::<S>(self.flush.records_effects) {
             self.flush_now(buffer);
         }
@@ -370,13 +370,13 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
                 }
             };
 
-        // A bounded operator's final attempt is its kind's: the stage fails into
+        // A steps operator's final attempt is its kind's: the stage fails into
         // compensation, and no dead letter is minted.
         let dlq = match settled.park_error.take() {
-            Some(error) if self.flush.bounded => {
-                flz_core::bounded::note_failure(
+            Some(error) if self.flush.steps => {
+                flz_core::steps::note_failure(
                     scope.slot,
-                    BoundedError::from(format!("tasklet {} failed: {error}", S::NAME)),
+                    StepsError::from(format!("tasklet {} failed: {error}", S::NAME)),
                     None,
                     attempt,
                 );
@@ -414,7 +414,7 @@ pub(super) enum Call<S: Tasklet> {
         fired_at: u64,
         kind: TimerKind,
     },
-    /// A bounded operator undo over the outputs the Cell recorded forward.
+    /// A steps operator undo over the outputs the Cell recorded forward.
     Compensate {
         outputs: Vec<Arc<S::Output>>,
     },
@@ -485,7 +485,7 @@ impl<'a, S: Tasklet> Invocation<'a, S> {
         }
     }
 
-    /// A bounded operator undo: one attempt, never retried, and nothing a park could
+    /// A steps operator undo: one attempt, never retried, and nothing a park could
     /// record.
     pub(super) fn compensation(outputs: Vec<Arc<S::Output>>, now: u64) -> Self {
         Self {

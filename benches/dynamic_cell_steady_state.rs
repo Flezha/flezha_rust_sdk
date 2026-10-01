@@ -12,7 +12,7 @@ use flezha_runner::operator::builder::build_topology_for;
 use flezha_runner::operator::registry::OperatorRegistry;
 use flezha_runner::operator::OperatorInstance;
 use flezha_runner::tasklet::{Tasklet, TaskletError};
-use flezha_runner::{__dispatch_internals as bi, Ctx, OverflowPolicy, UnboundedOperator};
+use flezha_runner::{Ctx, Operator, OverflowPolicy, __dispatch_internals as bi};
 use flz_core::bench_support::{fan_in, stream_pair, Settle};
 
 static DYN_COUNTER: Settle = Settle::new();
@@ -31,7 +31,7 @@ impl Tasklet for SteadyDynTasklet {
 }
 
 struct SteadyDynOperator;
-impl UnboundedOperator for SteadyDynOperator {
+impl Operator for SteadyDynOperator {
     fn factory_id() -> &'static str {
         "steady_dyn_operator"
     }

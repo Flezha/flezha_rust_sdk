@@ -56,12 +56,11 @@ impl Tasklet for TierStoreTasklet {
 }
 
 pub(crate) struct TierStoreOperator;
-impl UnboundedOperator for TierStoreOperator {
+impl Operator for TierStoreOperator {
     fn factory_id() -> &'static str {
         "tier_store"
     }
     fn channels(c: &ChannelBuilder) {
-        c.effectively_once();
         // 300 ms backoff base keeps the min-watermark freeze observable
         // (~0.9 s from first failure to park) in the DLQ e2e.
         // Declared DropNothing: a durable-input-log operator that sheds at its
@@ -73,6 +72,13 @@ impl UnboundedOperator for TierStoreOperator {
             .into::<TierStoreTasklet>()
             .keyed()
             .sink_named("sink");
+    }
+
+    fn settings() -> OperatorSettings {
+        OperatorSettings {
+            run: Run::Flow { exactly: Exactly::effectively_once() },
+            ..OperatorSettings::default()
+        }
     }
 }
 
@@ -108,7 +114,7 @@ impl Tasklet for TierTallyTasklet {
     type Change = CounterChange;
     fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         let (key, value) = input.split_once(':').unwrap_or((input.as_str(), ""));
-        if value == "hold" && std::env::var("FLEZHA_BOUNDED_E2E_RELEASE").is_err() {
+        if value == "hold" && std::env::var("FLEZHA_STEPS_E2E_RELEASE").is_err() {
             return Err(TaskletError::Custom("held until released".into()));
         }
         ctx.change(CounterChange { delta: 1 });
@@ -117,12 +123,11 @@ impl Tasklet for TierTallyTasklet {
 }
 
 pub(crate) struct TierChainOperator;
-impl UnboundedOperator for TierChainOperator {
+impl Operator for TierChainOperator {
     fn factory_id() -> &'static str {
         "tier_chain"
     }
     fn channels(c: &ChannelBuilder) {
-        c.effectively_once();
         c.input::<String>("input")
             .on_full(OverflowPolicy::DropNothing)
             .into::<TierRelayTasklet>()
@@ -131,6 +136,13 @@ impl UnboundedOperator for TierChainOperator {
             .into::<TierTallyTasklet>()
             .keyed()
             .sink_named("sink");
+    }
+
+    fn settings() -> OperatorSettings {
+        OperatorSettings {
+            run: Run::Flow { exactly: Exactly::effectively_once() },
+            ..OperatorSettings::default()
+        }
     }
 }
 
@@ -144,7 +156,7 @@ impl UnboundedOperator for TierChainOperator {
 // merge-blocking `mix bench` factory and must not change; a separate factory
 // keeps the round-trip bench's back-pressure posture independent of it.
 pub(crate) struct BenchEchoOperator;
-impl UnboundedOperator for BenchEchoOperator {
+impl Operator for BenchEchoOperator {
     fn factory_id() -> &'static str {
         "bench_echo"
     }
@@ -157,7 +169,7 @@ impl UnboundedOperator for BenchEchoOperator {
 }
 
 pub(crate) struct BenchKeyedOperator;
-impl UnboundedOperator for BenchKeyedOperator {
+impl Operator for BenchKeyedOperator {
     fn factory_id() -> &'static str {
         "bench_keyed"
     }
@@ -176,8 +188,7 @@ impl UnboundedOperator for BenchKeyedOperator {
 // like-for-like against an engine whose keyed state is pure heap. This variant
 // isolates that cost.
 pub(crate) struct BenchKeyedNoPersistOperator;
-impl UnboundedOperator for BenchKeyedNoPersistOperator {
-    const PERSISTENCE_ENABLED: bool = false;
+impl Operator for BenchKeyedNoPersistOperator {
 
     fn factory_id() -> &'static str {
         "bench_keyed_nopersist"
@@ -188,6 +199,13 @@ impl UnboundedOperator for BenchKeyedNoPersistOperator {
             .into::<TierStoreTasklet>()
             .keyed()
             .sink_named("sink");
+    }
+
+    fn settings() -> OperatorSettings {
+        OperatorSettings {
+            durable: Durable::Memory,
+            ..OperatorSettings::default()
+        }
     }
 }
 
@@ -220,17 +238,22 @@ impl Tasklet for CheckpointStoreTasklet {
 }
 
 pub(crate) struct CheckpointStoreOperator;
-impl UnboundedOperator for CheckpointStoreOperator {
+impl Operator for CheckpointStoreOperator {
     fn factory_id() -> &'static str {
         "checkpoint_store"
     }
     fn channels(c: &ChannelBuilder) {
-        c.effectively_once();
-        c.checkpoint_ack();
         c.input::<String>("input")
             .into::<CheckpointStoreTasklet>()
             .keyed()
             .sink_named("sink");
+    }
+
+    fn settings() -> OperatorSettings {
+        OperatorSettings {
+            run: Run::Flow { exactly: Exactly::EffectivelyOnce { ack: AckGranularity::Checkpoint(CheckpointPolicy { every: None, outputs: CheckpointOutputs::AsProduced, max_delay_ms: None }), correction_ms: None, beyond_window: BeyondWindowPolicy::ProcessAsArrival } },
+            ..OperatorSettings::default()
+        }
     }
 }
 
@@ -242,18 +265,22 @@ impl UnboundedOperator for CheckpointStoreOperator {
 // drives the close itself — with `commit:` for the batch case, and with the
 // delay alone for the quiet-Cell case.
 pub(crate) struct CheckpointBatchedOperator;
-impl UnboundedOperator for CheckpointBatchedOperator {
+impl Operator for CheckpointBatchedOperator {
     fn factory_id() -> &'static str {
         "checkpoint_batched_store"
     }
     fn channels(c: &ChannelBuilder) {
-        c.effectively_once();
-        c.checkpoint_ack();
-        c.outputs_at_checkpoint(1_500);
         c.input::<String>("input")
             .into::<CheckpointStoreTasklet>()
             .keyed()
             .sink_named("sink");
+    }
+
+    fn settings() -> OperatorSettings {
+        OperatorSettings {
+            run: Run::Flow { exactly: Exactly::EffectivelyOnce { ack: AckGranularity::Checkpoint(CheckpointPolicy { every: None, outputs: CheckpointOutputs::AtCheckpoint, max_delay_ms: Some(1_500) }), correction_ms: None, beyond_window: BeyondWindowPolicy::ProcessAsArrival } },
+            ..OperatorSettings::default()
+        }
     }
 }
 
@@ -282,11 +309,19 @@ impl Tasklet for BenchCheckpointTasklet {
 }
 
 pub(crate) struct BenchCheckpointOperator;
-impl UnboundedOperator for BenchCheckpointOperator {
+impl Operator for BenchCheckpointOperator {
     fn factory_id() -> &'static str {
         "bench_checkpoint"
     }
     fn channels(c: &ChannelBuilder) {
+        c.input::<String>("input")
+            .on_full(OverflowPolicy::DropNothing)
+            .into::<BenchCheckpointTasklet>()
+            .keyed()
+            .sink_named("sink");
+    }
+
+    fn settings() -> OperatorSettings {
         fn env_u64(key: &str, default: u64) -> u64 {
             std::env::var(key)
                 .ok()
@@ -294,16 +329,26 @@ impl UnboundedOperator for BenchCheckpointOperator {
                 .unwrap_or(default)
         }
 
-        c.effectively_once();
-        c.checkpoint_every(env_u64("FLEZHA_BENCH_CHECKPOINT_EVERY", 500) as u32);
-        if std::env::var("FLEZHA_BENCH_CHECKPOINT_OUTPUTS").as_deref() == Ok("at_checkpoint") {
-            c.outputs_at_checkpoint(env_u64("FLEZHA_BENCH_CHECKPOINT_DELAY_MS", 50));
+        let held = std::env::var("FLEZHA_BENCH_CHECKPOINT_OUTPUTS").as_deref() == Ok("at_checkpoint");
+        let checkpoint = CheckpointPolicy {
+            every: Some(env_u64("FLEZHA_BENCH_CHECKPOINT_EVERY", 500) as u32),
+            outputs: if held {
+                CheckpointOutputs::AtCheckpoint
+            } else {
+                CheckpointOutputs::AsProduced
+            },
+            max_delay_ms: held.then(|| env_u64("FLEZHA_BENCH_CHECKPOINT_DELAY_MS", 50)),
+        };
+        OperatorSettings {
+            run: Run::Flow {
+                exactly: Exactly::EffectivelyOnce {
+                    ack: AckGranularity::Checkpoint(checkpoint),
+                    correction_ms: None,
+                    beyond_window: BeyondWindowPolicy::ProcessAsArrival,
+                },
+            },
+            ..OperatorSettings::default()
         }
-        c.input::<String>("input")
-            .on_full(OverflowPolicy::DropNothing)
-            .into::<BenchCheckpointTasklet>()
-            .keyed()
-            .sink_named("sink");
     }
 }
 
@@ -342,7 +387,7 @@ impl Tasklet for CounterTasklet {
 }
 
 pub(crate) struct StatefulCounterOperator;
-impl UnboundedOperator for StatefulCounterOperator {
+impl Operator for StatefulCounterOperator {
     fn factory_id() -> &'static str {
         "stateful_counter"
     }
@@ -368,7 +413,7 @@ impl Tasklet for CounterEntryTasklet {
 
 // -- SleepingCounterOperator -----------------------------------------------------
 //
-// An unbounded operator that sleeps when idle: `key:delta` inputs fold into one running
+// A flow operator that sleeps when idle: `key:delta` inputs fold into one running
 // total per key, and every input emits `key=total` on the `totals` sink. The
 // sleep e2e reads the total after a wake to prove the Cell came back with the
 // state it slept with.
@@ -391,8 +436,7 @@ impl Tasklet for SleepingCounterTasklet {
 }
 
 pub(crate) struct SleepingCounterOperator;
-impl UnboundedOperator for SleepingCounterOperator {
-    const SLEEP_WHEN_IDLE: bool = true;
+impl Operator for SleepingCounterOperator {
 
     fn factory_id() -> &'static str {
         "sleeping_counter"
@@ -402,6 +446,13 @@ impl UnboundedOperator for SleepingCounterOperator {
             .key_by(|input: &String| crate::cell::key_prefix(input))
             .into::<SleepingCounterTasklet>()
             .sink_named("totals");
+    }
+
+    fn settings() -> OperatorSettings {
+        OperatorSettings {
+            durable: fixture_durable(),
+            ..OperatorSettings::default()
+        }
     }
 }
 
@@ -482,7 +533,7 @@ impl Tasklet for TickEntryTasklet {
 }
 
 pub(crate) struct CoalescingCounterOperator;
-impl UnboundedOperator for CoalescingCounterOperator {
+impl Operator for CoalescingCounterOperator {
     fn factory_id() -> &'static str {
         "coalescing_counter"
     }
@@ -496,12 +547,12 @@ impl UnboundedOperator for CoalescingCounterOperator {
 
 // -- PersistenceOffOperator (Section 6.3) ---------------------------------------
 //
-// Same Tasklet topology as `StatefulCounterOperator` but `PERSISTENCE_ENABLED`
-// is `false`. Used by integration tests to verify the toggle-off drain
+// Same Tasklet topology as `StatefulCounterOperator` but kept in memory
+// (`Durable::Memory`). Used by integration tests to verify the toggle-off drain
 // path discards frames without invoking the wire stub.
 
 pub(crate) struct PersistenceOffOperator;
-impl UnboundedOperator for PersistenceOffOperator {
+impl Operator for PersistenceOffOperator {
     fn factory_id() -> &'static str {
         "persistence_off_counter"
     }
@@ -511,7 +562,13 @@ impl UnboundedOperator for PersistenceOffOperator {
             .named("ticks")
             .into::<PersistenceOffCounterTasklet>();
     }
-    const PERSISTENCE_ENABLED: bool = false;
+
+    fn settings() -> OperatorSettings {
+        OperatorSettings {
+            durable: Durable::Memory,
+            ..OperatorSettings::default()
+        }
+    }
 }
 
 #[derive(Default)]

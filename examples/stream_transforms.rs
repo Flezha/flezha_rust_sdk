@@ -45,7 +45,7 @@
 
 use flezha_runner::state::Change;
 use flezha_runner::tasklet::{Ctx, Tasklet, TaskletError};
-use flezha_runner::{ChannelBuilder, UnboundedOperator};
+use flezha_runner::{ChannelBuilder, Operator};
 use serde::{Deserialize, Serialize};
 
 /// The timeframes every trade is folded into.
@@ -136,7 +136,7 @@ impl Tasklet for Candle {
 
 struct Candles;
 
-impl UnboundedOperator for Candles {
+impl Operator for Candles {
     fn factory_id() -> &'static str {
         "candles"
     }

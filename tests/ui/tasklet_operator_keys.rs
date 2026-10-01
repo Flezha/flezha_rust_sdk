@@ -20,10 +20,10 @@ macro_rules! refused {
 
 refused!(A, sink = "echo");
 refused!(B, input = "prices");
-refused!(C, kind = "unbounded");
+refused!(C, kind = "flow");
 refused!(E, on_full = drop_oldest);
 
-#[flezha_runner::unbounded_operator(id = "d", kind = "unbounded", sink = "echo")]
+#[flezha_runner::operator(id = "d", kind = "flow", sink = "echo")]
 fn d(input: String) -> Vec<u8> {
     input.into_bytes()
 }

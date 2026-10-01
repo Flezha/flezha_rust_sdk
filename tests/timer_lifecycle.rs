@@ -91,7 +91,7 @@ impl Tasklet for EvictTask {
 }
 
 struct EvictOperator;
-impl UnboundedOperator for EvictOperator {
+impl Operator for EvictOperator {
     fn factory_id() -> &'static str {
         "timers_evict_operator"
     }
@@ -185,7 +185,7 @@ impl Tasklet for ExclusionTask {
 }
 
 struct ExclusionOperator;
-impl UnboundedOperator for ExclusionOperator {
+impl Operator for ExclusionOperator {
     fn factory_id() -> &'static str {
         "timers_exclusion_operator"
     }

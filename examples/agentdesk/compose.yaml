@@ -15,7 +15,6 @@ services:
     build: .
     environment:
       FLEZHA_SOCKET_FILES_PATH: /flezha/app_data/sockets
-      FLEZHA_PARK_IDLE_MS: "10000"         # an idle session sleeps after 10 s
     volumes:
       - sockets:/flezha/app_data/sockets
     depends_on:

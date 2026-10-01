@@ -35,7 +35,7 @@ pub use stream::{EntryStream, EntryTarget, NodeTarget, Stream, StreamTarget};
 
 use crate::channel::ChannelKind;
 
-/// Builder collected by `UnboundedOperator::channels`. Internal state turns into a
+/// Builder collected by `Operator::channels`. Internal state turns into a
 /// frozen `OperatorTopology` at `build_topology` time. Stream handles hold a
 /// shared reference to the builder, so its interior is a `RefCell`.
 pub struct ChannelBuilder {
@@ -51,12 +51,6 @@ impl ChannelBuilder {
                 tasklet_name_to_id: HashMap::new(),
                 pending: Vec::new(),
                 merge_groups: 0,
-                effectively_once: false,
-                correction: None,
-                checkpoint_ack: false,
-                checkpoint_every: None,
-                checkpoint_outputs: crate::operator::topology::CheckpointOutputs::AsProduced,
-                checkpoint_max_delay_ms: None,
             }),
         }
     }
@@ -68,132 +62,10 @@ impl ChannelBuilder {
         self.state.into_inner()
     }
 
-    /// Whether any tasklet was declared (a bounded operator without one is
+    /// Whether any tasklet was declared (a steps operator without one is
     /// refused).
     pub(crate) fn has_tasklets(&self) -> bool {
         !self.state.borrow().tasklets.is_empty()
-    }
-
-    /// The class settings written so far, for a kind that refuses some.
-    pub(crate) fn class_settings(&self) -> std::cell::Ref<'_, BuilderState> {
-        self.state.borrow()
-    }
-
-    /// Opt this operator into late-input correction over the given window.
-    ///
-    /// An input whose extracted event time is behind its Cell's high-water
-    /// by no more than `window_ms` is not processed as an arrival. The engine
-    /// rewinds the Cell to a baseline preceding that event time, replays
-    /// the retained input slice in event-time order under a bumped epoch, and
-    /// keyed changelog sinks overwrite the stale rows by natural key.
-    ///
-    /// Requires `effectively_once()` (correction replays the durable input
-    /// log) and an event-time clock (there is nothing else to order by).
-    /// `build_topology` refuses the declaration otherwise. The controller
-    /// additionally refuses to start the operator unless its input-log hold
-    /// window and snapshot age-floor both cover `window_ms` — you cannot
-    /// rebuild a past you did not retain.
-    ///
-    /// Inputs later than the window follow [`beyond_window_policy`], which
-    /// defaults to processing them as arrivals.
-    ///
-    /// [`beyond_window_policy`]: ChannelBuilder::beyond_window_policy
-    pub fn correction_window(&self, window_ms: u64) {
-        let mut st = self.state.borrow_mut();
-        let beyond_window = st.correction.map(|c| c.beyond_window).unwrap_or_default();
-        st.correction = Some(crate::operator::topology::CorrectionPolicy {
-            window_ms,
-            beyond_window,
-        });
-    }
-
-    /// Fate of an input later than the declared correction window. Defaults to
-    /// [`BeyondWindowPolicy::ProcessAsArrival`] — the behaviour of an operator
-    /// with no correction window at all, so declaring one never silently starts
-    /// dropping data.
-    ///
-    /// [`BeyondWindowPolicy::ProcessAsArrival`]: crate::operator::topology::BeyondWindowPolicy::ProcessAsArrival
-    pub fn beyond_window_policy(&self, policy: crate::operator::topology::BeyondWindowPolicy) {
-        let mut st = self.state.borrow_mut();
-        let window_ms = st.correction.map(|c| c.window_ms).unwrap_or(0);
-        st.correction = Some(crate::operator::topology::CorrectionPolicy {
-            window_ms,
-            beyond_window: policy,
-        });
-    }
-
-    /// Opt this operator into the effectively-once delivery tier.
-    ///
-    /// In tier mode each invocation's plugin emits ship inside the atomic
-    /// effect record on the reliable state sink (with the state change and
-    /// consumed input offset), and the controller flushes them to plugins
-    /// only after the record is fsynced. Identity is the dedup contract:
-    /// `build_topology` refuses the declaration when any plugin-bound
-    /// channel lacks `.keyed()`. Default is off — operators that do not
-    /// call this keep the at-least-once paths byte-identical.
-    pub fn effectively_once(&self) {
-        self.state.borrow_mut().effectively_once = true;
-    }
-
-    /// Advance the durable consumed-offset only at an explicit
-    /// [`Ctx::checkpoint`], instead of once per input.
-    ///
-    /// For an operator that folds many inputs into one state push — a window
-    /// that only closes on its boundary — the per-input default is not merely
-    /// expensive, it is incoherent: the offset would run ahead of the state,
-    /// and a restore would resume past inputs the restored state never saw.
-    /// Under this granularity the changes an interval applies are held until
-    /// `ctx.checkpoint()` and ship with the closing input's offset as one
-    /// fsynced record, so state and offset advance together or not at all.
-    ///
-    /// The price is the interval: on recovery the controller re-forwards
-    /// every input after the last checkpoint, and the interval's outputs are
-    /// emitted again. Both are absorbed by the keyed-sink dedup the tier
-    /// already requires — and the interval you choose is also the input-log
-    /// retention and the recovery work you are asking for.
-    ///
-    /// Requires `effectively_once()`; `build_topology` refuses it otherwise.
-    /// Emits made before a checkpoint are still flushed as they happen —
-    /// checkpointing moves the *acknowledgement*, not the output. To hold them
-    /// for the interval too, see [`outputs_at_checkpoint`].
-    ///
-    /// [`Ctx::checkpoint`]: crate::tasklet::Ctx::checkpoint
-    /// [`outputs_at_checkpoint`]: ChannelBuilder::outputs_at_checkpoint
-    pub fn checkpoint_ack(&self) {
-        self.state.borrow_mut().checkpoint_ack = true;
-    }
-
-    /// Close the checkpoint interval once `inputs` inputs have folded into it,
-    /// instead of waiting for an explicit [`Ctx::checkpoint`].
-    ///
-    /// An explicit checkpoint still closes the interval early; this is the
-    /// ceiling, not the only closer. Implies `checkpoint_ack()`.
-    ///
-    /// [`Ctx::checkpoint`]: crate::tasklet::Ctx::checkpoint
-    pub fn checkpoint_every(&self, inputs: u32) {
-        self.state.borrow_mut().checkpoint_every = Some(inputs);
-    }
-
-    /// Hold the interval's outputs with its changes and ship them inside its
-    /// checkpoint record, which the controller flushes as one batch after that
-    /// record is fsynced — one WAL append per interval instead of one per
-    /// invocation.
-    ///
-    /// The trade is output latency: an emit is not visible downstream until
-    /// its interval closes. `max_delay_ms` bounds that — the interval closes
-    /// that long after the input that opened it even if nothing else arrives,
-    /// so a quiet Cell never holds an output indefinitely. It is a parameter
-    /// rather than an option because an unbounded hold is not a posture anyone
-    /// should be able to declare by omission.
-    ///
-    /// Replay is exactly the mode's existing contract: an interval that did not
-    /// checkpoint re-produces its outputs when it replays, a checkpointed
-    /// record re-drives with identical identity, and the keyed-sink dedup the
-    /// tier already requires absorbs both. Implies `checkpoint_ack()`.
-    pub fn outputs_at_checkpoint(&self, max_delay_ms: u64) {
-        let mut st = self.state.borrow_mut();
-        st.checkpoint_outputs = crate::operator::topology::CheckpointOutputs::AtCheckpoint;
-        st.checkpoint_max_delay_ms = Some(max_delay_ms);
     }
 
     /// Declare the entry channel fed by the controller — the operator's
@@ -244,7 +116,7 @@ impl ChannelBuilder {
     /// ```
     ///
     /// Sources may be entry streams (sealed payloads) or another tasklet's
-    /// output stream, freely mixed, on either kind of operator. A bounded operator
+    /// output stream, freely mixed, on either kind of operator. A steps operator
     /// message starts only the chain of the entry channel it arrived on, so a
     /// merge over two entry channels runs once per message, over that
     /// message's source.
@@ -266,7 +138,7 @@ impl ChannelBuilder {
     /// A panicking mapping is contained everywhere it can be: on an
     /// inter-tasklet source it is caught as the producing tasklet's panic
     /// (stream) or turned into a terminal chain error the saga compensates
-    /// (bounded operator). The one unguarded seam is an unbounded operator's entry-channel source,
+    /// (steps operator). The one unguarded seam is a flow operator's entry-channel source,
     /// where the mapping runs on the wire-reader path — the same exposure the
     /// entry parser there already carries. `docs/sdk/multi_input_tasklets.md`
     /// tabulates it.

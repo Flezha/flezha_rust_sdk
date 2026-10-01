@@ -8,7 +8,7 @@ use crate::*;
 // `DoNothingOperator`. One declaration is the whole operator: it generates
 // the operator `SugarDoNothing`, which `main.rs` registers, and the tasklet
 // `SugarDoNothingTasklet` beside it.
-#[flezha_runner::unbounded_operator(id = "sugar_do_nothing", sink = "sugar_do_nothing_echo")]
+#[flezha_runner::operator(id = "sugar_do_nothing", sink = "sugar_do_nothing_echo")]
 pub(crate) fn sugar_do_nothing(input: String) -> Vec<u8> {
     input.into_bytes()
 }
@@ -34,7 +34,7 @@ impl Change<SugarStoreState> for Kept {
 #[derive(Default)]
 pub(crate) struct SugarStoreInput;
 
-#[flezha_runner::unbounded_operator(id = "sugar_store_input", sink = "sugar_store_sink")]
+#[flezha_runner::operator(id = "sugar_store_input", sink = "sugar_store_sink")]
 impl Tasklet for SugarStoreInput {
     type Input = String;
     type Output = String;
@@ -48,7 +48,7 @@ impl Tasklet for SugarStoreInput {
 }
 
 // The short form naming its entry channel: `prices`, not the default `input`.
-#[flezha_runner::unbounded_operator(
+#[flezha_runner::operator(
     id = "sugar_named_input",
     sink = "sugar_named_input_sink",
     input = "prices"
@@ -57,25 +57,26 @@ pub(crate) fn sugar_named_input(input: String) -> Vec<u8> {
     input.into_bytes()
 }
 
-// The bounded short form: one declaration is a whole `once` bounded operator, run on
+// The steps short form: one declaration is a whole `once` steps operator, run on
 // its first message on `order` and completing after one run.
-#[flezha_runner::bounded_operator(
-    id = "sugar_bounded",
-    sink = "sugar_bounded_placed",
-    input = "order"
+#[flezha_runner::operator(
+    id = "sugar_steps",
+    sink = "sugar_steps_placed",
+    input = "order",
+    run = steps
 )]
-pub(crate) fn sugar_bounded(order: String) -> Vec<u8> {
+pub(crate) fn sugar_steps(order: String) -> Vec<u8> {
     order.into_bytes()
 }
 
-// A bounded short form that loops: one pass per message on `input`, and the
+// A steps short form that loops: one pass per message on `input`, and the
 // instance stays after each.
-#[flezha_runner::bounded_operator(
-    id = "sugar_bounded_per_input",
-    sink = "sugar_bounded_per_input_out",
-    loop_mode = "per_input"
+#[flezha_runner::operator(
+    id = "sugar_steps_per_input",
+    sink = "sugar_steps_per_input_out",
+    run = steps(each = per_input)
 )]
-pub(crate) fn sugar_bounded_per_input(message: String) -> Vec<u8> {
+pub(crate) fn sugar_steps_per_input(message: String) -> Vec<u8> {
     message.into_bytes()
 }
 
@@ -98,7 +99,7 @@ impl Change<SugarStateOnlyState> for Seen {
 #[derive(Default)]
 pub(crate) struct SugarStateOnly;
 
-#[flezha_runner::unbounded_operator(id = "sugar_state_only", input = "ticks")]
+#[flezha_runner::operator(id = "sugar_state_only", input = "ticks")]
 impl Tasklet for SugarStateOnly {
     type Input = String;
     type State = SugarStateOnlyState;
@@ -110,7 +111,7 @@ impl Tasklet for SugarStateOnly {
     }
 }
 
-// `operator!` linear-pipeline twin of `StaticCellOperator`.
+// `pipeline!` linear-pipeline twin of `StaticCellOperator`.
 #[derive(Serialize, Deserialize, Clone, Default, PartialEq, Debug)]
 struct MacroStaticEntryState {
     seen: Vec<String>,
@@ -164,7 +165,7 @@ impl Tasklet for MacroStaticDownstream {
     }
 }
 
-flezha_runner::operator! {
+flezha_runner::pipeline! {
     pub(crate) struct SugarStaticCell;
     id: "sugar_static_cell",
     pipeline: input::<String> -> MacroStaticEntry -> MacroStaticDownstream -> plugin::<Vec<u8>>("test_kafka")
@@ -201,7 +202,7 @@ impl Tasklet for MixedHandDownstream {
 }
 
 pub(crate) struct MixedOperator;
-impl UnboundedOperator for MixedOperator {
+impl Operator for MixedOperator {
     fn factory_id() -> &'static str {
         "mixed_operator"
     }
@@ -450,7 +451,7 @@ mod macro_twin_tests {
 
     #[test]
     fn sugar_operators_register() {
-        // Nothing is harvested: every short form and `operator!` type is a
+        // Nothing is harvested: every short form and `pipeline!` type is a
         // named value the author hands to `register_factory`, exactly as a
         // hand-written operator is.
         let runner = Flezha::create_runner("sugar_test").unwrap();
@@ -461,9 +462,9 @@ mod macro_twin_tests {
             .unwrap()
             .register_factory(SugarNamedInput)
             .unwrap()
-            .register_factory(SugarBounded)
+            .register_factory(SugarSteps)
             .unwrap()
-            .register_factory(SugarBoundedPerInput)
+            .register_factory(SugarStepsPerInput)
             .unwrap()
             .register_factory(SugarStateOnly)
             .unwrap()
@@ -485,17 +486,17 @@ mod macro_twin_tests {
         }
         let class = flezha_runner::operator::registry::get_class;
         assert!(
-            class("sugar_bounded").is_some_and(|c| c.bounded.is_some()),
-            "the bounded short form registers as a bounded class"
+            class("sugar_steps").is_some_and(|c| c.steps.is_some()),
+            "the steps short form registers as a steps class"
         );
-        let per_input = class("sugar_bounded_per_input").expect("the looping short form registers");
+        let per_input = class("sugar_steps_per_input").expect("the looping short form registers");
         assert_eq!(
             per_input
-                .bounded
+                .steps
                 .as_ref()
-                .expect("a bounded class")
-                .loop_mode,
-            LoopMode::PerInput,
+                .expect("a steps class")
+                .each,
+            Each::PerInput,
             "the short form carries the loop mode it wrote"
         );
     }

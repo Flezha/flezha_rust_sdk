@@ -220,7 +220,7 @@ mod tests {
 
     use super::*;
     use crate::channel::ChannelBuilder;
-    use crate::operator::UnboundedOperator;
+    use crate::operator::Operator;
     use crate::runner::poll_core_tests::fixtures::{build_slot_of, push_input, wait_until};
     use crate::tasklet::{Ctx, Tasklet, TaskletError};
 
@@ -248,14 +248,14 @@ mod tests {
     }
 
     struct GatedOperator;
-    impl UnboundedOperator for GatedOperator {
+    impl Operator for GatedOperator {
         fn factory_id() -> &'static str {
             "poll_pool_gated_operator"
         }
         fn channels(c: &ChannelBuilder) {
             c.input::<usize>("in").into::<GatedTask>();
         }
-    }
+}
 
     /// A private core with its own pool, so a case never observes (or
     /// disturbs) the process-global one. Leaked because a pool's threads

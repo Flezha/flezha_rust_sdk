@@ -1,4 +1,4 @@
-use flezha_runner::{ChannelBuilder, UnboundedOperator};
+use flezha_runner::{ChannelBuilder, Operator};
 
 use crate::tasklet::Echo;
 
@@ -11,7 +11,7 @@ use crate::tasklet::Echo;
 /// that graph.
 pub struct EchoOperator;
 
-impl UnboundedOperator for EchoOperator {
+impl Operator for EchoOperator {
     /// The operator's stable identity, and the name `flz operator start`
     /// takes. The controller's registry and the durable state both key on it,
     /// so changing it declares a new operator rather than renaming this one.

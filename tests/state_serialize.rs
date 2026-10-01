@@ -47,7 +47,7 @@ impl Tasklet for CounterTasklet {
 }
 
 struct CounterOperator;
-impl UnboundedOperator for CounterOperator {
+impl Operator for CounterOperator {
     fn factory_id() -> &'static str {
         "counter_operator"
     }
@@ -101,7 +101,7 @@ impl Tasklet for OhlcTasklet {
 }
 
 struct OhlcOperator;
-impl UnboundedOperator for OhlcOperator {
+impl Operator for OhlcOperator {
     fn factory_id() -> &'static str {
         "ohlc_operator"
     }
@@ -187,7 +187,7 @@ fn round_trip_static_mode_through_serialize_then_apply() {
 /// Two Tasklets on one Operator, so a `tasklet` selector has something to
 /// exclude.
 struct PairOperator;
-impl UnboundedOperator for PairOperator {
+impl Operator for PairOperator {
     fn factory_id() -> &'static str {
         "pair_operator"
     }
@@ -218,7 +218,7 @@ impl Tasklet for CandleTasklet {
 }
 
 struct CandleOperator;
-impl UnboundedOperator for CandleOperator {
+impl Operator for CandleOperator {
     fn factory_id() -> &'static str {
         "candle_operator"
     }
@@ -518,7 +518,7 @@ fn a_selector_less_cell_state_command_encodes_exactly_as_before() {
 
 /// Pinned cross-language fixture: the identical literal is asserted by
 /// `jsonShapeMatchesTheRustSdk` in the Java SDK's
-/// `UnboundedOperatorStateSerializerTest`. Both encoders sort object keys, so
+/// `OperatorStateSerializerTest`. Both encoders sort object keys, so
 /// a controller decoding either runtime's reply sees one shape.
 #[test]
 fn the_json_shape_matches_the_java_sdk_byte_for_byte() {

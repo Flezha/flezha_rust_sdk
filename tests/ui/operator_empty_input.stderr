@@ -1,5 +1,5 @@
 error: an entry channel name may not be empty
- --> tests/ui/operator_empty_input.rs:1:67
+ --> tests/ui/operator_empty_input.rs:1:57
   |
-1 | #[flezha_runner::unbounded_operator(id = "f", sink = "s", input = "")]
-  |                                                                   ^^
+1 | #[flezha_runner::operator(id = "f", sink = "s", input = "")]
+  |                                                         ^^

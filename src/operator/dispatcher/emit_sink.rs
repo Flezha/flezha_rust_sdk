@@ -1,6 +1,6 @@
 //! The sink an invocation's outputs leave through, [`CellEmitSink`], on the
 //! connection its item rode in on. An emit is routed to its consumers (a
-//! bounded operator's held on its pass for the stage's commit) and its plugin output
+//! steps operator's held on its pass for the stage's commit) and its plugin output
 //! written, or, for a Cell that records effects, captured into the
 //! invocation's atomic effect record.
 
@@ -54,7 +54,7 @@ pub(super) struct CellEmitSink<'a> {
     /// inter-tasklet emits so downstream Cells' effect records carry
     /// the origin offset.
     pub(super) consumed_offset: Option<u64>,
-    /// The outside call the invocation's input carried (a bounded pass's for
+    /// The outside call the invocation's input carried (a steps pass's for
     /// every stage), inherited by inter-tasklet emits and stamped on every
     /// output of a `response()` end.
     pub(super) reply_to: Option<Arc<str>>,
@@ -200,11 +200,11 @@ impl<'a> EmitSink for CellEmitSink<'a> {
         key: Option<String>,
     ) -> Result<(), TaskletError> {
         self.flush_pending();
-        // A bounded tasklet with no output channel still releases what it
+        // A steps tasklet with no output channel still releases what it
         // emits: a chained loop's leaf carries it into the next pass.
         if self.output_channel_id.is_none() {
-            if let Some(instance) = self.instance.as_ref().filter(|i| i.bounded.is_some()) {
-                flz_core::bounded::hold_emit(instance, None, &value, &self.stream, self.producer);
+            if let Some(instance) = self.instance.as_ref().filter(|i| i.steps.is_some()) {
+                flz_core::steps::hold_emit(instance, None, &value, &self.stream, self.producer);
                 return Ok(());
             }
         }
@@ -278,12 +278,12 @@ impl<'a> EmitSink for CellEmitSink<'a> {
     }
 
     fn complete(&mut self, result: Vec<u8>) -> Result<(), TaskletError> {
-        if self.instance.as_ref().is_none_or(|i| i.bounded.is_none()) {
-            return Err(TaskletError::non_retryable(
-                flz_core::bounded::complete_outside_bounded().text(),
-            ));
+        match &self.instance {
+            Some(instance) if instance.steps.is_some() => {
+                flz_core::steps::complete(self.producer, result)
+            }
+            _ => flz_core::operator::completion::complete(self.producer, result),
         }
-        flz_core::bounded::complete(self.producer, result);
         Ok(())
     }
 }

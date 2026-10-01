@@ -25,7 +25,7 @@ test_tasklet!(WireFastBTasklet, "wire_fast_b_tasklet", Vec<u8> => (), (), |_inpu
 });
 
 struct WireOperatorADefault;
-impl UnboundedOperator for WireOperatorADefault {
+impl Operator for WireOperatorADefault {
     fn factory_id() -> &'static str {
         "wire_operator_a_default"
     }
@@ -35,7 +35,7 @@ impl UnboundedOperator for WireOperatorADefault {
 }
 
 struct WireOperatorABlock;
-impl UnboundedOperator for WireOperatorABlock {
+impl Operator for WireOperatorABlock {
     fn factory_id() -> &'static str {
         "wire_operator_a_block"
     }
@@ -47,7 +47,7 @@ impl UnboundedOperator for WireOperatorABlock {
 }
 
 struct WireOperatorADropNewest;
-impl UnboundedOperator for WireOperatorADropNewest {
+impl Operator for WireOperatorADropNewest {
     fn factory_id() -> &'static str {
         "wire_operator_a_drop_newest"
     }
@@ -59,7 +59,7 @@ impl UnboundedOperator for WireOperatorADropNewest {
 }
 
 struct WireOperatorB;
-impl UnboundedOperator for WireOperatorB {
+impl Operator for WireOperatorB {
     fn factory_id() -> &'static str {
         "wire_operator_b"
     }
@@ -69,9 +69,9 @@ impl UnboundedOperator for WireOperatorB {
 }
 
 /// Spec scenario "A declared drop policy keeps the wire reader running":
-/// when UnboundedOperator A's entry mailbox is artificially saturated under a
+/// when Operator A's entry mailbox is artificially saturated under a
 /// declared `DropNewest`, the simulated wire-reader continues dispatching
-/// frames to sibling UnboundedOperator B without delay.
+/// frames to sibling Operator B without delay.
 #[test]
 fn declared_drop_newest_entry_does_not_stall_sibling_operators() {
     let _serial = WIRE_TEST_LOCK.lock().unwrap();
@@ -143,7 +143,7 @@ fn declared_entry_drop_nothing_parks_the_reader_until_the_pool_drains() {
     entry_drop_nothing_parks_reader_until_pool_drains::<WireOperatorABlock>("block");
 }
 
-/// Shared body of the entry-edge `Block` scenarios: when UnboundedOperator A's
+/// Shared body of the entry-edge `Block` scenarios: when Operator A's
 /// entry channel saturates while A's round is queued but not yet served, the
 /// wire-reader thread parks on the push. It never runs A's tasklets itself
 /// — serving a consumer inline is a pool thread's move; a reader doing it
@@ -151,7 +151,7 @@ fn declared_entry_drop_nothing_parks_the_reader_until_the_pool_drains() {
 /// — so B's frame, queued behind the parked push, waits too. Once the pool
 /// serves A's round, a pop unparks the reader and every frame lands, none
 /// lost and none counted as dropped.
-fn entry_drop_nothing_parks_reader_until_pool_drains<A: UnboundedOperator>(tag: &str) {
+fn entry_drop_nothing_parks_reader_until_pool_drains<A: Operator>(tag: &str) {
     let _serial = WIRE_TEST_LOCK.lock().unwrap();
     WIRE_A_DELIVERED.store(0, Ordering::Release);
     WIRE_B_DELIVERED.store(0, Ordering::Release);

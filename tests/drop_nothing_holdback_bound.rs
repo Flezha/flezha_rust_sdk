@@ -30,7 +30,7 @@ test_tasklet!(BoundTail, "holdback_bound_tail", String => (), (), cap 1, |input,
 });
 
 struct BoundOperator;
-impl UnboundedOperator for BoundOperator {
+impl Operator for BoundOperator {
     fn factory_id() -> &'static str {
         "holdback_bound_operator"
     }
@@ -122,7 +122,7 @@ test_tasklet!(LoadTail, "holdback_load_tail", String => (), (), cap 1, |_input, 
 });
 
 struct LoadOperator;
-impl UnboundedOperator for LoadOperator {
+impl Operator for LoadOperator {
     fn factory_id() -> &'static str {
         "holdback_load_operator"
     }

@@ -26,17 +26,16 @@
 //! producer-side links (`named`, `sink`, `keyed`, `branch`) live on
 //! `Stream<'b, T, NodeTarget>` and an entry channel's handle is a different
 //! type, so a row applying one to an entry channel has no Rust spelling; and a
-//! unbounded class has no `sync_durability` knob at all — it is a bounded operator
-//! declaration here, which is why the record's flag is written `false`
-//! (`sdk/rust/src/operator/builder.rs`). The fixture's `needs` column names
-//! both.
+//! settings tree with a setting under the wrong parent is a type error here,
+//! proven by the compile-fail fixtures instead. The fixture's `needs` column
+//! names both.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use flezha_runner::bounded::spec::build_spec;
+use flezha_runner::steps::spec::build_spec;
 use flezha_runner::channel::{
     ChannelDescriptor, ChannelKind, EntryStream, Merge, NodeTarget, Stream, StreamTarget,
 };
@@ -45,7 +44,7 @@ use flezha_runner::operator::topology::OperatorTopology;
 use flezha_runner::{ErrorModel, Flezha, FlezhaRunner};
 use serde_json::{json, Value};
 
-use crate::bounded::TierCommitBlockBounded;
+use crate::steps::TierCommitBlockSteps;
 use crate::channel::HybridChannelOperator;
 use crate::*;
 
@@ -58,7 +57,7 @@ const FIXTURE: &str = "test/fixtures/reference_topologies.txt";
 const SURFACES: [&str; 7] = [
     "merge",
     "branch",
-    "bounded",
+    "steps",
     "shorthand",
     "shorthand_typed_output",
     "response",
@@ -215,18 +214,18 @@ palette_tasklet!(EventTime, "eventtime", "eventtime", EventTime, {
 struct Plan {
     factory_id: &'static str,
     steps: String,
+    settings: OperatorSettings,
 }
 
 thread_local! {
     static PLAN: RefCell<Plan> = RefCell::new(Plan::default());
 }
 
-/// A row's class. `class.persistent` selects between this and its volatile
-/// twin, which is the only class fact a Rust operator declares as a const
-/// rather than on the builder.
+/// A row's class: the row's graph under the settings tree its `class.run` and
+/// `class.durable` steps wrote, read with the core's own reading of the tree.
 struct RowClass;
 
-impl UnboundedOperator for RowClass {
+impl Operator for RowClass {
     fn factory_id() -> &'static str {
         PLAN.with(|p| p.borrow().factory_id)
     }
@@ -234,66 +233,29 @@ impl UnboundedOperator for RowClass {
     fn channels(c: &ChannelBuilder) {
         interpret(c, &PLAN.with(|p| p.borrow().steps.clone()));
     }
-}
 
-struct VolatileRowClass;
-
-impl UnboundedOperator for VolatileRowClass {
-    const PERSISTENCE_ENABLED: bool = false;
-
-    fn factory_id() -> &'static str {
-        RowClass::factory_id()
-    }
-
-    fn channels(c: &ChannelBuilder) {
-        RowClass::channels(c);
+    fn settings() -> OperatorSettings {
+        PLAN.with(|p| p.borrow().settings)
     }
 }
 
-/// A `class.sleep_when_idle` row without `class.persistent`: the setting and
-/// the missing switch are consts, so the refusal needs a class of its own.
-struct SleepyVolatileRowClass;
-
-impl UnboundedOperator for SleepyVolatileRowClass {
-    const PERSISTENCE_ENABLED: bool = false;
-    const SLEEP_WHEN_IDLE: bool = true;
-
-    fn factory_id() -> &'static str {
-        RowClass::factory_id()
+/// The settings tree a row writes; a row this builder can spell writes only
+/// a tree the typed settings can hold.
+fn settings_of(steps: &str) -> OperatorSettings {
+    use flezha_runner::operator::settings::{parse_durable, parse_run};
+    let mut settings = OperatorSettings::default();
+    for step in steps.split(';').map(str::trim) {
+        let (verb, value) = split_call(step);
+        let tree = || serde_json::from_str::<Value>(value).expect("a class setting is JSON");
+        match verb {
+            "class.run" => settings.run = parse_run(Some(&tree())).expect("a typed run"),
+            "class.durable" => {
+                settings.durable = parse_durable(Some(&tree())).expect("a typed durable")
+            }
+            _ => {}
+        }
     }
-
-    fn channels(c: &ChannelBuilder) {
-        RowClass::channels(c);
-    }
-}
-
-/// Which const pair an unbounded row declares: `(persistent, sleeps)`.
-fn stream_consts(row: &Row) -> (bool, bool) {
-    (
-        row.steps.contains("class.persistent"),
-        row.steps.contains("class.sleep_when_idle"),
-    )
-}
-
-/// A `class.bounded` row's class: the same steps on a bounded operator, so what the
-/// row writes reaches the bounded kind's judgement.
-struct RowBounded;
-
-impl BoundedOperator for RowBounded {
-    fn factory_id() -> &'static str {
-        RowClass::factory_id()
-    }
-
-    fn channels(c: &ChannelBuilder) {
-        RowClass::channels(c);
-    }
-}
-
-/// Whether a row declares the bounded kind rather than the unbounded one.
-fn is_bounded(row: &Row) -> bool {
-    row.steps
-        .split(';')
-        .any(|step| step.trim() == "class.bounded")
+    settings
 }
 
 /// Load `row` as the class the next `build_topology_for` declares.
@@ -304,6 +266,7 @@ fn load(row: &Row) {
         *p.borrow_mut() = Plan {
             factory_id: leak(&row.topology),
             steps: row.steps.clone(),
+            settings: settings_of(&row.steps),
         }
     });
 }
@@ -479,25 +442,12 @@ impl<'b> Interp<'b> {
         };
     }
 
-    /// `class.<flag>[(<value>)]` — the facts the class declares on the builder.
-    /// `persistent` and `sleep_when_idle` are consts on the class and
-    /// `bounded` the class's kind, all chosen by the caller; `sync_durability` is a declaration an unbounded operator
-    /// class does not carry, and every row needing it is skipped before it
-    /// reaches here.
+    /// `class.run(...)` and `class.durable(...)` are the class's settings,
+    /// read by `settings_of` before the graph is declared.
     fn class_flag(&mut self, rest: &str) {
-        let (flag, value) = split_call(rest);
-        match flag {
-            "persistent" | "sleep_when_idle" | "bounded" => {}
-            "effectively_once" => self.c.effectively_once(),
-            "checkpoint_ack" => self.c.checkpoint_ack(),
-            "checkpoint_every" => self.c.checkpoint_every(value.parse().expect("a cadence")),
-            "correction_window" => self.c.correction_window(value.parse().expect("a window")),
-            "outputs_at_checkpoint" => self
-                .c
-                .outputs_at_checkpoint(value.parse().expect("a max delay")),
-            other => {
-                panic!("the fixture spells a class flag this interpreter does not map: {other}")
-            }
+        let (flag, _) = split_call(rest);
+        if !matches!(flag, "run" | "durable") {
+            panic!("the fixture spells a class setting this interpreter does not map: {flag}");
         }
     }
 }
@@ -650,13 +600,13 @@ fn citation(s: &Shorthand) -> (&'static str, &'static str) {
 // The duplicate row's pair, declared here rather than beside the app's
 // fixtures because nothing but that row registers them: two short forms, one of
 // each kind, under one factory id.
-#[flezha_runner::unbounded_operator(id = "plain", sink = "out")]
-fn shorthand_dup_unbounded(input: String) -> Vec<u8> {
+#[flezha_runner::operator(id = "plain", sink = "out")]
+fn shorthand_dup_flow(input: String) -> Vec<u8> {
     input.into_bytes()
 }
 
-#[flezha_runner::bounded_operator(id = "plain", sink = "twin_sink")]
-fn shorthand_dup_bounded(input: String) -> Vec<u8> {
+#[flezha_runner::operator(id = "plain", sink = "twin_sink", run = steps)]
+fn shorthand_dup_steps(input: String) -> Vec<u8> {
     input.into_bytes()
 }
 
@@ -665,9 +615,9 @@ fn shorthand_dup_bounded(input: String) -> Vec<u8> {
 /// factory id it already held, which is the shape the contract refuses.
 fn drive_duplicate(runner: &FlezhaRunner) -> Result<(), String> {
     runner
-        .register_factory(ShorthandDupUnbounded)
+        .register_factory(ShorthandDupFlow)
         .map_err(|e| format!("the first registration must succeed, got: {e}"))?;
-    match runner.register_factory(ShorthandDupBounded) {
+    match runner.register_factory(ShorthandDupSteps) {
         Ok(_) => Ok(()),
         Err(refusal) => Err(refusal.code()),
     }
@@ -683,16 +633,10 @@ fn topology_of(row: &Row) -> Result<Arc<OperatorTopology>, Vec<String>> {
         return cited(&row.topology);
     }
     load(row);
-    if is_bounded(row) {
-        return build_spec::<RowBounded>().map_err(|e| vec![e.code().to_string()]);
+    if matches!(RowClass::settings().run, Run::Steps { .. }) {
+        return build_spec::<RowClass>().map_err(|e| vec![e.code().to_string()]);
     }
-    let built = match stream_consts(row) {
-        (true, false) => build_topology_for::<RowClass>(),
-        (false, false) => build_topology_for::<VolatileRowClass>(),
-        (false, true) => build_topology_for::<SleepyVolatileRowClass>(),
-        (true, true) => panic!("no row declares a persistent class that sleeps"),
-    };
-    built.map_err(|e| {
+    build_topology_for::<RowClass>().map_err(|e| {
         e.errors
             .iter()
             .map(|issue| issue.code().to_string())
@@ -707,7 +651,7 @@ fn cited(topology: &str) -> Result<Arc<OperatorTopology>, Vec<String>> {
         "hybrid_channel" => build_topology_for::<HybridChannelOperator>()
             .map_err(|e| e.errors.iter().map(|i| i.code().to_string()).collect()),
         "commit_block_chain" => {
-            build_spec::<TierCommitBlockBounded>().map_err(|e| vec![e.code().to_string()])
+            build_spec::<TierCommitBlockSteps>().map_err(|e| vec![e.code().to_string()])
         }
         other => panic!("the fixture cites a topology this app does not declare: {other}"),
     }
@@ -743,8 +687,36 @@ fn kind_name(channel: &ChannelDescriptor) -> &'static str {
     }
 }
 
+/// A settings tree with a setting under the wrong parent is a type error in
+/// this SDK: the row is answered by the refusal it would earn elsewhere and
+/// the compile-fail fixture that pins it here.
+fn typed_refusal(row: &Row) -> Option<(&'static str, &'static str)> {
+    if row.needs != "untyped_tree" {
+        return None;
+    }
+    let fixture = match row.topology.as_str() {
+        "each_under_flow" => "sdk/rust/tests/ui/settings_each_under_flow.rs",
+        "ack_under_at_least_once" => "sdk/rust/tests/ui/settings_ack_under_at_least_once.rs",
+        "ack_under_steps" => "sdk/rust/tests/ui/settings_ack_under_steps.rs",
+        "correction_under_steps" => "sdk/rust/tests/ui/settings_correction_under_steps.rs",
+        "exactly_under_steps" => "sdk/rust/tests/ui/settings_exactly_under_steps.rs",
+        "sleep_after_in_memory" => "sdk/rust/tests/ui/settings_sleep_after_in_memory.rs",
+        "kind_literal" => "sdk/rust/tests/ui/settings_kind_literal.rs",
+        other => panic!("an untyped-tree row this app pins no fixture for: {other}"),
+    };
+    let name = if row.topology == "kind_literal" {
+        "topology.invalid_setting"
+    } else {
+        "topology.unknown_field"
+    };
+    Some((name, fixture))
+}
+
 /// One row's verdict, in the report's shape.
 fn judge(row: &Row) -> Value {
+    if let Some((name, path)) = typed_refusal(row) {
+        return json!({"topology": row.topology, "outcome": "cited", "names": [name], "citation": path});
+    }
     if row.needs != "-" && !SURFACES.contains(&row.needs.as_str()) {
         return json!({"topology": row.topology, "outcome": "skipped", "needs": row.needs});
     }
@@ -811,6 +783,10 @@ pub(crate) fn register_only(
         .find(|row| row.topology == topology)
         .ok_or_else(|| format!("{FIXTURE} has no row `{topology}`"))?;
 
+    if let Some((name, path)) = typed_refusal(row) {
+        eprintln!("{topology}: {name} is a compile error here; pinned by {path}");
+        std::process::exit(1);
+    }
     if row.needs != "-" && !SURFACES.contains(&row.needs.as_str()) {
         eprintln!("{topology}: this SDK's builder carries no `{}`, so the row is skipped and nothing is registered", row.needs);
         std::process::exit(1);
@@ -845,17 +821,7 @@ pub(crate) fn register_only(
     }
 
     load(row);
-    let defined = if is_bounded(row) {
-        runner.register_factory(RowBounded)
-    } else {
-        match stream_consts(row) {
-            (true, false) => runner.register_factory(RowClass),
-            (false, false) => runner.register_factory(VolatileRowClass),
-            (false, true) => runner.register_factory(SleepyVolatileRowClass),
-            (true, true) => panic!("no row declares a persistent class that sleeps"),
-        }
-    };
-    if let Err(refusal) = defined {
+    if let Err(refusal) = runner.register_factory(RowClass) {
         eprintln!("{topology}: {}: {refusal}", ErrorModel::code(&refusal));
         std::process::exit(1);
     }

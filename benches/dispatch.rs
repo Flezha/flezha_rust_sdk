@@ -21,7 +21,7 @@ use flezha_runner::operator::builder::build_topology_for;
 use flezha_runner::operator::registry::OperatorRegistry;
 use flezha_runner::operator::OperatorInstance;
 use flezha_runner::tasklet::{Tasklet, TaskletError};
-use flezha_runner::{__dispatch_internals as bi, Ctx, OverflowPolicy, UnboundedOperator};
+use flezha_runner::{Ctx, Operator, OverflowPolicy, __dispatch_internals as bi};
 use flz_core::bench_support::{
     allocations, fan_in, measurement_secs_default, report, stream_pair, Counting, Settle,
 };
@@ -63,7 +63,7 @@ impl Tasklet for RegressionTasklet {
 }
 
 struct RegressionOperator;
-impl UnboundedOperator for RegressionOperator {
+impl Operator for RegressionOperator {
     fn factory_id() -> &'static str {
         "regression_bench_operator"
     }
@@ -147,14 +147,14 @@ static PART_COUNTER: Settle = Settle::new();
 const STRESS_KEYS: &[&str] = &["p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7"];
 
 // Entry-tasklet routing: fan out every input to all 8 cells per
-// `operator-bench-harness/design.md` Decision 7 / bounded operator §1.1.
+// `operator-bench-harness/design.md` Decision 7 / steps operator §1.1.
 fn entry_cells_for(_: &Vec<u8>) -> Vec<&'static str> {
     STRESS_KEYS.to_vec()
 }
 
 // Downstream-tasklet routing: pin each emit to a single cell so the
 // fan-out factor stays bounded at 8 (entry) and each pipeline stage runs
-// once per upstream emit. Per bounded operator §1.1 ("cells_for returning all 8
+// once per upstream emit. Per steps operator §1.1 ("cells_for returning all 8
 // keys for the entry tasklet") only the entry tasklet fans out N-wide; B/C/D
 // have 8 cells each (Decision 7) but route to one.
 fn pipeline_cells_for(_: &Vec<u8>) -> Vec<&'static str> {
@@ -234,7 +234,7 @@ impl Tasklet for StressBenchTaskletD {
 }
 
 struct CellStressBenchOperator;
-impl UnboundedOperator for CellStressBenchOperator {
+impl Operator for CellStressBenchOperator {
     fn factory_id() -> &'static str {
         "cell_stress_bench_operator"
     }

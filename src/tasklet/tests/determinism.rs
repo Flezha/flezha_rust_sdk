@@ -261,16 +261,10 @@ fn non_reserved_metadata_still_flows() {
 }
 
 #[test]
-fn a_stream_context_refuses_to_complete_without_a_retry() {
+fn a_context_with_no_instance_to_end_accepts_a_completion() {
     let mut sink = StubSink::default();
     let mut cell = ProbeCell::default();
     let mut ctx = cell.ctx(&mut sink, 0, 7, IDENTITY);
-    let err = ctx
-        .complete("3")
-        .expect_err("an unbounded operator never completes");
-    assert!(err.is_non_retryable(), "{err:?}");
-    assert!(
-        err.to_string().contains("runtime.complete_outside_bounded"),
-        "{err}"
-    );
+    ctx.complete("3")
+        .expect("a sink that runs no instance has nothing to end and refuses nothing");
 }

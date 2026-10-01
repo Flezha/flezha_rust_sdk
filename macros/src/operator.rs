@@ -1,4 +1,4 @@
-//! `flezha::operator! { pub struct Name; id: "...", pipeline: input::<T> -> A -> B -> plugin::<U>("k") }`
+//! `flezha::pipeline! { pub struct Name; id: "...", pipeline: input::<T> -> A -> B -> plugin::<U>("k") }`
 //! — declares the named type and lowers a strictly linear pipeline to its
 //! `channels()` body. The author registers it with
 //! `runner.register_factory(Name)`; nothing is collected. Fan-out / multi-input
@@ -85,7 +85,7 @@ impl Parse for OperatorDef {
         input.parse::<Token![struct]>().map_err(|_| {
             syn::Error::new(
                 input.span(),
-                "`flezha::operator!` begins with the type it declares: `pub struct Name;`",
+                "`flezha::pipeline!` begins with the type it declares: `pub struct Name;`",
             )
         })?;
         let ident: Ident = input.parse()?;
@@ -111,7 +111,7 @@ impl Parse for OperatorDef {
         if !input.is_empty() {
             return Err(syn::Error::new(
                 input.span(),
-                "fan-out / multi-input pipelines are not supported by `flezha::operator!`; \
+                "fan-out / multi-input pipelines are not supported by `flezha::pipeline!`; \
                  declare the topology with an explicit `channels()` body",
             ));
         }
@@ -153,8 +153,6 @@ pub(crate) struct Wiring<'a> {
     pub vis: Option<&'a Visibility>,
     /// The operator type, the one the author registers.
     pub ident: &'a Ident,
-    /// Which authoring trait the impl states.
-    pub kind: Kind,
     pub id: &'a str,
     pub input_ty: &'a Type,
     /// The entry channel's name as the author wrote it; `None` takes the
@@ -170,36 +168,9 @@ pub(crate) struct Wiring<'a> {
     /// The plugin sink's name, the producing channel named after it; `None`
     /// declares no plugin channel.
     pub sink: Option<&'a str>,
-    /// The operator items the short form sets beyond the graph (a bounded operator's
-    /// `loop_mode`), empty when every item keeps its trait default.
+    /// The operator items the short form sets beyond the graph (a steps operator's
+    /// `each`), empty when every item keeps its trait default.
     pub settings: TokenStream,
-}
-
-/// The two operator kinds a short form can declare. `operator!` is
-/// unbounded-only; the short-form attribute's name chooses.
-#[derive(Clone, Copy)]
-pub(crate) enum Kind {
-    Unbounded,
-    Bounded,
-}
-
-impl Kind {
-    /// The short-form attribute that declares this kind.
-    pub(crate) fn attribute(self) -> &'static str {
-        match self {
-            Kind::Unbounded => "#[flezha::unbounded_operator]",
-            Kind::Bounded => "#[flezha::bounded_operator]",
-        }
-    }
-
-    /// The trait the impl states — the one place the two kinds differ, since
-    /// both declare their graph in `channels` on the same builder.
-    fn operator_trait(self) -> TokenStream {
-        match self {
-            Kind::Unbounded => quote! { ::flezha_runner::UnboundedOperator },
-            Kind::Bounded => quote! { ::flezha_runner::BoundedOperator },
-        }
-    }
 }
 
 /// The entry channel's name: the author's where one was written, and `input`
@@ -215,12 +186,11 @@ fn entry_channel_name(written: Option<&LitStr>) -> syn::Result<String> {
     }
 }
 
-/// The operator type and its impl of the kind's authoring trait.
+/// The operator type and its impl of the `Operator` trait.
 pub(crate) fn operator_item(wiring: Wiring<'_>) -> syn::Result<TokenStream> {
     let Wiring {
         vis,
         ident,
-        kind,
         id,
         input_ty,
         input_name,
@@ -231,7 +201,6 @@ pub(crate) fn operator_item(wiring: Wiring<'_>) -> syn::Result<TokenStream> {
         settings,
     } = wiring;
     let entry = entry_channel_name(input_name)?;
-    let operator_trait = kind.operator_trait();
     let declared = vis.map(|vis| quote! { #vis struct #ident; });
     // Pins the declared sink payload type against the terminal tasklet's
     // `Output`; with no sink the tasklet's output is left unconsumed, as a
@@ -245,7 +214,7 @@ pub(crate) fn operator_item(wiring: Wiring<'_>) -> syn::Result<TokenStream> {
     };
     Ok(quote! {
         #declared
-        impl #operator_trait for #ident {
+        impl ::flezha_runner::Operator for #ident {
             fn factory_id() -> &'static str { #id }
             fn channels(c: &::flezha_runner::ChannelBuilder) {
                 let stream = c.input::<#input_ty>(#entry) #on_full #chain
@@ -278,7 +247,6 @@ pub fn expand(item: TokenStream) -> syn::Result<TokenStream> {
     operator_item(Wiring {
         vis: Some(&def.vis),
         ident: &def.ident,
-        kind: Kind::Unbounded,
         id: &def.id,
         input_ty: &def.input_ty,
         input_name: def.input_name.as_ref(),

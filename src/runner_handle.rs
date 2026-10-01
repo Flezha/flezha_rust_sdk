@@ -14,7 +14,7 @@ use crate::operator::instance::OperatorInstance;
 use crate::operator::Operator;
 use crate::runner::{ClientResponseMessage, RunnerMessage};
 use crate::shutdown::ShutdownBridge;
-use crate::{operator, pb, runner, shutdown, BuildBoundedError, TopologyBuildError};
+use crate::{operator, pb, runner, shutdown, BuildStepsError, TopologyBuildError};
 
 /// The ONE public error of the entry-point chain: every fallible call on
 /// [`FlezhaRunner`] returns `Result<_, FlezhaError>`, so
@@ -38,8 +38,8 @@ pub enum FlezhaError {
     /// unwired channels, type mismatches, ...) — reported at the declaring
     /// call site, never a panic.
     InvalidTopology(TopologyBuildError),
-    /// `register_factory` found invalid bounded operator authoring.
-    InvalidBounded(BuildBoundedError),
+    /// `register_factory` found invalid steps operator authoring.
+    InvalidSteps(BuildStepsError),
     /// The factory id is already in this runner's declared set, whichever kind
     /// either operator is.
     DuplicateFactoryId { factory_id: String },
@@ -79,7 +79,7 @@ impl ErrorModel for FlezhaError {
             ),
             FlezhaError::Refused(error) => error.clone(),
             FlezhaError::InvalidTopology(e) => e.to_error(),
-            FlezhaError::InvalidBounded(e) => e.to_error(),
+            FlezhaError::InvalidSteps(e) => e.to_error(),
             FlezhaError::DuplicateFactoryId { factory_id } => E::with(
                 "topology.duplicate_factory_id",
                 [("factory_id", factory_id.as_str().into())],
@@ -128,9 +128,9 @@ impl From<TopologyBuildError> for FlezhaError {
     }
 }
 
-impl From<BuildBoundedError> for FlezhaError {
-    fn from(e: BuildBoundedError) -> Self {
-        FlezhaError::InvalidBounded(e)
+impl From<BuildStepsError> for FlezhaError {
+    fn from(e: BuildStepsError) -> Self {
+        FlezhaError::InvalidSteps(e)
     }
 }
 
@@ -171,7 +171,7 @@ impl Flezha {
     /// ```no_run
     /// # use flezha_runner::{Flezha, FlezhaError};
     /// # struct MyOperator;
-    /// # impl flezha_runner::UnboundedOperator for MyOperator {
+    /// # impl flezha_runner::Operator for MyOperator {
     /// #     fn factory_id() -> &'static str { "my_operator" }
     /// #     fn channels(_c: &flezha_runner::ChannelBuilder) {}
     /// # }
@@ -303,27 +303,23 @@ impl FlezhaRunner {
     }
 
     /// Declare an operator class the runtime can spawn instances of later
-    /// (via the controller's `AddOperator`), of either kind: the kind is read
-    /// from the value's [`Operator`] impl, never named by the call. Builds the
-    /// class once — `R::channels(...)` for an unbounded operator, the spec for a bounded operator —
-    /// and records it in the global class registry of its kind. Legal before
-    /// and after `start()`; a post-start registration ships the runner's full
-    /// factory set to the controller (`UpdateFactories`).
+    /// (via the controller's `AddOperator`). Builds the class once, under its
+    /// [`Operator::settings`], and records it in the global class registry.
+    /// Legal before and after `start()`; a post-start registration ships the
+    /// runner's full factory set to the controller (`UpdateFactories`).
     ///
     /// An invalid declaration (duplicate channel names, unwired channels,
-    /// missing `cells_for` overrides, an unterminating bounded operator, ...) is
-    /// reported here, at the declaring call site — not a panic — and leaves the
-    /// runner exactly as it was.
+    /// missing `cells_for` overrides, ...) is reported here, at the declaring
+    /// call site — not a panic — and leaves the runner exactly as it was.
     ///
-    /// The operator is passed as a value because a function generic over two
-    /// unrelated traits cannot be called with a type argument alone without
-    /// naming the kind marker; operators are unit structs, so the value costs
-    /// nothing. A type implementing BOTH kind traits cannot be passed at all —
-    /// `K` is unresolvable — which is Rust's `AmbiguousOperatorKind`.
-    pub fn register_factory<K, O: Operator<K>>(&self, _operator: O) -> Result<&Self, FlezhaError> {
+    /// The operator is passed as a value so a call reads as the class it
+    /// declares; operators are unit structs, so the value costs nothing.
+    pub fn register_factory<O: Operator>(&self, _operator: O) -> Result<&Self, FlezhaError> {
         // Build/validate BEFORE touching the declared set.
-        let class = O::build_class()?;
-        self.declare(O::factory_id(), || O::install_class(class))?;
+        let class = crate::operator::build_class::<O>()?;
+        self.declare(O::factory_id(), || {
+            crate::operator::registry::register_class(O::factory_id(), class)
+        })?;
         Ok(self)
     }
 
@@ -334,7 +330,7 @@ impl FlezhaRunner {
     /// [`FlezhaError::NotDefined`] for a factory this runner never declared.
     /// A post-start removal ships the remaining full factory set to the
     /// controller (`UpdateFactories`).
-    pub fn unregister_factory<K, O: Operator<K>>(
+    pub fn unregister_factory<O: Operator>(
         &self,
         _operator: O,
     ) -> Result<&Self, FlezhaError> {
@@ -349,7 +345,7 @@ impl FlezhaRunner {
     /// WITHOUT connecting, mutating shared state, or spawning a thread.
     /// Starting with zero declared operator types is legal (the init frame
     /// carries an empty factory list; types may be declared later), whatever
-    /// short-form or `operator!` types the binary happens to contain: nothing
+    /// short-form or `pipeline!` types the binary happens to contain: nothing
     /// is harvested here. Bind the runner before starting it
     /// (`let runner = Flezha::create_runner(ns)?; runner.start()?;`): a
     /// chained temporary Drops (and shuts the runner down) at statement end.
@@ -396,7 +392,7 @@ impl FlezhaRunner {
         self.await_termination()
     }
 
-    /// Snapshot of the live UnboundedOperator-instance registry, keyed by
+    /// Snapshot of the live Operator-instance registry, keyed by
     /// what the wire calls `operator_id`. `Err(NotStarted)` on a
     /// never-started runner — never a panic.
     pub fn operators(&self) -> Result<HashMap<String, Arc<OperatorInstance>>, FlezhaError> {
@@ -494,15 +490,7 @@ impl FlezhaRunner {
                 .read()
                 .unwrap()
                 .iter()
-                .map(|id| {
-                    let (sdk_lang, kind) = flz_core::operator::registry::advertised_for_factory(id);
-                    pb::FactoryDecl {
-                        id: id.clone(),
-                        description: String::new(),
-                        sdk_lang: sdk_lang as u32,
-                        kind: kind.to_string(),
-                    }
-                })
+                .map(|id| flz_core::operator::registry::advertised_for_factory(id))
                 .collect();
             let _ = live.runner_tx.send(RunnerMessage::control_request(
                 format!("update-factories-{}", crate::util::nonce_suffix()),

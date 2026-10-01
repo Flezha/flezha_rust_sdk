@@ -11,22 +11,21 @@ pub(crate) mod fixtures {
 
     use crate::cell::{CellItem, CellPayload, CellSlot};
     use crate::channel::ChannelBuilder;
-    use crate::operator::builder::build_topology_with_persistence;
+    use crate::operator::builder::build_topology_with_settings;
     use crate::operator::instance::OperatorInstance;
-    use crate::operator::UnboundedOperator;
+    use crate::operator::Operator;
     use crate::runner::poll_core::PollCore;
 
     /// One instance of `O` and its first Cell.
-    pub(crate) fn build_slot_of<O: UnboundedOperator>(
+    pub(crate) fn build_slot_of<O: Operator>(
         instance_id: &str,
     ) -> (Arc<OperatorInstance>, Arc<CellSlot>) {
         let cb = ChannelBuilder::new();
         O::channels(&cb);
-        let topology = build_topology_with_persistence(
+        let topology = build_topology_with_settings(
             O::factory_id(),
             cb,
-            O::PERSISTENCE_ENABLED,
-            O::SLEEP_WHEN_IDLE,
+            &O::settings(),
         )
         .expect("topology");
         let instance = OperatorInstance::new(topology, Arc::from(instance_id));
@@ -104,7 +103,7 @@ mod support {
     use crate::cell::{CellItem, CellSlot};
     use crate::channel::ChannelBuilder;
     use crate::operator::instance::OperatorInstance;
-    use crate::operator::UnboundedOperator;
+    use crate::operator::Operator;
     use crate::tasklet::error::TaskletError;
     use crate::tasklet::{Ctx, Tasklet};
 
@@ -119,14 +118,14 @@ mod support {
     }
 
     pub(super) struct PollOp;
-    impl UnboundedOperator for PollOp {
+    impl Operator for PollOp {
         fn factory_id() -> &'static str {
             "poll_core_exclusivity_op"
         }
         fn channels(c: &ChannelBuilder) {
             c.input::<usize>("input").into::<PollTask>();
         }
-    }
+}
 
     /// A one-slot mailbox: the smallest thing that can be full, so a wake
     /// promoted against it always meets the no-room path.
@@ -144,14 +143,14 @@ mod support {
     }
 
     pub(super) struct TinyOp;
-    impl UnboundedOperator for TinyOp {
+    impl Operator for TinyOp {
         fn factory_id() -> &'static str {
             "poll_core_tiny_mailbox_op"
         }
         fn channels(c: &ChannelBuilder) {
             c.input::<usize>("input").into::<TinyTask>();
         }
-    }
+}
 
     /// A slot whose one mailbox slot is taken and whose round is claimed by
     /// nobody: every wake promoted against it meets a full mailbox.
@@ -168,7 +167,7 @@ mod support {
     /// A backoff long enough to observe the deferral window from the outside:
     /// base 2 s, so attempt 1 comes due in 1–3 s.
     pub(super) struct SlowRetryOp;
-    impl UnboundedOperator for SlowRetryOp {
+    impl Operator for SlowRetryOp {
         fn factory_id() -> &'static str {
             "poll_core_slow_retry_op"
         }
@@ -177,7 +176,7 @@ mod support {
                 .retry_backoff_ms(2_000)
                 .into::<PollTask>();
         }
-    }
+}
 
     pub(super) fn build_slot(instance_id: &str) -> (Arc<OperatorInstance>, Arc<CellSlot>) {
         build_slot_of::<PollOp>(instance_id)

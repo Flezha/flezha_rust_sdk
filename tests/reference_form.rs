@@ -7,7 +7,7 @@ use flezha_runner::operator::builder::build_topology_for;
 use flezha_runner::state::Change;
 use flezha_runner::tasklet::{ClockKind, Ctx, NoChange, Tasklet, TaskletError};
 use flezha_runner::testing::TaskletTestHarness;
-use flezha_runner::UnboundedOperator;
+use flezha_runner::Operator;
 
 #[derive(Default, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 struct Totals {
@@ -78,7 +78,7 @@ impl Tasklet for Drain {
 /// Both forms in one graph.
 struct MixedOperator;
 
-impl UnboundedOperator for MixedOperator {
+impl Operator for MixedOperator {
     fn factory_id() -> &'static str {
         "mixed_operator"
     }

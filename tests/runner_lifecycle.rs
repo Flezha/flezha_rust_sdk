@@ -19,9 +19,7 @@ mod common;
 use common::prelude::*;
 use common::{stays_quiet, wait_until};
 use flezha_runner::transport::FlezhaStream;
-use flezha_runner::{
-    ChannelBuilder, ErrorModel, Flezha, FlezhaError, Tasklet, TaskletError, UnboundedOperator,
-};
+use flezha_runner::{ChannelBuilder, ErrorModel, Flezha, FlezhaError, Operator, Tasklet, TaskletError};
 use prost::Message;
 
 #[derive(serde::Serialize, serde::Deserialize, Default)]
@@ -43,7 +41,7 @@ impl Tasklet for PassTask {
 }
 
 struct ProbeOperatorA;
-impl UnboundedOperator for ProbeOperatorA {
+impl Operator for ProbeOperatorA {
     fn factory_id() -> &'static str {
         "lifecycle_probe_a"
     }
@@ -53,7 +51,7 @@ impl UnboundedOperator for ProbeOperatorA {
 }
 
 struct ProbeOperatorB;
-impl UnboundedOperator for ProbeOperatorB {
+impl Operator for ProbeOperatorB {
     fn factory_id() -> &'static str {
         "lifecycle_probe_b"
     }
@@ -63,7 +61,7 @@ impl UnboundedOperator for ProbeOperatorB {
 }
 
 struct ProbeOperatorC;
-impl UnboundedOperator for ProbeOperatorC {
+impl Operator for ProbeOperatorC {
     fn factory_id() -> &'static str {
         "lifecycle_probe_c"
     }
@@ -75,7 +73,7 @@ impl UnboundedOperator for ProbeOperatorC {
 /// Declares a `.keyed()` channel without a plugin wire — `register_factory`
 /// must report this as `Err(FlezhaError::InvalidTopology)`, not panic.
 struct UnwiredOperator;
-impl UnboundedOperator for UnwiredOperator {
+impl Operator for UnwiredOperator {
     fn factory_id() -> &'static str {
         "lifecycle_unwired"
     }

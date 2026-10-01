@@ -3,7 +3,7 @@
 //! The crate's worked example: one entry channel feeding one tasklet that
 //! appends every input it sees to its own durable state. It is the smallest
 //! class that exercises all four parts of the authoring surface: a tasklet
-//! with state, the change that records its mutation, an `UnboundedOperator`
+//! with state, the change that records its mutation, an `Operator`
 //! that wires it, and a runner that registers the class.
 //!
 //! The invariant it demonstrates: when 10,000 messages targeting one
@@ -20,9 +20,7 @@
 //! then feed it:
 //!     flz operator send appender --channel input --text '"first"'
 
-use flezha_runner::{
-    tasklet, Change, ChannelBuilder, Ctx, Tasklet, TaskletError, UnboundedOperator,
-};
+use flezha_runner::{Change, ChannelBuilder, Ctx, Operator, Tasklet, TaskletError, tasklet};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -60,7 +58,7 @@ impl Tasklet for Append {
 
 struct AppendOperator;
 
-impl UnboundedOperator for AppendOperator {
+impl Operator for AppendOperator {
     fn factory_id() -> &'static str {
         "appender"
     }

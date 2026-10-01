@@ -40,7 +40,6 @@ services:
     build: .
     environment:
       FLEZHA_SOCKET_FILES_PATH: /flezha/app_data/sockets
-      FLEZHA_PARK_IDLE_MS: "10000"
     volumes:
       - sockets_2:/flezha/app_data/sockets
     depends_on:

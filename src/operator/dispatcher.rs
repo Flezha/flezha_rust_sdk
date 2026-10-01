@@ -117,9 +117,9 @@ struct FlushWiring {
     cell_identity: Arc<Vec<u8>>,
     change_seq: Arc<AtomicU64>,
     header: HeaderTemplate,
-    persistence_enabled: bool,
+    keeps_state: bool,
     /// One effect record per invocation (`OperatorTopology::records_effects`):
-    /// the effectively-once tier or a durable bounded operator. The invocation's plugin
+    /// the effectively-once tier or a durable steps operator. The invocation's plugin
     /// emits are captured into the record on the reliable state sink instead
     /// of the primary stream.
     records_effects: bool,
@@ -134,9 +134,9 @@ struct FlushWiring {
     /// engine's assembly (`runner::poll_core`), which reads this through
     /// `TaskletDispatcher::correction_policy`.
     correction: Option<crate::operator::topology::CorrectionPolicy>,
-    /// A bounded operator Cell: its record ships as each item settles, named on the
+    /// A steps operator Cell: its record ships as each item settles, named on the
     /// pass sheet, and its final failure fails the stage instead of parking.
-    bounded: bool,
+    steps: bool,
 }
 
 impl<S: Tasklet> TaskletDispatcherImpl<S> {
@@ -276,7 +276,7 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
 
     /// The typed input inside a mailbox payload, `None` with the mismatch
     /// reported. Consumers with different Input types in the same
-    /// UnboundedOperator downcast independently, because the channel wiring
+    /// Operator downcast independently, because the channel wiring
     /// guarantees each only ever receives its own type.
     fn typed_input(value: Arc<dyn Any + Send + Sync>) -> Option<Arc<S::Input>> {
         match Arc::downcast::<S::Input>(value) {
@@ -446,7 +446,7 @@ impl<S: Tasklet> TaskletDispatcher for TaskletDispatcherImpl<S> {
             .as_any_mut()
             .downcast_mut::<TypedBuffer<S>>()
             .expect("compensate: flush buffer type mismatch for tasklet");
-        let stream = flz_core::bounded::unwired_stream();
+        let stream = flz_core::steps::unwired_stream();
         let instance = Weak::clone(&slot.instance);
         let scope = CellScope {
             slot,
@@ -586,7 +586,7 @@ fn complete_item(slot: &Arc<CellSlot>, ops: &[TimerOp], stream: &Arc<FlezhaStrea
 }
 
 /// The Cell work one activation carries, or `None` when there is none to run
-/// here: a bounded operator undo is served in process and answered at once, and the
+/// here: a steps operator undo is served in process and answered at once, and the
 /// other command and prepare payloads are host-only — a typed worker never
 /// receives one, because typed and host classes do not share a process.
 fn cell_work(
@@ -625,7 +625,7 @@ pub(super) fn run_activation(
     let Some((slot, items)) = cell_work(payload) else {
         return;
     };
-    let bounded = slot.topology.bounded.is_some();
+    let steps = slot.topology.steps.is_some();
     let mut handout = Handout::new(core, token, items);
     while let Some(work) = handout.next_item() {
         // Returning with no connection is safe only because the guard
@@ -638,8 +638,8 @@ pub(super) fn run_activation(
             ItemDisposition::Done { ops } => {
                 handout.item_done();
                 let hand_back = complete_item(&slot, &ops, &stream);
-                if bounded {
-                    flz_core::bounded::item_settled(&slot);
+                if steps {
+                    flz_core::steps::item_settled(&slot);
                 }
                 if hand_back {
                     handout.hand_back();
@@ -647,8 +647,8 @@ pub(super) fn run_activation(
                 }
             }
             ItemDisposition::RetryLater { item, error } => {
-                if bounded {
-                    flz_core::bounded::attempt_failed(&slot);
+                if steps {
+                    flz_core::steps::attempt_failed(&slot);
                 }
                 handout.retry(
                     ItemAttempt {

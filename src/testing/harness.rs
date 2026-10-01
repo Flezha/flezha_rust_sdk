@@ -627,7 +627,7 @@ impl<'a> EmitSink for RecordingEmitSink<'a> {
         self.keyed
     }
 
-    /// The harness runs a bounded operator's tasklet as readily as an unbounded operator's, so
+    /// The harness runs a steps operator's tasklet as readily as a flow operator's, so
     /// it accepts a completion and, like a checkpoint, records nothing.
     fn complete(&mut self, _result: Vec<u8>) -> Result<(), TaskletError> {
         Ok(())

@@ -5,7 +5,7 @@
 use super::*;
 use crate::cell::restore::RestoreInitPayload;
 use crate::channel::ChannelBuilder;
-use crate::operator::UnboundedOperator;
+use crate::operator::Operator;
 use crate::tasklet::ctx::EmitSink;
 use crate::tasklet::{Ctx, Tasklet, TaskletError};
 
@@ -54,7 +54,7 @@ fn an_unwinding_worker_re_hands_its_activation_instead_of_retiring_the_cell() {
 
 #[derive(Default)]
 struct KeyedTask;
-#[flezha_runner::tasklet(name = "bounded_keyed_op")]
+#[flezha_runner::tasklet(name = "steps_keyed_op")]
 impl Tasklet for KeyedTask {
     type Input = String;
     type Output = String;
@@ -64,9 +64,9 @@ impl Tasklet for KeyedTask {
 }
 
 struct KeyedOperator;
-impl UnboundedOperator for KeyedOperator {
+impl Operator for KeyedOperator {
     fn factory_id() -> &'static str {
-        "bounded_keyed_operator"
+        "steps_keyed_operator"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
@@ -102,14 +102,14 @@ impl EmitSink for NoSink {
     }
 }
 
-/// A bounded operator Cell's context carries no timer session — timers do not fire
-/// inside a bounded operator yet. The refusal is structural (there is nothing to
+/// A steps operator Cell's context carries no timer session — timers do not fire
+/// inside a steps operator yet. The refusal is structural (there is nothing to
 /// register into), and typed rather than a silent drop.
 #[test]
 fn a_context_without_a_timer_session_refuses_rather_than_dropping() {
     let mut sink = NoSink;
     let (mut state, changes) = (0, std::cell::RefCell::new(Vec::new()));
-    let ctx = Ctx::<CounterTask>::new(&mut state, &changes, &mut sink, 0, 0, b"bounded/keyed/");
+    let ctx = Ctx::<CounterTask>::new(&mut state, &changes, &mut sink, 0, 0, b"steps/keyed/");
     let err = ctx
         .timer_after(std::time::Duration::from_secs(1))
         .expect_err("a session-less context must refuse");
@@ -171,11 +171,11 @@ fn snapshot_frame_round_trips_through_restore() {
             cell_identity: Arc::new(flz_core::flusher::encode_cell_identity("inst", "task", "")),
             change_seq: Arc::new(AtomicU64::new(3)),
             header: crate::cell::header::header_template_for::<CounterTask>(),
-            persistence_enabled: false,
+            keeps_state: false,
             records_effects: false,
             checkpoint: None,
             correction: None,
-            bounded: false,
+            steps: false,
         },
     );
 

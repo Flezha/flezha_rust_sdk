@@ -5,6 +5,7 @@
 use std::io::Read;
 
 use flezha_runner::cell::header::header_template_for;
+use flezha_runner::{Exactly, OperatorSettings, Run};
 
 mod common;
 use common::prelude::*;
@@ -141,18 +142,24 @@ impl Tasklet for Drain {
 }
 
 struct TierRelayOperator;
-impl UnboundedOperator for TierRelayOperator {
+impl Operator for TierRelayOperator {
     fn factory_id() -> &'static str {
         "tier_relay_operator"
     }
     fn channels(c: &ChannelBuilder) {
-        c.effectively_once();
         c.input::<String>("input").into::<Relay>().into::<Drain>();
+    }
+
+    fn settings() -> OperatorSettings {
+        OperatorSettings {
+            run: Run::Flow { exactly: Exactly::effectively_once() },
+            ..OperatorSettings::default()
+        }
     }
 }
 
 struct PlainRelayOperator;
-impl UnboundedOperator for PlainRelayOperator {
+impl Operator for PlainRelayOperator {
     fn factory_id() -> &'static str {
         "plain_relay_operator"
     }
@@ -282,7 +289,7 @@ test_tasklet!(LogicalNowSinkTasklet, "logical_now_sink_tasklet", String => (), (
 });
 
 struct LogicalNowOperator;
-impl UnboundedOperator for LogicalNowOperator {
+impl Operator for LogicalNowOperator {
     fn factory_id() -> &'static str {
         "logical_now_operator"
     }

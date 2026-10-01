@@ -1,4 +1,4 @@
-use flezha_runner::{BoundedOperator, ChannelBuilder};
+use flezha_runner::{ChannelBuilder, Each, OnFailure, Operator, OperatorSettings, Run};
 use serde::{Deserialize, Serialize};
 
 use crate::confirm_fill::ConfirmFill;
@@ -15,10 +15,10 @@ pub struct OrderTicket {
     pub quantity: u32,
 }
 
-/// The desk's bounded operator: one instance per order, which runs its steps
+/// The desk's steps operator: one instance per order, which runs its steps
 /// once and then ends.
 ///
-/// A bounded operator declares its steps the way an unbounded operator declares
+/// A steps operator declares its steps the way a flow operator declares
 /// its graph, on the same builder, and the controller schedules, restarts and
 /// relocates it in the same way. What differs is the lifecycle: each step's
 /// output is written down as it commits, so an instance that is interrupted
@@ -32,7 +32,7 @@ pub struct OrderTicket {
 /// desk's book is left alone.
 pub struct OrderExecutorOperator;
 
-impl BoundedOperator for OrderExecutorOperator {
+impl Operator for OrderExecutorOperator {
     /// The operator's stable identity, and the name
     /// `flz operator start order_executor` resolves. It is durable, so changing
     /// it declares a new operator rather than renaming this one.
@@ -63,5 +63,12 @@ impl BoundedOperator for OrderExecutorOperator {
                     book.into::<RecordOrder>();
                 },
             ]);
+    }
+
+    fn settings() -> OperatorSettings {
+        OperatorSettings {
+            run: Run::Steps { each: Each::Once, on_failure: OnFailure::UndoAll },
+            ..OperatorSettings::default()
+        }
     }
 }

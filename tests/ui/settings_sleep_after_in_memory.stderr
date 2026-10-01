@@ -1,0 +1,7 @@
+error[E0559]: variant `Durable::Memory` has no field named `sleep_after`
+ --> tests/ui/settings_sleep_after_in_memory.rs:6:31
+  |
+6 |     let _ = Durable::Memory { sleep_after: None };
+  |                               ^^^^^^^^^^^ `Durable::Memory` does not have this field
+  |
+  = note: all struct fields are already assigned

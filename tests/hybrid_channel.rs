@@ -78,7 +78,7 @@ test_tasklet!(SingleConsumer, "hybrid_single_consumer", u32 => (), (), |input, _
 });
 
 struct SingleHybridOperator;
-impl UnboundedOperator for SingleHybridOperator {
+impl Operator for SingleHybridOperator {
     fn factory_id() -> &'static str {
         "hybrid_single"
     }
@@ -151,7 +151,7 @@ test_tasklet!(ThreeConsumerC, "hybrid_three_c", u32 => (), (), |input, _ctx| {
 });
 
 struct ThreeHybridOperator;
-impl UnboundedOperator for ThreeHybridOperator {
+impl Operator for ThreeHybridOperator {
     fn factory_id() -> &'static str {
         "hybrid_three"
     }
@@ -227,7 +227,7 @@ test_tasklet!(PanicConsumer, "hybrid_panic_consumer", u32 => (), (), |input, _ct
 });
 
 struct PanicHybridOperator;
-impl UnboundedOperator for PanicHybridOperator {
+impl Operator for PanicHybridOperator {
     fn factory_id() -> &'static str {
         "hybrid_panic"
     }
@@ -300,7 +300,7 @@ test_tasklet!(DupProducer, "hybrid_dup_producer", String => u32, (), |_input, _c
 });
 
 struct DupHybridOperator;
-impl UnboundedOperator for DupHybridOperator {
+impl Operator for DupHybridOperator {
     fn factory_id() -> &'static str {
         "hybrid_dup"
     }
@@ -349,7 +349,7 @@ test_tasklet!(MetaConsumer, "hybrid_meta_consumer", u32 => (), (), |input, _ctx|
 });
 
 struct MetaHybridOperator;
-impl UnboundedOperator for MetaHybridOperator {
+impl Operator for MetaHybridOperator {
     fn factory_id() -> &'static str {
         "hybrid_meta"
     }
@@ -423,7 +423,7 @@ test_tasklet!(PureConsumer, "hybrid_pure_consumer", u32 => (), (), |input, _ctx|
 });
 
 struct PureOperator;
-impl UnboundedOperator for PureOperator {
+impl Operator for PureOperator {
     fn factory_id() -> &'static str {
         "hybrid_pure"
     }
@@ -493,7 +493,7 @@ test_tasklet!(UnifiedConsumer, "unified_consumer", String => (), (), |input, _ct
 
 /// `sink` and nothing after it — what the removed `output(...)` declared.
 struct TerminalSinkOperator;
-impl UnboundedOperator for TerminalSinkOperator {
+impl Operator for TerminalSinkOperator {
     fn factory_id() -> &'static str {
         "unified_terminal"
     }
@@ -506,7 +506,7 @@ impl UnboundedOperator for TerminalSinkOperator {
 
 /// The same sink with a consumer wired after it — what `also_output` declared.
 struct HybridSinkOperator;
-impl UnboundedOperator for HybridSinkOperator {
+impl Operator for HybridSinkOperator {
     fn factory_id() -> &'static str {
         "unified_hybrid"
     }
@@ -519,7 +519,7 @@ impl UnboundedOperator for HybridSinkOperator {
 }
 
 /// Everything about one channel the sink declaration decides.
-fn sink_shape<R: UnboundedOperator>(channel: &str) -> (ChannelKind, usize, Option<String>, bool) {
+fn sink_shape<R: Operator>(channel: &str) -> (ChannelKind, usize, Option<String>, bool) {
     let topology = build_topology_for::<R>().expect("topology");
     let cid = topology.lookup_channel_id(channel).expect("channel id");
     let descriptor = topology.channel(cid).expect("descriptor");
@@ -581,8 +581,8 @@ fn terminal_and_hybrid_sink_frames_match_the_pre_rename_fixture() {
     dispatch_input(&terminal_handle, "uni-terminal", &terminal_stream, "hello");
 
     let (hybrid_handle, _h) = setup::<HybridSinkOperator>("uni-hybrid");
-    let (hybrid_unbounded, hybrid_frames) = duplex_stream_with_reader();
-    dispatch_input(&hybrid_handle, "uni-hybrid", &hybrid_unbounded, "hello");
+    let (hybrid_flow, hybrid_frames) = duplex_stream_with_reader();
+    dispatch_input(&hybrid_handle, "uni-hybrid", &hybrid_flow, "hello");
 
     assert!(
         wait_until(
@@ -617,7 +617,7 @@ fn terminal_and_hybrid_sink_frames_match_the_pre_rename_fixture() {
 /// The channel this produces is the one the frame is stamped with, so the
 /// string an author can read in the source is the string a plugin filters on.
 struct SinkNamesChannelOperator;
-impl UnboundedOperator for SinkNamesChannelOperator {
+impl Operator for SinkNamesChannelOperator {
     fn factory_id() -> &'static str {
         "sink_names_channel"
     }
@@ -655,7 +655,7 @@ fn sink_name_is_the_channel_name_on_the_wire() {
 /// A channel both `.named(...)` and `.sink_named(...)` name is refused rather
 /// than resolved by precedence, and the refusal names both declarations.
 struct DoubleNamedOperator;
-impl UnboundedOperator for DoubleNamedOperator {
+impl Operator for DoubleNamedOperator {
     fn factory_id() -> &'static str {
         "double_named"
     }

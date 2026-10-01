@@ -30,7 +30,7 @@ pub(crate) struct TaskletEntry {
     pub cell_keys: Vec<&'static str>,
     pub cells_for_overridden: bool,
     /// `Tasklet::COMPENSATE_OVERRIDDEN` captured at registration time. A
-    /// bounded run consults the resolved descriptor flag to fire saga
+    /// steps run consults the resolved descriptor flag to fire saga
     /// compensation only for tasklets that declared a `compensate` hook.
     pub compensate_overridden: bool,
     /// Channels this node consumes. Several = a fan-in, or a merge whose
@@ -147,8 +147,8 @@ pub(crate) struct ChannelEntry {
     pub retry: crate::channel::RetryPolicy,
     /// Inter-task byte codec, derived from the producing tasklet's `Output`
     /// type when the channel is created. `None` only on a channel with no
-    /// producer (an entry channel); a durable structured bounded operator's task
-    /// journal reads it at every barrier (`bounded-task-journal`).
+    /// producer (an entry channel); a durable structured steps operator's task
+    /// journal reads it at every barrier (`steps-task-journal`).
     pub codec: Option<crate::channel::ChannelCodec>,
     /// The authoring record: one entry per fluent sequence declared off this
     /// channel's handle, in the order the author closed them. The consumers,
@@ -196,25 +196,9 @@ pub(crate) struct BuilderState {
     /// Merges declared so far; the counter that ties one merge's sources
     /// together across the channels they are declared on.
     pub merge_groups: u32,
-    pub effectively_once: bool,
-    pub correction: Option<crate::operator::topology::CorrectionPolicy>,
-    /// The checkpoint flags exactly as the author set them. The granularity
-    /// they imply is the core's answer, never the builder's.
-    pub checkpoint_ack: bool,
-    pub checkpoint_every: Option<u32>,
-    pub checkpoint_outputs: crate::operator::topology::CheckpointOutputs,
-    pub checkpoint_max_delay_ms: Option<u64>,
 }
 
 impl BuilderState {
-    /// Whether any checkpoint flag was written; the granularity they imply is
-    /// still the core's answer.
-    pub(crate) fn declares_checkpoint(&self) -> bool {
-        self.checkpoint_ack
-            || self.checkpoint_every.is_some()
-            || self.checkpoint_outputs != crate::operator::topology::CheckpointOutputs::AsProduced
-            || self.checkpoint_max_delay_ms.is_some()
-    }
 
     pub(super) fn push_channel(&mut self, name: &'static str, kind: ChannelKind) -> u32 {
         let id = self.channels.len() as u32;

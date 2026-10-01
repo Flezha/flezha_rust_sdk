@@ -1,5 +1,6 @@
-//! `build_topology` consumes a `ChannelBuilder` (populated by
-//! `UnboundedOperator::channels`) and produces a frozen `Arc<OperatorTopology>`.
+//! `build_topology_with_settings` consumes a `ChannelBuilder` (populated by
+//! `Operator::channels`) and the class's settings tree, and produces a frozen
+//! `Arc<OperatorTopology>`.
 //!
 //! The builder judges nothing. It writes what the author declared into the
 //! shared record ([`flz_core::host::HostClassDecl`]), submits it to
@@ -13,9 +14,10 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use flz_core::host::{
-    check, DerivedChannel, HostAckGranularity, HostBeyondWindow, HostCellModeDecl, HostChannelDecl,
-    HostChannelKind, HostCheckpointOutputs, HostClassDecl, HostLink, HostOverflow, HostTaskletDecl,
+    check, DerivedChannel, HostCellModeDecl, HostChannelDecl, HostChannelKind, HostClassDecl,
+    HostLink, HostOverflow, HostTaskletDecl,
 };
+use flz_core::operator::settings::{durable_json, run_json, Exactly, OperatorSettings, Run};
 
 use crate::channel::builder::{
     BuilderState, ChannelBuilder, ChannelEntry, TaskletEntry, TopologyIssue,
@@ -24,8 +26,7 @@ use crate::channel::{
     ChannelDescriptor, ChannelKind, ConsumerEdge, OverflowPolicy, PluginSink, TaskletId,
 };
 use crate::operator::topology::{
-    AckGranularity, BeyondWindowPolicy, CellMode, CheckpointOutputs, CheckpointPolicy,
-    OperatorTopology, TaskletDescriptor,
+    AckGranularity, CellMode, CorrectionPolicy, OperatorTopology, TaskletDescriptor,
 };
 
 /// Built-in default per-Cell mailbox capacity used when a Tasklet does
@@ -45,23 +46,21 @@ pub struct TopologyBuildError {
     pub errors: Vec<TopologyIssue>,
 }
 
+/// A flow class with no settings: the topology a test that exercises a
+/// topology without an operator type builds.
 pub fn build_topology(
     factory_id: &'static str,
     builder: ChannelBuilder,
 ) -> Result<Arc<OperatorTopology>, TopologyBuildError> {
-    build_topology_with_persistence(factory_id, builder, true, false)
+    build_topology_with_settings(factory_id, builder, &OperatorSettings::default())
 }
 
-/// Like [`build_topology`] but accepts the class's `PERSISTENCE_ENABLED` and
-/// `SLEEP_WHEN_IDLE` consts captured at registration; the core refuses a
-/// class that sleeps with persistence off. `build_topology_for::<R>()` is the
-/// canonical caller; tests that exercise topology without an operator
-/// generic call [`build_topology`], which persists and never sleeps.
-pub fn build_topology_with_persistence(
+/// The topology `builder` declares under the class's settings tree. A steps
+/// class gets its DAG from `build_spec`; this is the part both runs share.
+pub fn build_topology_with_settings(
     factory_id: &'static str,
     builder: ChannelBuilder,
-    persistence_enabled_const: bool,
-    sleep_when_idle: bool,
+    settings: &OperatorSettings,
 ) -> Result<Arc<OperatorTopology>, TopologyBuildError> {
     let mut state = builder.into_state();
     // A chain nothing closed is recorded as written; the core answers it.
@@ -70,8 +69,7 @@ pub fn build_topology_with_persistence(
     let capacities = resolve_capacities(&state.tasklets);
     let derived = check(declaration(
         factory_id,
-        persistence_enabled_const,
-        sleep_when_idle,
+        settings,
         &state,
         &capacities,
         &keyed_consumers,
@@ -82,11 +80,6 @@ pub fn build_topology_with_persistence(
         channels,
         tasklets,
         tasklet_name_to_id,
-        effectively_once,
-        correction,
-        checkpoint_every,
-        checkpoint_outputs,
-        checkpoint_max_delay_ms,
         ..
     } = state;
 
@@ -97,6 +90,24 @@ pub fn build_topology_with_persistence(
         descriptors.push(channel_descriptor(entry, derived_channel));
     }
 
+    let (effectively_once, ack_granularity, correction) = match settings.run {
+        Run::Flow {
+            exactly:
+                Exactly::EffectivelyOnce {
+                    ack,
+                    correction_ms,
+                    beyond_window,
+                },
+        } => (
+            true,
+            ack,
+            correction_ms.map(|window_ms| CorrectionPolicy {
+                window_ms,
+                beyond_window,
+            }),
+        ),
+        _ => (false, AckGranularity::PerInput, None),
+    };
     Ok(Arc::new(OperatorTopology {
         sdk_lang: flz_core::header::SDK_LANG_RUST,
         channels: descriptors,
@@ -104,58 +115,35 @@ pub fn build_topology_with_persistence(
         tasklets: build_tasklet_descs(tasklets, capacities, &keyed_consumers),
         tasklet_name_to_id,
         factory_id,
-        persistence_enabled_const,
-        sleep_when_idle,
+        description: settings.description,
+        durable: settings.durable,
+        max_duration: settings.max_duration,
         effectively_once,
         correction,
-        ack_granularity: match derived.ack_granularity {
-            HostAckGranularity::PerInput => AckGranularity::PerInput,
-            HostAckGranularity::Checkpoint => AckGranularity::Checkpoint(CheckpointPolicy {
-                every: checkpoint_every,
-                outputs: checkpoint_outputs,
-                max_delay_ms: checkpoint_max_delay_ms,
-            }),
-        },
-        bounded: None,
+        ack_granularity,
+        steps: None,
     }))
 }
 
 /// The record the core judges: every fact a rule reads, and nothing derived.
 /// The closures stay behind on the builder, keyed by the chain they close.
-///
-/// A bounded class declares `None` here: its own facts — the loop shape, the
-/// retry ladder, the task-journal codecs — are `build_spec`'s to refuse, and
-/// this record carries the channel topology they are declared over.
 fn declaration(
     factory_id: &'static str,
-    persistent: bool,
-    sleep_when_idle: bool,
+    settings: &OperatorSettings,
     state: &BuilderState,
     capacities: &[usize],
     keyed_consumers: &HashSet<TaskletId>,
 ) -> HostClassDecl {
     HostClassDecl {
         factory_id: factory_id.to_string(),
-        persistent,
-        sleep_when_idle,
+        description: settings.description.to_string(),
+        max_duration_ms: settings.max_duration.map(|limit| limit.as_millis() as u64),
+        run: Some(run_json(&settings.run)),
+        durable: Some(durable_json(&settings.durable)),
         sdk_lang: flz_core::header::SDK_LANG_RUST,
         sdk_version: env!("CARGO_PKG_VERSION").to_string(),
         change_format_id: flz_core::header::FORMAT_ID_POSTCARD,
-        effectively_once: state.effectively_once,
-        checkpoint_ack: state.checkpoint_ack,
-        checkpoint_every: state.checkpoint_every,
-        checkpoint_outputs: match state.checkpoint_outputs {
-            CheckpointOutputs::AsProduced => HostCheckpointOutputs::AsProduced,
-            CheckpointOutputs::AtCheckpoint => HostCheckpointOutputs::AtCheckpoint,
-        },
-        checkpoint_max_delay_ms: state.checkpoint_max_delay_ms,
-        correction_window_ms: state.correction.map(|c| c.window_ms),
-        beyond_window_policy: match state.correction.map(|c| c.beyond_window) {
-            Some(BeyondWindowPolicy::Drop) => HostBeyondWindow::Drop,
-            _ => HostBeyondWindow::ProcessAsArrival,
-        },
         compact_after_bytes: None,
-        sync_durability: false,
         channels: state.channels.iter().map(channel_decl).collect(),
         tasklets: state
             .tasklets
@@ -163,7 +151,6 @@ fn declaration(
             .enumerate()
             .map(|(id, entry)| tasklet_decl(id, entry, capacities[id], keyed_consumers))
             .collect(),
-        bounded: None,
     }
 }
 
@@ -349,20 +336,13 @@ fn build_tasklet_desc(
     }
 }
 
-/// Convenience constructor used by `register_factory(R)`. Calls
-/// `R::channels(...)` once and returns the resulting topology, capturing
-/// `R::PERSISTENCE_ENABLED` so `OperatorInstance::new` can resolve the
-/// final per-instance flag, and `R::SLEEP_WHEN_IDLE`.
-pub fn build_topology_for<R: crate::operator::UnboundedOperator>(
+/// The topology `register_factory(R)` builds for a flow class: `R::channels`
+/// once, under `R::settings()`.
+pub fn build_topology_for<R: crate::operator::Operator>(
 ) -> Result<Arc<OperatorTopology>, TopologyBuildError> {
     let cb = ChannelBuilder::new();
     R::channels(&cb);
-    build_topology_with_persistence(
-        R::factory_id(),
-        cb,
-        R::PERSISTENCE_ENABLED,
-        R::SLEEP_WHEN_IDLE,
-    )
+    build_topology_with_settings(R::factory_id(), cb, &R::settings())
 }
 
 /// Every tasklet's resolved mailbox capacity, in declaration order. The

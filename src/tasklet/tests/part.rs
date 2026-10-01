@@ -1,5 +1,5 @@
 //! `ctx.part` where there is no work item to preview. The live paths run
-//! against a real stream in `tests/parts.rs` and the bounded driver.
+//! against a real stream in `tests/parts.rs` and the steps driver.
 
 use super::spawn::NullSink;
 use super::ProbeCell;

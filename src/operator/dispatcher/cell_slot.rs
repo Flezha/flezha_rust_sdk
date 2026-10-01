@@ -112,7 +112,7 @@ fn register_flusher<S: Tasklet>(
     parts: &flz_core::cell::SlotParts,
     prefix: &Option<Arc<flz_core::prefix::PrefixLedger>>,
     flush_buffer: &Arc<Mutex<Box<dyn FlushableBuffer>>>,
-    persistence_enabled: bool,
+    keeps_state: bool,
     records_effects: bool,
 ) -> Option<crate::cell::flusher::FlusherEntryId> {
     flusher_registered::<S>(records_effects).then(|| {
@@ -120,7 +120,7 @@ fn register_flusher<S: Tasklet>(
             Arc::clone(&parts.cell_identity),
             prefix.clone(),
             Arc::clone(flush_buffer),
-            persistence_enabled,
+            keeps_state,
             Arc::clone(&parts.change_seq),
             crate::cell::header::header_template_for::<S>(),
             Arc::clone(&parts.push_deferred),
@@ -163,18 +163,18 @@ fn build_dispatcher<S: Tasklet>(
             cell_identity: Arc::clone(&parts.cell_identity),
             change_seq: Arc::clone(&parts.change_seq),
             header: crate::cell::header::header_template_for::<S>(),
-            persistence_enabled: args.persistence_enabled,
-            records_effects: topology.records_effects(args.persistence_enabled),
+            keeps_state: args.keeps_state,
+            records_effects: topology.records_effects(args.keeps_state),
             checkpoint: topology.ack_granularity.checkpoint(),
             correction: topology.correction,
-            bounded: topology.bounded.is_some(),
+            steps: topology.steps.is_some(),
         },
     )) as Arc<dyn TaskletDispatcher>
 }
 
 /// Build one `CellSlot` for a Tasklet. Captures S statically; the
 /// channel builder collects this closure into `TaskletEntry.build_cell`
-/// during `UnboundedOperator::channels` and `build_topology` invokes it once per
+/// during `Operator::channels` and `build_topology` invokes it once per
 /// cell at operator-instance startup.
 pub fn build_cell_slot<S: Tasklet>(args: BuildCellArgs<'_>) -> Arc<CellSlot> {
     // The slot's rounds are served by the typed layer's poll workers; make
@@ -209,8 +209,8 @@ pub fn build_cell_slot<S: Tasklet>(args: BuildCellArgs<'_>) -> Arc<CellSlot> {
         &parts,
         &args.prefix,
         &flush_buffer,
-        args.persistence_enabled,
-        topology.records_effects(args.persistence_enabled),
+        args.keeps_state,
+        topology.records_effects(args.keeps_state),
     );
 
     let mailbox_capacity = tasklet_desc.mailbox_capacity;

@@ -11,7 +11,7 @@ use flezha_runner::cell::header::HeaderTemplate;
 use flezha_runner::channel::ChannelBuilder;
 use flezha_runner::state::Change;
 use flezha_runner::tasklet::{Ctx, Tasklet, TaskletError};
-use flezha_runner::UnboundedOperator;
+use flezha_runner::{Durable, Exactly, Operator, OperatorSettings, Run, SleepAfter};
 
 use super::dummy_stream;
 
@@ -46,7 +46,7 @@ impl Tasklet for KeyedStampTasklet {
 }
 
 pub struct KeyedStampOperator;
-impl UnboundedOperator for KeyedStampOperator {
+impl Operator for KeyedStampOperator {
     fn factory_id() -> &'static str {
         "keyed_stamp_operator"
     }
@@ -55,6 +55,16 @@ impl UnboundedOperator for KeyedStampOperator {
             .into::<KeyedStampTasklet>()
             .keyed()
             .sink_named("out");
+    }
+
+    /// A plain class that never sleeps: nothing journals its input.
+    fn settings() -> OperatorSettings {
+        OperatorSettings {
+            durable: Durable::Local {
+                sleep_after: SleepAfter::Never,
+            },
+            ..OperatorSettings::default()
+        }
     }
 }
 
@@ -93,16 +103,24 @@ impl Tasklet for TierStampTasklet {
 }
 
 pub struct TierOperator;
-impl UnboundedOperator for TierOperator {
+impl Operator for TierOperator {
     fn factory_id() -> &'static str {
         "tier_operator"
     }
     fn channels(c: &ChannelBuilder) {
-        c.effectively_once();
         c.input::<String>("input")
             .into::<TierStampTasklet>()
             .keyed()
             .sink_named("out");
+    }
+
+    fn settings() -> OperatorSettings {
+        OperatorSettings {
+            run: Run::Flow {
+                exactly: Exactly::effectively_once(),
+            },
+            ..OperatorSettings::default()
+        }
     }
 }
 

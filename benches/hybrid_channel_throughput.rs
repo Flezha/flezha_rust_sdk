@@ -24,7 +24,7 @@ use flezha_runner::operator::builder::build_topology_for;
 use flezha_runner::operator::registry::OperatorRegistry;
 use flezha_runner::operator::OperatorInstance;
 use flezha_runner::tasklet::{Tasklet, TaskletError};
-use flezha_runner::{__dispatch_internals as bi, Ctx, OverflowPolicy, UnboundedOperator};
+use flezha_runner::{Ctx, Operator, OverflowPolicy, __dispatch_internals as bi};
 use flz_core::bench_support::{fan_in, stream_pair, Settle};
 
 const MSGS_PER_ITER: usize = 5_000;
@@ -62,7 +62,7 @@ impl Tasklet for Pure1Consumer {
 }
 
 struct Pure1Operator;
-impl UnboundedOperator for Pure1Operator {
+impl Operator for Pure1Operator {
     fn factory_id() -> &'static str {
         "bench_pure_inter_tasklet_1c"
     }
@@ -108,7 +108,7 @@ pure3_consumer!(Pure3ConsumerB, "pure3_b");
 pure3_consumer!(Pure3ConsumerC, "pure3_c");
 
 struct Pure3Operator;
-impl UnboundedOperator for Pure3Operator {
+impl Operator for Pure3Operator {
     fn factory_id() -> &'static str {
         "bench_pure_inter_tasklet_3c"
     }
@@ -139,7 +139,7 @@ impl Tasklet for PluginBoundProducer {
 }
 
 struct PluginBoundOperator;
-impl UnboundedOperator for PluginBoundOperator {
+impl Operator for PluginBoundOperator {
     fn factory_id() -> &'static str {
         "bench_pure_plugin_bound"
     }
@@ -176,7 +176,7 @@ impl Tasklet for Hybrid1Consumer {
 }
 
 struct Hybrid1Operator;
-impl UnboundedOperator for Hybrid1Operator {
+impl Operator for Hybrid1Operator {
     fn factory_id() -> &'static str {
         "bench_hybrid_1c"
     }
@@ -222,7 +222,7 @@ hybrid3_consumer!(Hybrid3ConsumerB, "hybrid3_b");
 hybrid3_consumer!(Hybrid3ConsumerC, "hybrid3_c");
 
 struct Hybrid3Operator;
-impl UnboundedOperator for Hybrid3Operator {
+impl Operator for Hybrid3Operator {
     fn factory_id() -> &'static str {
         "bench_hybrid_3c"
     }
@@ -240,7 +240,7 @@ impl UnboundedOperator for Hybrid3Operator {
 
 // ----- bench harness -----
 
-fn run_bench<R: UnboundedOperator>(
+fn run_bench<R: Operator>(
     c: &mut Criterion,
     name: &'static str,
     instance_id: &'static str,

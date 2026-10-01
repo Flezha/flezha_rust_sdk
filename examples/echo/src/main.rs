@@ -2,7 +2,7 @@
 //! operators.
 //!
 //! Declare every operator you want served before `start()`. One runner can
-//! serve several, and the same call takes a bounded operator.
+//! serve several, and the same call takes a steps operator.
 
 mod operator;
 mod tasklet;

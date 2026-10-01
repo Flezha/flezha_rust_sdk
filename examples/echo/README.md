@@ -66,5 +66,5 @@ workspace from claiming this folder, and does nothing in a copy of its own.
 
 [`docs/guides/runner_deployment.md`](../../../../docs/guides/runner_deployment.md)
 walks through what each of the three parts is and why the split is the way it
-is. The other Rust examples, covering state, keys, timers, bounded operators and the
+is. The other Rust examples, covering state, keys, timers, steps operators and the
 rest, are the SDK crate's own examples in `sdk/rust/examples/`.

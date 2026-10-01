@@ -1,12 +1,12 @@
 //! Operator call fixtures (`operator_call`): operators that call another
 //! operator from their graph and read the outcome as a `Response`.
 //!
-//! - `call_pricing`: an unbounded callee answering `price:<input>` through
+//! - `call_pricing`: a flow callee answering `price:<input>` through
 //!   `response()`; an input starting `silent` is never answered.
-//! - `call_orders`: an unbounded caller calling the instance `pricing` by name.
+//! - `call_orders`: a flow caller calling the instance `pricing` by name.
 //! - `call_agent`: a durable `:per_input` `keep_progress` session answering
 //!   `answer:<turn>`; `boom` fails the turn, `slow` answers after 2 s.
-//! - `call_gateway`: an effectively-once unbounded caller calling `call_agent`
+//! - `call_gateway`: an effectively-once flow caller calling `call_agent`
 //!   by the session key of each `<session>:<text>` turn, the Response channel
 //!   wired back into its calling tasklet; a `resume:<session>:<text>` turn
 //!   reaches its session only if it runs (`create: false`).
@@ -76,7 +76,7 @@ impl Tasklet for PricingQuote {
 }
 
 pub(crate) struct CallPricingOperator;
-impl UnboundedOperator for CallPricingOperator {
+impl Operator for CallPricingOperator {
     fn factory_id() -> &'static str {
         "call_pricing"
     }
@@ -114,7 +114,7 @@ impl Tasklet for OrderPriced {
 }
 
 pub(crate) struct CallOrdersOperator;
-impl UnboundedOperator for CallOrdersOperator {
+impl Operator for CallOrdersOperator {
     fn factory_id() -> &'static str {
         "call_orders"
     }
@@ -149,25 +149,22 @@ impl Tasklet for AgentTurn {
     }
 }
 
-pub(crate) struct CallAgentBounded;
-impl BoundedOperator for CallAgentBounded {
+pub(crate) struct CallAgentSteps;
+impl Operator for CallAgentSteps {
     fn factory_id() -> &'static str {
         "call_agent"
     }
-    fn loop_mode() -> LoopMode {
-        LoopMode::PerInput
-    }
-    fn rollback_mode() -> RollbackMode {
-        RollbackMode::KeepProgress
-    }
-    fn self_terminating() -> bool {
-        false
-    }
-    fn max_duration() -> Option<Duration> {
-        Some(Duration::from_secs(600))
-    }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("turn").into::<AgentTurn>().response();
+    }
+
+    fn settings() -> OperatorSettings {
+        OperatorSettings {
+            run: Run::Steps { each: Each::PerInput, on_failure: OnFailure::KeepProgress },
+            max_duration: Some(Duration::from_secs(600)),
+            durable: fixture_durable(),
+            ..OperatorSettings::default()
+        }
     }
 }
 
@@ -224,12 +221,11 @@ fn session_of(line: &str) -> String {
 }
 
 pub(crate) struct CallGatewayOperator;
-impl UnboundedOperator for CallGatewayOperator {
+impl Operator for CallGatewayOperator {
     fn factory_id() -> &'static str {
         "call_gateway"
     }
     fn channels(c: &ChannelBuilder) {
-        c.effectively_once();
         let account = c
             .input::<String>("in")
             .map(CallerIn::Turn)
@@ -256,23 +252,21 @@ impl UnboundedOperator for CallGatewayOperator {
             .keyed()
             .sink_named("gateway_out");
     }
+
+    fn settings() -> OperatorSettings {
+        OperatorSettings {
+            run: Run::Flow { exactly: Exactly::effectively_once() },
+            ..OperatorSettings::default()
+        }
+    }
 }
 
 // -- call_tool_session ----------------------------------------------------------
 
-pub(crate) struct CallToolSessionBounded;
-impl BoundedOperator for CallToolSessionBounded {
+pub(crate) struct CallToolSessionSteps;
+impl Operator for CallToolSessionSteps {
     fn factory_id() -> &'static str {
         "call_tool_session"
-    }
-    fn loop_mode() -> LoopMode {
-        LoopMode::PerInput
-    }
-    fn self_terminating() -> bool {
-        false
-    }
-    fn max_duration() -> Option<Duration> {
-        Some(Duration::from_secs(600))
     }
     fn channels(c: &ChannelBuilder) {
         let turn = c
@@ -287,6 +281,15 @@ impl BoundedOperator for CallToolSessionBounded {
         turn.filter(|line: &String| is_outcome(line))
             .into_named::<OutcomeLog>("tool_log")
             .sink_named("tool_out");
+    }
+
+    fn settings() -> OperatorSettings {
+        OperatorSettings {
+            run: Run::Steps { each: Each::PerInput, on_failure: OnFailure::UndoAll },
+            max_duration: Some(Duration::from_secs(600)),
+            durable: fixture_durable(),
+            ..OperatorSettings::default()
+        }
     }
 }
 

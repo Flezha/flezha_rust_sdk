@@ -17,7 +17,7 @@ test_tasklet!(KeyedConsumerTasklet, "keyed_consumer_tasklet", String => (), (), 
 
 /// `.keyed()` with a pure plugin wire is accepted and recorded.
 struct KeyedPluginOperator;
-impl UnboundedOperator for KeyedPluginOperator {
+impl Operator for KeyedPluginOperator {
     fn factory_id() -> &'static str {
         "keyed_plugin_operator"
     }
@@ -39,7 +39,7 @@ fn keyed_plugin_channel_is_accepted_and_marked() {
 
 /// `.keyed()` on a hybrid (`sink_with`) channel is accepted.
 struct KeyedHybridOperator;
-impl UnboundedOperator for KeyedHybridOperator {
+impl Operator for KeyedHybridOperator {
     fn factory_id() -> &'static str {
         "keyed_hybrid_operator"
     }
@@ -63,7 +63,7 @@ fn keyed_hybrid_channel_is_accepted_and_marked() {
 /// `.keyed()` on a channel with no plugin wire fails the build with a
 /// typed error naming the channel.
 struct KeyedInterTaskletOperator;
-impl UnboundedOperator for KeyedInterTaskletOperator {
+impl Operator for KeyedInterTaskletOperator {
     fn factory_id() -> &'static str {
         "keyed_inter_tasklet_operator"
     }
@@ -103,7 +103,7 @@ impl Tasklet for FrozenLogicalTasklet {
 }
 
 struct FrozenLogicalOperator;
-impl UnboundedOperator for FrozenLogicalOperator {
+impl Operator for FrozenLogicalOperator {
     fn factory_id() -> &'static str {
         "frozen_logical_operator"
     }

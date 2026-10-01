@@ -1,6 +1,7 @@
 //! Late-input correction: a replayed slice is re-forwarded in event-time
 //! order, not arrival order, and the replay never lowers the high-water.
 
+use flezha_runner::{AckGranularity, BeyondWindowPolicy, Exactly, OperatorSettings, Run};
 use flz_transport::transport::FlezhaStream;
 
 mod common;
@@ -32,17 +33,22 @@ impl Tasklet for ReplayTasklet {
 }
 
 struct ReplayOperator;
-impl UnboundedOperator for ReplayOperator {
+impl Operator for ReplayOperator {
     fn factory_id() -> &'static str {
         "replay_operator"
     }
     fn channels(c: &ChannelBuilder) {
-        c.effectively_once();
-        c.correction_window(600_000);
         c.input::<String>("input")
             .into::<ReplayTasklet>()
             .keyed()
             .sink_named("out");
+    }
+
+    fn settings() -> OperatorSettings {
+        OperatorSettings {
+            run: Run::Flow { exactly: Exactly::EffectivelyOnce { ack: AckGranularity::PerInput, correction_ms: Some(600_000), beyond_window: BeyondWindowPolicy::ProcessAsArrival } },
+            ..OperatorSettings::default()
+        }
     }
 }
 
@@ -135,17 +141,22 @@ impl Tasklet for HighWaterTasklet {
 }
 
 struct HighWaterOperator;
-impl UnboundedOperator for HighWaterOperator {
+impl Operator for HighWaterOperator {
     fn factory_id() -> &'static str {
         "high_water_operator"
     }
     fn channels(c: &ChannelBuilder) {
-        c.effectively_once();
-        c.correction_window(600_000);
         c.input::<String>("input")
             .into::<HighWaterTasklet>()
             .keyed()
             .sink_named("out");
+    }
+
+    fn settings() -> OperatorSettings {
+        OperatorSettings {
+            run: Run::Flow { exactly: Exactly::EffectivelyOnce { ack: AckGranularity::PerInput, correction_ms: Some(600_000), beyond_window: BeyondWindowPolicy::ProcessAsArrival } },
+            ..OperatorSettings::default()
+        }
     }
 }
 

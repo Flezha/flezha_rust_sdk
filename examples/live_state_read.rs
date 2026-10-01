@@ -53,11 +53,11 @@
 //!
 //! Both exit non-zero. `cell_evicted` and `cell_not_found` are different
 //! diagnoses on purpose: eviction unlinks the Cell's files, so after the fact
-//! only the SDK's bounded operator eviction trace can tell you the key ever existed.
+//! only the SDK's steps operator eviction trace can tell you the key ever existed.
 
 use flezha_runner::state::Change;
 use flezha_runner::tasklet::{Ctx, Tasklet, TaskletError};
-use flezha_runner::{ChannelBuilder, UnboundedOperator};
+use flezha_runner::{ChannelBuilder, Operator};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -114,7 +114,7 @@ impl Tasklet for CandleTasklet {
 
 struct Market;
 
-impl UnboundedOperator for Market {
+impl Operator for Market {
     fn factory_id() -> &'static str {
         // The FIRST path segment of `flz state get <operator>/...`.
         "market"

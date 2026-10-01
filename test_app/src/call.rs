@@ -1,15 +1,15 @@
 //! Call fixtures (`call_response`): operators an outside caller calls and
 //! whose graph answers it through `response()` — from the first tasklet, from
 //! a downstream one, from whichever of two filtered paths the input took, and
-//! from a durable bounded turn.
+//! from a durable steps turn.
 
-use crate::bounded::stateless_step;
+use crate::steps::stateless_step;
 use crate::*;
 
 stateless_step!(CallEcho, "call_echo", |input, ctx| ctx.emit(input));
 
 pub(crate) struct CallEchoOperator;
-impl UnboundedOperator for CallEchoOperator {
+impl Operator for CallEchoOperator {
     fn factory_id() -> &'static str {
         "call_echo"
     }
@@ -23,7 +23,7 @@ stateless_step!(CallAnswer, "call_answer", |input, ctx| ctx
     .emit(format!("re:{input}")));
 
 pub(crate) struct CallDownstreamOperator;
-impl UnboundedOperator for CallDownstreamOperator {
+impl Operator for CallDownstreamOperator {
     fn factory_id() -> &'static str {
         "call_downstream"
     }
@@ -43,7 +43,7 @@ stateless_step!(CallRefuse, "call_refuse", |input, ctx| ctx
     .emit(format!("refused:{input}")));
 
 pub(crate) struct CallSplitOperator;
-impl UnboundedOperator for CallSplitOperator {
+impl Operator for CallSplitOperator {
     fn factory_id() -> &'static str {
         "call_split"
     }
@@ -62,18 +62,21 @@ impl UnboundedOperator for CallSplitOperator {
 
 stateless_step!(CallTurn, "call_turn", |input, ctx| ctx.emit(input));
 
-pub(crate) struct CallTurnBounded;
-impl BoundedOperator for CallTurnBounded {
+pub(crate) struct CallTurnSteps;
+impl Operator for CallTurnSteps {
     fn factory_id() -> &'static str {
         "call_turn"
     }
-    fn loop_mode() -> LoopMode {
-        LoopMode::PerInput
-    }
-    fn max_duration() -> Option<Duration> {
-        Some(Duration::from_secs(600))
-    }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("in").into::<CallTurn>().response();
+    }
+
+    fn settings() -> OperatorSettings {
+        OperatorSettings {
+            run: Run::Steps { each: Each::PerInput, on_failure: OnFailure::UndoAll },
+            max_duration: Some(Duration::from_secs(600)),
+            durable: fixture_durable(),
+            ..OperatorSettings::default()
+        }
     }
 }

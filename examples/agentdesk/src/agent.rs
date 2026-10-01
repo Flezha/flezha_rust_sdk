@@ -1,4 +1,8 @@
-use flezha_runner::{BoundedOperator, ChannelBuilder, LoopMode, RollbackMode};
+use std::time::Duration;
+
+use flezha_runner::{
+    ChannelBuilder, Durable, Each, OnFailure, Operator, OperatorSettings, Run, SleepAfter,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::deliver::Deliver;
@@ -11,22 +15,14 @@ pub struct Message {
     pub text: String,
 }
 
-/// One conversation: a bounded operator that runs one turn per message it is
+/// One conversation: a steps operator that runs one turn per message it is
 /// sent, for as long as the session lasts. Every session is an instance of its
 /// own, with its own state.
 pub struct AgentOperator;
 
-impl BoundedOperator for AgentOperator {
+impl Operator for AgentOperator {
     fn factory_id() -> &'static str {
         "agent"
-    }
-
-    fn loop_mode() -> LoopMode {
-        LoopMode::PerInput // one turn per message
-    }
-
-    fn rollback_mode() -> RollbackMode {
-        RollbackMode::KeepProgress // a failed turn fails alone
     }
 
     fn channels(c: &ChannelBuilder) {
@@ -38,5 +34,18 @@ impl BoundedOperator for AgentOperator {
         c.input::<Message>("message") // from the gateway
             .map(|message| message.text)
             .into::<Reply>();
+    }
+
+    fn settings() -> OperatorSettings {
+        OperatorSettings {
+            run: Run::Steps {
+                each: Each::PerInput,                // one turn per message
+                on_failure: OnFailure::KeepProgress, // a failed turn fails alone
+            },
+            durable: Durable::Local {
+                sleep_after: SleepAfter::After(Duration::from_secs(10)), // an idle session sleeps after 10 s
+            },
+            ..OperatorSettings::default()
+        }
     }
 }

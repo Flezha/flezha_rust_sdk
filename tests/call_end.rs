@@ -9,7 +9,7 @@ use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 
 use flezha_runner::channel::{ChannelBuilder, ChannelKind};
-use flezha_runner::{BoundedOperator, CallTarget, ErrorModel, Response};
+use flezha_runner::{CallTarget, Each, ErrorModel, OnFailure, Operator, OperatorSettings, Response, Run};
 use flz_transport::service::payloader;
 use flz_transport::transport::FlezhaStream;
 
@@ -45,7 +45,7 @@ test_tasklet!(Read, "call_end_read", Response<String, String> => String, (), |in
 });
 
 struct Caller;
-impl UnboundedOperator for Caller {
+impl Operator for Caller {
     fn factory_id() -> &'static str {
         "call_end_caller"
     }
@@ -65,7 +65,7 @@ impl UnboundedOperator for Caller {
 }
 
 struct CallBesideSink;
-impl UnboundedOperator for CallBesideSink {
+impl Operator for CallBesideSink {
     fn factory_id() -> &'static str {
         "call_end_beside_sink"
     }
@@ -77,18 +77,23 @@ impl UnboundedOperator for CallBesideSink {
 }
 
 struct OnceCaller;
-impl BoundedOperator for OnceCaller {
+impl Operator for OnceCaller {
     fn factory_id() -> &'static str {
         "call_end_once"
-    }
-    fn max_duration() -> Option<Duration> {
-        Some(Duration::from_secs(60))
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<Ask>()
             .call::<String>(CallTarget::id("pricing"), 500)
             .into::<Read>();
+    }
+
+    fn settings() -> OperatorSettings {
+        OperatorSettings {
+            run: Run::Steps { each: Each::Once, on_failure: OnFailure::UndoAll },
+            max_duration: Some(Duration::from_secs(60)),
+            ..OperatorSettings::default()
+        }
     }
 }
 
@@ -129,7 +134,7 @@ fn a_call_beside_a_sink_ends_the_channel_twice() {
 
 #[test]
 fn a_single_pass_class_that_calls_is_refused() {
-    let err = flezha_runner::bounded::spec::build_spec::<OnceCaller>()
+    let err = flezha_runner::steps::spec::build_spec::<OnceCaller>()
         .expect_err("a :once class never reads its Response");
     assert_eq!(err.code(), "topology.call_outside_per_input_loop");
 }

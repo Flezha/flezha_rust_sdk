@@ -28,7 +28,7 @@ test_tasklet!(TransientTasklet, "transient_tasklet", String => String, (), |_inp
 });
 
 struct TransientOperator;
-impl UnboundedOperator for TransientOperator {
+impl Operator for TransientOperator {
     fn factory_id() -> &'static str {
         "transient_operator"
     }
@@ -92,7 +92,7 @@ test_tasklet!(NonRetryableTasklet, "non_retryable_tasklet", String => String, ()
 });
 
 struct NonRetryableOperator;
-impl UnboundedOperator for NonRetryableOperator {
+impl Operator for NonRetryableOperator {
     fn factory_id() -> &'static str {
         "non_retryable_operator"
     }
@@ -160,7 +160,7 @@ test_tasklet!(PanickyTasklet, "panicky_tasklet", String => String, (), |input, _
 });
 
 struct PanickyOperator;
-impl UnboundedOperator for PanickyOperator {
+impl Operator for PanickyOperator {
     fn factory_id() -> &'static str {
         "panicky_operator"
     }
@@ -234,7 +234,7 @@ test_tasklet!(TypedOrderTasklet, "typed_order_tasklet", TypedOrder => String, ()
 });
 
 struct TypedEntryOperator;
-impl UnboundedOperator for TypedEntryOperator {
+impl Operator for TypedEntryOperator {
     fn factory_id() -> &'static str {
         "typed_entry_operator"
     }

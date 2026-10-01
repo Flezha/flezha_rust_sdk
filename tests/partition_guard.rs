@@ -31,7 +31,7 @@ test_tasklet!(KeyedTasklet, "keyed_tasklet", String => String, (), |input, _ctx|
 });
 
 struct KeyedOperator;
-impl UnboundedOperator for KeyedOperator {
+impl Operator for KeyedOperator {
     fn factory_id() -> &'static str {
         "partition_guard_operator"
     }
@@ -53,7 +53,7 @@ test_tasklet!(StaticTasklet, "static_tasklet", String => String, (), |input, _ct
 });
 
 struct StaticOperator;
-impl UnboundedOperator for StaticOperator {
+impl Operator for StaticOperator {
     fn factory_id() -> &'static str {
         "partition_static_operator"
     }

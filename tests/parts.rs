@@ -43,7 +43,7 @@ test_tasklet!(ThreeParts, "parts_three", String => String, (), |input, ctx| {
 });
 
 struct ThreePartsOp;
-impl UnboundedOperator for ThreePartsOp {
+impl Operator for ThreePartsOp {
     fn factory_id() -> &'static str {
         "parts_three"
     }
@@ -87,7 +87,7 @@ test_tasklet!(FlakyParts, "parts_flaky", String => String, (), |input, ctx| {
 });
 
 struct FlakyPartsOp;
-impl UnboundedOperator for FlakyPartsOp {
+impl Operator for FlakyPartsOp {
     fn factory_id() -> &'static str {
         "parts_flaky"
     }
@@ -139,7 +139,7 @@ test_tasklet!(Answerer, "parts_answerer", String => String, (), |input, ctx| {
 });
 
 struct FeederOp;
-impl UnboundedOperator for FeederOp {
+impl Operator for FeederOp {
     fn factory_id() -> &'static str {
         "parts_feeder"
     }
@@ -152,7 +152,7 @@ impl UnboundedOperator for FeederOp {
 }
 
 struct AnswererOp;
-impl UnboundedOperator for AnswererOp {
+impl Operator for AnswererOp {
     fn factory_id() -> &'static str {
         "parts_answerer"
     }
@@ -196,7 +196,7 @@ test_tasklet!(Blocking, "parts_blocking", String => String, (), |input, ctx| {
 });
 
 struct BlockingOp;
-impl UnboundedOperator for BlockingOp {
+impl Operator for BlockingOp {
     fn factory_id() -> &'static str {
         "parts_blocking"
     }

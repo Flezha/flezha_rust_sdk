@@ -68,7 +68,7 @@ pub trait Tasklet: Send + Sync + 'static + Default {
     /// shared-Arc case (`Arc::unwrap_or_clone`).
     type Input: Send + Sync + 'static + Clone;
     /// Per-cell output value, handed to every consumer of this node's
-    /// channel. Bound on [`JournalValue`] — a bounded journals the handoff
+    /// channel. Bound on [`JournalValue`] — a steps journals the handoff
     /// between two tasklets, so the runtime derives the channel's byte
     /// codec from this type and no declaration exists to forget.
     ///
@@ -77,7 +77,7 @@ pub trait Tasklet: Send + Sync + 'static + Default {
     /// anyway, so the requirement reaches it where it matters. `State` keeps
     /// its raw serde bounds, which say the same thing for a different reader.
     type Output: Send + Sync + 'static + JournalValue;
-    /// Per-Cell state. Bounded operator on `Serialize + DeserializeOwned` so
+    /// Per-Cell state. Steps operator on `Serialize + DeserializeOwned` so
     /// the runtime can serialize state for `CellState` /
     /// `MigrationSerialization` and seed it from `AddOperator.init_values`
     /// without going through the user's `init_state`.
@@ -220,7 +220,7 @@ pub trait Tasklet: Send + Sync + 'static + Default {
     const CELLS_FOR_OVERRIDDEN: bool = false;
 
     /// Dynamic-mode idle eviction window. `None` (default) = no eviction:
-    /// Cells live as long as the UnboundedOperator, like static ones. `Some(ttl)`
+    /// Cells live as long as the Operator, like static ones. `Some(ttl)`
     /// opts a per-Tasklet reaper in; eviction is destructive (in-memory slot +
     /// on-disk WAL/snapshot dropped) and a later input cold-starts fresh —
     /// no restore-from-disk. Ignored for single/static Tasklets.
@@ -313,10 +313,10 @@ pub trait Tasklet: Send + Sync + 'static + Default {
         DEFAULT_MAX_TIMERS_PER_CELL
     }
 
-    /// Optional saga **compensation** hook (bounded operators only). A
+    /// Optional saga **compensation** hook (steps operators only). A
     /// tasklet whose `run` commits a reversible side effect writes this to
-    /// undo it. The bounded operator fires it ONLY during abnormal-termination
-    /// rollback (never on a clean `ok`, never for an unbounded operator), once
+    /// undo it. The steps operator fires it ONLY during abnormal-termination
+    /// rollback (never on a clean `ok`, never for a flow operator), once
     /// per cell that ran, in reverse completion order, handing back that
     /// cell's own collected outputs (zero-copy `Arc`s) and its [`Ctx`], so it
     /// can reverse precisely. Compensation MUST be idempotent by author
@@ -324,7 +324,7 @@ pub trait Tasklet: Send + Sync + 'static + Default {
     ///
     /// The default is a no-op. Writing it in a `#[flezha::tasklet]` block sets
     /// [`COMPENSATE_OVERRIDDEN`](Self::COMPENSATE_OVERRIDDEN), which is what
-    /// makes the bounded operator register the tasklet as compensable.
+    /// makes the steps operator register the tasklet as compensable.
     fn compensate(
         &mut self,
         _completed_output: Vec<Arc<Self::Output>>,

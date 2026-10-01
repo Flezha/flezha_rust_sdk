@@ -1,0 +1,7 @@
+error[E0559]: variant `Run::Steps` has no field named `exactly`
+ --> tests/ui/settings_exactly_under_steps.rs:9:9
+  |
+9 |         exactly: Exactly::effectively_once(),
+  |         ^^^^^^^ `Run::Steps` does not have this field
+  |
+  = note: all struct fields are already assigned

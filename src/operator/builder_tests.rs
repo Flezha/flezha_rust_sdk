@@ -6,7 +6,37 @@
 
 use super::*;
 use crate::channel::ChannelBuilder;
-use crate::operator::topology::BeyondWindowPolicy;
+use crate::operator::settings::{Exactly, OperatorSettings, Run};
+use crate::operator::topology::{
+    AckGranularity, BeyondWindowPolicy, CheckpointOutputs, CheckpointPolicy,
+};
+
+/// A flow class on the effectively-once tier, acknowledging per `ack`, with
+/// an optional correction window.
+fn tier(ack: AckGranularity, correction_ms: Option<u64>) -> OperatorSettings {
+    OperatorSettings {
+        run: Run::Flow {
+            exactly: Exactly::EffectivelyOnce {
+                ack,
+                correction_ms,
+                beyond_window: BeyondWindowPolicy::ProcessAsArrival,
+            },
+        },
+        ..OperatorSettings::default()
+    }
+}
+
+fn checkpoint(every: Option<u32>, max_delay_ms: Option<u64>) -> AckGranularity {
+    AckGranularity::Checkpoint(CheckpointPolicy {
+        every,
+        outputs: if max_delay_ms.is_some() {
+            CheckpointOutputs::AtCheckpoint
+        } else {
+            CheckpointOutputs::AsProduced
+        },
+        max_delay_ms,
+    })
+}
 use crate::tasklet::{Ctx, Tasklet, TaskletError};
 
 #[derive(Default)]
@@ -23,8 +53,8 @@ impl Tasklet for TierTask {
 /// The journal codec is derived from the producing tasklet's `Output`, so a
 /// produced channel carries one whatever the class kind. The bound is
 /// unconditional because a user's per-class persistence override, not the
-/// author, decides whether a class journals; nothing in an unbounded operator's
-/// engine path ever calls it (the only readers are the bounded operator commit and
+/// author, decides whether a class journals; nothing in a flow operator's
+/// engine path ever calls it (the only readers are the steps operator commit and
 /// resume paths in `flz_core`).
 #[test]
 fn a_produced_channel_carries_a_derived_codec() {
@@ -85,23 +115,21 @@ fn a_plugin_bound_terminal_carries_no_codec() {
 #[test]
 fn effectively_once_with_keyed_plugin_channel_builds() {
     let cb = ChannelBuilder::new();
-    cb.effectively_once();
     cb.input::<String>("in")
         .into::<TierTask>()
         .keyed()
         .sink_named("out");
-    let topology = build_topology("tier_keyed_ok", cb).expect("topology");
+    let topology = build_topology_with_settings("tier_keyed_ok", cb, &tier(AckGranularity::PerInput, None)).expect("topology");
     assert!(topology.effectively_once);
 }
 
 #[test]
 fn effectively_once_rejects_unkeyed_plugin_channel() {
     let cb = ChannelBuilder::new();
-    cb.effectively_once();
     cb.input::<String>("in")
         .into::<TierTask>()
         .sink_named("out");
-    let err = match build_topology("tier_unkeyed_plugin", cb) {
+    let err = match build_topology_with_settings("tier_unkeyed_plugin", cb, &tier(AckGranularity::PerInput, None)) {
         Err(e) => e,
         Ok(_) => panic!("unkeyed plugin channel must fail under the tier"),
     };
@@ -114,11 +142,10 @@ fn effectively_once_rejects_unkeyed_plugin_channel() {
 #[test]
 fn effectively_once_rejects_unkeyed_hybrid_sink() {
     let cb = ChannelBuilder::new();
-    cb.effectively_once();
     cb.input::<String>("in")
         .into::<TierTask>()
         .sink_named_with("mid", |s: &String| s.as_bytes().to_vec());
-    let err = match build_topology("tier_unkeyed_hybrid", cb) {
+    let err = match build_topology_with_settings("tier_unkeyed_hybrid", cb, &tier(AckGranularity::PerInput, None)) {
         Err(e) => e,
         Ok(_) => panic!("unkeyed hybrid sink must fail under the tier"),
     };
@@ -199,15 +226,8 @@ impl Tasklet for EventTimeTask {
     }
 }
 
-fn correction_builder<S: Tasklet<Input = String, Output = String> + Default>(
-    window_ms: u64,
-    tier: bool,
-) -> ChannelBuilder {
+fn correction_builder<S: Tasklet<Input = String, Output = String> + Default>() -> ChannelBuilder {
     let cb = ChannelBuilder::new();
-    if tier {
-        cb.effectively_once();
-    }
-    cb.correction_window(window_ms);
     cb.input::<String>("in")
         .into::<S>()
         .keyed()
@@ -217,9 +237,10 @@ fn correction_builder<S: Tasklet<Input = String, Output = String> + Default>(
 
 #[test]
 fn correction_with_tier_and_event_time_builds() {
-    let topology = build_topology(
+    let topology = build_topology_with_settings(
         "correction_ok",
-        correction_builder::<EventTimeTask>(600_000, true),
+        correction_builder::<EventTimeTask>(),
+        &tier(AckGranularity::PerInput, Some(600_000)),
     )
     .expect("topology");
 
@@ -231,31 +252,24 @@ fn correction_with_tier_and_event_time_builds() {
 }
 
 #[test]
-fn checkpoint_ack_with_the_tier_builds() {
+fn ack_at_checkpoint_with_the_tier_builds() {
     let cb = ChannelBuilder::new();
-    cb.effectively_once();
-    cb.checkpoint_ack();
     cb.input::<String>("in")
         .into::<TierTask>()
         .keyed()
         .sink_named("out");
-    let topology = build_topology("checkpoint_ok", cb).expect("topology");
+    let topology = build_topology_with_settings("checkpoint_ok", cb, &tier(checkpoint(None, None), None)).expect("topology");
     assert!(topology.ack_granularity.is_checkpoint());
 }
 
 #[test]
 fn the_interval_options_reach_the_topology_and_imply_the_granularity() {
-    use crate::operator::topology::CheckpointOutputs;
-
     let cb = ChannelBuilder::new();
-    cb.effectively_once();
-    cb.checkpoint_every(500);
-    cb.outputs_at_checkpoint(50);
     cb.input::<String>("in")
         .into::<TierTask>()
         .keyed()
         .sink_named("out");
-    let topology = build_topology("checkpoint_options", cb).expect("topology");
+    let topology = build_topology_with_settings("checkpoint_options", cb, &tier(checkpoint(Some(500), Some(50)), None)).expect("topology");
 
     let policy = topology
         .ack_granularity
@@ -271,17 +285,13 @@ fn the_interval_options_reach_the_topology_and_imply_the_granularity() {
 }
 
 #[test]
-fn a_bare_checkpoint_ack_holds_no_outputs() {
-    use crate::operator::topology::CheckpointOutputs;
-
+fn a_bare_ack_at_checkpoint_holds_no_outputs() {
     let cb = ChannelBuilder::new();
-    cb.effectively_once();
-    cb.checkpoint_ack();
     cb.input::<String>("in")
         .into::<TierTask>()
         .keyed()
         .sink_named("out");
-    let topology = build_topology("checkpoint_bare", cb).expect("topology");
+    let topology = build_topology_with_settings("checkpoint_bare", cb, &tier(checkpoint(None, None), None)).expect("topology");
 
     let policy = topology.ack_granularity.checkpoint().expect("checkpoint");
     assert_eq!(
@@ -295,13 +305,11 @@ fn a_bare_checkpoint_ack_holds_no_outputs() {
 #[test]
 fn a_zero_interval_is_refused() {
     let cb = ChannelBuilder::new();
-    cb.effectively_once();
-    cb.checkpoint_every(0);
     cb.input::<String>("in")
         .into::<TierTask>()
         .keyed()
         .sink_named("out");
-    let err = build_topology("checkpoint_zero", cb)
+    let err = build_topology_with_settings("checkpoint_zero", cb, &tier(checkpoint(Some(0), None), None))
         .expect_err("an interval that closes every zero inputs is not an interval");
 
     assert!(err
@@ -313,12 +321,11 @@ fn a_zero_interval_is_refused() {
 #[test]
 fn per_input_is_the_default_ack_granularity() {
     let cb = ChannelBuilder::new();
-    cb.effectively_once();
     cb.input::<String>("in")
         .into::<TierTask>()
         .keyed()
         .sink_named("out");
-    let topology = build_topology("per_input_default", cb).expect("topology");
+    let topology = build_topology_with_settings("per_input_default", cb, &tier(AckGranularity::PerInput, None)).expect("topology");
     assert!(!topology.ack_granularity.is_checkpoint());
 }
 
@@ -330,14 +337,13 @@ fn a_dropping_policy_under_the_tier_is_refused_naming_the_channel() {
     // nothing is lost.
     for policy in [OverflowPolicy::DropNewest, OverflowPolicy::DropOldest] {
         let cb = ChannelBuilder::new();
-        cb.effectively_once();
         cb.input::<String>("in")
             .on_full(policy)
             .into::<TierTask>()
             .keyed()
             .sink_named("out");
 
-        let err = build_topology("tier_sheds", cb)
+        let err = build_topology_with_settings("tier_sheds", cb, &tier(AckGranularity::PerInput, None))
             .expect_err("a shedding channel under the tier must fail");
 
         assert!(
@@ -366,48 +372,13 @@ fn a_dropping_policy_off_the_tier_still_builds() {
 }
 
 #[test]
-fn checkpoint_ack_without_the_tier_is_refused() {
-    // The checkpoint is where the tier's consumed-offset advances; off the
-    // tier there is no durable offset to hold back, and no durable input
-    // log to replay the interval from.
-    let cb = ChannelBuilder::new();
-    cb.checkpoint_ack();
-    cb.input::<String>("in")
-        .into::<TierTask>()
-        .sink_named("out");
-
-    let err = build_topology("checkpoint_no_tier", cb)
-        .expect_err("checkpoint_ack without the tier must fail");
-
-    assert!(err
-        .errors
-        .iter()
-        .any(|e| matches!(e, TopologyIssue::CheckpointAckWithoutTier)));
-}
-
-#[test]
-fn correction_without_the_tier_is_refused() {
-    // Without the tier there is no durable input log, so there is nothing to
-    // replay — the declaration is meaningless, not merely degraded.
-    let err = build_topology(
-        "correction_no_tier",
-        correction_builder::<EventTimeTask>(600_000, false),
-    )
-    .expect_err("correction without the tier must fail");
-
-    assert!(err
-        .errors
-        .iter()
-        .any(|e| matches!(e, TopologyIssue::CorrectionWithoutTier)));
-}
-
-#[test]
 fn correction_without_an_event_time_clock_is_refused() {
     // TierTask declares the wall clock: there is no event time to order a replayed
     // slice by, so lateness is not even definable.
-    let err = build_topology(
+    let err = build_topology_with_settings(
         "correction_wall_clock",
-        correction_builder::<TierTask>(600_000, true),
+        correction_builder::<TierTask>(),
+        &tier(AckGranularity::PerInput, Some(600_000)),
     )
     .expect_err("correction without an event-time clock must fail");
 
@@ -420,9 +391,10 @@ fn correction_without_an_event_time_clock_is_refused() {
 
 #[test]
 fn a_zero_correction_window_is_refused() {
-    let err = build_topology(
+    let err = build_topology_with_settings(
         "correction_zero",
-        correction_builder::<EventTimeTask>(0, true),
+        correction_builder::<EventTimeTask>(),
+        &tier(AckGranularity::PerInput, Some(0)),
     )
     .expect_err("a zero window must fail");
 
@@ -434,12 +406,24 @@ fn a_zero_correction_window_is_refused() {
 
 #[test]
 fn the_beyond_window_policy_is_declarable() {
-    let cb = correction_builder::<EventTimeTask>(600_000, true);
-    cb.beyond_window_policy(BeyondWindowPolicy::Drop);
-    let topology = build_topology("correction_drop", cb).expect("topology");
+    let settings = OperatorSettings {
+        run: Run::Flow {
+            exactly: Exactly::EffectivelyOnce {
+                ack: AckGranularity::PerInput,
+                correction_ms: Some(600_000),
+                beyond_window: BeyondWindowPolicy::Drop,
+            },
+        },
+        ..OperatorSettings::default()
+    };
+    let topology = build_topology_with_settings(
+        "correction_drop",
+        correction_builder::<EventTimeTask>(),
+        &settings,
+    )
+    .expect("topology");
 
     let policy = topology.correction.expect("correction declared");
     assert_eq!(policy.beyond_window, BeyondWindowPolicy::Drop);
-    // ...and setting the policy must not clobber the window.
     assert_eq!(policy.window_ms, 600_000);
 }

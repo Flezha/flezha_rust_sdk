@@ -1,0 +1,7 @@
+error[E0559]: variant `Run::Steps` has no field named `correction_ms`
+ --> tests/ui/settings_correction_under_steps.rs:9:9
+  |
+9 |         correction_ms: Some(5_000),
+  |         ^^^^^^^^^^^^^ `Run::Steps` does not have this field
+  |
+  = note: all struct fields are already assigned

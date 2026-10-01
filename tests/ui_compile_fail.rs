@@ -27,21 +27,30 @@ fn ui_compile_fail() {
     t.compile_fail("tests/ui/emit_wrong_type.rs");
     t.compile_fail("tests/ui/operator_fan_out.rs");
     t.compile_fail("tests/ui/operator_empty_entry_name.rs");
-    t.compile_fail("tests/ui/register_factory_of_both_kinds.rs");
 
-    // The short-form attributes (`#[flezha::unbounded_operator]` /
-    // `#[flezha::bounded_operator]`).
+    // The short-form attribute `#[flezha::operator]`.
     t.compile_fail("tests/ui/operator_sink_without_output.rs");
     t.compile_fail("tests/ui/operator_no_id.rs");
     t.compile_fail("tests/ui/operator_empty_input.rs");
     t.compile_fail("tests/ui/operator_with_hand_written_impl.rs");
     t.compile_fail("tests/ui/operator_shared_ref_state.rs");
-    t.compile_fail("tests/ui/operator_unknown_loop_mode.rs");
+    t.compile_fail("tests/ui/operator_unknown_each.rs");
+    t.compile_fail("tests/ui/operator_misplaced_setting.rs");
     t.compile_fail("tests/ui/short_form_state_on_function.rs");
     t.compile_fail("tests/ui/short_form_operator_is_not_a_tasklet.rs");
 
-    // A bounded operator declares its graph in `channels` and its retry ladder on the
-    // edge, as an unbounded operator does.
-    t.compile_fail("tests/ui/bounded_tasklets_body.rs");
-    t.compile_fail("tests/ui/bounded_retry_attempts.rs");
+    // The settings tree: a setting under a parent that does not carry it is
+    // a type error. Each is a row of the reference refusal set.
+    t.compile_fail("tests/ui/settings_each_under_flow.rs");
+    t.compile_fail("tests/ui/settings_ack_under_at_least_once.rs");
+    t.compile_fail("tests/ui/settings_ack_under_steps.rs");
+    t.compile_fail("tests/ui/settings_correction_under_steps.rs");
+    t.compile_fail("tests/ui/settings_exactly_under_steps.rs");
+    t.compile_fail("tests/ui/settings_sleep_after_in_memory.rs");
+    t.compile_fail("tests/ui/settings_kind_literal.rs");
+
+    // A steps class declares its graph in `channels` and its retry ladder on
+    // the edge, as a flow class does.
+    t.compile_fail("tests/ui/steps_tasklets_body.rs");
+    t.compile_fail("tests/ui/steps_retry_attempts.rs");
 }

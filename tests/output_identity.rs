@@ -59,7 +59,7 @@ fn non_keyed_frame_is_byte_identical_to_prechange_layout() {
     // MetaProducerTasklet-free operator: reuse FlushOrderOperator's shape
     // via a minimal pure-plugin operator.
     struct PlainPluginOperator;
-    impl UnboundedOperator for PlainPluginOperator {
+    impl Operator for PlainPluginOperator {
         fn factory_id() -> &'static str {
             "plain_plugin_operator"
         }
@@ -68,7 +68,7 @@ fn non_keyed_frame_is_byte_identical_to_prechange_layout() {
                 .into::<PlainPluginTasklet>()
                 .sink_named("out");
         }
-    }
+}
 
     let (handle, _instance) = setup::<PlainPluginOperator>("plain-plugin-instance");
     let (stream, mut observer) = stream_pair();

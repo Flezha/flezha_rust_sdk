@@ -28,9 +28,7 @@
 //!     flz operator send thermostat --channel readings --text '{"sensor":"kiln","celsius":812.0}'
 //!     flz operator send thermostat --channel config   --text '{"max_celsius":800.0}'
 
-use flezha_runner::{
-    tasklet, Change, ChannelBuilder, Ctx, Tasklet, TaskletError, UnboundedOperator,
-};
+use flezha_runner::{Change, ChannelBuilder, Ctx, Operator, Tasklet, TaskletError, tasklet};
 use serde::{Deserialize, Serialize};
 
 // -- the two feeds ----------------------------------------------------------
@@ -121,7 +119,7 @@ impl Tasklet for Detector {
 
 struct Thermostat;
 
-impl UnboundedOperator for Thermostat {
+impl Operator for Thermostat {
     fn factory_id() -> &'static str {
         "thermostat"
     }

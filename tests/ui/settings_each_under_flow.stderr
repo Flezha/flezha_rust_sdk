@@ -1,0 +1,7 @@
+error[E0559]: variant `Run::Flow` has no field named `each`
+ --> tests/ui/settings_each_under_flow.rs:8:9
+  |
+8 |         each: Each::PerInput,
+  |         ^^^^ `Run::Flow` does not have this field
+  |
+  = note: all struct fields are already assigned

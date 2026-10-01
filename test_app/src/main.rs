@@ -11,13 +11,28 @@ pub(crate) use std::{env, io, thread};
 pub(crate) use flezha_runner::state::{postcard, Change, ClockKind, CoalesceKey, NoChange};
 pub(crate) use flezha_runner::tasklet::{Ctx, Tasklet, TaskletError};
 pub(crate) use flezha_runner::{
-    BoundedOperator, ChannelBuilder, Flezha, FlezhaRunner, LoopMode, OverflowPolicy, RollbackMode,
-    Stream, UnboundedOperator,
+    AckGranularity, BeyondWindowPolicy, ChannelBuilder, CheckpointOutputs, CheckpointPolicy,
+    Durable, Each, Exactly, Flezha, FlezhaRunner, OnFailure, Operator, OperatorSettings,
+    OverflowPolicy, Run, SleepAfter, Stream,
 };
 pub(crate) use serde::{Deserialize, Serialize};
 
-mod bounded;
-mod bounded_loop;
+/// Where a sleeping fixture keeps its work: locally, sleeping after the class
+/// default unless the drill or the bench driving it shortens the interval
+/// through `FLEZHA_FIXTURE_SLEEP_AFTER_MS`.
+pub(crate) fn fixture_durable() -> Durable {
+    let sleep_after = env::var("FLEZHA_FIXTURE_SLEEP_AFTER_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map_or(
+            flezha_runner::operator::DEFAULT_SLEEP_AFTER,
+            Duration::from_millis,
+        );
+    Durable::Local {
+        sleep_after: SleepAfter::After(sleep_after),
+    }
+}
+
 mod call;
 mod cell;
 mod channel;
@@ -26,10 +41,11 @@ mod operator_call;
 mod part;
 mod probe;
 mod state;
+mod steps;
+mod steps_loop;
+mod steps_timer;
 mod sugar;
 
-use crate::bounded::*;
-use crate::bounded_loop::*;
 use crate::call::*;
 use crate::cell::*;
 use crate::channel::*;
@@ -37,6 +53,9 @@ use crate::operator_call::*;
 use crate::part::*;
 use crate::probe::*;
 use crate::state::*;
+use crate::steps::*;
+use crate::steps_loop::*;
+use crate::steps_timer::*;
 use crate::sugar::*;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -74,6 +93,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     runner
         .register_factory(DoNothingOperator)?
+        .register_factory(CompleteFlowOperator)?
         .register_factory(StoreInputOperator)?
         .register_factory(CompareFilterOperator)?
         .register_factory(StaticCellOperator)?
@@ -91,14 +111,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register_factory(CallEchoOperator)?
         .register_factory(CallDownstreamOperator)?
         .register_factory(CallSplitOperator)?
-        .register_factory(CallTurnBounded)?
+        .register_factory(CallTurnSteps)?
         .register_factory(CallPricingOperator)?
         .register_factory(CallOrdersOperator)?
-        .register_factory(CallAgentBounded)?
+        .register_factory(CallAgentSteps)?
         .register_factory(CallGatewayOperator)?
-        .register_factory(CallToolSessionBounded)?
+        .register_factory(CallToolSessionSteps)?
         .register_factory(PartEchoOperator)?
-        .register_factory(PartEchoBounded)?
+        .register_factory(PartEchoSteps)?
         .register_factory(ResumeProbeOperator)?
         .register_factory(SchemaEvolutionV1Operator)?
         .register_factory(SchemaEvolutionV2Operator)?
@@ -124,39 +144,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register_factory(SugarStoreInput)?
         .register_factory(SugarNamedInput)?
         .register_factory(SugarStaticCell)?
-        .register_factory(SugarBounded)?
-        .register_factory(SugarBoundedPerInput)?
+        .register_factory(SugarSteps)?
+        .register_factory(SugarStepsPerInput)?
         .register_factory(SugarStateOnly)?
-        .register_factory(EchoBounded)?
-        .register_factory(TimerLoopBounded)?
-        .register_factory(EventTimerBounded)?
-        .register_factory(StaticCellBounded)?
-        .register_factory(CommitBlockBounded)?
-        .register_factory(SyncDurableBounded)?
-        .register_factory(OptOutCommitBlockBounded)?
-        .register_factory(TierCommitBlockBounded)?
-        .register_factory(SagaBlockBounded)?
-        .register_factory(KeyedBlockBounded)?
-        .register_factory(KeyedSagaBounded)?
-        .register_factory(OutboxBlockBounded)?
-        .register_factory(UndoOutboxBounded)?
-        .register_factory(FailedStageBounded)?
-        .register_factory(ChatLoopBounded)?
-        .register_factory(StatelessLoopBounded)?
-        .register_factory(KeyedLoopBounded)?
-        .register_factory(ChatRewindBounded)?
-        .register_factory(FailingTurnLoopBounded)?
-        .register_factory(FailingTurnAllOrNothingBounded)?
-        .register_factory(ReplyBlockLoopBounded)?
-        .register_factory(TypedOnceBounded)?
-        .register_factory(RetryBounded)?
-        .register_factory(BranchBounded)?
-        .register_factory(DiamondBounded)?
+        .register_factory(EchoSteps)?
+        .register_factory(TimerLoopSteps)?
+        .register_factory(EventTimerSteps)?
+        .register_factory(StaticCellSteps)?
+        .register_factory(CommitBlockSteps)?
+        .register_factory(SyncDurableSteps)?
+        .register_factory(OptOutCommitBlockSteps)?
+        .register_factory(TierCommitBlockSteps)?
+        .register_factory(SagaBlockSteps)?
+        .register_factory(KeyedBlockSteps)?
+        .register_factory(KeyedSagaSteps)?
+        .register_factory(OutboxBlockSteps)?
+        .register_factory(UndoOutboxSteps)?
+        .register_factory(FailedStageSteps)?
+        .register_factory(ChatLoopSteps)?
+        .register_factory(ChainedSteps)?
+        .register_factory(StatelessLoopSteps)?
+        .register_factory(KeyedLoopSteps)?
+        .register_factory(ChatRewindSteps)?
+        .register_factory(FailingTurnLoopSteps)?
+        .register_factory(FailingTurnUndoAllSteps)?
+        .register_factory(ReplyBlockLoopSteps)?
+        .register_factory(TypedOnceSteps)?
+        .register_factory(RetrySteps)?
+        .register_factory(BranchSteps)?
+        .register_factory(DiamondSteps)?
         .register_factory(BenchChain1)?
         .register_factory(BenchChain4)?
         .register_factory(BenchChain16)?
         .register_factory(BenchChainOptOut4)?
-        .register_factory(BenchLoopBounded)?
+        .register_factory(BenchLoopSteps)?
         .run()?;
     Ok(())
 }

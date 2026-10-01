@@ -1,4 +1,4 @@
-#[flezha_runner::unbounded_operator(id = "x", sink = "s")]
+#[flezha_runner::operator(id = "x", sink = "s")]
 fn f(a: String) {
     let _ = a;
 }
@@ -6,7 +6,7 @@ fn f(a: String) {
 #[derive(Default)]
 struct G;
 
-#[flezha_runner::unbounded_operator(id = "g", sink = "s")]
+#[flezha_runner::operator(id = "g", sink = "s")]
 impl flezha_runner::Tasklet for G {
     type Input = String;
 

@@ -148,7 +148,7 @@ pub(crate) enum RouteLatestInput<D> {
 /// identifies it, and the version each key has already received.
 ///
 /// `delivered` grows with the keys this member sees, which is the Cell count
-/// it already pays for — not a new unbounded-growth class.
+/// it already pays for — not a new flow-growth class.
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct RouterState<D> {
     document: Option<D>,

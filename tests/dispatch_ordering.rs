@@ -15,7 +15,7 @@ test_tasklet!(AppendTasklet, "append_tasklet", String => String, (), |input, _ct
 });
 
 struct AppendOperator;
-impl UnboundedOperator for AppendOperator {
+impl Operator for AppendOperator {
     fn factory_id() -> &'static str {
         "append_operator"
     }
@@ -84,7 +84,7 @@ test_tasklet!(ConcurrencyProbeTasklet, "concurrency_probe_tasklet", String => St
 });
 
 struct ConcurrencyProbeOperator;
-impl UnboundedOperator for ConcurrencyProbeOperator {
+impl Operator for ConcurrencyProbeOperator {
     fn factory_id() -> &'static str {
         "concurrency_probe_operator"
     }
@@ -200,7 +200,7 @@ impl Tasklet for ParallelStaticTasklet {
 }
 
 struct ParallelOperator;
-impl UnboundedOperator for ParallelOperator {
+impl Operator for ParallelOperator {
     fn factory_id() -> &'static str {
         "parallel_operator"
     }
@@ -260,8 +260,8 @@ test_tasklet!(CountingTasklet, "counting_tasklet", String => String, CountingSta
     Ok(())
 });
 
-struct UnboundedA;
-impl UnboundedOperator for UnboundedA {
+struct FlowA;
+impl Operator for FlowA {
     fn factory_id() -> &'static str {
         "ns_operator_a"
     }
@@ -270,8 +270,8 @@ impl UnboundedOperator for UnboundedA {
     }
 }
 
-struct UnboundedB;
-impl UnboundedOperator for UnboundedB {
+struct FlowB;
+impl Operator for FlowB {
     fn factory_id() -> &'static str {
         "ns_operator_b"
     }
@@ -282,8 +282,8 @@ impl UnboundedOperator for UnboundedB {
 
 #[test]
 fn per_operator_namespace_isolation() {
-    let topology_a = build_topology_for::<UnboundedA>().expect("topology a");
-    let topology_b = build_topology_for::<UnboundedB>().expect("topology b");
+    let topology_a = build_topology_for::<FlowA>().expect("topology a");
+    let topology_b = build_topology_for::<FlowB>().expect("topology b");
     assert_ne!(topology_a.factory_id, topology_b.factory_id);
 
     // Same channel name on each is a separate ChannelDescriptor with id 0
@@ -315,7 +315,7 @@ test_tasklet!(MetaConsumerTasklet, "meta_consumer_tasklet", String => (), (), |_
 });
 
 struct MetaRejectOperator;
-impl UnboundedOperator for MetaRejectOperator {
+impl Operator for MetaRejectOperator {
     fn factory_id() -> &'static str {
         "meta_reject_operator"
     }

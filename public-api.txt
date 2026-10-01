@@ -11,7 +11,7 @@
 # pointer for code reviewers.
 #
 # `extract-sdk-poll-core`: the SDK's kernel (cell slots, mailbox/drain
-# gates, flusher, credit, DLQ park, timers, bounded driver, commands,
+# gates, flusher, credit, DLQ park, timers, steps driver, commands,
 # transport loop) moved into the `flz_core` workspace crate; every path
 # listed below is unchanged and now resolves through internal re-exports
 # from `flz_core`. This is the documented internal-re-export exception —
@@ -19,12 +19,12 @@
 # (`flz_core::poll_core`) and the C ABI (`flz_core_ffi`) are NOT part of
 # this crate's public surface.
 #
-# The unit is `Operator` and its two kinds are `UnboundedOperator` and
-# `BoundedOperator`; every signature below that names the unit or a kind
-# changed with that rename. BREAKING, no shim.
+# One `Operator` trait configured by one settings tree
+# (`fn settings() -> OperatorSettings`: `run` is `Run::Flow` with `Exactly`, or
+# `Run::Steps` with `Each` and `OnFailure`; `durable` is
+# `Durable::{Memory, Local, Remote}` with a `SleepAfter`).
 #
-# `Stream<'b, T, K>` (the channel handle) is unrelated and unchanged; an
-# unbounded operator is the kind that consumes streams.
+# `Stream<'b, T, K>` (the channel handle) is unrelated and unchanged.
 
 pub mod state {
     pub use crate::cell::restore::RestoreError;
@@ -55,6 +55,10 @@ pub use tasklet::SpawnOutcome;
 pub use tasklet::SpawnResult;
 pub use tasklet::StableId;
 pub use cell::timer::TimerKind;                            # ADDED by `cell-timers`
+pub use operator::Operator;
+pub use operator::{OperatorSettings, Run, Exactly, Each, OnFailure, Durable, SleepAfter};
+pub use operator::topology::{AckGranularity, BeyondWindowPolicy, CheckpointOutputs, CheckpointPolicy};
+pub use steps::StepsError;
 
 # One tasklet form: the author's type, `impl Tasklet for T`, completed by
 # `#[flezha::tasklet(name = "...")]`, which writes the items marked (attr).
@@ -125,11 +129,10 @@ pub use cell::timer::TimerKind;                            # ADDED by `cell-time
 #   that Cell, so a test observes the defaulted stamp.
 #   pub fn complete(&mut self, result: impl Into<Vec<u8>>) -> Result<(), TaskletError>;
 #
-#   `complete` (ADDED by `retire-the-bounded-run-body`) ends a bounded operator
-#   instance with `result` once the iteration commits; in an unbounded operator
-#   it fails the input naming `CompleteOutsideBounded`.
-#   pub fn spawn_bounded(&self, factory_id: impl Into<String>, payload: impl Into<Vec<u8>>) -> SpawnHandle;
-#   pub fn spawn_bounded_with(&self, factory_id: impl Into<String>, payload: impl Into<Vec<u8>>, options: SpawnOptions) -> SpawnHandle;
+#   `complete` ends the instance with `result`: in steps once the iteration
+#   commits, in flow once its Cells have run what they hold.
+#   pub fn spawn_steps(&self, factory_id: impl Into<String>, payload: impl Into<Vec<u8>>) -> SpawnHandle;
+#   pub fn spawn_steps_with(&self, factory_id: impl Into<String>, payload: impl Into<Vec<u8>>, options: SpawnOptions) -> SpawnHandle;
 #
 # Per-Cell timers (`cell-timers`) — each returns the ABSOLUTE scheduled
 # timestamp, which is the handle a cancellation takes:
@@ -161,19 +164,24 @@ pub use cell::timer::TimerKind;                            # ADDED by `cell-time
 #       pub fn wait_timeout(&mut self, timeout: Duration) -> Option<Result<SpawnResult, SpawnError>>;
 #   }
 #
-# Trait surface on `UnboundedOperator`:
+# The operator and its settings tree:
 #
-#   const PERSISTENCE_ENABLED: bool = true;
+#   pub trait Operator: Send + Sync + 'static {
+#       fn factory_id() -> &'static str;
+#       fn channels(c: &ChannelBuilder);
+#       fn settings() -> OperatorSettings { OperatorSettings::default() }
+#   }
+#   pub struct OperatorSettings { pub description: &'static str, pub max_duration: Option<Duration>, pub run: Run, pub durable: Durable }
+#   pub enum Run { Flow { exactly: Exactly }, Steps { each: Each, on_failure: OnFailure } }
+#   pub enum Exactly { AtLeastOnce, EffectivelyOnce { ack: AckGranularity, correction_ms: Option<u64>, beyond_window: BeyondWindowPolicy } }
+#   pub enum Each { Once, PerInput, Chained }
+#   pub enum OnFailure { UndoAll, KeepProgress }
+#   pub enum Durable { Memory, Local { sleep_after: SleepAfter }, Remote { sleep_after: SleepAfter } }
+#   pub enum SleepAfter { RunDefault, Never, After(Duration) }  # RunDefault: a flow never, a steps class after DEFAULT_SLEEP_AFTER
+#   pub const DEFAULT_SLEEP_AFTER: Duration;             # six hours
 #
-# Remote durability tier (`remote-durability-tier`) — trait surface on
-# `BoundedOperator`:
-#
-#   const SYNC_DURABILITY: bool = false;
-#
-#   When true the controller ships the commit barrier to its durability backend
-#   before acking it, so the ack the driver blocks on implies the commit
-#   survives losing the controller's disk (RPO 0). Inert unless a backend is
-#   configured; refused on an unbounded class at registration.
+#   `Durable::Remote` ships each commit barrier to the durability backend
+#   before acking it (RPO 0); refused on a flow class (`topology.remote_on_flow`).
 #
 # Test harness (gated behind `cfg(any(test, feature = "testing"))`):
 #
@@ -205,12 +213,6 @@ pub use cell::timer::TimerKind;                            # ADDED by `cell-time
 #     pub fn input_with<T, P>(&self, name: &'static str, parser: P) -> EntryStream<'_, T>
 #       where P: Fn(Vec<u8>) -> Result<T, String> + Send + Sync + 'static;
 #     pub fn merge<I: Send + Sync + 'static>(&self) -> Merge<'_, I>;
-#     # effectively_once / checkpoint_ack / correction_window / beyond_window_policy (&self)
-#     # ADDED by `amortise-effectively-once-output-confirmation`:
-#     pub fn checkpoint_every(&self, inputs: u32);
-#     pub fn outputs_at_checkpoint(&self, max_delay_ms: u64);
-#     #   `max_delay_ms` is a parameter, not an option: an unbounded output
-#     #   hold must not be declarable by omission.
 #
 #   CHANGED by `stream-dsl-keyby-and-transforms`: the two handles are ONE
 #   struct parameterized by a target marker, so their shared surface —
@@ -315,14 +317,9 @@ pub use cell::timer::TimerKind;                            # ADDED by `cell-time
 #
 #   Removed: ChannelDecl, ChannelDeclWithProducer, EntryChannel, EntryChannelType,
 #   channel::<T>("name"), .from::<S>(), to_plugin, also_to_plugin_with.
-#   Trait signatures: UnboundedOperator::channels(c: &ChannelBuilder),
-#   BoundedOperator::tasklets(c: &ChannelBuilder)  (was &mut).
-#
-#   REMOVED by `retire-the-bounded-run-body` (no shim): the one-function body
-#   `BoundedOperator::run(ctx: &mut BoundedCtx, args: &str)` and the
-#   `BoundedCtx` export. A bounded operator always declares `tasklets`; one that
-#   declares none is refused with `BuildBoundedError::NoTasklets`, which
-#   replaces `LoopWithoutChain`.
+#   Trait signature: Operator::channels(c: &ChannelBuilder) (was &mut). A class
+#   that runs in steps and declares no tasklet is refused with
+#   `BuildStepsError::NoTasklets`.
 #
 # `TopologyIssue` variants (renamed from BuildTopologyError by
 # `sdk-runner-entrypoint-redesign`):
@@ -351,12 +348,14 @@ pub use cell::timer::TimerKind;                            # ADDED by `cell-time
 #       UnkeyedEdgeIntoDynamicTasklet { channel: &'static str, tasklet: &'static str },
 #   }
 #
-# `BuildBoundedError` variants (`bounded::spec`):
+# `BuildStepsError` variants (`steps::spec`):
 #
-#   pub enum BuildBoundedError {
-#       /* existing variants unchanged */
+#   pub enum BuildStepsError {
+#       /* existing variants unchanged; the refusals of tier, checkpoint and
+#          correction settings, of an operator that only an external stop ends,
+#          and of a call outside a per-input loop REMOVED: the tree cannot write
+#          the first ones and the core judges the last */
 #       MergeFromEntryChannel { factory_id: &'static str, channel: String, tasklet: String },
-#       CallOutsidePerInputLoop { factory_id: &'static str, channel: String },   # ADDED
 #   }
 #
 # `TaskletError` variants:
@@ -415,7 +414,7 @@ pub use cell::timer::TimerKind;                            # ADDED by `cell-time
 # `channel::builder::BuildTopologyError` name (now `TopologyIssue`; the
 # per-kind `TopologyBuildError` keeps its name).
 
-pub use bounded operator::spec::BuildBoundedError;
+pub use steps::spec::BuildStepsError;
 pub use channel::builder::TopologyIssue;
 pub use operator::builder::TopologyBuildError;
 
@@ -429,8 +428,8 @@ pub use operator::builder::TopologyBuildError;
 #                                          # Drop of a STARTED owner = graceful shutdown
 #   impl FlezhaRunner {
 #       pub fn namespace(&self) -> &str;
-#       pub fn register_factory<K, O: Operator<K>>(&self, operator: O) -> Result<&Self, FlezhaError>;
-#       pub fn unregister_factory<K, O: Operator<K>>(&self, operator: O) -> Result<&Self, FlezhaError>;
+#       pub fn register_factory<O: Operator>(&self, operator: O) -> Result<&Self, FlezhaError>;
+#       pub fn unregister_factory<O: Operator>(&self, operator: O) -> Result<&Self, FlezhaError>;
 #       pub fn start(&self) -> Result<&Self, FlezhaError>;     # slot claimed here (CAS)
 #       pub fn run(&self) -> Result<(), FlezhaError>;          # start + await_termination
 #       pub fn operators(&self) -> Result<HashMap<String, Arc<OperatorInstance>>, FlezhaError>;
@@ -443,7 +442,7 @@ pub use operator::builder::TopologyBuildError;
 #       ConnectFailed(String),
 #       Refused(flz_transport::errors::FlezhaError),   # the controller's connect refusal
 #       InvalidTopology(TopologyBuildError),           # From<TopologyBuildError>
-#       InvalidBounded(BuildBoundedError),             # From<BuildBoundedError>
+#       InvalidSteps(BuildStepsError),                 # From<BuildStepsError>
 #       DuplicateFactoryId { factory_id: String },
 #       NotDefined { factory_id: String },
 #       OperatorTypeInUse { factory_id: String, live_instances: usize },
@@ -453,7 +452,7 @@ pub use operator::builder::TopologyBuildError;
 #   }
 #
 #   # The error model's fields, implemented for FlezhaError, TaskletError,
-#   # TopologyBuildError, TopologyIssue, BuildBoundedError, AdminError and
+#   # TopologyBuildError, TopologyIssue, BuildStepsError, AdminError and
 #   # SpawnError. `code` is the catalogue code (`topology.duplicate_factory_id`).
 #   # Re-exported from `flz_transport::errors`, where the core's own error types
 #   # implement it.
@@ -465,18 +464,6 @@ pub use operator::builder::TopologyBuildError;
 #       fn hint(&self) -> Option<String>;
 #   }
 #   pub use flz_transport::errors;         # the catalogue, Class, the model's FlezhaError
-#
-#   # The shared base of both kinds: the SDK implements it for every
-#   # UnboundedOperator and every BoundedOperator, so one method takes either.
-#   pub struct UnboundedKind;
-#   pub struct BoundedKind;
-#   pub trait Operator<K>: sealed::Sealed<K> {   # sealed: only the SDK's two impls
-#       type Class;
-#       const IS_BOUNDED: bool;
-#       fn factory_id() -> &'static str;
-#       fn build_class() -> Result<Self::Class, FlezhaError>;
-#       fn install_class(class: Self::Class);
-#   }
 
 # Live Cell read (`cell-state-live-query`). The `CellState` command
 # gained a selector; the serializer that answers it is public because the
@@ -520,7 +507,7 @@ pub use operator::builder::TopologyBuildError;
 #   default, which forwards to `handle` with no metadata.
 #
 #   ADDED: `DynamicCellRegistry::recently_evicted(&self, key: &str) -> bool`
-#   — the bounded operator eviction trace that lets a live read say "idle-evicted"
+#   — the eviction trace that lets a live read say "idle-evicted"
 #   rather than "never existed".
 
 # Exported tracing defaults (`export-rust-sdk-tracing-defaults`). The SDK's
@@ -536,38 +523,19 @@ pub use operator::builder::TopologyBuildError;
 #                                            # install warns and returns, never panics
 #   }
 
-# A bounded operator declared like an unbounded operator (`declare-a-bounded-like-a-stream`).
-# BREAKING, no shim:
-#
-#   pub trait BoundedOperator {
-#       fn factory_id() -> &'static str;
-#       fn channels(c: &ChannelBuilder);          # was `tasklets`, now required
-#       fn max_duration() -> Option<Duration>;
-#       fn self_terminating() -> bool;
-#       fn loop_mode() -> LoopMode;
-#       fn rollback_mode() -> RollbackMode;
-#       const PERSISTENCE_ENABLED: bool;
-#       const SYNC_DURABILITY: bool;
-#   }
-#   REMOVED: BoundedOperator::{tasklets, retry_attempts, retry_backoff,
-#   barrier_retry_attempts}; BuildBoundedError::ZeroRetryBackoff;
-#   BoundedSpec::{retry, barrier_retry_attempts}. A stage's ladder is the
-#   consuming edge's `retry_max` / `retry_backoff_ms`, as on an unbounded operator.
-#   ADDED: BuildBoundedError::{EffectivelyOnceOnBounded, CheckpointOnBounded,
-#   CorrectionWindowOnBounded} { factory_id }; SpawnError::FactoryNotBounded(String);
-#   `#[flezha::bounded_operator(.., loop_mode = "once" | "per_input" | "chained")]`.
-
-# Timers inside a bounded operator (`fire-timers-inside-a-bounded`). BREAKING, no shim:
-#
-#   REMOVED: BoundedOperator::wake_after. A bounded tasklet registers Cell
-#   timers as an unbounded tasklet does, and a sleeping instance wakes at the
-#   earliest pending processing-time one.
+# A class that runs in steps declares its graph in `channels`, as a flow class
+# does, and its retry ladder on the consuming edge (`retry_max` /
+# `retry_backoff_ms`). Its tasklets register Cell timers as a flow tasklet does,
+# and a sleeping instance wakes at the earliest pending processing-time one.
+# `SpawnError::FactoryNotSteps(String)`.
 
 # Authoring macros. `tasklet` completes an `impl Tasklet` block and generates no
-# type. `unbounded_operator` and `bounded_operator` are the §5 short form: on a
-# stateless function each emits the operator type under the function's
-# PascalCase name and the tasklet type beside it, suffixed `Tasklet`; on an
-# `impl Tasklet for T` block each completes the block and implements the
-# operator trait on `T`.
+# type. `operator` is the §5 short form, taking the class's settings tree as
+# keys (`run = steps(each = chained)`, `durable = local(sleep_after = 2000)`,
+# `max_duration_ms`, `description`): on a stateless function it emits the
+# operator type under the function's PascalCase name and the tasklet type
+# beside it, suffixed `Tasklet`; on an `impl Tasklet for T` block it completes
+# the block and implements the operator trait on `T`. `pipeline!` lowers a
+# linear pipeline to a `channels()` body on the type it declares.
 
-pub use flezha_macros::{operator, tasklet, unbounded_operator, bounded_operator};
+pub use flezha_macros::{operator, pipeline, tasklet};

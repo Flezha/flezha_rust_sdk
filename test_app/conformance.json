@@ -35,7 +35,7 @@
   "topology_surfaces": [
     "merge",
     "branch",
-    "bounded",
+    "steps",
     "shorthand",
     "shorthand_typed_output",
     "response",
@@ -47,7 +47,8 @@
     "runner_lifecycle": [
       "do_nothing",
       "compare_filter",
-      "bench_echo"
+      "bench_echo",
+      "complete_flow"
     ],
     "connect_discovery": [
       "do_nothing"
@@ -66,8 +67,8 @@
       "sugar_do_nothing",
       "sugar_store_input",
       "sugar_named_input",
-      "sugar_bounded",
-      "sugar_bounded_per_input",
+      "sugar_steps",
+      "sugar_steps_per_input",
       "sugar_state_only"
     ],
     "liveness": [
@@ -104,40 +105,41 @@
     "keyed_channels": [
       "partition_relay"
     ],
-    "bounded": [
+    "steps": [
       "spawn_requester",
       "spawn_hold_requester",
       "spawn_once_requester",
-      "echo_bounded",
-      "timer_loop_bounded",
-      "event_timer_bounded",
-      "static_cell_bounded",
-      "typed_once_bounded",
-      "commit_block_bounded",
-      "sync_durable_bounded",
+      "echo_steps",
+      "timer_loop_steps",
+      "event_timer_steps",
+      "static_cell_steps",
+      "typed_once_steps",
+      "commit_block_steps",
+      "sync_durable_steps",
       "optout_commit_block",
-      "tier_commit_block_bounded",
-      "saga_block_bounded",
-      "keyed_block_bounded",
-      "keyed_saga_bounded",
-      "outbox_block_bounded",
-      "undo_outbox_bounded",
-      "failed_stage_bounded",
-      "chat_loop_bounded",
-      "stateless_loop_bounded",
-      "keyed_loop_bounded",
-      "chat_rewind_bounded",
-      "failing_turn_loop_bounded",
-      "failing_turn_all_or_nothing_bounded",
-      "reply_block_loop_bounded",
-      "retry_bounded",
-      "branch_bounded",
-      "diamond_bounded",
+      "tier_commit_block_steps",
+      "saga_block_steps",
+      "keyed_block_steps",
+      "keyed_saga_steps",
+      "outbox_block_steps",
+      "undo_outbox_steps",
+      "failed_stage_steps",
+      "chat_loop_steps",
+      "chained_steps",
+      "stateless_loop_steps",
+      "keyed_loop_steps",
+      "chat_rewind_steps",
+      "failing_turn_loop_steps",
+      "failing_turn_undo_all_steps",
+      "reply_block_loop_steps",
+      "retry_steps",
+      "branch_steps",
+      "diamond_steps",
       "bench_chain_1",
       "bench_chain_4",
       "bench_chain_16",
       "bench_chain_optout_4",
-      "bench_loop_bounded"
+      "bench_loop_steps"
     ],
     "dynamic_cell": [
       "dynamic_cell"
@@ -157,12 +159,12 @@
     ],
     "parts": [
       "part_echo",
-      "part_echo_bounded"
+      "part_echo_steps"
     ],
     "partitioned": [
       "partition_relay",
       "dynamic_cell",
-      "keyed_loop_bounded"
+      "keyed_loop_steps"
     ],
     "pool_wedge": [
       "wedge_probe"

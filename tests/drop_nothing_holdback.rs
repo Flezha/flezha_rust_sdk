@@ -65,7 +65,7 @@ fn note_inflight() {
 }
 
 struct ChainOperator;
-impl UnboundedOperator for ChainOperator {
+impl Operator for ChainOperator {
     fn factory_id() -> &'static str {
         "nonparking_chain_operator"
     }
@@ -152,7 +152,7 @@ test_tasklet!(OrderedTail, "nonparking_ordered_tail", String => (), (), cap 1, |
 });
 
 struct OrderedOperator;
-impl UnboundedOperator for OrderedOperator {
+impl Operator for OrderedOperator {
     fn factory_id() -> &'static str {
         "nonparking_ordered_operator"
     }
@@ -213,7 +213,7 @@ test_tasklet!(GateTail, "nonparking_gate_tail", String => (), (), cap 1, |_input
 });
 
 struct GateOperator;
-impl UnboundedOperator for GateOperator {
+impl Operator for GateOperator {
     fn factory_id() -> &'static str {
         "nonparking_gate_operator"
     }

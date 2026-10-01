@@ -8,7 +8,7 @@ use crate::channel::builder::TopologyIssue;
 use crate::channel::ChannelBuilder;
 use crate::operator::builder::build_topology_for;
 use crate::operator::topology::CellMode;
-use crate::operator::UnboundedOperator;
+use crate::operator::Operator;
 use crate::tasklet::{Ctx, Tasklet, TaskletError};
 use crate::testing::TaskletTestHarness;
 
@@ -182,7 +182,7 @@ impl Tasklet for Detector {
 /// The canonical shape: a document stream, a traffic stream, a keyed consumer.
 struct RoutedOperator;
 
-impl UnboundedOperator for RoutedOperator {
+impl Operator for RoutedOperator {
     fn factory_id() -> &'static str {
         "route_latest_expansion"
     }
@@ -241,7 +241,7 @@ fn the_block_expands_to_one_single_cell_node_fed_by_both_streams() {
 
 struct TwoUnnamedRouterOperator;
 
-impl UnboundedOperator for TwoUnnamedRouterOperator {
+impl Operator for TwoUnnamedRouterOperator {
     fn factory_id() -> &'static str {
         "route_latest_twice"
     }
@@ -260,7 +260,7 @@ impl UnboundedOperator for TwoUnnamedRouterOperator {
 
 struct TwoNamedRouterOperator;
 
-impl UnboundedOperator for TwoNamedRouterOperator {
+impl Operator for TwoNamedRouterOperator {
     fn factory_id() -> &'static str {
         "route_latest_twice_named"
     }
@@ -277,7 +277,7 @@ impl UnboundedOperator for TwoNamedRouterOperator {
 }
 
 /// Declaration errors this operator's `channels(...)` collected.
-fn issues<R: UnboundedOperator>() -> Vec<TopologyIssue> {
+fn issues<R: Operator>() -> Vec<TopologyIssue> {
     build_topology_for::<R>()
         .err()
         .map(|e| e.errors)
@@ -308,7 +308,7 @@ fn a_second_router_needs_a_node_name() {
 
 struct SelfRoutedOperator;
 
-impl UnboundedOperator for SelfRoutedOperator {
+impl Operator for SelfRoutedOperator {
     fn factory_id() -> &'static str {
         "route_latest_self"
     }

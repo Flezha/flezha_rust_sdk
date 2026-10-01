@@ -9,7 +9,7 @@ mod remove_factory_tests {
     use flz_core::runner::*;
 
     use crate::tasklet::{Ctx, Tasklet, TaskletError};
-    use crate::{ChannelBuilder, UnboundedOperator};
+    use crate::{ChannelBuilder, Operator};
 
     #[derive(Default)]
     struct SeamTask;
@@ -23,26 +23,26 @@ mod remove_factory_tests {
     }
 
     struct SeamOperator;
-    impl UnboundedOperator for SeamOperator {
+    impl Operator for SeamOperator {
         fn factory_id() -> &'static str {
             "remove_factory_seam_probe"
         }
         fn channels(c: &ChannelBuilder) {
             c.input::<String>("in").into::<SeamTask>();
         }
-    }
+}
 
     #[test]
     fn removal_refuses_while_instances_live_and_unregisters_after() {
         let runner = RunnerNode::new("seam_ns".to_string());
-        crate::register_class::<crate::UnboundedKind, SeamOperator>().expect("valid topology");
+        crate::register_class::<SeamOperator>().expect("valid topology");
 
         runner
             .start_operator(
                 "remove_factory_seam_probe".to_string(),
                 "seam-inst-1".to_string(),
                 flz_core::operator::instance::KeyGroupRange::UNPARTITIONED,
-                flz_core::bounded::Resume::default(),
+                flz_core::steps::Resume::default(),
             )
             .expect("instance spawns");
 

@@ -1,5 +1,5 @@
 // A Tasklet whose `Output` has no byte form. The output of one tasklet is
-// the handoff to the next, and a durable bounded journals that handoff at its
+// the handoff to the next, and a durable steps journals that handoff at its
 // commit barrier, so the type has to be writable to bytes and readable back.
 // The refusal must be the SDK's own sentence, naming the type — not serde's
 // message about a trait the author never wrote.

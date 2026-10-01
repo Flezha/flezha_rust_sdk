@@ -1,4 +1,4 @@
-error: #[flezha::unbounded_operator] already completes this block and names its tasklet; a block takes one of `#[flezha::tasklet]`, `#[flezha::unbounded_operator]` and `#[flezha::bounded_operator]`
+error: #[flezha::operator] already completes this block and names its tasklet; a block takes one of `#[flezha::tasklet]` and `#[flezha::operator]`
  --> tests/ui/tasklet_beside_short_form.rs:9:1
   |
 9 | #[tasklet(name = "counter")]

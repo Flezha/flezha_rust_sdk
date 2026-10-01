@@ -5,7 +5,7 @@ struct Seen {
     count: u64,
 }
 
-#[flezha_runner::unbounded_operator(id = "store_input")]
+#[flezha_runner::operator(id = "store_input")]
 fn store_input(input: String, state: &mut Seen) -> String {
     state.count += 1;
     input

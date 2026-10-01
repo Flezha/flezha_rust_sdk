@@ -1,5 +1,5 @@
-//! `#[flezha::unbounded_operator]` / `#[flezha::bounded_operator]`: a whole
-//! one-tasklet operator, on one of two targets.
+//! `#[flezha::operator]`: a whole one-tasklet operator, on one of two
+//! targets.
 //!
 //! - A function with no state parameter, returning its output: the attribute
 //!   emits the operator type under the author's PascalCase name and, beside it,
@@ -9,14 +9,17 @@
 //!   the tasklet after the `id`, and implements the operator trait on `X`
 //!   itself, generating no type.
 //!
-//! See `docs/sdk/authoring_contract.md` §5.
+//! The class's settings tree is written as keys (`run`, `durable`,
+//! `max_duration_ms`, `description`); see `crate::settings`. See
+//! `docs/sdk/authoring_contract.md` §5.
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::spanned::Spanned;
 use syn::{FnArg, ImplItem, Item, ItemFn, ItemImpl, LitStr, Meta, Pat, ReturnType, Type};
 
-use crate::operator::{operator_item, Kind, Wiring};
+use crate::operator::{operator_item, Wiring};
+use crate::settings::Written;
 use crate::tasklet::{
     complete, impl_target, key_of, lit_str, parse_metas, unknown_key, TaskletKeys, OPERATOR_KEYS,
 };
@@ -32,21 +35,23 @@ struct OperatorKeys {
     input: Option<LitStr>,
     /// The entry channel's `.on_full(..)` call, empty when none was written.
     on_full: TokenStream,
-    /// A bounded operator's `loop_mode()` item, empty when none was written.
-    loop_mode: TokenStream,
+    /// The settings tree, lowered to one `fn settings()` item.
+    settings: Written,
 }
 
-pub(crate) fn expand(kind: Kind, attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> {
-    let (keys, tasklet) = parse_keys(kind, attr)?;
+/// The attribute every refusal names.
+const ATTRIBUTE: &str = "#[flezha::operator]";
+
+pub(crate) fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> {
+    let (keys, tasklet) = parse_keys(attr)?;
     let item: Item = syn::parse2(item)?;
     match item {
-        Item::Fn(func) => on_function(kind, &keys, &tasklet, func),
-        other => on_impl(kind, &keys, &tasklet, other),
+        Item::Fn(func) => on_function(&keys, &tasklet, func),
+        other => on_impl(&keys, &tasklet, other),
     }
 }
 
-fn parse_keys(kind: Kind, attr: TokenStream) -> syn::Result<(OperatorKeys, TaskletKeys)> {
-    let attribute = kind.attribute();
+fn parse_keys(attr: TokenStream) -> syn::Result<(OperatorKeys, TaskletKeys)> {
     let mut keys = OperatorKeys::default();
     let mut tasklet = TaskletKeys::default();
     for meta in parse_metas(attr)? {
@@ -56,17 +61,12 @@ fn parse_keys(kind: Kind, attr: TokenStream) -> syn::Result<(OperatorKeys, Taskl
             "id" => keys.id = Some(lit_str(value()?)?.clone()),
             "sink" => keys.sink = Some(lit_str(value()?)?.value()),
             "input" => keys.input = Some(lit_str(value()?)?.clone()),
-            "on_full" => keys.on_full = on_full_call(attribute, &ident(value()?)?)?,
-            "loop_mode" if matches!(kind, Kind::Unbounded) => {
-                return Err(syn::Error::new_spanned(
-                    meta.path(),
-                    "#[flezha::unbounded_operator]: `loop_mode` is a bounded setting; declare the \
-                     short form with `#[flezha::bounded_operator(..)]`",
-                ))
+            "on_full" => keys.on_full = on_full_call(ATTRIBUTE, &ident(value()?)?)?,
+            "run" | "durable" | "max_duration_ms" | "description" => {
+                keys.settings.take(&key, value()?)?;
             }
-            "loop_mode" => keys.loop_mode = loop_mode_item(lit_str(value()?)?)?,
             _ if tasklet.take(&key, &meta)? => {}
-            _ => return Err(refused_key(&meta, &key, attribute)),
+            _ => return Err(refused_key(&meta, &key, ATTRIBUTE)),
         }
     }
     Ok((keys, tasklet))
@@ -91,14 +91,13 @@ fn ident(expr: &syn::Expr) -> syn::Result<syn::Ident> {
 }
 
 /// The `id` every operator needs: a factory id is an address a user types.
-fn required_id(kind: Kind, keys: &OperatorKeys, span: proc_macro2::Span) -> syn::Result<LitStr> {
+fn required_id(keys: &OperatorKeys, span: proc_macro2::Span) -> syn::Result<LitStr> {
     keys.id.clone().ok_or_else(|| {
         syn::Error::new(
             span,
             format!(
-                "{} needs an `id`: an operator's factory id is an address a user types, \
-                 so it is written rather than derived from the function name",
-                kind.attribute()
+                "{ATTRIBUTE} needs an `id`: an operator's factory id is an address a user types, \
+                 so it is written rather than derived from the function name"
             ),
         )
     })
@@ -115,7 +114,6 @@ fn sink_without_output(span: proc_macro2::Span) -> syn::Error {
 /// The operator wiring the entry channel into `tasklet`, and `tasklet` to the
 /// sink when one is written.
 fn wiring<'a>(
-    kind: Kind,
     keys: &'a OperatorKeys,
     id: &'a LitStr,
     tasklet: &Type,
@@ -126,7 +124,6 @@ fn wiring<'a>(
     operator_item(Wiring {
         vis,
         ident,
-        kind,
         id: &id,
         input_ty: &syn::parse_quote! { <#tasklet as ::flezha_runner::Tasklet>::Input },
         input_name: keys.input.as_ref(),
@@ -134,20 +131,19 @@ fn wiring<'a>(
         chain: quote! { .into::<#tasklet>(); },
         payload: quote! { <#tasklet as ::flezha_runner::Tasklet>::Output },
         sink: keys.sink.as_deref(),
-        settings: keys.loop_mode.clone(),
+        settings: keys.settings.item(),
     })
 }
 
 /// The `impl Tasklet for X` target: the block completed under the `id`, and
 /// the operator trait on `X` itself.
 fn on_impl(
-    kind: Kind,
     keys: &OperatorKeys,
     tasklet: &TaskletKeys,
     item: Item,
 ) -> syn::Result<TokenStream> {
-    let block: ItemImpl = impl_target(quote! { #item }, kind.attribute())?;
-    let id = required_id(kind, keys, block.self_ty.span())?;
+    let block: ItemImpl = impl_target(quote! { #item }, ATTRIBUTE)?;
+    let id = required_id(keys, block.self_ty.span())?;
     if keys.sink.is_some() && !writes_output(&block) {
         return Err(sink_without_output(block.self_ty.span()));
     }
@@ -155,7 +151,7 @@ fn on_impl(
     let Type::Path(path) = &self_ty else {
         return Err(syn::Error::new_spanned(
             &self_ty,
-            format!("{} expects a named type", kind.attribute()),
+            format!("{ATTRIBUTE} expects a named type"),
         ));
     };
     let ident = &path
@@ -164,7 +160,7 @@ fn on_impl(
         .last()
         .expect("a type path has a segment")
         .ident;
-    let operator = wiring(kind, keys, &id, &self_ty, None, ident)?;
+    let operator = wiring(keys, &id, &self_ty, None, ident)?;
     let completed = complete(tasklet, &id, block)?;
     Ok(quote! {
         #completed
@@ -182,16 +178,10 @@ fn writes_output(block: &ItemImpl) -> bool {
 
 /// The function target: the tasklet `XTasklet`, whose `run` emits what the
 /// function returns, and the operator `X` wiring it.
-fn on_function(
-    kind: Kind,
-    keys: &OperatorKeys,
-    tasklet: &TaskletKeys,
-    func: ItemFn,
-) -> syn::Result<TokenStream> {
-    let attribute = kind.attribute();
-    let (input_pat, input_ty) = input_param(&func, attribute)?;
+fn on_function(keys: &OperatorKeys, tasklet: &TaskletKeys, func: ItemFn) -> syn::Result<TokenStream> {
+    let (input_pat, input_ty) = input_param(&func, ATTRIBUTE)?;
     let output = resolve_output(&func.sig.output);
-    let id = required_id(kind, keys, func.sig.span())?;
+    let id = required_id(keys, func.sig.span())?;
     if keys.sink.is_some() && !output.emits() {
         return Err(sink_without_output(func.sig.span()));
     }
@@ -223,7 +213,7 @@ fn on_function(
     let completed = complete(tasklet, &id, block)?;
     let tasklet_ty: Type = syn::parse_quote! { #tasklet_ident };
     let vis = &func.vis;
-    let operator = wiring(kind, keys, &id, &tasklet_ty, Some(vis), &operator_ident)?;
+    let operator = wiring(keys, &id, &tasklet_ty, Some(vis), &operator_ident)?;
     Ok(quote! {
         #[derive(::core::default::Default)]
         #vis struct #tasklet_ident;
@@ -375,26 +365,6 @@ fn variant(
         .ok_or_else(|| syn::Error::new_spanned(spanned, refusal))?;
     let variant = syn::Ident::new(variant, proc_macro2::Span::call_site());
     Ok(quote! { #ty::#variant })
-}
-
-/// A bounded operator's `loop_mode()`.
-fn loop_mode_item(lit: &LitStr) -> syn::Result<TokenStream> {
-    let mode = variant(
-        &lit.value(),
-        lit,
-        &[
-            ("once", "Once"),
-            ("per_input", "PerInput"),
-            ("chained", "Chained"),
-        ],
-        quote! { ::flezha_runner::bounded::LoopMode },
-        "#[flezha::bounded_operator] `loop_mode` must be one of: \"once\", \"per_input\", \
-         \"chained\""
-            .to_string(),
-    )?;
-    Ok(quote! {
-        fn loop_mode() -> ::flezha_runner::bounded::LoopMode { #mode }
-    })
 }
 
 /// The entry channel's `.on_full(..)` call.

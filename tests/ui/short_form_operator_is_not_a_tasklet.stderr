@@ -7,11 +7,11 @@ error[E0277]: the trait bound `DoNothing: Tasklet` is not satisfied
 help: the trait `Tasklet` is not implemented for `DoNothing`
   --> tests/ui/short_form_operator_is_not_a_tasklet.rs:5:1
    |
- 5 | #[flezha_runner::unbounded_operator(id = "do_nothing", sink = "echo")]
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ 5 | #[flezha_runner::operator(id = "do_nothing", sink = "echo")]
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 help: the trait `Tasklet` is implemented for `DoNothingTasklet`
   --> tests/ui/short_form_operator_is_not_a_tasklet.rs:5:1
    |
- 5 | #[flezha_runner::unbounded_operator(id = "do_nothing", sink = "echo")]
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-   = note: this error originates in the attribute macro `flezha_runner::unbounded_operator` (in Nightly builds, run with -Z macro-backtrace for more info)
+ 5 | #[flezha_runner::operator(id = "do_nothing", sink = "echo")]
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: this error originates in the attribute macro `flezha_runner::operator` (in Nightly builds, run with -Z macro-backtrace for more info)

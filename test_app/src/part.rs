@@ -1,13 +1,13 @@
 //! Part fixtures (`parts`): for an input `n` the tasklet sends the parts `1`
-//! .. `n` and then emits `done:<n>` on its sink `answer`, in an unbounded
-//! operator and in a `per_input` bounded one. `retry:<n>` sends its parts and
+//! .. `n` and then emits `done:<n>` on its sink `answer`, in a flow
+//! operator and in a `per_input` steps one. `retry:<n>` sends its parts and
 //! then fails retryably the first time this process sees it, so the retry's
 //! parts number from 0 again under the next attempt.
 
 use std::collections::BTreeSet;
 use std::sync::Mutex;
 
-use crate::bounded::stateless_step;
+use crate::steps::stateless_step;
 use crate::*;
 
 /// The `retry:` inputs that have already failed once in this process.
@@ -41,7 +41,7 @@ stateless_step!(PartEchoTurn, "part_echo_turn", |input, ctx| send_parts(
 ));
 
 pub(crate) struct PartEchoOperator;
-impl UnboundedOperator for PartEchoOperator {
+impl Operator for PartEchoOperator {
     fn factory_id() -> &'static str {
         "part_echo"
     }
@@ -53,21 +53,24 @@ impl UnboundedOperator for PartEchoOperator {
     }
 }
 
-pub(crate) struct PartEchoBounded;
-impl BoundedOperator for PartEchoBounded {
+pub(crate) struct PartEchoSteps;
+impl Operator for PartEchoSteps {
     fn factory_id() -> &'static str {
-        "part_echo_bounded"
-    }
-    fn loop_mode() -> LoopMode {
-        LoopMode::PerInput
-    }
-    fn max_duration() -> Option<Duration> {
-        Some(Duration::from_secs(600))
+        "part_echo_steps"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .retry_backoff_ms(25)
             .into::<PartEchoTurn>()
             .sink_named("answer");
+    }
+
+    fn settings() -> OperatorSettings {
+        OperatorSettings {
+            run: Run::Steps { each: Each::PerInput, on_failure: OnFailure::UndoAll },
+            max_duration: Some(Duration::from_secs(600)),
+            durable: fixture_durable(),
+            ..OperatorSettings::default()
+        }
     }
 }

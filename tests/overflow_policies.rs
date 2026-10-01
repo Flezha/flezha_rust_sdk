@@ -2,7 +2,7 @@
 //! every item, DropNewest and DropOldest each shed their own end, and every
 //! outcome is counted.
 
-use flezha_runner::{OverflowPolicy, UnboundedOperator};
+use flezha_runner::{Operator, OverflowPolicy};
 
 mod common;
 use common::prelude::*;
@@ -34,7 +34,7 @@ test_tasklet!(DropNothingStressTasklet, "drop_nothing_stress_tasklet", Vec<u8> =
 });
 
 struct DropNothingStressOperator;
-impl UnboundedOperator for DropNothingStressOperator {
+impl Operator for DropNothingStressOperator {
     fn factory_id() -> &'static str {
         "drop_nothing_stress_operator"
     }
@@ -117,7 +117,7 @@ test_tasklet!(DropNewestTasklet, "drop_newest_tasklet", Vec<u8> => (), (), cap 2
 });
 
 struct DropNewestOperator;
-impl UnboundedOperator for DropNewestOperator {
+impl Operator for DropNewestOperator {
     fn factory_id() -> &'static str {
         "drop_newest_operator"
     }
@@ -205,7 +205,7 @@ test_tasklet!(DropOldestTasklet, "drop_oldest_tasklet", Vec<u8> => (), (), cap 2
 });
 
 struct DropOldestOperator;
-impl UnboundedOperator for DropOldestOperator {
+impl Operator for DropOldestOperator {
     fn factory_id() -> &'static str {
         "drop_oldest_operator"
     }
@@ -365,7 +365,7 @@ test_tasklet!(DropOldestStressTasklet, "drop_oldest_stress_tasklet", Vec<u8> => 
 });
 
 struct DropOldestStressOperator;
-impl UnboundedOperator for DropOldestStressOperator {
+impl Operator for DropOldestStressOperator {
     fn factory_id() -> &'static str {
         "drop_oldest_stress_operator"
     }
@@ -496,7 +496,7 @@ test_tasklet!(InterTaskletConsumer, "inter_tasklet_consumer", String => (), (), 
 });
 
 struct InterTaskletDefaultBlockOperator;
-impl UnboundedOperator for InterTaskletDefaultBlockOperator {
+impl Operator for InterTaskletDefaultBlockOperator {
     fn factory_id() -> &'static str {
         "inter_tasklet_default_block_operator"
     }
@@ -509,17 +509,17 @@ impl UnboundedOperator for InterTaskletDefaultBlockOperator {
     }
 }
 
-// ----- Sticky ordering preserved under bounded operator Block (BoundedOperator 8.3) -----
+// ----- Sticky ordering preserved under steps operator Block (Operator 8.3) -----
 
-static STICKY_BOUNDED_CONCURRENT: AtomicUsize = AtomicUsize::new(0);
-static STICKY_BOUNDED_MAX_CONCURRENT: AtomicUsize = AtomicUsize::new(0);
-static STICKY_BOUNDED_DELIVERED: AtomicUsize = AtomicUsize::new(0);
+static STICKY_STEPS_CONCURRENT: AtomicUsize = AtomicUsize::new(0);
+static STICKY_STEPS_MAX_CONCURRENT: AtomicUsize = AtomicUsize::new(0);
+static STICKY_STEPS_DELIVERED: AtomicUsize = AtomicUsize::new(0);
 
-test_tasklet!(StickyBoundedTasklet, "sticky_bounded_tasklet", Vec<u8> => (), (), cap 16, |_input, _ctx| {
-    let cur = STICKY_BOUNDED_CONCURRENT.fetch_add(1, Ordering::AcqRel) + 1;
-    let mut prev = STICKY_BOUNDED_MAX_CONCURRENT.load(Ordering::Acquire);
+test_tasklet!(StickyStepsTasklet, "sticky_steps_tasklet", Vec<u8> => (), (), cap 16, |_input, _ctx| {
+    let cur = STICKY_STEPS_CONCURRENT.fetch_add(1, Ordering::AcqRel) + 1;
+    let mut prev = STICKY_STEPS_MAX_CONCURRENT.load(Ordering::Acquire);
     while cur > prev {
-        match STICKY_BOUNDED_MAX_CONCURRENT.compare_exchange_weak(
+        match STICKY_STEPS_MAX_CONCURRENT.compare_exchange_weak(
             prev,
             cur,
             Ordering::AcqRel,
@@ -532,20 +532,20 @@ test_tasklet!(StickyBoundedTasklet, "sticky_bounded_tasklet", Vec<u8> => (), (),
     for _ in 0..32 {
         std::hint::spin_loop();
     }
-    STICKY_BOUNDED_CONCURRENT.fetch_sub(1, Ordering::AcqRel);
-    STICKY_BOUNDED_DELIVERED.fetch_add(1, Ordering::Relaxed);
+    STICKY_STEPS_CONCURRENT.fetch_sub(1, Ordering::AcqRel);
+    STICKY_STEPS_DELIVERED.fetch_add(1, Ordering::Relaxed);
     Ok(())
 });
 
-struct StickyBoundedOperator;
-impl UnboundedOperator for StickyBoundedOperator {
+struct StickyOperator;
+impl Operator for StickyOperator {
     fn factory_id() -> &'static str {
-        "sticky_bounded_operator"
+        "sticky_operator"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<Vec<u8>>("input")
             .on_full(OverflowPolicy::DropNothing)
-            .into::<StickyBoundedTasklet>();
+            .into::<StickyStepsTasklet>();
     }
 }
 
@@ -556,11 +556,11 @@ impl UnboundedOperator for StickyBoundedOperator {
 /// parked at the entry edge.
 #[test]
 fn sticky_ordering_holds_under_drop_nothing_entry() {
-    STICKY_BOUNDED_CONCURRENT.store(0, Ordering::Release);
-    STICKY_BOUNDED_MAX_CONCURRENT.store(0, Ordering::Release);
-    STICKY_BOUNDED_DELIVERED.store(0, Ordering::Release);
+    STICKY_STEPS_CONCURRENT.store(0, Ordering::Release);
+    STICKY_STEPS_MAX_CONCURRENT.store(0, Ordering::Release);
+    STICKY_STEPS_DELIVERED.store(0, Ordering::Release);
 
-    let (handle, instance) = setup::<StickyBoundedOperator>("sticky-bounded-instance");
+    let (handle, instance) = setup::<StickyOperator>("sticky-steps-instance");
     let stream = dummy_stream();
 
     let producers = 4usize;
@@ -576,7 +576,7 @@ fn sticky_ordering_holds_under_drop_nothing_entry() {
                 let mut md = HashMap::new();
                 md.insert("channel".to_string(), "input".to_string());
                 handle.dispatch(
-                    "sticky-bounded-instance",
+                    "sticky-steps-instance",
                     format!("{tid}-{i}").into_bytes(),
                     &md,
                     Arc::clone(&stream),
@@ -589,12 +589,12 @@ fn sticky_ordering_holds_under_drop_nothing_entry() {
     }
 
     assert!(wait_until(
-        || STICKY_BOUNDED_DELIVERED.load(Ordering::Acquire) == total,
+        || STICKY_STEPS_DELIVERED.load(Ordering::Acquire) == total,
         Duration::from_secs(60)
     ));
 
     assert_eq!(
-        STICKY_BOUNDED_MAX_CONCURRENT.load(Ordering::Acquire),
+        STICKY_STEPS_MAX_CONCURRENT.load(Ordering::Acquire),
         1,
         "bounded-mailbox single-cell allowed concurrent dispatch"
     );

@@ -45,7 +45,7 @@ test_tasklet!(FlushOrderSinkTasklet, "flush_order_sink_tasklet", String => (), (
 });
 
 struct FlushOrderOperator;
-impl UnboundedOperator for FlushOrderOperator {
+impl Operator for FlushOrderOperator {
     fn factory_id() -> &'static str {
         "flush_order_operator"
     }
@@ -78,7 +78,7 @@ fn change_is_flushed_before_output_is_emitted() {
 
     let (handle, instance) = setup::<FlushOrderOperator>("flush-order-instance");
     assert!(
-        instance.persistence_enabled(),
+        instance.keeps_state(),
         "operator must be persistent"
     );
     let stream = dummy_stream();
@@ -118,7 +118,7 @@ test_tasklet!(PanicTasklet, "panic_tasklet", String => (), (), |input, _ctx| {
 });
 
 struct PanicOperator;
-impl UnboundedOperator for PanicOperator {
+impl Operator for PanicOperator {
     fn factory_id() -> &'static str {
         "panic_operator"
     }
@@ -186,8 +186,8 @@ fn tasklet_panic_does_not_wedge_the_cell() {
 // ----- DropNothing producer on a one-worker pool must not self-deadlock -----
 //
 // The single pool worker, mid-producer-dispatch, emits into a full DropNothing
-// consumer mailbox whose drain bounded operator sits queued behind the producer's own
-// bounded operator. Parking the worker there is a permanent self-deadlock; the
+// consumer mailbox whose drain steps operator sits queued behind the producer's own
+// steps operator. Parking the worker there is a permanent self-deadlock; the
 // DropNothing arm must drain the full slot inline instead.
 
 static BLOCKED_CONSUMED: AtomicUsize = AtomicUsize::new(0);
@@ -205,7 +205,7 @@ test_tasklet!(BlockedConsumerTasklet, "blocked_consumer_tasklet", String => Stri
 });
 
 struct BlockDeadlockOperator;
-impl UnboundedOperator for BlockDeadlockOperator {
+impl Operator for BlockDeadlockOperator {
     fn factory_id() -> &'static str {
         "block_deadlock_operator"
     }

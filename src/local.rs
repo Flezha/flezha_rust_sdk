@@ -23,7 +23,7 @@ use std::time::Duration;
 use flz_core::local::LocalRun;
 pub use flz_core::local::{SinkOutput, NON_DURABILITY_NOTICE};
 
-use crate::operator::UnboundedOperator;
+use crate::operator::Operator;
 use crate::runner_handle::FlezhaError;
 
 /// One operator graph running in this process. Dropping it stops the run.
@@ -34,8 +34,8 @@ pub struct LocalOperator {
 impl LocalOperator {
     /// Register `R`'s declared graph and start it locally. Refuses a
     /// declaration that needs a controller, naming the capability.
-    pub fn start<R: UnboundedOperator>() -> Result<Self, FlezhaError> {
-        crate::register_class::<crate::UnboundedKind, R>()?;
+    pub fn start<R: Operator>() -> Result<Self, FlezhaError> {
+        crate::register_class::<R>()?;
         crate::operator::poll_pool::ensure_poll_workers();
         Ok(LocalOperator {
             run: LocalRun::start(R::factory_id(), &format!("{}-local", R::factory_id()))?,

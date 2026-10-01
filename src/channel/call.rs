@@ -30,7 +30,7 @@ impl CallTarget {
 
     /// An instance of `factory`: after a `key_by`, the one whose id is the
     /// request's key, started with the request when no instance holds it;
-    /// without one, a new bounded instance per call.
+    /// without one, a new steps instance per call.
     pub fn factory(factory: impl Into<String>) -> Self {
         Self {
             target: None,

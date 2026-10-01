@@ -1,4 +1,4 @@
-//! Unbounded fixtures distinguished by cell shape: dynamic cells, keyed
+//! Flow fixtures distinguished by cell shape: dynamic cells, keyed
 //! relays, session timeouts, static fan-out, the two pass-through classes and
 //! the four-stage stress pipeline.
 
@@ -53,7 +53,7 @@ pub(crate) fn key_prefix(value: &str) -> String {
 }
 
 pub(crate) struct DynamicCellOperator;
-impl UnboundedOperator for DynamicCellOperator {
+impl Operator for DynamicCellOperator {
     fn factory_id() -> &'static str {
         "dynamic_cell"
     }
@@ -107,7 +107,7 @@ impl Tasklet for PartitionRelayTasklet {
 }
 
 pub(crate) struct PartitionRelayOperator;
-impl UnboundedOperator for PartitionRelayOperator {
+impl Operator for PartitionRelayOperator {
     fn factory_id() -> &'static str {
         "partition_relay"
     }
@@ -186,7 +186,7 @@ impl Tasklet for SessionTimeoutTasklet {
 }
 
 pub(crate) struct SessionTimeoutOperator;
-impl UnboundedOperator for SessionTimeoutOperator {
+impl Operator for SessionTimeoutOperator {
     fn factory_id() -> &'static str {
         "session_timeout"
     }
@@ -214,7 +214,7 @@ impl Tasklet for DoNothingTasklet {
 }
 
 pub(crate) struct DoNothingOperator;
-impl UnboundedOperator for DoNothingOperator {
+impl Operator for DoNothingOperator {
     fn factory_id() -> &'static str {
         "do_nothing"
     }
@@ -222,6 +222,37 @@ impl UnboundedOperator for DoNothingOperator {
         c.input::<String>("input")
             .into::<DoNothingTasklet>()
             .sink_named("echo");
+    }
+}
+
+// -- CompleteFlowOperator --------------------------------------------------------
+//
+// A flow class whose tasklet echoes each input on `complete_flow_out` and ends
+// its instance on `bye`, the echo of `bye` included.
+
+#[derive(Default)]
+pub(crate) struct CompleteFlowTasklet;
+#[flezha_runner::tasklet(name = "complete_flow_tasklet")]
+impl Tasklet for CompleteFlowTasklet {
+    type Input = String;
+    type Output = String;
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        if input == "bye" {
+            ctx.complete(input.clone())?;
+        }
+        ctx.emit(input)
+    }
+}
+
+pub(crate) struct CompleteFlowOperator;
+impl Operator for CompleteFlowOperator {
+    fn factory_id() -> &'static str {
+        "complete_flow"
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("input")
+            .into::<CompleteFlowTasklet>()
+            .sink_named("complete_flow_out");
     }
 }
 
@@ -260,7 +291,7 @@ impl Tasklet for StoreInputTasklet {
 }
 
 pub(crate) struct StoreInputOperator;
-impl UnboundedOperator for StoreInputOperator {
+impl Operator for StoreInputOperator {
     fn factory_id() -> &'static str {
         "store_input"
     }
@@ -304,7 +335,7 @@ impl Tasklet for CompareFilterTasklet {
 }
 
 pub(crate) struct CompareFilterOperator;
-impl UnboundedOperator for CompareFilterOperator {
+impl Operator for CompareFilterOperator {
     fn factory_id() -> &'static str {
         "compare_filter"
     }
@@ -368,7 +399,7 @@ impl Tasklet for StaticDownstreamTasklet {
 }
 
 pub(crate) struct StaticCellOperator;
-impl UnboundedOperator for StaticCellOperator {
+impl Operator for StaticCellOperator {
     fn factory_id() -> &'static str {
         "static_cell"
     }
@@ -454,7 +485,7 @@ impl Tasklet for StressTaskletD {
 }
 
 pub(crate) struct CellStressOperator;
-impl UnboundedOperator for CellStressOperator {
+impl Operator for CellStressOperator {
     fn factory_id() -> &'static str {
         "cell_stress"
     }

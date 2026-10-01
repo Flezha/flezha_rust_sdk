@@ -54,7 +54,7 @@ impl Tasklet for StaticTasklet {
 }
 
 struct StaticOperator;
-impl UnboundedOperator for StaticOperator {
+impl Operator for StaticOperator {
     fn factory_id() -> &'static str {
         "static_operator"
     }
@@ -85,7 +85,7 @@ impl Tasklet for DynamicOnlyTasklet {
 }
 
 struct DynamicOnlyOperator;
-impl UnboundedOperator for DynamicOnlyOperator {
+impl Operator for DynamicOnlyOperator {
     fn factory_id() -> &'static str {
         "dynamic_only_operator"
     }
@@ -131,7 +131,7 @@ impl Tasklet for UnannotatedStaticTasklet {
 }
 
 struct UnannotatedOperator;
-impl UnboundedOperator for UnannotatedOperator {
+impl Operator for UnannotatedOperator {
     fn factory_id() -> &'static str {
         "unannotated_operator"
     }
@@ -158,7 +158,7 @@ test_tasklet!(ZeroCapacityTasklet, "zero_capacity_tasklet", String => String, ()
 });
 
 struct ZeroCapacityOperator;
-impl UnboundedOperator for ZeroCapacityOperator {
+impl Operator for ZeroCapacityOperator {
     fn factory_id() -> &'static str {
         "zero_capacity_operator"
     }
@@ -189,7 +189,7 @@ test_tasklet!(ExplicitCapTasklet, "explicit_cap_tasklet", String => String, (), 
 });
 
 struct ExplicitCapOperator;
-impl UnboundedOperator for ExplicitCapOperator {
+impl Operator for ExplicitCapOperator {
     fn factory_id() -> &'static str {
         "explicit_cap_operator"
     }

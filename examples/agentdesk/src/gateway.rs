@@ -1,4 +1,4 @@
-use flezha_runner::{CallTarget, ChannelBuilder, UnboundedOperator};
+use flezha_runner::{CallTarget, ChannelBuilder, Exactly, Operator, OperatorSettings, Run};
 
 use crate::admit::Admit;
 use crate::budget::{Budget, Event, Verdict};
@@ -8,17 +8,16 @@ use crate::watch::Watch;
 
 const DEADLINE_MS: u64 = 60_000;
 
-/// The HTTP side of the desk: an unbounded operator that carries the HTTP
+/// The HTTP side of the desk: a flow operator that carries the HTTP
 /// plugin, answers every request, and calls the session a message is for.
 pub struct GatewayOperator;
 
-impl UnboundedOperator for GatewayOperator {
+impl Operator for GatewayOperator {
     fn factory_id() -> &'static str {
         "gateway"
     }
 
     fn channels(c: &ChannelBuilder) {
-        c.effectively_once(); // each request and answer on disk before it runs
         let http = c.input::<Request>("http");
         http.filter(|request| !request.sends())
             .into::<Watch>()
@@ -37,5 +36,14 @@ impl UnboundedOperator for GatewayOperator {
             .map(Event::used)
             .key_by(|event| event.user().to_string())
             .into::<Budget>(); // the tokens the answer used
+    }
+
+    fn settings() -> OperatorSettings {
+        OperatorSettings {
+            run: Run::Flow {
+                exactly: Exactly::effectively_once(),
+            },
+            ..OperatorSettings::default()
+        }
     }
 }

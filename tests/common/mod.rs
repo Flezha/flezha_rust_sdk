@@ -21,7 +21,7 @@ use flezha_runner::cell::park::{self, ParkBody};
 use flezha_runner::cell::state_sink::{install_global_sink, PARK_PAYLOAD_PAYLOAD_ID};
 use flezha_runner::operator::builder::build_topology_for;
 use flezha_runner::operator::registry::OperatorRegistry;
-use flezha_runner::operator::{OperatorInstance, UnboundedOperator};
+use flezha_runner::operator::{OperatorInstance, Operator};
 use flz_transport::transport::FlezhaStream;
 pub use tier::*;
 pub use timers::*;
@@ -40,7 +40,7 @@ pub mod prelude {
     pub use flezha_runner::channel::{ChannelBuilder, OverflowPolicy};
     pub use flezha_runner::operator::builder::build_topology_for;
     pub use flezha_runner::operator::registry::OperatorRegistry;
-    pub use flezha_runner::operator::{OperatorInstance, UnboundedOperator};
+    pub use flezha_runner::operator::{OperatorInstance, Operator};
     pub use flezha_runner::state::{NoChange, RestoreInitPayload};
     pub use flezha_runner::tasklet::{Ctx, Tasklet, TaskletError};
 
@@ -72,16 +72,16 @@ pub fn stays_quiet<F: Fn() -> bool>(happened: F, window: Duration) -> bool {
     !wait_until(happened, window)
 }
 
-/// Build + register a single UnboundedOperator instance, returning a dispatch handle
+/// Build + register a single Operator instance, returning a dispatch handle
 /// and the live instance (for counter / state assertions).
-pub fn setup<R: UnboundedOperator>(id: &str) -> (OperatorDispatchHandle, Arc<OperatorInstance>) {
+pub fn setup<R: Operator>(id: &str) -> (OperatorDispatchHandle, Arc<OperatorInstance>) {
     setup_partitioned::<R>(id, flezha_runner::operator::KeyGroupRange::UNPARTITIONED)
 }
 
 /// [`setup`] for one member of a partition group: the instance is built with
 /// the key-group range its `AddOperator` would have carried, so the dispatch
 /// guard is armed exactly as it is in production.
-pub fn setup_partitioned<R: UnboundedOperator>(
+pub fn setup_partitioned<R: Operator>(
     id: &str,
     partition: flezha_runner::operator::KeyGroupRange,
 ) -> (OperatorDispatchHandle, Arc<OperatorInstance>) {
@@ -220,7 +220,7 @@ impl flezha_runner::tasklet::Tasklet for EchoTasklet {
 /// single-cell. What a topology assertion reaches for when the topology
 /// itself is not the subject.
 pub struct SingleOperator;
-impl UnboundedOperator for SingleOperator {
+impl Operator for SingleOperator {
     fn factory_id() -> &'static str {
         "single_operator"
     }

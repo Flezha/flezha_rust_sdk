@@ -67,17 +67,22 @@ impl Tasklet for CandleTasklet {
 }
 
 pub(crate) struct CandleOperator;
-impl UnboundedOperator for CandleOperator {
+impl Operator for CandleOperator {
     fn factory_id() -> &'static str {
         "candle"
     }
     fn channels(c: &ChannelBuilder) {
-        c.effectively_once();
-        c.correction_window(600_000);
         c.input::<String>("input")
             .into::<CandleTasklet>()
             .keyed()
             .sink_named("sink");
+    }
+
+    fn settings() -> OperatorSettings {
+        OperatorSettings {
+            run: Run::Flow { exactly: Exactly::EffectivelyOnce { ack: AckGranularity::PerInput, correction_ms: Some(600_000), beyond_window: BeyondWindowPolicy::ProcessAsArrival } },
+            ..OperatorSettings::default()
+        }
     }
 }
 
@@ -107,7 +112,7 @@ impl Tasklet for PoisonProbeTasklet {
 }
 
 pub(crate) struct PoisonProbeOperator;
-impl UnboundedOperator for PoisonProbeOperator {
+impl Operator for PoisonProbeOperator {
     fn factory_id() -> &'static str {
         "poison_probe"
     }
@@ -165,7 +170,7 @@ impl Tasklet for WedgeProbeTasklet {
 }
 
 pub(crate) struct WedgeProbeOperator;
-impl UnboundedOperator for WedgeProbeOperator {
+impl Operator for WedgeProbeOperator {
     fn factory_id() -> &'static str {
         "wedge_probe"
     }
@@ -224,7 +229,7 @@ impl Tasklet for ResumeProbeTasklet {
 }
 
 pub(crate) struct ResumeProbeOperator;
-impl UnboundedOperator for ResumeProbeOperator {
+impl Operator for ResumeProbeOperator {
     fn factory_id() -> &'static str {
         "resume_probe"
     }
@@ -352,7 +357,7 @@ impl Tasklet for SchemaEvolutionV2Tasklet {
 }
 
 pub(crate) struct SchemaEvolutionV1Operator;
-impl UnboundedOperator for SchemaEvolutionV1Operator {
+impl Operator for SchemaEvolutionV1Operator {
     fn factory_id() -> &'static str {
         "schema_evolution_v1"
     }
@@ -364,7 +369,7 @@ impl UnboundedOperator for SchemaEvolutionV1Operator {
 }
 
 pub(crate) struct SchemaEvolutionV2Operator;
-impl UnboundedOperator for SchemaEvolutionV2Operator {
+impl Operator for SchemaEvolutionV2Operator {
     fn factory_id() -> &'static str {
         "schema_evolution_v2"
     }

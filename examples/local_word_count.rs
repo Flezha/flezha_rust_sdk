@@ -21,9 +21,7 @@
 
 use std::time::Duration;
 
-use flezha_runner::{
-    tasklet, Change, ChannelBuilder, Ctx, LocalOperator, Tasklet, TaskletError, UnboundedOperator,
-};
+use flezha_runner::{Change, ChannelBuilder, Ctx, LocalOperator, Operator, Tasklet, TaskletError, tasklet};
 use serde::{Deserialize, Serialize};
 
 /// One line into its words. Stateless: the whole point of the first
@@ -79,7 +77,7 @@ impl Tasklet for Tally {
 
 struct WordCount;
 
-impl UnboundedOperator for WordCount {
+impl Operator for WordCount {
     fn factory_id() -> &'static str {
         "local_word_count"
     }

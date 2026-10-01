@@ -14,8 +14,8 @@
 //! `docs/configuration.md`.
 
 pub mod admin;
-pub mod bounded;
 pub mod channel;
+pub mod steps;
 pub use flz_core::command;
 pub mod cell;
 pub mod diag;
@@ -56,8 +56,6 @@ pub mod state {
 
 /// Administering the namespace a runner's connection proved.
 pub use admin::{Admin, OperatorSpec, StartOutcome, StartResult};
-pub use bounded::spec::BuildBoundedError;
-pub use bounded::{BoundedError, BoundedOperator, LoopMode, RollbackMode};
 pub use cell::timer::TimerKind;
 pub use cell::{RestoreError, RestoreInitPayload};
 pub use channel::builder::TopologyIssue;
@@ -66,25 +64,31 @@ pub use channel::{
     RetryPolicy, Stream,
 };
 /// Authoring sugar. `#[flezha::tasklet]` on an `impl Tasklet` block, the
-/// short-form `#[flezha::unbounded_operator]` / `#[flezha::bounded_operator]`
-/// and `flezha::operator!` expand to the trait surface above; see
-/// `docs/sdk/authoring_contract.md`.
-pub use flezha_macros::{bounded_operator, operator, tasklet, unbounded_operator};
+/// short-form `#[flezha::operator]` and `flezha::pipeline!` expand to the
+/// trait surface above; see `docs/sdk/authoring_contract.md`.
+pub use flezha_macros::{operator, pipeline, tasklet};
 pub use flz_core::pb;
 pub use flz_transport::{errors, service, transport};
 pub use local::LocalOperator;
 pub use operator::builder::TopologyBuildError;
-pub use operator::{BoundedKind, Operator, UnboundedKind, UnboundedOperator};
+pub use operator::topology::{
+    AckGranularity, BeyondWindowPolicy, CheckpointOutputs, CheckpointPolicy,
+};
+pub use operator::{
+    Durable, Each, Exactly, OnFailure, Operator, OperatorSettings, Run, SleepAfter,
+};
 pub use runner_handle::{ErrorModel, Flezha, FlezhaError, FlezhaRunner};
+pub use steps::spec::BuildStepsError;
+pub use steps::StepsError;
 pub use tasklet::{Change, ClockKind, CoalesceKey, Ctx, NoChange, StableId, Tasklet, TaskletError};
 
-/// Build a class of kind `K` and install it in that kind's process-global
-/// registry, with no runner involved — the body
-/// [`FlezhaRunner::register_factory`] runs once it has cleared the runner's own
-/// declared set. Kept callable on its own for the local run and for the
-/// bounded operator scenarios that drive a class without a runner at all.
-pub(crate) fn register_class<K, O: Operator<K>>() -> Result<(), FlezhaError> {
-    O::install_class(O::build_class()?);
+/// Build a class and install it in the process-global registry, with no
+/// runner involved — the body [`FlezhaRunner::register_factory`] runs once it
+/// has cleared the runner's own declared set. Kept callable on its own for the
+/// local run and for the steps scenarios that drive a class without a runner.
+pub(crate) fn register_class<O: Operator>() -> Result<(), FlezhaError> {
+    let class = operator::build_class::<O>()?;
+    operator::registry::register_class(O::factory_id(), class);
     Ok(())
 }
 

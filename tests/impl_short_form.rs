@@ -5,15 +5,11 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use flezha_runner::bounded::LoopMode;
-use flezha_runner::{
-    tasklet, BoundedOperator, Change, ChannelBuilder, ClockKind, Ctx, LocalOperator, NoChange,
-    Tasklet, TaskletError, UnboundedOperator,
-};
+use flezha_runner::{Change, ChannelBuilder, ClockKind, Ctx, Each, LocalOperator, NoChange, OnFailure, Operator, OperatorSettings, Run, Tasklet, TaskletError, tasklet};
 use serde::{Deserialize, Serialize};
 
 /// Every value released on `sink` while `feed` runs through `R`'s graph.
-fn released<R: UnboundedOperator>(entry: &str, sink: &str, feed: &[&str]) -> Vec<String> {
+fn released<R: Operator>(entry: &str, sink: &str, feed: &[&str]) -> Vec<String> {
     let out = Arc::new(Mutex::new(Vec::new()));
     let into = Arc::clone(&out);
     let run = LocalOperator::start::<R>().expect("the run starts");
@@ -50,7 +46,7 @@ impl Change<StoreInputState> for Stored {
 #[derive(Default)]
 struct StoreInput;
 
-#[flezha_runner::unbounded_operator(id = "store_input", sink = "stored", max_cells = 10)]
+#[flezha_runner::operator(id = "store_input", sink = "stored", max_cells = 10)]
 impl Tasklet for StoreInput {
     type Input = String;
     type Output = String;
@@ -66,7 +62,7 @@ impl Tasklet for StoreInput {
 #[test]
 fn a_stateful_short_form_sits_on_the_impl_block() {
     assert_eq!(
-        <StoreInput as UnboundedOperator>::factory_id(),
+        <StoreInput as Operator>::factory_id(),
         "store_input"
     );
     assert_eq!(StoreInput::NAME, "store_input");
@@ -81,7 +77,7 @@ fn a_stateful_short_form_sits_on_the_impl_block() {
 #[derive(Default)]
 struct Ticks;
 
-#[flezha_runner::unbounded_operator(id = "ticks_counter", input = "ticks")]
+#[flezha_runner::operator(id = "ticks_counter", input = "ticks")]
 impl Tasklet for Ticks {
     type Input = String;
 
@@ -103,11 +99,11 @@ fn a_short_form_with_no_sink_wires_only_the_entry_channel() {
 #[derive(Default)]
 struct PlaceIt;
 
-#[flezha_runner::bounded_operator(
+#[flezha_runner::operator(
     id = "place_it",
     sink = "placed",
     input = "order",
-    loop_mode = "per_input"
+    run = steps(each = per_input)
 )]
 impl Tasklet for PlaceIt {
     type Input = String;
@@ -119,14 +115,14 @@ impl Tasklet for PlaceIt {
 }
 
 #[test]
-fn a_bounded_short_form_on_the_impl_block_implements_the_bounded_trait() {
-    assert_eq!(<PlaceIt as BoundedOperator>::factory_id(), "place_it");
-    assert_eq!(PlaceIt::loop_mode(), LoopMode::PerInput);
+fn a_steps_short_form_on_the_impl_block_declares_its_run() {
+    assert_eq!(<PlaceIt as Operator>::factory_id(), "place_it");
+    assert_eq!(PlaceIt::settings().run, Run::steps(Each::PerInput));
     assert_eq!(PlaceIt::NAME, "place_it");
     assert_eq!(PlaceIt::CLOCK, ClockKind::Wall);
 }
 
-#[flezha_runner::unbounded_operator(id = "evens_only", sink = "evens")]
+#[flezha_runner::operator(id = "evens_only", sink = "evens")]
 fn evens_only(n: String) -> Option<String> {
     (n.parse::<u64>().ok()? % 2 == 0).then_some(n)
 }
@@ -174,7 +170,7 @@ impl Tasklet for Bang {
 
 struct Mixed;
 
-impl UnboundedOperator for Mixed {
+impl Operator for Mixed {
     fn factory_id() -> &'static str {
         "mixed_forms"
     }
@@ -195,7 +191,7 @@ fn a_sugared_and_a_hand_written_tasklet_compose() {
 /// The author's own type is what either kind of operator names.
 struct PlaceShouted;
 
-impl BoundedOperator for PlaceShouted {
+impl Operator for PlaceShouted {
     fn factory_id() -> &'static str {
         "place_shouted"
     }
@@ -205,12 +201,19 @@ impl BoundedOperator for PlaceShouted {
             .into::<Shout>()
             .sink_named("placed");
     }
+
+    fn settings() -> OperatorSettings {
+        OperatorSettings {
+            run: Run::Steps { each: Each::Once, on_failure: OnFailure::UndoAll },
+            ..OperatorSettings::default()
+        }
+    }
 }
 
 #[test]
-fn the_authors_type_is_named_in_a_bounded_topology() {
+fn the_authors_type_is_named_in_a_steps_topology() {
     let runner = flezha_runner::Flezha::create_runner("impl_short_form").expect("a runner");
     runner
         .register_factory(PlaceShouted)
-        .expect("the bounded class registers");
+        .expect("the steps class registers");
 }

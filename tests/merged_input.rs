@@ -68,7 +68,7 @@ test_tasklet!(SignalSinkTasklet, "merge_signal_sink_tasklet", String => String, 
 });
 
 struct TypedMergeOperator;
-impl UnboundedOperator for TypedMergeOperator {
+impl Operator for TypedMergeOperator {
     fn factory_id() -> &'static str {
         "typed_merge_operator"
     }
@@ -158,7 +158,7 @@ test_tasklet!(TunedTasklet, "merge_tuned_tasklet", TunedInput => String, (), |in
 });
 
 struct EntryMergeOperator;
-impl UnboundedOperator for EntryMergeOperator {
+impl Operator for EntryMergeOperator {
     fn factory_id() -> &'static str {
         "entry_merge_operator"
     }
@@ -354,7 +354,7 @@ impl Tasklet for CellTunedTasklet {
 }
 
 struct CellMergeOperator;
-impl UnboundedOperator for CellMergeOperator {
+impl Operator for CellMergeOperator {
     fn factory_id() -> &'static str {
         "cell_merge_operator"
     }
@@ -412,7 +412,7 @@ fn cells_for_is_evaluated_on_the_mapped_value() {
 // ----- 4: definition-time validation -----
 
 struct OneSourceMergeOperator;
-impl UnboundedOperator for OneSourceMergeOperator {
+impl Operator for OneSourceMergeOperator {
     fn factory_id() -> &'static str {
         "one_source_merge_operator"
     }
@@ -439,7 +439,7 @@ fn a_merge_with_fewer_than_two_sources_is_refused() {
 }
 
 struct DuplicateSourceMergeOperator;
-impl UnboundedOperator for DuplicateSourceMergeOperator {
+impl Operator for DuplicateSourceMergeOperator {
     fn factory_id() -> &'static str {
         "duplicate_source_merge_operator"
     }
@@ -471,7 +471,7 @@ fn a_duplicated_merge_source_is_refused_naming_the_channel() {
 /// than dropped: the tasklet would otherwise receive the first declaration's
 /// value forever, with nothing said at definition time or at runtime.
 struct RewiredMergeSourceOperator;
-impl UnboundedOperator for RewiredMergeSourceOperator {
+impl Operator for RewiredMergeSourceOperator {
     fn factory_id() -> &'static str {
         "rewired_merge_source_operator"
     }
@@ -506,7 +506,7 @@ fn a_merge_source_may_not_re_wire_an_edge_that_is_already_declared() {
 /// The same edge claimed first by a plain `.into` and then by a merge: the
 /// channel's payload cannot both BE the input and be mapped into it.
 struct PlainThenMergedOperator;
-impl UnboundedOperator for PlainThenMergedOperator {
+impl Operator for PlainThenMergedOperator {
     fn factory_id() -> &'static str {
         "plain_then_merged_operator"
     }

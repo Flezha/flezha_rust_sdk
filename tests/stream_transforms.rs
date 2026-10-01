@@ -71,7 +71,7 @@ test_tasklet!(Recorder, "transform_recorder", String => (), (), |input, _ctx| {
 
 /// `filter` → `map` → `map` → `key_by`, all on the one entry→Recorder edge.
 struct ChainOperator;
-impl UnboundedOperator for ChainOperator {
+impl Operator for ChainOperator {
     fn factory_id() -> &'static str {
         "transform_chain_operator"
     }
@@ -149,7 +149,7 @@ test_tasklet!(FanRecorder, "transform_fan_recorder", Slot => (), (), |input, _ct
 });
 
 struct FanOutOperator;
-impl UnboundedOperator for FanOutOperator {
+impl Operator for FanOutOperator {
     fn factory_id() -> &'static str {
         "transform_fanout_operator"
     }
@@ -271,7 +271,7 @@ test_tasklet!(PoisonRecorder, "transform_poison_recorder", String => (), (), |in
 });
 
 struct PanickingTransformOperator;
-impl UnboundedOperator for PanickingTransformOperator {
+impl Operator for PanickingTransformOperator {
     fn factory_id() -> &'static str {
         "transform_panic_operator"
     }
@@ -337,12 +337,12 @@ test_tasklet!(PlainTarget, "transform_plain_target", String => Vec<u8>, (), |inp
 macro_rules! refusal {
     ($operator:ident, $factory:literal, |$c:ident| $body:block) => {
         struct $operator;
-        impl UnboundedOperator for $operator {
+        impl Operator for $operator {
             fn factory_id() -> &'static str {
                 $factory
             }
             fn channels($c: &ChannelBuilder) $body
-        }
+}
     };
 }
 
@@ -413,7 +413,7 @@ fn cell_keys(instance: &Arc<flezha_runner::operator::OperatorInstance>) -> Vec<S
     keys
 }
 
-fn issues<R: UnboundedOperator>() -> Vec<TopologyIssue> {
+fn issues<R: Operator>() -> Vec<TopologyIssue> {
     build_topology_for::<R>()
         .err()
         .map(|e| e.errors)

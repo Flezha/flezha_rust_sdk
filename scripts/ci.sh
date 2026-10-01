@@ -14,7 +14,7 @@
 #   scripts/ci.sh --core <dir|url> [--version 0.1.0]
 #
 # What this cannot see is the fifteen-capability vocabulary the controller
-# owns: persistence, effectively-once, correction, partitioning, bounded operators,
+# owns: persistence, effectively-once, correction, partitioning, steps operators,
 # liveness, restarts. Those are end-to-end scenarios and they run in the core's
 # own tree, which boots this repository's reference runner in every suite.
 set -euo pipefail

@@ -1,0 +1,7 @@
+error[E0559]: variant `Exactly::AtLeastOnce` has no field named `ack`
+ --> tests/ui/settings_ack_under_at_least_once.rs:7:9
+  |
+7 |         ack: AckGranularity::PerInput,
+  |         ^^^ `Exactly::AtLeastOnce` does not have this field
+  |
+  = note: all struct fields are already assigned

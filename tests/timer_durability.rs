@@ -2,6 +2,7 @@
 //! replay rebuilds it exactly, overdue entries included.
 
 use flezha_runner::cell::header::FORMAT_ID_TIMER_OPS;
+use flezha_runner::{Exactly, OperatorSettings, Run};
 use flezha_runner::cell::state_sink;
 use flezha_runner::cell::timer::{TimerKind, TimerOp};
 use flezha_runner::testing::TaskletTestHarness;
@@ -253,16 +254,22 @@ impl Tasklet for TierSessionTask {
 }
 
 struct TierSessionOperator;
-impl UnboundedOperator for TierSessionOperator {
+impl Operator for TierSessionOperator {
     fn factory_id() -> &'static str {
         "timers_tier_session_operator"
     }
     fn channels(c: &ChannelBuilder) {
-        c.effectively_once();
         c.input::<String>("in")
             .into::<TierSessionTask>()
             .keyed()
             .sink_named("out");
+    }
+
+    fn settings() -> OperatorSettings {
+        OperatorSettings {
+            run: Run::Flow { exactly: Exactly::effectively_once() },
+            ..OperatorSettings::default()
+        }
     }
 }
 
@@ -270,7 +277,7 @@ impl UnboundedOperator for TierSessionOperator {
 
 /// Spec: "Replay registers the same timers" — the pending set is folded state,
 /// so `replay_equals` (which covers it) is the gate. A registration is NOT
-/// skipped on replay, unlike `spawn_bounded`.
+/// skipped on replay, unlike `spawn_steps`.
 #[test]
 fn replay_rebuilds_the_identical_pending_set() {
     let mut harness = TaskletTestHarness::<SurfaceTask>::new().with_wall_clock(1_000);

@@ -33,7 +33,7 @@ use flezha_runner::operator::builder::build_topology_for;
 use flezha_runner::operator::registry::OperatorRegistry;
 use flezha_runner::operator::OperatorInstance;
 use flezha_runner::tasklet::{Tasklet, TaskletError};
-use flezha_runner::{__dispatch_internals as bi, Ctx, OverflowPolicy, UnboundedOperator};
+use flezha_runner::{Ctx, Exactly, Operator, OperatorSettings, OverflowPolicy, Run, __dispatch_internals as bi};
 use flz_core::bench_support::{
     allocations, drained_pair, fan_in, report, stream_pair, Counting, Settle,
 };
@@ -60,7 +60,7 @@ impl Tasklet for SingleCellTasklet {
 }
 
 struct SingleCellOperator;
-impl UnboundedOperator for SingleCellOperator {
+impl Operator for SingleCellOperator {
     fn factory_id() -> &'static str {
         "single_cell_operator"
     }
@@ -151,7 +151,7 @@ impl Tasklet for FanoutTasklet {
 }
 
 struct StaticFanoutOperator;
-impl UnboundedOperator for StaticFanoutOperator {
+impl Operator for StaticFanoutOperator {
     fn factory_id() -> &'static str {
         "static_fanout_operator"
     }
@@ -259,7 +259,7 @@ tier_bench_tasklet!(TierOffTasklet, "tier_off_tasklet", TIER_OFF_COUNTER);
 tier_bench_tasklet!(TierOnTasklet, "tier_on_tasklet", TIER_ON_COUNTER);
 
 struct TierOffOperator;
-impl UnboundedOperator for TierOffOperator {
+impl Operator for TierOffOperator {
     fn factory_id() -> &'static str {
         "tier_off_bench_operator"
     }
@@ -273,17 +273,23 @@ impl UnboundedOperator for TierOffOperator {
 }
 
 struct TierOnOperator;
-impl UnboundedOperator for TierOnOperator {
+impl Operator for TierOnOperator {
     fn factory_id() -> &'static str {
         "tier_on_bench_operator"
     }
     fn channels(c: &ChannelBuilder) {
-        c.effectively_once();
         c.input::<Vec<u8>>("input")
             .on_full(OverflowPolicy::DropNothing)
             .into::<TierOnTasklet>()
             .keyed()
             .sink_named("out");
+    }
+
+    fn settings() -> OperatorSettings {
+        OperatorSettings {
+            run: Run::Flow { exactly: Exactly::effectively_once() },
+            ..OperatorSettings::default()
+        }
     }
 }
 

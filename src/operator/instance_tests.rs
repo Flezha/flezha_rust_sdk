@@ -7,8 +7,8 @@ mod tests {
     use flz_core::operator::instance::*;
 
     use crate::channel::ChannelBuilder;
-    use crate::operator::builder::build_topology_with_persistence;
-    use crate::operator::UnboundedOperator;
+    use crate::operator::builder::build_topology_with_settings;
+    use crate::operator::Operator;
     use crate::tasklet::error::TaskletError;
     use crate::tasklet::{Ctx, Tasklet};
 
@@ -23,39 +23,37 @@ mod tests {
     }
 
     struct DummyOperator;
-    impl UnboundedOperator for DummyOperator {
+    impl Operator for DummyOperator {
         fn factory_id() -> &'static str {
             "dummy_operator_persistence_test"
         }
         fn channels(c: &ChannelBuilder) {
             c.input::<String>("input").into::<DummyTasklet>();
         }
-    }
+}
 
     #[test]
     fn persistence_flag_frozen_at_construction_with_const_default() {
         let cb = ChannelBuilder::new();
         DummyOperator::channels(&cb);
-        let topology = build_topology_with_persistence(
+        let topology = build_topology_with_settings(
             DummyOperator::factory_id(),
             cb,
-            DummyOperator::PERSISTENCE_ENABLED,
-            DummyOperator::SLEEP_WHEN_IDLE,
+            &DummyOperator::settings(),
         )
         .expect("topology");
         let instance = OperatorInstance::new(topology, Arc::from("instance"));
-        assert!(instance.persistence_enabled());
+        assert!(instance.keeps_state());
     }
 
     #[test]
     fn user_override_wins_over_const() {
         let cb = ChannelBuilder::new();
         DummyOperator::channels(&cb);
-        let topology = build_topology_with_persistence(
+        let topology = build_topology_with_settings(
             DummyOperator::factory_id(),
             cb,
-            DummyOperator::PERSISTENCE_ENABLED,
-            DummyOperator::SLEEP_WHEN_IDLE,
+            &DummyOperator::settings(),
         )
         .expect("topology");
         let instance = OperatorInstance::with_options(
@@ -64,11 +62,11 @@ mod tests {
             Some(false),
             flz_core::operator::instance::KeyGroupRange::UNPARTITIONED,
         );
-        assert!(!instance.persistence_enabled());
+        assert!(!instance.keeps_state());
         // Every CellSlot inherits the resolved value.
         for tasklet_cells in &instance.cells {
             for slot in tasklet_cells {
-                assert!(!slot.persistence_enabled);
+                assert!(!slot.keeps_state);
             }
         }
     }

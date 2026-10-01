@@ -5,24 +5,24 @@ build, as a standalone project. Nothing here depends on the Flezha source tree:
 `Cargo.toml` names one released version of `flezha_runner`, the way your own
 project would.
 
-Every conversation is a session of its own: an instance of the bounded operator `agent`,
+Every conversation is a session of its own: an instance of the steps operator `agent`,
 which runs one turn per message and keeps the conversation as its state. A turn is
 answered by a demo model that lives in this project. It is a stand-in, not a model:
 it answers every message with the same sentence, one token at a time, and reports how
 many tokens it used. `src/demo_model.rs` is where a real model's client would be called.
 
-In front of the sessions is `gateway`, an unbounded operator that carries the HTTP
+In front of the sessions is `gateway`, a flow operator that carries the HTTP
 plugin: a POST is a message for a user's session, answered 202 at once, a GET streams
 the session's answer as it is written, and each user has a daily token budget.
 
 | File | What is in it |
 |---|---|
 | `src/main.rs` | the runner: this process joins the `agents` namespace and registers the `agent` and `gateway` factories |
-| `src/agent.rs` | a session, a bounded operator: one turn per message, and a failed turn fails alone. The `Message` the gateway sends is here |
+| `src/agent.rs` | a session, a steps operator: one turn per message, and a failed turn fails alone. The `Message` the gateway sends is here |
 | `src/reply.rs` | answers a message with the demo model, sends the answer as it grows, and keeps the conversation |
 | `src/deliver.rs` | hands the finished answer to whoever called |
 | `src/demo_model.rs` | the demo model |
-| `src/gateway.rs` | the HTTP side, an unbounded operator: it carries the HTTP plugin, answers every request, and calls the session a message is for |
+| `src/gateway.rs` | the HTTP side, a flow operator: it carries the HTTP plugin, answers every request, and calls the session a message is for |
 | `src/request.rs` | one HTTP request, as the plugin hands it to the gateway, and the two routes the gateway knows |
 | `src/http.rs` | the gateway's answer to a request: a status and a body, or the session to stream |
 | `src/watch.rs` | answers a request for a session's events with its stream, and any other request with 404 |

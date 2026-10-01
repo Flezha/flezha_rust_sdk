@@ -24,7 +24,7 @@ fn key_of(input: &str) -> String {
 
 /// A `String`-in, `()`-state dynamic-mode Tasklet keyed by [`key_of`]. The
 /// base form takes the `init_state` + `run` bodies; `dyn_tasklet!` adds
-/// trivial ones plus a paired single-entry UnboundedOperator. Extra trait items (TTL,
+/// trivial ones plus a paired single-entry Operator. Extra trait items (TTL,
 /// cap) are appended verbatim.
 macro_rules! dyn_tasklet_base {
     ($tasklet:ident, $operator:ident, $name:tt, $factory:literal, { $($item:item)* }) => {
@@ -36,7 +36,7 @@ macro_rules! dyn_tasklet_base {
             $($item)*
         }
         struct $operator;
-        impl UnboundedOperator for $operator {
+        impl Operator for $operator {
             fn factory_id() -> &'static str { $factory }
             fn channels(c: &ChannelBuilder) {
                 c.input::<String>("inp")
@@ -44,7 +44,7 @@ macro_rules! dyn_tasklet_base {
                     .key_by(|s: &String| key_of(s))
                     .into::<$tasklet>();
             }
-        }
+}
     };
 }
 

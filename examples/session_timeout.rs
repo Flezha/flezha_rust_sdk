@@ -10,7 +10,7 @@
 use std::time::Duration;
 
 use flezha_runner::channel::ChannelBuilder;
-use flezha_runner::operator::UnboundedOperator;
+use flezha_runner::operator::Operator;
 use flezha_runner::state::{Change, TimerKind};
 use flezha_runner::tasklet::{Ctx, Tasklet, TaskletError};
 use flezha_runner::Flezha;
@@ -100,7 +100,7 @@ impl Tasklet for SessionWindow {
 
 struct SessionOperator;
 
-impl UnboundedOperator for SessionOperator {
+impl Operator for SessionOperator {
     fn factory_id() -> &'static str {
         "session_window"
     }

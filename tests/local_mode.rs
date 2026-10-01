@@ -13,7 +13,7 @@ use std::time::Duration;
 use flezha_runner::local::SinkOutput;
 use flezha_runner::state::Change;
 use flezha_runner::tasklet::{Ctx, Tasklet, TaskletError};
-use flezha_runner::{ChannelBuilder, Flezha, LocalOperator, UnboundedOperator};
+use flezha_runner::{ChannelBuilder, Flezha, LocalOperator, Operator};
 use serde::{Deserialize, Serialize};
 
 mod common;
@@ -70,7 +70,7 @@ impl Tasklet for Tally {
 
 struct WordCount;
 
-impl UnboundedOperator for WordCount {
+impl Operator for WordCount {
     fn factory_id() -> &'static str {
         "local_word_count_rust"
     }

@@ -11,7 +11,7 @@ use flezha_runner::cell::header::{HeaderTemplate, FORMAT_ID_EFFECT_RECORD, FORMA
 use flezha_runner::cell::state_sink;
 use flezha_runner::cell::timer::{PendingTimers, TimerKind, TimerOp};
 use flezha_runner::channel::ChannelBuilder;
-use flezha_runner::operator::UnboundedOperator;
+use flezha_runner::operator::Operator;
 use flezha_runner::state::{Change, ClockKind, RestoreInitPayload};
 use flezha_runner::tasklet::{Ctx, Tasklet, TaskletError};
 use flezha_runner::testing::TaskletTestHarness;
@@ -141,7 +141,7 @@ impl<const CAP: usize> Tasklet for SessionTask<CAP> {
 }
 
 pub struct SessionOperator;
-impl UnboundedOperator for SessionOperator {
+impl Operator for SessionOperator {
     fn factory_id() -> &'static str {
         "timers_session_operator"
     }
@@ -156,7 +156,7 @@ impl UnboundedOperator for SessionOperator {
 /// [`SessionOperator`] with a two-slot, `DropNothing` entry mailbox, so a
 /// case can saturate it with two frames and watch a firing meet it.
 pub struct SaturatedSessionOperator;
-impl UnboundedOperator for SaturatedSessionOperator {
+impl Operator for SaturatedSessionOperator {
     fn factory_id() -> &'static str {
         "timers_saturated_session_operator"
     }
@@ -230,7 +230,7 @@ impl Tasklet for WindowTask {
 }
 
 pub struct WindowOperator;
-impl UnboundedOperator for WindowOperator {
+impl Operator for WindowOperator {
     fn factory_id() -> &'static str {
         "timers_window_operator"
     }

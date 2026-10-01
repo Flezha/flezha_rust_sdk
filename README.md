@@ -81,7 +81,7 @@ Entry names are explicit, they are the operator's address).
 
 ```rust
 struct OrdersOperator;
-impl UnboundedOperator for OrdersOperator {
+impl Operator for OrdersOperator {
     fn factory_id() -> &'static str { "orders" }
     fn channels(c: &ChannelBuilder) {
         // Typed entry: OrderEvent is deserialized from JSON at the edge
@@ -192,7 +192,7 @@ changelog-style sink:
 
 ```rust
 struct RiskOperator;
-impl UnboundedOperator for RiskOperator {
+impl Operator for RiskOperator {
     fn factory_id() -> &'static str { "risk" }
     fn channels(c: &ChannelBuilder) {
         // Entry-side config chains BEFORE .into: this channel retries a
@@ -225,9 +225,9 @@ hold, and the only names in the graph are the ones something external needs —
 the entry (`orders`), the tap (`orders.validated`), the terminal
 (`risk.verdicts`), and any channel you chose to `.named(...)`.
 
-### A structured bounded operator DAG
+### A structured steps operator DAG
 
-Bounded operators author on the same builder. A durable class journals each
+Steps operators author on the same builder. A durable class journals each
 task barrier, and the runtime derives the codec for that from each tasklet's
 declared `Output`, so a chain declares nothing about it; a fan-in node runs once,
 after **all** its producers committed, with the accumulated batch — and on an
@@ -235,8 +235,8 @@ abnormal exit the saga unwinds reverse-topologically (the join before either
 producer, the shared root last):
 
 ```rust
-struct SettleBounded;
-impl BoundedOperator for SettleBounded {
+struct SettleSteps;
+impl Operator for SettleSteps {
     fn factory_id() -> &'static str { "settle" }
     fn channels(c: &ChannelBuilder) {
         // The diamond: Reserve fans out to Charge and Ledger, whose outputs
@@ -256,7 +256,7 @@ impl BoundedOperator for SettleBounded {
 A crash between the two producers resumes with the committed producer's
 **journaled** handoff banked and only the uncommitted arm re-run; `Reconcile`
 still runs exactly once. Cycles are refused at registration; a chained loop
-(`LoopMode::Chained`) additionally requires the graph to converge on a single
+(`Each::Chained`) additionally requires the graph to converge on a single
 terminal that releases an output channel, since that handoff is what seeds the
 next iteration.
 

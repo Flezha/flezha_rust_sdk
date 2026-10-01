@@ -72,7 +72,7 @@ impl<S> Change<S> for NoChange {
 ///
 /// [`Tasklet::Output`](crate::tasklet::Tasklet::Output) carries this
 /// bound because one tasklet's output is the handoff to the next, and a
-/// durable structured bounded journals that handoff at its commit barrier so
+/// durable structured steps journals that handoff at its commit barrier so
 /// a resumed run can seed the next tasklet instead of re-running the chain
 /// from the top. Whether a class journals is not settled where it is compiled
 /// — a user overrides persistence per class at deploy time — so the bound
@@ -87,7 +87,7 @@ impl<S> Change<S> for NoChange {
 #[diagnostic::on_unimplemented(
     message = "`{Self}` cannot be written down, so it cannot be a tasklet's `Output`",
     label = "this output has no byte form",
-    note = "a tasklet's output is the handoff to the next tasklet, and a durable bounded \
+    note = "a tasklet's output is the handoff to the next tasklet, and a durable steps \
             journals that handoff at its commit barrier and re-seeds from it on crash-resume",
     note = "add `#[derive(serde::Serialize, serde::Deserialize)]` to `{Self}`"
 )]
