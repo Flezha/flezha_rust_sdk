@@ -173,6 +173,10 @@
     "schema_evolution": [
       "schema_evolution_v1",
       "schema_evolution_v2"
+    ],
+    "inner_operator": [
+      "session_gateway",
+      "loop_gateway"
     ]
   },
   "docs": "docs/architecture/runner.md"

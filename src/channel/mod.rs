@@ -14,3 +14,15 @@ pub use builder::{
 };
 pub use call::{CallTarget, Response};
 pub use flz_core::channel::*;
+
+/// How an edge embeds an operator class
+/// ([`Stream::into_operator_with`](builder::Stream::into_operator_with)):
+/// the entry channel it feeds when the class declares several, the node's
+/// name (the class's factory id by default), and the most scopes a keyed edge
+/// keeps at once.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Embedding {
+    pub input: Option<&'static str>,
+    pub name: Option<&'static str>,
+    pub max_cells: Option<usize>,
+}

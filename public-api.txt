@@ -50,6 +50,7 @@ pub use tasklet::SpawnError;
 pub use tasklet::SpawnHandle;
 pub use tasklet::SpawnOptions;
 pub use channel::CallTarget;                             # ADDED by `call-an-operator-and-get-its-response`
+pub use channel::Embedding;                              # ADDED by `run-an-operator-inside-an-operator`
 pub use channel::Response;                               # ADDED by `call-an-operator-and-get-its-response`
 pub use tasklet::SpawnOutcome;
 pub use tasklet::SpawnResult;
@@ -229,6 +230,12 @@ pub use steps::StepsError;
 #     # --- shared surface (both handles) ---
 #     pub fn into<S: Tasklet<Input = T>>(self) -> Stream<'b, S::Output>;
 #     pub fn into_named<S: Tasklet<Input = T>>(self, node_name: &'static str) -> Stream<'b, S::Output>;
+#     pub fn into_operator<O: Operator, U>(self) -> Stream<'b, U>
+#       where T: JournalValue + Send + Sync, U: JournalValue + Send + Sync + 'static;
+#     pub fn into_operator_with<O: Operator, U>(self, embedding: Embedding) -> Stream<'b, U>
+#       where T: JournalValue + Send + Sync, U: JournalValue + Send + Sync + 'static;
+#   pub struct Embedding { pub input: Option<&'static str>, pub name: Option<&'static str>,
+#                          pub max_cells: Option<usize> }   # Debug, Clone, Copy, Default
 #     pub fn map<U, F>(self, f: F) -> Stream<'b, U, K>
 #       where T: Clone, U: Send + Sync + 'static, F: Fn(T) -> U + Send + Sync + 'static;
 #     pub fn flat_map<U, I, F>(self, f: F) -> Stream<'b, U, K>

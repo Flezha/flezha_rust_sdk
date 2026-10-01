@@ -51,6 +51,8 @@ impl ChannelBuilder {
                 tasklet_name_to_id: HashMap::new(),
                 pending: Vec::new(),
                 merge_groups: 0,
+                inlining: Vec::new(),
+                issues: Vec::new(),
             }),
         }
     }
@@ -169,6 +171,14 @@ impl ChannelBuilder {
         entry_parsed: bool,
     ) -> EntryStream<'_, T> {
         let mut st = self.state.borrow_mut();
+        if let Some((feed, pending)) = st.inline_entry::<T>(name) {
+            return EntryStream {
+                builder: self,
+                target: feed,
+                pending,
+                _phantom: PhantomData,
+            };
+        }
         let id = st.push_channel(name, ChannelKind::Entry);
         let entry = &mut st.channels[id as usize];
         entry.wrap_input = Some(wrap);

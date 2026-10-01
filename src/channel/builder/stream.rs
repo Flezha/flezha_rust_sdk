@@ -128,6 +128,54 @@ impl<'b, T: 'static + Send + Sync, K: StreamTarget> Stream<'b, T, K> {
         self.wire::<S>(Some(node_name))
     }
 
+    /// Route into an operator class. One that runs in steps: every key of
+    /// this edge (one scope on an unkeyed edge) runs its own stepped instance
+    /// of `O` inside this operator, with its own state and journal, and the
+    /// output of the class's exit tasklet, of type `U`, continues on the
+    /// handle answered. One that runs in flow is inlined: its graph joins
+    /// this one, its entry fed by this edge and its nodes named
+    /// `<factory_id>.<node>`, and the handle answered is its exit node's.
+    /// `O`'s entry channel takes this stream's `T`.
+    pub fn into_operator<O, U>(self) -> Stream<'b, U>
+    where
+        O: crate::operator::Operator,
+        T: crate::tasklet::JournalValue + Send + Sync,
+        U: crate::tasklet::JournalValue + Send + Sync + 'static,
+    {
+        self.into_operator_with::<O, U>(crate::channel::Embedding::default())
+    }
+
+    /// [`into_operator`](Stream::into_operator) with the embedding's options:
+    /// the entry channel it feeds, the node's name and the cap on scopes.
+    pub fn into_operator_with<O, U>(self, embedding: crate::channel::Embedding) -> Stream<'b, U>
+    where
+        O: crate::operator::Operator,
+        T: crate::tasklet::JournalValue + Send + Sync,
+        U: crate::tasklet::JournalValue + Send + Sync + 'static,
+    {
+        let pending = self.pending;
+        if matches!(O::settings().run, crate::Run::Flow { .. }) {
+            self.with_channel(|st, cid| st.open_inline::<O, T>(cid, pending, &embedding));
+            O::channels(self.builder);
+            if let Some(exit) = self.builder.state.borrow_mut().close_inline::<U>() {
+                return Stream {
+                    builder: self.builder,
+                    target: exit,
+                    pending: None,
+                    _phantom: PhantomData,
+                };
+            }
+        }
+        // A steps class, or a flow class with no node, which the core refuses.
+        let node = self.with_channel(|st, cid| st.wire_scope::<O, T, U>(cid, pending, &embedding));
+        Stream {
+            builder: self.builder,
+            target: node,
+            pending: None,
+            _phantom: PhantomData,
+        }
+    }
+
     fn wire<S: Tasklet<Input = T>>(self, node_name: Option<&'static str>) -> Stream<'b, S::Output> {
         let pending = self.pending;
         let node = self.with_channel(|st, cid| st.wire_consumer::<S>(cid, pending, node_name));
