@@ -325,10 +325,9 @@ fn remote_durability_is_declared_per_class_and_off_by_default() {
     assert!(class.durable.is_remote());
 }
 
-/// A flow class cannot keep its work remote yet: it is refused naming the
-/// change that lifts it.
+/// A flow class keeps its work remote as a steps class does.
 #[test]
-fn a_flow_class_declaring_remote_is_refused() {
+fn a_flow_class_may_declare_remote() {
     struct RemoteFlow;
     impl Operator for RemoteFlow {
         fn factory_id() -> &'static str {
@@ -344,12 +343,9 @@ fn a_flow_class_declaring_remote_is_refused() {
             }
         }
     }
-    let err = crate::operator::builder::build_topology_for::<RemoteFlow>().expect_err("refused");
-    assert_eq!(
-        crate::ErrorModel::code(&err),
-        "topology.remote_on_flow",
-        "{err}"
-    );
+    let topology = crate::operator::builder::build_topology_for::<RemoteFlow>()
+        .expect("a remote flow class registers");
+    assert!(topology.durable.is_remote());
 }
 
 /// `steps-branching` registration validation. A DAG is accepted (with its

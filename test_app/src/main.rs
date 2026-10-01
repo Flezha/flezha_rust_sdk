@@ -127,6 +127,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register_factory(SessionTimeoutOperator)?
         .register_factory(MixedOperator)?
         .register_factory(TierStoreOperator)?
+        .register_factory(RemoteTierStoreOperator)?
         .register_factory(TierChainOperator)?
         .register_factory(BenchEchoOperator)?
         .register_factory(BenchKeyedOperator)?

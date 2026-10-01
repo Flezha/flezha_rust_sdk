@@ -91,6 +91,7 @@
     ],
     "effectively_once": [
       "tier_store",
+      "remote_tier_store",
       "tier_chain",
       "checkpoint_store",
       "checkpoint_batched_store",

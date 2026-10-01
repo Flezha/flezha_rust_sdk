@@ -181,7 +181,7 @@ pub use steps::StepsError;
 #   pub const DEFAULT_SLEEP_AFTER: Duration;             # six hours
 #
 #   `Durable::Remote` ships each commit barrier to the durability backend
-#   before acking it (RPO 0); refused on a flow class (`topology.remote_on_flow`).
+#   before acking it (RPO 0): a steps stage, a flow input or checkpoint.
 #
 # Test harness (gated behind `cfg(any(test, feature = "testing"))`):
 #

@@ -82,6 +82,25 @@ impl Operator for TierStoreOperator {
     }
 }
 
+// The same store kept `durable: remote`: an input is acknowledged only once the
+// durability backend holds the records it produced.
+pub(crate) struct RemoteTierStoreOperator;
+impl Operator for RemoteTierStoreOperator {
+    fn factory_id() -> &'static str {
+        "remote_tier_store"
+    }
+    fn channels(c: &ChannelBuilder) {
+        TierStoreOperator::channels(c);
+    }
+
+    fn settings() -> OperatorSettings {
+        OperatorSettings {
+            durable: Durable::remote(),
+            ..TierStoreOperator::settings()
+        }
+    }
+}
+
 // -- TierChainOperator (effectively-once, inter-tasklet) ------------------------
 //
 // `tier_chain`: an effectively-once stream of two tasklets. `tier_relay` counts
