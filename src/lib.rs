@@ -55,7 +55,7 @@ pub mod state {
 }
 
 /// Administering the namespace a runner's connection proved.
-pub use admin::{Admin, OperatorSpec, StartOutcome, StartResult};
+pub use admin::{Admin, OperatorSpec, PluginSpec, StartOutcome, StartResult};
 pub use cell::timer::TimerKind;
 pub use cell::{RestoreError, RestoreInitPayload};
 pub use channel::builder::TopologyIssue;

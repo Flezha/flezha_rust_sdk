@@ -4,6 +4,14 @@ All notable changes to the Rust SDK crate.
 
 ## Unreleased
 
+### Changed: plugins are enabled by name and bound to operators
+
+**Breaking.** `Admin::enable_plugin(name, &PluginSpec)` enables a plugin by
+name, of a provider and on its options, with no operator; `PluginSpec::bind`
+binds one in the same call. `Admin::bind_plugin` and `Admin::unbind_plugin`
+are new, `disable_plugin` takes the plugin's name, and `list_plugins` answers
+the plugins enabled in the namespace.
+
 ### Added: `Stream::call` and `Response`
 
 A chain ends on a call to another operator with

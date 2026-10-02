@@ -2,8 +2,8 @@
 //! application code.
 //!
 //! [`FlezhaRunner::admin`](crate::FlezhaRunner::admin) hands back an [`Admin`]
-//! whose methods start, stop and feed operators, enable and disable plugins,
-//! and read what is running. No tasklet has to be running and the
+//! whose methods start, stop and feed operators, enable, bind, unbind and
+//! disable plugins, and read what is running. No tasklet has to be running and the
 //! application holds no credential of its own: the controller judges every
 //! call as the identity the connection already established, so a user
 //! grants the authority once per namespace and revokes it the same way:
@@ -65,21 +65,92 @@ impl OperatorSpec {
     }
 
     fn to_fields(&self) -> Value {
-        let mut fields = json!({ "factory_id": self.factory_id });
-        let object = fields
-            .as_object_mut()
-            .expect("a JSON object was just built");
-        if let Some(id) = &self.id {
-            object.insert("id".into(), json!(id));
-        }
-        if !self.init_values.is_null() {
-            object.insert("init_values".into(), self.init_values.clone());
-        }
-        if !self.opts.is_null() {
-            object.insert("opts".into(), self.opts.clone());
-        }
-        fields
+        given(
+            json!({ "factory_id": self.factory_id }),
+            [
+                ("id", json!(self.id)),
+                ("init_values", self.init_values.clone()),
+                ("opts", self.opts.clone()),
+            ],
+        )
     }
+}
+
+/// What a plugin enable takes beside the plugin's name, the same as
+/// `flz plugin enable` takes.
+#[derive(Debug, Clone, Default)]
+pub struct PluginSpec {
+    provider: String,
+    opts: Value,
+    single: bool,
+    operator_id: Option<String>,
+    hooks: Value,
+}
+
+impl PluginSpec {
+    /// A plugin of `provider`, for example `operator_websocket`, on no options.
+    pub fn new(provider: impl Into<String>) -> Self {
+        Self {
+            provider: provider.into(),
+            ..Self::default()
+        }
+    }
+
+    /// The provider's options.
+    pub fn opts(mut self, opts: Value) -> Self {
+        self.opts = opts;
+        self
+    }
+
+    /// Run one copy in the whole cluster.
+    pub fn single(mut self) -> Self {
+        self.single = true;
+        self
+    }
+
+    /// Bind `operator_id` in the same call, with `hooks`: names or
+    /// `[name, opts]` pairs.
+    pub fn bind(mut self, operator_id: impl Into<String>, hooks: Value) -> Self {
+        self.operator_id = Some(operator_id.into());
+        self.hooks = hooks;
+        self
+    }
+
+    fn to_fields(&self) -> Value {
+        let opts = if self.opts.is_null() {
+            json!({})
+        } else {
+            self.opts.clone()
+        };
+        given(
+            json!({ "provider": self.provider, "opts": opts }),
+            [
+                (
+                    "single",
+                    if self.single {
+                        json!(true)
+                    } else {
+                        Value::Null
+                    },
+                ),
+                ("operator_id", json!(self.operator_id)),
+                ("hooks", self.hooks.clone()),
+            ],
+        )
+    }
+}
+
+/// `fields` with every one of `optional` that was given, a null being none.
+fn given<const N: usize>(mut fields: Value, optional: [(&str, Value); N]) -> Value {
+    let object = fields
+        .as_object_mut()
+        .expect("the fields are a JSON object");
+    for (key, value) in optional {
+        if !value.is_null() {
+            object.insert(key.into(), value);
+        }
+    }
+    fields
 }
 
 /// What a start answered: the id the operator runs under, the generated one
@@ -127,14 +198,38 @@ impl Admin {
         )
     }
 
-    /// Enable a plugin, built from the fields `flz plugin enable` takes.
-    pub fn enable_plugin(&self, plugin_id: &str, fields: Value) -> Result<Value, AdminError> {
-        self.call("PluginManager.enable", &[json!(plugin_id), fields])
+    /// Enable the plugin `name` in this namespace, as `spec` describes it.
+    pub fn enable_plugin(&self, name: &str, spec: &PluginSpec) -> Result<Value, AdminError> {
+        self.call("PluginManager.enable", &[json!(name), spec.to_fields()])
     }
 
-    /// Disable a plugin, or every partitioned instance of it.
-    pub fn disable_plugin(&self, plugin_id: &str) -> Result<Value, AdminError> {
-        self.call("PluginManager.disable", &[json!(plugin_id)])
+    /// Bind the operator `operator_id` to the enabled plugin `name`. `hooks`
+    /// may be null and `channel` empty for none.
+    pub fn bind_plugin(
+        &self,
+        name: &str,
+        operator_id: &str,
+        hooks: Value,
+        channel: &str,
+    ) -> Result<Value, AdminError> {
+        self.call(
+            "PluginManager.bind",
+            &[json!(name), bind_fields(operator_id, hooks, channel)],
+        )
+    }
+
+    /// Unbind the operator `operator_id` from the plugin `name`, which stays
+    /// enabled.
+    pub fn unbind_plugin(&self, name: &str, operator_id: &str) -> Result<Value, AdminError> {
+        self.call(
+            "PluginManager.unbind",
+            &[json!(name), json!({ "operator_id": operator_id })],
+        )
+    }
+
+    /// Disable the plugin `name`, stopping it wherever it runs.
+    pub fn disable_plugin(&self, name: &str) -> Result<Value, AdminError> {
+        self.call("PluginManager.disable", &[json!(name), json!({})])
     }
 
     /// The operator ids running in this namespace.
@@ -142,7 +237,8 @@ impl Admin {
         self.call("Operator.list_operators", &[])
     }
 
-    /// The plugins enabled on the controller node answering this call.
+    /// The plugins enabled in this namespace: name, provider, single, bound
+    /// operators.
     pub fn list_plugins(&self) -> Result<Value, AdminError> {
         self.call("PluginManager.list", &[])
     }
@@ -166,6 +262,18 @@ impl Admin {
         let args = Value::Array(args.to_vec()).to_string();
         read(verb, &admin::call(verb, &args)?)
     }
+}
+
+fn bind_fields(operator_id: &str, hooks: Value, channel: &str) -> Value {
+    let channel = if channel.is_empty() {
+        Value::Null
+    } else {
+        json!(channel)
+    };
+    given(
+        json!({ "operator_id": operator_id }),
+        [("hooks", hooks), ("channel", channel)],
+    )
 }
 
 /// The controller's answer, read as the shape the call promises.
@@ -192,6 +300,37 @@ mod tests {
         assert_eq!(
             OperatorSpec::new("echo").id("my_echo").to_fields(),
             json!({ "factory_id": "echo", "id": "my_echo" })
+        );
+    }
+
+    #[test]
+    fn a_plugin_is_enabled_by_name_and_bound_by_operator() {
+        assert_eq!(
+            PluginSpec::new("operator_file_sink")
+                .opts(json!({ "path": "out.txt" }))
+                .to_fields(),
+            json!({ "provider": "operator_file_sink", "opts": { "path": "out.txt" } })
+        );
+        assert_eq!(
+            PluginSpec::new("operator_websocket")
+                .single()
+                .bind("my_echo", json!([["on_output", {}]]))
+                .to_fields(),
+            json!({
+                "provider": "operator_websocket",
+                "opts": {},
+                "single": true,
+                "operator_id": "my_echo",
+                "hooks": [["on_output", {}]],
+            })
+        );
+        assert_eq!(
+            bind_fields("my_echo", Value::Null, ""),
+            json!({ "operator_id": "my_echo" })
+        );
+        assert_eq!(
+            bind_fields("my_echo", json!(["on_output"]), "in"),
+            json!({ "operator_id": "my_echo", "hooks": ["on_output"], "channel": "in" })
         );
     }
 

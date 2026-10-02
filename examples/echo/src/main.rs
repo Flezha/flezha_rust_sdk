@@ -29,14 +29,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // admin.start_operator(&flezha_runner::OperatorSpec::new("echo").id("my_echo"))?;
     // admin.enable_plugin(
     //     "writer",
-    //     serde_json::json!({
-    //         "id": "writer",
-    //         "provider": "operator_file_sink",
-    //         "operator_id": "my_echo",
-    //         "opts": { "path": "echo-out.txt" },
-    //         "hooks": [["on_output", {}]],
-    //     }),
+    //     &flezha_runner::PluginSpec::new("operator_file_sink")
+    //         .opts(serde_json::json!({ "path": "echo-out.txt" })),
     // )?;
+    // admin.bind_plugin("writer", "my_echo", serde_json::json!([["on_output", {}]]), "")?;
     // admin.send("my_echo", "hello world", "in")?;
     //
     // docs/sdk/admin.md has the whole surface. An enforced controller refuses
