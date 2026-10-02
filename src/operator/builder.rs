@@ -67,25 +67,14 @@ pub fn build_topology_with_settings(
     state.record_open_chains();
     let keyed_consumers = derive_keyed_consumers(&state.channels);
     let capacities = resolve_capacities(&state.tasklets);
-    let checked = check(declaration(
+    let derived = check(declaration(
         factory_id,
         settings,
         &state,
         &capacities,
         &keyed_consumers,
-    ));
-    let derived = match checked {
-        Ok(derived) if state.issues.is_empty() => derived,
-        Ok(_) => {
-            return Err(TopologyBuildError {
-                errors: state.issues,
-            })
-        }
-        Err(mut errors) => {
-            errors.append(&mut state.issues);
-            return Err(TopologyBuildError { errors });
-        }
-    };
+    ))
+    .map_err(|errors| TopologyBuildError { errors })?;
 
     let BuilderState {
         channels,
@@ -123,7 +112,7 @@ pub fn build_topology_with_settings(
         sdk_lang: flz_core::header::SDK_LANG_RUST,
         channels: descriptors,
         name_to_id,
-        tasklets: build_tasklet_descs(factory_id, tasklets, capacities, &keyed_consumers),
+        tasklets: build_tasklet_descs(tasklets, capacities, &keyed_consumers),
         tasklet_name_to_id,
         factory_id,
         description: settings.description,
@@ -162,7 +151,6 @@ fn declaration(
             .enumerate()
             .map(|(id, entry)| tasklet_decl(id, entry, capacities[id], keyed_consumers))
             .collect(),
-        embedded: false,
     }
 }
 
@@ -212,11 +200,6 @@ fn tasklet_decl(
         // records it writes, which is not a topology fact.
         schema_version: 1,
         min_readable_schema_version: None,
-        operator: entry.embeds.map(|(factory, _)| factory.to_string()),
-        input: entry
-            .embeds
-            .and_then(|(_, input)| input)
-            .map(str::to_string),
     }
 }
 
@@ -311,7 +294,6 @@ fn channel_descriptor(entry: ChannelEntry, derived: DerivedChannel) -> ChannelDe
 }
 
 fn build_tasklet_descs(
-    outer: &str,
     tasklets: Vec<TaskletEntry>,
     capacities: Vec<usize>,
     keyed_consumers: &HashSet<TaskletId>,
@@ -320,14 +302,11 @@ fn build_tasklet_descs(
         .into_iter()
         .zip(capacities)
         .enumerate()
-        .map(|(id, (entry, capacity))| {
-            build_tasklet_desc(outer, id, entry, capacity, keyed_consumers)
-        })
+        .map(|(id, (entry, capacity))| build_tasklet_desc(id, entry, capacity, keyed_consumers))
         .collect()
 }
 
 fn build_tasklet_desc(
-    outer: &str,
     id: usize,
     entry: TaskletEntry,
     mailbox_capacity: usize,
@@ -354,17 +333,6 @@ fn build_tasklet_desc(
         cells_for_erased: entry.cells_for_erased,
         serialize_state: entry.serialize_state,
         deserialize_state: entry.deserialize_state,
-        // Judged by `check` before the build: a refusal never reaches here.
-        scope: entry.embeds.and_then(|(inner, input)| {
-            flz_core::operator::scope::embed(outer, false, inner, input)
-                .ok()
-                .map(|node| {
-                    Arc::new(flz_core::operator::scope::ScopeNode {
-                        input_codec: entry.input_codec.clone(),
-                        ..node
-                    })
-                })
-        }),
     }
 }
 

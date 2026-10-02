@@ -297,71 +297,6 @@ fn leak(text: &str) -> &'static str {
 // ---------------------------------------------------------------------------
 // The interpreter.
 
-/// One class-palette role: an operator class whose factory id is the role.
-macro_rules! palette_class {
-    ($ty:ident, $role:literal, $run:expr, |$c:ident| $body:block) => {
-        pub(crate) struct $ty;
-
-        impl Operator for $ty {
-            fn factory_id() -> &'static str {
-                $role
-            }
-
-            fn channels($c: &ChannelBuilder) $body
-
-            fn settings() -> OperatorSettings {
-                OperatorSettings {
-                    run: $run,
-                    ..OperatorSettings::default()
-                }
-            }
-        }
-    };
-}
-
-const fn steps_run(each: Each) -> Run {
-    Run::Steps {
-        each,
-        on_failure: OnFailure::UndoAll,
-    }
-}
-
-palette_class!(InnerSession, "inner_session", steps_run(Each::PerInput), |c| {
-    c.input::<String>("turns").into::<Plain>();
-});
-
-palette_class!(InnerLoop, "inner_loop", steps_run(Each::Chained), |c| {
-    c.input::<String>("turns").into::<Plain>().named("carry");
-});
-
-palette_class!(InnerCleanup, "inner_cleanup", Run::default(), |c| {
-    c.input::<String>("raw").into::<Plain>().into::<Second>();
-});
-
-palette_class!(InnerTwoEntries, "inner_two_entries", steps_run(Each::PerInput), |c| {
-    c.input::<String>("a").into::<Plain>();
-    c.input::<String>("b").into::<Second>();
-});
-
-palette_class!(InnerTwoExits, "inner_two_exits", steps_run(Each::PerInput), |c| {
-    let turns = c.input::<String>("turns");
-    turns.into::<Plain>();
-    turns.into::<Second>();
-});
-
-/// `<x>.into_class(<class>)` — the class role bound to its operator class. The
-/// result is the class's exit, addressed by the class's role.
-fn wire_class<'b, K: StreamTarget>(s: Stream<'b, String, K>, role: &str) -> Stream<'b, String> {
-    match role {
-        "inner_session" => s.into_operator::<InnerSession, String>(),
-        "inner_loop" => s.into_operator::<InnerLoop, String>(),
-        "inner_cleanup" => s.into_operator::<InnerCleanup, String>(),
-        "inner_two_entries" => s.into_operator::<InnerTwoEntries, String>(),
-        "inner_two_exits" => s.into_operator::<InnerTwoExits, String>(),
-        other => panic!("the fixture names a class role that is not one: {other}"),
-    }
-}
-
 /// A channel the steps address: an entry channel by name, or a tasklet's
 /// output channel by the role that produces it. The two are different types —
 /// which is what puts the producer-side links out of an entry channel's reach.
@@ -458,10 +393,6 @@ impl<'b> Interp<'b> {
         match verb {
             "into" => {
                 let node = wire(s, arg);
-                self.nodes.insert(arg.to_string(), node);
-            }
-            "into_class" => {
-                let node = wire_class(s, arg);
                 self.nodes.insert(arg.to_string(), node);
             }
             "retry_max" => {

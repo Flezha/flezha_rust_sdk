@@ -1,6 +1,7 @@
 //! Flush-before-emit ordering and failure containment: a durable change
-//! reaches the sink before the output it justifies, and a panicking
-//! tasklet takes nothing else down.
+//! reaches the sink before the output it justifies, a sleeping class's
+//! stateless Cells still move its processed prefix, and a panicking tasklet
+//! takes nothing else down.
 
 mod common;
 use common::prelude::*;
@@ -104,6 +105,66 @@ fn change_is_flushed_before_output_is_emitted() {
         FLUSH_ORDER_LOG.lock().unwrap().clone(),
         vec!["wal", "emit"],
         "change must reach the WAL path before the output frame is written"
+    );
+}
+
+// ----- A sleeping class whose Cells keep no record -----
+//
+// Its input is journaled, so the controller moves the log's floor only on the
+// processed prefix the runner reports. No Cell of a `NoChange` tasklet joins
+// the flusher, so the flusher reports the instance's prefix on its own.
+
+test_tasklet!(StatelessSleeperTasklet, "stateless_sleeper_tasklet", String => (), (), |_input, _ctx| {
+    Ok(())
+});
+
+struct StatelessSleeperOperator;
+impl Operator for StatelessSleeperOperator {
+    fn factory_id() -> &'static str {
+        "stateless_sleeper_operator"
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("input").into::<StatelessSleeperTasklet>();
+    }
+    fn settings() -> flezha_runner::OperatorSettings {
+        flezha_runner::OperatorSettings {
+            durable: flezha_runner::Durable::Local {
+                sleep_after: flezha_runner::SleepAfter::After(Duration::from_secs(60)),
+            },
+            ..flezha_runner::OperatorSettings::default()
+        }
+    }
+}
+
+/// The `(cell identity, prefix)` of a captured processed-prefix marker.
+fn prefix_marker(frame: &[u8]) -> (Vec<u8>, u64) {
+    let len = u16::from_be_bytes([frame[0], frame[1]]) as usize;
+    let seq = u64::from_be_bytes(frame[2 + len..2 + len + 8].try_into().unwrap());
+    (frame[2..2 + len].to_vec(), seq)
+}
+
+#[test]
+fn a_sleeping_class_with_stateless_cells_reports_its_processed_prefix() {
+    let _serial = WAL_TEST_LOCK.lock().unwrap();
+    install_capturing_tier_sink();
+    let instance_id = "stateless-sleeper-instance";
+    let (handle, _instance) = setup::<StatelessSleeperOperator>(instance_id);
+
+    let identity = flezha_runner::cell::flusher::encode_cell_identity(instance_id, "", "");
+    dispatch_at(&handle, instance_id, 7, "one");
+
+    let reported = || {
+        TIER_SINK_FRAMES
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(pid, _)| pid == "processed_prefix")
+            .map(|(_, frame)| prefix_marker(frame))
+            .any(|marker| marker == (identity.clone(), 7))
+    };
+    assert!(
+        wait_until(reported, Duration::from_secs(5)),
+        "offset 7 settled but no processed prefix covering it was reported"
     );
 }
 

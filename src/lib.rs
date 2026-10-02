@@ -60,8 +60,8 @@ pub use cell::timer::TimerKind;
 pub use cell::{RestoreError, RestoreInitPayload};
 pub use channel::builder::TopologyIssue;
 pub use channel::{
-    CallTarget, ChannelBuilder, Embedding, EntryStream, Merge, MergeSource, OverflowPolicy,
-    Response, RetryPolicy, Stream,
+    CallTarget, ChannelBuilder, EntryStream, Merge, MergeSource, OverflowPolicy, Response,
+    RetryPolicy, Stream,
 };
 /// Authoring sugar. `#[flezha::tasklet]` on an `impl Tasklet` block, the
 /// short-form `#[flezha::operator]` and `flezha::pipeline!` expand to the

@@ -423,7 +423,6 @@ pub(crate) fn drain(
                 status,
                 error,
                 result,
-                ..
             } if operator_id == id => return (take_delivered(id), (status, error, result)),
             RunnerMessage::EmitControlRequest {
                 reference_id,

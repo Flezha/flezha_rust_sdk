@@ -6,7 +6,7 @@ use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use flz_core::host::{HostLink, TopologyIssue};
+use flz_core::host::HostLink;
 
 use crate::channel::{
     ChannelId, ChannelKind, EdgeKeyFn, EdgeTransformFn, EdgeYield, OverflowPolicy, TaskletId,
@@ -99,14 +99,6 @@ pub(crate) struct TaskletEntry {
     /// `S::Output` and installed on the node's output channel the moment that
     /// channel is created. There is no declaration to forget.
     pub output_codec: crate::channel::ChannelCodec,
-
-    /// `Some` for a node that embeds a steps class: its factory id and the
-    /// entry channel the edge feeds. Such a node holds no Cells; each edge key
-    /// runs a scope of the class (`flz_core::operator::scope`).
-    pub embeds: Option<(&'static str, Option<&'static str>)>,
-    /// The journal codec of the values an embedding node takes, which a
-    /// scope's input log keeps.
-    pub input_codec: Option<crate::channel::ChannelCodec>,
 }
 
 /// One author callback erased behind `&dyn Any` — how every typed declaration
@@ -204,23 +196,6 @@ pub(crate) struct BuilderState {
     /// Merges declared so far; the counter that ties one merge's sources
     /// together across the channels they are declared on.
     pub merge_groups: u32,
-    /// The flow classes being inlined, the innermost last.
-    pub inlining: Vec<Inline>,
-    /// What the builder alone can judge: an inlined class's entry and exit.
-    pub issues: Vec<TopologyIssue>,
-}
-
-/// A flow class whose `channels` runs on this builder: its entry is the
-/// feeding edge and every node it names carries its prefix.
-pub(crate) struct Inline {
-    class: &'static str,
-    prefix: &'static str,
-    feed: ChannelId,
-    pending: Option<u32>,
-    feed_type: (TypeId, &'static str),
-    input: Option<&'static str>,
-    entries: Vec<&'static str>,
-    first_node: u32,
 }
 
 impl BuilderState {
@@ -250,7 +225,7 @@ impl BuilderState {
     /// `S::NAME`. An identity claimed by a *different* declaration is a
     /// collision.
     pub(super) fn resolve_node<S: Tasklet>(&mut self, node_name: Option<&'static str>) -> u32 {
-        let identity = self.prefixed(node_name.unwrap_or(S::NAME));
+        let identity = node_name.unwrap_or(S::NAME);
         let named = node_name.is_some();
         if let Some(&id) = self.tasklet_name_to_id.get(identity) {
             let existing = &self.tasklets[id as usize];
@@ -285,123 +260,6 @@ impl BuilderState {
         self.channels[id as usize].codec = Some(codec);
         self.tasklets[node as usize].output_channel_id = Some(id);
         id
-    }
-
-    /// Wire `channel_id` into a node that embeds the steps class `O`, named by
-    /// the embedding or the class's factory id. The class is registered with
-    /// the core here, never announced as a factory of its own, so the core's
-    /// judgment of the embedding finds it.
-    pub(super) fn wire_scope<O: crate::operator::Operator, T, U>(
-        &mut self,
-        channel_id: u32,
-        pending: Option<u32>,
-        embedding: &crate::channel::Embedding,
-    ) -> u32
-    where
-        T: crate::tasklet::JournalValue + Send + Sync + 'static,
-        U: crate::tasklet::JournalValue + Send + Sync + 'static,
-    {
-        if flz_core::operator::registry::get_class(O::factory_id()).is_none() {
-            if let Ok(class) = crate::operator::build_class::<O>() {
-                flz_core::operator::registry::register_class(O::factory_id(), class);
-            }
-        }
-        let identity = self.prefixed(embedding.name.unwrap_or(O::factory_id()));
-        let named = embedding.name.is_some();
-        let consumer = match self.tasklet_name_to_id.get(identity) {
-            Some(&id) if self.tasklets[id as usize].class_id == TypeId::of::<O>() => id,
-            _ => {
-                let id = self.tasklets.len() as u32;
-                self.tasklets
-                    .push(scope_entry::<O, T, U>(identity, named, embedding));
-                self.tasklet_name_to_id.entry(identity).or_insert(id);
-                id
-            }
-        };
-        self.attach_consumer(channel_id, consumer, pending, None);
-        consumer
-    }
-
-    /// A node's identity inside the class being inlined: `<prefix>.<name>`.
-    /// Leaked once per class registration, as a call end's response name is.
-    fn prefixed(&self, name: &'static str) -> &'static str {
-        match self.inlining.last() {
-            Some(inline) => Box::leak(format!("{}.{name}", inline.prefix).into_boxed_str()),
-            None => name,
-        }
-    }
-
-    /// Start inlining the flow class `O` fed by `feed` (closing `pending`'s
-    /// chain on each edge out of its entry), its values of type `T`.
-    pub(super) fn open_inline<O: crate::operator::Operator, T: 'static>(
-        &mut self,
-        feed: ChannelId,
-        pending: Option<u32>,
-        embedding: &crate::channel::Embedding,
-    ) {
-        let prefix = self.prefixed(embedding.name.unwrap_or(O::factory_id()));
-        self.inlining.push(Inline {
-            class: O::factory_id(),
-            prefix,
-            feed,
-            pending,
-            feed_type: (TypeId::of::<T>(), std::any::type_name::<T>()),
-            input: embedding.input,
-            entries: Vec::new(),
-            first_node: self.tasklets.len() as u32,
-        });
-    }
-
-    /// The handle an `input` declared inside an inlined class answers: the
-    /// feeding edge, when the types agree.
-    pub(super) fn inline_entry<T: 'static>(
-        &mut self,
-        name: &'static str,
-    ) -> Option<(u32, Option<u32>)> {
-        let inline = self.inlining.last_mut()?;
-        inline.entries.push(name);
-        let (feed_type, feed_name) = inline.feed_type;
-        let (class, feed, pending) = (inline.class, inline.feed, inline.pending);
-        if feed_type != TypeId::of::<T>() {
-            self.issues.push(flz_core::host::mistyped_inlining(
-                format!("the edge into '{class}'"),
-                "input",
-                std::any::type_name::<T>(),
-                format!("the edge's type, {feed_name}"),
-            ));
-        }
-        Some((feed, pending))
-    }
-
-    /// End inlining the innermost class: its one entry judged, and its exit
-    /// answered, the one node it added that nothing consumes (the last it
-    /// added when every node feeds another or a sink). `None` when it added
-    /// no node.
-    pub(super) fn close_inline<U: 'static>(&mut self) -> Option<u32> {
-        let inline = self.inlining.pop()?;
-        let added = inline.first_node..self.tasklets.len() as u32;
-        let exits: Vec<u32> = added
-            .clone()
-            .filter(|&id| self.tasklets[id as usize].output_channel_id.is_none())
-            .collect();
-        let exit_names = exits.iter().map(|&id| self.tasklets[id as usize].name);
-        self.issues.extend(flz_core::host::judge_inlining(
-            inline.class,
-            &inline.entries,
-            inline.input,
-            exit_names.collect(),
-        ));
-        let exit = exits.first().copied().or(added.last())?;
-        let exit_entry = &self.tasklets[exit as usize];
-        if exit_entry.output_type_id != TypeId::of::<U>() {
-            self.issues.push(flz_core::host::mistyped_inlining(
-                format!("the edge out of '{}'", inline.class),
-                "exit",
-                exit_entry.name,
-                format!("a tasklet whose output is {}", std::any::type_name::<U>()),
-            ));
-        }
-        Some(exit)
     }
 
     /// Wire `channel_id` into a consumer node (created/resolved by identity),
@@ -624,47 +482,6 @@ fn tasklet_entry<S: Tasklet>(name: &'static str, named: bool) -> TaskletEntry {
         serialize_state,
         deserialize_state,
         output_codec: journal_codec::<S::Output>(),
-        embeds: None,
-        input_codec: None,
-    }
-}
-
-/// The node an edge into the steps class `O` becomes: no Cells, no state, the
-/// edge's values `T` in and the class's exit values `U` out.
-fn scope_entry<O: crate::operator::Operator, T, U>(
-    name: &'static str,
-    named: bool,
-    embedding: &crate::channel::Embedding,
-) -> TaskletEntry
-where
-    T: crate::tasklet::JournalValue + Send + Sync + 'static,
-    U: crate::tasklet::JournalValue + Send + Sync + 'static,
-{
-    TaskletEntry {
-        name,
-        class_id: TypeId::of::<O>(),
-        named,
-        cell_keys: Vec::new(),
-        cells_for_overridden: false,
-        compensate_overridden: false,
-        input_channel_ids: Vec::new(),
-        output_channel_id: None,
-        input_type_id: TypeId::of::<T>(),
-        output_type_id: TypeId::of::<U>(),
-        clock: crate::tasklet::ClockKind::Wall,
-        change_is_nochange: true,
-        mailbox_capacity: crate::operator::builder::DEFAULT_MAILBOX_CAPACITY,
-        mailbox_capacity_overridden: false,
-        compact_after_bytes: flz_core::operator::topology::DEFAULT_COMPACT_AFTER_BYTES,
-        build_cell: Box::new(|_| unreachable!("a node that embeds a class builds no Cell")),
-        cells_for_erased: Arc::new(|_| Vec::new()),
-        idle_ttl: None,
-        max_cells: embedding.max_cells.unwrap_or(usize::MAX),
-        serialize_state: Arc::new(|_| Err("a node that embeds a class has no state".to_string())),
-        deserialize_state: Arc::new(|_| Err("a node that embeds a class has no state".to_string())),
-        output_codec: journal_codec::<U>(),
-        embeds: Some((O::factory_id(), embedding.input)),
-        input_codec: Some(journal_codec::<T>()),
     }
 }
 

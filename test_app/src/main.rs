@@ -37,7 +37,6 @@ mod call;
 mod cell;
 mod channel;
 mod conformance;
-mod inner;
 mod operator_call;
 mod part;
 mod probe;
@@ -50,7 +49,6 @@ mod sugar;
 use crate::call::*;
 use crate::cell::*;
 use crate::channel::*;
-use crate::inner::*;
 use crate::operator_call::*;
 use crate::part::*;
 use crate::probe::*;
@@ -107,8 +105,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register_factory(CoalescingCounterOperator)?
         .register_factory(PersistenceOffOperator)?
         .register_factory(SleepingCounterOperator)?
-        .register_factory(GatewayOperator)?
-        .register_factory(LoopGatewayOperator)?
         .register_factory(HybridChannelOperator)?
         .register_factory(MergedInputOperator)?
         .register_factory(TransformChainOperator)?
