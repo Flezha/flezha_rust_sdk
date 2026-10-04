@@ -26,12 +26,12 @@ impl Operator for AgentOperator {
     }
 
     fn channels(c: &ChannelBuilder) {
-        c.input::<String>("turn")
+        c.input::<String>("turn") // entry 1: `flz operator call`
             .into::<Reply>()
-            .sink_named("answer") // to whoever listens
+            .sink_named("answer") // to whoever listens; the chain goes on
             .into::<Deliver>()
             .response(); // to whoever called
-        c.input::<Message>("message") // from the gateway
+        c.input::<Message>("message") // entry 2: the gateway, into the same Reply
             .map(|message| message.text)
             .into::<Reply>();
     }

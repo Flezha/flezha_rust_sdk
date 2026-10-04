@@ -14,6 +14,7 @@ impl Tasklet for Deliver {
     type Output = Answer;
 
     fn run(&mut self, answer: Answer, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        // The whole answer, to whoever called.
         ctx.emit(answer)
     }
 

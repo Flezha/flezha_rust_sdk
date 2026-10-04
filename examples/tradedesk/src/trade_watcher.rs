@@ -43,13 +43,13 @@ impl Operator for TradeWatcherOperator {
     /// stage is keyed: a plain `into` leaves its consumer single-cell, which is
     /// right for a stage that keeps nothing per symbol.
     fn channels(c: &ChannelBuilder) {
-        c.input::<TradeMessage>("trades")
+        c.input::<TradeMessage>("trades") // JSON from the exchange
             .filter(|message| message.channel == "trade") // trade messages only
             .flat_map(|message| message.data) // a message into its trades
             .filter(|trade| trade.ord_type == "market") // market orders only
             .key_by(|trade| trade.symbol.clone()) // one cell per symbol
             .into::<TrackPrices>()
-            .into::<BuyAboveAverage>()
-            .sink_named("signals");
+            .into::<BuyAboveAverage>() // fed by the tasklet above
+            .sink_named("signals"); // out to the file plugin
     }
 }

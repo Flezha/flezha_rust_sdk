@@ -48,6 +48,7 @@ impl Tasklet for Reply {
     type Change = Edit;
 
     fn run(&mut self, message: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        // Each piece streams out as it is made; then the whole answer.
         ctx.emit(demo_model::answer(
             &ctx.state().messages,
             &message,

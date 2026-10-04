@@ -18,28 +18,39 @@ impl Operator for GatewayOperator {
     }
 
     fn channels(c: &ChannelBuilder) {
+        // every request arrives on "http"; kept as a handle to split it
         let http = c.input::<Request>("http");
+        // route 1: GET .../events gets the session's stream
         http.filter(|request| !request.sends())
             .into::<Watch>()
             .response(); // a stream, or 404
+
+        // route 2: POST .../messages is checked against the user's budget
         let verdicts = http
             .filter(Request::sends)
             .map(|request| Event::Sent(request.message()))
             .key_by(|event| event.user().to_string()) // one cell per user
             .into::<Budget>();
+
+        // a verdict: the message plus its user's tokens today; used twice
+        // use 1: answer the POST
         verdicts.into::<Admit>().response(); // 202, or 429 over the budget
+
+        // use 2: pass an admitted message on to the user's session
         verdicts
             .filter(Verdict::admitted)
             .map(|verdict| verdict.message)
             .key_by(|message| message.user.clone()) // the user's session
+            // call the "agent" operator; its answer comes back here
             .call::<Answer>(CallTarget::factory("agent").channel("message"), DEADLINE_MS)
-            .map(Event::used)
+            .map(Event::used) // the session's answer, as tokens used
             .key_by(|event| event.user().to_string())
-            .into::<Budget>(); // the tokens the answer used
+            .into::<Budget>(); // back into the same budget
     }
 
     fn settings() -> OperatorSettings {
         OperatorSettings {
+            // each request and answer on disk before it runs
             run: Run::Flow {
                 exactly: Exactly::effectively_once(),
             },

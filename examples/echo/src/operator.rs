@@ -16,7 +16,7 @@ impl Operator for EchoOperator {
     /// takes. The controller's registry and the durable state both key on it,
     /// so changing it declares a new operator rather than renaming this one.
     fn factory_id() -> &'static str {
-        "echo"
+        "echo" // the name `flz operator start` takes
     }
 
     /// Called once when the runner declares the operator. The graph is checked
@@ -25,6 +25,8 @@ impl Operator for EchoOperator {
     /// An entry channel named `in` carrying strings, routed into the echo
     /// tasklet, whose output ends on the plugin layer as the channel `out`.
     fn channels(c: &ChannelBuilder) {
-        c.input::<String>("in").into::<Echo>().sink_named("out");
+        c.input::<String>("in") // messages arrive on the entry channel "in"
+            .into::<Echo>() // each one runs through the echo tasklet
+            .sink_named("out"); // the result leaves on "out", for a plugin to pick up
     }
 }

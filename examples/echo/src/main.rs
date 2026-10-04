@@ -19,6 +19,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The runner is bound to a name because a chained temporary would be
     // dropped, and shut down, at the end of the statement.
     let runner = Flezha::create_runner(namespace)?;
+    // connects to the controller and serves these operators
     runner.register_factory(operator::EchoOperator)?.start()?;
 
     // Everything `flz operator` and `flz plugin` do is also a method here.

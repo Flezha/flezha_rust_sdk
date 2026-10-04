@@ -52,7 +52,7 @@ impl Operator for OrderExecutorOperator {
     /// Nothing ends on a sink: the last step ends the instance with its result,
     /// which `flz operator info` shows.
     fn channels(c: &ChannelBuilder) {
-        c.input::<OrderTicket>("order")
+        c.input::<OrderTicket>("order") // the order to carry out
             .into::<ReserveFunds>() // step one
             .into::<PlaceOrder>() // step two, once step one is done
             .branch([
@@ -67,6 +67,8 @@ impl Operator for OrderExecutorOperator {
 
     fn settings() -> OperatorSettings {
         OperatorSettings {
+            // one instance per order; each step runs once
+            // a failed step undoes the finished ones
             run: Run::Steps { each: Each::Once, on_failure: OnFailure::UndoAll },
             ..OperatorSettings::default()
         }

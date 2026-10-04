@@ -88,10 +88,12 @@ impl Tasklet for Budget {
     fn run(&mut self, event: Event, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         let today = ctx.now() / DAY_MS;
         match event {
+            // A message to admit: hand on its verdict.
             Event::Sent(message) => ctx.emit(Verdict {
                 message,
                 spent: ctx.state().on(today),
             }),
+            // The tokens an answer used: count them.
             Event::Used { tokens, .. } => {
                 ctx.change(Counted { day: today, tokens });
                 Ok(())

@@ -14,12 +14,13 @@ use flezha_runner::{tasklet, Ctx, Tasklet, TaskletError};
 #[derive(Default)]
 pub struct Echo;
 
+// state is saved under this name, so choose it once
 #[tasklet(name = "echo")]
 impl Tasklet for Echo {
     type Input = String;
     type Output = String;
 
     fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
-        ctx.emit(format!("echo: {input}"))
+        ctx.emit(format!("echo: {input}")) // where it goes is the operator's business
     }
 }
