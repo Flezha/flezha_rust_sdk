@@ -9,7 +9,7 @@ publish = false
 
 [dependencies]
 flezha_runner = "0.1.0"
-# The admin calls commented out in main.rs take their fields as JSON.
+# The control calls commented out in main.rs take their fields as JSON.
 serde_json = "1"
 
 # Its own workspace, so the Flezha repository's workspace around this folder

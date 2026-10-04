@@ -5,12 +5,10 @@
 //! the started owning handle drops — so a second runner may start afterwards,
 //! and an observer handle from [`Flezha::current_runner`] never shuts one down.
 
-use std::collections::HashMap;
 use std::sync::{Arc, Condvar, Mutex, RwLock, Weak};
 
 use crossbeam::channel::{Receiver, Sender};
 
-use crate::operator::instance::OperatorInstance;
 use crate::operator::Operator;
 use crate::runner::{ClientResponseMessage, RunnerMessage};
 use crate::shutdown::ShutdownBridge;
@@ -269,6 +267,45 @@ impl Started {
     }
 }
 
+/// How a [`FlezhaRunner::send`](crate::FlezhaRunner::send) travels: through
+/// the controller, unless [`Self::local`] says otherwise.
+#[derive(Debug, Clone, Default)]
+pub struct SendOpts {
+    msg_id: Option<String>,
+    key: Option<String>,
+    local: bool,
+}
+
+impl SendOpts {
+    /// Through the controller, with no id and no key.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The message's id, stamped as `flz.msg_id`: an operator whose input log
+    /// still holds an input of this id absorbs the repeat and answers
+    /// `absorbed`.
+    pub fn msg_id(mut self, id: impl Into<String>) -> Self {
+        self.msg_id = Some(id.into());
+        self
+    }
+
+    /// The partition key: the member of a partition group whose range owns
+    /// it takes the message.
+    pub fn key(mut self, key: impl Into<String>) -> Self {
+        self.key = Some(key.into());
+        self
+    }
+
+    /// Hand the message to an operator bound on this runner, in process,
+    /// without the controller: it is on no disk, is lost if the runner stops
+    /// before handling it, and an input log's guarantee does not cover it.
+    pub fn local(mut self) -> Self {
+        self.local = true;
+        self
+    }
+}
+
 /// This process's runner: create → declare (`register_factory` /
 /// `unregister_factory`) → start
 /// on one object, returned by [`Flezha::create_runner`]. Dropping a started
@@ -290,16 +327,40 @@ impl FlezhaRunner {
         &self.core.namespace
     }
 
-    /// Administer this namespace from ordinary application code: start, stop
-    /// and feed operators, enable and disable plugins, read what is running.
+    /// Administer this namespace from ordinary application code: start and
+    /// stop operators, enable and disable plugins, read what is running.
     ///
     /// The controller judges every call as the identity this connection
     /// proved, so no credential is held here and nothing expires. A user
     /// grants a namespace's applications the authority once, with
     /// `flz role bind runner@<namespace> app <namespace>`; until then every
-    /// call is refused. See [`crate::admin`].
-    pub fn admin(&self) -> crate::admin::Admin {
-        crate::admin::Admin
+    /// call is refused. See [`crate::control`].
+    pub fn control(&self) -> crate::control::Control {
+        crate::control::Control
+    }
+
+    /// Send `message` to the entry channel `channel` of `operator_id`, through
+    /// the controller under the same role check as [`Self::control`], and
+    /// answer its verdict: `{"to": <operator>, "verdict": "delivered" |
+    /// "absorbed" | "suspended"}`. [`crate::SendOpts`] adds a message id or a
+    /// partition key, or makes the send local: in process to an operator
+    /// bound on this runner, answering null, with no durability at all.
+    pub fn send(
+        &self,
+        operator_id: &str,
+        message: &str,
+        channel: &str,
+        opts: &SendOpts,
+    ) -> Result<serde_json::Value, crate::ControlError> {
+        let answer = flz_core::admin::send(
+            operator_id,
+            message.as_bytes(),
+            channel,
+            opts.msg_id.as_deref(),
+            opts.key.as_deref(),
+            opts.local,
+        )?;
+        crate::control::read("Operator.send", &answer)
     }
 
     /// Declare an operator class the runtime can spawn instances of later
@@ -392,19 +453,14 @@ impl FlezhaRunner {
         self.await_termination()
     }
 
-    /// Snapshot of the live Operator-instance registry, keyed by
-    /// what the wire calls `operator_id`. `Err(NotStarted)` on a
-    /// never-started runner — never a panic.
-    pub fn operators(&self) -> Result<HashMap<String, Arc<OperatorInstance>>, FlezhaError> {
-        let started = self.core.started.lock().unwrap();
-        let Some(live) = started.as_ref() else {
+    /// The ids of the operator instances bound on this runner now, a
+    /// partition member by its member id, read without the controller.
+    /// `Err(NotStarted)` on a never-started runner — never a panic.
+    pub fn operators(&self) -> Result<Vec<String>, FlezhaError> {
+        if self.core.started.lock().unwrap().is_none() {
             return Err(FlezhaError::NotStarted);
-        };
-
-        match live.exchange(RunnerMessage::ReturnOperators)? {
-            ClientResponseMessage::ReturnOperators(operators) => Ok(operators),
-            _ => Err(Started::unexpected_reply()),
         }
+        Ok(flz_core::runner::bound().ids())
     }
 
     /// Block the calling thread until the runner shuts down (the owning

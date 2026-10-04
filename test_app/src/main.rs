@@ -91,6 +91,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Ok(script) = env::var("FLEZHA_ADMIN_SCRIPT") {
         run_admin_script(&runner, script);
     }
+    // The local-send drill: `{"operator", "channel", "message", "when"}` sends
+    // this app's own code makes with `local`, each once the file `when` names
+    // exists, so the e2e can prove the operator's sink live first.
+    if let Ok(script) = env::var("FLEZHA_LOCAL_SEND_SCRIPT") {
+        run_local_sends(script);
+    }
     runner
         .register_factory(DoNothingOperator)?
         .register_factory(CompleteFlowOperator)?
@@ -188,7 +194,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// one refusal is what synchronises with it, and every other answer is the
 /// controller's and is printed.
 fn run_admin_script(runner: &FlezhaRunner, script: String) {
-    let admin = runner.admin();
+    let control = runner.control();
     thread::spawn(move || {
         let calls: Vec<serde_json::Value> =
             serde_json::from_str(&script).expect("FLEZHA_ADMIN_SCRIPT is a JSON array of calls");
@@ -201,22 +207,51 @@ fn run_admin_script(runner: &FlezhaRunner, script: String) {
             }
             let verb = call["verb"].as_str().unwrap_or_default().to_string();
             let args: Vec<serde_json::Value> = call["args"].as_array().cloned().unwrap_or_default();
-            println!("admin {verb} {}", admin_answer(&admin, &verb, &args));
+            println!("admin {verb} {}", admin_answer(&control, &verb, &args));
         }
     });
 }
 
-fn admin_answer(admin: &flezha_runner::Admin, verb: &str, args: &[serde_json::Value]) -> String {
+fn admin_answer(
+    control: &flezha_runner::Control,
+    verb: &str,
+    args: &[serde_json::Value],
+) -> String {
     for _ in 0..600 {
-        match admin.call(verb, args) {
+        match control.call(verb, args) {
             Ok(value) => return format!("ok {value}"),
-            Err(flezha_runner::admin::AdminError::Unavailable) => {
+            Err(flezha_runner::ControlError::Unavailable) => {
                 thread::sleep(Duration::from_millis(50));
             }
             Err(e) => return format!("err {}: {e}", flezha_runner::ErrorModel::code(&e)),
         }
     }
     "err no control plane within 30s".to_string()
+}
+
+/// Each local send of the drill once its trigger file exists, printing
+/// `local_send <operator> ok` or `local_send <operator> err <code>`.
+fn run_local_sends(script: String) {
+    thread::spawn(move || {
+        let sends: Vec<serde_json::Value> =
+            serde_json::from_str(&script).expect("FLEZHA_LOCAL_SEND_SCRIPT is a JSON array");
+        for send in sends {
+            let field = |name: &str| send[name].as_str().unwrap_or_default().to_string();
+            let operator = field("operator");
+            while !std::path::Path::new(&field("when")).exists() {
+                thread::sleep(Duration::from_millis(50));
+            }
+            let runner = Flezha::current_runner().expect("the runner is serving");
+            let opts = flezha_runner::SendOpts::new().local();
+            match runner.send(&operator, &field("message"), &field("channel"), &opts) {
+                Ok(_) => println!("local_send {operator} ok"),
+                Err(e) => println!(
+                    "local_send {operator} err {}",
+                    flezha_runner::ErrorModel::code(&e)
+                ),
+            }
+        }
+    });
 }
 
 fn namespace() -> String {

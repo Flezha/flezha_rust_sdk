@@ -407,6 +407,11 @@ pub use steps::StepsError;
 #       pub serializer: PluginSerializeFn,
 #   }
 
+# Administering the namespace from runner code (`control()`).
+pub use control::{Control, ControlError, OperatorSpec, PluginSpec, StartOutcome, StartResult};
+# Sending to its operators (`FlezhaRunner::send`, through the controller or `local`).
+pub use runner_handle::SendOpts;
+
 # Entry point + runner lifecycle (`sdk-runner-entrypoint-redesign`).
 # REMOVED (no back-compat shim): `RunnerBuilder`, `Flezha::new_runner`,
 # `RunnerStartError`, `RunnerError`, `FlezhaRunner::id`, the
@@ -432,7 +437,10 @@ pub use operator::builder::TopologyBuildError;
 #       pub fn unregister_factory<O: Operator>(&self, operator: O) -> Result<&Self, FlezhaError>;
 #       pub fn start(&self) -> Result<&Self, FlezhaError>;     # slot claimed here (CAS)
 #       pub fn run(&self) -> Result<(), FlezhaError>;          # start + await_termination
-#       pub fn operators(&self) -> Result<HashMap<String, Arc<OperatorInstance>>, FlezhaError>;
+#       pub fn operators(&self) -> Result<Vec<String>, FlezhaError>;   # bound instance ids
+#       pub fn control(&self) -> Control;
+#       pub fn send(&self, operator_id: &str, message: &str, channel: &str, opts: &SendOpts)
+#           -> Result<serde_json::Value, ControlError>;
 #       pub fn await_termination(&self) -> Result<(), FlezhaError>;
 #   }
 #
@@ -452,7 +460,7 @@ pub use operator::builder::TopologyBuildError;
 #   }
 #
 #   # The error model's fields, implemented for FlezhaError, TaskletError,
-#   # TopologyBuildError, TopologyIssue, BuildStepsError, AdminError and
+#   # TopologyBuildError, TopologyIssue, BuildStepsError, ControlError and
 #   # SpawnError. `code` is the catalogue code (`topology.duplicate_factory_id`).
 #   # Re-exported from `flz_transport::errors`, where the core's own error types
 #   # implement it.

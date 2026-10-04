@@ -1,9 +1,9 @@
 //! Administering the namespace this runner's connection proved, from ordinary
 //! application code.
 //!
-//! [`FlezhaRunner::admin`](crate::FlezhaRunner::admin) hands back an [`Admin`]
-//! whose methods start, stop and feed operators, enable, bind, unbind and
-//! disable plugins, and read what is running. No tasklet has to be running and the
+//! [`FlezhaRunner::control`](crate::FlezhaRunner::control) hands back a
+//! [`Control`] whose methods start and stop operators, enable, bind, unbind
+//! and disable plugins, and read what is running. No tasklet has to be running and the
 //! application holds no credential of its own: the controller judges every
 //! call as the identity the connection already established, so a user
 //! grants the authority once per namespace and revokes it the same way:
@@ -16,7 +16,7 @@
 //! is data on the wire. Adding one costs a method here and nothing native.
 
 use flz_core::admin;
-pub use flz_core::admin::AdminError;
+pub use flz_core::admin::AdminError as ControlError;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -171,35 +171,21 @@ pub enum StartOutcome {
 
 /// The administration surface for the namespace this runner proved.
 #[derive(Debug, Clone, Copy)]
-pub struct Admin;
+pub struct Control;
 
-impl Admin {
+impl Control {
     /// Start an operator.
-    pub fn start_operator(&self, spec: &OperatorSpec) -> Result<StartResult, AdminError> {
+    pub fn start_operator(&self, spec: &OperatorSpec) -> Result<StartResult, ControlError> {
         self.answer("Operator.start", &[spec.to_fields()])
     }
 
     /// Stop an operator, or the whole partition group it names.
-    pub fn stop_operator(&self, operator_id: &str) -> Result<Value, AdminError> {
+    pub fn stop_operator(&self, operator_id: &str) -> Result<Value, ControlError> {
         self.call("Operator.stop", &[json!(operator_id)])
     }
 
-    /// Inject a message into an operator's input stream and block for the
-    /// delivery verdict. `channel` may be empty for none.
-    pub fn send(
-        &self,
-        operator_id: &str,
-        message: &str,
-        channel: &str,
-    ) -> Result<Value, AdminError> {
-        self.call(
-            "Operator.send",
-            &[json!(operator_id), json!(message), json!(channel)],
-        )
-    }
-
     /// Enable the plugin `name` in this namespace, as `spec` describes it.
-    pub fn enable_plugin(&self, name: &str, spec: &PluginSpec) -> Result<Value, AdminError> {
+    pub fn enable_plugin(&self, name: &str, spec: &PluginSpec) -> Result<Value, ControlError> {
         self.call("PluginManager.enable", &[json!(name), spec.to_fields()])
     }
 
@@ -211,7 +197,7 @@ impl Admin {
         operator_id: &str,
         hooks: Value,
         channel: &str,
-    ) -> Result<Value, AdminError> {
+    ) -> Result<Value, ControlError> {
         self.call(
             "PluginManager.bind",
             &[json!(name), bind_fields(operator_id, hooks, channel)],
@@ -220,7 +206,7 @@ impl Admin {
 
     /// Unbind the operator `operator_id` from the plugin `name`, which stays
     /// enabled.
-    pub fn unbind_plugin(&self, name: &str, operator_id: &str) -> Result<Value, AdminError> {
+    pub fn unbind_plugin(&self, name: &str, operator_id: &str) -> Result<Value, ControlError> {
         self.call(
             "PluginManager.unbind",
             &[json!(name), json!({ "operator_id": operator_id })],
@@ -228,23 +214,23 @@ impl Admin {
     }
 
     /// Disable the plugin `name`, stopping it wherever it runs.
-    pub fn disable_plugin(&self, name: &str) -> Result<Value, AdminError> {
+    pub fn disable_plugin(&self, name: &str) -> Result<Value, ControlError> {
         self.call("PluginManager.disable", &[json!(name), json!({})])
     }
 
     /// The operator ids running in this namespace.
-    pub fn list_operators(&self) -> Result<Value, AdminError> {
+    pub fn list_operators(&self) -> Result<Value, ControlError> {
         self.call("Operator.list_operators", &[])
     }
 
     /// The plugins enabled in this namespace: name, provider, single, bound
     /// operators.
-    pub fn list_plugins(&self) -> Result<Value, AdminError> {
+    pub fn list_plugins(&self) -> Result<Value, ControlError> {
         self.call("PluginManager.list", &[])
     }
 
     /// One cell's live state, and the change sequence it was read at.
-    pub fn cell_state(&self, operator_id: &str, cell_key: &str) -> Result<Value, AdminError> {
+    pub fn cell_state(&self, operator_id: &str, cell_key: &str) -> Result<Value, ControlError> {
         self.call(
             "Operator.cell_state",
             &[json!(operator_id), json!(cell_key)],
@@ -254,11 +240,11 @@ impl Admin {
     /// Any published function, by name, for a verb this surface has not yet
     /// grown a method for. What succeeds follows from the role the namespace
     /// is bound to, never from a list kept here.
-    pub fn call(&self, verb: &str, args: &[Value]) -> Result<Value, AdminError> {
+    pub fn call(&self, verb: &str, args: &[Value]) -> Result<Value, ControlError> {
         self.answer(verb, args)
     }
 
-    fn answer<T: DeserializeOwned>(&self, verb: &str, args: &[Value]) -> Result<T, AdminError> {
+    fn answer<T: DeserializeOwned>(&self, verb: &str, args: &[Value]) -> Result<T, ControlError> {
         let args = Value::Array(args.to_vec()).to_string();
         read(verb, &admin::call(verb, &args)?)
     }
@@ -277,10 +263,10 @@ fn bind_fields(operator_id: &str, hooks: Value, channel: &str) -> Value {
 }
 
 /// The controller's answer, read as the shape the call promises.
-fn read<T: DeserializeOwned>(verb: &str, answer: &str) -> Result<T, AdminError> {
+pub(crate) fn read<T: DeserializeOwned>(verb: &str, answer: &str) -> Result<T, ControlError> {
     serde_json::from_str(answer).map_err(|e| {
-        AdminError::Refused(flz_core::FlezhaError::with(
-            "admin.unreadable_answer",
+        ControlError::Refused(flz_core::FlezhaError::with(
+            "control.unreadable_answer",
             [("verb", verb.into()), ("reason", e.to_string().into())],
         ))
     })
@@ -365,8 +351,8 @@ mod tests {
             r#"{"id":"my_echo","outcome":"duplicate"}"#,
         );
         assert!(
-            matches!(&refused, Err(AdminError::Refused(e))
-                if e.code == "admin.unreadable_answer"
+            matches!(&refused, Err(ControlError::Refused(e))
+                if e.code == "control.unreadable_answer"
                     && e.details["reason"].as_str().is_some_and(|r| r.contains("duplicate"))),
             "{refused:?}"
         );

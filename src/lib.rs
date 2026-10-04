@@ -13,8 +13,8 @@
 //! with the Java SDK; every environment knob the runner reads is listed in
 //! `docs/configuration.md`.
 
-pub mod admin;
 pub mod channel;
+pub mod control;
 pub mod steps;
 pub use flz_core::command;
 pub mod cell;
@@ -54,8 +54,6 @@ pub mod state {
     pub use crate::tasklet::clock::ClockKind;
 }
 
-/// Administering the namespace a runner's connection proved.
-pub use admin::{Admin, OperatorSpec, PluginSpec, StartOutcome, StartResult};
 pub use cell::timer::TimerKind;
 pub use cell::{RestoreError, RestoreInitPayload};
 pub use channel::builder::TopologyIssue;
@@ -63,6 +61,8 @@ pub use channel::{
     CallTarget, ChannelBuilder, EntryStream, Merge, MergeSource, OverflowPolicy, Response,
     RetryPolicy, Stream,
 };
+/// Administering the namespace a runner's connection proved.
+pub use control::{Control, ControlError, OperatorSpec, PluginSpec, StartOutcome, StartResult};
 /// Authoring sugar. `#[flezha::tasklet]` on an `impl Tasklet` block, the
 /// short-form `#[flezha::operator]` and `flezha::pipeline!` expand to the
 /// trait surface above; see `docs/sdk/authoring_contract.md`.
@@ -77,7 +77,7 @@ pub use operator::topology::{
 pub use operator::{
     Durable, Each, Exactly, OnFailure, Operator, OperatorSettings, Run, SleepAfter,
 };
-pub use runner_handle::{ErrorModel, Flezha, FlezhaError, FlezhaRunner};
+pub use runner_handle::{ErrorModel, Flezha, FlezhaError, FlezhaRunner, SendOpts};
 pub use steps::spec::BuildStepsError;
 pub use steps::StepsError;
 pub use tasklet::{Change, ClockKind, CoalesceKey, Ctx, NoChange, StableId, Tasklet, TaskletError};

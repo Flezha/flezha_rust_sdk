@@ -22,8 +22,8 @@
 //! With authorization on, the default in a release, bind the namespace's runner
 //! principal to `spawner` first, or every spawn resolves `Refused`:
 //!     flz role bind runner@default spawner default
-//! The role also lets this runner's `admin()` start and send to operators in its
-//! namespace, and nothing else.
+//! The role also lets this runner's `control()` start operators and its `send`
+//! reach operators in its namespace, and nothing else.
 
 use flezha_runner::tasklet::{IfRunning, SpawnOptions};
 use flezha_runner::{ChannelBuilder, Ctx, Each, OnFailure, Operator, OperatorSettings, Run, Tasklet, TaskletError, tasklet};
