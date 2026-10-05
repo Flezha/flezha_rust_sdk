@@ -56,7 +56,7 @@ pub(super) struct CellEmitSink<'a> {
     pub(super) consumed_offset: Option<u64>,
     /// The outside call the invocation's input carried (a steps pass's for
     /// every stage), inherited by inter-tasklet emits and stamped on every
-    /// output of a `response()` end.
+    /// sink output.
     pub(super) reply_to: Option<Arc<str>>,
     /// `Some` for a Cell that records effects: plugin emits are pushed here
     /// (for the invocation's atomic effect record) instead of being written
@@ -132,11 +132,9 @@ impl<'a> CellEmitSink<'a> {
     ) -> Result<(), TaskletError> {
         let bytes = serialize_contained(&sink.serializer, &descriptor.name, value.as_ref())?;
         let mut meta = meta;
-        if descriptor.response {
-            meta.get_or_insert_with(HashMap::new).insert(
-                flz_core::routing::CALL_KEY.to_string(),
-                self.reply_to.as_deref().unwrap_or_default().to_string(),
-            );
+        if let Some(token) = self.reply_to.as_deref() {
+            meta.get_or_insert_with(HashMap::new)
+                .insert(flz_core::routing::CALL_KEY.to_string(), token.to_string());
         }
         self.write_plugin_output(instance, descriptor, bytes, meta, key)
     }

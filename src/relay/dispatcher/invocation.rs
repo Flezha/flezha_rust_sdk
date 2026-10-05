@@ -406,7 +406,7 @@ pub(super) enum Call<S: Tasklet> {
         /// variant rather than beside it.
         consumed_offset: Option<u64>,
         /// The outside call waiting on the input (`flz.reply_to`), which a
-        /// `response()` end's output answers. A firing answers nobody.
+        /// sink output answers. A firing answers nobody.
         reply_to: Option<Arc<str>>,
         replay: bool,
     },

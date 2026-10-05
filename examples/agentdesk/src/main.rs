@@ -4,7 +4,6 @@
 mod admit;
 mod agent;
 mod budget;
-mod deliver;
 mod demo_model;
 mod gateway;
 mod http;

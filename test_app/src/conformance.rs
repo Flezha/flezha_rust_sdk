@@ -54,13 +54,12 @@ const FIXTURE: &str = "test/fixtures/reference_topologies.txt";
 /// The authoring surfaces this builder carries — the same set the app's
 /// `conformance.json` declares. A row needing anything else is skipped BY NAME,
 /// which is what makes the skip checkable.
-const SURFACES: [&str; 7] = [
+const SURFACES: [&str; 6] = [
     "merge",
     "branch",
     "steps",
     "shorthand",
     "shorthand_typed_output",
-    "response",
     "call",
 ];
 
@@ -481,7 +480,6 @@ fn producer_link(s: Stream<'_, String, NodeTarget>, link: &str) {
         "named" => s.named(leak(arg)),
         "sink" if arg.is_empty() => s.sink(),
         "sink" => s.sink_named(leak(arg)),
-        "response" => s.response(),
         "keyed" => s.keyed(),
         other => panic!("the fixture spells a link this interpreter does not map: {other}"),
     };

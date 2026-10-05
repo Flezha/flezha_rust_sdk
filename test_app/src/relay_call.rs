@@ -1,9 +1,10 @@
 //! Relay call fixtures (`relay_call`): relays that call another
 //! relay from their graph and read the outcome as a `Response`.
 //!
-//! - `call_pricing`: a flow callee answering `price:<input>` through
-//!   `response()`; an input starting `silent` is never answered.
-//! - `call_orders`: a flow caller calling the instance `pricing` by name.
+//! - `call_pricing`: a flow callee answering `price:<input>` on its sink
+//!   `quotes`; an input starting `silent` is never answered.
+//! - `call_orders`: a flow caller calling the instance `pricing` by name,
+//!   answered from `quotes`.
 //! - `call_agent`: a durable `:per_input` `keep_progress` session answering
 //!   `answer:<turn>`; `boom` fails the turn, `slow` answers after 2 s.
 //! - `call_gateway`: an effectively-once flow caller calling `call_agent`
@@ -81,7 +82,9 @@ impl Relay for CallPricingRelay {
         "call_pricing"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<String>("in").into::<PricingQuote>().response();
+        c.input::<String>("in")
+            .into::<PricingQuote>()
+            .sink_named("quotes");
     }
 }
 
@@ -122,7 +125,10 @@ impl Relay for CallOrdersRelay {
         c.input::<String>("in")
             .into::<OrderAsk>()
             .named("order")
-            .call::<String>(CallTarget::id("pricing"), DEADLINE_MS)
+            .call::<String>(
+                CallTarget::id("pricing").answer_channel("quotes"),
+                DEADLINE_MS,
+            )
             .into::<OrderPriced>()
             .sink_named("priced");
     }
@@ -155,7 +161,7 @@ impl Relay for CallAgentSteps {
         "call_agent"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<String>("turn").into::<AgentTurn>().response();
+        c.input::<String>("turn").into::<AgentTurn>().sink();
     }
 
     fn settings() -> RelaySettings {
@@ -280,7 +286,10 @@ impl Relay for CallToolSessionSteps {
             .into_named::<CallerTurn>("tool_turn")
             .named("tool");
         turn.filter(|line: &String| is_request(line))
-            .call::<String>(CallTarget::id("pricing"), DEADLINE_MS)
+            .call::<String>(
+                CallTarget::id("pricing").answer_channel("quotes"),
+                DEADLINE_MS,
+            )
             .map(CallerIn::Outcome)
             .into_named::<CallerTurn>("tool_turn");
         turn.filter(|line: &String| is_outcome(line))

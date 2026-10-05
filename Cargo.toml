@@ -154,7 +154,7 @@ name = "hybrid_channel"
 required-features = ["bench-internals"]
 
 [[test]]
-name = "response_end"
+name = "sink_answer"
 required-features = ["bench-internals"]
 
 [[test]]

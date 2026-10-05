@@ -38,7 +38,6 @@
     "steps",
     "shorthand",
     "shorthand_typed_output",
-    "response",
     "call"
   ],
   "toolchain": "rustc --version",

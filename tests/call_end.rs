@@ -56,7 +56,10 @@ impl Relay for Caller {
             .filter(|v: &String| v != "skip")
             .key_by(|v: &String| v.split(':').next().unwrap_or_default().to_string())
             .call::<String>(
-                CallTarget::factory("agent").create(false).channel("turn"),
+                CallTarget::factory("agent")
+                    .create(false)
+                    .channel("turn")
+                    .answer_channel("reply"),
                 60_000,
             )
             .into::<Read>()
@@ -113,6 +116,7 @@ fn a_call_is_a_plugin_end_answering_an_entry_channel() {
     assert_eq!(&*end.target, "factory:agent");
     assert!(!end.create);
     assert_eq!(end.channel.as_deref(), Some("turn"));
+    assert_eq!(end.answer_channel.as_deref(), Some("reply"));
     assert_eq!(&*end.response, "ask.response");
     let response = topology
         .channels
@@ -172,6 +176,7 @@ fn each_request_leaves_stamped_and_the_response_reaches_its_reader() {
     assert_eq!(meta["flz.call"], "factory:agent");
     assert_eq!(meta["flz.call_create"], "false");
     assert_eq!(meta["flz.call_channel"], "turn");
+    assert_eq!(meta["flz.call_answer_channel"], "reply");
     assert_eq!(meta["flz.call_response"], "ask.response");
     assert_eq!(meta["flz.key"], "anna-42");
     let deadline: u64 = meta["flz.deadline_at"].parse().expect("a millisecond");

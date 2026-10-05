@@ -1,7 +1,7 @@
 //! Call fixtures (`call_response`): relays an outside caller calls and
-//! whose graph answers it through `response()` — from the first tasklet, from
-//! a downstream one, from whichever of two filtered paths the input took, and
-//! from a durable steps turn.
+//! whose sink output answers it — from the first tasklet, from a downstream
+//! one, from whichever of two filtered paths the input took, and from a
+//! durable steps turn.
 
 use crate::steps::stateless_step;
 use crate::*;
@@ -14,7 +14,7 @@ impl Relay for CallEchoRelay {
         "call_echo"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<String>("in").into::<CallEcho>().response();
+        c.input::<String>("in").into::<CallEcho>().sink();
     }
 }
 
@@ -31,7 +31,7 @@ impl Relay for CallDownstreamRelay {
         c.input::<String>("in")
             .into::<CallParse>()
             .into::<CallAnswer>()
-            .response();
+            .sink();
     }
 }
 
@@ -52,11 +52,11 @@ impl Relay for CallSplitRelay {
         admitted
             .filter(|v: &String| !v.starts_with("no"))
             .into::<CallAccept>()
-            .response();
+            .sink();
         admitted
             .filter(|v: &String| v.starts_with("no"))
             .into::<CallRefuse>()
-            .response();
+            .sink();
     }
 }
 
@@ -68,7 +68,7 @@ impl Relay for CallTurnSteps {
         "call_turn"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<String>("in").into::<CallTurn>().response();
+        c.input::<String>("in").into::<CallTurn>().sink();
     }
 
     fn settings() -> RelaySettings {

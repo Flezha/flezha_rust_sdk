@@ -5,7 +5,6 @@ use flezha_runner::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::deliver::Deliver;
 use crate::reply::Reply;
 
 /// A message for a user's session, as the gateway sends it: the session is named after the user.
@@ -28,9 +27,7 @@ impl Relay for AgentRelay {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("turn") // entry 1: `flz relay call`
             .into::<Reply>()
-            .sink_named("answer") // to whoever listens; the chain goes on
-            .into::<Deliver>()
-            .response(); // to whoever called
+            .sink_named("answer"); // to whoever called, and whoever listens
         c.input::<Message>("message") // entry 2: the gateway, into the same Reply
             .map(|message| message.text)
             .into::<Reply>();

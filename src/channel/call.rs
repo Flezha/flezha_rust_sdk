@@ -15,6 +15,7 @@ pub struct CallTarget {
     pub(crate) factory: Option<String>,
     pub(crate) create: bool,
     pub(crate) channel: Option<String>,
+    pub(crate) answer_channel: Option<String>,
 }
 
 impl CallTarget {
@@ -25,6 +26,7 @@ impl CallTarget {
             factory: None,
             create: true,
             channel: None,
+            answer_channel: None,
         }
     }
 
@@ -37,6 +39,7 @@ impl CallTarget {
             factory: Some(factory.into()),
             create: true,
             channel: None,
+            answer_channel: None,
         }
     }
 
@@ -50,6 +53,13 @@ impl CallTarget {
     /// The callee's entry channel the request enters on; its first when unset.
     pub fn channel(mut self, channel: impl Into<String>) -> Self {
         self.channel = Some(channel.into());
+        self
+    }
+
+    /// The callee's channel whose output answers the call; its first output
+    /// for the request when unset.
+    pub fn answer_channel(mut self, channel: impl Into<String>) -> Self {
+        self.answer_channel = Some(channel.into());
         self
     }
 }

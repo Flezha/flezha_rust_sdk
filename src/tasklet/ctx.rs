@@ -488,7 +488,7 @@ impl<'a, S: Tasklet> Ctx<'a, S> {
     /// the size limit) is dropped and counted, and a replayed input sends
     /// none. Fails with `part.no_sink` when the output channel does not end
     /// in a sink, as for a channel that only feeds another tasklet or ends in
-    /// `response()`, and with `part.outside_invocation` in `compensate`,
+    /// a call, and with `part.outside_invocation` in `compensate`,
     /// which previews no work item. In the testing harness it sends nothing.
     pub fn part(&self, value: S::Output) -> Result<(), TaskletError> {
         let source = match &self.part {

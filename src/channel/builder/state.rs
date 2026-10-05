@@ -329,6 +329,7 @@ impl BuilderState {
             deadline_ms,
             create: target.create,
             channel: target.channel,
+            answer_channel: target.answer_channel,
             response: response.to_string(),
         }));
         self.push_chain(channel, links, transform, key);

@@ -365,32 +365,6 @@ impl<'b, T: 'static + Send + Sync> Stream<'b, T, NodeTarget> {
         )
     }
 
-    /// Terminate this channel on the answer to the outside call its input
-    /// carried: every value emitted on it is serialized as [`sink`](Stream::sink)
-    /// serializes it and handed to the caller waiting on that input, never to
-    /// a plugin. It takes no name: the channel keeps the one it would have
-    /// without it. Consumers may be wired after it, as after `sink`; a channel
-    /// with none is the plugin-bound terminal. A channel ends in one sink or
-    /// one response (`TopologyIssue::ChannelEndsTwice`).
-    pub fn response(self) -> Self
-    where
-        T: serde::Serialize,
-    {
-        self.attach_plugin_end(HostLink::Response, None, default_plugin_serializer::<T>())
-    }
-
-    /// [`response`](Stream::response) with a serializer of your own.
-    pub fn response_with<F>(self, serializer: F) -> Self
-    where
-        F: Fn(&T) -> Vec<u8> + Send + Sync + 'static,
-    {
-        self.attach_plugin_end(
-            HostLink::Response,
-            None,
-            erase::<T, _, _>("plugin serializer", serializer),
-        )
-    }
-
     /// End this chain in a call to another relay: every value that reaches
     /// it, after this chain's transforms and key, is one request, serialized
     /// as [`sink`](Stream::sink) serializes it. The call waits for nothing:
@@ -399,7 +373,7 @@ impl<'b, T: 'static + Send + Sync> Stream<'b, T, NodeTarget> {
     /// must feed a tasklet (the one that made the call included) and decodes
     /// the answer as `input::<A>` decodes. The caller hears of the outcome
     /// within `deadline_ms` milliseconds of the emit, `call.timeout` at the
-    /// latest. A channel ends in one sink, one response or one call.
+    /// latest. A channel ends in one sink or one call.
     pub fn call<A>(
         self,
         target: crate::CallTarget,
@@ -428,26 +402,17 @@ impl<'b, T: 'static + Send + Sync> Stream<'b, T, NodeTarget> {
         }
     }
 
+    /// Record a sink, which serializes the value through `serializer`; the
+    /// core refuses a second end on a channel.
     fn attach_plugin_sink(
         self,
         name: Option<&'static str>,
         serializer: crate::channel::PluginSerializeFn,
     ) -> Self {
-        let link = HostLink::Sink {
-            name: name.map(str::to_string),
-        };
-        self.attach_plugin_end(link, name, serializer)
-    }
-
-    /// Record a plugin end, a sink or a response; both serialize the value
-    /// through `serializer`, and the core refuses a second end on a channel.
-    fn attach_plugin_end(
-        self,
-        link: HostLink,
-        name: Option<&'static str>,
-        serializer: crate::channel::PluginSerializeFn,
-    ) -> Self {
         self.with_channel(|st, cid| {
+            let link = HostLink::Sink {
+                name: name.map(str::to_string),
+            };
             st.record_link(cid, link);
             // This SDK builds its descriptors from `entry.name` rather than
             // from the core's derived answer (`relay/builder.rs`), so a
@@ -458,9 +423,9 @@ impl<'b, T: 'static + Send + Sync> Stream<'b, T, NodeTarget> {
             if let Some(name) = name {
                 entry.name = name;
             }
-            // Both ends reach the record and the core refuses the class; the
-            // first one stays on the entry so nothing downstream sees a half
-            // -built descriptor.
+            // A second end reaches the record and the core refuses the class;
+            // the first one stays on the entry so nothing downstream sees a
+            // half-built descriptor.
             if entry.plugin_sink.is_none() {
                 entry.plugin_sink = Some(PluginSink { serializer });
             }

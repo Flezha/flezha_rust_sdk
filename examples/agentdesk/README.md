@@ -20,7 +20,6 @@ the session's answer as it is written, and each user has a daily token budget.
 | `src/main.rs` | the runner: this process joins the `agents` namespace and registers the `agent` and `gateway` factories |
 | `src/agent.rs` | a session, a steps relay: one turn per message, and a failed turn fails alone. The `Message` the gateway sends is here |
 | `src/reply.rs` | answers a message with the demo model, sends the answer as it grows, and keeps the conversation |
-| `src/deliver.rs` | hands the finished answer to whoever called |
 | `src/demo_model.rs` | the demo model |
 | `src/gateway.rs` | the HTTP side, a flow relay: it carries the HTTP plugin, answers every request, and calls the session a message is for |
 | `src/request.rs` | one HTTP request, as the plugin hands it to the gateway, and the two routes the gateway knows |

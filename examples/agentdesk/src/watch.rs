@@ -13,15 +13,19 @@ impl Tasklet for Watch {
     type Output = Http;
 
     fn run(&mut self, request: Request, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
-        ctx.emit(if request.listens() {
-            Http::Stream {
-                stream: request.user().to_string(),
-            }
-        } else {
-            Http::Plain {
-                status: 404,
-                body: "no such route".to_string(),
-            }
-        })
+        // keyed by the user: a sink of an effectively-once relay needs a key
+        ctx.emit_keyed(
+            request.user(),
+            if request.listens() {
+                Http::Stream {
+                    stream: request.user().to_string(),
+                }
+            } else {
+                Http::Plain {
+                    status: 404,
+                    body: "no such route".to_string(),
+                }
+            },
+        )
     }
 }

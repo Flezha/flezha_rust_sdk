@@ -275,7 +275,6 @@ fn channel_descriptor(entry: ChannelEntry, derived: DerivedChannel) -> ChannelDe
         plugin_sink: entry.plugin_sink.map(|sink| PluginSink {
             serializer: sink.serializer,
         }),
-        response: derived.response,
         sink: derived.sink.is_some(),
         call,
         keyed: entry.keyed,

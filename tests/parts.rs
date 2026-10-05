@@ -4,7 +4,7 @@
 
 use std::sync::Condvar;
 
-use flezha_runner::ErrorModel;
+use flezha_runner::{CallTarget, ErrorModel, Response};
 
 mod common;
 use common::prelude::*;
@@ -129,9 +129,12 @@ test_tasklet!(Feeder, "parts_feeder", String => String, (), |input, ctx| {
 test_tasklet!(Forward, "parts_pass", String => String, (), |input, ctx| {
     ctx.emit(input)
 });
-test_tasklet!(Answerer, "parts_answerer", String => String, (), |input, ctx| {
+test_tasklet!(Asker, "parts_asker", String => String, (), |input, ctx| {
     refused_part(ctx);
     ctx.emit(input)
+});
+test_tasklet!(Heard, "parts_heard", Response<String, String> => (), (), |_input, _ctx| {
+    Ok(())
 });
 
 struct FeederOp;
@@ -147,31 +150,34 @@ impl Relay for FeederOp {
     }
 }
 
-struct AnswererOp;
-impl Relay for AnswererOp {
+struct AskerOp;
+impl Relay for AskerOp {
     fn factory_id() -> &'static str {
-        "parts_answerer"
+        "parts_asker"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<String>("in").into::<Answerer>().response();
+        c.input::<String>("in")
+            .into::<Asker>()
+            .call::<String>(CallTarget::id("pricing"), 500)
+            .into::<Heard>();
     }
 }
 
 #[test]
 fn a_channel_without_a_sink_refuses_a_part_and_sends_nothing() {
     let (feeder, _a) = setup::<FeederOp>("parts-feeder");
-    let (answerer, _b) = setup::<AnswererOp>("parts-answerer");
+    let (asker, _b) = setup::<AskerOp>("parts-asker");
     let mut fed = dispatch(&feeder, "parts-feeder", "x");
-    let mut answered = dispatch(&answerer, "parts-answerer", "y");
+    let mut asked = dispatch(&asker, "parts-asker", "y");
 
     let fed = read_frames(&mut fed, 1, WAIT);
-    let answered = read_frames(&mut answered, 1, WAIT);
+    let asked = read_frames(&mut asked, 1, WAIT);
     assert!(!is_part(&fed[0]) && fed[0].message == b"x");
-    assert!(!is_part(&answered[0]) && answered[0].message == b"y");
+    assert!(!is_part(&asked[0]) && asked[0].message == b"y");
     assert_eq!(
         *REFUSALS.lock().unwrap(),
         ["part.no_sink", "part.no_sink"],
-        "a channel feeding another tasklet and a response() end preview nothing"
+        "a channel feeding another tasklet and a call end preview nothing"
     );
 }
 
