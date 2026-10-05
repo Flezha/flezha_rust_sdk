@@ -1,6 +1,6 @@
-//! A flow and a steps operator under one factory id.
+//! A flow and a steps relay under one factory id.
 //!
-//! Flow and steps operators share one factory-id namespace per runner, so the
+//! Flow and steps relays share one factory-id namespace per runner, so the
 //! second registration must be refused whichever kind either one is. This lives
 //! in its own test binary because the `plain` id is claimed process-wide, and a
 //! binary's registry is shared by every runner in it.
@@ -11,10 +11,12 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use flezha_runner::transport::FlezhaStream;
-use flezha_runner::{ChannelBuilder, Ctx, ErrorModel, Flezha, FlezhaError, Operator, Tasklet, TaskletError};
+use flezha_runner::{
+    ChannelBuilder, Ctx, ErrorModel, Flezha, FlezhaError, Relay, Tasklet, TaskletError,
+};
 
 /// The steps short form under `plain`: one tasklet, one sink, nothing else.
-#[flezha_runner::operator(id = "plain", sink = "plain_sink", run = steps)]
+#[flezha_runner::relay(id = "plain", sink = "plain_sink", run = steps)]
 fn plain(input: String) -> String {
     input
 }
@@ -33,7 +35,7 @@ impl Tasklet for HandWrittenTask {
 
 /// A hand-written stream that claims the same factory id the short form does.
 struct HandWrittenPlain;
-impl Operator for HandWrittenPlain {
+impl Relay for HandWrittenPlain {
     fn factory_id() -> &'static str {
         "plain"
     }
@@ -115,9 +117,10 @@ fn a_steps_short_form_colliding_with_a_stream_is_refused() {
         .register_factory(HandWrittenPlain)
         .expect("the hand-written stream takes the id first");
 
-    let err = runner.register_factory(Plain).err().expect(
-        "a steps operator under a flow operator's factory id must be refused, not skipped",
-    );
+    let err = runner
+        .register_factory(Plain)
+        .err()
+        .expect("a steps relay under a flow relay's factory id must be refused, not skipped");
     assert!(
         matches!(err, FlezhaError::DuplicateFactoryId { ref factory_id } if factory_id == "plain"),
         "expected DuplicateFactoryId naming `plain`, got: {err}"

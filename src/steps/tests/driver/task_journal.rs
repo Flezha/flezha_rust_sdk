@@ -7,11 +7,11 @@ use flz_core::runner::RunnerNode;
 use super::super::fake_controller::*;
 use super::super::fixtures::*;
 use super::resume_chain_with_journal;
-use crate::steps::*;
 use crate::runner::RunnerMessage;
+use crate::steps::*;
 
 pub(super) fn durable_wal_and_journal(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
-    // --- §5b.1/§7c.1 durable steps operator actually writes WAL; opt-out writes nothing ---
+    // --- §5b.1/§7c.1 durable steps relay actually writes WAL; opt-out writes nothing ---
     // FanSteps is durable-by-default; its FanTask applies a Change per item,
     // which the driver flushes as a cell_state_change frame to the sink.
     WAL_FRAMES.lock().unwrap().clear();
@@ -20,7 +20,7 @@ pub(super) fn durable_wal_and_journal(node: &mut RunnerNode, rx: &Receiver<Runne
     assert_eq!(done.0, "ok");
     assert!(
         !WAL_FRAMES.lock().unwrap().is_empty(),
-        "a durable steps operator ships cell_state_change frames to the WAL"
+        "a durable steps relay ships cell_state_change frames to the WAL"
     );
 
     // The opt-out twin does identical work with `Durable::Memory`:
@@ -36,10 +36,10 @@ pub(super) fn durable_wal_and_journal(node: &mut RunnerNode, rx: &Receiver<Runne
     assert_eq!(done.0, "ok");
     assert!(
         WAL_FRAMES.lock().unwrap().is_empty(),
-        "an opt-out steps operator writes nothing to the WAL"
+        "an opt-out steps relay writes nothing to the WAL"
     );
 
-    // --- §5b.2 crash-resume gate: a durable structured steps operator holds its
+    // --- §5b.2 crash-resume gate: a durable structured steps relay holds its
     // first Tasklet until the Controller's Cell restores land, and its
     // Cells are reachable by the restore handler via wire identity ---
     WAL_FRAMES.lock().unwrap().clear();
@@ -57,11 +57,10 @@ pub(super) fn durable_wal_and_journal(node: &mut RunnerNode, rx: &Receiver<Runne
     )
     .expect("init_values is a JSON object"));
     assert!(feed(node, "resume-inst", b"a,bb"));
-    // The steps operator Cells are reachable by wire identity: the stream
-    // lookup only scans OperatorInstance cells, so the restore handler
-    // finds a steps operator Cell by identity or not at all.
-    let even_id =
-        crate::cell::flusher::encode_cell_identity("resume-inst", "steps_fan_op", "even");
+    // The steps relay Cells are reachable by wire identity: the stream
+    // lookup only scans RelayInstance cells, so the restore handler
+    // finds a steps relay Cell by identity or not at all.
+    let even_id = crate::cell::flusher::encode_cell_identity("resume-inst", "steps_fan_op", "even");
     let (resume_instance, _slot) = find_cell(node, &even_id)
         .expect("a durable steps Cell is reachable by the restore handler");
     // Release one restore, exactly as the RestoreInitState handler does after
@@ -91,7 +90,7 @@ pub(super) fn task_journal_commits(node: &mut RunnerNode, rx: &Receiver<RunnerMe
         vec![0, 1],
         "one gated TaskCommit per completed stage, in chain order"
     );
-    assert!(commits.iter().all(|c| c.operator_id == "chain-commit"));
+    assert!(commits.iter().all(|c| c.relay_id == "chain-commit"));
     // Stage 0 hands off on the codec'd `mid` channel (id 1: in=0, mid=1);
     // the terminal stage's output is plugin-bound (no codec) ⇒ empty.
     assert_eq!(commits[0].handoff.len(), 1);
@@ -108,7 +107,7 @@ pub(super) fn task_journal_commits(node: &mut RunnerNode, rx: &Receiver<RunnerMe
     // channel, and was released only once the commit was acked.
     assert!(
         wire_emits_for("chain-commit").is_empty(),
-        "a durable structured operator writes its output into its records"
+        "a durable structured relay writes its output into its records"
     );
     assert!(
         commits[0].cells_ran[0].channels.is_empty(),

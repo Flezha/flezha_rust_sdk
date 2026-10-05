@@ -1,6 +1,6 @@
 //! Lifecycle and structured-chain scenarios: a single pass, a failure, a
 //! completion and its tie-break, an inbox loop a tasklet ends, a stop, and
-//! the `AddOperator` kind routing.
+//! the `AddRelay` kind routing.
 
 use std::sync::atomic::Ordering;
 
@@ -10,7 +10,7 @@ use flz_core::runner::RunnerNode;
 use super::super::fake_controller::*;
 use super::super::fixtures::*;
 use crate::command::CommandAction;
-use crate::pb::{AddOperator, StepsStop};
+use crate::pb::{AddRelay, StepsStop};
 use crate::runner::RunnerMessage;
 use crate::ErrorModel;
 
@@ -28,7 +28,7 @@ pub(super) fn lifecycle(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
     assert_eq!((done.0.as_str(), done.1.as_str()), ("ok", ""));
 
     // Instance stays registered; a duplicate start is idempotent (no re-run).
-    assert!(node.has_operator("steps-ok"));
+    assert!(node.has_relay("steps-ok"));
     assert!(
         instance(node, "steps-ok").is_some_and(|i| i.steps.is_some()),
         "a steps instance carries its run"
@@ -68,7 +68,7 @@ pub(super) fn completions(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
     assert_eq!(
         done.2,
         b"result:z".to_vec(),
-        "complete() result reaches OperatorCompleted"
+        "complete() result reaches RelayCompleted"
     );
     assert_eq!(
         completions_of(drain_task_commits(), "steps-c"),
@@ -102,12 +102,7 @@ pub(super) fn completions(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
     );
 
     // --- a failure later in the iteration discards the completion ---
-    assert!(start_fed(
-        node,
-        "test-complete-then-fail",
-        "steps-cf",
-        b"x"
-    ));
+    assert!(start_fed(node, "test-complete-then-fail", "steps-cf", b"x"));
     let (_o, done) = drain(rx, "steps-cf");
     assert_eq!(done.0, "error");
     assert!(done.1.contains("boom after complete"), "{}", done.1);
@@ -119,7 +114,7 @@ pub(super) fn completions(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
 fn completions_of(commits: Vec<crate::pb::TaskCommit>, id: &str) -> Vec<Option<Vec<u8>>> {
     commits
         .into_iter()
-        .filter(|c| c.operator_id == id && !c.compensating)
+        .filter(|c| c.relay_id == id && !c.compensating)
         .map(|c| c.completes.then_some(c.result))
         .collect()
 }
@@ -149,7 +144,7 @@ pub(super) fn loop_stop_and_removal(node: &mut RunnerNode, rx: &Receiver<RunnerM
     // Drain the echo first so the instance is definitely live before stop.
     wait_for_output(rx, "loop-2", b"got:one");
     let stop = StepsStop {
-        operator_id: "loop-2".into(),
+        relay_id: "loop-2".into(),
     };
     let mut errs = Vec::new();
     stop.handle(node, "", &mut errs);
@@ -157,24 +152,22 @@ pub(super) fn loop_stop_and_removal(node: &mut RunnerNode, rx: &Receiver<RunnerM
     let (_o, done) = drain(rx, "loop-2");
     assert_eq!(done.0, "cancelled", "StepsStop ⇒ cancelled");
 
-    // --- hard removal (RemOperator → stop_operator) ends the run with no
+    // --- hard removal (RemRelay → stop_relay) ends the run with no
     // completion: the controller removing an instance writes none ---
     assert!(start(node, "test-loop-steps".into(), "loop-3".into(), "")
         .expect("init_values is a JSON object"));
     assert!(feed(node, "loop-3", b"x"));
     wait_for_output(rx, "loop-3", b"got:x");
     assert!(
-        node.stop_operator("loop-3"),
-        "stop_operator removes the steps operator"
+        node.stop_relay("loop-3"),
+        "stop_relay removes the steps relay"
     );
-    assert!(!node.has_operator("loop-3"));
+    assert!(!node.has_relay("loop-3"));
     assert_no_completion(rx, "loop-3", std::time::Duration::from_millis(300));
 
     // --- max_duration backstop → cancelled ---
-    assert!(
-        start(node, "test-timed-steps".into(), "timed-1".into(), "")
-            .expect("init_values is a JSON object")
-    );
+    assert!(start(node, "test-timed-steps".into(), "timed-1".into(), "")
+        .expect("init_values is a JSON object"));
     let (_o, done) = drain(rx, "timed-1");
     assert_eq!(done.0, "cancelled", "max_duration elapse ⇒ cancelled");
 }
@@ -191,12 +184,7 @@ pub(super) fn structured_chains(node: &mut RunnerNode, rx: &Receiver<RunnerMessa
     );
 
     // --- structured parallel static cells + barrier + per-cell state ---
-    assert!(start_fed(
-        node,
-        "test-fan-steps",
-        "fan-1",
-        b"a,bb,ccc,dddd"
-    ));
+    assert!(start_fed(node, "test-fan-steps", "fan-1", b"a,bb,ccc,dddd"));
     let (mut fan_outs, done) = drain(rx, "fan-1");
     assert_eq!(done.0, "ok");
     fan_outs.sort();
@@ -223,11 +211,11 @@ pub(super) fn structured_chains(node: &mut RunnerNode, rx: &Receiver<RunnerMessa
     assert_eq!(hybrid_outs, hybrid_expected);
 }
 
-pub(super) fn add_operator_routing(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
-    // --- AddOperator --kind steps operator routes to the steps path; its
+pub(super) fn add_relay_routing(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
+    // --- AddRelay --kind steps relay routes to the steps path; its
     // init_values are state, never the first message ---
-    let add = AddOperator {
-        operator_id: "steps-via-add".into(),
+    let add = AddRelay {
+        relay_id: "steps-via-add".into(),
         factory_id: "test-emit-steps".into(),
         init_values: "{}".into(),
         run: "steps".into(),
@@ -239,7 +227,7 @@ pub(super) fn add_operator_routing(node: &mut RunnerNode, rx: &Receiver<RunnerMe
     add.handle(node, "", &mut errors);
     assert!(
         errors.is_empty(),
-        "AddOperator --kind steps should not error: {errors:?}"
+        "AddRelay --kind steps should not error: {errors:?}"
     );
     assert!(feed(node, "steps-via-add", b"argz"));
     let (outs, done) = drain(rx, "steps-via-add");
@@ -247,8 +235,8 @@ pub(super) fn add_operator_routing(node: &mut RunnerNode, rx: &Receiver<RunnerMe
     assert_eq!(done.0, "ok");
 
     // --- init_values that are not a JSON object are refused at the bind ---
-    let add_text = AddOperator {
-        operator_id: "steps-text-init".into(),
+    let add_text = AddRelay {
+        relay_id: "steps-text-init".into(),
         factory_id: "test-emit-steps".into(),
         init_values: "argz".into(),
         run: "steps".into(),
@@ -267,9 +255,9 @@ pub(super) fn add_operator_routing(node: &mut RunnerNode, rx: &Receiver<RunnerMe
         "a refused document starts nothing"
     );
 
-    // --- AddOperator for an unregistered factory reports it ---
-    let add_bad = AddOperator {
-        operator_id: "steps-bad".into(),
+    // --- AddRelay for an unregistered factory reports it ---
+    let add_bad = AddRelay {
+        relay_id: "steps-bad".into(),
         factory_id: "test-unregistered".into(),
         ..Default::default()
     };
@@ -284,8 +272,8 @@ pub(super) fn add_operator_routing(node: &mut RunnerNode, rx: &Receiver<RunnerMe
     assert!(errors_bad[0].to_string().contains("test-unregistered"));
 
     // --- the class says how it runs: the wire's run string is not read ---
-    let add_other_kind = AddOperator {
-        operator_id: "kind-other".into(),
+    let add_other_kind = AddRelay {
+        relay_id: "kind-other".into(),
         factory_id: "test-emit-steps".into(),
         run: "flow".into(),
         ..Default::default()
@@ -297,5 +285,5 @@ pub(super) fn add_operator_routing(node: &mut RunnerNode, rx: &Receiver<RunnerMe
         instance(node, "kind-other").is_some_and(|i| i.steps.is_some()),
         "a steps class binds a steps instance whatever the wire says"
     );
-    assert!(node.stop_operator("kind-other"));
+    assert!(node.stop_relay("kind-other"));
 }

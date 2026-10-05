@@ -1,4 +1,4 @@
-//! Channel authoring surface — typed end-to-end with per-operator
+//! Channel authoring surface — typed end-to-end with per-relay
 //! namespacing. The runtime kernel (descriptors, edges, policies) lives in
 //! `flz_core::channel` and is re-exported here; the stream handles are typed
 //! by payload so wiring errors fire at compile time. Channel names are

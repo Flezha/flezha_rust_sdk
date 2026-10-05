@@ -201,7 +201,7 @@ pub(super) fn retry_stop_and_stage(node: &mut RunnerNode, rx: &Receiver<RunnerMe
         probe_keys().len() * 2,
         "one failed attempt and one success per cell"
     );
-    let base = crate::operator::poll_pool::base_worker_count();
+    let base = crate::relay::poll_pool::base_worker_count();
     for (key, thread) in &attempts {
         let worker = thread.strip_prefix("flz-poll-").unwrap_or_else(|| {
             panic!("cell {key} ran its step on {thread}, not on an SDK poll worker")

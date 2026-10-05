@@ -11,10 +11,10 @@ use flz_core::runner::RunnerNode;
 
 use super::super::fake_controller::*;
 use super::super::fixtures::*;
-use crate::steps::instance;
 use crate::command::CommandAction;
 use crate::pb::StepsStop;
 use crate::runner::RunnerMessage;
+use crate::steps::instance;
 
 /// The next `count` outputs of `id`, in order, with every control request
 /// answered on the way.
@@ -25,14 +25,14 @@ fn outputs(rx: &Receiver<RunnerMessage>, id: &str, count: usize) -> Vec<Vec<u8>>
 fn stop(node: &mut RunnerNode, id: &str) {
     let mut errors = Vec::new();
     StepsStop {
-        operator_id: id.into(),
+        relay_id: id.into(),
     }
     .handle(node, "", &mut errors);
     assert!(errors.is_empty(), "{errors:?}");
 }
 
 pub(super) fn entrance(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
-    // --- init_values is state for a steps operator, in place before its first message ---
+    // --- init_values is state for a steps relay, in place before its first message ---
     assert!(start(
         node,
         "test-budget-once".into(),
@@ -107,7 +107,7 @@ pub(super) fn entrance(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
     assert_eq!(
         drain_iter_commits()
             .iter()
-            .filter(|c| c.operator_id == "countdown-1")
+            .filter(|c| c.relay_id == "countdown-1")
             .map(|c| c.consumed_offset)
             .collect::<Vec<_>>(),
         vec![Some(0), None, None],
@@ -138,7 +138,7 @@ pub(super) fn once_waits(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
     let parks = drain_iter_parks();
     assert_eq!(parks.len(), 1);
     assert_eq!(parks[0].iter, 0, "the park names pass 0");
-    assert!(node.stop_operator("once-parks"));
+    assert!(node.stop_relay("once-parks"));
     assert!(start_resumable(
         node,
         "test-emit-steps".into(),
@@ -167,9 +167,7 @@ pub(super) fn once_waits(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
             .expect("init_values is a JSON object")
     );
     match rx.recv_timeout(Duration::from_millis(400)) {
-        Ok(RunnerMessage::EmitOperatorCompleted { operator_id, .. })
-            if operator_id == "once-waits" =>
-        {
+        Ok(RunnerMessage::EmitRelayCompleted { relay_id, .. }) if relay_id == "once-waits" => {
             panic!("an opted-out once run ended instead of waiting")
         }
         _ => {}

@@ -4,10 +4,10 @@
 use std::sync::{Arc, Mutex};
 
 use super::*;
-use crate::steps::*;
-use crate::{Operator, OperatorSettings, Run};
 use crate::channel::ChannelBuilder;
+use crate::steps::*;
 use crate::tasklet::{Ctx, Tasklet, TaskletError};
+use crate::{Relay, RelaySettings, Run};
 
 // ---- fan-in / diamond tasks (`steps-branching` fan-in accumulates) ------
 
@@ -56,7 +56,7 @@ diamond_op!(DiamondJoin, "steps_join_op", "j");
 /// The diamond A→(B,C)→D: both branch outputs accumulate into the one
 /// join node (two unnamed mentions unify), which closes plugin-bound.
 pub(crate) struct DiamondSteps;
-impl Operator for DiamondSteps {
+impl Relay for DiamondSteps {
     fn factory_id() -> &'static str {
         "test-diamond-steps"
     }
@@ -69,17 +69,20 @@ impl Operator for DiamondSteps {
             .sink_named("d_out");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
-            run: Run::Steps { each: Each::Once, on_failure: OnFailure::UndoAll },
-            ..OperatorSettings::default()
+    fn settings() -> RelaySettings {
+        RelaySettings {
+            run: Run::Steps {
+                each: Each::Once,
+                on_failure: OnFailure::UndoAll,
+            },
+            ..RelaySettings::default()
         }
     }
 }
 
 /// Kahn-shape twin used by the registration test (no driver run).
 pub(crate) struct JoinSteps;
-impl Operator for JoinSteps {
+impl Relay for JoinSteps {
     fn factory_id() -> &'static str {
         "test-join-steps-shape"
     }
@@ -89,10 +92,13 @@ impl Operator for JoinSteps {
         mid.into::<EchoTask>().named("join_c").into::<DiamondJoin>();
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
-            run: Run::Steps { each: Each::Once, on_failure: OnFailure::UndoAll },
-            ..OperatorSettings::default()
+    fn settings() -> RelaySettings {
+        RelaySettings {
+            run: Run::Steps {
+                each: Each::Once,
+                on_failure: OnFailure::UndoAll,
+            },
+            ..RelaySettings::default()
         }
     }
 }
@@ -101,7 +107,7 @@ impl Operator for JoinSteps {
 /// abort must undo the join BEFORE either producer, and the shared root
 /// last (reverse-topological compensation over a DAG).
 pub(crate) struct DiamondSaga;
-impl Operator for DiamondSaga {
+impl Relay for DiamondSaga {
     fn factory_id() -> &'static str {
         "test-diamond-saga"
     }
@@ -116,10 +122,13 @@ impl Operator for DiamondSaga {
         join.into::<SagaShipFails>().sink_named("d_out");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
-            run: Run::Steps { each: Each::Once, on_failure: OnFailure::UndoAll },
-            ..OperatorSettings::default()
+    fn settings() -> RelaySettings {
+        RelaySettings {
+            run: Run::Steps {
+                each: Each::Once,
+                on_failure: OnFailure::UndoAll,
+            },
+            ..RelaySettings::default()
         }
     }
 }
@@ -156,7 +165,7 @@ impl Tasklet for MergeJoinTask {
 /// each edge's mapping both where it accumulates a producer's released
 /// batch and where a resume re-seeds from the journaled handoff.
 pub(crate) struct MergeSteps;
-impl Operator for MergeSteps {
+impl Relay for MergeSteps {
     fn factory_id() -> &'static str {
         "test-merge-steps"
     }
@@ -171,10 +180,13 @@ impl Operator for MergeSteps {
             .sink_named("m_out");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
-            run: Run::Steps { each: Each::Once, on_failure: OnFailure::UndoAll },
-            ..OperatorSettings::default()
+    fn settings() -> RelaySettings {
+        RelaySettings {
+            run: Run::Steps {
+                each: Each::Once,
+                on_failure: OnFailure::UndoAll,
+            },
+            ..RelaySettings::default()
         }
     }
 }
@@ -184,7 +196,7 @@ impl Operator for MergeSteps {
 /// without containment its unwind would take the worker with it and the
 /// instance would never report.
 pub(crate) struct PanickingMergeSteps;
-impl Operator for PanickingMergeSteps {
+impl Relay for PanickingMergeSteps {
     fn factory_id() -> &'static str {
         "test-panic-merge-steps"
     }
@@ -199,10 +211,13 @@ impl Operator for PanickingMergeSteps {
             .sink_named("pm_out");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
-            run: Run::Steps { each: Each::Once, on_failure: OnFailure::UndoAll },
-            ..OperatorSettings::default()
+    fn settings() -> RelaySettings {
+        RelaySettings {
+            run: Run::Steps {
+                each: Each::Once,
+                on_failure: OnFailure::UndoAll,
+            },
+            ..RelaySettings::default()
         }
     }
 }
@@ -210,7 +225,7 @@ impl Operator for PanickingMergeSteps {
 /// A plain edge `map` on an inter-tasklet edge — the same routing seam a
 /// merge mapping runs on, reached without a merge.
 pub(crate) struct PanickingTransformSteps;
-impl Operator for PanickingTransformSteps {
+impl Relay for PanickingTransformSteps {
     fn factory_id() -> &'static str {
         "test-panic-transform-steps"
     }
@@ -223,10 +238,13 @@ impl Operator for PanickingTransformSteps {
             .sink_named("pt_out");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
-            run: Run::Steps { each: Each::Once, on_failure: OnFailure::UndoAll },
-            ..OperatorSettings::default()
+    fn settings() -> RelaySettings {
+        RelaySettings {
+            run: Run::Steps {
+                each: Each::Once,
+                on_failure: OnFailure::UndoAll,
+            },
+            ..RelaySettings::default()
         }
     }
 }

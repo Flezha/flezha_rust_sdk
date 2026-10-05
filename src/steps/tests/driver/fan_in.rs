@@ -6,9 +6,9 @@ use flz_core::runner::RunnerNode;
 
 use super::super::fake_controller::*;
 use super::super::fixtures::*;
-use crate::steps::*;
 use crate::cell::state_sink::COMPENSATION_DONE_PAYLOAD_ID as DONE;
 use crate::runner::RunnerMessage;
+use crate::steps::*;
 
 /// The journal a diamond-shaped chain leaves when A (the fan) and B (one
 /// branch) committed before the crash: each producer's edge handoff, plus
@@ -96,8 +96,8 @@ pub(super) fn fan_in_branching(node: &mut RunnerNode, rx: &Receiver<RunnerMessag
     // accumulates B's JOURNALED handoff with C's fresh output ---
     let _ = drain_diamond_log();
     let da_id = crate::cell::flusher::encode_cell_identity("diamond-r", "diamond_a", "");
-    let diamond_spec = crate::operator::registry::get_class("test-diamond-steps")
-        .expect("diamond class registered");
+    let diamond_spec =
+        crate::relay::registry::get_class("test-diamond-steps").expect("diamond class registered");
     let diamond_topo = &diamond_spec;
     let d_fan = diamond_topo.lookup_channel_id("d_fan").unwrap();
     let d_b = diamond_topo.lookup_channel_id("d_b").unwrap();
@@ -193,7 +193,7 @@ pub(super) fn merge_mapping(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>)
     let _ = drain_task_commits();
     let ma_id = crate::cell::flusher::encode_cell_identity("merge-r", "diamond_a", "");
     let merge_spec =
-        crate::operator::registry::get_class("test-merge-steps").expect("merge class registered");
+        crate::relay::registry::get_class("test-merge-steps").expect("merge class registered");
     let merge_topo = &merge_spec;
     let m_fan = merge_topo.lookup_channel_id("m_fan").unwrap();
     let m_b = merge_topo.lookup_channel_id("m_b").unwrap();
@@ -221,7 +221,7 @@ pub(super) fn merge_mapping(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>)
 
     // --- a panicking mapping is CONTAINED. It runs on the driver thread,
     // outside any cell invocation, so an unguarded unwind would kill the
-    // thread before `emit_operator_completed` and strand the instance ---
+    // thread before `emit_relay_completed` and strand the instance ---
     let _ = drain_comp_log();
     let _ = drain_diamond_log();
     let _ = drain_task_commits();
@@ -234,7 +234,7 @@ pub(super) fn merge_mapping(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>)
     let (outs, done) = drain(rx, "merge-panic");
     assert_eq!(
         done.0, "error",
-        "the operator still REPORTS — the panic did not take the driver with it"
+        "the relay still REPORTS — the panic did not take the driver with it"
     );
     assert!(
         done.1.contains("edge transform panicked") && done.1.contains("merge mapping blew up"),
@@ -306,7 +306,7 @@ pub(super) fn merge_mapping(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>)
     let _ = drain_task_commits();
     let pa_id = crate::cell::flusher::encode_cell_identity("merge-panic-r", "diamond_a", "");
     let pb_id = crate::cell::flusher::encode_cell_identity("merge-panic-r", "diamond_b", "");
-    let panic_spec = crate::operator::registry::get_class("test-panic-merge-steps")
+    let panic_spec = crate::relay::registry::get_class("test-panic-merge-steps")
         .expect("panic merge class registered");
     let panic_topo = &panic_spec;
     let pm_fan = panic_topo.lookup_channel_id("pm_fan").unwrap();
@@ -369,12 +369,12 @@ pub(super) fn merge_mapping(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>)
 
 pub(super) fn branching_resume(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
     // --- steps-branching: A→(B,C) runs to DONE — both branches receive
-    // what A released on the channel they consume, and the operator is `ok`
+    // what A released on the channel they consume, and the relay is `ok`
     // exactly when every leaf has committed ---
     let _ = drain_task_commits();
     assert!(start_fed(node, "test-tree-steps", "tree-1", b"x"));
     let (mut tree_outs, done) = drain(rx, "tree-1");
-    assert_eq!(done.0, "ok", "both leaves committed ⇒ the operator is done");
+    assert_eq!(done.0, "ok", "both leaves committed ⇒ the relay is done");
     tree_outs.sort();
     assert_eq!(
         tree_outs,

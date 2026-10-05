@@ -11,9 +11,9 @@ use crate::channel::ChannelBuilder;
 use crate::steps::*;
 use crate::tasklet::change::Change;
 use crate::tasklet::{Ctx, Tasklet, TaskletError};
-use crate::{Durable, Operator, OperatorSettings, Run, SleepAfter};
+use crate::{Durable, Relay, RelaySettings, Run, SleepAfter};
 
-// ---- structured tasklets + operators ----------------------------------
+// ---- structured tasklets + relays ----------------------------------
 
 string_task!(EchoTask, "steps_echo_op", |input, ctx| ctx
     .emit(format!("echo:{input}")));
@@ -34,7 +34,7 @@ pub(crate) fn tree_chain(c: &ChannelBuilder) {
 }
 
 pub(crate) struct TreeSteps;
-impl Operator for TreeSteps {
+impl Relay for TreeSteps {
     fn factory_id() -> &'static str {
         "test-tree-steps"
     }
@@ -42,13 +42,13 @@ impl Operator for TreeSteps {
         tree_chain(c);
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             run: Run::Steps {
                 each: Each::Once,
                 on_failure: OnFailure::UndoAll,
             },
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }
@@ -65,7 +65,7 @@ pub(crate) fn two_stage_chain(c: &ChannelBuilder) {
 }
 
 pub(crate) struct ChainSteps;
-impl Operator for ChainSteps {
+impl Relay for ChainSteps {
     fn factory_id() -> &'static str {
         "test-chain-steps"
     }
@@ -73,8 +73,8 @@ impl Operator for ChainSteps {
         two_stage_chain(c);
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             run: Run::Steps {
                 each: Each::Once,
                 on_failure: OnFailure::UndoAll,
@@ -82,7 +82,7 @@ impl Operator for ChainSteps {
             durable: Durable::Local {
                 sleep_after: SleepAfter::After(SHORT_SLEEP),
             },
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }
@@ -91,7 +91,7 @@ impl Operator for ChainSteps {
 /// post-start input, parking when the inbox goes quiet
 /// (`steps-durable-loop` + `durable-suspension`).
 pub(crate) struct ChatLoop;
-impl Operator for ChatLoop {
+impl Relay for ChatLoop {
     fn factory_id() -> &'static str {
         "test-chat-loop"
     }
@@ -99,8 +99,8 @@ impl Operator for ChatLoop {
         two_stage_chain(c);
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             run: Run::Steps {
                 each: Each::PerInput,
                 on_failure: OnFailure::UndoAll,
@@ -109,7 +109,7 @@ impl Operator for ChatLoop {
             durable: Durable::Local {
                 sleep_after: SleepAfter::After(SHORT_SLEEP),
             },
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }
@@ -122,7 +122,7 @@ string_task!(PartTurn, "steps_part_turn", |input, ctx| {
 
 /// A `per_input` loop whose one stage sends two parts before its answer.
 pub(crate) struct PartLoop;
-impl Operator for PartLoop {
+impl Relay for PartLoop {
     fn factory_id() -> &'static str {
         "test-part-loop"
     }
@@ -132,8 +132,8 @@ impl Operator for PartLoop {
             .sink_named("answer");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             run: Run::Steps {
                 each: Each::PerInput,
                 on_failure: OnFailure::UndoAll,
@@ -142,7 +142,7 @@ impl Operator for PartLoop {
             durable: Durable::Local {
                 sleep_after: SleepAfter::After(SHORT_SLEEP),
             },
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }
@@ -184,7 +184,7 @@ string_task!(LoopMaybeFail, "loop_maybe_fail", |input, ctx| {
 /// Inbox-driven saga loop, all-or-nothing: a failing turn unwinds every
 /// committed turn too.
 pub(crate) struct LoopSagaUndoAll;
-impl Operator for LoopSagaUndoAll {
+impl Relay for LoopSagaUndoAll {
     fn factory_id() -> &'static str {
         "test-loop-saga-aon"
     }
@@ -192,8 +192,8 @@ impl Operator for LoopSagaUndoAll {
         loop_saga_chain(c);
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             run: Run::Steps {
                 each: Each::PerInput,
                 on_failure: OnFailure::UndoAll,
@@ -202,14 +202,14 @@ impl Operator for LoopSagaUndoAll {
             durable: Durable::Local {
                 sleep_after: SleepAfter::After(SHORT_SLEEP),
             },
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }
 
 /// The same loop, keep-progress: a failing turn unwinds only itself.
 pub(crate) struct LoopSagaKeepProgress;
-impl Operator for LoopSagaKeepProgress {
+impl Relay for LoopSagaKeepProgress {
     fn factory_id() -> &'static str {
         "test-loop-saga-keep"
     }
@@ -217,8 +217,8 @@ impl Operator for LoopSagaKeepProgress {
         loop_saga_chain(c);
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             run: Run::Steps {
                 each: Each::PerInput,
                 on_failure: OnFailure::KeepProgress,
@@ -227,7 +227,7 @@ impl Operator for LoopSagaKeepProgress {
             durable: Durable::Local {
                 sleep_after: SleepAfter::After(SHORT_SLEEP),
             },
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }
@@ -244,7 +244,7 @@ pub(crate) fn loop_saga_chain(c: &ChannelBuilder) {
 /// no consumer is wired from it and it names no sink, so it owns no output
 /// channel at all and iteration N+1 has no handoff to be re-seeded from.
 pub(crate) struct ChainedLoopNoTerminalOutput;
-impl Operator for ChainedLoopNoTerminalOutput {
+impl Relay for ChainedLoopNoTerminalOutput {
     fn factory_id() -> &'static str {
         "test-chained-loop-no-terminal-output"
     }
@@ -252,13 +252,13 @@ impl Operator for ChainedLoopNoTerminalOutput {
         c.input::<String>("in").into::<Stage1>().into::<Stage2>();
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             run: Run::Steps {
                 each: Each::Chained,
                 on_failure: OnFailure::UndoAll,
             },
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }
@@ -268,7 +268,7 @@ impl Operator for ChainedLoopNoTerminalOutput {
 /// and carries no journal codec. The iteration commit would ship an empty
 /// handoff and the resume would read the loop as converged.
 pub(crate) struct ChainedLoopPluginTerminal;
-impl Operator for ChainedLoopPluginTerminal {
+impl Relay for ChainedLoopPluginTerminal {
     fn factory_id() -> &'static str {
         "test-chained-loop-plugin-terminal"
     }
@@ -280,13 +280,13 @@ impl Operator for ChainedLoopPluginTerminal {
             .sink_named("out");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             run: Run::Steps {
                 each: Each::Chained,
                 on_failure: OnFailure::UndoAll,
             },
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }
@@ -338,7 +338,7 @@ impl Tasklet for FanTask {
 
 /// Split → fan-out across static cells → plugin.
 pub(crate) struct FanSteps;
-impl Operator for FanSteps {
+impl Relay for FanSteps {
     fn factory_id() -> &'static str {
         "test-fan-steps"
     }
@@ -350,13 +350,13 @@ impl Operator for FanSteps {
             .sink_named("out");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             run: Run::Steps {
                 each: Each::Once,
                 on_failure: OnFailure::UndoAll,
             },
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }
@@ -364,7 +364,7 @@ impl Operator for FanSteps {
 /// Opt-out twin of `FanSteps`: identical topology, persistence disabled —
 /// its Changes drain-and-discard instead of reaching the WAL.
 pub(crate) struct FanOptOutSteps;
-impl Operator for FanOptOutSteps {
+impl Relay for FanOptOutSteps {
     fn factory_id() -> &'static str {
         "test-fan-optout-steps"
     }
@@ -376,14 +376,14 @@ impl Operator for FanOptOutSteps {
             .sink_named("out");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             run: Run::Steps {
                 each: Each::Once,
                 on_failure: OnFailure::UndoAll,
             },
             durable: Durable::Memory,
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }
@@ -397,7 +397,7 @@ string_task!(HybridStage2, "steps_hybrid_stage2", |input, ctx| ctx
 /// Hybrid inter-tasklet channel (`sink_with`): Stage1's output
 /// both feeds Stage2 AND is serialized to a plugin sink.
 pub(crate) struct HybridSteps;
-impl Operator for HybridSteps {
+impl Relay for HybridSteps {
     fn factory_id() -> &'static str {
         "test-hybrid-steps"
     }
@@ -409,13 +409,13 @@ impl Operator for HybridSteps {
             .sink_named("out");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             run: Run::Steps {
                 each: Each::Once,
                 on_failure: OnFailure::UndoAll,
             },
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }

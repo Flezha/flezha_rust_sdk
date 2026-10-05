@@ -1,7 +1,7 @@
 //! A stream detector that hands each interesting event to a short-lived
 //! steps worker.
 //!
-//! The pattern this exists for: a flow operator notices something worth
+//! The pattern this exists for: a flow relay notices something worth
 //! doing real work about, and wants a worker for it, without an external
 //! dispatcher, and without becoming one itself.
 //!
@@ -22,17 +22,19 @@
 //! With authorization on, the default in a release, bind the namespace's runner
 //! principal to `spawner` first, or every spawn resolves `Refused`:
 //!     flz role bind runner@default spawner default
-//! The role also lets this runner's `control()` start operators and its `send`
-//! reach operators in its namespace, and nothing else.
+//! The role also lets this runner's `control()` start relays and its `send`
+//! reach relays in its namespace, and nothing else.
 
 use flezha_runner::tasklet::{IfRunning, SpawnOptions};
-use flezha_runner::{ChannelBuilder, Ctx, Each, OnFailure, Operator, OperatorSettings, Run, Tasklet, TaskletError, tasklet};
+use flezha_runner::{
+    tasklet, ChannelBuilder, Ctx, Each, OnFailure, Relay, RelaySettings, Run, Tasklet, TaskletError,
+};
 
 // -- the detector: stream, one instance, runs forever ---------------------
 
 struct AlertDetector;
 
-impl Operator for AlertDetector {
+impl Relay for AlertDetector {
     fn factory_id() -> &'static str {
         "alert_detector"
     }
@@ -71,11 +73,11 @@ impl Tasklet for Detect {
     }
 }
 
-// -- the worker: steps operator, one per subject, torn down when its pass ends -----
+// -- the worker: steps relay, one per subject, torn down when its pass ends -----
 
 struct Triage;
 
-impl Operator for Triage {
+impl Relay for Triage {
     fn factory_id() -> &'static str {
         "triage"
     }
@@ -86,10 +88,13 @@ impl Operator for Triage {
             .sink_named("triaged");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
-            run: Run::Steps { each: Each::Once, on_failure: OnFailure::UndoAll },
-            ..OperatorSettings::default()
+    fn settings() -> RelaySettings {
+        RelaySettings {
+            run: Run::Steps {
+                each: Each::Once,
+                on_failure: OnFailure::UndoAll,
+            },
+            ..RelaySettings::default()
         }
     }
 }

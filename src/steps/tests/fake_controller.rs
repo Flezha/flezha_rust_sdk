@@ -24,7 +24,7 @@ pub(crate) static ITER_COMMITS: Mutex<Vec<crate::pb::IterCommit>> = Mutex::new(V
 /// committed boundary.
 pub(crate) static ITER_PARKS: Mutex<Vec<crate::pb::IterPark>> = Mutex::new(Vec::new());
 
-/// Every barrier send the fake controller saw, `(operator_id,
+/// Every barrier send the fake controller saw, `(relay_id,
 /// reference_id)`, re-sends included.
 pub(crate) static BARRIER_SENDS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
 
@@ -32,18 +32,18 @@ pub(crate) static BARRIER_SENDS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::
 /// them is acked from the existing entry, never recorded twice.
 pub(crate) static JOURNALED_REFS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-/// Per operator, how many barriers lose their first ack on the way back
+/// Per relay, how many barriers lose their first ack on the way back
 /// (`usize::MAX` = every send of every barrier). A lost ack is the real
 /// controller's: the entry is journaled and the records it names released,
 /// only the reply never reaches the runner.
 pub(crate) static LOST_ACKS: Mutex<Vec<(String, usize)>> = Mutex::new(Vec::new());
 
 /// Every plugin frame written STRAIGHT to the wire, bypassing any task
-/// boundary. A durable structured operator writes none (its output rides its
+/// boundary. A durable structured relay writes none (its output rides its
 /// Cells' effect records); an opted-out class does.
 pub(crate) static WIRE_EMITS: Mutex<Vec<(String, Vec<u8>)>> = Mutex::new(Vec::new());
 
-/// What a plugin receives, in order, per operator: an opted-out class's wire
+/// What a plugin receives, in order, per relay: an opted-out class's wire
 /// output, and a durable one's record outputs once the commit naming the
 /// records is acked.
 pub(crate) static DELIVERED: Mutex<Vec<(String, Vec<u8>)>> = Mutex::new(Vec::new());
@@ -53,13 +53,13 @@ pub(crate) static DELIVERED: Mutex<Vec<(String, Vec<u8>)>> = Mutex::new(Vec::new
 pub(crate) fn capturing_wire() -> Arc<flz_transport::transport::FlezhaStream> {
     Arc::new(flz_transport::transport::FlezhaStream::Local(Arc::new(
         |frame: &[u8]| {
-            let (operator_id, payload, _metadata) =
+            let (relay_id, payload, _metadata) =
                 flz_transport::service::payloader::extract_payload(frame)?;
             WIRE_EMITS
                 .lock()
                 .unwrap()
-                .push((operator_id.clone(), payload.clone()));
-            DELIVERED.lock().unwrap().push((operator_id, payload));
+                .push((relay_id.clone(), payload.clone()));
+            DELIVERED.lock().unwrap().push((relay_id, payload));
             Ok(())
         },
     )))
@@ -123,29 +123,29 @@ pub(crate) fn drain_barrier_sends() -> Vec<(String, String)> {
     std::mem::take(&mut *BARRIER_SENDS.lock().unwrap())
 }
 
-/// The reference ids of `operator_id`'s barrier sends, in order.
-pub(crate) fn barrier_sends_of(operator_id: &str) -> Vec<String> {
+/// The reference ids of `relay_id`'s barrier sends, in order.
+pub(crate) fn barrier_sends_of(relay_id: &str) -> Vec<String> {
     BARRIER_SENDS
         .lock()
         .unwrap()
         .iter()
-        .filter(|(id, _)| id == operator_id)
+        .filter(|(id, _)| id == relay_id)
         .map(|(_, reference_id)| reference_id.clone())
         .collect()
 }
 
-pub(crate) fn lose_acks(operator_id: &str, count: usize) {
+pub(crate) fn lose_acks(relay_id: &str, count: usize) {
     LOST_ACKS
         .lock()
         .unwrap()
-        .push((operator_id.to_string(), count));
+        .push((relay_id.to_string(), count));
 }
 
 /// Whether this send's ack is lost: a barrier's first send consumes one of
-/// the operator's losses, a re-send is acked — unless every ack is lost.
-pub(crate) fn ack_lost(operator_id: &str, first_send: bool) -> bool {
+/// the relay's losses, a re-send is acked — unless every ack is lost.
+pub(crate) fn ack_lost(relay_id: &str, first_send: bool) -> bool {
     let mut lost = LOST_ACKS.lock().unwrap();
-    match lost.iter_mut().find(|(id, _)| id == operator_id) {
+    match lost.iter_mut().find(|(id, _)| id == relay_id) {
         Some((_, n)) if *n == usize::MAX => true,
         Some((_, n)) if *n > 0 && first_send => {
             *n -= 1;
@@ -157,9 +157,9 @@ pub(crate) fn ack_lost(operator_id: &str, first_send: bool) -> bool {
 
 /// The controller's barrier handling: a first send is journaled (`record`)
 /// and the records it names released, a re-send is acked from the existing
-/// entry, unless this operator's ack is lost on the way back.
+/// entry, unless this relay's ack is lost on the way back.
 pub(crate) fn journal_barrier(
-    operator_id: &str,
+    relay_id: &str,
     reference_id: &str,
     released: Vec<Vec<u8>>,
     record: impl FnOnce(),
@@ -167,7 +167,7 @@ pub(crate) fn journal_barrier(
     BARRIER_SENDS
         .lock()
         .unwrap()
-        .push((operator_id.to_string(), reference_id.to_string()));
+        .push((relay_id.to_string(), reference_id.to_string()));
     let fresh = {
         let mut refs = JOURNALED_REFS.lock().unwrap();
         let fresh = !refs.iter().any(|r| r == reference_id);
@@ -179,12 +179,12 @@ pub(crate) fn journal_barrier(
     if fresh {
         record();
     }
-    if !ack_lost(operator_id, fresh) {
+    if !ack_lost(relay_id, fresh) {
         crate::shutdown::signal_result(reference_id, Ok(String::new()));
     }
     if fresh {
         let mut delivered = DELIVERED.lock().unwrap();
-        delivered.extend(released.into_iter().map(|p| (operator_id.to_string(), p)));
+        delivered.extend(released.into_iter().map(|p| (relay_id.to_string(), p)));
     }
 }
 
@@ -210,17 +210,17 @@ pub(crate) fn ack_control_request(
     use crate::pb::command_request::Command;
     match command {
         Command::TaskCommit(commit) => {
-            let operator_id = commit.operator_id.clone();
+            let relay_id = commit.relay_id.clone();
             journal_barrier(
-                &operator_id,
+                &relay_id,
                 &reference_id,
                 released(&commit.cells_ran),
                 || TASK_COMMITS.lock().unwrap().push(commit),
             )
         }
         Command::IterCommit(commit) => {
-            let operator_id = commit.operator_id.clone();
-            journal_barrier(&operator_id, &reference_id, Vec::new(), || {
+            let relay_id = commit.relay_id.clone();
+            journal_barrier(&relay_id, &reference_id, Vec::new(), || {
                 ITER_COMMITS.lock().unwrap().push(commit)
             })
         }
@@ -229,18 +229,18 @@ pub(crate) fn ack_control_request(
     }
 }
 
-/// The operator id an SDK-initiated control request belongs to.
-pub(crate) fn control_request_operator(command: &crate::pb::command_request::Command) -> String {
+/// The relay id an SDK-initiated control request belongs to.
+pub(crate) fn control_request_relay(command: &crate::pb::command_request::Command) -> String {
     use crate::pb::command_request::Command;
     match command {
-        Command::TaskCommit(c) => c.operator_id.clone(),
-        Command::IterCommit(c) => c.operator_id.clone(),
-        Command::IterPark(p) => p.operator_id.clone(),
+        Command::TaskCommit(c) => c.relay_id.clone(),
+        Command::IterCommit(c) => c.relay_id.clone(),
+        Command::IterPark(p) => p.relay_id.clone(),
         _ => String::new(),
     }
 }
 
-/// Bind steps operator `id` of `factory` as `AddOperator` does, resuming with
+/// Bind steps relay `id` of `factory` as `AddRelay` does, resuming with
 /// `expected` Cell restores, `owed_inbox` re-forwarded messages and the
 /// journal; `Ok(false)` names an unregistered class, `Err` a refused
 /// `init_values`.
@@ -264,17 +264,17 @@ pub(crate) fn start_resumable(
         factory,
         id,
         init_values,
-        flz_core::operator::instance::KeyGroupRange::UNPARTITIONED,
+        flz_core::relay::instance::KeyGroupRange::UNPARTITIONED,
         resume,
     )
 }
 
-/// A fresh bind of steps operator `id` as the partition member owning `range`.
+/// A fresh bind of steps relay `id` as the partition member owning `range`.
 pub(crate) fn start_partitioned(
     node: &RunnerNode,
     factory: &str,
     id: &str,
-    range: flz_core::operator::instance::KeyGroupRange,
+    range: flz_core::relay::instance::KeyGroupRange,
 ) -> bool {
     bind(
         node,
@@ -292,25 +292,25 @@ fn bind(
     factory: String,
     id: String,
     init_values: &str,
-    range: flz_core::operator::instance::KeyGroupRange,
+    range: flz_core::relay::instance::KeyGroupRange,
     resume: flz_core::steps::Resume,
 ) -> Result<bool, flz_core::Error> {
-    // A duplicate never initializes twice, as `AddOperator` guards it.
-    if node.has_operator(&id) {
+    // A duplicate never initializes twice, as `AddRelay` guards it.
+    if node.has_relay(&id) {
         return Ok(true);
     }
-    let Some(instance) = node.start_operator(factory, id.clone(), range, resume) else {
+    let Some(instance) = node.start_relay(factory, id.clone(), range, resume) else {
         return Ok(false);
     };
     if let Err(e) = flz_core::command::cell_state::apply_init_values(&instance, init_values) {
-        node.stop_operator(&id);
+        node.stop_relay(&id);
         return Err(e);
     }
     flz_core::steps::open(&instance);
     Ok(true)
 }
 
-/// A fresh bind of steps operator `id`.
+/// A fresh bind of steps relay `id`.
 pub(crate) fn start(
     node: &RunnerNode,
     factory: String,
@@ -323,8 +323,8 @@ pub(crate) fn start(
 pub(crate) fn instance(
     node: &RunnerNode,
     id: &str,
-) -> Option<Arc<flz_core::operator::instance::OperatorInstance>> {
-    node.get_operator(id)
+) -> Option<Arc<flz_core::relay::instance::RelayInstance>> {
+    node.get_relay(id)
 }
 
 /// A live Cell by wire identity, with its instance: where a restore lands.
@@ -332,24 +332,24 @@ pub(crate) fn find_cell(
     node: &RunnerNode,
     cell_id: &[u8],
 ) -> Option<(
-    Arc<flz_core::operator::instance::OperatorInstance>,
+    Arc<flz_core::relay::instance::RelayInstance>,
     Arc<crate::cell::CellSlot>,
 )> {
     node.find_cell(cell_id)
 }
 
 /// One Cell restore landed, carrying no saga marker.
-pub(crate) fn restored(instance: &flz_core::operator::instance::OperatorInstance) {
+pub(crate) fn restored(instance: &flz_core::relay::instance::RelayInstance) {
     flz_core::steps::restore_landed(instance, &[], false, false);
 }
 
-/// One message into steps operator `id` through the entrance, on its first entry
+/// One message into steps relay `id` through the entrance, on its first entry
 /// channel; `false` when no such instance is registered.
 pub(crate) fn feed(node: &RunnerNode, id: &str, message: &[u8]) -> bool {
     feed_on(node, id, None, message)
 }
 
-/// One message into steps operator `id` naming `channel`, as `flz operator send
+/// One message into steps relay `id` naming `channel`, as `flz relay send
 /// --channel` does.
 pub(crate) fn feed_on(node: &RunnerNode, id: &str, channel: Option<&str>, message: &[u8]) -> bool {
     let metadata = channel
@@ -361,15 +361,15 @@ pub(crate) fn feed_on(node: &RunnerNode, id: &str, channel: Option<&str>, messag
 /// One message into `instance` stamped with the input-log offset the
 /// controller would have given it.
 pub(crate) fn feed_at(
-    instance: &Arc<flz_core::operator::instance::OperatorInstance>,
+    instance: &Arc<flz_core::relay::instance::RelayInstance>,
     message: &[u8],
     offset: u64,
 ) {
-    let registry = Arc::new(flz_core::operator::registry::OperatorRegistry::new());
+    let registry = Arc::new(flz_core::relay::registry::RelayRegistry::new());
     registry.register(Arc::clone(instance));
     let metadata =
         std::collections::HashMap::from([("flz.offset".to_string(), offset.to_string())]);
-    flz_core::runner::OperatorDispatchHandle { registry }.dispatch(
+    flz_core::runner::RelayDispatchHandle { registry }.dispatch(
         &instance.instance_id,
         message.to_vec(),
         &metadata,
@@ -384,10 +384,10 @@ fn dispatch(
     message: &[u8],
     metadata: &std::collections::HashMap<String, String>,
 ) -> bool {
-    if !node.has_operator(id) {
+    if !node.has_relay(id) {
         return false;
     }
-    node.operator_dispatch_handle().dispatch(
+    node.relay_dispatch_handle().dispatch(
         id,
         message.to_vec(),
         metadata,
@@ -397,15 +397,15 @@ fn dispatch(
 }
 
 /// Start `factory` under `id` and hand it `message` as its first input: what
-/// a spawn, a `send` or `flz operator start --text` does.
+/// a spawn, a `send` or `flz relay start --text` does.
 pub(crate) fn start_fed(node: &RunnerNode, factory: &str, id: &str, message: &[u8]) -> bool {
     start(node, factory.into(), id.into(), "").expect("init_values is a JSON object")
         && feed(node, id, message)
 }
 
-/// Drain control requests until the `OperatorCompleted` for `id`, returning
+/// Drain control requests until the `RelayCompleted` for `id`, returning
 /// what reached its plugins and the `(status, error, result)` completion
-/// tuple: an opted-out emit straight off the wire, a durable operator's
+/// tuple: an opted-out emit straight off the wire, a durable relay's
 /// record outputs once the commit naming them is acked.
 pub(crate) fn drain(
     rx: &Receiver<RunnerMessage>,
@@ -418,17 +418,17 @@ pub(crate) fn drain(
             .recv_timeout(remaining)
             .unwrap_or_else(|_| panic!("timed out waiting for steps {id}"));
         match msg {
-            RunnerMessage::EmitOperatorCompleted {
-                operator_id,
+            RunnerMessage::EmitRelayCompleted {
+                relay_id,
                 status,
                 error,
                 result,
-            } if operator_id == id => return (take_delivered(id), (status, error, result)),
+            } if relay_id == id => return (take_delivered(id), (status, error, result)),
             RunnerMessage::EmitControlRequest {
                 reference_id,
                 command,
             } => {
-                let for_id = control_request_operator(&command) == id;
+                let for_id = control_request_relay(&command) == id;
                 // A park tears the run down WITHOUT a completion, so the
                 // drain would otherwise wait out its deadline: report it as
                 // the terminal outcome of this run instead.
@@ -480,12 +480,10 @@ pub(crate) fn assert_no_completion(rx: &Receiver<RunnerMessage>, id: &str, wait:
     let deadline = Instant::now() + wait;
     while let Ok(message) = rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
         match message {
-            RunnerMessage::EmitOperatorCompleted {
-                operator_id,
-                status,
-                ..
+            RunnerMessage::EmitRelayCompleted {
+                relay_id, status, ..
             } => assert!(
-                operator_id != id,
+                relay_id != id,
                 "steps {id} ended with status `{status}` instead of staying quiet"
             ),
             RunnerMessage::EmitControlRequest {

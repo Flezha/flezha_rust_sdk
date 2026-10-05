@@ -4,10 +4,10 @@
 
 use crate::*;
 
-// -- Durable structured steps operators (crash-resume e2e, §7c.3) ------------
+// -- Durable structured steps relays (crash-resume e2e, §7c.3) ------------
 //
 // `commit_block_steps` and `saga_block_steps` are durable-by-default,
-// multi-tasklet steps operators that BLOCK mid-chain on the
+// multi-tasklet steps relays that BLOCK mid-chain on the
 // `FLEZHA_STEPS_E2E_RELEASE` env var so a SIGKILL of the runner lands with
 // earlier tasklets' Cell state already committed to the WAL. The resumed
 // runner is launched WITH the env set, so the respawned instance restores the
@@ -116,7 +116,7 @@ stateless_step!(EchoStep, "echo", |input, ctx| ctx
     .emit(format!("echo:{input}")));
 
 pub(crate) struct EchoSteps;
-impl Operator for EchoSteps {
+impl Relay for EchoSteps {
     fn factory_id() -> &'static str {
         "echo_steps"
     }
@@ -124,14 +124,14 @@ impl Operator for EchoSteps {
         c.input::<String>("in").into::<EchoStep>().sink_named("out");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             run: Run::Steps {
                 each: Each::Once,
                 on_failure: OnFailure::UndoAll,
             },
             durable: fixture_durable(),
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }
@@ -155,7 +155,7 @@ impl Tasklet for StaticCellStep {
 }
 
 pub(crate) struct StaticCellSteps;
-impl Operator for StaticCellSteps {
+impl Relay for StaticCellSteps {
     fn factory_id() -> &'static str {
         "static_cell_steps"
     }
@@ -165,15 +165,15 @@ impl Operator for StaticCellSteps {
             .sink_named("out");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             run: Run::Steps {
                 each: Each::PerInput,
                 on_failure: OnFailure::UndoAll,
             },
             max_duration: Some(Duration::from_secs(600)),
             durable: fixture_durable(),
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }
@@ -189,7 +189,7 @@ stateless_step!(BlockB, "block_b", |_input, _ctx| {
 });
 
 pub(crate) struct CommitBlockSteps;
-impl Operator for CommitBlockSteps {
+impl Relay for CommitBlockSteps {
     fn factory_id() -> &'static str {
         "commit_block_steps"
     }
@@ -200,14 +200,14 @@ impl Operator for CommitBlockSteps {
             .into::<BlockB>();
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             run: Run::Steps {
                 each: Each::Once,
                 on_failure: OnFailure::UndoAll,
             },
             durable: fixture_durable(),
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }
@@ -218,7 +218,7 @@ impl Operator for CommitBlockSteps {
 // commit — which is what lets the kill-the-disk drill destroy the whole state
 // directory and still resume with task A committed rather than re-run.
 pub(crate) struct SyncDurableSteps;
-impl Operator for SyncDurableSteps {
+impl Relay for SyncDurableSteps {
     fn factory_id() -> &'static str {
         "sync_durable_steps"
     }
@@ -229,14 +229,14 @@ impl Operator for SyncDurableSteps {
             .into::<BlockB>();
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             run: Run::Steps {
                 each: Each::Once,
                 on_failure: OnFailure::UndoAll,
             },
             durable: Durable::remote(),
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }
@@ -247,7 +247,7 @@ impl Operator for SyncDurableSteps {
 // (there is none). A crash + resume re-runs the whole chain from the top, so
 // the sink sees task A's marker once per run and no journal/WAL file exists.
 pub(crate) struct OptOutCommitBlockSteps;
-impl Operator for OptOutCommitBlockSteps {
+impl Relay for OptOutCommitBlockSteps {
     fn factory_id() -> &'static str {
         "optout_commit_block"
     }
@@ -258,14 +258,14 @@ impl Operator for OptOutCommitBlockSteps {
             .into::<BlockB>();
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             run: Run::Steps {
                 each: Each::Once,
                 on_failure: OnFailure::UndoAll,
             },
             durable: Durable::Memory,
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }
@@ -290,7 +290,7 @@ impl Tasklet for TierCommitA {
 }
 
 pub(crate) struct TierCommitBlockSteps;
-impl Operator for TierCommitBlockSteps {
+impl Relay for TierCommitBlockSteps {
     fn factory_id() -> &'static str {
         "tier_commit_block_steps"
     }
@@ -301,14 +301,14 @@ impl Operator for TierCommitBlockSteps {
             .into::<BlockB>();
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             run: Run::Steps {
                 each: Each::Once,
                 on_failure: OnFailure::UndoAll,
             },
             durable: fixture_durable(),
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }
@@ -327,7 +327,7 @@ stateless_step!(SagaC, "saga_c", |_input, _ctx| Err(TaskletError::Custom(
 )));
 
 pub(crate) struct SagaBlockSteps;
-impl Operator for SagaBlockSteps {
+impl Relay for SagaBlockSteps {
     fn factory_id() -> &'static str {
         "saga_block_steps"
     }
@@ -340,14 +340,14 @@ impl Operator for SagaBlockSteps {
             .into::<SagaC>();
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             run: Run::Steps {
                 each: Each::Once,
                 on_failure: OnFailure::UndoAll,
             },
             durable: fixture_durable(),
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }
@@ -378,7 +378,7 @@ fn keyed_commits(c: &ChannelBuilder) -> Stream<'_, String> {
 }
 
 pub(crate) struct KeyedBlockSteps;
-impl Operator for KeyedBlockSteps {
+impl Relay for KeyedBlockSteps {
     fn factory_id() -> &'static str {
         "keyed_block_steps"
     }
@@ -386,20 +386,20 @@ impl Operator for KeyedBlockSteps {
         keyed_commits(c).into::<BlockB>();
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             run: Run::Steps {
                 each: Each::Once,
                 on_failure: OnFailure::UndoAll,
             },
             durable: fixture_durable(),
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }
 
 pub(crate) struct KeyedSagaSteps;
-impl Operator for KeyedSagaSteps {
+impl Relay for KeyedSagaSteps {
     fn factory_id() -> &'static str {
         "keyed_saga_steps"
     }
@@ -407,14 +407,14 @@ impl Operator for KeyedSagaSteps {
         keyed_commits(c).into::<KeyedFail>();
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             run: Run::Steps {
                 each: Each::Once,
                 on_failure: OnFailure::UndoAll,
             },
             durable: fixture_durable(),
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }
@@ -440,7 +440,7 @@ impl Tasklet for OutboxA {
 }
 
 pub(crate) struct OutboxBlockSteps;
-impl Operator for OutboxBlockSteps {
+impl Relay for OutboxBlockSteps {
     fn factory_id() -> &'static str {
         "outbox_block_steps"
     }
@@ -452,14 +452,14 @@ impl Operator for OutboxBlockSteps {
             .into::<BlockB>();
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             run: Run::Steps {
                 each: Each::Once,
                 on_failure: OnFailure::UndoAll,
             },
             durable: fixture_durable(),
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }
@@ -483,7 +483,7 @@ stateless_step!(UndoC, "undo_outbox_c", |_input, _ctx| Err(
 ));
 
 pub(crate) struct UndoOutboxSteps;
-impl Operator for UndoOutboxSteps {
+impl Relay for UndoOutboxSteps {
     fn factory_id() -> &'static str {
         "undo_outbox_steps"
     }
@@ -494,14 +494,14 @@ impl Operator for UndoOutboxSteps {
             .into::<UndoC>();
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             run: Run::Steps {
                 each: Each::Once,
                 on_failure: OnFailure::UndoAll,
             },
             durable: fixture_durable(),
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }
@@ -518,7 +518,7 @@ stateless_step!(FailedStage, "failed_stage", |input, ctx| {
 });
 
 pub(crate) struct FailedStageSteps;
-impl Operator for FailedStageSteps {
+impl Relay for FailedStageSteps {
     fn factory_id() -> &'static str {
         "failed_stage_steps"
     }
@@ -529,14 +529,14 @@ impl Operator for FailedStageSteps {
             .sink_named_with("mid", |s: &String| format!("lost:{s}").into_bytes());
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             run: Run::Steps {
                 each: Each::Once,
                 on_failure: OnFailure::UndoAll,
             },
             durable: fixture_durable(),
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }
@@ -606,7 +606,7 @@ impl Tasklet for BranchD {
 }
 
 pub(crate) struct BranchSteps;
-impl Operator for BranchSteps {
+impl Relay for BranchSteps {
     fn factory_id() -> &'static str {
         "branch_steps"
     }
@@ -627,14 +627,14 @@ impl Operator for BranchSteps {
         mid.into::<BranchC>().sink_named("c_out");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             run: Run::Steps {
                 each: Each::Once,
                 on_failure: OnFailure::UndoAll,
             },
             durable: fixture_durable(),
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }
@@ -698,7 +698,7 @@ impl Tasklet for DiamJoin {
 }
 
 pub(crate) struct DiamondSteps;
-impl Operator for DiamondSteps {
+impl Relay for DiamondSteps {
     fn factory_id() -> &'static str {
         "diamond_steps"
     }
@@ -720,14 +720,14 @@ impl Operator for DiamondSteps {
             .sink_named("j_out");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             run: Run::Steps {
                 each: Each::Once,
                 on_failure: OnFailure::UndoAll,
             },
             durable: fixture_durable(),
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }
@@ -772,7 +772,7 @@ impl Tasklet for RetryFlaky {
 }
 
 pub(crate) struct RetrySteps;
-impl Operator for RetrySteps {
+impl Relay for RetrySteps {
     fn factory_id() -> &'static str {
         "retry_steps"
     }
@@ -784,14 +784,14 @@ impl Operator for RetrySteps {
             .sink_named("out");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             run: Run::Steps {
                 each: Each::Once,
                 on_failure: OnFailure::UndoAll,
             },
             durable: fixture_durable(),
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }

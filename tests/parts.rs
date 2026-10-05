@@ -25,11 +25,7 @@ fn part_of(frame: &WireFrame) -> (String, String, String) {
     )
 }
 
-fn dispatch(
-    handle: &OperatorDispatchHandle,
-    id: &str,
-    input: &str,
-) -> std::os::unix::net::UnixStream {
+fn dispatch(handle: &RelayDispatchHandle, id: &str, input: &str) -> std::os::unix::net::UnixStream {
     let (stream, observer) = stream_pair();
     handle.dispatch(id, input.as_bytes().to_vec(), &HashMap::new(), stream);
     observer
@@ -43,7 +39,7 @@ test_tasklet!(ThreeParts, "parts_three", String => String, (), |input, ctx| {
 });
 
 struct ThreePartsOp;
-impl Operator for ThreePartsOp {
+impl Relay for ThreePartsOp {
     fn factory_id() -> &'static str {
         "parts_three"
     }
@@ -68,7 +64,7 @@ fn parts_are_numbered_within_the_attempt_and_leave_before_the_output() {
     assert_eq!(parts, expected);
     for part in &frames[..3] {
         assert_eq!(part.metadata["channel"], "answer");
-        assert_eq!(part.metadata["flz.operator"], "parts-three");
+        assert_eq!(part.metadata["flz.relay"], "parts-three");
         assert!(part.metadata.contains_key("flz.cell"));
     }
     assert!(!is_part(&frames[3]), "the output follows its parts");
@@ -87,7 +83,7 @@ test_tasklet!(FlakyParts, "parts_flaky", String => String, (), |input, ctx| {
 });
 
 struct FlakyPartsOp;
-impl Operator for FlakyPartsOp {
+impl Relay for FlakyPartsOp {
     fn factory_id() -> &'static str {
         "parts_flaky"
     }
@@ -130,7 +126,7 @@ test_tasklet!(Feeder, "parts_feeder", String => String, (), |input, ctx| {
     refused_part(ctx);
     ctx.emit(input)
 });
-test_tasklet!(Relay, "parts_relay", String => String, (), |input, ctx| {
+test_tasklet!(Forward, "parts_pass", String => String, (), |input, ctx| {
     ctx.emit(input)
 });
 test_tasklet!(Answerer, "parts_answerer", String => String, (), |input, ctx| {
@@ -139,20 +135,20 @@ test_tasklet!(Answerer, "parts_answerer", String => String, (), |input, ctx| {
 });
 
 struct FeederOp;
-impl Operator for FeederOp {
+impl Relay for FeederOp {
     fn factory_id() -> &'static str {
         "parts_feeder"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<Feeder>()
-            .into::<Relay>()
+            .into::<Forward>()
             .sink_named("answer");
     }
 }
 
 struct AnswererOp;
-impl Operator for AnswererOp {
+impl Relay for AnswererOp {
     fn factory_id() -> &'static str {
         "parts_answerer"
     }
@@ -196,7 +192,7 @@ test_tasklet!(Blocking, "parts_blocking", String => String, (), |input, ctx| {
 });
 
 struct BlockingOp;
-impl Operator for BlockingOp {
+impl Relay for BlockingOp {
     fn factory_id() -> &'static str {
         "parts_blocking"
     }

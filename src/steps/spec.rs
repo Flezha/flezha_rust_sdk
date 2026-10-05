@@ -2,18 +2,18 @@
 //! author's `channels` against a `ChannelBuilder` and validates the chain.
 //! The spec/DAG data structures live in `flz_core::steps::spec`.
 
+use flz_core::relay::settings::{Each, Run};
+use flz_core::relay::topology::RelayTopology;
 pub use flz_core::steps::spec::*;
-use flz_core::operator::settings::{Each, Run};
-use flz_core::operator::topology::OperatorTopology;
 
 use crate::channel::{ChannelBuilder, TaskletId};
-use crate::operator::builder::build_topology_with_settings;
-use crate::operator::Operator;
+use crate::relay::builder::build_topology_with_settings;
+use crate::relay::Relay;
 
 /// Build and validate the spec for a class that runs in steps: its
 /// `channels()` declaration, validated as a static DAG. The call-end rule is
 /// the core's, judged with the rest of the record.
-pub fn build_spec<T: Operator>() -> Result<std::sync::Arc<OperatorTopology>, BuildStepsError> {
+pub fn build_spec<T: Relay>() -> Result<std::sync::Arc<RelayTopology>, BuildStepsError> {
     let factory_id = T::factory_id();
     let settings = T::settings();
     let Run::Steps { each, on_failure } = settings.run else {
@@ -57,7 +57,7 @@ pub fn build_spec<T: Operator>() -> Result<std::sync::Arc<OperatorTopology>, Bui
 fn refuse_chained_loop_shape(
     factory_id: &'static str,
     each: Each,
-    topology: &OperatorTopology,
+    topology: &RelayTopology,
     dag: &TaskDag,
 ) -> Result<(), BuildStepsError> {
     if each != Each::Chained {
@@ -87,7 +87,7 @@ fn refuse_chained_loop_shape(
 fn refuse_loop_terminal_without_handoff(
     factory_id: &'static str,
     each: Each,
-    topology: &OperatorTopology,
+    topology: &RelayTopology,
     dag: &TaskDag,
 ) -> Result<(), BuildStepsError> {
     if each != Each::Chained {
@@ -102,7 +102,7 @@ fn refuse_loop_terminal_without_handoff(
     }
 }
 
-/// Resolve the execution DAG of a structured steps operator's tasklets and refuse
+/// Resolve the execution DAG of a structured steps relay's tasklets and refuse
 /// anything outside the shared graph-shape rule (`sdk-graph-authoring`): an
 /// entry-rooted connected acyclic graph (several entry channels, fan-out and
 /// fan-in all legal) with at most one output channel per tasklet.
@@ -113,7 +113,7 @@ fn refuse_loop_terminal_without_handoff(
 /// former walk, enqueued a join on its first producer and broke it).
 fn build_dag(
     factory_id: &'static str,
-    topology: &OperatorTopology,
+    topology: &RelayTopology,
 ) -> Result<TaskDag, BuildStepsError> {
     refuse_multiple_outputs(factory_id, topology)?;
     let entries = topology.entry_consumers();
@@ -159,7 +159,7 @@ fn build_dag(
 /// defense-in-depth.
 fn refuse_multiple_outputs(
     factory_id: &'static str,
-    topology: &OperatorTopology,
+    topology: &RelayTopology,
 ) -> Result<(), BuildStepsError> {
     for (idx, task) in topology.tasklets.iter().enumerate() {
         let task_id = idx as TaskletId;

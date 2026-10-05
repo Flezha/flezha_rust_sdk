@@ -3,7 +3,7 @@
 
 use crate::*;
 
-// -- CandleOperator (stream-late-input-correction e2e) -------------------
+// -- CandleRelay (stream-late-input-correction e2e) -------------------
 //
 // A trade stream keyed by an EVENT time carried in the input itself
 // ("<event_time>:<price>"), with a declared correction window. State records the
@@ -66,8 +66,8 @@ impl Tasklet for CandleTasklet {
     }
 }
 
-pub(crate) struct CandleOperator;
-impl Operator for CandleOperator {
+pub(crate) struct CandleRelay;
+impl Relay for CandleRelay {
     fn factory_id() -> &'static str {
         "candle"
     }
@@ -78,15 +78,21 @@ impl Operator for CandleOperator {
             .sink_named("sink");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
-            run: Run::Flow { exactly: Exactly::EffectivelyOnce { ack: AckGranularity::PerInput, correction_ms: Some(600_000), beyond_window: BeyondWindowPolicy::ProcessAsArrival } },
-            ..OperatorSettings::default()
+    fn settings() -> RelaySettings {
+        RelaySettings {
+            run: Run::Flow {
+                exactly: Exactly::EffectivelyOnce {
+                    ack: AckGranularity::PerInput,
+                    correction_ms: Some(600_000),
+                    beyond_window: BeyondWindowPolicy::ProcessAsArrival,
+                },
+            },
+            ..RelaySettings::default()
         }
     }
 }
 
-// -- PoisonProbeOperator (dead-letter-queue e2e) -------------------
+// -- PoisonProbeRelay (dead-letter-queue e2e) -------------------
 //
 // Tier-off retry-then-park probe: `run` fails on the input "poison" until an
 // "antidote" input flips a process-global flag. The e2e parks the poison
@@ -111,8 +117,8 @@ impl Tasklet for PoisonProbeTasklet {
     }
 }
 
-pub(crate) struct PoisonProbeOperator;
-impl Operator for PoisonProbeOperator {
+pub(crate) struct PoisonProbeRelay;
+impl Relay for PoisonProbeRelay {
     fn factory_id() -> &'static str {
         "poison_probe"
     }
@@ -126,10 +132,10 @@ impl Operator for PoisonProbeOperator {
     }
 }
 
-// -- WedgeProbeOperator (runner-dispatch-wedge e2e) -----------------------
+// -- WedgeProbeRelay (runner-dispatch-wedge e2e) -----------------------
 //
 // The `pool_wedge` fixture: the two ways a runner stops doing work, on one
-// operator.
+// relay.
 //
 //   "wedge" — blocks the dispatch inside user code forever, so the SDK's
 //     dispatch counter stops advancing while the heartbeat thread keeps
@@ -144,7 +150,7 @@ impl Operator for PoisonProbeOperator {
 //     must be served again and the aborting item must not produce twice.
 //
 // Every other input emits `ok:<input>`, which is how the e2e proves the
-// operator produces again once the remedy has landed.
+// relay produces again once the remedy has landed.
 
 static WEDGE_PROBE_ABORTED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
@@ -169,8 +175,8 @@ impl Tasklet for WedgeProbeTasklet {
     }
 }
 
-pub(crate) struct WedgeProbeOperator;
-impl Operator for WedgeProbeOperator {
+pub(crate) struct WedgeProbeRelay;
+impl Relay for WedgeProbeRelay {
     fn factory_id() -> &'static str {
         "wedge_probe"
     }
@@ -181,12 +187,12 @@ impl Operator for WedgeProbeOperator {
     }
 }
 
-// -- ResumeProbeOperator ---------------------------------------------------------
+// -- ResumeProbeRelay ---------------------------------------------------------
 //
 // Stateful counter that EMITS its running total on every input, so a Kafka
 // plugin on the output makes the persisted value externally observable. Used
 // by chaos/tests/stateful-resume.sh to prove WAL-backed state survives a hard
-// controller kill / runner restart: after recovery the operator resumes from
+// controller kill / runner restart: after recovery the relay resumes from
 // the persisted total (replayed changes), not from zero. Input is a decimal
 // delta string; output is the new running total as ASCII bytes.
 
@@ -228,8 +234,8 @@ impl Tasklet for ResumeProbeTasklet {
     }
 }
 
-pub(crate) struct ResumeProbeOperator;
-impl Operator for ResumeProbeOperator {
+pub(crate) struct ResumeProbeRelay;
+impl Relay for ResumeProbeRelay {
     fn factory_id() -> &'static str {
         "resume_probe"
     }
@@ -240,10 +246,10 @@ impl Operator for ResumeProbeOperator {
     }
 }
 
-// -- SchemaEvolutionOperator -----------------------------------------------------
+// -- SchemaEvolutionRelay -----------------------------------------------------
 //
 // The same class either side of a deploy that edits its own state type. Both
-// halves declare the SAME tasklet name, so an operator started under v1 and
+// halves declare the SAME tasklet name, so a relay started under v1 and
 // restarted under v2 restores from the very WAL v1 wrote — which is what a
 // deploy does, with the two binaries collapsed into one for the fixture.
 //
@@ -356,8 +362,8 @@ impl Tasklet for SchemaEvolutionV2Tasklet {
     }
 }
 
-pub(crate) struct SchemaEvolutionV1Operator;
-impl Operator for SchemaEvolutionV1Operator {
+pub(crate) struct SchemaEvolutionV1Relay;
+impl Relay for SchemaEvolutionV1Relay {
     fn factory_id() -> &'static str {
         "schema_evolution_v1"
     }
@@ -368,8 +374,8 @@ impl Operator for SchemaEvolutionV1Operator {
     }
 }
 
-pub(crate) struct SchemaEvolutionV2Operator;
-impl Operator for SchemaEvolutionV2Operator {
+pub(crate) struct SchemaEvolutionV2Relay;
+impl Relay for SchemaEvolutionV2Relay {
     fn factory_id() -> &'static str {
         "schema_evolution_v2"
     }

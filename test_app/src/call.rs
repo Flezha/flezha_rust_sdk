@@ -1,4 +1,4 @@
-//! Call fixtures (`call_response`): operators an outside caller calls and
+//! Call fixtures (`call_response`): relays an outside caller calls and
 //! whose graph answers it through `response()` — from the first tasklet, from
 //! a downstream one, from whichever of two filtered paths the input took, and
 //! from a durable steps turn.
@@ -8,8 +8,8 @@ use crate::*;
 
 stateless_step!(CallEcho, "call_echo", |input, ctx| ctx.emit(input));
 
-pub(crate) struct CallEchoOperator;
-impl Operator for CallEchoOperator {
+pub(crate) struct CallEchoRelay;
+impl Relay for CallEchoRelay {
     fn factory_id() -> &'static str {
         "call_echo"
     }
@@ -22,8 +22,8 @@ stateless_step!(CallParse, "call_parse", |input, ctx| ctx.emit(input));
 stateless_step!(CallAnswer, "call_answer", |input, ctx| ctx
     .emit(format!("re:{input}")));
 
-pub(crate) struct CallDownstreamOperator;
-impl Operator for CallDownstreamOperator {
+pub(crate) struct CallDownstreamRelay;
+impl Relay for CallDownstreamRelay {
     fn factory_id() -> &'static str {
         "call_downstream"
     }
@@ -42,8 +42,8 @@ stateless_step!(CallAccept, "call_accept", |input, ctx| ctx
 stateless_step!(CallRefuse, "call_refuse", |input, ctx| ctx
     .emit(format!("refused:{input}")));
 
-pub(crate) struct CallSplitOperator;
-impl Operator for CallSplitOperator {
+pub(crate) struct CallSplitRelay;
+impl Relay for CallSplitRelay {
     fn factory_id() -> &'static str {
         "call_split"
     }
@@ -63,7 +63,7 @@ impl Operator for CallSplitOperator {
 stateless_step!(CallTurn, "call_turn", |input, ctx| ctx.emit(input));
 
 pub(crate) struct CallTurnSteps;
-impl Operator for CallTurnSteps {
+impl Relay for CallTurnSteps {
     fn factory_id() -> &'static str {
         "call_turn"
     }
@@ -71,12 +71,15 @@ impl Operator for CallTurnSteps {
         c.input::<String>("in").into::<CallTurn>().response();
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
-            run: Run::Steps { each: Each::PerInput, on_failure: OnFailure::UndoAll },
+    fn settings() -> RelaySettings {
+        RelaySettings {
+            run: Run::Steps {
+                each: Each::PerInput,
+                on_failure: OnFailure::UndoAll,
+            },
             max_duration: Some(Duration::from_secs(600)),
             durable: fixture_durable(),
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }

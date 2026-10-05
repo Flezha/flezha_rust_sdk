@@ -1,4 +1,4 @@
-//! The Rust SDK's local mode: a user's own operator type, its declared
+//! The Rust SDK's local mode: a user's own relay type, its declared
 //! two-tasklet graph, and no controller anywhere.
 //!
 //! The graph and its expected sink output are read from
@@ -13,7 +13,7 @@ use std::time::Duration;
 use flezha_runner::local::SinkOutput;
 use flezha_runner::state::Change;
 use flezha_runner::tasklet::{Ctx, Tasklet, TaskletError};
-use flezha_runner::{ChannelBuilder, Flezha, LocalOperator, Operator};
+use flezha_runner::{ChannelBuilder, Flezha, LocalRelay, Relay};
 use serde::{Deserialize, Serialize};
 
 mod common;
@@ -70,7 +70,7 @@ impl Tasklet for Tally {
 
 struct WordCount;
 
-impl Operator for WordCount {
+impl Relay for WordCount {
     fn factory_id() -> &'static str {
         "local_word_count_rust"
     }
@@ -128,7 +128,7 @@ fn a_declared_graph_runs_locally_and_releases_the_recorded_output() {
     let released: Arc<Mutex<Vec<SinkOutput>>> = Arc::new(Mutex::new(Vec::new()));
     let into = Arc::clone(&released);
 
-    let run = LocalOperator::start::<WordCount>().expect("the run starts");
+    let run = LocalRelay::start::<WordCount>().expect("the run starts");
     // `sink_named("totals")` is the declaration's ONLY naming call, and this
     // registers under that same string: local mode addresses a sink by the
     // channel name, and a sink names the channel, so `sdk-local-mode`'s "the
@@ -175,7 +175,7 @@ fn a_declared_graph_runs_locally_and_releases_the_recorded_output() {
 
 #[test]
 fn a_channel_the_class_does_not_declare_is_refused_by_name() {
-    let run = LocalOperator::start::<WordCount>().expect("the run starts");
+    let run = LocalRelay::start::<WordCount>().expect("the run starts");
     let refusal = run
         .feed("nope", "1")
         .expect_err("an undeclared channel is refused");

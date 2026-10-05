@@ -1,4 +1,4 @@
-error: #[flezha::tasklet] sits on an `impl Tasklet for YourType` block; a one-tasklet operator written as a function takes `#[flezha::operator(..)]`
+error: #[flezha::tasklet] sits on an `impl Tasklet for YourType` block; a one-tasklet relay written as a function takes `#[flezha::relay(..)]`
  --> tests/ui/tasklet_on_function.rs:4:1
   |
 4 | fn echo(input: String) -> String {

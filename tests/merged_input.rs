@@ -67,10 +67,10 @@ test_tasklet!(SignalSinkTasklet, "merge_signal_sink_tasklet", String => String, 
     Ok(())
 });
 
-struct TypedMergeOperator;
-impl Operator for TypedMergeOperator {
+struct TypedMergeRelay;
+impl Relay for TypedMergeRelay {
     fn factory_id() -> &'static str {
-        "typed_merge_operator"
+        "typed_merge_relay"
     }
     fn channels(c: &ChannelBuilder) {
         let raw = c.input::<String>("raw");
@@ -88,7 +88,7 @@ impl Operator for TypedMergeOperator {
 fn two_typed_channels_feed_one_tasklet() {
     SIGNALS.lock().unwrap().clear();
     SIGNAL_SINK.lock().unwrap().clear();
-    let (handle, _instance) = setup::<TypedMergeOperator>("typed-merge-instance");
+    let (handle, _instance) = setup::<TypedMergeRelay>("typed-merge-instance");
     let stream = dummy_stream();
 
     dispatch_input(
@@ -157,10 +157,10 @@ test_tasklet!(TunedTasklet, "merge_tuned_tasklet", TunedInput => String, (), |in
     Ok(())
 });
 
-struct EntryMergeOperator;
-impl Operator for EntryMergeOperator {
+struct EntryMergeRelay;
+impl Relay for EntryMergeRelay {
     fn factory_id() -> &'static str {
-        "entry_merge_operator"
+        "entry_merge_relay"
     }
     fn channels(c: &ChannelBuilder) {
         c.merge::<TunedInput>()
@@ -173,7 +173,7 @@ impl Operator for EntryMergeOperator {
 #[test]
 fn entry_channels_are_merge_sources() {
     let _serial = tuned_test_guard();
-    let (handle, _instance) = setup::<EntryMergeOperator>("entry-merge-instance");
+    let (handle, _instance) = setup::<EntryMergeRelay>("entry-merge-instance");
     let stream = dummy_stream();
 
     dispatch_input(
@@ -204,7 +204,7 @@ fn entry_channels_are_merge_sources() {
 #[test]
 fn per_source_order_holds_under_interleaving() {
     let _serial = tuned_test_guard();
-    let (handle, _instance) = setup::<EntryMergeOperator>("entry-fifo-instance");
+    let (handle, _instance) = setup::<EntryMergeRelay>("entry-fifo-instance");
     let stream = dummy_stream();
 
     let n = 200usize;
@@ -272,7 +272,7 @@ fn per_source_order_holds_under_interleaving() {
 #[test]
 fn a_replayed_merge_maps_exactly_as_the_live_run_did() {
     let _serial = tuned_test_guard();
-    let (handle, _instance) = setup::<EntryMergeOperator>("entry-replay-instance");
+    let (handle, _instance) = setup::<EntryMergeRelay>("entry-replay-instance");
     let stream = dummy_stream();
 
     let feed = [("data", "d0"), ("config", "c0"), ("data", "d1")];
@@ -353,10 +353,10 @@ impl Tasklet for CellTunedTasklet {
     }
 }
 
-struct CellMergeOperator;
-impl Operator for CellMergeOperator {
+struct CellMergeRelay;
+impl Relay for CellMergeRelay {
     fn factory_id() -> &'static str {
-        "cell_merge_operator"
+        "cell_merge_relay"
     }
     fn channels(c: &ChannelBuilder) {
         c.merge::<TunedInput>()
@@ -369,7 +369,7 @@ impl Operator for CellMergeOperator {
 #[test]
 fn cells_for_is_evaluated_on_the_mapped_value() {
     PER_CELL.lock().unwrap().clear();
-    let (handle, _instance) = setup::<CellMergeOperator>("cell-merge-instance");
+    let (handle, _instance) = setup::<CellMergeRelay>("cell-merge-instance");
     let stream = dummy_stream();
 
     dispatch_input(
@@ -411,10 +411,10 @@ fn cells_for_is_evaluated_on_the_mapped_value() {
 
 // ----- 4: definition-time validation -----
 
-struct OneSourceMergeOperator;
-impl Operator for OneSourceMergeOperator {
+struct OneSourceMergeRelay;
+impl Relay for OneSourceMergeRelay {
     fn factory_id() -> &'static str {
-        "one_source_merge_operator"
+        "one_source_merge_relay"
     }
     fn channels(c: &ChannelBuilder) {
         c.merge::<TunedInput>()
@@ -425,7 +425,7 @@ impl Operator for OneSourceMergeOperator {
 
 #[test]
 fn a_merge_with_fewer_than_two_sources_is_refused() {
-    let err = build_topology_for::<OneSourceMergeOperator>()
+    let err = build_topology_for::<OneSourceMergeRelay>()
         .expect_err("a one-source merge must fail definition");
     assert!(
         err.errors.iter().any(|e| matches!(
@@ -438,10 +438,10 @@ fn a_merge_with_fewer_than_two_sources_is_refused() {
     );
 }
 
-struct DuplicateSourceMergeOperator;
-impl Operator for DuplicateSourceMergeOperator {
+struct DuplicateSourceMergeRelay;
+impl Relay for DuplicateSourceMergeRelay {
     fn factory_id() -> &'static str {
-        "duplicate_source_merge_operator"
+        "duplicate_source_merge_relay"
     }
     fn channels(c: &ChannelBuilder) {
         let data = c.input::<String>("data");
@@ -454,7 +454,7 @@ impl Operator for DuplicateSourceMergeOperator {
 
 #[test]
 fn a_duplicated_merge_source_is_refused_naming_the_channel() {
-    let err = build_topology_for::<DuplicateSourceMergeOperator>()
+    let err = build_topology_for::<DuplicateSourceMergeRelay>()
         .expect_err("a duplicated merge source must fail definition");
     assert!(
         err.errors.iter().any(
@@ -470,10 +470,10 @@ fn a_duplicated_merge_source_is_refused_naming_the_channel() {
 /// be honoured (an edge carries one mapping), so it must be refused rather
 /// than dropped: the tasklet would otherwise receive the first declaration's
 /// value forever, with nothing said at definition time or at runtime.
-struct RewiredMergeSourceOperator;
-impl Operator for RewiredMergeSourceOperator {
+struct RewiredMergeSourceRelay;
+impl Relay for RewiredMergeSourceRelay {
     fn factory_id() -> &'static str {
-        "rewired_merge_source_operator"
+        "rewired_merge_source_relay"
     }
     fn channels(c: &ChannelBuilder) {
         let data = c.input::<String>("data");
@@ -490,7 +490,7 @@ impl Operator for RewiredMergeSourceOperator {
 
 #[test]
 fn a_merge_source_may_not_re_wire_an_edge_that_is_already_declared() {
-    let err = build_topology_for::<RewiredMergeSourceOperator>()
+    let err = build_topology_for::<RewiredMergeSourceRelay>()
         .expect_err("re-wiring a declared edge with a second mapping must fail definition");
     assert!(
         err.errors.iter().any(|e| matches!(
@@ -505,10 +505,10 @@ fn a_merge_source_may_not_re_wire_an_edge_that_is_already_declared() {
 
 /// The same edge claimed first by a plain `.into` and then by a merge: the
 /// channel's payload cannot both BE the input and be mapped into it.
-struct PlainThenMergedOperator;
-impl Operator for PlainThenMergedOperator {
+struct PlainThenMergedRelay;
+impl Relay for PlainThenMergedRelay {
     fn factory_id() -> &'static str {
-        "plain_then_merged_operator"
+        "plain_then_merged_relay"
     }
     fn channels(c: &ChannelBuilder) {
         let data = c.input::<TunedInput>("data");
@@ -522,7 +522,7 @@ impl Operator for PlainThenMergedOperator {
 
 #[test]
 fn a_merge_may_not_re_wire_an_edge_a_plain_into_already_declared() {
-    let err = build_topology_for::<PlainThenMergedOperator>()
+    let err = build_topology_for::<PlainThenMergedRelay>()
         .expect_err("merging onto an edge a plain `.into` declared must fail definition");
     assert!(
         err.errors.iter().any(|e| matches!(

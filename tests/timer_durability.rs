@@ -2,10 +2,10 @@
 //! replay rebuilds it exactly, overdue entries included.
 
 use flezha_runner::cell::header::FORMAT_ID_TIMER_OPS;
-use flezha_runner::{Exactly, OperatorSettings, Run};
 use flezha_runner::cell::state_sink;
 use flezha_runner::cell::timer::{TimerKind, TimerOp};
 use flezha_runner::testing::TaskletTestHarness;
+use flezha_runner::{Exactly, RelaySettings, Run};
 
 mod common;
 use common::prelude::*;
@@ -71,7 +71,7 @@ fn a_compaction_re_states_the_pending_timers_above_the_snapshot_seq() {
     take_order();
     let frames = recording_sink();
 
-    let (handle, instance) = setup::<WindowOperator>("timers-compaction");
+    let (handle, instance) = setup::<WindowRelay>("timers-compaction");
     let stream = dummy_stream();
     dispatch_input(&handle, "timers-compaction", "in", tick(50), &stream);
     let slot = Arc::clone(&instance.cells[0][0]);
@@ -125,7 +125,7 @@ fn a_registration_outside_the_tier_ships_a_timer_ops_record() {
     take_order();
     let frames = recording_sink();
 
-    let (handle, instance) = setup::<WindowOperator>("timers-record");
+    let (handle, instance) = setup::<WindowRelay>("timers-record");
     let stream = dummy_stream();
     dispatch_input(&handle, "timers-record", "in", tick(50), &stream);
     assert!(wait_until(
@@ -172,7 +172,7 @@ fn a_tier_firing_writes_one_record_with_no_consumed_offset() {
     take_firings();
     let frames = recording_sink();
 
-    let (handle, _instance) = setup::<TierSessionOperator>("timers-tier");
+    let (handle, _instance) = setup::<TierSessionRelay>("timers-tier");
     let stream = dummy_stream();
     dispatch_marked(
         &handle,
@@ -253,10 +253,10 @@ impl Tasklet for TierSessionTask {
     }
 }
 
-struct TierSessionOperator;
-impl Operator for TierSessionOperator {
+struct TierSessionRelay;
+impl Relay for TierSessionRelay {
     fn factory_id() -> &'static str {
-        "timers_tier_session_operator"
+        "timers_tier_session_relay"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
@@ -265,10 +265,12 @@ impl Operator for TierSessionOperator {
             .sink_named("out");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
-            run: Run::Flow { exactly: Exactly::effectively_once() },
-            ..OperatorSettings::default()
+    fn settings() -> RelaySettings {
+        RelaySettings {
+            run: Run::Flow {
+                exactly: Exactly::effectively_once(),
+            },
+            ..RelaySettings::default()
         }
     }
 }
@@ -347,7 +349,7 @@ fn a_restore_re_arms_the_wake_list_and_fires_what_is_already_due() {
         flezha_runner::transport::FlezhaStream::Unix(sock),
     )));
 
-    let (_handle, instance) = setup::<SessionOperator>("timers-restore");
+    let (_handle, instance) = setup::<SessionRelay>("timers-restore");
     let registry = Arc::clone(instance.dynamic_registries[0].as_ref().expect("dynamic"));
     let slot = registry.get_or_create("carol").expect("cell");
 

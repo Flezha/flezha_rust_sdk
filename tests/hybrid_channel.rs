@@ -45,7 +45,7 @@ fn duplex_stream_with_reader() -> (Arc<FlezhaStream>, Arc<Mutex<Vec<ReceivedFram
 }
 
 fn dispatch_input(
-    handle: &OperatorDispatchHandle,
+    handle: &RelayDispatchHandle,
     instance_id: &str,
     stream: &Arc<FlezhaStream>,
     input: &str,
@@ -77,8 +77,8 @@ test_tasklet!(SingleConsumer, "hybrid_single_consumer", u32 => (), (), |input, _
     Ok(())
 });
 
-struct SingleHybridOperator;
-impl Operator for SingleHybridOperator {
+struct SingleHybridRelay;
+impl Relay for SingleHybridRelay {
     fn factory_id() -> &'static str {
         "hybrid_single"
     }
@@ -93,7 +93,7 @@ impl Operator for SingleHybridOperator {
 #[test]
 fn hybrid_single_consumer_receives_typed_and_plugin_bytes() {
     single_consumer_observed().lock().unwrap().clear();
-    let (handle, _instance) = setup::<SingleHybridOperator>("hyb-single");
+    let (handle, _instance) = setup::<SingleHybridRelay>("hyb-single");
     let (stream, received) = duplex_stream_with_reader();
 
     dispatch_input(&handle, "hyb-single", &stream, "42");
@@ -150,8 +150,8 @@ test_tasklet!(ThreeConsumerC, "hybrid_three_c", u32 => (), (), |input, _ctx| {
     Ok(())
 });
 
-struct ThreeHybridOperator;
-impl Operator for ThreeHybridOperator {
+struct ThreeHybridRelay;
+impl Relay for ThreeHybridRelay {
     fn factory_id() -> &'static str {
         "hybrid_three"
     }
@@ -176,7 +176,7 @@ fn hybrid_three_consumers_single_serializer_call() {
     three_consumer_observed_c().lock().unwrap().clear();
     SERIALIZER_CALLS.store(0, Ordering::SeqCst);
 
-    let (handle, _instance) = setup::<ThreeHybridOperator>("hyb-three");
+    let (handle, _instance) = setup::<ThreeHybridRelay>("hyb-three");
     let (stream, received) = duplex_stream_with_reader();
 
     dispatch_input(&handle, "hyb-three", &stream, "7");
@@ -226,8 +226,8 @@ test_tasklet!(PanicConsumer, "hybrid_panic_consumer", u32 => (), (), |input, _ct
     Ok(())
 });
 
-struct PanicHybridOperator;
-impl Operator for PanicHybridOperator {
+struct PanicHybridRelay;
+impl Relay for PanicHybridRelay {
     fn factory_id() -> &'static str {
         "hybrid_panic"
     }
@@ -249,7 +249,7 @@ fn hybrid_serializer_panic_is_caught() {
     panic_consumer_observed().lock().unwrap().clear();
     panic_emit_results().lock().unwrap().clear();
 
-    let (handle, _instance) = setup::<PanicHybridOperator>("hyb-panic");
+    let (handle, _instance) = setup::<PanicHybridRelay>("hyb-panic");
     let (stream, received) = duplex_stream_with_reader();
 
     // First emit panics in the serializer.
@@ -299,8 +299,8 @@ test_tasklet!(DupProducer, "hybrid_dup_producer", String => u32, (), |_input, _c
     Ok(())
 });
 
-struct DupHybridOperator;
-impl Operator for DupHybridOperator {
+struct DupHybridRelay;
+impl Relay for DupHybridRelay {
     fn factory_id() -> &'static str {
         "hybrid_dup"
     }
@@ -314,7 +314,7 @@ impl Operator for DupHybridOperator {
 
 #[test]
 fn hybrid_duplicate_plugin_sink_is_rejected() {
-    let result = build_topology_for::<DupHybridOperator>();
+    let result = build_topology_for::<DupHybridRelay>();
     let err = match result {
         Ok(_) => panic!("expected topology error"),
         Err(e) => e,
@@ -348,8 +348,8 @@ test_tasklet!(MetaConsumer, "hybrid_meta_consumer", u32 => (), (), |input, _ctx|
     Ok(())
 });
 
-struct MetaHybridOperator;
-impl Operator for MetaHybridOperator {
+struct MetaHybridRelay;
+impl Relay for MetaHybridRelay {
     fn factory_id() -> &'static str {
         "hybrid_meta"
     }
@@ -364,7 +364,7 @@ impl Operator for MetaHybridOperator {
 #[test]
 fn emit_with_meta_on_hybrid_channel_forwards_meta_to_plugin_only() {
     meta_consumer_observed().lock().unwrap().clear();
-    let (handle, _instance) = setup::<MetaHybridOperator>("hyb-meta");
+    let (handle, _instance) = setup::<MetaHybridRelay>("hyb-meta");
     let (stream, received) = duplex_stream_with_reader();
 
     dispatch_input(&handle, "hyb-meta", &stream, "9");
@@ -422,8 +422,8 @@ test_tasklet!(PureConsumer, "hybrid_pure_consumer", u32 => (), (), |input, _ctx|
     Ok(())
 });
 
-struct PureOperator;
-impl Operator for PureOperator {
+struct PureRelay;
+impl Relay for PureRelay {
     fn factory_id() -> &'static str {
         "hybrid_pure"
     }
@@ -440,7 +440,7 @@ fn emit_with_meta_on_pure_inter_tasklet_channel_is_rejected() {
     pure_consumer_observed().lock().unwrap().clear();
     pure_emit_results().lock().unwrap().clear();
 
-    let (handle, _instance) = setup::<PureOperator>("hyb-pure");
+    let (handle, _instance) = setup::<PureRelay>("hyb-pure");
     let (stream, received) = duplex_stream_with_reader();
 
     dispatch_input(&handle, "hyb-pure", &stream, "1");
@@ -492,8 +492,8 @@ test_tasklet!(UnifiedConsumer, "unified_consumer", String => (), (), |input, _ct
 });
 
 /// `sink` and nothing after it — what the removed `output(...)` declared.
-struct TerminalSinkOperator;
-impl Operator for TerminalSinkOperator {
+struct TerminalSinkRelay;
+impl Relay for TerminalSinkRelay {
     fn factory_id() -> &'static str {
         "unified_terminal"
     }
@@ -505,8 +505,8 @@ impl Operator for TerminalSinkOperator {
 }
 
 /// The same sink with a consumer wired after it — what `also_output` declared.
-struct HybridSinkOperator;
-impl Operator for HybridSinkOperator {
+struct HybridSinkRelay;
+impl Relay for HybridSinkRelay {
     fn factory_id() -> &'static str {
         "unified_hybrid"
     }
@@ -519,7 +519,7 @@ impl Operator for HybridSinkOperator {
 }
 
 /// Everything about one channel the sink declaration decides.
-fn sink_shape<R: Operator>(channel: &str) -> (ChannelKind, usize, Option<String>, bool) {
+fn sink_shape<R: Relay>(channel: &str) -> (ChannelKind, usize, Option<String>, bool) {
     let topology = build_topology_for::<R>().expect("topology");
     let cid = topology.lookup_channel_id(channel).expect("channel id");
     let descriptor = topology.channel(cid).expect("descriptor");
@@ -539,8 +539,8 @@ fn sink_shape<R: Operator>(channel: &str) -> (ChannelKind, usize, Option<String>
 /// depending only on what is wired after it.
 #[test]
 fn terminality_is_derived_from_the_wiring() {
-    let terminal = sink_shape::<TerminalSinkOperator>("unified_out");
-    let hybrid = sink_shape::<HybridSinkOperator>("unified_out");
+    let terminal = sink_shape::<TerminalSinkRelay>("unified_out");
+    let hybrid = sink_shape::<HybridSinkRelay>("unified_out");
 
     assert_eq!(
         terminal,
@@ -576,11 +576,11 @@ fn terminal_and_hybrid_sink_frames_match_the_pre_rename_fixture() {
 
     unified_consumer_observed().lock().unwrap().clear();
 
-    let (terminal_handle, _t) = setup::<TerminalSinkOperator>("uni-terminal");
+    let (terminal_handle, _t) = setup::<TerminalSinkRelay>("uni-terminal");
     let (terminal_stream, terminal_frames) = duplex_stream_with_reader();
     dispatch_input(&terminal_handle, "uni-terminal", &terminal_stream, "hello");
 
-    let (hybrid_handle, _h) = setup::<HybridSinkOperator>("uni-hybrid");
+    let (hybrid_handle, _h) = setup::<HybridSinkRelay>("uni-hybrid");
     let (hybrid_flow, hybrid_frames) = duplex_stream_with_reader();
     dispatch_input(&hybrid_handle, "uni-hybrid", &hybrid_flow, "hello");
 
@@ -616,8 +616,8 @@ fn terminal_and_hybrid_sink_frames_match_the_pre_rename_fixture() {
 /// `sink("items_output")` with no `.named(...)` anywhere in the declaration.
 /// The channel this produces is the one the frame is stamped with, so the
 /// string an author can read in the source is the string a plugin filters on.
-struct SinkNamesChannelOperator;
-impl Operator for SinkNamesChannelOperator {
+struct SinkNamesChannelRelay;
+impl Relay for SinkNamesChannelRelay {
     fn factory_id() -> &'static str {
         "sink_names_channel"
     }
@@ -628,11 +628,11 @@ impl Operator for SinkNamesChannelOperator {
     }
 }
 
-/// The reproduction: a hand-written operator whose only naming call is its
+/// The reproduction: a hand-written relay whose only naming call is its
 /// sink ships frames stamped with the sink's name, not the producing node's.
 #[test]
 fn sink_name_is_the_channel_name_on_the_wire() {
-    let (handle, _instance) = setup::<SinkNamesChannelOperator>("sink-names");
+    let (handle, _instance) = setup::<SinkNamesChannelRelay>("sink-names");
     let (stream, frames) = duplex_stream_with_reader();
 
     dispatch_input(&handle, "sink-names", &stream, "hello");
@@ -654,8 +654,8 @@ fn sink_name_is_the_channel_name_on_the_wire() {
 
 /// A channel both `.named(...)` and `.sink_named(...)` name is refused rather
 /// than resolved by precedence, and the refusal names both declarations.
-struct DoubleNamedOperator;
-impl Operator for DoubleNamedOperator {
+struct DoubleNamedRelay;
+impl Relay for DoubleNamedRelay {
     fn factory_id() -> &'static str {
         "double_named"
     }
@@ -669,7 +669,7 @@ impl Operator for DoubleNamedOperator {
 
 #[test]
 fn a_channel_named_twice_is_refused_naming_both() {
-    let err = match build_topology_for::<DoubleNamedOperator>() {
+    let err = match build_topology_for::<DoubleNamedRelay>() {
         Ok(_) => panic!("expected topology error"),
         Err(e) => e,
     };

@@ -303,10 +303,10 @@ impl Written {
         }
         let fields = &self.fields;
         quote! {
-            fn settings() -> ::flezha_runner::OperatorSettings {
-                ::flezha_runner::OperatorSettings {
+            fn settings() -> ::flezha_runner::RelaySettings {
+                ::flezha_runner::RelaySettings {
                     #(#fields,)*
-                    ..::flezha_runner::OperatorSettings::default()
+                    ..::flezha_runner::RelaySettings::default()
                 }
             }
         }

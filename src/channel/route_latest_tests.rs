@@ -6,9 +6,9 @@ use serde::{Deserialize, Serialize};
 use super::{LatestRouter, RouteLatestInput};
 use crate::channel::builder::TopologyIssue;
 use crate::channel::ChannelBuilder;
-use crate::operator::builder::build_topology_for;
-use crate::operator::topology::CellMode;
-use crate::operator::Operator;
+use crate::relay::builder::build_topology_for;
+use crate::relay::topology::CellMode;
+use crate::relay::Relay;
 use crate::tasklet::{Ctx, Tasklet, TaskletError};
 use crate::testing::TaskletTestHarness;
 
@@ -42,7 +42,7 @@ fn harness() -> TaskletTestHarness<LatestRouter<Thresholds>> {
 }
 
 /// fails when: a changed document stops reaching a key on that key's own next
-/// traffic item — every per-key consumer of an operator-wide document would
+/// traffic item — every per-key consumer of a relay-wide document would
 /// keep computing against a stale one, silently.
 #[test]
 fn a_changed_document_reaches_each_key_on_its_own_next_traffic() {
@@ -180,9 +180,9 @@ impl Tasklet for Detector {
 }
 
 /// The canonical shape: a document stream, a traffic stream, a keyed consumer.
-struct RoutedOperator;
+struct RoutedRelay;
 
-impl Operator for RoutedOperator {
+impl Relay for RoutedRelay {
     fn factory_id() -> &'static str {
         "route_latest_expansion"
     }
@@ -199,11 +199,11 @@ impl Operator for RoutedOperator {
 /// fails when: the block stops expanding to one single-cell node fed by both
 /// streams with the key function on the traffic edge. Every guarantee the block
 /// carries rests on that shape: single-cell (one retained document per
-/// operator), and the traffic payload replaced by its key at the routing seam
+/// relay), and the traffic payload replaced by its key at the routing seam
 /// (so the router never holds application values).
 #[test]
 fn the_block_expands_to_one_single_cell_node_fed_by_both_streams() {
-    let topology = build_topology_for::<RoutedOperator>().expect("topology");
+    let topology = build_topology_for::<RoutedRelay>().expect("topology");
 
     let router_id = topology.tasklet_name_to_id["route_latest"];
     let router = &topology.tasklets[router_id as usize];
@@ -239,9 +239,9 @@ fn the_block_expands_to_one_single_cell_node_fed_by_both_streams() {
     );
 }
 
-struct TwoUnnamedRouterOperator;
+struct TwoUnnamedRouterRelay;
 
-impl Operator for TwoUnnamedRouterOperator {
+impl Relay for TwoUnnamedRouterRelay {
     fn factory_id() -> &'static str {
         "route_latest_twice"
     }
@@ -258,9 +258,9 @@ impl Operator for TwoUnnamedRouterOperator {
     }
 }
 
-struct TwoNamedRouterOperator;
+struct TwoNamedRouterRelay;
 
-impl Operator for TwoNamedRouterOperator {
+impl Relay for TwoNamedRouterRelay {
     fn factory_id() -> &'static str {
         "route_latest_twice_named"
     }
@@ -276,8 +276,8 @@ impl Operator for TwoNamedRouterOperator {
     }
 }
 
-/// Declaration errors this operator's `channels(...)` collected.
-fn issues<R: Operator>() -> Vec<TopologyIssue> {
+/// Declaration errors this relay's `channels(...)` collected.
+fn issues<R: Relay>() -> Vec<TopologyIssue> {
     build_topology_for::<R>()
         .err()
         .map(|e| e.errors)
@@ -290,25 +290,23 @@ fn issues<R: Operator>() -> Vec<TopologyIssue> {
 #[test]
 fn a_second_router_needs_a_node_name() {
     assert!(
-        issues::<TwoUnnamedRouterOperator>()
-            .iter()
-            .any(|e| matches!(
-                e,
-                TopologyIssue::EdgeAlreadyWired { channel, tasklet }
-                    if channel == "trades" && tasklet == "route_latest"
-            )),
+        issues::<TwoUnnamedRouterRelay>().iter().any(|e| matches!(
+            e,
+            TopologyIssue::EdgeAlreadyWired { channel, tasklet }
+                if channel == "trades" && tasklet == "route_latest"
+        )),
         "the shared traffic edge must be refused, not silently re-wired"
     );
 
-    let two = build_topology_for::<TwoNamedRouterOperator>().expect("topology");
+    let two = build_topology_for::<TwoNamedRouterRelay>().expect("topology");
     assert!(two.tasklet_name_to_id.contains_key("primary"));
     assert!(two.tasklet_name_to_id.contains_key("secondary"));
     assert!(!two.tasklet_name_to_id.contains_key("route_latest"));
 }
 
-struct SelfRoutedOperator;
+struct SelfRoutedRelay;
 
-impl Operator for SelfRoutedOperator {
+impl Relay for SelfRoutedRelay {
     fn factory_id() -> &'static str {
         "route_latest_self"
     }
@@ -325,7 +323,7 @@ impl Operator for SelfRoutedOperator {
 #[test]
 fn one_channel_cannot_be_both_streams() {
     assert!(
-        issues::<SelfRoutedOperator>().iter().any(
+        issues::<SelfRoutedRelay>().iter().any(
             |e| matches!(e, TopologyIssue::DuplicateMergeSource { channel } if channel == "trades")
         ),
         "one channel serving as both streams must be refused"

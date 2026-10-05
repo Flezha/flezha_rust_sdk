@@ -33,7 +33,7 @@ pub const DEFAULT_TASKLET_ON_TIMER_PANIC_MESSAGE: &str =
 /// author-controlled memory multiplied by an unbounded Cell count; the cap
 /// is what keeps a runaway registration a refusal rather than an OOM.
 pub const DEFAULT_MAX_TIMERS_PER_CELL: usize = 10_000;
-pub use flz_core::operator::topology::DEFAULT_COMPACT_AFTER_BYTES;
+pub use flz_core::relay::topology::DEFAULT_COMPACT_AFTER_BYTES;
 
 /// One tasklet: the author's own type, whose `run` the runtime calls for each
 /// input a Cell receives. The Cell's state is held by the runtime and reached
@@ -77,9 +77,9 @@ pub trait Tasklet: Send + Sync + 'static + Default {
     /// anyway, so the requirement reaches it where it matters. `State` keeps
     /// its raw serde bounds, which say the same thing for a different reader.
     type Output: Send + Sync + 'static + JournalValue;
-    /// Per-Cell state. Steps operator on `Serialize + DeserializeOwned` so
+    /// Per-Cell state. Steps relay on `Serialize + DeserializeOwned` so
     /// the runtime can serialize state for `CellState` /
-    /// `MigrationSerialization` and seed it from `AddOperator.init_values`
+    /// `MigrationSerialization` and seed it from `AddRelay.init_values`
     /// without going through the user's `init_state`.
     type State: Send + Sync + 'static + Serialize + DeserializeOwned;
 
@@ -89,7 +89,7 @@ pub trait Tasklet: Send + Sync + 'static + Default {
     /// detects it via `TypeId` and allocates no flush buffer.
     type Change: Change<Self::State>;
 
-    /// The tasklet's name within its operator, unique there. Saved state is
+    /// The tasklet's name within its relay, unique there. Saved state is
     /// keyed by it, never by the Rust type, so renaming the type keeps the
     /// state.
     const NAME: &'static str;
@@ -190,7 +190,7 @@ pub trait Tasklet: Send + Sync + 'static + Default {
 
     /// Per-Cell WAL size threshold reported to the controller. The
     /// runtime never compacts on the SDK side — compaction is controller-
-    /// driven per `operator-state-persistence`. Default 8 MiB,
+    /// driven per `relay-state-persistence`. Default 8 MiB,
     /// in lockstep with the controller's `:default_compact_after_bytes`.
     fn compact_after_bytes() -> usize {
         DEFAULT_COMPACT_AFTER_BYTES
@@ -209,7 +209,7 @@ pub trait Tasklet: Send + Sync + 'static + Default {
     ///
     /// Static-mode tasklets (`cell_keys()` non-empty) MUST write this;
     /// `#[flezha::tasklet]` then sets `CELLS_FOR_OVERRIDDEN`, and the topology
-    /// builder refuses the operator otherwise.
+    /// builder refuses the relay otherwise.
     fn cells_for(_input: &Self::Input) -> Vec<&'static str> {
         Vec::new()
     }
@@ -220,7 +220,7 @@ pub trait Tasklet: Send + Sync + 'static + Default {
     const CELLS_FOR_OVERRIDDEN: bool = false;
 
     /// Dynamic-mode idle eviction window. `None` (default) = no eviction:
-    /// Cells live as long as the Operator, like static ones. `Some(ttl)`
+    /// Cells live as long as the Relay, like static ones. `Some(ttl)`
     /// opts a per-Tasklet reaper in; eviction is destructive (in-memory slot +
     /// on-disk WAL/snapshot dropped) and a later input cold-starts fresh —
     /// no restore-from-disk. Ignored for single/static Tasklets.
@@ -240,7 +240,7 @@ pub trait Tasklet: Send + Sync + 'static + Default {
     const MAX_CELLS_OVERRIDDEN: bool = false;
 
     /// Per-Cell mailbox capacity. The consumer Cell allocates
-    /// one bounded ring buffer of this size at operator startup. Static-mode
+    /// one bounded ring buffer of this size at relay startup. Static-mode
     /// Tasklets allocate one mailbox per declared cell key, all sharing
     /// the same capacity.
     ///
@@ -267,7 +267,7 @@ pub trait Tasklet: Send + Sync + 'static + Default {
     /// Compute. Receives the typed input and the context, which reads the
     /// state with `ctx.state()`, changes it with `ctx.change(..)` and emits
     /// with `ctx.emit(..)`. Producing zero outputs is calling no emit.
-    /// Returning Err logs against `(operator, tasklet, cell)` and discards
+    /// Returning Err logs against `(relay, tasklet, cell)` and discards
     /// any partial emits.
     fn run(&mut self, input: Self::Input, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError>;
 
@@ -313,10 +313,10 @@ pub trait Tasklet: Send + Sync + 'static + Default {
         DEFAULT_MAX_TIMERS_PER_CELL
     }
 
-    /// Optional saga **compensation** hook (steps operators only). A
+    /// Optional saga **compensation** hook (steps relays only). A
     /// tasklet whose `run` commits a reversible side effect writes this to
-    /// undo it. The steps operator fires it ONLY during abnormal-termination
-    /// rollback (never on a clean `ok`, never for a flow operator), once
+    /// undo it. The steps relay fires it ONLY during abnormal-termination
+    /// rollback (never on a clean `ok`, never for a flow relay), once
     /// per cell that ran, in reverse completion order, handing back that
     /// cell's own collected outputs (zero-copy `Arc`s) and its [`Ctx`], so it
     /// can reverse precisely. Compensation MUST be idempotent by author
@@ -324,7 +324,7 @@ pub trait Tasklet: Send + Sync + 'static + Default {
     ///
     /// The default is a no-op. Writing it in a `#[flezha::tasklet]` block sets
     /// [`COMPENSATE_OVERRIDDEN`](Self::COMPENSATE_OVERRIDDEN), which is what
-    /// makes the steps operator register the tasklet as compensable.
+    /// makes the steps relay register the tasklet as compensable.
     fn compensate(
         &mut self,
         _completed_output: Vec<Arc<Self::Output>>,

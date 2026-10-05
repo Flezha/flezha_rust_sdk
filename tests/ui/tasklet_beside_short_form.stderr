@@ -1,4 +1,4 @@
-error: #[flezha::operator] already completes this block and names its tasklet; a block takes one of `#[flezha::tasklet]` and `#[flezha::operator]`
+error: #[flezha::relay] already completes this block and names its tasklet; a block takes one of `#[flezha::tasklet]` and `#[flezha::relay]`
  --> tests/ui/tasklet_beside_short_form.rs:9:1
   |
 9 | #[tasklet(name = "counter")]

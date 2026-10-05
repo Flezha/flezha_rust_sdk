@@ -4,7 +4,7 @@
 
 use crate::*;
 
-// -- BoundedMailboxOperator ------------------------------------------------------
+// -- BoundedMailboxRelay ------------------------------------------------------
 
 #[derive(Serialize, Deserialize, Clone, Default)]
 struct StepsTaskletState {
@@ -72,11 +72,11 @@ impl Tasklet for DropOldestTestTasklet {
     }
 }
 
-// One operator per overflow policy: the graph-shape rule
-// (`sdk-graph-authoring`) allows exactly one entry channel per operator, so
-// the former three-entry BoundedMailboxOperator is now three classes.
-pub(crate) struct BoundedMailboxDropNothingOperator;
-impl Operator for BoundedMailboxDropNothingOperator {
+// One relay per overflow policy: the graph-shape rule
+// (`sdk-graph-authoring`) allows exactly one entry channel per relay, so
+// the former three-entry BoundedMailboxRelay is now three classes.
+pub(crate) struct BoundedMailboxDropNothingRelay;
+impl Relay for BoundedMailboxDropNothingRelay {
     fn factory_id() -> &'static str {
         "bounded_mailbox_drop_nothing"
     }
@@ -88,8 +88,8 @@ impl Operator for BoundedMailboxDropNothingOperator {
     }
 }
 
-pub(crate) struct BoundedMailboxDropNewestOperator;
-impl Operator for BoundedMailboxDropNewestOperator {
+pub(crate) struct BoundedMailboxDropNewestRelay;
+impl Relay for BoundedMailboxDropNewestRelay {
     fn factory_id() -> &'static str {
         "bounded_mailbox_drop_newest"
     }
@@ -101,8 +101,8 @@ impl Operator for BoundedMailboxDropNewestOperator {
     }
 }
 
-pub(crate) struct BoundedMailboxDropOldestOperator;
-impl Operator for BoundedMailboxDropOldestOperator {
+pub(crate) struct BoundedMailboxDropOldestRelay;
+impl Relay for BoundedMailboxDropOldestRelay {
     fn factory_id() -> &'static str {
         "bounded_mailbox_drop_oldest"
     }
@@ -114,7 +114,7 @@ impl Operator for BoundedMailboxDropOldestOperator {
     }
 }
 
-// -- HybridChannelOperator -------------------------------------------------------
+// -- HybridChannelRelay -------------------------------------------------------
 //
 // Demonstrates `sink_with(...)`: the producer Tasklet emits a
 // `u32` value that fans out to an inter-tasklet consumer and is also
@@ -152,8 +152,8 @@ impl Tasklet for HybridConsumerTasklet {
     }
 }
 
-pub(crate) struct HybridChannelOperator;
-impl Operator for HybridChannelOperator {
+pub(crate) struct HybridChannelRelay;
+impl Relay for HybridChannelRelay {
     fn factory_id() -> &'static str {
         "hybrid_channel"
     }
@@ -170,7 +170,7 @@ impl Operator for HybridChannelOperator {
     }
 }
 
-// -- MergedInputOperator ---------------------------------------------------------
+// -- MergedInputRelay ---------------------------------------------------------
 //
 // Two entry channels merged into one tasklet. Each source's mapping tags the
 // value with the channel it came from, the merge keys on the symbol the mapping
@@ -202,8 +202,8 @@ impl Tasklet for MergeLabelTasklet {
     }
 }
 
-pub(crate) struct MergedInputOperator;
-impl Operator for MergedInputOperator {
+pub(crate) struct MergedInputRelay;
+impl Relay for MergedInputRelay {
     fn factory_id() -> &'static str {
         "merged_input"
     }
@@ -220,7 +220,7 @@ impl Operator for MergedInputOperator {
     }
 }
 
-// -- TransformChainOperator ------------------------------------------------------
+// -- TransformChainRelay ------------------------------------------------------
 //
 // Every value transform on one edge: `drop` is filtered out, a comma list fans
 // out into one value per element, each is upper-cased and keyed on its prefix.
@@ -236,8 +236,8 @@ impl Tasklet for TransformLabelTasklet {
     }
 }
 
-pub(crate) struct TransformChainOperator;
-impl Operator for TransformChainOperator {
+pub(crate) struct TransformChainRelay;
+impl Relay for TransformChainRelay {
     fn factory_id() -> &'static str {
         "transform_chain"
     }

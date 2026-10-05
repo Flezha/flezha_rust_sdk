@@ -35,8 +35,8 @@ pub use stream::{EntryStream, EntryTarget, NodeTarget, Stream, StreamTarget};
 
 use crate::channel::ChannelKind;
 
-/// Builder collected by `Operator::channels`. Internal state turns into a
-/// frozen `OperatorTopology` at `build_topology` time. Stream handles hold a
+/// Builder collected by `Relay::channels`. Internal state turns into a
+/// frozen `RelayTopology` at `build_topology` time. Stream handles hold a
 /// shared reference to the builder, so its interior is a `RefCell`.
 pub struct ChannelBuilder {
     pub(crate) state: RefCell<BuilderState>,
@@ -62,13 +62,13 @@ impl ChannelBuilder {
         self.state.into_inner()
     }
 
-    /// Whether any tasklet was declared (a steps operator without one is
+    /// Whether any tasklet was declared (a steps relay without one is
     /// refused).
     pub(crate) fn has_tasklets(&self) -> bool {
         !self.state.borrow().tasklets.is_empty()
     }
 
-    /// Declare the entry channel fed by the controller — the operator's
+    /// Declare the entry channel fed by the controller — the relay's
     /// external input address, so its name is explicit and mandatory.
     ///
     /// Any payload type is accepted. `Vec<u8>` is delivered unchanged and
@@ -116,7 +116,7 @@ impl ChannelBuilder {
     /// ```
     ///
     /// Sources may be entry streams (sealed payloads) or another tasklet's
-    /// output stream, freely mixed, on either kind of operator. A steps operator
+    /// output stream, freely mixed, on either kind of relay. A steps relay
     /// message starts only the chain of the entry channel it arrived on, so a
     /// merge over two entry channels runs once per message, over that
     /// message's source.
@@ -138,7 +138,7 @@ impl ChannelBuilder {
     /// A panicking mapping is contained everywhere it can be: on an
     /// inter-tasklet source it is caught as the producing tasklet's panic
     /// (stream) or turned into a terminal chain error the saga compensates
-    /// (steps operator). The one unguarded seam is a flow operator's entry-channel source,
+    /// (steps relay). The one unguarded seam is a flow relay's entry-channel source,
     /// where the mapping runs on the wire-reader path — the same exposure the
     /// entry parser there already carries. `docs/sdk/multi_input_tasklets.md`
     /// tabulates it.

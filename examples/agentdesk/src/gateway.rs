@@ -1,4 +1,4 @@
-use flezha_runner::{CallTarget, ChannelBuilder, Exactly, Operator, OperatorSettings, Run};
+use flezha_runner::{CallTarget, ChannelBuilder, Exactly, Relay, RelaySettings, Run};
 
 use crate::admit::Admit;
 use crate::budget::{Budget, Event, Verdict};
@@ -8,11 +8,11 @@ use crate::watch::Watch;
 
 const DEADLINE_MS: u64 = 60_000;
 
-/// The HTTP side of the desk: a flow operator that carries the HTTP
+/// The HTTP side of the desk: a flow relay that carries the HTTP
 /// plugin, answers every request, and calls the session a message is for.
-pub struct GatewayOperator;
+pub struct GatewayRelay;
 
-impl Operator for GatewayOperator {
+impl Relay for GatewayRelay {
     fn factory_id() -> &'static str {
         "gateway"
     }
@@ -41,20 +41,20 @@ impl Operator for GatewayOperator {
             .filter(Verdict::admitted)
             .map(|verdict| verdict.message)
             .key_by(|message| message.user.clone()) // the user's session
-            // call the "agent" operator; its answer comes back here
+            // call the "agent" relay; its answer comes back here
             .call::<Answer>(CallTarget::factory("agent").channel("message"), DEADLINE_MS)
             .map(Event::used) // the session's answer, as tokens used
             .key_by(|event| event.user().to_string())
             .into::<Budget>(); // back into the same budget
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             // each request and answer on disk before it runs
             run: Run::Flow {
                 exactly: Exactly::effectively_once(),
             },
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }

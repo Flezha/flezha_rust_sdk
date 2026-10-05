@@ -11,7 +11,7 @@ use flezha_runner::cell::header::{HeaderTemplate, FORMAT_ID_EFFECT_RECORD, FORMA
 use flezha_runner::cell::state_sink;
 use flezha_runner::cell::timer::{PendingTimers, TimerKind, TimerOp};
 use flezha_runner::channel::ChannelBuilder;
-use flezha_runner::operator::Operator;
+use flezha_runner::relay::Relay;
 use flezha_runner::state::{Change, ClockKind, RestoreInitPayload};
 use flezha_runner::tasklet::{Ctx, Tasklet, TaskletError};
 use flezha_runner::testing::TaskletTestHarness;
@@ -140,10 +140,10 @@ impl<const CAP: usize> Tasklet for SessionTask<CAP> {
     }
 }
 
-pub struct SessionOperator;
-impl Operator for SessionOperator {
+pub struct SessionRelay;
+impl Relay for SessionRelay {
     fn factory_id() -> &'static str {
-        "timers_session_operator"
+        "timers_session_relay"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
@@ -153,12 +153,12 @@ impl Operator for SessionOperator {
     }
 }
 
-/// [`SessionOperator`] with a two-slot, `DropNothing` entry mailbox, so a
+/// [`SessionRelay`] with a two-slot, `DropNothing` entry mailbox, so a
 /// case can saturate it with two frames and watch a firing meet it.
-pub struct SaturatedSessionOperator;
-impl Operator for SaturatedSessionOperator {
+pub struct SaturatedSessionRelay;
+impl Relay for SaturatedSessionRelay {
     fn factory_id() -> &'static str {
-        "timers_saturated_session_operator"
+        "timers_saturated_session_relay"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
@@ -229,10 +229,10 @@ impl Tasklet for WindowTask {
     }
 }
 
-pub struct WindowOperator;
-impl Operator for WindowOperator {
+pub struct WindowRelay;
+impl Relay for WindowRelay {
     fn factory_id() -> &'static str {
-        "timers_window_operator"
+        "timers_window_relay"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<Tick>("in").into::<WindowTask>();

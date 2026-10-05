@@ -1,0 +1,5 @@
+error: `each` must be one of: once, per_input, chained
+ --> tests/ui/relay_unknown_each.rs:1:74
+  |
+1 | #[flezha_runner::relay(id = "chat", sink = "replies", run = steps(each = forever))]
+  |                                                                          ^^^^^^^

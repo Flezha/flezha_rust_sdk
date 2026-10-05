@@ -2,7 +2,7 @@
 //! application code.
 //!
 //! [`FlezhaRunner::control`](crate::FlezhaRunner::control) hands back a
-//! [`Control`] whose methods start and stop operators, enable, bind, unbind
+//! [`Control`] whose methods start and stop relays, enable, bind, unbind
 //! and disable plugins, and read what is running. No tasklet has to be running and the
 //! application holds no credential of its own: the controller judges every
 //! call as the identity the connection already established, so a user
@@ -21,17 +21,17 @@ use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-/// The specification a start takes, the same one `flz operator start` takes.
+/// The specification a start takes, the same one `flz relay start` takes.
 #[derive(Debug, Clone, Default)]
-pub struct OperatorSpec {
+pub struct RelaySpec {
     factory_id: String,
     id: Option<String>,
     init_values: Value,
     opts: Value,
 }
 
-impl OperatorSpec {
-    /// An operator of the factory `factory_id`, of the kind its runner
+impl RelaySpec {
+    /// A relay of the factory `factory_id`, of the kind its runner
     /// announced, under an id the controller generates unless [`Self::id`]
     /// names one.
     pub fn new(factory_id: impl Into<String>) -> Self {
@@ -43,9 +43,9 @@ impl OperatorSpec {
         }
     }
 
-    /// The operator's own id. Without one, every start runs a new operator
+    /// The relay's own id. Without one, every start runs a new relay
     /// under a generated id, so a start retried after a lost answer starts a
-    /// second one; with one, a second start leaves the running operator
+    /// second one; with one, a second start leaves the running relay
     /// untouched.
     pub fn id(mut self, id: impl Into<String>) -> Self {
         self.id = Some(id.into());
@@ -58,7 +58,7 @@ impl OperatorSpec {
         self
     }
 
-    /// The start options, as `flz operator start` takes them.
+    /// The start options, as `flz relay start` takes them.
     pub fn opts(mut self, opts: Value) -> Self {
         self.opts = opts;
         self
@@ -83,12 +83,12 @@ pub struct PluginSpec {
     provider: String,
     opts: Value,
     single: bool,
-    operator_id: Option<String>,
+    relay_id: Option<String>,
     hooks: Value,
 }
 
 impl PluginSpec {
-    /// A plugin of `provider`, for example `operator_websocket`, on no options.
+    /// A plugin of `provider`, for example `relay_websocket`, on no options.
     pub fn new(provider: impl Into<String>) -> Self {
         Self {
             provider: provider.into(),
@@ -108,10 +108,10 @@ impl PluginSpec {
         self
     }
 
-    /// Bind `operator_id` in the same call, with `hooks`: names or
+    /// Bind `relay_id` in the same call, with `hooks`: names or
     /// `[name, opts]` pairs.
-    pub fn bind(mut self, operator_id: impl Into<String>, hooks: Value) -> Self {
-        self.operator_id = Some(operator_id.into());
+    pub fn bind(mut self, relay_id: impl Into<String>, hooks: Value) -> Self {
+        self.relay_id = Some(relay_id.into());
         self.hooks = hooks;
         self
     }
@@ -133,7 +133,7 @@ impl PluginSpec {
                         Value::Null
                     },
                 ),
-                ("operator_id", json!(self.operator_id)),
+                ("relay_id", json!(self.relay_id)),
                 ("hooks", self.hooks.clone()),
             ],
         )
@@ -153,7 +153,7 @@ fn given<const N: usize>(mut fields: Value, optional: [(&str, Value); N]) -> Val
     fields
 }
 
-/// What a start answered: the id the operator runs under, the generated one
+/// What a start answered: the id the relay runs under, the generated one
 /// when the start named none, and what the start did.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct StartResult {
@@ -165,7 +165,7 @@ pub struct StartResult {
 #[serde(rename_all = "snake_case")]
 pub enum StartOutcome {
     Started,
-    /// The named operator was already running and was left untouched.
+    /// The named relay was already running and was left untouched.
     AlreadyRunning,
 }
 
@@ -174,14 +174,14 @@ pub enum StartOutcome {
 pub struct Control;
 
 impl Control {
-    /// Start an operator.
-    pub fn start_operator(&self, spec: &OperatorSpec) -> Result<StartResult, ControlError> {
-        self.answer("Operator.start", &[spec.to_fields()])
+    /// Start a relay.
+    pub fn start_relay(&self, spec: &RelaySpec) -> Result<StartResult, ControlError> {
+        self.answer("Relay.start", &[spec.to_fields()])
     }
 
-    /// Stop an operator, or the whole partition group it names.
-    pub fn stop_operator(&self, operator_id: &str) -> Result<Value, ControlError> {
-        self.call("Operator.stop", &[json!(operator_id)])
+    /// Stop a relay, or the whole partition group it names.
+    pub fn stop_relay(&self, relay_id: &str) -> Result<Value, ControlError> {
+        self.call("Relay.stop", &[json!(relay_id)])
     }
 
     /// Enable the plugin `name` in this namespace, as `spec` describes it.
@@ -189,27 +189,27 @@ impl Control {
         self.call("PluginManager.enable", &[json!(name), spec.to_fields()])
     }
 
-    /// Bind the operator `operator_id` to the enabled plugin `name`. `hooks`
+    /// Bind the relay `relay_id` to the enabled plugin `name`. `hooks`
     /// may be null and `channel` empty for none.
     pub fn bind_plugin(
         &self,
         name: &str,
-        operator_id: &str,
+        relay_id: &str,
         hooks: Value,
         channel: &str,
     ) -> Result<Value, ControlError> {
         self.call(
             "PluginManager.bind",
-            &[json!(name), bind_fields(operator_id, hooks, channel)],
+            &[json!(name), bind_fields(relay_id, hooks, channel)],
         )
     }
 
-    /// Unbind the operator `operator_id` from the plugin `name`, which stays
+    /// Unbind the relay `relay_id` from the plugin `name`, which stays
     /// enabled.
-    pub fn unbind_plugin(&self, name: &str, operator_id: &str) -> Result<Value, ControlError> {
+    pub fn unbind_plugin(&self, name: &str, relay_id: &str) -> Result<Value, ControlError> {
         self.call(
             "PluginManager.unbind",
-            &[json!(name), json!({ "operator_id": operator_id })],
+            &[json!(name), json!({ "relay_id": relay_id })],
         )
     }
 
@@ -218,23 +218,20 @@ impl Control {
         self.call("PluginManager.disable", &[json!(name), json!({})])
     }
 
-    /// The operator ids running in this namespace.
-    pub fn list_operators(&self) -> Result<Value, ControlError> {
-        self.call("Operator.list_operators", &[])
+    /// The relay ids running in this namespace.
+    pub fn list_relays(&self) -> Result<Value, ControlError> {
+        self.call("Relay.list_relays", &[])
     }
 
     /// The plugins enabled in this namespace: name, provider, single, bound
-    /// operators.
+    /// relays.
     pub fn list_plugins(&self) -> Result<Value, ControlError> {
         self.call("PluginManager.list", &[])
     }
 
     /// One cell's live state, and the change sequence it was read at.
-    pub fn cell_state(&self, operator_id: &str, cell_key: &str) -> Result<Value, ControlError> {
-        self.call(
-            "Operator.cell_state",
-            &[json!(operator_id), json!(cell_key)],
-        )
+    pub fn cell_state(&self, relay_id: &str, cell_key: &str) -> Result<Value, ControlError> {
+        self.call("Relay.cell_state", &[json!(relay_id), json!(cell_key)])
     }
 
     /// Any published function, by name, for a verb this surface has not yet
@@ -250,14 +247,14 @@ impl Control {
     }
 }
 
-fn bind_fields(operator_id: &str, hooks: Value, channel: &str) -> Value {
+fn bind_fields(relay_id: &str, hooks: Value, channel: &str) -> Value {
     let channel = if channel.is_empty() {
         Value::Null
     } else {
         json!(channel)
     };
     given(
-        json!({ "operator_id": operator_id }),
+        json!({ "relay_id": relay_id }),
         [("hooks", hooks), ("channel", channel)],
     )
 }
@@ -279,44 +276,44 @@ mod tests {
     #[test]
     fn a_start_names_its_id_only_when_given_one() {
         assert_eq!(
-            OperatorSpec::new("echo").to_fields(),
+            RelaySpec::new("echo").to_fields(),
             json!({ "factory_id": "echo" }),
             "no id is sent, so the controller generates one"
         );
         assert_eq!(
-            OperatorSpec::new("echo").id("my_echo").to_fields(),
+            RelaySpec::new("echo").id("my_echo").to_fields(),
             json!({ "factory_id": "echo", "id": "my_echo" })
         );
     }
 
     #[test]
-    fn a_plugin_is_enabled_by_name_and_bound_by_operator() {
+    fn a_plugin_is_enabled_by_name_and_bound_by_relay() {
         assert_eq!(
-            PluginSpec::new("operator_file_sink")
+            PluginSpec::new("relay_file_sink")
                 .opts(json!({ "path": "out.txt" }))
                 .to_fields(),
-            json!({ "provider": "operator_file_sink", "opts": { "path": "out.txt" } })
+            json!({ "provider": "relay_file_sink", "opts": { "path": "out.txt" } })
         );
         assert_eq!(
-            PluginSpec::new("operator_websocket")
+            PluginSpec::new("relay_websocket")
                 .single()
                 .bind("my_echo", json!([["on_output", {}]]))
                 .to_fields(),
             json!({
-                "provider": "operator_websocket",
+                "provider": "relay_websocket",
                 "opts": {},
                 "single": true,
-                "operator_id": "my_echo",
+                "relay_id": "my_echo",
                 "hooks": [["on_output", {}]],
             })
         );
         assert_eq!(
             bind_fields("my_echo", Value::Null, ""),
-            json!({ "operator_id": "my_echo" })
+            json!({ "relay_id": "my_echo" })
         );
         assert_eq!(
             bind_fields("my_echo", json!(["on_output"]), "in"),
-            json!({ "operator_id": "my_echo", "hooks": ["on_output"], "channel": "in" })
+            json!({ "relay_id": "my_echo", "hooks": ["on_output"], "channel": "in" })
         );
     }
 
@@ -324,7 +321,7 @@ mod tests {
     fn a_start_answer_reads_as_its_id_and_outcome() {
         assert_eq!(
             read::<StartResult>(
-                "Operator.start",
+                "Relay.start",
                 r#"{"id":"echo-k7m2qzxw4pd3fn2a","outcome":"started"}"#
             ),
             Ok(StartResult {
@@ -334,7 +331,7 @@ mod tests {
         );
         assert_eq!(
             read::<StartResult>(
-                "Operator.start",
+                "Relay.start",
                 r#"{"id":"my_echo","outcome":"already_running"}"#
             ),
             Ok(StartResult {
@@ -346,10 +343,8 @@ mod tests {
 
     #[test]
     fn a_start_answer_of_another_shape_is_refused_naming_what_is_wrong() {
-        let refused = read::<StartResult>(
-            "Operator.start",
-            r#"{"id":"my_echo","outcome":"duplicate"}"#,
-        );
+        let refused =
+            read::<StartResult>("Relay.start", r#"{"id":"my_echo","outcome":"duplicate"}"#);
         assert!(
             matches!(&refused, Err(ControlError::Refused(e))
                 if e.code == "control.unreadable_answer"

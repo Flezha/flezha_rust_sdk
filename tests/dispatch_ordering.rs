@@ -1,6 +1,6 @@
 //! Per-cell ordering and stickiness: one Cell is never dispatched
 //! concurrently, its inputs keep enqueue order, different cells run in
-//! parallel, and two operators' same-named channels stay independent.
+//! parallel, and two relays' same-named channels stay independent.
 
 mod common;
 use common::prelude::*;
@@ -14,10 +14,10 @@ test_tasklet!(AppendTasklet, "append_tasklet", String => String, (), |input, _ct
     Ok(())
 });
 
-struct AppendOperator;
-impl Operator for AppendOperator {
+struct AppendRelay;
+impl Relay for AppendRelay {
     fn factory_id() -> &'static str {
-        "append_operator"
+        "append_relay"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input").into::<AppendTasklet>();
@@ -27,7 +27,7 @@ impl Operator for AppendOperator {
 #[test]
 fn per_cell_input_order_preserved() {
     APPEND_OBSERVED.lock().unwrap().clear();
-    let (handle, _instance) = setup::<AppendOperator>("append-instance");
+    let (handle, _instance) = setup::<AppendRelay>("append-instance");
     let stream = dummy_stream();
 
     let n = 1000usize;
@@ -83,10 +83,10 @@ test_tasklet!(ConcurrencyProbeTasklet, "concurrency_probe_tasklet", String => St
     Ok(())
 });
 
-struct ConcurrencyProbeOperator;
-impl Operator for ConcurrencyProbeOperator {
+struct ConcurrencyProbeRelay;
+impl Relay for ConcurrencyProbeRelay {
     fn factory_id() -> &'static str {
-        "concurrency_probe_operator"
+        "concurrency_probe_relay"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input").into::<ConcurrencyProbeTasklet>();
@@ -98,11 +98,11 @@ fn same_cell_never_runs_concurrently() {
     APPEND_CONCURRENT.store(0, Ordering::Release);
     APPEND_MAX_CONCURRENT.store(0, Ordering::Release);
 
-    let topology = build_topology_for::<ConcurrencyProbeOperator>().expect("topology");
-    let registry = Arc::new(OperatorRegistry::new());
-    let instance = OperatorInstance::new(topology, Arc::from("conc-instance"));
+    let topology = build_topology_for::<ConcurrencyProbeRelay>().expect("topology");
+    let registry = Arc::new(RelayRegistry::new());
+    let instance = RelayInstance::new(topology, Arc::from("conc-instance"));
     registry.register(instance);
-    let handle = OperatorDispatchHandle {
+    let handle = RelayDispatchHandle {
         registry: Arc::clone(&registry),
     };
     let stream = dummy_stream();
@@ -144,7 +144,7 @@ fn same_cell_never_runs_concurrently() {
     );
 }
 
-fn registry_instance(registry: &Arc<OperatorRegistry>, id: &str) -> Arc<OperatorInstance> {
+fn registry_instance(registry: &Arc<RelayRegistry>, id: &str) -> Arc<RelayInstance> {
     registry.get(id).expect("registered instance")
 }
 
@@ -199,10 +199,10 @@ impl Tasklet for ParallelStaticTasklet {
     }
 }
 
-struct ParallelOperator;
-impl Operator for ParallelOperator {
+struct ParallelRelay;
+impl Relay for ParallelRelay {
     fn factory_id() -> &'static str {
-        "parallel_operator"
+        "parallel_relay"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input").into::<ParallelStaticTasklet>();
@@ -212,7 +212,7 @@ impl Operator for ParallelOperator {
 #[test]
 fn static_cells_dispatch_independently() {
     parallel_observed().lock().unwrap().clear();
-    let (handle, _instance) = setup::<ParallelOperator>("parallel-instance");
+    let (handle, _instance) = setup::<ParallelRelay>("parallel-instance");
     let stream = dummy_stream();
 
     let prefixes = ["a", "b", "c", "d"];
@@ -249,7 +249,7 @@ fn static_cells_dispatch_independently() {
     }
 }
 
-// ----- Per-operator namespace isolation -----
+// ----- Per-relay namespace isolation -----
 
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 struct CountingState {
@@ -261,9 +261,9 @@ test_tasklet!(CountingTasklet, "counting_tasklet", String => String, CountingSta
 });
 
 struct FlowA;
-impl Operator for FlowA {
+impl Relay for FlowA {
     fn factory_id() -> &'static str {
-        "ns_operator_a"
+        "ns_relay_a"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input").into::<CountingTasklet>();
@@ -271,9 +271,9 @@ impl Operator for FlowA {
 }
 
 struct FlowB;
-impl Operator for FlowB {
+impl Relay for FlowB {
     fn factory_id() -> &'static str {
-        "ns_operator_b"
+        "ns_relay_b"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input").into::<CountingTasklet>();
@@ -281,13 +281,13 @@ impl Operator for FlowB {
 }
 
 #[test]
-fn per_operator_namespace_isolation() {
+fn per_relay_namespace_isolation() {
     let topology_a = build_topology_for::<FlowA>().expect("topology a");
     let topology_b = build_topology_for::<FlowB>().expect("topology b");
     assert_ne!(topology_a.factory_id, topology_b.factory_id);
 
     // Same channel name on each is a separate ChannelDescriptor with id 0
-    // in its own topology — interning is per-operator.
+    // in its own topology — interning is per-relay.
     assert_eq!(topology_a.lookup_channel_id("input"), Some(0));
     assert_eq!(topology_b.lookup_channel_id("input"), Some(0));
     assert!(!std::ptr::eq(
@@ -314,10 +314,10 @@ test_tasklet!(MetaConsumerTasklet, "meta_consumer_tasklet", String => (), (), |_
     Ok(())
 });
 
-struct MetaRejectOperator;
-impl Operator for MetaRejectOperator {
+struct MetaRejectRelay;
+impl Relay for MetaRejectRelay {
     fn factory_id() -> &'static str {
-        "meta_reject_operator"
+        "meta_reject_relay"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
@@ -330,7 +330,7 @@ impl Operator for MetaRejectOperator {
 #[test]
 fn emit_with_meta_rejected_on_inter_tasklet() {
     *META_REJECT_OBSERVED.lock().unwrap() = None;
-    let (handle, _instance) = setup::<MetaRejectOperator>("meta-instance");
+    let (handle, _instance) = setup::<MetaRejectRelay>("meta-instance");
     let stream = dummy_stream();
 
     let mut md = HashMap::new();

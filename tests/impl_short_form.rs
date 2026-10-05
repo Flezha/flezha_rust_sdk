@@ -5,14 +5,17 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use flezha_runner::{Change, ChannelBuilder, ClockKind, Ctx, Each, LocalOperator, NoChange, OnFailure, Operator, OperatorSettings, Run, Tasklet, TaskletError, tasklet};
+use flezha_runner::{
+    tasklet, Change, ChannelBuilder, ClockKind, Ctx, Each, LocalRelay, NoChange, OnFailure, Relay,
+    RelaySettings, Run, Tasklet, TaskletError,
+};
 use serde::{Deserialize, Serialize};
 
 /// Every value released on `sink` while `feed` runs through `R`'s graph.
-fn released<R: Operator>(entry: &str, sink: &str, feed: &[&str]) -> Vec<String> {
+fn released<R: Relay>(entry: &str, sink: &str, feed: &[&str]) -> Vec<String> {
     let out = Arc::new(Mutex::new(Vec::new()));
     let into = Arc::clone(&out);
-    let run = LocalOperator::start::<R>().expect("the run starts");
+    let run = LocalRelay::start::<R>().expect("the run starts");
     run.on_sink(sink, move |o| {
         into.lock()
             .unwrap()
@@ -42,11 +45,11 @@ impl Change<StoreInputState> for Stored {
     }
 }
 
-/// A stateful one-tasklet operator: the author's type is both.
+/// A stateful one-tasklet relay: the author's type is both.
 #[derive(Default)]
 struct StoreInput;
 
-#[flezha_runner::operator(id = "store_input", sink = "stored", max_cells = 10)]
+#[flezha_runner::relay(id = "store_input", sink = "stored", max_cells = 10)]
 impl Tasklet for StoreInput {
     type Input = String;
     type Output = String;
@@ -61,10 +64,7 @@ impl Tasklet for StoreInput {
 
 #[test]
 fn a_stateful_short_form_sits_on_the_impl_block() {
-    assert_eq!(
-        <StoreInput as Operator>::factory_id(),
-        "store_input"
-    );
+    assert_eq!(<StoreInput as Relay>::factory_id(), "store_input");
     assert_eq!(StoreInput::NAME, "store_input");
     assert_eq!(StoreInput::max_cells(), 10);
     assert_eq!(
@@ -77,7 +77,7 @@ fn a_stateful_short_form_sits_on_the_impl_block() {
 #[derive(Default)]
 struct Ticks;
 
-#[flezha_runner::operator(id = "ticks_counter", input = "ticks")]
+#[flezha_runner::relay(id = "ticks_counter", input = "ticks")]
 impl Tasklet for Ticks {
     type Input = String;
 
@@ -88,7 +88,7 @@ impl Tasklet for Ticks {
 
 #[test]
 fn a_short_form_with_no_sink_wires_only_the_entry_channel() {
-    let run = LocalOperator::start::<Ticks>().expect("the run starts");
+    let run = LocalRelay::start::<Ticks>().expect("the run starts");
     run.feed("ticks", "1")
         .expect("`ticks` is the entry channel");
     assert!(run.feed("input", "1").is_err(), "no default entry channel");
@@ -99,7 +99,7 @@ fn a_short_form_with_no_sink_wires_only_the_entry_channel() {
 #[derive(Default)]
 struct PlaceIt;
 
-#[flezha_runner::operator(
+#[flezha_runner::relay(
     id = "place_it",
     sink = "placed",
     input = "order",
@@ -116,13 +116,13 @@ impl Tasklet for PlaceIt {
 
 #[test]
 fn a_steps_short_form_on_the_impl_block_declares_its_run() {
-    assert_eq!(<PlaceIt as Operator>::factory_id(), "place_it");
+    assert_eq!(<PlaceIt as Relay>::factory_id(), "place_it");
     assert_eq!(PlaceIt::settings().run, Run::steps(Each::PerInput));
     assert_eq!(PlaceIt::NAME, "place_it");
     assert_eq!(PlaceIt::CLOCK, ClockKind::Wall);
 }
 
-#[flezha_runner::operator(id = "evens_only", sink = "evens")]
+#[flezha_runner::relay(id = "evens_only", sink = "evens")]
 fn evens_only(n: String) -> Option<String> {
     (n.parse::<u64>().ok()? % 2 == 0).then_some(n)
 }
@@ -170,7 +170,7 @@ impl Tasklet for Bang {
 
 struct Mixed;
 
-impl Operator for Mixed {
+impl Relay for Mixed {
     fn factory_id() -> &'static str {
         "mixed_forms"
     }
@@ -188,10 +188,10 @@ fn a_sugared_and_a_hand_written_tasklet_compose() {
     assert_eq!(released::<Mixed>("words", "loud", &["hi"]), ["HI!"]);
 }
 
-/// The author's own type is what either kind of operator names.
+/// The author's own type is what either kind of relay names.
 struct PlaceShouted;
 
-impl Operator for PlaceShouted {
+impl Relay for PlaceShouted {
     fn factory_id() -> &'static str {
         "place_shouted"
     }
@@ -202,10 +202,13 @@ impl Operator for PlaceShouted {
             .sink_named("placed");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
-            run: Run::Steps { each: Each::Once, on_failure: OnFailure::UndoAll },
-            ..OperatorSettings::default()
+    fn settings() -> RelaySettings {
+        RelaySettings {
+            run: Run::Steps {
+                each: Each::Once,
+                on_failure: OnFailure::UndoAll,
+            },
+            ..RelaySettings::default()
         }
     }
 }

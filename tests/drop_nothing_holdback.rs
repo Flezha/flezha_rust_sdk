@@ -64,10 +64,10 @@ fn note_inflight() {
     DEEPEST_INFLIGHT.fetch_max(now, Ordering::AcqRel);
 }
 
-struct ChainOperator;
-impl Operator for ChainOperator {
+struct ChainRelay;
+impl Relay for ChainRelay {
     fn factory_id() -> &'static str {
-        "nonparking_chain_operator"
+        "nonparking_chain_relay"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
@@ -91,7 +91,7 @@ fn a_chain_of_full_mailboxes_drains_on_a_single_pinned_worker() {
     CHAIN_MID.store(0, Ordering::Release);
     DEEPEST_INFLIGHT.store(0, Ordering::Release);
 
-    let (handle, instance) = setup::<ChainOperator>("nonparking-chain");
+    let (handle, instance) = setup::<ChainRelay>("nonparking-chain");
     let stream = dummy_stream();
     dispatch_input(
         &handle,
@@ -151,10 +151,10 @@ test_tasklet!(OrderedTail, "nonparking_ordered_tail", String => (), (), cap 1, |
     Ok(())
 });
 
-struct OrderedOperator;
-impl Operator for OrderedOperator {
+struct OrderedRelay;
+impl Relay for OrderedRelay {
     fn factory_id() -> &'static str {
-        "nonparking_ordered_operator"
+        "nonparking_ordered_relay"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
@@ -172,7 +172,7 @@ fn per_producer_emit_order_survives_the_holdback() {
     let _serial = pin_single_worker_host();
     ORDERED_SEEN.lock().unwrap().clear();
 
-    let (handle, _instance) = setup::<OrderedOperator>("nonparking-ordered");
+    let (handle, _instance) = setup::<OrderedRelay>("nonparking-ordered");
     let stream = dummy_stream();
     dispatch_input(
         &handle,
@@ -212,10 +212,10 @@ test_tasklet!(GateTail, "nonparking_gate_tail", String => (), (), cap 1, |_input
     Ok(())
 });
 
-struct GateOperator;
-impl Operator for GateOperator {
+struct GateRelay;
+impl Relay for GateRelay {
     fn factory_id() -> &'static str {
-        "nonparking_gate_operator"
+        "nonparking_gate_relay"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
@@ -244,7 +244,7 @@ fn a_gated_producer_holds_its_round_and_is_reported() {
     let _serial = pin_single_worker_host();
     GATED_SEEN.store(0, Ordering::Release);
 
-    let (handle, instance) = setup::<GateOperator>("nonparking-gate");
+    let (handle, instance) = setup::<GateRelay>("nonparking-gate");
     let head = Arc::clone(&instance.cells[0][0]);
     let tail = Arc::clone(&instance.cells[1][0]);
     let stream = dummy_stream();
@@ -281,7 +281,7 @@ fn a_gated_producer_holds_its_round_and_is_reported() {
     assert_eq!(
         head.counters().pushes_total.load(Ordering::Relaxed),
         1,
-        "only the operator's own input landed on the producer"
+        "only the relay's own input landed on the producer"
     );
 
     // Let the consumer run: its first pop re-arms the producer, and the

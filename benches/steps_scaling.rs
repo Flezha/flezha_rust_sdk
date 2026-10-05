@@ -49,7 +49,7 @@ use common::wait_until;
 use crossbeam::channel::Receiver;
 use flezha_runner::channel::ChannelBuilder;
 use flezha_runner::tasklet::{Tasklet, TaskletError};
-use flezha_runner::{Ctx, Durable, Each, Flezha, OnFailure, Operator, OperatorSettings, Run};
+use flezha_runner::{Ctx, Durable, Each, Flezha, OnFailure, Relay, RelaySettings, Run};
 use flz_core::runner::{install_reconnect_trigger, RunnerMessage, RunnerNode};
 use flz_core::util::env_parse;
 
@@ -102,7 +102,7 @@ impl Tasklet for ShortTask {
 /// backstop a real agent class would declare — read at registration, which is
 /// where `build_spec` asks — an entry on the deferred-wake list per run.
 struct ScaleStepSteps;
-impl Operator for ScaleStepSteps {
+impl Relay for ScaleStepSteps {
     fn factory_id() -> &'static str {
         "scale-step-steps"
     }
@@ -110,15 +110,18 @@ impl Operator for ScaleStepSteps {
         c.input::<String>("in").into::<GateTask>().named("out");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
-            run: Run::Steps { each: Each::Once, on_failure: OnFailure::UndoAll },
+    fn settings() -> RelaySettings {
+        RelaySettings {
+            run: Run::Steps {
+                each: Each::Once,
+                on_failure: OnFailure::UndoAll,
+            },
             max_duration: match env_parse(ENV_MAX_DURATION_MS, 0u64) {
-            0 => None,
-            ms => Some(Duration::from_millis(ms)),
-        },
+                0 => None,
+                ms => Some(Duration::from_millis(ms)),
+            },
             durable: Durable::Memory,
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }
@@ -145,7 +148,7 @@ static IDLE_PASSES: AtomicUsize = AtomicUsize::new(0);
 /// no thread — no worker (no step is running), no duration backstop — which
 /// is what isolates the per-instance cost.
 struct ScaleIdleSteps;
-impl Operator for ScaleIdleSteps {
+impl Relay for ScaleIdleSteps {
     fn factory_id() -> &'static str {
         "scale-idle-steps"
     }
@@ -153,18 +156,21 @@ impl Operator for ScaleIdleSteps {
         c.input::<String>("in").into::<IdleTask>().named("out");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
-            run: Run::Steps { each: Each::PerInput, on_failure: OnFailure::UndoAll },
+    fn settings() -> RelaySettings {
+        RelaySettings {
+            run: Run::Steps {
+                each: Each::PerInput,
+                on_failure: OnFailure::UndoAll,
+            },
             durable: Durable::Memory,
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }
 
 /// The instance measured beside the population.
 struct ScaleControlSteps;
-impl Operator for ScaleControlSteps {
+impl Relay for ScaleControlSteps {
     fn factory_id() -> &'static str {
         "scale-control-steps"
     }
@@ -174,11 +180,14 @@ impl Operator for ScaleControlSteps {
             .sink_named("out");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
-            run: Run::Steps { each: Each::Once, on_failure: OnFailure::UndoAll },
+    fn settings() -> RelaySettings {
+        RelaySettings {
+            run: Run::Steps {
+                each: Each::Once,
+                on_failure: OnFailure::UndoAll,
+            },
             durable: Durable::Memory,
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }
@@ -304,20 +313,20 @@ fn cpu_ms() -> u64 {
     (ticks(11) + ticks(12)) * 1000 / TICKS_PER_SEC
 }
 
-/// Start instance `id` of `factory_id` as `AddOperator` does and feed
+/// Start instance `id` of `factory_id` as `AddRelay` does and feed
 /// `message` through its entry channel; `false` when the class is not
 /// registered.
 fn start_fed(node: &RunnerNode, factory_id: &str, id: &str, message: &[u8]) -> bool {
-    let Some(instance) = node.start_operator(
+    let Some(instance) = node.start_relay(
         factory_id.into(),
         id.into(),
-        flz_core::operator::instance::KeyGroupRange::UNPARTITIONED,
+        flz_core::relay::instance::KeyGroupRange::UNPARTITIONED,
         flz_core::steps::Resume::default(),
     ) else {
         return false;
     };
     flz_core::steps::open(&instance);
-    node.operator_dispatch_handle().dispatch(
+    node.relay_dispatch_handle().dispatch(
         id,
         message.to_vec(),
         &Default::default(),
@@ -340,17 +349,15 @@ fn control_sample(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>, seq: usiz
         let msg = rx
             .recv_timeout(deadline.saturating_duration_since(Instant::now()))
             .unwrap_or_else(|_| panic!("control instance {id} never completed"));
-        if let RunnerMessage::EmitOperatorCompleted {
-            operator_id,
-            status,
-            ..
+        if let RunnerMessage::EmitRelayCompleted {
+            relay_id, status, ..
         } = msg
         {
-            if operator_id == id {
+            if relay_id == id {
                 assert_eq!(status, "ok", "control instance {id} completed abnormally");
                 // The registry entry outlives the run; drop it so a long
                 // sampling window does not accumulate one per sample.
-                node.stop_operator(&id);
+                node.stop_relay(&id);
                 return started.elapsed();
             }
         }
@@ -496,7 +503,7 @@ fn steps_instance_scaling_probe() {
         opened.notify_all();
     }
     for i in 0..n {
-        node.stop_operator(&format!("scale-{i}"));
+        node.stop_relay(&format!("scale-{i}"));
     }
     let drained = wait_until(
         || thread_count() <= before_threads + SPARE_WORKERS as u64,

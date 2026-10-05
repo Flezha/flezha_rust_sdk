@@ -15,13 +15,13 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use flezha_runner::__dispatch_internals::OperatorDispatchHandle;
+use flezha_runner::__dispatch_internals::RelayDispatchHandle;
 use flezha_runner::cell::flusher::{SendError, SendFrameFn};
 use flezha_runner::cell::park::{self, ParkBody};
 use flezha_runner::cell::state_sink::{install_global_sink, PARK_PAYLOAD_PAYLOAD_ID};
-use flezha_runner::operator::builder::build_topology_for;
-use flezha_runner::operator::registry::OperatorRegistry;
-use flezha_runner::operator::{OperatorInstance, Operator};
+use flezha_runner::relay::builder::build_topology_for;
+use flezha_runner::relay::registry::RelayRegistry;
+use flezha_runner::relay::{Relay, RelayInstance};
 use flz_transport::transport::FlezhaStream;
 pub use tier::*;
 pub use timers::*;
@@ -36,11 +36,11 @@ pub mod prelude {
     pub use std::sync::{Arc, Mutex};
     pub use std::time::{Duration, Instant};
 
-    pub use flezha_runner::__dispatch_internals::OperatorDispatchHandle;
+    pub use flezha_runner::__dispatch_internals::RelayDispatchHandle;
     pub use flezha_runner::channel::{ChannelBuilder, OverflowPolicy};
-    pub use flezha_runner::operator::builder::build_topology_for;
-    pub use flezha_runner::operator::registry::OperatorRegistry;
-    pub use flezha_runner::operator::{OperatorInstance, Operator};
+    pub use flezha_runner::relay::builder::build_topology_for;
+    pub use flezha_runner::relay::registry::RelayRegistry;
+    pub use flezha_runner::relay::{Relay, RelayInstance};
     pub use flezha_runner::state::{NoChange, RestoreInitPayload};
     pub use flezha_runner::tasklet::{Ctx, Tasklet, TaskletError};
 
@@ -72,24 +72,24 @@ pub fn stays_quiet<F: Fn() -> bool>(happened: F, window: Duration) -> bool {
     !wait_until(happened, window)
 }
 
-/// Build + register a single Operator instance, returning a dispatch handle
+/// Build + register a single Relay instance, returning a dispatch handle
 /// and the live instance (for counter / state assertions).
-pub fn setup<R: Operator>(id: &str) -> (OperatorDispatchHandle, Arc<OperatorInstance>) {
-    setup_partitioned::<R>(id, flezha_runner::operator::KeyGroupRange::UNPARTITIONED)
+pub fn setup<R: Relay>(id: &str) -> (RelayDispatchHandle, Arc<RelayInstance>) {
+    setup_partitioned::<R>(id, flezha_runner::relay::KeyGroupRange::UNPARTITIONED)
 }
 
 /// [`setup`] for one member of a partition group: the instance is built with
-/// the key-group range its `AddOperator` would have carried, so the dispatch
+/// the key-group range its `AddRelay` would have carried, so the dispatch
 /// guard is armed exactly as it is in production.
-pub fn setup_partitioned<R: Operator>(
+pub fn setup_partitioned<R: Relay>(
     id: &str,
-    partition: flezha_runner::operator::KeyGroupRange,
-) -> (OperatorDispatchHandle, Arc<OperatorInstance>) {
+    partition: flezha_runner::relay::KeyGroupRange,
+) -> (RelayDispatchHandle, Arc<RelayInstance>) {
     let topology = build_topology_for::<R>().expect("topology");
-    let registry = Arc::new(OperatorRegistry::new());
-    let instance = OperatorInstance::with_options(topology, Arc::from(id), None, partition);
+    let registry = Arc::new(RelayRegistry::new());
+    let instance = RelayInstance::with_options(topology, Arc::from(id), None, partition);
     registry.register(Arc::clone(&instance));
-    (OperatorDispatchHandle { registry }, instance)
+    (RelayDispatchHandle { registry }, instance)
 }
 
 /// Declare a trivial test Tasklet: `State` built via `Default`, no cell
@@ -131,22 +131,22 @@ macro_rules! test_tasklet {
     };
 }
 
-/// Dispatch one wire frame to `operator_id` on `channel`.
+/// Dispatch one wire frame to `relay_id` on `channel`.
 pub fn dispatch_input(
-    handle: &OperatorDispatchHandle,
-    operator_id: &str,
+    handle: &RelayDispatchHandle,
+    relay_id: &str,
     channel: &str,
     payload: Vec<u8>,
     stream: &Arc<FlezhaStream>,
 ) {
-    dispatch_marked(handle, operator_id, channel, payload, stream, &[]);
+    dispatch_marked(handle, relay_id, channel, payload, stream, &[]);
 }
 
 /// Dispatch one wire frame carrying extra metadata — the controller's
 /// `flz.replay` / `flz.offset` / `flz.replay_end` marks ride there.
 pub fn dispatch_marked(
-    handle: &OperatorDispatchHandle,
-    operator_id: &str,
+    handle: &RelayDispatchHandle,
+    relay_id: &str,
     channel: &str,
     payload: Vec<u8>,
     stream: &Arc<FlezhaStream>,
@@ -157,7 +157,7 @@ pub fn dispatch_marked(
     for (k, v) in marks {
         md.insert(k.to_string(), v.to_string());
     }
-    handle.dispatch(operator_id, payload, &md, Arc::clone(stream));
+    handle.dispatch(relay_id, payload, &md, Arc::clone(stream));
 }
 
 /// Install a recording global sink whose park frames are auto-acked from a
@@ -219,10 +219,10 @@ impl flezha_runner::tasklet::Tasklet for EchoTasklet {
 /// The smallest complete class: one entry channel into one echo tasklet,
 /// single-cell. What a topology assertion reaches for when the topology
 /// itself is not the subject.
-pub struct SingleOperator;
-impl Operator for SingleOperator {
+pub struct SingleRelay;
+impl Relay for SingleRelay {
     fn factory_id() -> &'static str {
-        "single_operator"
+        "single_relay"
     }
     fn channels(c: &flezha_runner::channel::ChannelBuilder) {
         c.input::<String>("inp").into::<EchoTasklet>();

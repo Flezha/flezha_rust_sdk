@@ -65,7 +65,7 @@ stateless_step!(ChatReply, "chat_reply", |input, ctx| ctx
 // at iteration 0 again, colliding with iteration 0's entries.
 
 pub(crate) struct StatelessLoopSteps;
-impl Operator for StatelessLoopSteps {
+impl Relay for StatelessLoopSteps {
     fn factory_id() -> &'static str {
         "stateless_loop_steps"
     }
@@ -75,15 +75,15 @@ impl Operator for StatelessLoopSteps {
             .sink_named("out");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             run: Run::Steps {
                 each: Each::PerInput,
                 on_failure: OnFailure::UndoAll,
             },
             max_duration: Some(Duration::from_secs(600)),
             durable: fixture_durable(),
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }
@@ -92,7 +92,7 @@ impl Operator for StatelessLoopSteps {
 //
 // `keyed_loop_steps`: a durable PER_INPUT loop keyed on its entry edge by
 // the text before the first `:`, so one Cell counts one symbol's messages. The
-// shape a partition group of steps operator members takes: each member mints Cells
+// shape a partition group of steps relay members takes: each member mints Cells
 // for its own key groups only, and a rescale moves them with their counts.
 
 #[derive(Default)]
@@ -111,7 +111,7 @@ impl Tasklet for KeyedLoopCount {
 }
 
 pub(crate) struct KeyedLoopSteps;
-impl Operator for KeyedLoopSteps {
+impl Relay for KeyedLoopSteps {
     fn factory_id() -> &'static str {
         "keyed_loop_steps"
     }
@@ -122,20 +122,20 @@ impl Operator for KeyedLoopSteps {
             .sink_named("keyed_loop_steps_out");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             run: Run::Steps {
                 each: Each::PerInput,
                 on_failure: OnFailure::UndoAll,
             },
             max_duration: Some(Duration::from_secs(600)),
             durable: fixture_durable(),
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }
 
-// -- SpawnRequesterOperator -----------------------------------------------------
+// -- SpawnRequesterRelay -----------------------------------------------------
 //
 // `spawn_requester`: on each input it spawns `stateless_loop_steps` once with
 // no id and once under the input as its id, and prints both results, because a
@@ -168,8 +168,8 @@ impl Tasklet for SpawnRequester {
     }
 }
 
-pub(crate) struct SpawnRequesterOperator;
-impl Operator for SpawnRequesterOperator {
+pub(crate) struct SpawnRequesterRelay;
+impl Relay for SpawnRequesterRelay {
     fn factory_id() -> &'static str {
         "spawn_requester"
     }
@@ -180,7 +180,7 @@ impl Operator for SpawnRequesterOperator {
     }
 }
 
-// -- SpawnHoldRequesterOperator ---------------------------------------------------
+// -- SpawnHoldRequesterRelay ---------------------------------------------------
 //
 // `spawn_hold_requester`: an effectively-once stream whose tasklet spawns
 // `stateless_loop_steps` with no id, prints the answer as
@@ -211,8 +211,8 @@ impl Tasklet for SpawnHoldRequester {
     }
 }
 
-pub(crate) struct SpawnHoldRequesterOperator;
-impl Operator for SpawnHoldRequesterOperator {
+pub(crate) struct SpawnHoldRequesterRelay;
+impl Relay for SpawnHoldRequesterRelay {
     fn factory_id() -> &'static str {
         "spawn_hold_requester"
     }
@@ -224,17 +224,17 @@ impl Operator for SpawnHoldRequesterOperator {
             .sink_named("out");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             run: Run::Flow {
                 exactly: Exactly::effectively_once(),
             },
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }
 
-// -- SpawnOnceRequesterOperator / TypedOnceSteps --------------------------------
+// -- SpawnOnceRequesterRelay / TypedOnceSteps --------------------------------
 //
 // `spawn_once_requester`: on each input it spawns `typed_once_steps` once
 // with `{"text": <input>}` as the payload and prints the handle's answer as
@@ -269,8 +269,8 @@ impl Tasklet for SpawnOnceRequester {
     }
 }
 
-pub(crate) struct SpawnOnceRequesterOperator;
-impl Operator for SpawnOnceRequesterOperator {
+pub(crate) struct SpawnOnceRequesterRelay;
+impl Relay for SpawnOnceRequesterRelay {
     fn factory_id() -> &'static str {
         "spawn_once_requester"
     }
@@ -295,7 +295,7 @@ impl Tasklet for OncePlaced {
 }
 
 pub(crate) struct TypedOnceSteps;
-impl Operator for TypedOnceSteps {
+impl Relay for TypedOnceSteps {
     fn factory_id() -> &'static str {
         "typed_once_steps"
     }
@@ -305,14 +305,14 @@ impl Operator for TypedOnceSteps {
             .sink_named("placed");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             run: Run::Steps {
                 each: Each::Once,
                 on_failure: OnFailure::UndoAll,
             },
             durable: fixture_durable(),
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }
@@ -334,7 +334,7 @@ stateless_step!(BlockingReply, "blocking_reply", |input, ctx| {
 });
 
 pub(crate) struct ReplyBlockLoopSteps;
-impl Operator for ReplyBlockLoopSteps {
+impl Relay for ReplyBlockLoopSteps {
     fn factory_id() -> &'static str {
         "reply_block_loop_steps"
     }
@@ -346,15 +346,15 @@ impl Operator for ReplyBlockLoopSteps {
             .sink_named("out");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             run: Run::Steps {
                 each: Each::PerInput,
                 on_failure: OnFailure::UndoAll,
             },
             max_duration: Some(Duration::from_secs(600)),
             durable: fixture_durable(),
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }
@@ -415,7 +415,7 @@ impl Tasklet for ChatReplyUndoable {
 }
 
 pub(crate) struct ChatRewindSteps;
-impl Operator for ChatRewindSteps {
+impl Relay for ChatRewindSteps {
     fn factory_id() -> &'static str {
         "chat_rewind_steps"
     }
@@ -427,21 +427,21 @@ impl Operator for ChatRewindSteps {
             .sink_named("out");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             run: Run::Steps {
                 each: Each::PerInput,
                 on_failure: OnFailure::UndoAll,
             },
             max_duration: Some(Duration::from_secs(600)),
             durable: fixture_durable(),
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }
 
 pub(crate) struct ChatLoopSteps;
-impl Operator for ChatLoopSteps {
+impl Relay for ChatLoopSteps {
     fn factory_id() -> &'static str {
         "chat_loop_steps"
     }
@@ -455,15 +455,15 @@ impl Operator for ChatLoopSteps {
             .sink_named("out");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             run: Run::Steps {
                 each: Each::PerInput,
                 on_failure: OnFailure::UndoAll,
             },
             max_duration: Some(Duration::from_secs(600)),
             durable: fixture_durable(),
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }
@@ -565,7 +565,7 @@ impl Tasklet for Answer {
 macro_rules! failing_turn_loop {
     ($ty:ident, $factory:literal, $rollback:expr) => {
         pub(crate) struct $ty;
-        impl Operator for $ty {
+        impl Relay for $ty {
             fn factory_id() -> &'static str {
                 $factory
             }
@@ -577,15 +577,15 @@ macro_rules! failing_turn_loop {
                     .sink_named("answer");
             }
 
-            fn settings() -> OperatorSettings {
-                OperatorSettings {
+            fn settings() -> RelaySettings {
+                RelaySettings {
                     run: Run::Steps {
                         each: Each::PerInput,
                         on_failure: $rollback,
                     },
                     max_duration: Some(Duration::from_secs(600)),
                     durable: fixture_durable(),
-                    ..OperatorSettings::default()
+                    ..RelaySettings::default()
                 }
             }
         }
@@ -605,8 +605,8 @@ failing_turn_loop!(
 
 // -- Bench steps fixtures (`mix bench.steps`) -------------------------------
 //
-// Durable K-tasklet chains and a long-lived chat loop for the steps operator
-// operator bench. Every chain step is the `durable_step!` shape — one
+// Durable K-tasklet chains and a long-lived chat loop for the steps relay
+// relay bench. Every chain step is the `durable_step!` shape — one
 // idempotent Change per task, the payload passed through unchanged — so the
 // sink receives the seed input and the bench reads its own seq + send
 // timestamp back. The loop is the `chat_loop_steps` shape with a bounded
@@ -637,7 +637,7 @@ durable_step!(BenchS15, "bench_s15");
 macro_rules! bench_chain {
     ($ty:ident, $factory:literal, persist: $persist:expr, $first:ident $(, $rest:ident)*) => {
         pub(crate) struct $ty;
-        impl Operator for $ty {
+        impl Relay for $ty {
             fn factory_id() -> &'static str {
                 $factory
             }
@@ -651,11 +651,11 @@ macro_rules! bench_chain {
                 s.sink_named("out");
             }
 
-            fn settings() -> OperatorSettings {
-                OperatorSettings {
+            fn settings() -> RelaySettings {
+                RelaySettings {
                     run: Run::steps(Each::Once),
                     durable: if $persist { Durable::local() } else { Durable::Memory },
-                    ..OperatorSettings::default()
+                    ..RelaySettings::default()
                 }
             }
         }
@@ -741,7 +741,7 @@ impl Tasklet for BenchTurn {
 }
 
 pub(crate) struct BenchLoopSteps;
-impl Operator for BenchLoopSteps {
+impl Relay for BenchLoopSteps {
     fn factory_id() -> &'static str {
         "bench_loop_steps"
     }
@@ -753,12 +753,12 @@ impl Operator for BenchLoopSteps {
             .sink_named("out");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             run: Run::steps(Each::PerInput),
             max_duration: Some(Duration::from_secs(24 * 3600)),
             durable: fixture_durable(),
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }
@@ -778,7 +778,7 @@ stateless_step!(ChainedCountdown, "chained_countdown", |input, ctx| {
 });
 
 pub(crate) struct ChainedSteps;
-impl Operator for ChainedSteps {
+impl Relay for ChainedSteps {
     fn factory_id() -> &'static str {
         "chained_steps"
     }
@@ -788,10 +788,10 @@ impl Operator for ChainedSteps {
             .named("carry");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             run: Run::steps(Each::Chained),
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }

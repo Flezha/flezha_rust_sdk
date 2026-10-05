@@ -3,11 +3,11 @@
 //! register, dispatch and journal the same way.
 
 use flezha_runner::channel::ChannelBuilder;
-use flezha_runner::operator::builder::build_topology_for;
+use flezha_runner::relay::builder::build_topology_for;
 use flezha_runner::state::Change;
 use flezha_runner::tasklet::{ClockKind, Ctx, NoChange, Tasklet, TaskletError};
 use flezha_runner::testing::TaskletTestHarness;
-use flezha_runner::Operator;
+use flezha_runner::Relay;
 
 #[derive(Default, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 struct Totals {
@@ -76,11 +76,11 @@ impl Tasklet for Drain {
 }
 
 /// Both forms in one graph.
-struct MixedOperator;
+struct MixedRelay;
 
-impl Operator for MixedOperator {
+impl Relay for MixedRelay {
     fn factory_id() -> &'static str {
-        "mixed_operator"
+        "mixed_relay"
     }
 
     fn channels(c: &ChannelBuilder) {
@@ -106,11 +106,11 @@ fn the_attribute_writes_what_the_block_leaves_out() {
     assert_eq!(<Counter as Tasklet>::init_state(None), Totals::default());
 }
 
-/// fails when: an operator can no longer mix an attributed tasklet with one
+/// fails when: a relay can no longer mix an attributed tasklet with one
 /// written in the reference form.
 #[test]
 fn an_attributed_and_a_reference_tasklet_wire_together() {
-    let topology = build_topology_for::<MixedOperator>().expect("build topology");
+    let topology = build_topology_for::<MixedRelay>().expect("build topology");
     let names: Vec<&str> = topology.tasklets.iter().map(|t| &*t.name).collect();
     assert_eq!(names, vec!["counter", "drain"]);
 }

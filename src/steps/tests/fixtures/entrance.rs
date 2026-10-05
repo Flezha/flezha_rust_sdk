@@ -8,10 +8,10 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::steps::*;
-use crate::{Durable, Operator, OperatorSettings, Run};
 use crate::channel::ChannelBuilder;
+use crate::steps::*;
 use crate::tasklet::{Ctx, Tasklet, TaskletError};
+use crate::{Durable, Relay, RelaySettings, Run};
 
 string_task!(ChainA, "entrance_a", |input, ctx| ctx
     .emit(format!("a:{input}")));
@@ -23,7 +23,7 @@ string_task!(ChainJoin, "entrance_join", |input, ctx| ctx
 /// Entries `a` (A→J) and `b` (B→J): a message runs the chain of its channel
 /// and the join waits for that chain's producer only.
 pub(crate) struct TwoChainsSteps;
-impl Operator for TwoChainsSteps {
+impl Relay for TwoChainsSteps {
     fn factory_id() -> &'static str {
         "test-two-chains"
     }
@@ -34,19 +34,22 @@ impl Operator for TwoChainsSteps {
         b.into::<ChainJoin>();
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
-            run: Run::Steps { each: Each::PerInput, on_failure: OnFailure::UndoAll },
+    fn settings() -> RelaySettings {
+        RelaySettings {
+            run: Run::Steps {
+                each: Each::PerInput,
+                on_failure: OnFailure::UndoAll,
+            },
             max_duration: Some(Duration::from_secs(600)),
             durable: Durable::Memory,
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }
 
 /// One entry feeding two roots, each through its own edge transform.
 pub(crate) struct FanEntrySteps;
-impl Operator for FanEntrySteps {
+impl Relay for FanEntrySteps {
     fn factory_id() -> &'static str {
         "test-fan-entry"
     }
@@ -62,11 +65,14 @@ impl Operator for FanEntrySteps {
             .sink_named("out_b");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
-            run: Run::Steps { each: Each::Once, on_failure: OnFailure::UndoAll },
+    fn settings() -> RelaySettings {
+        RelaySettings {
+            run: Run::Steps {
+                each: Each::Once,
+                on_failure: OnFailure::UndoAll,
+            },
             durable: Durable::Memory,
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }
@@ -93,7 +99,7 @@ string_task!(Countdown, "entrance_countdown", |input, ctx| {
 /// A chained loop with entries `a` (A→countdown) and `b` (B→countdown): the
 /// carry re-enters the chain the first message picked.
 pub(crate) struct ChainedChainsSteps;
-impl Operator for ChainedChainsSteps {
+impl Relay for ChainedChainsSteps {
     fn factory_id() -> &'static str {
         "test-chained-chains"
     }
@@ -108,11 +114,14 @@ impl Operator for ChainedChainsSteps {
             .into::<Countdown>();
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
-            run: Run::Steps { each: Each::Chained, on_failure: OnFailure::UndoAll },
+    fn settings() -> RelaySettings {
+        RelaySettings {
+            run: Run::Steps {
+                each: Each::Chained,
+                on_failure: OnFailure::UndoAll,
+            },
             durable: Durable::Memory,
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }
@@ -120,7 +129,7 @@ impl Operator for ChainedChainsSteps {
 /// A durable chained loop over one entry: only its first pass takes a message,
 /// and the countdown's own channel is the carry the journal hands the next.
 pub(crate) struct JournaledCountdownSteps;
-impl Operator for JournaledCountdownSteps {
+impl Relay for JournaledCountdownSteps {
     fn factory_id() -> &'static str {
         "test-journaled-countdown"
     }
@@ -128,10 +137,13 @@ impl Operator for JournaledCountdownSteps {
         c.input::<String>("in").into::<Countdown>().named("carry");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
-            run: Run::Steps { each: Each::Chained, on_failure: OnFailure::UndoAll },
-            ..OperatorSettings::default()
+    fn settings() -> RelaySettings {
+        RelaySettings {
+            run: Run::Steps {
+                each: Each::Chained,
+                on_failure: OnFailure::UndoAll,
+            },
+            ..RelaySettings::default()
         }
     }
 }
@@ -156,7 +168,7 @@ impl Tasklet for BudgetTask {
 }
 
 pub(crate) struct BudgetOnce;
-impl Operator for BudgetOnce {
+impl Relay for BudgetOnce {
     fn factory_id() -> &'static str {
         "test-budget-once"
     }
@@ -166,11 +178,14 @@ impl Operator for BudgetOnce {
             .sink_named("out");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
-            run: Run::Steps { each: Each::Once, on_failure: OnFailure::UndoAll },
+    fn settings() -> RelaySettings {
+        RelaySettings {
+            run: Run::Steps {
+                each: Each::Once,
+                on_failure: OnFailure::UndoAll,
+            },
             durable: Durable::Memory,
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }

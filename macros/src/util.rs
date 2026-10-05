@@ -24,7 +24,7 @@ pub fn generic_args<'a>(ty: &'a Type, name: &str) -> impl Iterator<Item = &'a Ty
     })
 }
 
-/// `do_nothing` → `DoNothing`: the operator type a function short form
+/// `do_nothing` → `DoNothing`: the relay type a function short form
 /// declares.
 pub fn snake_ident_to_pascal(ident: &Ident) -> Ident {
     let mut out = String::new();

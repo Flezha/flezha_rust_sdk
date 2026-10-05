@@ -1,12 +1,12 @@
 //! Flow fixtures distinguished by cell shape: dynamic cells, keyed
-//! relays, session timeouts, static fan-out, the two pass-through classes and
+//! passes, session timeouts, static fan-out, the two pass-through classes and
 //! the four-stage stress pipeline.
 
 use crate::*;
 
-// -- DynamicCellOperator ----------------------------------------------------
+// -- DynamicCellRelay ----------------------------------------------------
 //
-// Dynamic-mode operator shared by the e2e correctness test and `mix bench
+// Dynamic-mode relay shared by the e2e correctness test and `mix bench
 // --shape dynamic`. Key = text before the first ':' (`"drop"` → None, drop).
 // Eviction TTL is read from `DYN_TEST_TTL_MS` (the e2e sets 200ms to exercise
 // reap + delete; the bench leaves it unset → no eviction, pure routing).
@@ -52,8 +52,8 @@ pub(crate) fn key_prefix(value: &str) -> String {
     value.split(':').next().unwrap_or_default().to_string()
 }
 
-pub(crate) struct DynamicCellOperator;
-impl Operator for DynamicCellOperator {
+pub(crate) struct DynamicCellRelay;
+impl Relay for DynamicCellRelay {
     fn factory_id() -> &'static str {
         "dynamic_cell"
     }
@@ -67,65 +67,65 @@ impl Operator for DynamicCellOperator {
     }
 }
 
-// -- PartitionRelayOperator --------------------------------------------------
+// -- PartitionPassRelay --------------------------------------------------
 //
-// The partitioned-operators e2e's upstream: keyed on the wiring (so it can be
+// The partitioned-relays e2e's upstream: keyed on the wiring (so it can be
 // partitioned at all) AND emitting keyed (so a partitioned forward target can
 // resolve the owning member). Key = text before the first ':', the same
 // convention as `dynamic_cell`, so one fixture's key groups line up with the
 // other's.
 
 #[derive(Serialize, Deserialize, Clone, Default)]
-struct RelayState {
+struct PassState {
     seen: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-enum RelayChange {
+enum PassChange {
     Push(String),
 }
-impl Change<RelayState> for RelayChange {
-    fn apply_to(&self, state: &mut RelayState) {
-        let RelayChange::Push(s) = self;
+impl Change<PassState> for PassChange {
+    fn apply_to(&self, state: &mut PassState) {
+        let PassChange::Push(s) = self;
         state.seen.push(s.clone());
     }
 }
 
 #[derive(Default)]
-struct PartitionRelayTasklet;
-#[flezha_runner::tasklet(name = "partition_relay_tasklet")]
-impl Tasklet for PartitionRelayTasklet {
+struct PartitionPassTasklet;
+#[flezha_runner::tasklet(name = "partition_pass_tasklet")]
+impl Tasklet for PartitionPassTasklet {
     type Input = String;
     type Output = String;
-    type State = RelayState;
-    type Change = RelayChange;
+    type State = PassState;
+    type Change = PassChange;
     fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         let key = key_prefix(&input);
-        ctx.change(RelayChange::Push(input.clone()));
+        ctx.change(PassChange::Push(input.clone()));
         ctx.emit_keyed(key, input)
     }
 }
 
-pub(crate) struct PartitionRelayOperator;
-impl Operator for PartitionRelayOperator {
+pub(crate) struct PartitionPassRelay;
+impl Relay for PartitionPassRelay {
     fn factory_id() -> &'static str {
-        "partition_relay"
+        "partition_pass"
     }
     fn channels(c: &ChannelBuilder) {
         // The plugin channel is named `input` because a forwarded frame keeps
         // its producing channel's name in metadata, and that is what selects
-        // the receiving operator's channel — the downstream fixture's entry
+        // the receiving relay's channel — the downstream fixture's entry
         // channel. The entry channel here is `in` so the two names cannot
         // collide inside this class.
         c.input::<String>("in")
             .key_by(|input: &String| key_prefix(input))
-            .into::<PartitionRelayTasklet>()
+            .into::<PartitionPassTasklet>()
             .keyed()
             .sink_named("input");
     }
 }
 
-// -- SessionTimeoutOperator --------------------------------------------------
+// -- SessionTimeoutRelay --------------------------------------------------
 //
 // The worked session-timeout shape (`cell-timers`): each input pushes the
 // idle deadline out, and the firing closes the session. Single-cell so the
@@ -185,8 +185,8 @@ impl Tasklet for SessionTimeoutTasklet {
     }
 }
 
-pub(crate) struct SessionTimeoutOperator;
-impl Operator for SessionTimeoutOperator {
+pub(crate) struct SessionTimeoutRelay;
+impl Relay for SessionTimeoutRelay {
     fn factory_id() -> &'static str {
         "session_timeout"
     }
@@ -197,7 +197,7 @@ impl Operator for SessionTimeoutOperator {
     }
 }
 
-// -- DoNothingOperator -----------------------------------------------------------
+// -- DoNothingRelay -----------------------------------------------------------
 //
 // Echoes the input bytes on the plugin-bound `echo` channel. Stateless;
 // inherits `Change = NoChange` so the runtime skips flush-buffer registration.
@@ -213,8 +213,8 @@ impl Tasklet for DoNothingTasklet {
     }
 }
 
-pub(crate) struct DoNothingOperator;
-impl Operator for DoNothingOperator {
+pub(crate) struct DoNothingRelay;
+impl Relay for DoNothingRelay {
     fn factory_id() -> &'static str {
         "do_nothing"
     }
@@ -225,7 +225,7 @@ impl Operator for DoNothingOperator {
     }
 }
 
-// -- CompleteFlowOperator --------------------------------------------------------
+// -- CompleteFlowRelay --------------------------------------------------------
 //
 // A flow class whose tasklet echoes each input on `complete_flow_out` and ends
 // its instance on `bye`, the echo of `bye` included.
@@ -244,8 +244,8 @@ impl Tasklet for CompleteFlowTasklet {
     }
 }
 
-pub(crate) struct CompleteFlowOperator;
-impl Operator for CompleteFlowOperator {
+pub(crate) struct CompleteFlowRelay;
+impl Relay for CompleteFlowRelay {
     fn factory_id() -> &'static str {
         "complete_flow"
     }
@@ -256,7 +256,7 @@ impl Operator for CompleteFlowOperator {
     }
 }
 
-// -- StoreInputOperator ----------------------------------------------------------
+// -- StoreInputRelay ----------------------------------------------------------
 
 #[derive(Serialize, Deserialize, Clone, Default)]
 struct StoreInputState {
@@ -290,8 +290,8 @@ impl Tasklet for StoreInputTasklet {
     }
 }
 
-pub(crate) struct StoreInputOperator;
-impl Operator for StoreInputOperator {
+pub(crate) struct StoreInputRelay;
+impl Relay for StoreInputRelay {
     fn factory_id() -> &'static str {
         "store_input"
     }
@@ -302,7 +302,7 @@ impl Operator for StoreInputOperator {
     }
 }
 
-// -- CompareFilterOperator -------------------------------------------------------
+// -- CompareFilterRelay -------------------------------------------------------
 
 #[derive(Serialize, Deserialize, Clone)]
 struct CompareFilterState {
@@ -334,8 +334,8 @@ impl Tasklet for CompareFilterTasklet {
     }
 }
 
-pub(crate) struct CompareFilterOperator;
-impl Operator for CompareFilterOperator {
+pub(crate) struct CompareFilterRelay;
+impl Relay for CompareFilterRelay {
     fn factory_id() -> &'static str {
         "compare_filter"
     }
@@ -346,7 +346,7 @@ impl Operator for CompareFilterOperator {
     }
 }
 
-// -- StaticCellOperator -----------------------------------------------------
+// -- StaticCellRelay -----------------------------------------------------
 
 #[derive(Serialize, Deserialize, Clone, Default)]
 struct StaticEntryState {
@@ -398,8 +398,8 @@ impl Tasklet for StaticDownstreamTasklet {
     }
 }
 
-pub(crate) struct StaticCellOperator;
-impl Operator for StaticCellOperator {
+pub(crate) struct StaticCellRelay;
+impl Relay for StaticCellRelay {
     fn factory_id() -> &'static str {
         "static_cell"
     }
@@ -412,7 +412,7 @@ impl Operator for StaticCellOperator {
     }
 }
 
-// -- CellStressOperator --------------------------------------------------
+// -- CellStressRelay --------------------------------------------------
 
 const STRESS_KEYS: &[&str] = &["p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7"];
 
@@ -484,8 +484,8 @@ impl Tasklet for StressTaskletD {
     }
 }
 
-pub(crate) struct CellStressOperator;
-impl Operator for CellStressOperator {
+pub(crate) struct CellStressRelay;
+impl Relay for CellStressRelay {
     fn factory_id() -> &'static str {
         "cell_stress"
     }

@@ -10,8 +10,8 @@
 //! - `hybrid_1c`            — hybrid, 1 consumer + plugin sink
 //! - `hybrid_3c`            — hybrid, 3 consumers + plugin sink
 //!
-//! Each iteration drives one emit per operator through the live
-//! dispatcher (`OperatorDispatchHandle::dispatch` on the shared poll-worker
+//! Each iteration drives one emit per relay through the live
+//! dispatcher (`RelayDispatchHandle::dispatch` on the shared poll-worker
 //! pool). The consumer Tasklets count receipts atomically so `iter_custom`
 //! waits for full drain before stopping the timer.
 
@@ -20,11 +20,11 @@ use std::time::{Duration, Instant};
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use flezha_runner::channel::ChannelBuilder;
-use flezha_runner::operator::builder::build_topology_for;
-use flezha_runner::operator::registry::OperatorRegistry;
-use flezha_runner::operator::OperatorInstance;
+use flezha_runner::relay::builder::build_topology_for;
+use flezha_runner::relay::registry::RelayRegistry;
+use flezha_runner::relay::RelayInstance;
 use flezha_runner::tasklet::{Tasklet, TaskletError};
-use flezha_runner::{Ctx, Operator, OverflowPolicy, __dispatch_internals as bi};
+use flezha_runner::{__dispatch_internals as bi, Ctx, OverflowPolicy, Relay};
 use flz_core::bench_support::{fan_in, stream_pair, Settle};
 
 const MSGS_PER_ITER: usize = 5_000;
@@ -61,8 +61,8 @@ impl Tasklet for Pure1Consumer {
     }
 }
 
-struct Pure1Operator;
-impl Operator for Pure1Operator {
+struct Pure1Relay;
+impl Relay for Pure1Relay {
     fn factory_id() -> &'static str {
         "bench_pure_inter_tasklet_1c"
     }
@@ -107,8 +107,8 @@ pure3_consumer!(Pure3ConsumerA, "pure3_a");
 pure3_consumer!(Pure3ConsumerB, "pure3_b");
 pure3_consumer!(Pure3ConsumerC, "pure3_c");
 
-struct Pure3Operator;
-impl Operator for Pure3Operator {
+struct Pure3Relay;
+impl Relay for Pure3Relay {
     fn factory_id() -> &'static str {
         "bench_pure_inter_tasklet_3c"
     }
@@ -138,8 +138,8 @@ impl Tasklet for PluginBoundProducer {
     }
 }
 
-struct PluginBoundOperator;
-impl Operator for PluginBoundOperator {
+struct PluginBoundRelay;
+impl Relay for PluginBoundRelay {
     fn factory_id() -> &'static str {
         "bench_pure_plugin_bound"
     }
@@ -175,8 +175,8 @@ impl Tasklet for Hybrid1Consumer {
     }
 }
 
-struct Hybrid1Operator;
-impl Operator for Hybrid1Operator {
+struct Hybrid1Relay;
+impl Relay for Hybrid1Relay {
     fn factory_id() -> &'static str {
         "bench_hybrid_1c"
     }
@@ -221,8 +221,8 @@ hybrid3_consumer!(Hybrid3ConsumerA, "hybrid3_a");
 hybrid3_consumer!(Hybrid3ConsumerB, "hybrid3_b");
 hybrid3_consumer!(Hybrid3ConsumerC, "hybrid3_c");
 
-struct Hybrid3Operator;
-impl Operator for Hybrid3Operator {
+struct Hybrid3Relay;
+impl Relay for Hybrid3Relay {
     fn factory_id() -> &'static str {
         "bench_hybrid_3c"
     }
@@ -240,7 +240,7 @@ impl Operator for Hybrid3Operator {
 
 // ----- bench harness -----
 
-fn run_bench<R: Operator>(
+fn run_bench<R: Relay>(
     c: &mut Criterion,
     name: &'static str,
     instance_id: &'static str,
@@ -248,10 +248,10 @@ fn run_bench<R: Operator>(
     expected_per_msg: usize,
 ) {
     let topology = build_topology_for::<R>().expect("topology");
-    let registry = Arc::new(OperatorRegistry::new());
-    let inst = OperatorInstance::new(topology, Arc::from(instance_id));
+    let registry = Arc::new(RelayRegistry::new());
+    let inst = RelayInstance::new(topology, Arc::from(instance_id));
     registry.register(inst);
-    let handle = bi::OperatorDispatchHandle {
+    let handle = bi::RelayDispatchHandle {
         registry: Arc::clone(&registry),
     };
     let stream = stream_pair().0;
@@ -293,7 +293,7 @@ fn run_bench<R: Operator>(
 }
 
 fn pure_inter_tasklet_1c(c: &mut Criterion) {
-    run_bench::<Pure1Operator>(
+    run_bench::<Pure1Relay>(
         c,
         "pure_inter_tasklet_1c",
         "bench-pure-1c",
@@ -303,7 +303,7 @@ fn pure_inter_tasklet_1c(c: &mut Criterion) {
 }
 
 fn pure_inter_tasklet_3c(c: &mut Criterion) {
-    run_bench::<Pure3Operator>(
+    run_bench::<Pure3Relay>(
         c,
         "pure_inter_tasklet_3c",
         "bench-pure-3c",
@@ -313,7 +313,7 @@ fn pure_inter_tasklet_3c(c: &mut Criterion) {
 }
 
 fn pure_plugin_bound(c: &mut Criterion) {
-    run_bench::<PluginBoundOperator>(
+    run_bench::<PluginBoundRelay>(
         c,
         "pure_plugin_bound",
         "bench-plugin-bound",
@@ -323,11 +323,11 @@ fn pure_plugin_bound(c: &mut Criterion) {
 }
 
 fn hybrid_1c(c: &mut Criterion) {
-    run_bench::<Hybrid1Operator>(c, "hybrid_1c", "bench-hybrid-1c", &HYBRID_1C_COUNT, 1);
+    run_bench::<Hybrid1Relay>(c, "hybrid_1c", "bench-hybrid-1c", &HYBRID_1C_COUNT, 1);
 }
 
 fn hybrid_3c(c: &mut Criterion) {
-    run_bench::<Hybrid3Operator>(c, "hybrid_3c", "bench-hybrid-3c", &HYBRID_3C_COUNT, 3);
+    run_bench::<Hybrid3Relay>(c, "hybrid_3c", "bench-hybrid-3c", &HYBRID_3C_COUNT, 3);
 }
 
 criterion_group!(

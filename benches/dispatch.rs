@@ -1,27 +1,27 @@
-//! Throughput benches under the operator-mvp-rust model.
+//! Throughput benches under the relay-mvp-rust model.
 //!
-//! Two shapes (per `operator-mvp-rust/design.md` Decision 6 +
-//! `operator-bench-harness/design.md` Decisions 1-12):
+//! Two shapes (per `relay-mvp-rust/design.md` Decision 6 +
+//! `relay-bench-harness/design.md` Decisions 1-12):
 //! - `regression_100x1x1x10k` — apples-to-apples regression check
-//!   (100 operators × 1 tasklet × 1 cell × 10K msg).
+//!   (100 relays × 1 tasklet × 1 cell × 10K msg).
 //! - `cell_stress_8x4x8x20k/<workers>` — cell-stress
-//!   check (8 operators × 4 tasklets × 8 cells × 20K msg/operator,
+//!   check (8 relays × 4 tasklets × 8 cells × 20K msg/relay,
 //!   fan-out factor 8 on the entry tasklet), labelled with the SDK's base
 //!   worker count (`FLEZHA_WORKER_POOL_SIZE`, default: host parallelism).
 //!
 //! Both rely on the `bench-internals` feature for access to the
-//! `OperatorDispatchHandle`.
+//! `RelayDispatchHandle`.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use flezha_runner::channel::ChannelBuilder;
-use flezha_runner::operator::builder::build_topology_for;
-use flezha_runner::operator::registry::OperatorRegistry;
-use flezha_runner::operator::OperatorInstance;
+use flezha_runner::relay::builder::build_topology_for;
+use flezha_runner::relay::registry::RelayRegistry;
+use flezha_runner::relay::RelayInstance;
 use flezha_runner::tasklet::{Tasklet, TaskletError};
-use flezha_runner::{Ctx, Operator, OverflowPolicy, __dispatch_internals as bi};
+use flezha_runner::{__dispatch_internals as bi, Ctx, OverflowPolicy, Relay};
 use flz_core::bench_support::{
     allocations, fan_in, measurement_secs_default, report, stream_pair, Counting, Settle,
 };
@@ -46,7 +46,7 @@ fn worker_count_from_env_or_cpus() -> usize {
         })
 }
 
-// ----- Regression bench: 100 operators × 1 tasklet × 1 cell × 10K msg -----
+// ----- Regression bench: 100 relays × 1 tasklet × 1 cell × 10K msg -----
 
 static REG_COUNTER: Settle = Settle::new();
 
@@ -62,14 +62,14 @@ impl Tasklet for RegressionTasklet {
     }
 }
 
-struct RegressionOperator;
-impl Operator for RegressionOperator {
+struct RegressionRelay;
+impl Relay for RegressionRelay {
     fn factory_id() -> &'static str {
-        "regression_bench_operator"
+        "regression_bench_relay"
     }
     fn channels(c: &ChannelBuilder) {
         // Opt the entry channel into Block: the bench bursts 10K msgs
-        // per operator against the default capacity-1024 mailbox; under
+        // per relay against the default capacity-1024 mailbox; under
         // DropNewest the producer side would drop frames mid-burst and
         // the throughput number would silently misrepresent the
         // dispatch hot path.
@@ -80,28 +80,26 @@ impl Operator for RegressionOperator {
 }
 
 fn regression_bench(c: &mut Criterion) {
-    let n_operators = 100usize;
-    let msgs_per_operator = 10_000usize;
-    let total = n_operators * msgs_per_operator;
+    let n_relays = 100usize;
+    let msgs_per_relay = 10_000usize;
+    let total = n_relays * msgs_per_relay;
 
-    let topology = build_topology_for::<RegressionOperator>().expect("topology");
-    let registry = Arc::new(OperatorRegistry::new());
+    let topology = build_topology_for::<RegressionRelay>().expect("topology");
+    let registry = Arc::new(RelayRegistry::new());
 
-    let instance_ids: Vec<String> = (0..n_operators)
-        .map(|i| format!("regression-{}", i))
-        .collect();
+    let instance_ids: Vec<String> = (0..n_relays).map(|i| format!("regression-{}", i)).collect();
     for id in &instance_ids {
-        let inst = OperatorInstance::new(Arc::clone(&topology), Arc::from(id.as_str()));
+        let inst = RelayInstance::new(Arc::clone(&topology), Arc::from(id.as_str()));
         registry.register(inst);
     }
 
-    let handle = bi::OperatorDispatchHandle {
+    let handle = bi::RelayDispatchHandle {
         registry: Arc::clone(&registry),
     };
     let stream = stream_pair().0;
     let payload: Vec<u8> = b"x".repeat(64);
 
-    let mut group = c.benchmark_group("operator_dispatch");
+    let mut group = c.benchmark_group("relay_dispatch");
     group.measurement_time(Duration::from_secs(measurement_secs_default(60)));
     group.sample_size(10);
     group.throughput(criterion::Throughput::Elements(total as u64));
@@ -115,7 +113,7 @@ fn regression_bench(c: &mut Criterion) {
                 fan_in(
                     &handle,
                     &instance_ids,
-                    msgs_per_operator,
+                    msgs_per_relay,
                     &[payload.as_slice()],
                     None,
                     &stream,
@@ -147,14 +145,14 @@ static PART_COUNTER: Settle = Settle::new();
 const STRESS_KEYS: &[&str] = &["p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7"];
 
 // Entry-tasklet routing: fan out every input to all 8 cells per
-// `operator-bench-harness/design.md` Decision 7 / steps operator §1.1.
+// `relay-bench-harness/design.md` Decision 7 / steps relay §1.1.
 fn entry_cells_for(_: &Vec<u8>) -> Vec<&'static str> {
     STRESS_KEYS.to_vec()
 }
 
 // Downstream-tasklet routing: pin each emit to a single cell so the
 // fan-out factor stays bounded at 8 (entry) and each pipeline stage runs
-// once per upstream emit. Per steps operator §1.1 ("cells_for returning all 8
+// once per upstream emit. Per steps relay §1.1 ("cells_for returning all 8
 // keys for the entry tasklet") only the entry tasklet fans out N-wide; B/C/D
 // have 8 cells each (Decision 7) but route to one.
 fn pipeline_cells_for(_: &Vec<u8>) -> Vec<&'static str> {
@@ -233,14 +231,14 @@ impl Tasklet for StressBenchTaskletD {
     }
 }
 
-struct CellStressBenchOperator;
-impl Operator for CellStressBenchOperator {
+struct CellStressBenchRelay;
+impl Relay for CellStressBenchRelay {
     fn factory_id() -> &'static str {
-        "cell_stress_bench_operator"
+        "cell_stress_bench_relay"
     }
     fn channels(c: &ChannelBuilder) {
         // Opt the entry channel into Block to avoid DropNewest losses
-        // during the 20K-msg-per-operator burst against the cap-1024
+        // during the 20K-msg-per-relay burst against the cap-1024
         // mailbox. Inter-tasklet channels keep their default Block
         // policy, which preserves ordering through the pipeline.
         c.input::<Vec<u8>>("input")
@@ -256,13 +254,13 @@ impl Operator for CellStressBenchOperator {
 }
 
 fn cell_stress_bench(c: &mut Criterion) {
-    let n_operators = 8usize;
-    let msgs_per_operator = std::env::var("FLEZHA_BENCH_MSGS_PER_OPERATOR")
+    let n_relays = 8usize;
+    let msgs_per_relay = std::env::var("FLEZHA_BENCH_MSGS_PER_RELAY")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(20_000usize);
     let measurement_secs = measurement_secs_default(30);
-    let inputs_total = n_operators * msgs_per_operator;
+    let inputs_total = n_relays * msgs_per_relay;
     let fan_out = STRESS_KEYS.len();
     let tasklets = 4usize;
     // Each input fans out to all 8 cells of the entry tasklet, and each
@@ -270,7 +268,7 @@ fn cell_stress_bench(c: &mut Criterion) {
     // invocations = inputs × fan_out × tasklets.
     let expected_runs = inputs_total * fan_out * tasklets;
 
-    let topology = build_topology_for::<CellStressBenchOperator>().expect("topology");
+    let topology = build_topology_for::<CellStressBenchRelay>().expect("topology");
     let payload: Vec<u8> = b"x".repeat(64);
     let stream = stream_pair().0;
 
@@ -281,15 +279,15 @@ fn cell_stress_bench(c: &mut Criterion) {
 
     {
         let workers = worker_count_from_env_or_cpus();
-        let registry = Arc::new(OperatorRegistry::new());
-        let instance_ids: Vec<String> = (0..n_operators)
+        let registry = Arc::new(RelayRegistry::new());
+        let instance_ids: Vec<String> = (0..n_relays)
             .map(|i| format!("cell-stress-{}", i))
             .collect();
         for id in &instance_ids {
-            let inst = OperatorInstance::new(Arc::clone(&topology), Arc::from(id.as_str()));
+            let inst = RelayInstance::new(Arc::clone(&topology), Arc::from(id.as_str()));
             registry.register(inst);
         }
-        let handle = bi::OperatorDispatchHandle {
+        let handle = bi::RelayDispatchHandle {
             registry: Arc::clone(&registry),
         };
 
@@ -303,7 +301,7 @@ fn cell_stress_bench(c: &mut Criterion) {
                     fan_in(
                         &handle,
                         &instance_ids,
-                        msgs_per_operator,
+                        msgs_per_relay,
                         &[payload.as_slice()],
                         None,
                         &stream,

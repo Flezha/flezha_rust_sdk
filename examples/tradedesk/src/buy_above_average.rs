@@ -14,7 +14,7 @@ const UNITS_PER_PERCENT: f64 = 10.0;
 /// `type State`, beside `TrackPrices`, which keeps the window.
 ///
 /// It does two things per input, both through the context: it starts an
-/// operator that runs in steps and it emits.
+/// relay that runs in steps and it emits.
 #[derive(Default)]
 pub struct BuyAboveAverage;
 
@@ -35,7 +35,7 @@ impl Tasklet for BuyAboveAverage {
             quantity,
         };
         let order = serde_json::to_vec(&ticket).map_err(|e| TaskletError::Custom(e.to_string()))?;
-        let _ = ctx.spawn_steps("order_executor", order); // one steps operator per order
+        let _ = ctx.spawn_steps("order_executor", order); // one steps relay per order
 
         ctx.emit(format!(
             "{} {:.4} is {:.2}% above its average of {:.4}, buying {}",

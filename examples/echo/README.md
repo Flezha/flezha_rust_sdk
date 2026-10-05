@@ -9,7 +9,7 @@ Three files, one for each part the guides describe:
 | File | Part | What it does |
 |---|---|---|
 | `src/tasklet.rs` | the tasklet | the processing stage: prefixes each message |
-| `src/operator.rs` | the operator | the graph: `in` feeds the tasklet, output lands on `out` |
+| `src/relay.rs` | the relay | the graph: `in` feeds the tasklet, output lands on `out` |
 | `src/main.rs` | the runner | this process: registers the echo factory and waits |
 
 ## Run it
@@ -24,8 +24,8 @@ cargo run --release
 Then, from another terminal:
 
 ```sh
-flz operator start echo --id my_echo
-flz operator send my_echo --text 'hello world' --await 2000
+flz relay start echo --id my_echo
+flz relay send my_echo --text 'hello world' --await 2000
 ```
 
 ```
@@ -66,5 +66,5 @@ workspace from claiming this folder, and does nothing in a copy of its own.
 
 [`docs/guides/runner_deployment.md`](../../../../docs/guides/runner_deployment.md)
 walks through what each of the three parts is and why the split is the way it
-is. The other Rust examples, covering state, keys, timers, steps operators and the
+is. The other Rust examples, covering state, keys, timers, steps relays and the
 rest, are the SDK crate's own examples in `sdk/rust/examples/`.

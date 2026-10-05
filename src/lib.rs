@@ -8,7 +8,7 @@
 //! arrival order.
 //!
 //! Worked examples live in `sdk/rust/examples/` — start with
-//! `append_operator.rs` (sticky ordering with persistent state). Method names
+//! `append_relay.rs` (sticky ordering with persistent state). Method names
 //! and lifecycle verbs follow `docs/sdk/naming_conventions.md`, mirrored 1:1
 //! with the Java SDK; every environment knob the runner reads is listed in
 //! `docs/configuration.md`.
@@ -20,7 +20,7 @@ pub use flz_core::command;
 pub mod cell;
 pub mod diag;
 pub mod local;
-pub mod operator;
+pub mod relay;
 mod runner;
 mod runner_handle;
 pub mod tasklet;
@@ -62,21 +62,19 @@ pub use channel::{
     RetryPolicy, Stream,
 };
 /// Administering the namespace a runner's connection proved.
-pub use control::{Control, ControlError, OperatorSpec, PluginSpec, StartOutcome, StartResult};
+pub use control::{Control, ControlError, PluginSpec, RelaySpec, StartOutcome, StartResult};
 /// Authoring sugar. `#[flezha::tasklet]` on an `impl Tasklet` block, the
-/// short-form `#[flezha::operator]` and `flezha::pipeline!` expand to the
+/// short-form `#[flezha::relay]` and `flezha::pipeline!` expand to the
 /// trait surface above; see `docs/sdk/authoring_contract.md`.
-pub use flezha_macros::{operator, pipeline, tasklet};
+pub use flezha_macros::{pipeline, relay, tasklet};
 pub use flz_core::pb;
 pub use flz_transport::{errors, service, transport};
-pub use local::LocalOperator;
-pub use operator::builder::TopologyBuildError;
-pub use operator::topology::{
+pub use local::LocalRelay;
+pub use relay::builder::TopologyBuildError;
+pub use relay::topology::{
     AckGranularity, BeyondWindowPolicy, CheckpointOutputs, CheckpointPolicy,
 };
-pub use operator::{
-    Durable, Each, Exactly, OnFailure, Operator, OperatorSettings, Run, SleepAfter,
-};
+pub use relay::{Durable, Each, Exactly, OnFailure, Relay, RelaySettings, Run, SleepAfter};
 pub use runner_handle::{ErrorModel, Flezha, FlezhaError, FlezhaRunner, SendOpts};
 pub use steps::spec::BuildStepsError;
 pub use steps::StepsError;
@@ -86,9 +84,9 @@ pub use tasklet::{Change, ClockKind, CoalesceKey, Ctx, NoChange, StableId, Taskl
 /// runner involved — the body [`FlezhaRunner::register_factory`] runs once it
 /// has cleared the runner's own declared set. Kept callable on its own for the
 /// local run and for the steps scenarios that drive a class without a runner.
-pub(crate) fn register_class<O: Operator>() -> Result<(), FlezhaError> {
-    let class = operator::build_class::<O>()?;
-    operator::registry::register_class(O::factory_id(), class);
+pub(crate) fn register_class<O: Relay>() -> Result<(), FlezhaError> {
+    let class = relay::build_class::<O>()?;
+    relay::registry::register_class(O::factory_id(), class);
     Ok(())
 }
 
@@ -103,5 +101,5 @@ pub(crate) fn register_class<O: Operator>() -> Result<(), FlezhaError> {
 #[doc(hidden)]
 pub mod __dispatch_internals {
     pub use flz_core::mailbox::Mailbox;
-    pub use flz_core::runner::OperatorDispatchHandle;
+    pub use flz_core::runner::RelayDispatchHandle;
 }

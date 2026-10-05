@@ -1,5 +1,5 @@
 //! Starts the desk's runner: the process that connects to the controller and
-//! serves agentdesk's operators, in the `agents` namespace.
+//! serves agentdesk's relays, in the `agents` namespace.
 
 mod admit;
 mod agent;
@@ -17,8 +17,8 @@ use flezha_runner::Flezha;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let runner = Flezha::create_runner("agents")?;
     runner
-        .register_factory(agent::AgentOperator)?
-        .register_factory(gateway::GatewayOperator)?
+        .register_factory(agent::AgentRelay)?
+        .register_factory(gateway::GatewayRelay)?
         .start()?;
 
     runner.await_termination()?;

@@ -7,10 +7,10 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 
 use super::*;
-use crate::steps::*;
-use crate::{Operator, OperatorSettings, Run};
 use crate::channel::ChannelBuilder;
+use crate::steps::*;
 use crate::tasklet::{Ctx, Tasklet, TaskletError};
+use crate::{Relay, RelaySettings, Run};
 
 // ---- per-cell retry ladder tasks (`steps-cell-retry`) -------------
 
@@ -100,7 +100,7 @@ pub(crate) fn retry_chain(c: &ChannelBuilder, attempts: u32, backoff_ms: u64) {
 /// The default 3-attempt ladder, backoff shrunk so the scenarios do not
 /// sleep out a real one.
 pub(crate) struct RetrySteps;
-impl Operator for RetrySteps {
+impl Relay for RetrySteps {
     fn factory_id() -> &'static str {
         "test-retry-steps"
     }
@@ -108,10 +108,13 @@ impl Operator for RetrySteps {
         retry_chain(c, 3, 10);
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
-            run: Run::Steps { each: Each::Once, on_failure: OnFailure::UndoAll },
-            ..OperatorSettings::default()
+    fn settings() -> RelaySettings {
+        RelaySettings {
+            run: Run::Steps {
+                each: Each::Once,
+                on_failure: OnFailure::UndoAll,
+            },
+            ..RelaySettings::default()
         }
     }
 }
@@ -119,7 +122,7 @@ impl Operator for RetrySteps {
 /// The same chain with a one-attempt edge: the first cell error fails the
 /// tasklet.
 pub(crate) struct RetryFailFastSteps;
-impl Operator for RetryFailFastSteps {
+impl Relay for RetryFailFastSteps {
     fn factory_id() -> &'static str {
         "test-retry-failfast-steps"
     }
@@ -127,10 +130,13 @@ impl Operator for RetryFailFastSteps {
         retry_chain(c, 1, 10);
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
-            run: Run::Steps { each: Each::Once, on_failure: OnFailure::UndoAll },
-            ..OperatorSettings::default()
+    fn settings() -> RelaySettings {
+        RelaySettings {
+            run: Run::Steps {
+                each: Each::Once,
+                on_failure: OnFailure::UndoAll,
+            },
+            ..RelaySettings::default()
         }
     }
 }
@@ -138,7 +144,7 @@ impl Operator for RetryFailFastSteps {
 /// The same chain with a backoff long enough that a stop must interrupt the
 /// wait rather than outlast it.
 pub(crate) struct RetrySlowBackoffSteps;
-impl Operator for RetrySlowBackoffSteps {
+impl Relay for RetrySlowBackoffSteps {
     fn factory_id() -> &'static str {
         "test-retry-slow-steps"
     }
@@ -146,10 +152,13 @@ impl Operator for RetrySlowBackoffSteps {
         retry_chain(c, 3, 30_000);
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
-            run: Run::Steps { each: Each::Once, on_failure: OnFailure::UndoAll },
-            ..OperatorSettings::default()
+    fn settings() -> RelaySettings {
+        RelaySettings {
+            run: Run::Steps {
+                each: Each::Once,
+                on_failure: OnFailure::UndoAll,
+            },
+            ..RelaySettings::default()
         }
     }
 }
@@ -166,7 +175,7 @@ pub(crate) static STEP_ATTEMPTS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::
 pub(crate) fn probe_keys() -> &'static [&'static str] {
     static KEYS: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
     KEYS.get_or_init(|| {
-        (0..crate::operator::poll_pool::base_worker_count() * 2)
+        (0..crate::relay::poll_pool::base_worker_count() * 2)
             .map(|i| &*Box::leak(format!("probe{i}").into_boxed_str()))
             .collect()
     })
@@ -221,7 +230,7 @@ impl Tasklet for StepProbe {
 /// One flaky stage whose cells outnumber the SDK's workers, on a
 /// backoff long enough that a worker holding one would be observed.
 pub(crate) struct StepProbeSteps;
-impl Operator for StepProbeSteps {
+impl Relay for StepProbeSteps {
     fn factory_id() -> &'static str {
         "test-step-probe-steps"
     }
@@ -232,10 +241,13 @@ impl Operator for StepProbeSteps {
             .sink_named("probe_out");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
-            run: Run::Steps { each: Each::Once, on_failure: OnFailure::UndoAll },
-            ..OperatorSettings::default()
+    fn settings() -> RelaySettings {
+        RelaySettings {
+            run: Run::Steps {
+                each: Each::Once,
+                on_failure: OnFailure::UndoAll,
+            },
+            ..RelaySettings::default()
         }
     }
 }
@@ -272,7 +284,7 @@ string_task!(ItemFlaky, "item_flaky", |input, ctx| {
 
 /// Split → ItemFlaky: every piece of the message lands in the one Cell.
 pub(crate) struct ItemRetrySteps;
-impl Operator for ItemRetrySteps {
+impl Relay for ItemRetrySteps {
     fn factory_id() -> &'static str {
         "test-item-retry-steps"
     }
@@ -285,10 +297,13 @@ impl Operator for ItemRetrySteps {
             .sink_named("item_out");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
-            run: Run::Steps { each: Each::Once, on_failure: OnFailure::UndoAll },
-            ..OperatorSettings::default()
+    fn settings() -> RelaySettings {
+        RelaySettings {
+            run: Run::Steps {
+                each: Each::Once,
+                on_failure: OnFailure::UndoAll,
+            },
+            ..RelaySettings::default()
         }
     }
 }

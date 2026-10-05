@@ -1,5 +1,5 @@
 //! Keyed steps classes: a `key_by` edge into a tasklet that declares no
-//! keys, so its Cells are minted per key as a flow operator's are.
+//! keys, so its Cells are minted per key as a flow relay's are.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -11,7 +11,7 @@ use super::*;
 use crate::channel::ChannelBuilder;
 use crate::steps::*;
 use crate::tasklet::{Ctx, Tasklet, TaskletError};
-use crate::{Durable, Operator, OperatorSettings, Run, SleepAfter};
+use crate::{Durable, Relay, RelaySettings, Run, SleepAfter};
 
 /// Held until the running-pass sweep scenario releases it.
 pub(crate) static KEYED_BLOCK_RELEASE: AtomicBool = AtomicBool::new(false);
@@ -106,7 +106,7 @@ impl Tasklet for ZyStatic {
 }
 
 pub(crate) struct StaticOrderFlow;
-impl Operator for StaticOrderFlow {
+impl Relay for StaticOrderFlow {
     fn factory_id() -> &'static str {
         "test-static-order"
     }
@@ -114,13 +114,13 @@ impl Operator for StaticOrderFlow {
         c.input::<String>("in").into::<ZyStatic>();
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             run: Run::Steps {
                 each: Each::Once,
                 on_failure: OnFailure::UndoAll,
             },
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }
@@ -133,7 +133,7 @@ fn split_then_keyed(c: &ChannelBuilder) -> crate::channel::Stream<'_, String> {
 }
 
 pub(crate) struct KeyedFlow;
-impl Operator for KeyedFlow {
+impl Relay for KeyedFlow {
     fn factory_id() -> &'static str {
         "test-keyed-flow"
     }
@@ -141,19 +141,19 @@ impl Operator for KeyedFlow {
         split_then_keyed(c);
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             run: Run::Steps {
                 each: Each::Once,
                 on_failure: OnFailure::UndoAll,
             },
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }
 
 pub(crate) struct KeyedSaga;
-impl Operator for KeyedSaga {
+impl Relay for KeyedSaga {
     fn factory_id() -> &'static str {
         "test-keyed-saga"
     }
@@ -161,19 +161,19 @@ impl Operator for KeyedSaga {
         split_then_keyed(c).into::<KeyedFail>();
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             run: Run::Steps {
                 each: Each::Once,
                 on_failure: OnFailure::UndoAll,
             },
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }
 
 pub(crate) struct KeyedBlockFlow;
-impl Operator for KeyedBlockFlow {
+impl Relay for KeyedBlockFlow {
     fn factory_id() -> &'static str {
         "test-keyed-block"
     }
@@ -181,19 +181,19 @@ impl Operator for KeyedBlockFlow {
         split_then_keyed(c).into::<KeyedBlock>();
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             run: Run::Steps {
                 each: Each::Once,
                 on_failure: OnFailure::UndoAll,
             },
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }
 
 pub(crate) struct CappedKeyedFlow;
-impl Operator for CappedKeyedFlow {
+impl Relay for CappedKeyedFlow {
     fn factory_id() -> &'static str {
         "test-capped-keyed"
     }
@@ -204,13 +204,13 @@ impl Operator for CappedKeyedFlow {
             .into::<CappedKeyed>();
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             run: Run::Steps {
                 each: Each::Once,
                 on_failure: OnFailure::UndoAll,
             },
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }
@@ -224,7 +224,7 @@ fn keyed_loop(c: &ChannelBuilder) {
 }
 
 pub(crate) struct KeyedLoopUndoAll;
-impl Operator for KeyedLoopUndoAll {
+impl Relay for KeyedLoopUndoAll {
     fn factory_id() -> &'static str {
         "test-keyed-loop-aon"
     }
@@ -232,8 +232,8 @@ impl Operator for KeyedLoopUndoAll {
         keyed_loop(c);
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             run: Run::Steps {
                 each: Each::PerInput,
                 on_failure: OnFailure::UndoAll,
@@ -242,13 +242,13 @@ impl Operator for KeyedLoopUndoAll {
             durable: Durable::Local {
                 sleep_after: SleepAfter::After(LONG_SLEEP),
             },
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }
 
 pub(crate) struct KeyedLoopKeepProgress;
-impl Operator for KeyedLoopKeepProgress {
+impl Relay for KeyedLoopKeepProgress {
     fn factory_id() -> &'static str {
         "test-keyed-loop-kp"
     }
@@ -256,8 +256,8 @@ impl Operator for KeyedLoopKeepProgress {
         keyed_loop(c);
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             run: Run::Steps {
                 each: Each::PerInput,
                 on_failure: OnFailure::KeepProgress,
@@ -266,15 +266,15 @@ impl Operator for KeyedLoopKeepProgress {
             durable: Durable::Local {
                 sleep_after: SleepAfter::After(LONG_SLEEP),
             },
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }
 
 /// A per-input loop keyed on its entry edge: the shape a partition group of
-/// steps operator members has, one Cell per message key.
+/// steps relay members has, one Cell per message key.
 pub(crate) struct KeyedEntryLoop;
-impl Operator for KeyedEntryLoop {
+impl Relay for KeyedEntryLoop {
     fn factory_id() -> &'static str {
         "test-keyed-entry-loop"
     }
@@ -284,8 +284,8 @@ impl Operator for KeyedEntryLoop {
             .into::<KeyedPlain>();
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             run: Run::Steps {
                 each: Each::PerInput,
                 on_failure: OnFailure::UndoAll,
@@ -294,7 +294,7 @@ impl Operator for KeyedEntryLoop {
             durable: Durable::Local {
                 sleep_after: SleepAfter::After(LONG_SLEEP),
             },
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }

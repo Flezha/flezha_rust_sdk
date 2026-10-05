@@ -1,12 +1,12 @@
 //! Fixtures whose subject is persisted Cell state: the effectively-once tier
 //! store, checkpoint granularity and batched confirmation, the counter
-//! reference operators and the persistence-off class, plus the
+//! reference relays and the persistence-off class, plus the
 //! `mix bench.roundtrip` classes built on them.
 
 use crate::cell::DoNothingTasklet;
 use crate::*;
 
-// -- TierStoreOperator (effectively-once) ----------------------------------------
+// -- TierStoreRelay (effectively-once) ----------------------------------------
 //
 // Effectively-once e2e fixture: inputs are "key:value" strings; state upserts
 // the latest value per key; every input emits `key=value` under the natural
@@ -55,15 +55,15 @@ impl Tasklet for TierStoreTasklet {
     }
 }
 
-pub(crate) struct TierStoreOperator;
-impl Operator for TierStoreOperator {
+pub(crate) struct TierStoreRelay;
+impl Relay for TierStoreRelay {
     fn factory_id() -> &'static str {
         "tier_store"
     }
     fn channels(c: &ChannelBuilder) {
         // 300 ms backoff base keeps the min-watermark freeze observable
         // (~0.9 s from first failure to park) in the DLQ e2e.
-        // Declared DropNothing: a durable-input-log operator that sheds at its
+        // Declared DropNothing: a durable-input-log relay that sheds at its
         // mailbox would hold the min-watermark on the shed offset forever
         // while the log behind it keeps growing.
         c.input::<String>("input")
@@ -74,45 +74,47 @@ impl Operator for TierStoreOperator {
             .sink_named("sink");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
-            run: Run::Flow { exactly: Exactly::effectively_once() },
-            ..OperatorSettings::default()
+    fn settings() -> RelaySettings {
+        RelaySettings {
+            run: Run::Flow {
+                exactly: Exactly::effectively_once(),
+            },
+            ..RelaySettings::default()
         }
     }
 }
 
 // The same store kept `durable: remote`: an input is acknowledged only once the
 // durability backend holds the records it produced.
-pub(crate) struct RemoteTierStoreOperator;
-impl Operator for RemoteTierStoreOperator {
+pub(crate) struct RemoteTierStoreRelay;
+impl Relay for RemoteTierStoreRelay {
     fn factory_id() -> &'static str {
         "remote_tier_store"
     }
     fn channels(c: &ChannelBuilder) {
-        TierStoreOperator::channels(c);
+        TierStoreRelay::channels(c);
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             durable: Durable::remote(),
-            ..TierStoreOperator::settings()
+            ..TierStoreRelay::settings()
         }
     }
 }
 
-// -- TierChainOperator (effectively-once, inter-tasklet) ------------------------
+// -- TierChainRelay (effectively-once, inter-tasklet) ------------------------
 //
-// `tier_chain`: an effectively-once stream of two tasklets. `tier_relay` counts
-// what it relays and passes each `key:value` on; `tier_tally` counts each key's
+// `tier_chain`: an effectively-once stream of two tasklets. `tier_pass` counts
+// what it forwards and passes each `key:value` on; `tier_tally` counts each key's
 // inputs and emits `key=count`. Until the release env is set the tally fails
 // the value `hold` and keeps retrying it, so a runner killed there has made the
-// relay's record durable and not the tally's.
+// pass's record durable and not the tally's.
 
 #[derive(Default)]
-struct TierRelayTasklet;
-#[flezha_runner::tasklet(name = "tier_relay")]
-impl Tasklet for TierRelayTasklet {
+struct TierPassTasklet;
+#[flezha_runner::tasklet(name = "tier_pass")]
+impl Tasklet for TierPassTasklet {
     type Input = String;
     type Output = String;
     type State = CounterState;
@@ -141,15 +143,15 @@ impl Tasklet for TierTallyTasklet {
     }
 }
 
-pub(crate) struct TierChainOperator;
-impl Operator for TierChainOperator {
+pub(crate) struct TierChainRelay;
+impl Relay for TierChainRelay {
     fn factory_id() -> &'static str {
         "tier_chain"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .on_full(OverflowPolicy::DropNothing)
-            .into::<TierRelayTasklet>()
+            .into::<TierPassTasklet>()
             .key_by(|input: &String| crate::cell::key_prefix(input))
             .retry_max(1_000)
             .into::<TierTallyTasklet>()
@@ -157,15 +159,17 @@ impl Operator for TierChainOperator {
             .sink_named("sink");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
-            run: Run::Flow { exactly: Exactly::effectively_once() },
-            ..OperatorSettings::default()
+    fn settings() -> RelaySettings {
+        RelaySettings {
+            run: Run::Flow {
+                exactly: Exactly::effectively_once(),
+            },
+            ..RelaySettings::default()
         }
     }
 }
 
-// -- BenchKeyedOperator (mix bench.roundtrip, --workload keyed) -------------
+// -- BenchKeyedRelay (mix bench.roundtrip, --workload keyed) -------------
 //
 // `tier_store` minus the effectively-once declaration, so the round-trip bench
 // can measure the same keyed upsert under both durability postures.
@@ -174,8 +178,8 @@ impl Operator for TierChainOperator {
 // Echo with a declared DropNothing on its entry mailbox. `do_nothing` is the
 // merge-blocking `mix bench` factory and must not change; a separate factory
 // keeps the round-trip bench's back-pressure posture independent of it.
-pub(crate) struct BenchEchoOperator;
-impl Operator for BenchEchoOperator {
+pub(crate) struct BenchEchoRelay;
+impl Relay for BenchEchoRelay {
     fn factory_id() -> &'static str {
         "bench_echo"
     }
@@ -187,8 +191,8 @@ impl Operator for BenchEchoOperator {
     }
 }
 
-pub(crate) struct BenchKeyedOperator;
-impl Operator for BenchKeyedOperator {
+pub(crate) struct BenchKeyedRelay;
+impl Relay for BenchKeyedRelay {
     fn factory_id() -> &'static str {
         "bench_keyed"
     }
@@ -206,9 +210,8 @@ impl Operator for BenchKeyedOperator {
 // persistence is a separate, default-on class property — so it is not a
 // like-for-like against an engine whose keyed state is pure heap. This variant
 // isolates that cost.
-pub(crate) struct BenchKeyedNoPersistOperator;
-impl Operator for BenchKeyedNoPersistOperator {
-
+pub(crate) struct BenchKeyedNoPersistRelay;
+impl Relay for BenchKeyedNoPersistRelay {
     fn factory_id() -> &'static str {
         "bench_keyed_nopersist"
     }
@@ -220,17 +223,17 @@ impl Operator for BenchKeyedNoPersistOperator {
             .sink_named("sink");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             durable: Durable::Memory,
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }
 
-// -- CheckpointStoreOperator (effectively-once-checkpoint-granularity e2e) --
+// -- CheckpointStoreRelay (effectively-once-checkpoint-granularity e2e) --
 //
-// Same store as TierStoreOperator, but acknowledging only at an explicit
+// Same store as TierStoreRelay, but acknowledging only at an explicit
 // checkpoint: a `commit:` input closes the interval, every other input folds
 // into it. Emits still flush as they happen, so the sink sees an interval's
 // outputs long before its offsets are acknowledged — which is exactly what the
@@ -256,8 +259,8 @@ impl Tasklet for CheckpointStoreTasklet {
     }
 }
 
-pub(crate) struct CheckpointStoreOperator;
-impl Operator for CheckpointStoreOperator {
+pub(crate) struct CheckpointStoreRelay;
+impl Relay for CheckpointStoreRelay {
     fn factory_id() -> &'static str {
         "checkpoint_store"
     }
@@ -268,23 +271,33 @@ impl Operator for CheckpointStoreOperator {
             .sink_named("sink");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
-            run: Run::Flow { exactly: Exactly::EffectivelyOnce { ack: AckGranularity::Checkpoint(CheckpointPolicy { every: None, outputs: CheckpointOutputs::AsProduced, max_delay_ms: None }), correction_ms: None, beyond_window: BeyondWindowPolicy::ProcessAsArrival } },
-            ..OperatorSettings::default()
+    fn settings() -> RelaySettings {
+        RelaySettings {
+            run: Run::Flow {
+                exactly: Exactly::EffectivelyOnce {
+                    ack: AckGranularity::Checkpoint(CheckpointPolicy {
+                        every: None,
+                        outputs: CheckpointOutputs::AsProduced,
+                        max_delay_ms: None,
+                    }),
+                    correction_ms: None,
+                    beyond_window: BeyondWindowPolicy::ProcessAsArrival,
+                },
+            },
+            ..RelaySettings::default()
         }
     }
 }
 
-// -- CheckpointBatchedOperator (amortise-effectively-once-output-confirmation) --
+// -- CheckpointBatchedRelay (amortise-effectively-once-output-confirmation) --
 //
 // The same tasklet as `checkpoint_store`, declared `outputs_at_checkpoint`:
 // the interval's outputs are held with its changes and ship inside its
 // checkpoint record. `checkpoint_every` is deliberately absent so the test
 // drives the close itself — with `commit:` for the batch case, and with the
 // delay alone for the quiet-Cell case.
-pub(crate) struct CheckpointBatchedOperator;
-impl Operator for CheckpointBatchedOperator {
+pub(crate) struct CheckpointBatchedRelay;
+impl Relay for CheckpointBatchedRelay {
     fn factory_id() -> &'static str {
         "checkpoint_batched_store"
     }
@@ -295,15 +308,25 @@ impl Operator for CheckpointBatchedOperator {
             .sink_named("sink");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
-            run: Run::Flow { exactly: Exactly::EffectivelyOnce { ack: AckGranularity::Checkpoint(CheckpointPolicy { every: None, outputs: CheckpointOutputs::AtCheckpoint, max_delay_ms: Some(1_500) }), correction_ms: None, beyond_window: BeyondWindowPolicy::ProcessAsArrival } },
-            ..OperatorSettings::default()
+    fn settings() -> RelaySettings {
+        RelaySettings {
+            run: Run::Flow {
+                exactly: Exactly::EffectivelyOnce {
+                    ack: AckGranularity::Checkpoint(CheckpointPolicy {
+                        every: None,
+                        outputs: CheckpointOutputs::AtCheckpoint,
+                        max_delay_ms: Some(1_500),
+                    }),
+                    correction_ms: None,
+                    beyond_window: BeyondWindowPolicy::ProcessAsArrival,
+                },
+            },
+            ..RelaySettings::default()
         }
     }
 }
 
-// -- BenchCheckpointOperator (mix bench.roundtrip, --durability checkpoint) --
+// -- BenchCheckpointRelay (mix bench.roundtrip, --durability checkpoint) --
 //
 // `checkpoint_store` driven by a DECLARED cadence instead of a "commit:" input:
 // the same keyed upsert, acknowledging every `FLEZHA_BENCH_CHECKPOINT_EVERY`
@@ -327,8 +350,8 @@ impl Tasklet for BenchCheckpointTasklet {
     }
 }
 
-pub(crate) struct BenchCheckpointOperator;
-impl Operator for BenchCheckpointOperator {
+pub(crate) struct BenchCheckpointRelay;
+impl Relay for BenchCheckpointRelay {
     fn factory_id() -> &'static str {
         "bench_checkpoint"
     }
@@ -340,7 +363,7 @@ impl Operator for BenchCheckpointOperator {
             .sink_named("sink");
     }
 
-    fn settings() -> OperatorSettings {
+    fn settings() -> RelaySettings {
         fn env_u64(key: &str, default: u64) -> u64 {
             std::env::var(key)
                 .ok()
@@ -348,7 +371,8 @@ impl Operator for BenchCheckpointOperator {
                 .unwrap_or(default)
         }
 
-        let held = std::env::var("FLEZHA_BENCH_CHECKPOINT_OUTPUTS").as_deref() == Ok("at_checkpoint");
+        let held =
+            std::env::var("FLEZHA_BENCH_CHECKPOINT_OUTPUTS").as_deref() == Ok("at_checkpoint");
         let checkpoint = CheckpointPolicy {
             every: Some(env_u64("FLEZHA_BENCH_CHECKPOINT_EVERY", 500) as u32),
             outputs: if held {
@@ -358,7 +382,7 @@ impl Operator for BenchCheckpointOperator {
             },
             max_delay_ms: held.then(|| env_u64("FLEZHA_BENCH_CHECKPOINT_DELAY_MS", 50)),
         };
-        OperatorSettings {
+        RelaySettings {
             run: Run::Flow {
                 exactly: Exactly::EffectivelyOnce {
                     ack: AckGranularity::Checkpoint(checkpoint),
@@ -366,12 +390,12 @@ impl Operator for BenchCheckpointOperator {
                     beyond_window: BeyondWindowPolicy::ProcessAsArrival,
                 },
             },
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }
 
-// -- StatefulCounterOperator (Section 6.1) --------------------------------------
+// -- StatefulCounterRelay (Section 6.1) --------------------------------------
 //
 // One Tasklet `CounterTasklet` with `Change = CounterChange { delta: i64 }`,
 // whose `apply_to` adds the delta to `state.value`, and `coalesce_key()`
@@ -405,8 +429,8 @@ impl Tasklet for CounterTasklet {
     }
 }
 
-pub(crate) struct StatefulCounterOperator;
-impl Operator for StatefulCounterOperator {
+pub(crate) struct StatefulCounterRelay;
+impl Relay for StatefulCounterRelay {
     fn factory_id() -> &'static str {
         "stateful_counter"
     }
@@ -430,9 +454,9 @@ impl Tasklet for CounterEntryTasklet {
     }
 }
 
-// -- SleepingCounterOperator -----------------------------------------------------
+// -- SleepingCounterRelay -----------------------------------------------------
 //
-// A flow operator that sleeps when idle: `key:delta` inputs fold into one running
+// A flow relay that sleeps when idle: `key:delta` inputs fold into one running
 // total per key, and every input emits `key=total` on the `totals` sink. The
 // sleep e2e reads the total after a wake to prove the Cell came back with the
 // state it slept with.
@@ -454,9 +478,8 @@ impl Tasklet for SleepingCounterTasklet {
     }
 }
 
-pub(crate) struct SleepingCounterOperator;
-impl Operator for SleepingCounterOperator {
-
+pub(crate) struct SleepingCounterRelay;
+impl Relay for SleepingCounterRelay {
     fn factory_id() -> &'static str {
         "sleeping_counter"
     }
@@ -467,15 +490,15 @@ impl Operator for SleepingCounterOperator {
             .sink_named("totals");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             durable: fixture_durable(),
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }
 
-// -- CoalescingCounterOperator (Section 6.2) ------------------------------------
+// -- CoalescingCounterRelay (Section 6.2) ------------------------------------
 //
 // `Change = TickChange { interval: u8, ts: u64, delta: i64 }` with
 // `coalesce_key` returning `Some(CoalesceKey::from_hash(&(interval, ts)))`.
@@ -551,8 +574,8 @@ impl Tasklet for TickEntryTasklet {
     }
 }
 
-pub(crate) struct CoalescingCounterOperator;
-impl Operator for CoalescingCounterOperator {
+pub(crate) struct CoalescingCounterRelay;
+impl Relay for CoalescingCounterRelay {
     fn factory_id() -> &'static str {
         "coalescing_counter"
     }
@@ -564,14 +587,14 @@ impl Operator for CoalescingCounterOperator {
     }
 }
 
-// -- PersistenceOffOperator (Section 6.3) ---------------------------------------
+// -- PersistenceOffRelay (Section 6.3) ---------------------------------------
 //
-// Same Tasklet topology as `StatefulCounterOperator` but kept in memory
+// Same Tasklet topology as `StatefulCounterRelay` but kept in memory
 // (`Durable::Memory`). Used by integration tests to verify the toggle-off drain
 // path discards frames without invoking the wire stub.
 
-pub(crate) struct PersistenceOffOperator;
-impl Operator for PersistenceOffOperator {
+pub(crate) struct PersistenceOffRelay;
+impl Relay for PersistenceOffRelay {
     fn factory_id() -> &'static str {
         "persistence_off_counter"
     }
@@ -582,10 +605,10 @@ impl Operator for PersistenceOffOperator {
             .into::<PersistenceOffCounterTasklet>();
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             durable: Durable::Memory,
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }

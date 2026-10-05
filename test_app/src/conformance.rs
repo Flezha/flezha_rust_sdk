@@ -4,7 +4,7 @@
 //! `flz_core/src/host/check_tests.rs` is the same table driven against the
 //! record directly, because the core has no builder. This one maps the same
 //! step vocabulary onto the typed graph builder, so what is measured here is
-//! what an author of a Rust operator actually writes.
+//! what an author of a Rust relay actually writes.
 //!
 //! Two entry points, both off `main`:
 //!
@@ -35,17 +35,17 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use flezha_runner::steps::spec::build_spec;
 use flezha_runner::channel::{
     ChannelDescriptor, ChannelKind, EntryStream, Merge, NodeTarget, Stream, StreamTarget,
 };
-use flezha_runner::operator::builder::{build_topology_for, DEFAULT_MAILBOX_CAPACITY};
-use flezha_runner::operator::topology::OperatorTopology;
+use flezha_runner::relay::builder::{build_topology_for, DEFAULT_MAILBOX_CAPACITY};
+use flezha_runner::relay::topology::RelayTopology;
+use flezha_runner::steps::spec::build_spec;
 use flezha_runner::{ErrorModel, Flezha, FlezhaRunner};
 use serde_json::{json, Value};
 
+use crate::channel::HybridChannelRelay;
 use crate::steps::TierCommitBlockSteps;
-use crate::channel::HybridChannelOperator;
 use crate::*;
 
 /// The fixture, relative to the repository root the app is launched from.
@@ -214,7 +214,7 @@ palette_tasklet!(EventTime, "eventtime", "eventtime", EventTime, {
 struct Plan {
     factory_id: &'static str,
     steps: String,
-    settings: OperatorSettings,
+    settings: RelaySettings,
 }
 
 thread_local! {
@@ -225,7 +225,7 @@ thread_local! {
 /// `class.durable` steps wrote, read with the core's own reading of the tree.
 struct RowClass;
 
-impl Operator for RowClass {
+impl Relay for RowClass {
     fn factory_id() -> &'static str {
         PLAN.with(|p| p.borrow().factory_id)
     }
@@ -234,16 +234,16 @@ impl Operator for RowClass {
         interpret(c, &PLAN.with(|p| p.borrow().steps.clone()));
     }
 
-    fn settings() -> OperatorSettings {
+    fn settings() -> RelaySettings {
         PLAN.with(|p| p.borrow().settings)
     }
 }
 
 /// The settings tree a row writes; a row this builder can spell writes only
 /// a tree the typed settings can hold.
-fn settings_of(steps: &str) -> OperatorSettings {
-    use flezha_runner::operator::settings::{parse_durable, parse_run};
-    let mut settings = OperatorSettings::default();
+fn settings_of(steps: &str) -> RelaySettings {
+    use flezha_runner::relay::settings::{parse_durable, parse_run};
+    let mut settings = RelaySettings::default();
     for step in steps.split(';').map(str::trim) {
         let (verb, value) = split_call(step);
         let tree = || serde_json::from_str::<Value>(value).expect("a class setting is JSON");
@@ -379,7 +379,7 @@ impl<'b> Interp<'b> {
             }
             Handle::Node(s) => {
                 let s = reshape(s, reshaping);
-                if !self.terminate(s, last) && !crate::operator_call::call_step(s, head, last) {
+                if !self.terminate(s, last) && !crate::relay_call::call_step(s, head, last) {
                     producer_link(s, last);
                 }
             }
@@ -579,17 +579,17 @@ fn parse_shorthand(step: &str) -> Option<Shorthand> {
 }
 
 /// The refusal a declaration earns, and the compile-fail fixture that pins it.
-/// A second operator impl is rustc's own conflicting-impl error, which cannot
+/// A second relay impl is rustc's own conflicting-impl error, which cannot
 /// carry the contract's name, so that row cites the fixture's source.
 fn citation(s: &Shorthand) -> (&'static str, &'static str) {
     match s {
         Shorthand::WithTopology => (
             "topology.short_form_with_topology",
-            "sdk/rust/tests/ui/operator_with_hand_written_impl.rs",
+            "sdk/rust/tests/ui/relay_with_hand_written_impl.rs",
         ),
         Shorthand::NoOutput => (
             "topology.sink_without_output",
-            "sdk/rust/tests/ui/operator_sink_without_output.stderr",
+            "sdk/rust/tests/ui/relay_sink_without_output.stderr",
         ),
         Shorthand::Plain => {
             panic!("a well-formed shorthand declaration earns no refusal of its own")
@@ -600,18 +600,18 @@ fn citation(s: &Shorthand) -> (&'static str, &'static str) {
 // The duplicate row's pair, declared here rather than beside the app's
 // fixtures because nothing but that row registers them: two short forms, one of
 // each kind, under one factory id.
-#[flezha_runner::operator(id = "plain", sink = "out")]
+#[flezha_runner::relay(id = "plain", sink = "out")]
 fn shorthand_dup_flow(input: String) -> Vec<u8> {
     input.into_bytes()
 }
 
-#[flezha_runner::operator(id = "plain", sink = "twin_sink", run = steps)]
+#[flezha_runner::relay(id = "plain", sink = "twin_sink", run = steps)]
 fn shorthand_dup_steps(input: String) -> Vec<u8> {
     input.into_bytes()
 }
 
 /// Register the duplicate row's pair on `runner` and answer the code the
-/// second call was refused with. `Ok(())` means the runner accepted a second operator under a
+/// second call was refused with. `Ok(())` means the runner accepted a second relay under a
 /// factory id it already held, which is the shape the contract refuses.
 fn drive_duplicate(runner: &FlezhaRunner) -> Result<(), String> {
     runner
@@ -628,7 +628,7 @@ fn drive_duplicate(runner: &FlezhaRunner) -> Result<(), String> {
 
 /// What a row's topology answered: the derived declaration, or the refusal
 /// codes the core handed back as data.
-fn topology_of(row: &Row) -> Result<Arc<OperatorTopology>, Vec<String>> {
+fn topology_of(row: &Row) -> Result<Arc<RelayTopology>, Vec<String>> {
     if row.steps == "cited above" {
         return cited(&row.topology);
     }
@@ -646,9 +646,9 @@ fn topology_of(row: &Row) -> Result<Arc<OperatorTopology>, Vec<String>> {
 
 /// The two twins the fixture cites rather than re-spells: this app's own
 /// fixtures, which is where the seven-column table was transcribed from.
-fn cited(topology: &str) -> Result<Arc<OperatorTopology>, Vec<String>> {
+fn cited(topology: &str) -> Result<Arc<RelayTopology>, Vec<String>> {
     match topology {
-        "hybrid_channel" => build_topology_for::<HybridChannelOperator>()
+        "hybrid_channel" => build_topology_for::<HybridChannelRelay>()
             .map_err(|e| e.errors.iter().map(|i| i.code().to_string()).collect()),
         "commit_block_chain" => {
             build_spec::<TierCommitBlockSteps>().map_err(|e| vec![e.code().to_string()])
@@ -659,7 +659,7 @@ fn cited(topology: &str) -> Result<Arc<OperatorTopology>, Vec<String>> {
 
 /// The derived declaration, in the columns the fixture's seven-column table
 /// states: what the core answered, as the topology materialised it.
-fn derived(topology: &OperatorTopology) -> Value {
+fn derived(topology: &RelayTopology) -> Value {
     let channels: Vec<Value> = topology
         .channels
         .iter()
@@ -800,7 +800,7 @@ pub(crate) fn register_only(
             match drive_duplicate(runner) {
                 Ok(()) => {
                     return Err(format!(
-                        "{topology}: the runner accepted a second operator under one factory id"
+                        "{topology}: the runner accepted a second relay under one factory id"
                     )
                     .into())
                 }

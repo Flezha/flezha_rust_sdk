@@ -3,8 +3,11 @@
 //! discards the open interval.
 
 mod common;
-use flezha_runner::{AckGranularity, BeyondWindowPolicy, CheckpointOutputs, CheckpointPolicy, Exactly, OperatorSettings, Run};
 use common::prelude::*;
+use flezha_runner::{
+    AckGranularity, BeyondWindowPolicy, CheckpointOutputs, CheckpointPolicy, Exactly,
+    RelaySettings, Run,
+};
 
 // ---------------------------------------------------------------------------
 // effectively-once-checkpoint-granularity
@@ -40,10 +43,10 @@ impl Tasklet for CheckpointTasklet {
     }
 }
 
-struct CheckpointOperator;
-impl Operator for CheckpointOperator {
+struct CheckpointRelay;
+impl Relay for CheckpointRelay {
     fn factory_id() -> &'static str {
-        "checkpoint_operator"
+        "checkpoint_relay"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
@@ -52,10 +55,20 @@ impl Operator for CheckpointOperator {
             .sink_named("out");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
-            run: Run::Flow { exactly: Exactly::EffectivelyOnce { ack: AckGranularity::Checkpoint(CheckpointPolicy { every: None, outputs: CheckpointOutputs::AsProduced, max_delay_ms: None }), correction_ms: None, beyond_window: BeyondWindowPolicy::ProcessAsArrival } },
-            ..OperatorSettings::default()
+    fn settings() -> RelaySettings {
+        RelaySettings {
+            run: Run::Flow {
+                exactly: Exactly::EffectivelyOnce {
+                    ack: AckGranularity::Checkpoint(CheckpointPolicy {
+                        every: None,
+                        outputs: CheckpointOutputs::AsProduced,
+                        max_delay_ms: None,
+                    }),
+                    correction_ms: None,
+                    beyond_window: BeyondWindowPolicy::ProcessAsArrival,
+                },
+            },
+            ..RelaySettings::default()
         }
     }
 }
@@ -70,7 +83,7 @@ fn ack_at_checkpoint_holds_the_offset_until_the_interval_closes() {
     let _serial = WAL_TEST_LOCK.lock().unwrap();
     install_capturing_tier_sink();
 
-    let (handle, _instance) = setup::<CheckpointOperator>("cp-instance");
+    let (handle, _instance) = setup::<CheckpointRelay>("cp-instance");
 
     dispatch_at(&handle, "cp-instance", 1, "acc"); // fold only
     dispatch_at(&handle, "cp-instance", 2, "emit"); // fold + emit
@@ -125,7 +138,7 @@ fn a_park_closes_the_checkpoint_interval() {
     let _serial = WAL_TEST_LOCK.lock().unwrap();
     install_capturing_tier_sink();
 
-    let (handle, _instance) = setup::<CheckpointOperator>("cp-park-instance");
+    let (handle, _instance) = setup::<CheckpointRelay>("cp-park-instance");
 
     dispatch_at(&handle, "cp-park-instance", 7, "acc");
     dispatch_at(&handle, "cp-park-instance", 8, "poison");
@@ -188,8 +201,8 @@ fn a_restore_discards_the_open_interval() {
 fn a_restore_discards_queued_input_only_where_the_controller_re_forwards_it() {
     use flezha_runner::cell::{make_cell_payload, restore_discarded_inputs};
 
-    let (_tier_handle, tier) = setup::<TierOperator>("restore-mailbox-tier");
-    let (_plain_handle, plain) = setup::<KeyedStampOperator>("restore-mailbox-plain");
+    let (_tier_handle, tier) = setup::<TierRelay>("restore-mailbox-tier");
+    let (_plain_handle, plain) = setup::<KeyedStampRelay>("restore-mailbox-plain");
     let (stream, _observer) = stream_pair();
 
     for instance in [&tier, &plain] {

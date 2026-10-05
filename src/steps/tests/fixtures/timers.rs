@@ -1,4 +1,4 @@
-//! Timers inside a steps operator: a loop whose middle tasklet arms them, and a
+//! Timers inside a steps relay: a loop whose middle tasklet arms them, and a
 //! chained loop whose carry must yield to a firing.
 
 use std::sync::Mutex;
@@ -8,7 +8,7 @@ use super::SHORT_SLEEP;
 use crate::channel::ChannelBuilder;
 use crate::steps::*;
 use crate::tasklet::{Ctx, Tasklet, TaskletError};
-use crate::{Durable, Operator, OperatorSettings, Run, SleepAfter};
+use crate::{Durable, Relay, RelaySettings, Run, SleepAfter};
 
 /// Every timestamp a fixture here armed, in registration order.
 pub(crate) static ARMED: Mutex<Vec<u64>> = Mutex::new(Vec::new());
@@ -30,7 +30,7 @@ fn millis(text: &str) -> Duration {
 string_task!(Front, "timer_front", |input, ctx| ctx.emit(input));
 
 /// `after:<ms>` arms a timer and emits `armed:<at>`; `after-slow:<ms>` the
-/// same, marked for the relay to linger on; `hold:<ms>` holds the stage that
+/// same, marked for the tock to linger on; `hold:<ms>` holds the stage that
 /// long. A firing emits `fired:<at>`.
 #[derive(Default)]
 pub(crate) struct Tick;
@@ -62,17 +62,17 @@ impl Tasklet for Tick {
     }
 }
 
-string_task!(Relay, "timer_relay", |input, ctx| {
+string_task!(Tock, "timer_tock", |input, ctx| {
     if input.starts_with("armed-slow") {
         std::thread::sleep(Duration::from_millis(150));
     }
-    ctx.emit(format!("relay:{input}"))
+    ctx.emit(format!("tock:{input}"))
 });
 
-/// `in -> front -> tick -> relay -> out`: `tick`, which sets the timers, is
+/// `in -> front -> tick -> tock -> out`: `tick`, which sets the timers, is
 /// not the entry channel's root.
 pub(crate) struct TimerLoop;
-impl Operator for TimerLoop {
+impl Relay for TimerLoop {
     fn factory_id() -> &'static str {
         "test-timer-loop"
     }
@@ -82,12 +82,12 @@ impl Operator for TimerLoop {
             .named("fronted")
             .into::<Tick>()
             .named("ticked")
-            .into::<Relay>()
+            .into::<Tock>()
             .sink_named("out");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             run: Run::Steps {
                 each: Each::PerInput,
                 on_failure: OnFailure::UndoAll,
@@ -96,7 +96,7 @@ impl Operator for TimerLoop {
             durable: Durable::Local {
                 sleep_after: SleepAfter::After(SHORT_SLEEP),
             },
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }
@@ -135,7 +135,7 @@ string_task!(TimerCountdown, "timer_countdown", |input, ctx| {
 /// A durable chained loop `in -> arm -> countdown`, the countdown's own
 /// channel the carry.
 pub(crate) struct ChainedTimerLoop;
-impl Operator for ChainedTimerLoop {
+impl Relay for ChainedTimerLoop {
     fn factory_id() -> &'static str {
         "test-chained-timer-loop"
     }
@@ -147,13 +147,13 @@ impl Operator for ChainedTimerLoop {
             .named("carry");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             run: Run::Steps {
                 each: Each::Chained,
                 on_failure: OnFailure::UndoAll,
             },
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }

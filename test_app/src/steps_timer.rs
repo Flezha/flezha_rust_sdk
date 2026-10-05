@@ -4,12 +4,12 @@
 use crate::steps::{block_until_released, stateless_step};
 use crate::*;
 
-// `timer_loop_steps`: `in -> tick -> relay -> out`, a per-input loop whose
+// `timer_loop_steps`: `in -> tick -> tock -> out`, a per-input loop whose
 // `tick` arms a processing-time timer of the delay `after:<ms>` names and
 // emits `armed:<at>`; its firing emits `fired:<at>` and opens a pass of its
 // own. `slow:<ms>` holds `tick` that long, for a firing due mid-pass. On a
 // runner booted with `FLEZHA_STEPS_E2E_HOLD` the firing parks at the gate:
-// `timer` inside `on_timer`, before `tick` commits; `relay` in `relay`, after.
+// `timer` inside `on_timer`, before `tick` commits; `tock` in `tock`, after.
 const E2E_HOLD_ENV: &str = "FLEZHA_STEPS_E2E_HOLD";
 
 fn hold_at(point: &str) {
@@ -49,15 +49,15 @@ impl Tasklet for Tick {
     }
 }
 
-stateless_step!(Relay, "relay", |input, ctx| {
+stateless_step!(Tock, "tock", |input, ctx| {
     if input.starts_with("fired:") {
-        hold_at("relay");
+        hold_at("tock");
     }
-    ctx.emit(format!("relay:{input}"))
+    ctx.emit(format!("tock:{input}"))
 });
 
 pub(crate) struct TimerLoopSteps;
-impl Operator for TimerLoopSteps {
+impl Relay for TimerLoopSteps {
     fn factory_id() -> &'static str {
         "timer_loop_steps"
     }
@@ -65,19 +65,19 @@ impl Operator for TimerLoopSteps {
         c.input::<String>("in")
             .into::<Tick>()
             .named("ticked")
-            .into::<Relay>()
+            .into::<Tock>()
             .sink_named("out");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             run: Run::Steps {
                 each: Each::PerInput,
                 on_failure: OnFailure::UndoAll,
             },
             max_duration: Some(Duration::from_secs(600)),
             durable: fixture_durable(),
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }
@@ -112,7 +112,7 @@ impl Tasklet for EventTick {
 }
 
 pub(crate) struct EventTimerSteps;
-impl Operator for EventTimerSteps {
+impl Relay for EventTimerSteps {
     fn factory_id() -> &'static str {
         "event_timer_steps"
     }
@@ -122,15 +122,15 @@ impl Operator for EventTimerSteps {
             .sink_named("out");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             run: Run::Steps {
                 each: Each::PerInput,
                 on_failure: OnFailure::UndoAll,
             },
             max_duration: Some(Duration::from_secs(600)),
             durable: fixture_durable(),
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }

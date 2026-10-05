@@ -179,7 +179,7 @@ fn a_wake_armed_during_a_wait_shortens_it() {
     assert!(matches!(poller.join().unwrap(), Polled::ShuttingDown));
 }
 
-/// Two Operator instances arming the same tasklet id, cell key and
+/// Two Relay instances arming the same tasklet id, cell key and
 /// scheduled time hold two entries, and one instance's cancellation
 /// leaves the other's firing alone — the identity in the list key carries
 /// the instance.

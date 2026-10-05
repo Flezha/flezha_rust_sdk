@@ -1,0 +1,5 @@
+error: #[flezha::relay] takes its input by value, not by reference
+ --> tests/ui/relay_shared_ref_state.rs:6:17
+  |
+6 | fn f(a: String, s: &S) -> Vec<u8> {
+  |                 ^^^^^

@@ -5,7 +5,7 @@
 use std::io::Read;
 
 use flezha_runner::cell::header::header_template_for;
-use flezha_runner::{Exactly, OperatorSettings, Run};
+use flezha_runner::{Exactly, RelaySettings, Run};
 
 mod common;
 use common::prelude::*;
@@ -34,7 +34,7 @@ fn tier_emits_ride_the_state_sink_as_one_effect_record() {
     let _serial = WAL_TEST_LOCK.lock().unwrap();
     install_capturing_tier_sink();
 
-    let (handle, _instance) = setup::<TierOperator>("tier-instance");
+    let (handle, _instance) = setup::<TierRelay>("tier-instance");
     let (stream, mut observer) = stream_pair();
 
     let mut md = HashMap::new();
@@ -115,11 +115,11 @@ fn tier_emits_ride_the_state_sink_as_one_effect_record() {
     );
 }
 
-/// Relays each input to [`Drain`] and counts it.
+/// Forwards each input to [`Drain`] and counts it.
 #[derive(Default)]
-struct Relay;
-#[flezha_runner::tasklet(name = "relay")]
-impl Tasklet for Relay {
+struct Forward;
+#[flezha_runner::tasklet(name = "forward")]
+impl Tasklet for Forward {
     type Input = String;
     type Output = String;
     type State = i64;
@@ -141,30 +141,32 @@ impl Tasklet for Drain {
     }
 }
 
-struct TierRelayOperator;
-impl Operator for TierRelayOperator {
+struct TierPassRelay;
+impl Relay for TierPassRelay {
     fn factory_id() -> &'static str {
-        "tier_relay_operator"
+        "tier_pass_relay"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<String>("input").into::<Relay>().into::<Drain>();
+        c.input::<String>("input").into::<Forward>().into::<Drain>();
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
-            run: Run::Flow { exactly: Exactly::effectively_once() },
-            ..OperatorSettings::default()
+    fn settings() -> RelaySettings {
+        RelaySettings {
+            run: Run::Flow {
+                exactly: Exactly::effectively_once(),
+            },
+            ..RelaySettings::default()
         }
     }
 }
 
-struct PlainRelayOperator;
-impl Operator for PlainRelayOperator {
+struct PlainPassRelay;
+impl Relay for PlainPassRelay {
     fn factory_id() -> &'static str {
-        "plain_relay_operator"
+        "plain_pass_relay"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<String>("input").into::<Relay>().into::<Drain>();
+        c.input::<String>("input").into::<Forward>().into::<Drain>();
     }
 }
 
@@ -179,9 +181,9 @@ fn an_edge_value_rides_the_record_that_carries_its_producer_offset() {
     for (id, tier) in [("edge-tier", true), ("edge-plain", false)] {
         install_capturing_tier_sink();
         let (handle, _instance) = if tier {
-            setup::<TierRelayOperator>(id)
+            setup::<TierPassRelay>(id)
         } else {
-            setup::<PlainRelayOperator>(id)
+            setup::<PlainPassRelay>(id)
         };
         dispatch_at(&handle, id, 9, "v");
 
@@ -192,7 +194,7 @@ fn an_edge_value_rides_the_record_that_carries_its_producer_offset() {
         };
         assert!(
             wait_until(|| kept().is_some(), Duration::from_secs(5)),
-            "{id}: the relay's record never kept its edge value"
+            "{id}: the pass's record never kept its edge value"
         );
         let body = kept().unwrap();
         assert_eq!(body.edges.len(), 1, "{id}");
@@ -209,7 +211,7 @@ fn tier_replay_skips_inputs_at_or_below_the_consumed_floor() {
     let _serial = WAL_TEST_LOCK.lock().unwrap();
     install_capturing_tier_sink();
 
-    let (handle, instance) = setup::<TierOperator>("tier-replay-instance");
+    let (handle, instance) = setup::<TierRelay>("tier-replay-instance");
 
     // Restore left this Cell durably consumed through offset 4711.
     instance.cells[0][0]
@@ -288,10 +290,10 @@ test_tasklet!(LogicalNowSinkTasklet, "logical_now_sink_tasklet", String => (), (
     Ok(())
 });
 
-struct LogicalNowOperator;
-impl Operator for LogicalNowOperator {
+struct LogicalNowRelay;
+impl Relay for LogicalNowRelay {
     fn factory_id() -> &'static str {
-        "logical_now_operator"
+        "logical_now_relay"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
@@ -310,7 +312,7 @@ fn logical_clock_serves_change_seq_and_survives_restore_rearm() {
     pinned_pool();
     let _serial = WAL_TEST_LOCK.lock().unwrap();
     LOGICAL_OBSERVED.lock().unwrap().clear();
-    let (handle, instance) = setup::<LogicalNowOperator>("logical-now-instance");
+    let (handle, instance) = setup::<LogicalNowRelay>("logical-now-instance");
     let stream = dummy_stream();
 
     for payload in [b"a".to_vec(), b"b".to_vec()] {
@@ -326,7 +328,7 @@ fn logical_clock_serves_change_seq_and_survives_restore_rearm() {
     // Crash-restore: fresh instance, restore both changes (seqs 0, 1) and
     // re-arm; the next invocation's logical time continues at 2.
     LOGICAL_OBSERVED.lock().unwrap().clear();
-    let (handle_b, instance_b) = setup::<LogicalNowOperator>("logical-now-instance");
+    let (handle_b, instance_b) = setup::<LogicalNowRelay>("logical-now-instance");
     let slot = Arc::clone(&instance_b.cells[0][0]);
     let change_bytes = postcard::to_allocvec(&TickChange).expect("encode change");
     let mut change_log = wal_record(0, &change_bytes, header_template_for::<LogicalNowTasklet>());

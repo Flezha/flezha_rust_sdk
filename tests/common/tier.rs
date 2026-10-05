@@ -6,12 +6,12 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use flezha_runner::__dispatch_internals::OperatorDispatchHandle;
+use flezha_runner::__dispatch_internals::RelayDispatchHandle;
 use flezha_runner::cell::header::HeaderTemplate;
 use flezha_runner::channel::ChannelBuilder;
 use flezha_runner::state::Change;
 use flezha_runner::tasklet::{Ctx, Tasklet, TaskletError};
-use flezha_runner::{Durable, Exactly, Operator, OperatorSettings, Run, SleepAfter};
+use flezha_runner::{Durable, Exactly, Relay, RelaySettings, Run, SleepAfter};
 
 use super::dummy_stream;
 
@@ -45,10 +45,10 @@ impl Tasklet for KeyedStampTasklet {
     }
 }
 
-pub struct KeyedStampOperator;
-impl Operator for KeyedStampOperator {
+pub struct KeyedStampRelay;
+impl Relay for KeyedStampRelay {
     fn factory_id() -> &'static str {
-        "keyed_stamp_operator"
+        "keyed_stamp_relay"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
@@ -58,12 +58,12 @@ impl Operator for KeyedStampOperator {
     }
 
     /// A plain class that never sleeps: nothing journals its input.
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             durable: Durable::Local {
                 sleep_after: SleepAfter::Never,
             },
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }
@@ -102,10 +102,10 @@ impl Tasklet for TierStampTasklet {
     }
 }
 
-pub struct TierOperator;
-impl Operator for TierOperator {
+pub struct TierRelay;
+impl Relay for TierRelay {
     fn factory_id() -> &'static str {
-        "tier_operator"
+        "tier_relay"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
@@ -114,12 +114,12 @@ impl Operator for TierOperator {
             .sink_named("out");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             run: Run::Flow {
                 exactly: Exactly::effectively_once(),
             },
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }
@@ -162,7 +162,7 @@ pub fn install_capturing_tier_sink() {
     state_sink::install_global_sink(sink);
 }
 
-pub fn dispatch_at(handle: &OperatorDispatchHandle, instance: &str, offset: u64, body: &str) {
+pub fn dispatch_at(handle: &RelayDispatchHandle, instance: &str, offset: u64, body: &str) {
     let mut md = HashMap::new();
     md.insert("channel".to_string(), "input".to_string());
     md.insert("flz.offset".to_string(), offset.to_string());

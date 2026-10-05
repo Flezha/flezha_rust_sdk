@@ -8,7 +8,7 @@ use common::prelude::*;
 
 #[test]
 fn single_mode_cell_creation() {
-    let topology = build_topology_for::<SingleOperator>().expect("build topology");
+    let topology = build_topology_for::<SingleRelay>().expect("build topology");
     assert_eq!(topology.tasklets.len(), 1);
     assert_eq!(topology.channels.len(), 1);
     assert!(topology.tasklets[0].cell_keys.is_empty());
@@ -53,10 +53,10 @@ impl Tasklet for StaticTasklet {
     }
 }
 
-struct StaticOperator;
-impl Operator for StaticOperator {
+struct StaticRelay;
+impl Relay for StaticRelay {
     fn factory_id() -> &'static str {
-        "static_operator"
+        "static_relay"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("inp").into::<StaticTasklet>();
@@ -65,7 +65,7 @@ impl Operator for StaticOperator {
 
 #[test]
 fn static_mode_cell_creation() {
-    let topology = build_topology_for::<StaticOperator>().expect("build topology");
+    let topology = build_topology_for::<StaticRelay>().expect("build topology");
     assert_eq!(topology.tasklets.len(), 1);
     assert_eq!(topology.tasklets[0].cell_keys, vec!["a", "b", "c"]);
     assert!(topology.tasklets[0].cells_for_overridden);
@@ -84,10 +84,10 @@ impl Tasklet for DynamicOnlyTasklet {
     }
 }
 
-struct DynamicOnlyOperator;
-impl Operator for DynamicOnlyOperator {
+struct DynamicOnlyRelay;
+impl Relay for DynamicOnlyRelay {
     fn factory_id() -> &'static str {
-        "dynamic_only_operator"
+        "dynamic_only_relay"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("inp")
@@ -98,8 +98,8 @@ impl Operator for DynamicOnlyOperator {
 
 #[test]
 fn dynamic_mode_is_accepted_and_classified() {
-    use flezha_runner::operator::topology::CellMode;
-    let topology = build_topology_for::<DynamicOnlyOperator>().expect("dynamic mode accepted");
+    use flezha_runner::relay::topology::CellMode;
+    let topology = build_topology_for::<DynamicOnlyRelay>().expect("dynamic mode accepted");
     assert_eq!(topology.tasklets.len(), 1);
     assert_eq!(topology.tasklets[0].mode, CellMode::Dynamic);
     assert!(topology.tasklets[0].cell_keys.is_empty());
@@ -130,10 +130,10 @@ impl Tasklet for UnannotatedStaticTasklet {
     }
 }
 
-struct UnannotatedOperator;
-impl Operator for UnannotatedOperator {
+struct UnannotatedRelay;
+impl Relay for UnannotatedRelay {
     fn factory_id() -> &'static str {
-        "unannotated_operator"
+        "unannotated_relay"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("inp").into::<UnannotatedStaticTasklet>();
@@ -142,8 +142,8 @@ impl Operator for UnannotatedOperator {
 
 #[test]
 fn unannotated_static_mode_rejection() {
-    let err = build_topology_for::<UnannotatedOperator>()
-        .expect_err("expected cells_for-missing rejection");
+    let err =
+        build_topology_for::<UnannotatedRelay>().expect_err("expected cells_for-missing rejection");
     let msg = format!("{:?}", err.errors);
     assert!(
         msg.contains("CellsForMissing"),
@@ -152,15 +152,15 @@ fn unannotated_static_mode_rejection() {
 }
 
 // Tasklet whose `mailbox_capacity()` returns 0; `build_topology` must
-// reject the operator with the offending Tasklet's name.
+// reject the relay with the offending Tasklet's name.
 test_tasklet!(ZeroCapacityTasklet, "zero_capacity_tasklet", String => String, (), cap 0, |_input, _ctx| {
     Ok(())
 });
 
-struct ZeroCapacityOperator;
-impl Operator for ZeroCapacityOperator {
+struct ZeroCapacityRelay;
+impl Relay for ZeroCapacityRelay {
     fn factory_id() -> &'static str {
-        "zero_capacity_operator"
+        "zero_capacity_relay"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("inp").into::<ZeroCapacityTasklet>();
@@ -168,8 +168,8 @@ impl Operator for ZeroCapacityOperator {
 }
 
 #[test]
-fn capacity_zero_is_rejected_at_operator_startup() {
-    let err = build_topology_for::<ZeroCapacityOperator>()
+fn capacity_zero_is_rejected_at_relay_startup() {
+    let err = build_topology_for::<ZeroCapacityRelay>()
         .expect_err("expected mailbox-capacity-zero rejection");
     let msg = format!("{:?}", err.errors);
     assert!(
@@ -188,10 +188,10 @@ test_tasklet!(ExplicitCapTasklet, "explicit_cap_tasklet", String => String, (), 
     Ok(())
 });
 
-struct ExplicitCapOperator;
-impl Operator for ExplicitCapOperator {
+struct ExplicitCapRelay;
+impl Relay for ExplicitCapRelay {
     fn factory_id() -> &'static str {
-        "explicit_cap_operator"
+        "explicit_cap_relay"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("inp").into::<ExplicitCapTasklet>();
@@ -200,7 +200,7 @@ impl Operator for ExplicitCapOperator {
 
 #[test]
 fn explicit_capacity_threads_to_topology_descriptor() {
-    let topology = build_topology_for::<ExplicitCapOperator>().expect("topology");
+    let topology = build_topology_for::<ExplicitCapRelay>().expect("topology");
     assert_eq!(topology.tasklets.len(), 1);
     assert_eq!(topology.tasklets[0].mailbox_capacity, 4096);
     assert!(topology.tasklets[0].mailbox_capacity_overridden);
@@ -209,16 +209,15 @@ fn explicit_capacity_threads_to_topology_descriptor() {
 /// Default Tasklet inherits the 1024 default.
 #[test]
 fn default_capacity_is_1024_in_topology() {
-    let topology = build_topology_for::<SingleOperator>().expect("topology");
+    let topology = build_topology_for::<SingleRelay>().expect("topology");
     assert_eq!(topology.tasklets[0].mailbox_capacity, 1024);
     assert!(!topology.tasklets[0].mailbox_capacity_overridden);
 }
 
 #[test]
-fn operator_instance_creates_cells() {
-    let topology = build_topology_for::<StaticOperator>().expect("topology");
-    let instance =
-        flezha_runner::operator::OperatorInstance::new(topology, Arc::from("instance-id"));
+fn relay_instance_creates_cells() {
+    let topology = build_topology_for::<StaticRelay>().expect("topology");
+    let instance = flezha_runner::relay::RelayInstance::new(topology, Arc::from("instance-id"));
     assert_eq!(instance.cells.len(), 1);
     assert_eq!(instance.cells[0].len(), 3);
     assert_eq!(instance.cell_key_to_idx[0].get("a"), Some(&0));

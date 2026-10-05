@@ -7,19 +7,19 @@
 //! reads the Cell itself rather than a copy that reached a sink.
 //!
 //! **This example declares nothing special.** That is the point: every Cell
-//! of a running Operator is readable, because the read reuses the
+//! of a running Relay is readable, because the read reuses the
 //! `CellState` command the SDK answers for migration. Declaring
 //! `type Change` is what makes the value durable; nothing extra makes it
 //! readable.
 //!
-//! Run the operator:
+//! Run the relay:
 //!     Flezha::create_runner("default")?
 //!         .register_factory(Market)?
 //!         .run()?;
 //!
 //! feed it a couple of trades:
-//!     flz operator send market --channel trades --text '{"symbol":"BTCUSD","price":64100.0,"qty":0.5}'
-//!     flz operator send market --channel trades --text '{"symbol":"ETHUSD","price":3120.0,"qty":4.0}'
+//!     flz relay send market --channel trades --text '{"symbol":"BTCUSD","price":64100.0,"qty":0.5}'
+//!     flz relay send market --channel trades --text '{"symbol":"ETHUSD","price":3120.0,"qty":4.0}'
 //!
 //! then read ONE Cell by name:
 //!     $ flz state get market/candle/BTCUSD
@@ -45,7 +45,7 @@
 //!     state get: cell_not_found: tasklet `candle` holds no Cell keyed
 //!     `DOGEUSD` — read its durable state with `flz state at`
 //!
-//! and, once this operator's 10-minute idle TTL has evicted a quiet symbol:
+//! and, once this relay's 10-minute idle TTL has evicted a quiet symbol:
 //!     $ flz state get market/candle/ETHUSD
 //!     state get: cell_evicted: Cell `ETHUSD` of tasklet `candle` was
 //!     idle-evicted; eviction is destructive, so there is no durable value to
@@ -53,11 +53,11 @@
 //!
 //! Both exit non-zero. `cell_evicted` and `cell_not_found` are different
 //! diagnoses on purpose: eviction unlinks the Cell's files, so after the fact
-//! only the SDK's steps operator eviction trace can tell you the key ever existed.
+//! only the SDK's steps relay eviction trace can tell you the key ever existed.
 
 use flezha_runner::state::Change;
 use flezha_runner::tasklet::{Ctx, Tasklet, TaskletError};
-use flezha_runner::{ChannelBuilder, Operator};
+use flezha_runner::{ChannelBuilder, Relay};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -114,9 +114,9 @@ impl Tasklet for CandleTasklet {
 
 struct Market;
 
-impl Operator for Market {
+impl Relay for Market {
     fn factory_id() -> &'static str {
-        // The FIRST path segment of `flz state get <operator>/...`.
+        // The FIRST path segment of `flz state get <relay>/...`.
         "market"
     }
 
@@ -133,9 +133,9 @@ fn main() {
     // Declaration-only example: `cargo run --example live_state_read` builds
     // the topology and prints the read paths it makes addressable, rather than
     // dialing a controller.
-    match flezha_runner::operator::builder::build_topology_for::<Market>() {
+    match flezha_runner::relay::builder::build_topology_for::<Market>() {
         Ok(topology) => {
-            println!("operator `{}`", topology.factory_id);
+            println!("relay `{}`", topology.factory_id);
             for tasklet in &topology.tasklets {
                 println!(
                     "  flz state get {}/{}/<key>   ({} mode)",

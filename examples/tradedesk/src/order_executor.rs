@@ -1,4 +1,4 @@
-use flezha_runner::{ChannelBuilder, Each, OnFailure, Operator, OperatorSettings, Run};
+use flezha_runner::{ChannelBuilder, Each, OnFailure, Relay, RelaySettings, Run};
 use serde::{Deserialize, Serialize};
 
 use crate::confirm_fill::ConfirmFill;
@@ -15,10 +15,10 @@ pub struct OrderTicket {
     pub quantity: u32,
 }
 
-/// The desk's steps operator: one instance per order, which runs its steps
+/// The desk's steps relay: one instance per order, which runs its steps
 /// once and then ends.
 ///
-/// A steps operator declares its steps the way a flow operator declares
+/// A steps relay declares its steps the way a flow relay declares
 /// its graph, on the same builder, and the controller schedules, restarts and
 /// relocates it in the same way. What differs is the lifecycle: each step's
 /// output is written down as it commits, so an instance that is interrupted
@@ -30,12 +30,12 @@ pub struct OrderTicket {
 /// reverse, through their `compensate` hooks: the order is cancelled, then the
 /// money is released. A step with no `compensate` is skipped, which is why the
 /// desk's book is left alone.
-pub struct OrderExecutorOperator;
+pub struct OrderExecutorRelay;
 
-impl Operator for OrderExecutorOperator {
-    /// The operator's stable identity, and the name
-    /// `flz operator start order_executor` resolves. It is durable, so changing
-    /// it declares a new operator rather than renaming this one.
+impl Relay for OrderExecutorRelay {
+    /// The relay's stable identity, and the name
+    /// `flz relay start order_executor` resolves. It is durable, so changing
+    /// it declares a new relay rather than renaming this one.
     fn factory_id() -> &'static str {
         "order_executor"
     }
@@ -50,7 +50,7 @@ impl Operator for OrderExecutorOperator {
     /// why a refusal on either arm unwinds what the other arm did.
     ///
     /// Nothing ends on a sink: the last step ends the instance with its result,
-    /// which `flz operator info` shows.
+    /// which `flz relay info` shows.
     fn channels(c: &ChannelBuilder) {
         c.input::<OrderTicket>("order") // the order to carry out
             .into::<ReserveFunds>() // step one
@@ -65,12 +65,15 @@ impl Operator for OrderExecutorOperator {
             ]);
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             // one instance per order; each step runs once
             // a failed step undoes the finished ones
-            run: Run::Steps { each: Each::Once, on_failure: OnFailure::UndoAll },
-            ..OperatorSettings::default()
+            run: Run::Steps {
+                each: Each::Once,
+                on_failure: OnFailure::UndoAll,
+            },
+            ..RelaySettings::default()
         }
     }
 }

@@ -6,7 +6,7 @@ name: Rust SDK
 # its manifest.
 #
 # What this cannot prove is the capability vocabulary the controller owns:
-# persistence, effectively-once, correction, partitioning, steps operators, liveness,
+# persistence, effectively-once, correction, partitioning, steps relays, liveness,
 # restarts. Those are end-to-end scenarios and they run in the core's tree,
 # which builds this repository through its submodule and boots the reference
 # runner in every suite. The performance gates run there too.

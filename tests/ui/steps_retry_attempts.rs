@@ -1,8 +1,8 @@
-use flezha_runner::{ChannelBuilder, Each, OnFailure, Operator, OperatorSettings, Run};
+use flezha_runner::{ChannelBuilder, Each, OnFailure, Relay, RelaySettings, Run};
 
 struct ClassLadder;
 
-impl Operator for ClassLadder {
+impl Relay for ClassLadder {
     fn factory_id() -> &'static str {
         "class_ladder"
     }
@@ -13,10 +13,10 @@ impl Operator for ClassLadder {
         5
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             run: Run::Steps { each: Each::Once, on_failure: OnFailure::UndoAll },
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }

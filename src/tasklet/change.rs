@@ -1,6 +1,6 @@
 //! The named bounds on the values the runtime writes down: `Change` and its
 //! `NoChange` zero-variant default, the `CoalesceKey` newtype (per
-//! `operator-state-persistence/design.md` Decisions 3 and 4), and
+//! `relay-state-persistence/design.md` Decisions 3 and 4), and
 //! `JournalValue`, the bound a Tasklet's `Output` carries.
 //!
 //! `Change<S>` is a change a tasklet records against its state `S`: it folds
@@ -37,7 +37,7 @@ pub trait Change<S>: Serialize + DeserializeOwned + Send + Sync + 'static {
 }
 
 /// The change of a tasklet that keeps no state: uninhabited, so it can never
-/// be recorded. Detected at operator-build time via `TypeId` so the runtime
+/// be recorded. Detected at relay-build time via `TypeId` so the runtime
 /// skips flush-buffer allocation for it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NoChange {}

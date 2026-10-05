@@ -6,8 +6,8 @@ use flz_core::runner::RunnerNode;
 
 use super::super::fake_controller::*;
 use super::super::fixtures::*;
-use crate::steps::*;
 use crate::runner::RunnerMessage;
+use crate::steps::*;
 
 pub(super) fn durable_loop(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
     // --- steps-durable-loop: one iteration per inbox item, each ending in
@@ -488,7 +488,7 @@ pub(super) fn parts_before_the_answer(node: &mut RunnerNode, rx: &Receiver<Runne
     assert!(start(node, "test-part-loop".into(), "part-1".into(), "")
         .expect("init_values is a JSON object"));
     for turn in ["x", "y"] {
-        node.operator_dispatch_handle().dispatch(
+        node.relay_dispatch_handle().dispatch(
             "part-1",
             turn.as_bytes().to_vec(),
             &Default::default(),

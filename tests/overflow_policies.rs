@@ -2,7 +2,7 @@
 //! every item, DropNewest and DropOldest each shed their own end, and every
 //! outcome is counted.
 
-use flezha_runner::{Operator, OverflowPolicy};
+use flezha_runner::{OverflowPolicy, Relay};
 
 mod common;
 use common::prelude::*;
@@ -33,10 +33,10 @@ test_tasklet!(DropNothingStressTasklet, "drop_nothing_stress_tasklet", Vec<u8> =
     Ok(())
 });
 
-struct DropNothingStressOperator;
-impl Operator for DropNothingStressOperator {
+struct DropNothingStressRelay;
+impl Relay for DropNothingStressRelay {
     fn factory_id() -> &'static str {
-        "drop_nothing_stress_operator"
+        "drop_nothing_stress_relay"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<Vec<u8>>("input")
@@ -54,7 +54,7 @@ impl Operator for DropNothingStressOperator {
 #[test]
 fn drop_nothing_stress_100_producers_no_loss() {
     DROP_NOTHING_STRESS_RECEIVED.store(0, Ordering::Release);
-    let (handle, instance) = setup::<DropNothingStressOperator>("block-stress-instance");
+    let (handle, instance) = setup::<DropNothingStressRelay>("block-stress-instance");
     let stream = dummy_stream();
 
     let producers = 100usize;
@@ -116,10 +116,10 @@ test_tasklet!(DropNewestTasklet, "drop_newest_tasklet", Vec<u8> => (), (), cap 2
     Ok(())
 });
 
-struct DropNewestOperator;
-impl Operator for DropNewestOperator {
+struct DropNewestRelay;
+impl Relay for DropNewestRelay {
     fn factory_id() -> &'static str {
-        "drop_newest_operator"
+        "drop_newest_relay"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<Vec<u8>>("input")
@@ -138,7 +138,7 @@ fn drop_newest_discards_when_full_and_only_bumps_newest_counter() {
     let _serial = serial_drops();
     DROP_NEWEST_RECEIVED.store(0, Ordering::Release);
     let drops_newest_before = flezha_runner::cell::drops_newest_total();
-    let (handle, instance) = setup::<DropNewestOperator>("drop-newest-instance");
+    let (handle, instance) = setup::<DropNewestRelay>("drop-newest-instance");
     let slot = Arc::clone(&instance.cells[0][0]);
 
     // Pre-acquire inflight: subsequent enqueue paths skip submit_drain
@@ -204,10 +204,10 @@ test_tasklet!(DropOldestTasklet, "drop_oldest_tasklet", Vec<u8> => (), (), cap 2
     Ok(())
 });
 
-struct DropOldestOperator;
-impl Operator for DropOldestOperator {
+struct DropOldestRelay;
+impl Relay for DropOldestRelay {
     fn factory_id() -> &'static str {
-        "drop_oldest_operator"
+        "drop_oldest_relay"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<Vec<u8>>("input")
@@ -224,7 +224,7 @@ fn drop_oldest_evicts_head_and_bumps_oldest_counter() {
     let _serial = serial_drops();
     DROP_OLDEST_OBSERVED.lock().unwrap().clear();
     let drops_oldest_before = flezha_runner::cell::drops_oldest_total();
-    let (handle, instance) = setup::<DropOldestOperator>("drop-oldest-instance");
+    let (handle, instance) = setup::<DropOldestRelay>("drop-oldest-instance");
     let slot = Arc::clone(&instance.cells[0][0]);
 
     // Pre-acquire inflight so no drain runs during the deterministic
@@ -274,7 +274,7 @@ fn drop_oldest_evicts_head_and_bumps_oldest_counter() {
     assert_eq!(surviving, vec![b"new1".to_vec(), b"new2".to_vec()]);
 }
 
-/// Spec (`operator-tasklet-cell-model`) "A replay slice is never shed": a
+/// Spec (`relay-tasklet-cell-model`) "A replay slice is never shed": a
 /// correction's answer may not depend on arrival timing, so a slice member
 /// takes the `DropNothing` path whatever the channel declared. A dropped
 /// member would leave `replay_open` set and `replay_depth` short, the slice
@@ -284,7 +284,7 @@ fn drop_oldest_evicts_head_and_bumps_oldest_counter() {
 fn a_replay_slice_member_is_never_shed_by_a_dropping_channel() {
     let _serial = serial_drops();
     DROP_NEWEST_RECEIVED.store(0, Ordering::Release);
-    let (handle, instance) = setup::<DropNewestOperator>("drop-newest-replay-instance");
+    let (handle, instance) = setup::<DropNewestRelay>("drop-newest-replay-instance");
     let slot = Arc::clone(&instance.cells[0][0]);
     assert!(slot.mailbox.claim_inflight());
 
@@ -344,7 +344,7 @@ fn a_replay_slice_member_is_never_shed_by_a_dropping_channel() {
 /// exposes a counters() accessor with all four atomics at 0.
 #[test]
 fn fresh_cell_counters_start_at_zero() {
-    let (_handle, instance) = setup::<DropOldestOperator>("counters-fresh-instance");
+    let (_handle, instance) = setup::<DropOldestRelay>("counters-fresh-instance");
     let counters = instance.cells[0][0].counters();
     assert_eq!(counters.pushes_total.load(Ordering::Relaxed), 0);
     assert_eq!(counters.pushes_blocked_total.load(Ordering::Relaxed), 0);
@@ -364,10 +364,10 @@ test_tasklet!(DropOldestStressTasklet, "drop_oldest_stress_tasklet", Vec<u8> => 
     Ok(())
 });
 
-struct DropOldestStressOperator;
-impl Operator for DropOldestStressOperator {
+struct DropOldestStressRelay;
+impl Relay for DropOldestStressRelay {
     fn factory_id() -> &'static str {
-        "drop_oldest_stress_operator"
+        "drop_oldest_stress_relay"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<Vec<u8>>("input")
@@ -397,7 +397,7 @@ fn drop_oldest_stress_admitted_never_below_processed() {
     for round in 1..=4 {
         DROP_OLDEST_PROCESSED.store(0, Ordering::Release);
         let id = format!("drop-oldest-stress-{round}");
-        let (handle, instance) = setup::<DropOldestStressOperator>(&id);
+        let (handle, instance) = setup::<DropOldestStressRelay>(&id);
         let stream = dummy_stream();
 
         let mut threads = Vec::new();
@@ -495,10 +495,10 @@ test_tasklet!(InterTaskletConsumer, "inter_tasklet_consumer", String => (), (), 
     Ok(())
 });
 
-struct InterTaskletDefaultBlockOperator;
-impl Operator for InterTaskletDefaultBlockOperator {
+struct InterTaskletDefaultBlockRelay;
+impl Relay for InterTaskletDefaultBlockRelay {
     fn factory_id() -> &'static str {
-        "inter_tasklet_default_block_operator"
+        "inter_tasklet_default_block_relay"
     }
     fn channels(c: &ChannelBuilder) {
         // No `.on_full(...)` — exercises the default `Block` for inter-tasklet.
@@ -509,7 +509,7 @@ impl Operator for InterTaskletDefaultBlockOperator {
     }
 }
 
-// ----- Sticky ordering preserved under steps operator Block (Operator 8.3) -----
+// ----- Sticky ordering preserved under steps relay Block (Relay 8.3) -----
 
 static STICKY_STEPS_CONCURRENT: AtomicUsize = AtomicUsize::new(0);
 static STICKY_STEPS_MAX_CONCURRENT: AtomicUsize = AtomicUsize::new(0);
@@ -537,10 +537,10 @@ test_tasklet!(StickyStepsTasklet, "sticky_steps_tasklet", Vec<u8> => (), (), cap
     Ok(())
 });
 
-struct StickyOperator;
-impl Operator for StickyOperator {
+struct StickyRelay;
+impl Relay for StickyRelay {
     fn factory_id() -> &'static str {
-        "sticky_operator"
+        "sticky_relay"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<Vec<u8>>("input")
@@ -560,7 +560,7 @@ fn sticky_ordering_holds_under_drop_nothing_entry() {
     STICKY_STEPS_MAX_CONCURRENT.store(0, Ordering::Release);
     STICKY_STEPS_DELIVERED.store(0, Ordering::Release);
 
-    let (handle, instance) = setup::<StickyOperator>("sticky-steps-instance");
+    let (handle, instance) = setup::<StickyRelay>("sticky-steps-instance");
     let stream = dummy_stream();
 
     let producers = 4usize;
@@ -617,7 +617,7 @@ fn sticky_ordering_holds_under_drop_nothing_entry() {
 fn default_inter_tasklet_policy_is_block_and_pushes_total_increments() {
     INTER_TASKLET_DOWNSTREAM.store(0, Ordering::Release);
     let (handle, instance) =
-        setup::<InterTaskletDefaultBlockOperator>("inter-tasklet-default-instance");
+        setup::<InterTaskletDefaultBlockRelay>("inter-tasklet-default-instance");
     let stream = dummy_stream();
 
     let n = 200usize;

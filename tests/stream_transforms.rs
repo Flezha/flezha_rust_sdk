@@ -20,7 +20,7 @@ use common::{
 };
 
 /// Serializes every case that drives real dispatch here: they share
-/// `ChainOperator`'s process-global observation statics, and the parking case
+/// `ChainRelay`'s process-global observation statics, and the parking case
 /// holds a poll worker inside `park_blocking` until its ack thread answers —
 /// concurrently with a replay drain, that worker is one the drain never gets.
 static CHAIN_LOCK: Mutex<()> = Mutex::new(());
@@ -70,10 +70,10 @@ test_tasklet!(Recorder, "transform_recorder", String => (), (), |input, _ctx| {
 });
 
 /// `filter` → `map` → `map` → `key_by`, all on the one entry→Recorder edge.
-struct ChainOperator;
-impl Operator for ChainOperator {
+struct ChainRelay;
+impl Relay for ChainRelay {
     fn factory_id() -> &'static str {
-        "transform_chain_operator"
+        "transform_chain_relay"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
@@ -91,7 +91,7 @@ impl Operator for ChainOperator {
 #[test]
 fn a_transform_chain_is_one_closure_on_one_edge() {
     let _serial = guard(&CHAIN_LOCK);
-    let topology = build_topology_for::<ChainOperator>().expect("topology");
+    let topology = build_topology_for::<ChainRelay>().expect("topology");
     assert_eq!(
         topology.tasklets.len(),
         1,
@@ -106,7 +106,7 @@ fn a_transform_chain_is_one_closure_on_one_edge() {
 
     OBSERVED.lock().unwrap().clear();
     TRAVERSALS.store(0, Ordering::Relaxed);
-    let (handle, instance) = setup::<ChainOperator>("chain-1");
+    let (handle, instance) = setup::<ChainRelay>("chain-1");
     let stream = dummy_stream();
     for raw in ["AAPL:3", "#comment", "MSFT:7"] {
         dispatch_input(&handle, "chain-1", "in", raw.as_bytes().to_vec(), &stream);
@@ -148,10 +148,10 @@ test_tasklet!(FanRecorder, "transform_fan_recorder", Slot => (), (), |input, _ct
     Ok(())
 });
 
-struct FanOutOperator;
-impl Operator for FanOutOperator {
+struct FanOutRelay;
+impl Relay for FanOutRelay {
     fn factory_id() -> &'static str {
-        "transform_fanout_operator"
+        "transform_fanout_relay"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
@@ -170,7 +170,7 @@ impl Operator for FanOutOperator {
 #[test]
 fn a_fan_out_keys_every_yielded_value_independently() {
     FANNED.lock().unwrap().clear();
-    let (handle, instance) = setup::<FanOutOperator>("fan-1");
+    let (handle, instance) = setup::<FanOutRelay>("fan-1");
     let stream = dummy_stream();
     dispatch_input(&handle, "fan-1", "in", b"AAPL:3".to_vec(), &stream);
 
@@ -193,7 +193,7 @@ fn a_replayed_slice_transforms_exactly_as_the_live_run_did() {
     let _serial = guard(&CHAIN_LOCK);
     OBSERVED.lock().unwrap().clear();
     TRAVERSALS.store(0, Ordering::Relaxed);
-    let (handle, instance) = setup::<ChainOperator>("chain-replay");
+    let (handle, instance) = setup::<ChainRelay>("chain-replay");
     let stream = dummy_stream();
 
     let feed = ["AAPL:1", "#skip", "MSFT:2"];
@@ -270,10 +270,10 @@ test_tasklet!(PoisonRecorder, "transform_poison_recorder", String => (), (), |in
     Ok(())
 });
 
-struct PanickingTransformOperator;
-impl Operator for PanickingTransformOperator {
+struct PanickingTransformRelay;
+impl Relay for PanickingTransformRelay {
     fn factory_id() -> &'static str {
-        "transform_panic_operator"
+        "transform_panic_relay"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
@@ -296,7 +296,7 @@ fn a_panicking_transform_parks_and_routing_continues() {
     AFTER_PARK.lock().unwrap().clear();
     let parked = install_auto_acking_sink();
 
-    let (handle, _instance) = setup::<PanickingTransformOperator>("panic-1");
+    let (handle, _instance) = setup::<PanickingTransformRelay>("panic-1");
     let stream = dummy_stream();
     for raw in ["ok-1", "poison", "ok-2"] {
         dispatch_input(&handle, "panic-1", "in", raw.as_bytes().to_vec(), &stream);
@@ -335,9 +335,9 @@ test_tasklet!(PlainTarget, "transform_plain_target", String => Vec<u8>, (), |inp
 });
 
 macro_rules! refusal {
-    ($operator:ident, $factory:literal, |$c:ident| $body:block) => {
-        struct $operator;
-        impl Operator for $operator {
+    ($relay:ident, $factory:literal, |$c:ident| $body:block) => {
+        struct $relay;
+        impl Relay for $relay {
             fn factory_id() -> &'static str {
                 $factory
             }
@@ -346,21 +346,21 @@ macro_rules! refusal {
     };
 }
 
-refusal!(DuplicateKeyByOperator, "refuse_duplicate_key", |c| {
+refusal!(DuplicateKeyByRelay, "refuse_duplicate_key", |c| {
     c.input::<String>("in")
         .key_by(|s: &String| s.clone())
         .key_by(|s: &String| s.clone())
         .into::<Recorder>();
 });
 
-refusal!(DanglingOperator, "refuse_dangling", |c| {
+refusal!(DanglingRelay, "refuse_dangling", |c| {
     c.input::<String>("in").into::<Recorder>();
     let _dangling = c
         .input::<String>("other")
         .map(|s: String| s.len().to_string());
 });
 
-refusal!(AfterTerminalOperator, "refuse_after_terminal", |c| {
+refusal!(AfterTerminalRelay, "refuse_after_terminal", |c| {
     c.input::<String>("in")
         .into::<PlainTarget>()
         .sink()
@@ -370,14 +370,14 @@ refusal!(AfterTerminalOperator, "refuse_after_terminal", |c| {
 
 test_tasklet!(Recorder2, "transform_recorder_2", Vec<u8> => (), (), |_i, _c| { Ok(()) });
 
-refusal!(AfterKeyByOperator, "refuse_after_key", |c| {
+refusal!(AfterKeyByRelay, "refuse_after_key", |c| {
     c.input::<String>("in")
         .key_by(|s: &String| s.clone())
         .map(|s: String| s.to_uppercase())
         .into::<Recorder>();
 });
 
-refusal!(ConflictingRedeclarationOperator, "refuse_redeclared", |c| {
+refusal!(ConflictingRedeclarationRelay, "refuse_redeclared", |c| {
     let entry = c.input::<String>("in");
     entry.key_by(|s: &String| s.clone()).into::<Recorder>();
     entry
@@ -385,26 +385,22 @@ refusal!(ConflictingRedeclarationOperator, "refuse_redeclared", |c| {
         .into::<Recorder>();
 });
 
-refusal!(MixedKeyingOperator, "refuse_mixed_keying", |c| {
+refusal!(MixedKeyingRelay, "refuse_mixed_keying", |c| {
     c.input::<String>("first")
         .key_by(|s: &String| s.clone())
         .into::<Recorder>();
     c.input::<String>("second").into::<Recorder>();
 });
 
-refusal!(
-    BareRedeclarationOperator,
-    "accept_bare_redeclaration",
-    |c| {
-        let entry = c.input::<String>("in");
-        entry.into::<Recorder>();
-        entry.into::<Recorder>();
-    }
-);
+refusal!(BareRedeclarationRelay, "accept_bare_redeclaration", |c| {
+    let entry = c.input::<String>("in");
+    entry.into::<Recorder>();
+    entry.into::<Recorder>();
+});
 
-/// The live Cell keys of the operator's one dynamic Tasklet, sorted —
+/// The live Cell keys of the relay's one dynamic Tasklet, sorted —
 /// the runtime's own record of what the edge key produced.
-fn cell_keys(instance: &Arc<flezha_runner::operator::OperatorInstance>) -> Vec<String> {
+fn cell_keys(instance: &Arc<flezha_runner::relay::RelayInstance>) -> Vec<String> {
     let registry = instance.dynamic_registries[0]
         .as_ref()
         .expect("the keyed edge made the consumer dynamic");
@@ -413,7 +409,7 @@ fn cell_keys(instance: &Arc<flezha_runner::operator::OperatorInstance>) -> Vec<S
     keys
 }
 
-fn issues<R: Operator>() -> Vec<TopologyIssue> {
+fn issues<R: Relay>() -> Vec<TopologyIssue> {
     build_topology_for::<R>()
         .err()
         .map(|e| e.errors)
@@ -423,38 +419,38 @@ fn issues<R: Operator>() -> Vec<TopologyIssue> {
 #[test]
 fn transform_declarations_are_validated() {
     assert!(
-        issues::<DuplicateKeyByOperator>()
+        issues::<DuplicateKeyByRelay>()
             .iter()
             .any(|e| matches!(e, TopologyIssue::DuplicateKeyBy { channel } if channel == "in")),
         "two key functions on one edge are refused"
     );
     assert!(
-        issues::<DanglingOperator>().iter().any(|e| matches!(
+        issues::<DanglingRelay>().iter().any(|e| matches!(
             e,
             TopologyIssue::DanglingTransformChain { channel } if channel == "other"
         )),
         "a chain no `.into` closed is refused, naming the stream"
     );
     assert!(
-        issues::<AfterTerminalOperator>()
+        issues::<AfterTerminalRelay>()
             .iter()
             .any(|e| matches!(e, TopologyIssue::TransformAfterTerminal { .. })),
         "a transform behind a plugin sink is refused"
     );
     assert!(
-        issues::<AfterKeyByOperator>().iter().any(
+        issues::<AfterKeyByRelay>().iter().any(
             |e| matches!(e, TopologyIssue::TransformAfterKeyBy { channel } if channel == "in")
         ),
         "a transform after the key is refused — the key reads the final value"
     );
     assert!(
-        issues::<ConflictingRedeclarationOperator>()
+        issues::<ConflictingRedeclarationRelay>()
             .iter()
             .any(|e| matches!(e, TopologyIssue::EdgeAlreadyWired { .. })),
         "re-declaring a keyed edge is refused rather than keeping either key"
     );
     assert!(
-        issues::<MixedKeyingOperator>()
+        issues::<MixedKeyingRelay>()
             .iter()
             .any(|e| matches!(e, TopologyIssue::UnkeyedEdgeIntoDynamicTasklet { .. })),
         "a dynamic consumer has no keyless path, so every edge into it must key"
@@ -462,7 +458,7 @@ fn transform_declarations_are_validated() {
 
     // The transform-free re-declaration stays the legal fan-in no-op.
     let topology =
-        build_topology_for::<BareRedeclarationOperator>().expect("bare re-declaration is legal");
+        build_topology_for::<BareRedeclarationRelay>().expect("bare re-declaration is legal");
     assert_eq!(topology.channels[0].consumers.len(), 1);
 }
 
@@ -481,7 +477,7 @@ impl Tasklet for StaticFan {
     }
 }
 
-refusal!(KeyByOnStaticOperator, "refuse_key_on_static", |c| {
+refusal!(KeyByOnStaticRelay, "refuse_key_on_static", |c| {
     c.input::<String>("in")
         .key_by(|s: &String| s.clone())
         .into::<StaticFan>();
@@ -490,7 +486,7 @@ refusal!(KeyByOnStaticOperator, "refuse_key_on_static", |c| {
 #[test]
 fn keying_a_static_mode_consumer_is_refused() {
     assert!(
-        issues::<KeyByOnStaticOperator>().iter().any(|e| matches!(
+        issues::<KeyByOnStaticRelay>().iter().any(|e| matches!(
             e,
             TopologyIssue::KeyByOnUnkeyableTarget { tasklet, .. }
                 if tasklet == "transform_static_fan"

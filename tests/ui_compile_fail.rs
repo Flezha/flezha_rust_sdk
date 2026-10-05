@@ -18,26 +18,26 @@ fn ui_compile_fail() {
     // `#[flezha::tasklet]` on an `impl Tasklet` block, and the typed context.
     t.compile_fail("tests/ui/tasklet_on_function.rs");
     t.compile_fail("tests/ui/tasklet_cell_key_removed.rs");
-    t.compile_fail("tests/ui/tasklet_operator_keys.rs");
+    t.compile_fail("tests/ui/tasklet_relay_keys.rs");
     t.compile_fail("tests/ui/cell_keys_without_cells_for.rs");
     t.compile_fail("tests/ui/tasklet_two_clocks.rs");
     t.compile_fail("tests/ui/tasklet_item_written_twice.rs");
     t.compile_fail("tests/ui/tasklet_beside_short_form.rs");
     t.compile_fail("tests/ui/state_direct_mutation.rs");
     t.compile_fail("tests/ui/emit_wrong_type.rs");
-    t.compile_fail("tests/ui/operator_fan_out.rs");
-    t.compile_fail("tests/ui/operator_empty_entry_name.rs");
+    t.compile_fail("tests/ui/relay_fan_out.rs");
+    t.compile_fail("tests/ui/relay_empty_entry_name.rs");
 
-    // The short-form attribute `#[flezha::operator]`.
-    t.compile_fail("tests/ui/operator_sink_without_output.rs");
-    t.compile_fail("tests/ui/operator_no_id.rs");
-    t.compile_fail("tests/ui/operator_empty_input.rs");
-    t.compile_fail("tests/ui/operator_with_hand_written_impl.rs");
-    t.compile_fail("tests/ui/operator_shared_ref_state.rs");
-    t.compile_fail("tests/ui/operator_unknown_each.rs");
-    t.compile_fail("tests/ui/operator_misplaced_setting.rs");
+    // The short-form attribute `#[flezha::relay]`.
+    t.compile_fail("tests/ui/relay_sink_without_output.rs");
+    t.compile_fail("tests/ui/relay_no_id.rs");
+    t.compile_fail("tests/ui/relay_empty_input.rs");
+    t.compile_fail("tests/ui/relay_with_hand_written_impl.rs");
+    t.compile_fail("tests/ui/relay_shared_ref_state.rs");
+    t.compile_fail("tests/ui/relay_unknown_each.rs");
+    t.compile_fail("tests/ui/relay_misplaced_setting.rs");
     t.compile_fail("tests/ui/short_form_state_on_function.rs");
-    t.compile_fail("tests/ui/short_form_operator_is_not_a_tasklet.rs");
+    t.compile_fail("tests/ui/short_form_relay_is_not_a_tasklet.rs");
 
     // The settings tree: a setting under a parent that does not carry it is
     // a type error. Each is a row of the reference refusal set.

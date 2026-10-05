@@ -16,10 +16,10 @@ test_tasklet!(KeyedConsumerTasklet, "keyed_consumer_tasklet", String => (), (), 
 });
 
 /// `.keyed()` with a pure plugin wire is accepted and recorded.
-struct KeyedPluginOperator;
-impl Operator for KeyedPluginOperator {
+struct KeyedPluginRelay;
+impl Relay for KeyedPluginRelay {
     fn factory_id() -> &'static str {
-        "keyed_plugin_operator"
+        "keyed_plugin_relay"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("inp")
@@ -31,17 +31,17 @@ impl Operator for KeyedPluginOperator {
 
 #[test]
 fn keyed_plugin_channel_is_accepted_and_marked() {
-    let topology = build_topology_for::<KeyedPluginOperator>().expect("topology");
+    let topology = build_topology_for::<KeyedPluginRelay>().expect("topology");
     let out = topology.lookup_channel_id("out").unwrap();
     assert!(topology.channels[out as usize].keyed);
     assert!(!topology.channels[0].keyed, "entry channel is not keyed");
 }
 
 /// `.keyed()` on a hybrid (`sink_with`) channel is accepted.
-struct KeyedHybridOperator;
-impl Operator for KeyedHybridOperator {
+struct KeyedHybridRelay;
+impl Relay for KeyedHybridRelay {
     fn factory_id() -> &'static str {
-        "keyed_hybrid_operator"
+        "keyed_hybrid_relay"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("inp")
@@ -54,7 +54,7 @@ impl Operator for KeyedHybridOperator {
 
 #[test]
 fn keyed_hybrid_channel_is_accepted_and_marked() {
-    let topology = build_topology_for::<KeyedHybridOperator>().expect("topology");
+    let topology = build_topology_for::<KeyedHybridRelay>().expect("topology");
     let out = topology.lookup_channel_id("out").unwrap();
     assert!(topology.channels[out as usize].keyed);
     assert!(topology.channels[out as usize].plugin_sink.is_some());
@@ -62,10 +62,10 @@ fn keyed_hybrid_channel_is_accepted_and_marked() {
 
 /// `.keyed()` on a channel with no plugin wire fails the build with a
 /// typed error naming the channel.
-struct KeyedInterTaskletOperator;
-impl Operator for KeyedInterTaskletOperator {
+struct KeyedInterTaskletRelay;
+impl Relay for KeyedInterTaskletRelay {
     fn factory_id() -> &'static str {
-        "keyed_inter_tasklet_operator"
+        "keyed_inter_tasklet_relay"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("inp")
@@ -78,7 +78,7 @@ impl Operator for KeyedInterTaskletOperator {
 
 #[test]
 fn keyed_channel_without_plugin_wire_is_rejected() {
-    let err = match build_topology_for::<KeyedInterTaskletOperator>() {
+    let err = match build_topology_for::<KeyedInterTaskletRelay>() {
         Ok(_) => panic!("keyed inter-tasklet channel must fail the build"),
         Err(e) => e,
     };
@@ -102,10 +102,10 @@ impl Tasklet for FrozenLogicalTasklet {
     }
 }
 
-struct FrozenLogicalOperator;
-impl Operator for FrozenLogicalOperator {
+struct FrozenLogicalRelay;
+impl Relay for FrozenLogicalRelay {
     fn factory_id() -> &'static str {
-        "frozen_logical_operator"
+        "frozen_logical_relay"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("inp").into::<FrozenLogicalTasklet>();
@@ -114,7 +114,7 @@ impl Operator for FrozenLogicalOperator {
 
 #[test]
 fn logical_clock_without_persistent_changes_is_rejected_at_build() {
-    let err = match build_topology_for::<FrozenLogicalOperator>() {
+    let err = match build_topology_for::<FrozenLogicalRelay>() {
         Ok(_) => panic!("a logical clock with NoChange must fail the build"),
         Err(e) => e,
     };

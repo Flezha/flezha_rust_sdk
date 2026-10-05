@@ -27,7 +27,7 @@ type ChannelShape = (
 
 /// Flatten a frozen topology to a comparable shape: channels as
 /// `(name, kind, producer, consumers)` plus the tasklet identity list.
-fn topo_shape(t: &flezha_runner::operator::OperatorTopology) -> (Vec<ChannelShape>, Vec<String>) {
+fn topo_shape(t: &flezha_runner::relay::RelayTopology) -> (Vec<ChannelShape>, Vec<String>) {
     (
         t.channels
             .iter()
@@ -49,7 +49,7 @@ fn topo_shape(t: &flezha_runner::operator::OperatorTopology) -> (Vec<ChannelShap
 #[test]
 fn branch_builds_the_identical_topology() {
     struct ByHandles;
-    impl Operator for ByHandles {
+    impl Relay for ByHandles {
         fn factory_id() -> &'static str {
             "graph_by_handles"
         }
@@ -58,9 +58,9 @@ fn branch_builds_the_identical_topology() {
             validated.into::<GraphStage1>();
             validated.into::<GraphStage2>();
         }
-}
+    }
     struct ByBranch;
-    impl Operator for ByBranch {
+    impl Relay for ByBranch {
         fn factory_id() -> &'static str {
             "graph_by_branch"
         }
@@ -74,7 +74,7 @@ fn branch_builds_the_identical_topology() {
                 },
             ]);
         }
-}
+    }
     let handles = build_topology_for::<ByHandles>().expect("handle-reuse builds");
     let branch = build_topology_for::<ByBranch>().expect("branch builds");
     assert_eq!(topo_shape(&handles), topo_shape(&branch));
@@ -83,7 +83,7 @@ fn branch_builds_the_identical_topology() {
 #[test]
 fn branch_with_fewer_than_two_arms_is_refused() {
     struct OneArm;
-    impl Operator for OneArm {
+    impl Relay for OneArm {
         fn factory_id() -> &'static str {
             "graph_one_arm"
         }
@@ -92,7 +92,7 @@ fn branch_with_fewer_than_two_arms_is_refused() {
                 b.into::<GraphStage1>();
             }]);
         }
-}
+    }
     let err = match build_topology_for::<OneArm>() {
         Ok(_) => panic!("one arm must fail"),
         Err(e) => e,
@@ -109,7 +109,7 @@ fn branch_with_fewer_than_two_arms_is_refused() {
 #[test]
 fn named_nodes_reuse_one_class_at_two_positions() {
     struct TwoFilters;
-    impl Operator for TwoFilters {
+    impl Relay for TwoFilters {
         fn factory_id() -> &'static str {
             "graph_two_filters"
         }
@@ -122,7 +122,7 @@ fn named_nodes_reuse_one_class_at_two_positions() {
                 .into_named::<GraphStage1>("spam_filter")
                 .into::<GraphMerge>();
         }
-}
+    }
     let t = build_topology_for::<TwoFilters>().expect("named nodes build");
     let names: Vec<&str> = t.tasklets.iter().map(|o| o.name.as_ref()).collect();
     assert_eq!(
@@ -142,7 +142,7 @@ fn named_nodes_reuse_one_class_at_two_positions() {
 #[test]
 fn unnamed_mentions_unify_into_a_fan_in() {
     struct FanInGraph;
-    impl Operator for FanInGraph {
+    impl Relay for FanInGraph {
         fn factory_id() -> &'static str {
             "graph_fan_in"
         }
@@ -151,7 +151,7 @@ fn unnamed_mentions_unify_into_a_fan_in() {
             validated.into::<GraphStage1>().into::<GraphMerge>();
             validated.into::<GraphStage2>().into::<GraphMerge>();
         }
-}
+    }
     let t = build_topology_for::<FanInGraph>().expect("fan-in builds");
     assert_eq!(t.tasklets.len(), 4, "one Merge node, not two");
     let merge_id = *t.tasklet_name_to_id.get("graph_merge").unwrap();
@@ -165,7 +165,7 @@ fn unnamed_mentions_unify_into_a_fan_in() {
 #[test]
 fn node_identity_collision_is_refused() {
     struct Colliding;
-    impl Operator for Colliding {
+    impl Relay for Colliding {
         fn factory_id() -> &'static str {
             "graph_identity_collision"
         }
@@ -175,7 +175,7 @@ fn node_identity_collision_is_refused() {
             validated.into_named::<GraphStage2>("graph_stage1");
             validated.into::<GraphStage1>();
         }
-}
+    }
     let err = match build_topology_for::<Colliding>() {
         Ok(_) => panic!("identity collision must fail"),
         Err(e) => e,
@@ -193,7 +193,7 @@ fn node_identity_collision_is_refused() {
 #[test]
 fn channel_names_derive_from_the_producer_identity() {
     struct Derived;
-    impl Operator for Derived {
+    impl Relay for Derived {
         fn factory_id() -> &'static str {
             "graph_derived_names"
         }
@@ -204,7 +204,7 @@ fn channel_names_derive_from_the_producer_identity() {
                 .named("orders.validated")
                 .into::<GraphStage2>();
         }
-}
+    }
     let t = build_topology_for::<Derived>().expect("derived names build");
     assert!(
         t.lookup_channel_id("echo_tasklet").is_some(),
@@ -216,7 +216,7 @@ fn channel_names_derive_from_the_producer_identity() {
     );
 
     struct NameClash;
-    impl Operator for NameClash {
+    impl Relay for NameClash {
         fn factory_id() -> &'static str {
             "graph_name_clash"
         }
@@ -226,7 +226,7 @@ fn channel_names_derive_from_the_producer_identity() {
                 .into::<EchoTasklet>()
                 .into::<GraphStage1>();
         }
-}
+    }
     let err = match build_topology_for::<NameClash>() {
         Ok(_) => panic!("name collision must fail"),
         Err(e) => e,
@@ -241,7 +241,7 @@ fn channel_names_derive_from_the_producer_identity() {
 #[test]
 fn a_cycle_is_refused() {
     struct Cyclic;
-    impl Operator for Cyclic {
+    impl Relay for Cyclic {
         fn factory_id() -> &'static str {
             "graph_cyclic"
         }
@@ -251,7 +251,7 @@ fn a_cycle_is_refused() {
                 .into::<GraphStage2>()
                 .into::<GraphStage1>();
         }
-}
+    }
     let err = match build_topology_for::<Cyclic>() {
         Ok(_) => panic!("a cycle must fail"),
         Err(e) => e,
@@ -264,12 +264,12 @@ fn a_cycle_is_refused() {
 
 #[test]
 fn multiple_entry_channels_build() {
-    // A single operator may declare several entry channels — one per external
+    // A single relay may declare several entry channels — one per external
     // source (e.g. a market pipeline reading a trade feed and an order-book
     // feed on distinct channels). The controller routes each frame to its
     // entry by `metadata["channel"]`. Both entries and their subgraphs resolve.
     struct TwoEntries;
-    impl Operator for TwoEntries {
+    impl Relay for TwoEntries {
         fn factory_id() -> &'static str {
             "graph_two_entries"
         }
@@ -277,7 +277,7 @@ fn multiple_entry_channels_build() {
             c.input::<String>("in_a").into::<GraphStage1>();
             c.input::<String>("in_b").into::<GraphStage2>();
         }
-}
+    }
     let topology = build_topology_for::<TwoEntries>()
         .expect("multiple entry channels must build a valid topology");
     let entries: Vec<&str> = topology
@@ -308,14 +308,14 @@ test_tasklet!(OrderConsumer, "order_consumer", OrderEvent => String, (), |_input
 #[test]
 fn typed_entry_decodes_json_at_the_edge() {
     struct TypedEntry;
-    impl Operator for TypedEntry {
+    impl Relay for TypedEntry {
         fn factory_id() -> &'static str {
             "graph_typed_entry"
         }
         fn channels(c: &ChannelBuilder) {
             c.input::<OrderEvent>("orders").into::<OrderConsumer>();
         }
-}
+    }
     let t = build_topology_for::<TypedEntry>().expect("typed entry builds");
     let entry = &t.channels[0];
     assert!(entry.entry_parsed, "a typed entry is a real parser");
@@ -340,7 +340,7 @@ fn typed_entry_decodes_json_at_the_edge() {
 #[test]
 fn a_custom_parser_replaces_the_default_json() {
     struct CustomEntry;
-    impl Operator for CustomEntry {
+    impl Relay for CustomEntry {
         fn factory_id() -> &'static str {
             "graph_custom_entry"
         }
@@ -355,7 +355,7 @@ fn a_custom_parser_replaces_the_default_json() {
             })
             .into::<OrderConsumer>();
         }
-}
+    }
     let t = build_topology_for::<CustomEntry>().expect("custom parser builds");
     let entry = &t.channels[0];
     assert!(entry.entry_parsed);
@@ -371,7 +371,7 @@ fn a_custom_parser_replaces_the_default_json() {
 /// the drop-and-log path, not the DLQ ladder).
 #[test]
 fn bytes_and_string_entries_stay_passthrough() {
-    let t = build_topology_for::<SingleOperator>().expect("string entry builds");
+    let t = build_topology_for::<SingleRelay>().expect("string entry builds");
     let entry = &t.channels[0];
     assert!(!entry.entry_parsed, "String is not a parser");
     let wrap = entry.wrap_input.as_ref().unwrap();
@@ -383,14 +383,14 @@ fn bytes_and_string_entries_stay_passthrough() {
         Ok(())
     });
     struct BytesEntry;
-    impl Operator for BytesEntry {
+    impl Relay for BytesEntry {
         fn factory_id() -> &'static str {
             "graph_bytes_entry"
         }
         fn channels(c: &ChannelBuilder) {
             c.input::<Vec<u8>>("raw").into::<BytesConsumer>();
         }
-}
+    }
     let t = build_topology_for::<BytesEntry>().expect("bytes entry builds");
     let entry = &t.channels[0];
     assert!(!entry.entry_parsed);
@@ -403,20 +403,20 @@ fn bytes_and_string_entries_stay_passthrough() {
 
 /// A topology's channel names in declaration order; the entry channel is
 /// first, so a shorthand's whole naming answer is one vector.
-fn channel_names(t: &flezha_runner::operator::OperatorTopology) -> Vec<String> {
+fn channel_names(t: &flezha_runner::relay::RelayTopology) -> Vec<String> {
     t.channels.iter().map(|c| c.name.to_string()).collect()
 }
 
 /// The short form: `sink = "..."` is the only naming call the author writes,
 /// and it is the channel's name.
-#[flezha_runner::operator(id = "generated_naming", sink = "items_output")]
+#[flezha_runner::relay(id = "generated_naming", sink = "items_output")]
 fn generated_naming(input: String) -> Option<String> {
     Some(input)
 }
 
-/// The same operator spelled by hand, around the short form's own tasklet.
+/// The same relay spelled by hand, around the short form's own tasklet.
 struct HandWrittenNaming;
-impl Operator for HandWrittenNaming {
+impl Relay for HandWrittenNaming {
     fn factory_id() -> &'static str {
         "hand_written_naming"
     }
@@ -428,7 +428,7 @@ impl Operator for HandWrittenNaming {
 }
 
 /// fails when: the generator and a hand-written declaration disagree about a
-/// channel's name again — the disagreement that made a sugared operator ship
+/// channel's name again — the disagreement that made a sugared relay ship
 /// frames under one name and a hand-written one under another.
 #[test]
 fn the_generated_and_hand_written_spellings_name_one_channel() {
@@ -444,25 +444,25 @@ fn the_generated_and_hand_written_spellings_name_one_channel() {
 struct Roles<T>(std::marker::PhantomData<T>);
 trait NoRole {
     const TASKLET: bool = false;
-    const OPERATOR: bool = false;
+    const RELAY: bool = false;
 }
 impl<T> NoRole for Roles<T> {}
 impl<T: flezha_runner::Tasklet> Roles<T> {
     const TASKLET: bool = true;
 }
-impl<T: Operator> Roles<T> {
-    const OPERATOR: bool = true;
+impl<T: Relay> Roles<T> {
+    const RELAY: bool = true;
 }
 
 /// fails when: the short form makes one type play both roles again, so the
 /// name the author registers is also a tasklet.
 #[test]
-fn a_short_form_is_an_operator_beside_its_tasklet() {
+fn a_short_form_is_a_relay_beside_its_tasklet() {
     const {
-        assert!(<Roles<GeneratedNaming>>::OPERATOR);
+        assert!(<Roles<GeneratedNaming>>::RELAY);
         assert!(!<Roles<GeneratedNaming>>::TASKLET);
         assert!(<Roles<GeneratedNamingTasklet>>::TASKLET);
-        assert!(!<Roles<GeneratedNamingTasklet>>::OPERATOR);
+        assert!(!<Roles<GeneratedNamingTasklet>>::RELAY);
     }
     // The tasklet is named after the factory id, so ejecting to the full
     // form keeps every cell's state path.
@@ -473,7 +473,7 @@ fn a_short_form_is_an_operator_beside_its_tasklet() {
 }
 
 /// The short form's entry channel carries the overflow policy it declares.
-#[flezha_runner::operator(id = "shedding_entry", sink = "shed_items", on_full = drop_oldest)]
+#[flezha_runner::relay(id = "shedding_entry", sink = "shed_items", on_full = drop_oldest)]
 fn shedding_entry(input: String) -> Vec<u8> {
     input.into_bytes()
 }
@@ -509,7 +509,7 @@ impl flezha_runner::Change<CounterState> for Seen {
 #[derive(Default)]
 struct SinklessCounter;
 
-#[flezha_runner::operator(id = "sinkless_counter", input = "ticks")]
+#[flezha_runner::relay(id = "sinkless_counter", input = "ticks")]
 impl flezha_runner::Tasklet for SinklessCounter {
     type Input = String;
     type State = CounterState;
@@ -521,9 +521,9 @@ impl flezha_runner::Tasklet for SinklessCounter {
     }
 }
 
-/// The same operator spelled by hand: a channel ending at a tasklet.
+/// The same relay spelled by hand: a channel ending at a tasklet.
 struct HandWrittenCounter;
-impl Operator for HandWrittenCounter {
+impl Relay for HandWrittenCounter {
     fn factory_id() -> &'static str {
         "hand_written_counter"
     }
@@ -553,18 +553,14 @@ fn a_short_form_with_no_sink_declares_only_its_entry_channel() {
 // ---- the shorthand's entry channel takes the name the author writes ------
 
 /// The attribute shorthand, naming its entry channel.
-#[flezha_runner::operator(
-    id = "named_entry_attribute",
-    sink = "attr_items",
-    input = "prices"
-)]
+#[flezha_runner::relay(id = "named_entry_attribute", sink = "attr_items", input = "prices")]
 fn named_entry_attribute(input: String) -> Vec<u8> {
     input.into_bytes()
 }
 
 /// The attribute shorthand with no name written: the entry channel keeps the
-/// default address every existing operator already ships under.
-#[flezha_runner::operator(id = "default_entry_attribute", sink = "default_items")]
+/// default address every existing relay already ships under.
+#[flezha_runner::relay(id = "default_entry_attribute", sink = "default_items")]
 fn default_entry_attribute(input: String) -> Vec<u8> {
     input.into_bytes()
 }
@@ -608,7 +604,7 @@ fn both_shorthands_name_their_entry_channel() {
 }
 
 /// fails when: an unnamed shorthand stops naming its entry channel `input` —
-/// the address §6's conformance table and every existing operator ship under.
+/// the address §6's conformance table and every existing relay ship under.
 #[test]
 fn an_unnamed_shorthand_keeps_the_default_entry_channel_name() {
     let attr = build_topology_for::<DefaultEntryAttribute>()
@@ -634,7 +630,7 @@ fn a_frame_reaches_a_shorthand_on_the_channel_it_named() {
 }
 
 /// fails when: an unnamed shorthand stops accepting a frame addressed to
-/// `input` — every operator in the tree is reached that way.
+/// `input` — every relay in the tree is reached that way.
 #[test]
 fn a_frame_reaches_an_unnamed_shorthand_on_input() {
     let (handle, _instance) = setup::<DefaultEntryAttribute>("default-entry");
@@ -654,14 +650,14 @@ fn a_frame_reaches_an_unnamed_shorthand_on_input() {
 
 // ---- the steps short form -------------------------------------------
 
-/// A steps short form: one declaration is a whole `once` steps operator, with
+/// A steps short form: one declaration is a whole `once` steps relay, with
 /// every steps setting at its default.
-#[flezha_runner::operator(id = "place_order", sink = "placed", input = "order", run = steps)]
+#[flezha_runner::relay(id = "place_order", sink = "placed", input = "order", run = steps)]
 fn place_order(order: String) -> String {
     order
 }
 
-/// fails when: the steps attribute stops producing a steps operator, or the
+/// fails when: the steps attribute stops producing a steps relay, or the
 /// entry and sink names the declaration wrote stop reaching the spec — the
 /// short form would then declare a shape the author never wrote.
 #[test]

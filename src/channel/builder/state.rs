@@ -15,7 +15,7 @@ use crate::tasklet::Tasklet;
 
 /// Type-erased dispatcher factory for one Tasklet. Stored on
 /// `BuilderState::tasklets` and consumed by `build_topology` to produce
-/// per-cell slots in each `OperatorInstance`.
+/// per-cell slots in each `RelayInstance`.
 pub(crate) struct TaskletEntry {
     /// Node identity: the tasklet's `NAME`, or the explicit node name
     /// given at wiring time (`into_named`). Feeds everything `NAME` feeds —
@@ -63,7 +63,7 @@ pub(crate) struct TaskletEntry {
 
     /// `Tasklet::compact_after_bytes()` captured at registration time. The
     /// controller resolves the per-Cell WAL size compaction trigger from it,
-    /// shipped in the `AddOperator` response metadata.
+    /// shipped in the `AddRelay` response metadata.
     pub compact_after_bytes: usize,
 
     /// Build a per-cell slot. The closure captures the Tasklet type
@@ -147,7 +147,7 @@ pub(crate) struct ChannelEntry {
     pub retry: crate::channel::RetryPolicy,
     /// Inter-task byte codec, derived from the producing tasklet's `Output`
     /// type when the channel is created. `None` only on a channel with no
-    /// producer (an entry channel); a durable structured steps operator's task
+    /// producer (an entry channel); a durable structured steps relay's task
     /// journal reads it at every barrier (`steps-task-journal`).
     pub codec: Option<crate::channel::ChannelCodec>,
     /// The authoring record: one entry per fluent sequence declared off this
@@ -199,7 +199,6 @@ pub(crate) struct BuilderState {
 }
 
 impl BuilderState {
-
     pub(super) fn push_channel(&mut self, name: &'static str, kind: ChannelKind) -> u32 {
         let id = self.channels.len() as u32;
         self.channels.push(ChannelEntry {
@@ -453,10 +452,10 @@ fn tasklet_entry<S: Tasklet>(name: &'static str, named: bool) -> TaskletEntry {
 
     let build_cell: CellBuilder =
         Box::new(|args: BuildCellArgs<'_>| -> Arc<crate::cell::CellSlot> {
-            crate::operator::dispatcher::build_cell_slot::<S>(args)
+            crate::relay::dispatcher::build_cell_slot::<S>(args)
         });
 
-    let (serialize_state, deserialize_state) = crate::operator::dispatcher::build_state_fns::<S>();
+    let (serialize_state, deserialize_state) = crate::relay::dispatcher::build_state_fns::<S>();
 
     TaskletEntry {
         name,

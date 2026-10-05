@@ -8,11 +8,11 @@ use std::time::{Duration, Instant};
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use flezha_runner::channel::ChannelBuilder;
-use flezha_runner::operator::builder::build_topology_for;
-use flezha_runner::operator::registry::OperatorRegistry;
-use flezha_runner::operator::OperatorInstance;
+use flezha_runner::relay::builder::build_topology_for;
+use flezha_runner::relay::registry::RelayRegistry;
+use flezha_runner::relay::RelayInstance;
 use flezha_runner::tasklet::{Tasklet, TaskletError};
-use flezha_runner::{Ctx, Operator, OverflowPolicy, __dispatch_internals as bi};
+use flezha_runner::{__dispatch_internals as bi, Ctx, OverflowPolicy, Relay};
 use flz_core::bench_support::{fan_in, stream_pair, Settle};
 
 static DYN_COUNTER: Settle = Settle::new();
@@ -30,10 +30,10 @@ impl Tasklet for SteadyDynTasklet {
     }
 }
 
-struct SteadyDynOperator;
-impl Operator for SteadyDynOperator {
+struct SteadyDynRelay;
+impl Relay for SteadyDynRelay {
     fn factory_id() -> &'static str {
-        "steady_dyn_operator"
+        "steady_dyn_relay"
     }
     fn channels(c: &ChannelBuilder) {
         // First 8 bytes (hex-ish) are the key; cheap and deterministic.
@@ -53,13 +53,13 @@ fn steady_state_bench(c: &mut Criterion) {
         .and_then(|s| s.parse().ok())
         .unwrap_or(200_000usize);
 
-    let topology = build_topology_for::<SteadyDynOperator>().expect("topology");
-    let registry = Arc::new(OperatorRegistry::new());
-    registry.register(OperatorInstance::new(
+    let topology = build_topology_for::<SteadyDynRelay>().expect("topology");
+    let registry = Arc::new(RelayRegistry::new());
+    registry.register(RelayInstance::new(
         Arc::clone(&topology),
         Arc::from("steady-dyn-0"),
     ));
-    let handle = bi::OperatorDispatchHandle {
+    let handle = bi::RelayDispatchHandle {
         registry: Arc::clone(&registry),
     };
     let stream = stream_pair().0;

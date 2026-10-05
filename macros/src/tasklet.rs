@@ -13,7 +13,7 @@ use syn::{Expr, ExprLit, ImplItem, Item, ItemImpl, Lit, LitStr, Meta, Token};
 
 /// The attributes that complete an `impl Tasklet` block. Two on one block
 /// would each claim the tasklet's name.
-const COMPLETING_ATTRIBUTES: [&str; 2] = ["tasklet", "operator"];
+const COMPLETING_ATTRIBUTES: [&str; 2] = ["tasklet", "relay"];
 
 /// A setting key: the trait item it writes, and how it writes it.
 struct Setting {
@@ -79,9 +79,9 @@ const FLAGS: [(&str, &str); 4] = [
     ("MAILBOX_CAPACITY_OVERRIDDEN", "mailbox_capacity"),
 ];
 
-/// The keys the short forms take to describe an operator and its entry
+/// The keys the short forms take to describe a relay and its entry
 /// channel.
-pub(crate) const OPERATOR_KEYS: [&str; 8] = [
+pub(crate) const RELAY_KEYS: [&str; 8] = [
     "id",
     "sink",
     "input",
@@ -132,7 +132,7 @@ pub(crate) fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
     let name = keys.name.clone().ok_or_else(|| {
         syn::Error::new(
             Span::call_site(),
-            "#[flezha::tasklet] needs a `name`: the tasklet's name within its operator, \
+            "#[flezha::tasklet] needs a `name`: the tasklet's name within its relay, \
              which its saved state is keyed by",
         )
     })?;
@@ -145,12 +145,12 @@ fn parse_keys(attr: TokenStream) -> syn::Result<TaskletKeys> {
         let key = key_of(&meta)?;
         if key == "name" {
             keys.name = Some(lit_str(&meta.require_name_value()?.value)?.clone());
-        } else if OPERATOR_KEYS.contains(&key.as_str()) {
+        } else if RELAY_KEYS.contains(&key.as_str()) {
             return Err(syn::Error::new_spanned(
                 meta.path(),
                 format!(
-                    "#[flezha::tasklet] declares a tasklet; `{key}` belongs to an operator \
-                     declaration: write the short form as `#[flezha::operator(..)]`, or wire \
+                    "#[flezha::tasklet] declares a tasklet; `{key}` belongs to a relay \
+                     declaration: write the short form as `#[flezha::relay(..)]`, or wire \
                      it in a full form's topology"
                 ),
             ));
@@ -222,7 +222,7 @@ pub(crate) fn impl_target(item: TokenStream, attribute: &str) -> syn::Result<Ite
                 &func.sig,
                 format!(
                     "{attribute} sits on an `impl Tasklet for YourType` block; a one-tasklet \
-                     operator written as a function takes `#[flezha::operator(..)]`"
+                     relay written as a function takes `#[flezha::relay(..)]`"
                 ),
             ))
         }
@@ -253,7 +253,7 @@ pub(crate) fn impl_target(item: TokenStream, attribute: &str) -> syn::Result<Ite
             other,
             format!(
                 "{attribute} already completes this block and names its tasklet; a block takes \
-                 one of `#[flezha::tasklet]` and `#[flezha::operator]`"
+                 one of `#[flezha::tasklet]` and `#[flezha::relay]`"
             ),
         ));
     }

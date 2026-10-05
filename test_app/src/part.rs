@@ -1,6 +1,6 @@
 //! Part fixtures (`parts`): for an input `n` the tasklet sends the parts `1`
 //! .. `n` and then emits `done:<n>` on its sink `answer`, in a flow
-//! operator and in a `per_input` steps one. `retry:<n>` sends its parts and
+//! relay and in a `per_input` steps one. `retry:<n>` sends its parts and
 //! then fails retryably the first time this process sees it, so the retry's
 //! parts number from 0 again under the next attempt.
 
@@ -40,8 +40,8 @@ stateless_step!(PartEchoTurn, "part_echo_turn", |input, ctx| send_parts(
     input, ctx
 ));
 
-pub(crate) struct PartEchoOperator;
-impl Operator for PartEchoOperator {
+pub(crate) struct PartEchoRelay;
+impl Relay for PartEchoRelay {
     fn factory_id() -> &'static str {
         "part_echo"
     }
@@ -54,7 +54,7 @@ impl Operator for PartEchoOperator {
 }
 
 pub(crate) struct PartEchoSteps;
-impl Operator for PartEchoSteps {
+impl Relay for PartEchoSteps {
     fn factory_id() -> &'static str {
         "part_echo_steps"
     }
@@ -65,12 +65,15 @@ impl Operator for PartEchoSteps {
             .sink_named("answer");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
-            run: Run::Steps { each: Each::PerInput, on_failure: OnFailure::UndoAll },
+    fn settings() -> RelaySettings {
+        RelaySettings {
+            run: Run::Steps {
+                each: Each::PerInput,
+                on_failure: OnFailure::UndoAll,
+            },
             max_duration: Some(Duration::from_secs(600)),
             durable: fixture_durable(),
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }

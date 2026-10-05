@@ -41,7 +41,7 @@ test_tasklet!(Answer, "response_answer", String => String, (), |input, ctx| {
 test_tasklet!(Audit, "response_audit", String => (), (), |_input, _ctx| { Ok(()) });
 
 struct DownstreamAnswer;
-impl Operator for DownstreamAnswer {
+impl Relay for DownstreamAnswer {
     fn factory_id() -> &'static str {
         "response_downstream"
     }
@@ -54,7 +54,7 @@ impl Operator for DownstreamAnswer {
 }
 
 struct HybridAnswer;
-impl Operator for HybridAnswer {
+impl Relay for HybridAnswer {
     fn factory_id() -> &'static str {
         "response_hybrid"
     }
@@ -67,7 +67,7 @@ impl Operator for HybridAnswer {
 }
 
 struct AnswerBesideSink;
-impl Operator for AnswerBesideSink {
+impl Relay for AnswerBesideSink {
     fn factory_id() -> &'static str {
         "response_beside_sink"
     }
@@ -81,7 +81,7 @@ impl Operator for AnswerBesideSink {
 
 /// The kind, consumer count and response flag the declaration derives for
 /// the output channel of the tasklet named `producer`.
-fn end_of<R: Operator>(producer: &str) -> (ChannelKind, usize, bool) {
+fn end_of<R: Relay>(producer: &str) -> (ChannelKind, usize, bool) {
     let topology = build_topology_for::<R>().expect("topology");
     let descriptor = topology
         .channels

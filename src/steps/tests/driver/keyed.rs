@@ -1,5 +1,5 @@
 //! Keyed steps tasklets: Cells minted per key by routing, recorded and
-//! undone by identity, restored on a resume, capped as a flow operator's, and swept
+//! undone by identity, restored on a resume, capped as a flow relay's, and swept
 //! only between passes and never within a rollback's reach.
 
 use std::sync::atomic::Ordering;
@@ -141,7 +141,7 @@ pub(super) fn keyed_cells(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
 fn journaled_keyed_cells(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
     let _ = drain_comp_log();
     let id = "keyed-journal";
-    let topology = flz_core::operator::registry::get_class("test-keyed-saga").expect("registered");
+    let topology = flz_core::relay::registry::get_class("test-keyed-saga").expect("registered");
     let keyed = topology.tasklet_name_to_id["keyed_undo"];
     let handoff_channel = topology.tasklets[keyed as usize]
         .output_channel_id
@@ -344,10 +344,7 @@ fn acked_parks(id: &str) -> Vec<crate::cell::park::ParkBody> {
 fn await_iter_commit(rx: &Receiver<RunnerMessage>, id: &str) -> crate::pb::IterCommit {
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     loop {
-        if let Some(commit) = drain_iter_commits()
-            .into_iter()
-            .find(|c| c.operator_id == id)
-        {
+        if let Some(commit) = drain_iter_commits().into_iter().find(|c| c.relay_id == id) {
             return commit;
         }
         assert!(
@@ -370,7 +367,7 @@ fn partition_member(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
     // in-range message as its first iteration. "a" hashes to key group 100
     // and "BTC-USD" to 129 ---
     let id = "keyed-entry-p1";
-    let range = flz_core::operator::instance::KeyGroupRange {
+    let range = flz_core::relay::instance::KeyGroupRange {
         index: 1,
         count: 2,
         from: 128,

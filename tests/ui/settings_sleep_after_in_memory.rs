@@ -1,5 +1,5 @@
 //! topology.unknown_field: `sleep_after` is a setting of `local` and `remote`,
-//! and an operator kept in memory has nothing to wake from.
+//! and a relay kept in memory has nothing to wake from.
 use flezha_runner::Durable;
 
 fn main() {

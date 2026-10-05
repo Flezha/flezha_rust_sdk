@@ -9,10 +9,10 @@ use std::sync::{Arc, Condvar, Mutex, RwLock, Weak};
 
 use crossbeam::channel::{Receiver, Sender};
 
-use crate::operator::Operator;
+use crate::relay::Relay;
 use crate::runner::{ClientResponseMessage, RunnerMessage};
 use crate::shutdown::ShutdownBridge;
-use crate::{operator, pb, runner, shutdown, BuildStepsError, TopologyBuildError};
+use crate::{pb, relay, runner, shutdown, BuildStepsError, TopologyBuildError};
 
 /// The ONE public error of the entry-point chain: every fallible call on
 /// [`FlezhaRunner`] returns `Result<_, FlezhaError>`, so
@@ -36,20 +36,20 @@ pub enum FlezhaError {
     /// unwired channels, type mismatches, ...) — reported at the declaring
     /// call site, never a panic.
     InvalidTopology(TopologyBuildError),
-    /// `register_factory` found invalid steps operator authoring.
+    /// `register_factory` found invalid steps relay authoring.
     InvalidSteps(BuildStepsError),
     /// The factory id is already in this runner's declared set, whichever kind
-    /// either operator is.
+    /// either relay is.
     DuplicateFactoryId { factory_id: String },
     /// `unregister_factory` named a factory that is not in this runner's declared set.
     NotDefined { factory_id: String },
-    /// `unregister_factory` refused: live operator instances of the factory
+    /// `unregister_factory` refused: live relay instances of the factory
     /// exist. The type remains defined.
-    OperatorTypeInUse {
+    RelayTypeInUse {
         factory_id: String,
         live_instances: usize,
     },
-    /// The call requires a started runner (`await_termination`, `operators`).
+    /// The call requires a started runner (`await_termination`, `relays`).
     NotStarted,
     /// The runner thread is gone or replied with an unexpected message.
     RunnerUnavailable(String),
@@ -86,11 +86,11 @@ impl ErrorModel for FlezhaError {
                 "runtime.class_not_registered",
                 [("factory", factory_id.as_str().into())],
             ),
-            FlezhaError::OperatorTypeInUse {
+            FlezhaError::RelayTypeInUse {
                 factory_id,
                 live_instances,
             } => E::with(
-                "runtime.operator_type_in_use",
+                "runtime.relay_type_in_use",
                 [
                     ("factory_id", factory_id.as_str().into()),
                     ("live_instances", (*live_instances).into()),
@@ -160,7 +160,7 @@ pub struct Flezha;
 impl Flezha {
     /// Create this process's runner for `namespace` — one object carries
     /// declaration and lifecycle (Beam's `Pipeline.create()` shape). Declare
-    /// operator classes of either kind with
+    /// relay classes of either kind with
     /// [`FlezhaRunner::register_factory`] (legal before AND after start), then
     /// [`FlezhaRunner::start`] (keep the calling thread) or
     /// [`FlezhaRunner::run`] (block until shutdown). Creating a runner never
@@ -168,13 +168,13 @@ impl Flezha {
     ///
     /// ```no_run
     /// # use flezha_runner::{Flezha, FlezhaError};
-    /// # struct MyOperator;
-    /// # impl flezha_runner::Operator for MyOperator {
-    /// #     fn factory_id() -> &'static str { "my_operator" }
+    /// # struct MyRelay;
+    /// # impl flezha_runner::Relay for MyRelay {
+    /// #     fn factory_id() -> &'static str { "my_relay" }
     /// #     fn channels(_c: &flezha_runner::ChannelBuilder) {}
     /// # }
     /// # fn main() -> Result<(), FlezhaError> {
-    /// Flezha::create_runner("my_app")?.register_factory(MyOperator)?.run()?;
+    /// Flezha::create_runner("my_app")?.register_factory(MyRelay)?.run()?;
     /// # Ok(())
     /// # }
     /// ```
@@ -199,7 +199,7 @@ impl Flezha {
     /// dropped — `None` otherwise. Never fails and never starts a runner as
     /// a side effect. Runners that were created but never started never
     /// appear here. The returned handle observes the runner (`namespace()`,
-    /// `operators()`, `await_termination()`); dropping it does NOT shut the
+    /// `relays()`, `await_termination()`); dropping it does NOT shut the
     /// runner down — only dropping the started owning handle does.
     pub fn current_runner() -> Option<Arc<FlezhaRunner>> {
         let active = ACTIVE_RUNNER.lock().unwrap();
@@ -282,7 +282,7 @@ impl SendOpts {
         Self::default()
     }
 
-    /// The message's id, stamped as `flz.msg_id`: an operator whose input log
+    /// The message's id, stamped as `flz.msg_id`: a relay whose input log
     /// still holds an input of this id absorbs the repeat and answers
     /// `absorbed`.
     pub fn msg_id(mut self, id: impl Into<String>) -> Self {
@@ -297,7 +297,7 @@ impl SendOpts {
         self
     }
 
-    /// Hand the message to an operator bound on this runner, in process,
+    /// Hand the message to a relay bound on this runner, in process,
     /// without the controller: it is on no disk, is lost if the runner stops
     /// before handling it, and an input log's guarantee does not cover it.
     pub fn local(mut self) -> Self {
@@ -328,7 +328,7 @@ impl FlezhaRunner {
     }
 
     /// Administer this namespace from ordinary application code: start and
-    /// stop operators, enable and disable plugins, read what is running.
+    /// stop relays, enable and disable plugins, read what is running.
     ///
     /// The controller judges every call as the identity this connection
     /// proved, so no credential is held here and nothing expires. A user
@@ -339,33 +339,33 @@ impl FlezhaRunner {
         crate::control::Control
     }
 
-    /// Send `message` to the entry channel `channel` of `operator_id`, through
+    /// Send `message` to the entry channel `channel` of `relay_id`, through
     /// the controller under the same role check as [`Self::control`], and
-    /// answer its verdict: `{"to": <operator>, "verdict": "delivered" |
+    /// answer its verdict: `{"to": <relay>, "verdict": "delivered" |
     /// "absorbed" | "suspended"}`. [`crate::SendOpts`] adds a message id or a
-    /// partition key, or makes the send local: in process to an operator
+    /// partition key, or makes the send local: in process to a relay
     /// bound on this runner, answering null, with no durability at all.
     pub fn send(
         &self,
-        operator_id: &str,
+        relay_id: &str,
         message: &str,
         channel: &str,
         opts: &SendOpts,
     ) -> Result<serde_json::Value, crate::ControlError> {
         let answer = flz_core::admin::send(
-            operator_id,
+            relay_id,
             message.as_bytes(),
             channel,
             opts.msg_id.as_deref(),
             opts.key.as_deref(),
             opts.local,
         )?;
-        crate::control::read("Operator.send", &answer)
+        crate::control::read("Relay.send", &answer)
     }
 
-    /// Declare an operator class the runtime can spawn instances of later
-    /// (via the controller's `AddOperator`). Builds the class once, under its
-    /// [`Operator::settings`], and records it in the global class registry.
+    /// Declare a relay class the runtime can spawn instances of later
+    /// (via the controller's `AddRelay`). Builds the class once, under its
+    /// [`Relay::settings`], and records it in the global class registry.
     /// Legal before and after `start()`; a post-start registration ships the
     /// runner's full factory set to the controller (`UpdateFactories`).
     ///
@@ -373,28 +373,25 @@ impl FlezhaRunner {
     /// missing `cells_for` overrides, ...) is reported here, at the declaring
     /// call site — not a panic — and leaves the runner exactly as it was.
     ///
-    /// The operator is passed as a value so a call reads as the class it
-    /// declares; operators are unit structs, so the value costs nothing.
-    pub fn register_factory<O: Operator>(&self, _operator: O) -> Result<&Self, FlezhaError> {
+    /// The relay is passed as a value so a call reads as the class it
+    /// declares; relays are unit structs, so the value costs nothing.
+    pub fn register_factory<O: Relay>(&self, _relay: O) -> Result<&Self, FlezhaError> {
         // Build/validate BEFORE touching the declared set.
-        let class = crate::operator::build_class::<O>()?;
+        let class = crate::relay::build_class::<O>()?;
         self.declare(O::factory_id(), || {
-            crate::operator::registry::register_class(O::factory_id(), class)
+            crate::relay::registry::register_class(O::factory_id(), class)
         })?;
         Ok(self)
     }
 
-    /// Remove an operator class from this runner — the inverse of
+    /// Remove a relay class from this runner — the inverse of
     /// [`Self::register_factory`], taking what it took. Legal before and after
-    /// `start()`. Refuses with [`FlezhaError::OperatorTypeInUse`] while live
+    /// `start()`. Refuses with [`FlezhaError::RelayTypeInUse`] while live
     /// instances of the factory exist (the type stays defined) and with
     /// [`FlezhaError::NotDefined`] for a factory this runner never declared.
     /// A post-start removal ships the remaining full factory set to the
     /// controller (`UpdateFactories`).
-    pub fn unregister_factory<O: Operator>(
-        &self,
-        _operator: O,
-    ) -> Result<&Self, FlezhaError> {
+    pub fn unregister_factory<O: Relay>(&self, _relay: O) -> Result<&Self, FlezhaError> {
         self.remove(O::factory_id())
     }
 
@@ -404,7 +401,7 @@ impl FlezhaRunner {
     /// singleton slot by compare-and-set — at most one runner may be started
     /// per process; the loser fails with [`FlezhaError::AlreadyRunning`]
     /// WITHOUT connecting, mutating shared state, or spawning a thread.
-    /// Starting with zero declared operator types is legal (the init frame
+    /// Starting with zero declared relay types is legal (the init frame
     /// carries an empty factory list; types may be declared later), whatever
     /// short-form or `pipeline!` types the binary happens to contain: nothing
     /// is harvested here. Bind the runner before starting it
@@ -453,10 +450,10 @@ impl FlezhaRunner {
         self.await_termination()
     }
 
-    /// The ids of the operator instances bound on this runner now, a
+    /// The ids of the relay instances bound on this runner now, a
     /// partition member by its member id, read without the controller.
     /// `Err(NotStarted)` on a never-started runner — never a panic.
-    pub fn operators(&self) -> Result<Vec<String>, FlezhaError> {
+    pub fn relays(&self) -> Result<Vec<String>, FlezhaError> {
         if self.core.started.lock().unwrap().is_none() {
             return Err(FlezhaError::NotStarted);
         }
@@ -498,7 +495,7 @@ impl FlezhaRunner {
 
     /// Remove `factory_id` from this runner. Post-start, the live-instance
     /// check + class unregistration run on the coordinator loop — serialized
-    /// with `AddOperator` handling by construction, so the check is
+    /// with `AddRelay` handling by construction, so the check is
     /// race-free. Pre-start no instances can exist, so the class is
     /// unregistered directly.
     fn remove(&self, factory_id: &str) -> Result<&Self, FlezhaError> {
@@ -519,7 +516,7 @@ impl FlezhaRunner {
             let started = self.core.started.lock().unwrap();
             match started.as_ref() {
                 Some(live) => refuse_live_instances(live, factory_id)?,
-                None => operator::registry::unregister_class(factory_id),
+                None => relay::registry::unregister_class(factory_id),
             }
         }
 
@@ -546,7 +543,7 @@ impl FlezhaRunner {
                 .read()
                 .unwrap()
                 .iter()
-                .map(|id| flz_core::operator::registry::advertised_for_factory(id))
+                .map(|id| flz_core::relay::registry::advertised_for_factory(id))
                 .collect();
             let _ = live.runner_tx.send(RunnerMessage::control_request(
                 format!("update-factories-{}", crate::util::nonce_suffix()),
@@ -586,7 +583,7 @@ impl FlezhaRunner {
 }
 
 /// Post-start removal: the live-instance check and the class unregistration
-/// run on the coordinator loop, serialized with `AddOperator` handling by
+/// run on the coordinator loop, serialized with `AddRelay` handling by
 /// construction, so the check is race-free. Refuses while instances exist.
 fn refuse_live_instances(live: &Started, factory_id: &str) -> Result<(), FlezhaError> {
     match live.exchange(RunnerMessage::RemoveFactory {
@@ -594,7 +591,7 @@ fn refuse_live_instances(live: &Started, factory_id: &str) -> Result<(), FlezhaE
     })? {
         ClientResponseMessage::RemoveFactoryResult(Ok(())) => Ok(()),
         ClientResponseMessage::RemoveFactoryResult(Err(live_instances)) => {
-            Err(FlezhaError::OperatorTypeInUse {
+            Err(FlezhaError::RelayTypeInUse {
                 factory_id: factory_id.to_string(),
                 live_instances,
             })

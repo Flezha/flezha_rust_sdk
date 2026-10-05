@@ -1,21 +1,21 @@
-//! Authoring-sugar twins. Each mirrors a hand-written operator to prove the
+//! Authoring-sugar twins. Each mirrors a hand-written relay to prove the
 //! macros expand to the same trait surface and interoperate with raw
 //! tasklets.
 
 use crate::*;
 
 // Single-tasklet stateless short form, twin of `DoNothingTasklet` /
-// `DoNothingOperator`. One declaration is the whole operator: it generates
-// the operator `SugarDoNothing`, which `main.rs` registers, and the tasklet
+// `DoNothingRelay`. One declaration is the whole relay: it generates
+// the relay `SugarDoNothing`, which `main.rs` registers, and the tasklet
 // `SugarDoNothingTasklet` beside it.
-#[flezha_runner::operator(id = "sugar_do_nothing", sink = "sugar_do_nothing_echo")]
+#[flezha_runner::relay(id = "sugar_do_nothing", sink = "sugar_do_nothing_echo")]
 pub(crate) fn sugar_do_nothing(input: String) -> Vec<u8> {
     input.into_bytes()
 }
 
 // Single-tasklet stateful short form on the author's own type, twin of
-// `StoreInputTasklet` / `StoreInputOperator`: `SugarStoreInput` is both the
-// tasklet and the operator `main.rs` registers.
+// `StoreInputTasklet` / `StoreInputRelay`: `SugarStoreInput` is both the
+// tasklet and the relay `main.rs` registers.
 #[derive(Serialize, Deserialize, Clone, Default, PartialEq, Debug)]
 pub(crate) struct SugarStoreState {
     text_inputs: Vec<String>,
@@ -34,7 +34,7 @@ impl Change<SugarStoreState> for Kept {
 #[derive(Default)]
 pub(crate) struct SugarStoreInput;
 
-#[flezha_runner::operator(id = "sugar_store_input", sink = "sugar_store_sink")]
+#[flezha_runner::relay(id = "sugar_store_input", sink = "sugar_store_sink")]
 impl Tasklet for SugarStoreInput {
     type Input = String;
     type Output = String;
@@ -48,7 +48,7 @@ impl Tasklet for SugarStoreInput {
 }
 
 // The short form naming its entry channel: `prices`, not the default `input`.
-#[flezha_runner::operator(
+#[flezha_runner::relay(
     id = "sugar_named_input",
     sink = "sugar_named_input_sink",
     input = "prices"
@@ -57,9 +57,9 @@ pub(crate) fn sugar_named_input(input: String) -> Vec<u8> {
     input.into_bytes()
 }
 
-// The steps short form: one declaration is a whole `once` steps operator, run on
+// The steps short form: one declaration is a whole `once` steps relay, run on
 // its first message on `order` and completing after one run.
-#[flezha_runner::operator(
+#[flezha_runner::relay(
     id = "sugar_steps",
     sink = "sugar_steps_placed",
     input = "order",
@@ -71,7 +71,7 @@ pub(crate) fn sugar_steps(order: String) -> Vec<u8> {
 
 // A steps short form that loops: one pass per message on `input`, and the
 // instance stays after each.
-#[flezha_runner::operator(
+#[flezha_runner::relay(
     id = "sugar_steps_per_input",
     sink = "sugar_steps_per_input_out",
     run = steps(each = per_input)
@@ -99,7 +99,7 @@ impl Change<SugarStateOnlyState> for Seen {
 #[derive(Default)]
 pub(crate) struct SugarStateOnly;
 
-#[flezha_runner::operator(id = "sugar_state_only", input = "ticks")]
+#[flezha_runner::relay(id = "sugar_state_only", input = "ticks")]
 impl Tasklet for SugarStateOnly {
     type Input = String;
     type State = SugarStateOnlyState;
@@ -111,7 +111,7 @@ impl Tasklet for SugarStateOnly {
     }
 }
 
-// `pipeline!` linear-pipeline twin of `StaticCellOperator`.
+// `pipeline!` linear-pipeline twin of `StaticCellRelay`.
 #[derive(Serialize, Deserialize, Clone, Default, PartialEq, Debug)]
 struct MacroStaticEntryState {
     seen: Vec<String>,
@@ -171,7 +171,7 @@ flezha_runner::pipeline! {
     pipeline: input::<String> -> MacroStaticEntry -> MacroStaticDownstream -> plugin::<Vec<u8>>("test_kafka")
 }
 
-// Mixed operator: one `#[flezha::tasklet]` tasklet wired to one tasklet written
+// Mixed relay: one `#[flezha::tasklet]` tasklet wired to one tasklet written
 // in the reference form, in an explicit `channels()` body.
 #[derive(Default)]
 struct MixedMacroEntry;
@@ -201,10 +201,10 @@ impl Tasklet for MixedHandDownstream {
     }
 }
 
-pub(crate) struct MixedOperator;
-impl Operator for MixedOperator {
+pub(crate) struct MixedRelay;
+impl Relay for MixedRelay {
     fn factory_id() -> &'static str {
-        "mixed_operator"
+        "mixed_relay"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
@@ -368,9 +368,9 @@ mod macro_twin_tests {
         }
     }
 
-    // The reference operator's tasklets carry exactly these associated types.
+    // The reference relay's tasklets carry exactly these associated types.
     // A divergence is a compile error, not a silent drift.
-    fn _reference_operator_conformance()
+    fn _reference_relay_conformance()
     where
         MacroStaticEntry: Tasklet<
             Input = String,
@@ -450,10 +450,10 @@ mod macro_twin_tests {
     }
 
     #[test]
-    fn sugar_operators_register() {
+    fn sugar_relays_register() {
         // Nothing is harvested: every short form and `pipeline!` type is a
         // named value the author hands to `register_factory`, exactly as a
-        // hand-written operator is.
+        // hand-written relay is.
         let runner = Flezha::create_runner("sugar_test").unwrap();
         runner
             .register_factory(SugarDoNothing)
@@ -470,32 +470,28 @@ mod macro_twin_tests {
             .unwrap()
             .register_factory(SugarStaticCell)
             .unwrap()
-            .register_factory(MixedOperator)
+            .register_factory(MixedRelay)
             .unwrap();
 
-        let ids = flezha_runner::operator::registry::class_factory_ids();
+        let ids = flezha_runner::relay::registry::class_factory_ids();
         for id in [
             "sugar_do_nothing",
             "sugar_store_input",
             "sugar_named_input",
             "sugar_state_only",
             "sugar_static_cell",
-            "mixed_operator",
+            "mixed_relay",
         ] {
-            assert!(ids.contains(&id), "registered operator `{id}` missing");
+            assert!(ids.contains(&id), "registered relay `{id}` missing");
         }
-        let class = flezha_runner::operator::registry::get_class;
+        let class = flezha_runner::relay::registry::get_class;
         assert!(
             class("sugar_steps").is_some_and(|c| c.steps.is_some()),
             "the steps short form registers as a steps class"
         );
         let per_input = class("sugar_steps_per_input").expect("the looping short form registers");
         assert_eq!(
-            per_input
-                .steps
-                .as_ref()
-                .expect("a steps class")
-                .each,
+            per_input.steps.as_ref().expect("a steps class").each,
             Each::PerInput,
             "the short form carries the loop mode it wrote"
         );

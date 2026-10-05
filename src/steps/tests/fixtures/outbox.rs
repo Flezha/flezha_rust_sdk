@@ -4,10 +4,10 @@
 use std::sync::Arc;
 
 use super::*;
-use crate::steps::*;
-use crate::{Operator, OperatorSettings, Run};
 use crate::channel::ChannelBuilder;
+use crate::steps::*;
 use crate::tasklet::{Ctx, Tasklet, TaskletError};
+use crate::{Relay, RelaySettings, Run};
 
 // ---- staged-commit / transactional-outbox tasks --------------------------
 
@@ -20,7 +20,7 @@ string_task!(EmitThenFail, "steps_emit_then_fail", |input, ctx| {
 
 /// One tasklet that emits then fails, straight to a plugin sink.
 pub(crate) struct LeakSteps;
-impl Operator for LeakSteps {
+impl Relay for LeakSteps {
     fn factory_id() -> &'static str {
         "test-leak-steps"
     }
@@ -30,10 +30,13 @@ impl Operator for LeakSteps {
             .sink_named("out");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
-            run: Run::Steps { each: Each::Once, on_failure: OnFailure::UndoAll },
-            ..OperatorSettings::default()
+    fn settings() -> RelaySettings {
+        RelaySettings {
+            run: Run::Steps {
+                each: Each::Once,
+                on_failure: OnFailure::UndoAll,
+            },
+            ..RelaySettings::default()
         }
     }
 }
@@ -66,7 +69,7 @@ impl Tasklet for UndoEmit {
 /// UndoEmit(hybrid, compensable) → FailLast. The failure rolls UndoEmit
 /// back; its undo output is staged and journaled in a `compensated` entry.
 pub(crate) struct UndoSaga;
-impl Operator for UndoSaga {
+impl Relay for UndoSaga {
     fn factory_id() -> &'static str {
         "test-undo-saga"
     }
@@ -78,17 +81,20 @@ impl Operator for UndoSaga {
             .sink_named("out");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
-            run: Run::Steps { each: Each::Once, on_failure: OnFailure::UndoAll },
-            ..OperatorSettings::default()
+    fn settings() -> RelaySettings {
+        RelaySettings {
+            run: Run::Steps {
+                each: Each::Once,
+                on_failure: OnFailure::UndoAll,
+            },
+            ..RelaySettings::default()
         }
     }
 }
 
 /// A → B → ship(fails). Durable-by-default; both A and B are compensable.
 pub(crate) struct ResumeSaga;
-impl Operator for ResumeSaga {
+impl Relay for ResumeSaga {
     fn factory_id() -> &'static str {
         "test-resume-saga"
     }
@@ -102,10 +108,13 @@ impl Operator for ResumeSaga {
             .sink_named("out");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
-            run: Run::Steps { each: Each::Once, on_failure: OnFailure::UndoAll },
-            ..OperatorSettings::default()
+    fn settings() -> RelaySettings {
+        RelaySettings {
+            run: Run::Steps {
+                each: Each::Once,
+                on_failure: OnFailure::UndoAll,
+            },
+            ..RelaySettings::default()
         }
     }
 }

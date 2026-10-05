@@ -7,21 +7,21 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 
 use super::*;
-use crate::steps::*;
-use crate::{Operator, OperatorSettings, Run};
 use crate::channel::ChannelBuilder;
+use crate::steps::*;
 use crate::tasklet::{Ctx, Tasklet, TaskletError};
+use crate::{Relay, RelaySettings, Run};
 
-// ---- saga compensation operators (Phase 2 §4) --------------------------
+// ---- saga compensation relays (Phase 2 §4) --------------------------
 
-/// Process-global compensation observation log. The steps operator scenario test
+/// Process-global compensation observation log. The steps relay scenario test
 /// owns it (like `EMIT_RUNS`); compensable tasklets append a marker so
 /// rollback order and per-cell firing are assertable without wire
 /// plumbing (a compensable inter-tasklet task's `ctx.emit` is collected, not
 /// wired).
 pub(crate) static COMPENSATION_LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-// Captures the `(payload_id, frame)` pairs a durable steps operator ships to the
+// Captures the `(payload_id, frame)` pairs a durable steps relay ships to the
 // reliable sink — `cell_state_change` from the flush plus the saga
 // `compensation_intent` / `compensation_done` markers.
 pub(crate) static WAL_FRAMES: Mutex<Vec<(String, Vec<u8>)>> = Mutex::new(Vec::new());
@@ -131,7 +131,7 @@ impl Tasklet for SagaArchive {
 /// archive. The failure sits under one branch, so the abort must unwind BOTH
 /// branches and only then their shared parent.
 pub(crate) struct TreeSaga;
-impl Operator for TreeSaga {
+impl Relay for TreeSaga {
     fn factory_id() -> &'static str {
         "test-tree-saga"
     }
@@ -148,16 +148,19 @@ impl Operator for TreeSaga {
         t1.into::<SagaArchive>().named("t_out");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
-            run: Run::Steps { each: Each::Once, on_failure: OnFailure::UndoAll },
-            ..OperatorSettings::default()
+    fn settings() -> RelaySettings {
+        RelaySettings {
+            run: Run::Steps {
+                each: Each::Once,
+                on_failure: OnFailure::UndoAll,
+            },
+            ..RelaySettings::default()
         }
     }
 }
 
 pub(crate) struct SagaSteps;
-impl Operator for SagaSteps {
+impl Relay for SagaSteps {
     fn factory_id() -> &'static str {
         "test-saga-steps"
     }
@@ -171,10 +174,13 @@ impl Operator for SagaSteps {
             .sink_named("out");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
-            run: Run::Steps { each: Each::Once, on_failure: OnFailure::UndoAll },
-            ..OperatorSettings::default()
+    fn settings() -> RelaySettings {
+        RelaySettings {
+            run: Run::Steps {
+                each: Each::Once,
+                on_failure: OnFailure::UndoAll,
+            },
+            ..RelaySettings::default()
         }
     }
 }
@@ -184,7 +190,7 @@ impl Operator for SagaSteps {
 /// covered by the planner unit tests). Proves `on_failure()` is plumbed
 /// through the registration → run path.
 pub(crate) struct KeepProgressSaga;
-impl Operator for KeepProgressSaga {
+impl Relay for KeepProgressSaga {
     fn factory_id() -> &'static str {
         "test-keep-progress-saga"
     }
@@ -198,17 +204,20 @@ impl Operator for KeepProgressSaga {
             .sink_named("out");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
-            run: Run::Steps { each: Each::Once, on_failure: OnFailure::KeepProgress },
-            ..OperatorSettings::default()
+    fn settings() -> RelaySettings {
+        RelaySettings {
+            run: Run::Steps {
+                each: Each::Once,
+                on_failure: OnFailure::KeepProgress,
+            },
+            ..RelaySettings::default()
         }
     }
 }
 
 /// Reserve → Charge → Echo(succeeds): a clean `ok` MUST NOT compensate.
 pub(crate) struct CleanSaga;
-impl Operator for CleanSaga {
+impl Relay for CleanSaga {
     fn factory_id() -> &'static str {
         "test-clean-saga"
     }
@@ -222,10 +231,13 @@ impl Operator for CleanSaga {
             .sink_named("out");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
-            run: Run::Steps { each: Each::Once, on_failure: OnFailure::UndoAll },
-            ..OperatorSettings::default()
+    fn settings() -> RelaySettings {
+        RelaySettings {
+            run: Run::Steps {
+                each: Each::Once,
+                on_failure: OnFailure::UndoAll,
+            },
+            ..RelaySettings::default()
         }
     }
 }
@@ -284,7 +296,7 @@ string_task!(FailLast, "saga_fail_last", |_input, _ctx| Err(
 /// `SplitTask` is skipped during rollback; only `SagaFan` compensates, once
 /// per cell.
 pub(crate) struct FanSaga;
-impl Operator for FanSaga {
+impl Relay for FanSaga {
     fn factory_id() -> &'static str {
         "test-fan-saga"
     }
@@ -298,10 +310,13 @@ impl Operator for FanSaga {
             .sink_named("out");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
-            run: Run::Steps { each: Each::Once, on_failure: OnFailure::UndoAll },
-            ..OperatorSettings::default()
+    fn settings() -> RelaySettings {
+        RelaySettings {
+            run: Run::Steps {
+                each: Each::Once,
+                on_failure: OnFailure::UndoAll,
+            },
+            ..RelaySettings::default()
         }
     }
 }
@@ -337,7 +352,7 @@ impl Tasklet for StopReserve {
 /// StopReserve → Echo. A cooperative stop after StopReserve completes
 /// compensates only StopReserve; Echo never runs.
 pub(crate) struct StopSaga;
-impl Operator for StopSaga {
+impl Relay for StopSaga {
     fn factory_id() -> &'static str {
         "test-stop-saga"
     }
@@ -349,10 +364,13 @@ impl Operator for StopSaga {
             .sink_named("out");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
-            run: Run::Steps { each: Each::Once, on_failure: OnFailure::UndoAll },
-            ..OperatorSettings::default()
+    fn settings() -> RelaySettings {
+        RelaySettings {
+            run: Run::Steps {
+                each: Each::Once,
+                on_failure: OnFailure::UndoAll,
+            },
+            ..RelaySettings::default()
         }
     }
 }
@@ -455,7 +473,7 @@ string_task!(SiblingSlow, "sibling_slow", |_input, _ctx| {
 /// A root into two leaves: `SiblingFast` commits while `SiblingSlow` still
 /// runs, then `SiblingSlow` fails and the committed sibling is undone.
 pub(crate) struct SiblingSaga;
-impl Operator for SiblingSaga {
+impl Relay for SiblingSaga {
     fn factory_id() -> &'static str {
         "test-sibling-saga"
     }
@@ -465,10 +483,13 @@ impl Operator for SiblingSaga {
         root.into::<SiblingSlow>().named("s_slow");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
-            run: Run::Steps { each: Each::Once, on_failure: OnFailure::UndoAll },
-            ..OperatorSettings::default()
+    fn settings() -> RelaySettings {
+        RelaySettings {
+            run: Run::Steps {
+                each: Each::Once,
+                on_failure: OnFailure::UndoAll,
+            },
+            ..RelaySettings::default()
         }
     }
 }

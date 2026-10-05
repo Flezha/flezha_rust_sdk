@@ -1,0 +1,5 @@
+error: `each` is not a setting of `flow`
+ --> tests/ui/relay_misplaced_setting.rs:3:62
+  |
+3 | #[flezha_runner::relay(id = "echo", sink = "out", run = flow(each = per_input))]
+  |                                                              ^^^^

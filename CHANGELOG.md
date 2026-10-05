@@ -4,22 +4,22 @@ All notable changes to the Rust SDK crate.
 
 ## Unreleased
 
-### Changed: plugins are enabled by name and bound to operators
+### Changed: plugins are enabled by name and bound to relays
 
 **Breaking.** `Admin::enable_plugin(name, &PluginSpec)` enables a plugin by
-name, of a provider and on its options, with no operator; `PluginSpec::bind`
+name, of a provider and on its options, with no relay; `PluginSpec::bind`
 binds one in the same call. `Admin::bind_plugin` and `Admin::unbind_plugin`
 are new, `disable_plugin` takes the plugin's name, and `list_plugins` answers
 the plugins enabled in the namespace.
 
 ### Added: `Stream::call` and `Response`
 
-A chain ends on a call to another operator with
+A chain ends on a call to another relay with
 `.call::<Answer>(CallTarget::id("pricing") | CallTarget::factory("agent"), deadline_ms)`,
 answering an `EntryStream<Response<T, Answer>>` on `<channel>.response`. The call
 end keeps its chain's transform and key, and each request leaves stamped with
-the call's facts. A `:once` or `:chained` bounded class that calls is refused
-`BuildBoundedError::CallOutsidePerInputLoop`.
+the call's facts. A `:once` or `:chained` steps class that calls is refused
+`BuildStepsError::CallOutsidePerInputLoop`.
 
 ### Removed: the `sealed()` terminator and `Channel<T>`
 
@@ -44,7 +44,7 @@ tasklet has no `apply_change`. Writing `event_time(&Input) -> u64` makes the
 clock event time, and `compensate` is available in the everyday form.
 `init_state(cell_key)` loses the restore payload. The short-form attributes
 take either a stateless function, as before, or an `impl Tasklet` block, where
-they implement the operator trait on the author's type; a function with a
+they implement the user trait on the author's type; a function with a
 `&mut` parameter is refused with `ShortFormStateOnFunction`.
 `TaskletTestHarness::replay` folds each change encoded and decoded as the
 runtime persists it, and `expect_emits` is typed as `Output`.
@@ -58,94 +58,88 @@ Removed: `#[flezha::tasklet]` on a function and its `id`, `init`, `key`,
 type keeps it. Local saved state whose change type came from `#[derive(State)]`
 must be cleared once.
 
-### Changed: a workflow is declared like a stream (`declare-a-workflow-like-a-stream`)
+### Changed: a steps relay is declared like a flow relay
 
-**Breaking.** `WorkflowOperative::tasklets` is renamed `channels`, required as
-`StreamOperative::channels` is. The class-level `retry_attempts`,
+**Breaking.** `Relay::tasklets` is renamed `channels`, required as
+`Relay::channels` is. The class-level `retry_attempts`,
 `retry_backoff` and `barrier_retry_attempts` are deleted with
-`BuildWorkflowError::ZeroRetryBackoff`: a stage's retry ladder is the consuming
+`BuildStepsError::ZeroRetryBackoff`: a stage's retry ladder is the consuming
 edge's `retry_max` / `retry_backoff_ms` (3 attempts from 50 ms by default), and
 a commit barrier is re-sent a fixed three times. `build_spec` refuses a
-workflow whose `channels` set `effectively_once`, a checkpoint flag or
-`correction_window`, as `EffectivelyOnceOnWorkflow`, `CheckpointOnWorkflow` or
-`CorrectionWindowOnWorkflow`; a workflow cell writes no effect record. The
-runner announces each factory's kind with its id, so no start names one, and a
-spawn naming a stream factory resolves `SpawnError::FactoryNotWorkflow`.
-`#[flezha::workflow_operative]` accepts `loop_mode = "once" | "per_input" |
+steps relay whose `channels` set `effectively_once`, a checkpoint flag or
+`correction_window`, as `EffectivelyOnceOnSteps`, `CheckpointOnSteps` or
+`CorrectionWindowOnSteps`; a steps cell writes no effect record. The
+runner announces each factory's run with its id, so no start names one, and a
+spawn naming a flow factory resolves `SpawnError::FactoryNotSteps`.
+`#[flezha::relay]` accepts `each = "once" | "per_input" |
 "chained"`. `TaskletError::TimersUnavailable` names itself in its message.
 
-### Changed: a workflow reads messages on its entry channels (`feed-a-workflow-through-its-entry-channel`)
+### Changed: a steps relay reads messages on its entry channels
 
-**Breaking.** A workflow's `init_values` are each tasklet's starting state, as
-a stream's are; they no longer feed the entry channel. Every loop mode takes
-its input as messages through the entrance a stream's frame takes: the channel
+**Breaking.** A steps relay's `init_values` are each tasklet's starting state, as
+a flow relay's are; they no longer feed the entry channel. Every loop mode takes
+its input as messages through the entrance a flow relay's frame takes: the channel
 a message names is resolved (none takes the first entry channel, an undeclared
 one is parked), the entry parser and the entry edge's transforms run, and an
 unreadable message rides the entry channel's retry ladder to the dead-letter
 queue without ending the run. A `once` pass waits for its message, and a
 durable one parks while it waits. Several entry channels are allowed, each
 starting only its own chain, and a merge may take entry channels as sources:
-`BuildWorkflowError::EntryRoot` and `BuildWorkflowError::MergeFromEntryChannel`
+`BuildStepsError::EntryRoot` and `BuildStepsError::MergeFromEntryChannel`
 are deleted. A spawn's payload is an ordinary first message.
 
-### Changed: the short form is an operative declaration
+### Changed: the short form is a relay declaration
 
 **Breaking.** The single-tasklet short form moves from `#[flezha::tasklet]`
-to two new attributes, `#[flezha::stream_operative]` and
-`#[flezha::workflow_operative]`, whose name is the kind. Each takes a required
+to the attribute `#[flezha::relay]`. It takes a required
 `id` (the factory id), an optional `sink` and an optional `input`, and emits two
-types: the operative under the function's PascalCase name, which
+types: the relay under the function's PascalCase name, which
 `register_factory(Echo)` registers, and the tasklet `EchoTasklet` beside it,
-named after the `id`, so it can be wired into another operative's topology and
+named after the `id`, so it can be wired into another relay's topology and
 ejecting to the full form keeps every cell's state path. `sink` is optional:
 with none, the entry channel feeds the tasklet and no plugin channel is
 declared. `#[flezha::tasklet]` declares a tasklet only and refuses `kind`,
-`sink`, `input` and `on_full`, which describe the operative's entry channel. The refusals are `SinkWithoutOutput` (a `sink` on a body
+`sink`, `input` and `on_full`, which describe the relay's entry channel. The refusals are `SinkWithoutOutput` (a `sink` on a body
 with no output) and rustc's conflicting-impl error for a short form given a
 hand-written topology body (`ShortFormWithTopology` in the contract).
 
-### Removed: the workflow `run` body; added `TaskletCtx::complete`
+### Removed: the steps relay `run` body; added `TaskletCtx::complete`
 
-**Breaking.** `WorkflowOperative::run` and the `WorkflowCtx` export are deleted
-with no alias. A workflow declares `tasklets`; one that declares none is
-refused with `BuildWorkflowError::NoTasklets`, which replaces
-`LoopWithoutChain`. `TaskletCtx::complete(result)` ends a workflow instance
-once its iteration commits; in a stream operative it fails the input naming
-`CompleteOutsideWorkflow`. The testing harness accepts a completion and records
+**Breaking.** `Relay::run` and the `StepsCtx` export are deleted
+with no alias. A steps relay declares `tasklets`; one that declares none is
+refused with `BuildStepsError::NoTasklets`, which replaces
+`LoopWithoutChain`. `TaskletCtx::complete(result)` ends a steps instance
+once its iteration commits; in a flow relay it fails the input naming
+`CompleteOutsideSteps`. The testing harness accepts a completion and records
 nothing.
 
-### Changed — one `register_factory`, and the short form covers both kinds
+### Changed — one `register_factory`, and the short form covers both runs
 
-**Breaking.** `define_stream`, `define_workflow`, `remove_stream` and
-`remove_workflow` are deleted with no alias. `runner.register_factory(Echo)`
-takes an operative of either kind, passed as a value, and reads the kind from
-the sealed `Operative<K>` base the SDK implements for every `StreamOperative`
-and every `WorkflowOperative`; `unregister_factory(Echo)` is its inverse. A type
-implementing both kind traits cannot be passed at all — the kind is
-unresolvable, which is the compile-time form of `AmbiguousOperativeKind`.
+**Breaking.** `runner.register_factory(Echo)` takes a relay of either run,
+passed as a value; `unregister_factory(Echo)` is its inverse.
 
 Registration is explicit. The `inventory` harvest is gone with the `inventory`
-dependency, `AutoOperative` and `register_inventory_operatives()`: `start()` no
+dependency, `AutoRelay` and `register_inventory_relays()`: `start()` no
 longer merges linked short forms into the runner's declared set, so a duplicate
 factory id is refused at the second `register_factory` instead of being skipped
 in silence. `FlezhaError::DuplicateFactoryId`'s display now begins with the
 refusal's contract name.
 
-A workflow short form is a `once` workflow wiring its entry channel into the
+A steps short form is a `once` steps relay wiring its entry channel into the
 tasklet and the tasklet to the sink.
 
-`flezha::operative!` now begins with the type it declares —
-`flezha::operative! { pub struct Name; id: "...", pipeline: ... }` — and that
+`flezha::relay!` now begins with the type it declares —
+`flezha::relay! { pub struct Name; id: "...", pipeline: ... }` — and that
 type is what the author registers.
 
 ### Changed — a spawn and a start take the factory first and an optional id
 
-**Breaking.** `TaskletCtx::spawn_workflow(factory_id, payload)` spawns under an id the
-controller generates, and `spawn_workflow_with(factory_id, payload, SpawnOptions::id(id))`
+**Breaking.** `TaskletCtx::spawn_steps(factory_id, payload)` spawns under an id the
+controller generates, and `spawn_steps_with(factory_id, payload, SpawnOptions::id(id))`
 spawns or delivers under yours, `.if_running(IfRunning::Error)` refusing a running one. A
 `SpawnHandle` resolves to a `SpawnResult { id, outcome }`, so the id a spawn ran under is
-readable whoever chose it. `OperativeSpec::new(factory_id).id(id)` starts from application
-code, the id optional, and `Admin::start_operative` answers a `StartResult { id, outcome }`
+readable whoever chose it. `RelaySpec::new(factory_id).id(id)` starts from application
+code, the id optional, and `Admin::start_relay` answers a `StartResult { id, outcome }`
 whose outcome is `Started` or `AlreadyRunning`. The handle and its reaper live in `flz_core`,
 re-exported here unchanged in name.
 
@@ -161,15 +155,15 @@ forget.
 `JournalValue`, satisfied by every `Serialize + DeserializeOwned` type through a
 blanket implementation. A tasklet whose output has no serde derives stops
 compiling, and the message names the type and says the output is journaled at a
-workflow's commit barrier rather than naming a serde trait the author never
+steps relay's commit barrier rather than naming a serde trait the author never
 wrote. `Input` and `State` are unchanged.
 
-The bound is unconditional on purpose: whether a class journals is an operator's
+The bound is unconditional on purpose: whether a class journals is a user's
 per-class persistence setting at deploy time, not a fact available where the
-code is compiled, so a workflow-only bound could not be honest. A stream
-operative pays a compile-time requirement and nothing at runtime.
+code is compiled, so a steps-only bound could not be honest. A stream
+relay pays a compile-time requirement and nothing at runtime.
 
-`BuildWorkflowError::MissingInterTaskCodec` is deleted, and
+`BuildStepsError::MissingInterTaskCodec` is deleted, and
 `LoopTerminalWithoutCodec` becomes `LoopTerminalWithoutHandoff`: a durable
 chained loop seeds each iteration from its terminal tasklet's journaled
 handoff, and only an inter-tasklet channel carries one.
@@ -182,7 +176,7 @@ run read the empty seed as convergence and stopped. It worked here only while
 the author declared the codec by hand, and truncated silently in every other
 SDK. Take the sink off the terminal's own channel — a producer with no consumer
 is a legal channel, and is what a retained loop output already is — or declare
-`LoopMode::PerInput`. Wiring another tasklet behind the sink does not help on
+`Each::PerInput`. Wiring another tasklet behind the sink does not help on
 its own: it becomes the new terminal and owes the same handoff.
 
 Same postcard bytes as before on every channel that still carries a codec, so a
@@ -262,29 +256,6 @@ already frozen the kind and those consumers silently received nothing.
 is still never consulted on a channel with no mailbox — `.sealed()` refuses it
 as before.
 
-### BREAKING — the operative kinds are `stream` and `workflow`
-
-<!-- kind-naming-record:begin -->
-`UnboundedOperative` → `StreamOperative` and `BoundedOperative` →
-`WorkflowOperative`, with the whole family: `BoundedError` → `WorkflowError`,
-`BoundedCtx` → `WorkflowCtx`, `BuildBoundedError` → `BuildWorkflowError`,
-`UnboundedInstance` → `StreamInstance`, `BoundedInstance` → `WorkflowInstance`,
-`FlezhaError::InvalidBounded` → `InvalidWorkflow`, module `bounded` → module
-`workflow`. Entry points: `define_unbounded`/`define_bounded` →
-`define_stream`/`define_workflow`, `remove_unbounded`/`remove_bounded` →
-`remove_stream`/`remove_workflow`, `ctx.spawn_bounded` → `ctx.spawn_workflow`.
-Env vars `FLEZHA_BOUNDED_{DRIVER_STACK_KIB,PARK_IDLE_MS,RETRY_FAILS}` →
-`FLEZHA_WORKFLOW_*`.
-
-No shim, no dual acceptance: the old names are gone. Nothing about execution,
-durability or the wire tag numbers changes. The old words were borrowed terms
-for a property of the *data*, while the distinction here is whether one run
-terminates — and `bounded` was false for a durable `PerInput` operative, whose
-input is unbounded and whose *iteration* is the only bounded thing. The channel
-handle `Stream<'b, T, K>` is unrelated and unchanged; a stream operative is
-precisely the kind that consumes streams.
-<!-- kind-naming-record:end -->
-
 ### A keyed channel's plain emit carries the Cell's own key (`default-emit-to-cell-key`)
 
 In a keyed Cell the natural key of essentially every output *is* the key its
@@ -328,8 +299,8 @@ API, wire or persistence change.
   the stream map with `let _ = write_all(..)`, so an empty map or an all-failed
   write was a silent no-op. It now returns whether it reached any stream, and
   `heartbeat_tick` feeds a miss into the same flood ladder via
-  `state_sink::note_transport_failure()`. This is the only recovery signal an
-  Operative that writes no state changes has — the flood ladder alone never
+  `state_sink::note_transport_failure()`. This is the only recovery signal a
+  Relay that writes no state changes has — the flood ladder alone never
   fires for it.
 
 New env knob: `FLEZHA_RECONNECT_REQUEST_RETRY_MS`. New `#[doc(hidden)]` test
@@ -339,7 +310,7 @@ support on `state_sink`: `reset_for_test`, `reconnect_requested_for_test`.
 
 - **Public API unchanged** (`public-api.txt`: internal-re-export note). The
   type-erased kernel — cell slots, mailbox/drain gates, flusher, credit,
-  DLQ park/ladder, timers, routing, commands, workflow driver, transport
+  DLQ park/ladder, timers, routing, commands, steps driver, transport
   loop — now lives in the `flz_core` crate; this crate's typed layer
   consumes it as the first poll host. Dispatch runs on dedicated poll
   workers (`poll() → run one attempt per item → complete`); admission,
@@ -355,17 +326,17 @@ support on `state_sink`: `reset_for_test`, `reconnect_requested_for_test`.
 
 ### Live Cell read (`cell-state-live-query`)
 
-- **The `CellState` command gained a selector**, so the state an operator asks
-  for is the only state serialized: `CellState { operative_id, tasklet,
+- **The `CellState` command gained a selector**, so the state a user asks
+  for is the only state serialized: `CellState { relay_id, tasklet,
   cell_key }`, where an empty string means absent. No selector is the
-  whole-Operative migration/handover shape and encodes byte-identically to
+  whole-Relay migration/handover shape and encodes byte-identically to
   before. `cell_key` without `tasklet` is refused — a Cell key is unique
   only within its Tasklet.
 - **Dynamic-mode Cells are serialized**, keyed by whatever the live registry
-  holds. The whole-Operative shape previously omitted them entirely.
+  holds. The whole-Relay shape previously omitted them entirely.
 - **`command::cell_state::serialize_selected_state`** is the public entry
   point: it returns `(json, Option<seq>)`, the seq present only when the selector
-  named exactly one Cell. `serialize_operative_state` keeps its signature and
+  named exactly one Cell. `serialize_relay_state` keeps its signature and
   is now that call with an empty selector. Refusal strings lead with a canonical
   token (`cell_key_without_tasklet`, `tasklet_not_found`,
   `cell_not_found`, `cell_evicted`).
@@ -413,7 +384,7 @@ support on `state_sink`: `reset_for_test`, `reconnect_requested_for_test`.
   forward by pointer. `MergeSource::merge_channel_id` → `merge_site`.
 - **Edge closures are contained.** A panicking transform or key does not take
   the routing thread down: the value climbs the channel's existing retry→DLQ
-  ladder. On a workflow chain it becomes a terminal chain error the saga
+  ladder. On a steps chain it becomes a terminal chain error the saga
   compensates, so the instance still reports.
 - New `TopologyIssue` variants `KeyByOnUnkeyableTarget`, `DuplicateKeyBy`,
   `TransformAfterTerminal`, `TransformAfterKeyBy`, `DanglingTransformChain`,
@@ -429,17 +400,17 @@ support on `state_sink`: `reset_for_test`, `reconnect_requested_for_test`.
   map)` supplying the mapping from that channel's payload into it:
   `c.merge::<SignalInput>().from(ticker, SignalInput::Ticker).from(config,
   SignalInput::Config).into::<Detector>()`. Entry streams and inter-tasklet
-  streams are both valid sources on a stream operative (`MergeSource`,
-  implemented for `EntryStream` and `Stream`), freely mixed; see the workflow
+  streams are both valid sources on a flow relay (`MergeSource`,
+  implemented for `EntryStream` and `Stream`), freely mixed; see the steps relay
   restriction below. Single-input `.into` is unchanged.
 - **Purely a subscription-time construct**: `Tasklet` is untouched, so
   dispatch, state, `cells_for`, retry/DLQ and the emit APIs all see one type.
   `cells_for` / `cell_key` are evaluated on the **mapped** value.
-- **A merge mapping is contained on the workflow driver thread.** It is the only
-  author closure on a workflow chain running outside a cell invocation, so
+- **A merge mapping is contained on the steps driver thread.** It is the only
+  author closure on a steps chain running outside a cell invocation, so
   `extend_mapped` catches its unwind and reports it as a terminal chain error, and
   the instance still reports. An unguarded one would skip
-  `emit_workflow_completed` and strand it. At the **forward** accumulate site the
+  `emit_relay_completed` and strand it. At the **forward** accumulate site the
   saga unwinds the stages recorded as completed — the producer whose edge blew
   up among them, since the mapping runs after that stage's record and commit —
   and Java unwinds the same set in the same order; a sibling still in flight in
@@ -458,15 +429,15 @@ support on `state_sink`: `reset_for_test`, `reconnect_requested_for_test`.
   merge already declared — the mapping would otherwise be silently dropped); a
   mapped type that is not the tasklet's `Input` is a compile error at
   `.into::<Task>()`.
-- Merges accept entry channels as sources, in a stream and in a workflow.
+- Merges accept entry channels as sources, in a stream and in a steps relay.
 - `ChannelDescriptor::consumers` is now `Vec<ConsumerEdge>` (tasklet id plus
   the optional mapping); `consumer_ids()` is the id-only view.
 - No wire change and no controller change. Example: `examples/merged_input.rs`.
 
 ### Tasklet-requested spawn (`tasklet-requested-spawn`)
 
-- **`TaskletCtx::spawn_workflow(instance_id, factory_id, payload, if_running)`**
-  — spawn-or-deliver a workflow instance from inside any tasklet. A free id
+- **`TaskletCtx::spawn_steps(instance_id, factory_id, payload, if_running)`**
+  — spawn-or-deliver a steps instance from inside any tasklet. A free id
   starts `factory_id` with `payload` as its first input; a taken id receives it
   as one more input (`IfRunning::Deliver`) or reports
   `SpawnError::AlreadyRunning` (`IfRunning::Error`). Always in the requester's
@@ -479,8 +450,8 @@ support on `state_sink`: `reset_for_test`, `reconnect_requested_for_test`.
   correction) issues no request and answers `SpawnOutcome::SkippedOnReplay`.
 - New public items: `IfRunning`, `SpawnOutcome`, `SpawnError`, `SpawnHandle`,
   re-exported from `flezha_runner::tasklet`. Example:
-  `examples/spawn_workflow_worker.rs`.
-- **Wire**: additive `SpawnWorkflowRequest` (tag 34) / `SpawnWorkflowResponse`
+  `examples/spawn_steps_worker.rs`.
+- **Wire**: additive `SpawnStepsRequest` (tag 34) / `SpawnStepsResponse`
   (tag 35). Requires a controller of the same release.
 
 ### Determinism contract + output identity (`deterministic-effects-and-output-identity`)
@@ -509,13 +480,13 @@ support on `state_sink`: `reset_for_test`, `reconnect_requested_for_test`.
 ### Performance
 
 - **Dispatch core rewritten behind the `fast-dispatch` cargo feature.** The
-  single-coordinator dispatch loop is replaced with per-operative lock-free
+  single-coordinator dispatch loop is replaced with per-relay lock-free
   mailboxes (`crossbeam::queue::SegQueue` + `AtomicBool inflight`) drained
   by a Chase-Lev work-stealing pool (built on `crossbeam-deque`). The live
-  operative registry is backed by `DashMap` instead of
+  relay registry is backed by `DashMap` instead of
   `RwLock<HashMap>`. Per-message dispatch-overhead drops from ~9 to ≤3
   synchronization operations on the hot path.
-  - Criterion dispatch micro-bench (100 operatives × 10k messages, pure
+  - Criterion dispatch micro-bench (100 relays × 10k messages, pure
     dispatch): ~862k–907k msg/s on a 16-core dev box (baseline: ~90k msg/s).
   - End-to-end `mix bench --runtime rust -n 100 -m 10000`: improvement
     scales with hardware parallelism; see
@@ -528,28 +499,28 @@ support on `state_sink`: `reset_for_test`, `reconnect_requested_for_test`.
 
 ### Preserved invariants (no observable behavior change)
 
-- Sticky per-operative ordering under `OperativeRunner::ThreadPool`: two
-  invocations of the same operative's `process(...)` never overlap, inputs
+- Sticky per-relay ordering under `RelayRunner::ThreadPool`: two
+  invocations of the same relay's `process(...)` never overlap, inputs
   are observed in arrival order.
-- `OperativeRunner::ThreadSpawn`: per-invocation OS thread spawn retained.
+- `RelayRunner::ThreadSpawn`: per-invocation OS thread spawn retained.
 - Reconnect semantics: exponential backoff (200 ms → 30 s cap), state
   reset on unexpected drop, no reconnect on `RunnerDisconnect`.
 - Command dispatch (`AssignRunnerId`, `ConnectSocket`,
-  `AddOperative`, `RemOperative`, `CellState`,
+  `AddRelay`, `RemRelay`, `CellState`,
   `MigrationSerialization`, `MigrationDeserialization`,
   `RunnerDisconnect`) produces byte-identical `CommandResponse`
   bytes.
 - Public API surface unchanged: `new`, `Flezha`, `register_factory`,
-  `OperativeHandler`, `OperativeInput` / `OperativeOutput` /
-  `OperativeResult`, `OperativeSettings`, `FactoryMetadata` keep the same
+  `RelayHandler`, `RelayInput` / `RelayOutput` /
+  `RelayResult`, `RelaySettings`, `FactoryMetadata` keep the same
   signatures.
 
 ### Added (internal)
 
 - `runner/mailbox.rs`, `runner/work_stealing_pool.rs`,
   `runner/fast.rs` — the fast-dispatch internals.
-- `operative::factory_registry::OperativeRegistry` /
-  `OperativeSlot` — DashMap-backed live registry.
+- `relay::factory_registry::RelayRegistry` /
+  `RelaySlot` — DashMap-backed live registry.
 - `benches/dispatch.rs` — Criterion throughput + latency micro-benches.
 - `benches/correctness.rs` — contention-adder, sticky-ordering, thread-spawn
   invariant checks.

@@ -1,5 +1,0 @@
-error: `each` must be one of: once, per_input, chained
- --> tests/ui/operator_unknown_each.rs:1:77
-  |
-1 | #[flezha_runner::operator(id = "chat", sink = "replies", run = steps(each = forever))]
-  |                                                                             ^^^^^^^

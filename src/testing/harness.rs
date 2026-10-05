@@ -26,7 +26,7 @@ use crate::cell::flusher::encode_change;
 use crate::cell::header::SchemaDecision;
 use crate::cell::restore::{decode_change, init_cell_with_payload, RestoreInitPayload};
 use crate::cell::timer::{PendingTimers, TimerKind, TimerOp, TimerSession};
-use crate::operator::dispatcher::emit_sink::apply_identity_stamps;
+use crate::relay::dispatcher::emit_sink::apply_identity_stamps;
 use crate::tasklet::clock::{evaluate, wall_now_ms};
 use crate::tasklet::ctx::{EmitSink, PartRoute};
 use crate::tasklet::{Change, Ctx, Tasklet, TaskletError};
@@ -627,7 +627,7 @@ impl<'a> EmitSink for RecordingEmitSink<'a> {
         self.keyed
     }
 
-    /// The harness runs a steps operator's tasklet as readily as a flow operator's, so
+    /// The harness runs a steps relay's tasklet as readily as a flow relay's, so
     /// it accepts a completion and, like a checkpoint, records nothing.
     fn complete(&mut self, _result: Vec<u8>) -> Result<(), TaskletError> {
         Ok(())

@@ -5,10 +5,10 @@ use std::sync::Arc;
 
 use super::fixtures::*;
 use crate::channel::{ChannelBuilder, ChannelKind};
-use crate::operator::registry::OperatorRegistry;
+use crate::relay::registry::RelayRegistry;
 use crate::steps::*;
 use crate::tasklet::{Ctx, Tasklet, TaskletError};
-use crate::{Durable, ErrorModel, Operator, OperatorSettings, Run, SleepAfter};
+use crate::{Durable, ErrorModel, Relay, RelaySettings, Run, SleepAfter};
 
 #[test]
 fn steps_error_conversions() {
@@ -28,7 +28,7 @@ fn steps_error_conversions() {
 #[test]
 fn register_steps_makes_factory_resolvable() {
     struct RegSteps;
-    impl Operator for RegSteps {
+    impl Relay for RegSteps {
         fn factory_id() -> &'static str {
             "test-getclass-steps"
         }
@@ -36,17 +36,17 @@ fn register_steps_makes_factory_resolvable() {
             c.input::<String>("in").into::<EchoTask>();
         }
 
-        fn settings() -> OperatorSettings {
-            OperatorSettings {
+        fn settings() -> RelaySettings {
+            RelaySettings {
                 run: Run::Steps {
                     each: Each::Once,
                     on_failure: OnFailure::UndoAll,
                 },
-                ..OperatorSettings::default()
+                ..RelaySettings::default()
             }
         }
     }
-    let get_class = crate::operator::registry::get_class;
+    let get_class = crate::relay::registry::get_class;
     assert!(get_class("test-getclass-steps").is_none());
     crate::register_class::<RegSteps>().unwrap();
     let class = get_class("test-getclass-steps").expect("registered");
@@ -54,13 +54,13 @@ fn register_steps_makes_factory_resolvable() {
     assert!(get_class("test-nonexistent-steps").is_none());
 }
 
-/// One registry holds both kinds: a steps instance is an operator
+/// One registry holds both kinds: a steps instance is a relay
 /// instance that carries a run.
 #[test]
 fn the_one_registry_holds_a_steps_instance() {
-    let reg = OperatorRegistry::new();
+    let reg = RelayRegistry::new();
     let class = spec::build_spec::<EmitSteps>().expect("the fixture registers");
-    reg.register(crate::operator::instance::OperatorInstance::new(
+    reg.register(crate::relay::instance::RelayInstance::new(
         class,
         Arc::from("t1"),
     ));
@@ -112,7 +112,7 @@ fn a_steps_class_that_never_ends_is_accepted() {
 #[test]
 fn a_durable_handoff_is_journalable_with_nothing_declared() {
     struct NoCodec;
-    impl Operator for NoCodec {
+    impl Relay for NoCodec {
         fn factory_id() -> &'static str {
             "test-no-codec-steps"
         }
@@ -123,13 +123,13 @@ fn a_durable_handoff_is_journalable_with_nothing_declared() {
                 .into::<Stage2>();
         }
 
-        fn settings() -> OperatorSettings {
-            OperatorSettings {
+        fn settings() -> RelaySettings {
+            RelaySettings {
                 run: Run::Steps {
                     each: Each::Once,
                     on_failure: OnFailure::UndoAll,
                 },
-                ..OperatorSettings::default()
+                ..RelaySettings::default()
             }
         }
     }
@@ -193,7 +193,7 @@ fn loop_authoring_is_validated() {
 /// fail-fast, and `retry_max(0)` is the shared topology refusal.
 #[test]
 fn the_retry_policy_is_the_edges() {
-    let edge = |class: &crate::operator::topology::OperatorTopology, name: &str| {
+    let edge = |class: &crate::relay::topology::RelayTopology, name: &str| {
         let id = class.lookup_channel_id(name).expect("channel declared");
         class.channel(id).expect("channel built").retry
     };
@@ -205,7 +205,7 @@ fn the_retry_policy_is_the_edges() {
     assert_eq!(edge(&fail_fast, "mid2").max_attempts, 1);
 
     struct NoAttempt;
-    impl Operator for NoAttempt {
+    impl Relay for NoAttempt {
         fn factory_id() -> &'static str {
             "test-retry-no-attempt"
         }
@@ -213,13 +213,13 @@ fn the_retry_policy_is_the_edges() {
             retry_chain(c, 0, 10);
         }
 
-        fn settings() -> OperatorSettings {
-            OperatorSettings {
+        fn settings() -> RelaySettings {
+            RelaySettings {
                 run: Run::Steps {
                     each: Each::Once,
                     on_failure: OnFailure::UndoAll,
                 },
-                ..OperatorSettings::default()
+                ..RelaySettings::default()
             }
         }
     }
@@ -228,7 +228,7 @@ fn the_retry_policy_is_the_edges() {
 }
 
 /// A sleeping instance is evicted and restored from its durable state, so a
-/// class that keeps none is refused by name, whichever kind it is; a steps operator
+/// class that keeps none is refused by name, whichever kind it is; a steps relay
 /// sleeps by default exactly when it persists.
 /// The sleep interval is the class's own, whichever way it runs: by default
 /// six hours for a steps class and never for a flow class, off with
@@ -236,36 +236,36 @@ fn the_retry_policy_is_the_edges() {
 #[test]
 fn the_sleep_interval_is_a_durable_setting_of_either_run() {
     struct Quick;
-    impl Operator for Quick {
+    impl Relay for Quick {
         fn factory_id() -> &'static str {
             "test-sleep-quick"
         }
         fn channels(c: &ChannelBuilder) {
             two_stage_chain(c);
         }
-        fn settings() -> OperatorSettings {
-            OperatorSettings {
+        fn settings() -> RelaySettings {
+            RelaySettings {
                 run: Run::steps(Each::Once),
                 durable: Durable::Local {
                     sleep_after: SleepAfter::After(std::time::Duration::from_secs(2)),
                 },
-                ..OperatorSettings::default()
+                ..RelaySettings::default()
             }
         }
     }
     struct InMemory;
-    impl Operator for InMemory {
+    impl Relay for InMemory {
         fn factory_id() -> &'static str {
             "test-sleep-in-memory"
         }
         fn channels(c: &ChannelBuilder) {
             two_stage_chain(c);
         }
-        fn settings() -> OperatorSettings {
-            OperatorSettings {
+        fn settings() -> RelaySettings {
+            RelaySettings {
                 run: Run::steps(Each::Once),
                 durable: Durable::Memory,
-                ..OperatorSettings::default()
+                ..RelaySettings::default()
             }
         }
     }
@@ -277,10 +277,10 @@ fn the_sleep_interval_is_a_durable_setting_of_either_run() {
     let default = spec::build_spec::<NeverEndingSteps>().expect("registers");
     assert_eq!(
         default.sleep_after(),
-        Some(crate::operator::DEFAULT_SLEEP_AFTER)
+        Some(crate::relay::DEFAULT_SLEEP_AFTER)
     );
     struct FlowDefault;
-    impl Operator for FlowDefault {
+    impl Relay for FlowDefault {
         fn factory_id() -> &'static str {
             "test-sleep-flow-default"
         }
@@ -288,7 +288,7 @@ fn the_sleep_interval_is_a_durable_setting_of_either_run() {
             two_stage_chain(c);
         }
     }
-    let flow = crate::operator::builder::build_topology_for::<FlowDefault>().expect("registers");
+    let flow = crate::relay::builder::build_topology_for::<FlowDefault>().expect("registers");
     assert_eq!(
         flow.sleep_after(),
         None,
@@ -296,7 +296,7 @@ fn the_sleep_interval_is_a_durable_setting_of_either_run() {
     );
 }
 
-/// `durable: remote` reaches the class the controller's `AddOperator`
+/// `durable: remote` reaches the class the controller's `AddRelay`
 /// response is built from; a class that says nothing keeps its work locally,
 /// so no commit barrier waits on a remote store.
 #[test]
@@ -305,18 +305,18 @@ fn remote_durability_is_declared_per_class_and_off_by_default() {
     assert!(!default.durable.is_remote());
 
     struct Remote;
-    impl Operator for Remote {
+    impl Relay for Remote {
         fn factory_id() -> &'static str {
             "test-sync-durable"
         }
         fn channels(c: &ChannelBuilder) {
             two_stage_chain(c);
         }
-        fn settings() -> OperatorSettings {
-            OperatorSettings {
+        fn settings() -> RelaySettings {
+            RelaySettings {
                 run: Run::steps(Each::Once),
                 durable: Durable::remote(),
-                ..OperatorSettings::default()
+                ..RelaySettings::default()
             }
         }
     }
@@ -329,21 +329,21 @@ fn remote_durability_is_declared_per_class_and_off_by_default() {
 #[test]
 fn a_flow_class_may_declare_remote() {
     struct RemoteFlow;
-    impl Operator for RemoteFlow {
+    impl Relay for RemoteFlow {
         fn factory_id() -> &'static str {
             "test-remote-flow"
         }
         fn channels(c: &ChannelBuilder) {
             c.input::<String>("in").into::<EchoTask>();
         }
-        fn settings() -> OperatorSettings {
-            OperatorSettings {
+        fn settings() -> RelaySettings {
+            RelaySettings {
                 durable: Durable::remote(),
-                ..OperatorSettings::default()
+                ..RelaySettings::default()
             }
         }
     }
-    let topology = crate::operator::builder::build_topology_for::<RemoteFlow>()
+    let topology = crate::relay::builder::build_topology_for::<RemoteFlow>()
         .expect("a remote flow class registers");
     assert!(topology.durable.is_remote());
 }
@@ -427,7 +427,7 @@ fn dag_topology_is_validated() {
     // A cycle is refused with an error identifying it (surfaced through the
     // shared topology validation).
     struct Cyclic;
-    impl Operator for Cyclic {
+    impl Relay for Cyclic {
         fn factory_id() -> &'static str {
             "test-cyclic-steps"
         }
@@ -440,13 +440,13 @@ fn dag_topology_is_validated() {
                 .into::<Stage1>();
         }
 
-        fn settings() -> OperatorSettings {
-            OperatorSettings {
+        fn settings() -> RelaySettings {
+            RelaySettings {
                 run: Run::Steps {
                     each: Each::Once,
                     on_failure: OnFailure::UndoAll,
                 },
-                ..OperatorSettings::default()
+                ..RelaySettings::default()
             }
         }
     }
@@ -458,11 +458,11 @@ fn dag_topology_is_validated() {
     assert_eq!(refused.code(), "topology.cycle");
 
     // `multi-input-tasklets`: every message carries the channel it arrived
-    // on, so an entry channel is a merge source on a steps operator as on a
+    // on, so an entry channel is a merge source on a steps relay as on a
     // stream, and each entry channel roots its own chain over the merged
     // tasklet.
     struct EntryMergeSteps;
-    impl Operator for EntryMergeSteps {
+    impl Relay for EntryMergeSteps {
         fn factory_id() -> &'static str {
             "test-entry-merge-steps"
         }
@@ -473,13 +473,13 @@ fn dag_topology_is_validated() {
                 .into::<MergeJoinTask>();
         }
 
-        fn settings() -> OperatorSettings {
-            OperatorSettings {
+        fn settings() -> RelaySettings {
+            RelaySettings {
                 run: Run::Steps {
                     each: Each::Once,
                     on_failure: OnFailure::UndoAll,
                 },
-                ..OperatorSettings::default()
+                ..RelaySettings::default()
             }
         }
     }
@@ -515,7 +515,7 @@ fn dag_topology_is_validated() {
     // A handoff-chained loop over a branching tree has no single terminal
     // batch to seed iteration N+1 from.
     struct BranchingChained;
-    impl Operator for BranchingChained {
+    impl Relay for BranchingChained {
         fn factory_id() -> &'static str {
             "test-branching-chained-steps"
         }
@@ -523,13 +523,13 @@ fn dag_topology_is_validated() {
             tree_chain(c);
         }
 
-        fn settings() -> OperatorSettings {
-            OperatorSettings {
+        fn settings() -> RelaySettings {
+            RelaySettings {
                 run: Run::Steps {
                     each: Each::Chained,
                     on_failure: OnFailure::UndoAll,
                 },
-                ..OperatorSettings::default()
+                ..RelaySettings::default()
             }
         }
     }
@@ -558,7 +558,7 @@ fn a_keyed_edge_makes_a_steps_tasklet_dynamic() {
         }
     }
     struct DynSteps;
-    impl Operator for DynSteps {
+    impl Relay for DynSteps {
         fn factory_id() -> &'static str {
             "test-dyn-steps"
         }
@@ -569,13 +569,13 @@ fn a_keyed_edge_makes_a_steps_tasklet_dynamic() {
                 .into::<DynTask>();
         }
 
-        fn settings() -> OperatorSettings {
-            OperatorSettings {
+        fn settings() -> RelaySettings {
+            RelaySettings {
                 run: Run::Steps {
                     each: Each::Once,
                     on_failure: OnFailure::UndoAll,
                 },
-                ..OperatorSettings::default()
+                ..RelaySettings::default()
             }
         }
     }
@@ -583,10 +583,9 @@ fn a_keyed_edge_makes_a_steps_tasklet_dynamic() {
     let keyed = topology.tasklet_name_to_id["steps_dyn_op"];
     assert_eq!(
         topology.tasklets[keyed as usize].mode,
-        flz_core::operator::topology::CellMode::Dynamic
+        flz_core::relay::topology::CellMode::Dynamic
     );
-    let instance =
-        flz_core::operator::instance::OperatorInstance::new(topology, "dyn-steps-1".into());
+    let instance = flz_core::relay::instance::RelayInstance::new(topology, "dyn-steps-1".into());
     assert!(
         instance.cells[keyed as usize].is_empty(),
         "no Cell before a pass"

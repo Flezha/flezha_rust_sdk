@@ -29,10 +29,10 @@ test_tasklet!(BoundTail, "holdback_bound_tail", String => (), (), cap 1, |input,
     Ok(())
 });
 
-struct BoundOperator;
-impl Operator for BoundOperator {
+struct BoundRelay;
+impl Relay for BoundRelay {
     fn factory_id() -> &'static str {
-        "holdback_bound_operator"
+        "holdback_bound_relay"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
@@ -59,7 +59,7 @@ fn emitting_past_the_bound_delivers_everything_in_order() {
         Ordering::Release,
     );
 
-    let (handle, instance) = setup::<BoundOperator>("holdback-bound");
+    let (handle, instance) = setup::<BoundRelay>("holdback-bound");
     let stream = dummy_stream();
     dispatch_input(&handle, "holdback-bound", "input", b"go".to_vec(), &stream);
 
@@ -121,10 +121,10 @@ test_tasklet!(LoadTail, "holdback_load_tail", String => (), (), cap 1, |_input, 
     Ok(())
 });
 
-struct LoadOperator;
-impl Operator for LoadOperator {
+struct LoadRelay;
+impl Relay for LoadRelay {
     fn factory_id() -> &'static str {
-        "holdback_load_operator"
+        "holdback_load_relay"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
@@ -153,7 +153,7 @@ fn concurrent_feeders_against_a_live_drain_never_leak_a_gate() {
     flz_core::admission::set_nonparking_for_tests(true);
     LOAD_SEEN.store(0, Ordering::Release);
 
-    let (handle, instance) = setup::<LoadOperator>("holdback-load");
+    let (handle, instance) = setup::<LoadRelay>("holdback-load");
     let handle = Arc::new(handle);
     let started = std::time::Instant::now();
     let feeders: Vec<_> = (0..FEEDERS)

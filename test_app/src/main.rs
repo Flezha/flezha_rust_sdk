@@ -12,8 +12,8 @@ pub(crate) use flezha_runner::state::{postcard, Change, ClockKind, CoalesceKey, 
 pub(crate) use flezha_runner::tasklet::{Ctx, Tasklet, TaskletError};
 pub(crate) use flezha_runner::{
     AckGranularity, BeyondWindowPolicy, ChannelBuilder, CheckpointOutputs, CheckpointPolicy,
-    Durable, Each, Exactly, Flezha, FlezhaRunner, OnFailure, Operator, OperatorSettings,
-    OverflowPolicy, Run, SleepAfter, Stream,
+    Durable, Each, Exactly, Flezha, FlezhaRunner, OnFailure, OverflowPolicy, Relay, RelaySettings,
+    Run, SleepAfter, Stream,
 };
 pub(crate) use serde::{Deserialize, Serialize};
 
@@ -25,7 +25,7 @@ pub(crate) fn fixture_durable() -> Durable {
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .map_or(
-            flezha_runner::operator::DEFAULT_SLEEP_AFTER,
+            flezha_runner::relay::DEFAULT_SLEEP_AFTER,
             Duration::from_millis,
         );
     Durable::Local {
@@ -37,9 +37,9 @@ mod call;
 mod cell;
 mod channel;
 mod conformance;
-mod operator_call;
 mod part;
 mod probe;
+mod relay_call;
 mod state;
 mod steps;
 mod steps_loop;
@@ -49,9 +49,9 @@ mod sugar;
 use crate::call::*;
 use crate::cell::*;
 use crate::channel::*;
-use crate::operator_call::*;
 use crate::part::*;
 use crate::probe::*;
+use crate::relay_call::*;
 use crate::state::*;
 use crate::steps::*;
 use crate::steps_loop::*;
@@ -91,62 +91,62 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Ok(script) = env::var("FLEZHA_ADMIN_SCRIPT") {
         run_admin_script(&runner, script);
     }
-    // The local-send drill: `{"operator", "channel", "message", "when"}` sends
+    // The local-send drill: `{"relay", "channel", "message", "when"}` sends
     // this app's own code makes with `local`, each once the file `when` names
-    // exists, so the e2e can prove the operator's sink live first.
+    // exists, so the e2e can prove the relay's sink live first.
     if let Ok(script) = env::var("FLEZHA_LOCAL_SEND_SCRIPT") {
         run_local_sends(script);
     }
     runner
-        .register_factory(DoNothingOperator)?
-        .register_factory(CompleteFlowOperator)?
-        .register_factory(StoreInputOperator)?
-        .register_factory(CompareFilterOperator)?
-        .register_factory(StaticCellOperator)?
-        .register_factory(CellStressOperator)?
-        .register_factory(BoundedMailboxDropNothingOperator)?
-        .register_factory(BoundedMailboxDropNewestOperator)?
-        .register_factory(BoundedMailboxDropOldestOperator)?
-        .register_factory(StatefulCounterOperator)?
-        .register_factory(CoalescingCounterOperator)?
-        .register_factory(PersistenceOffOperator)?
-        .register_factory(SleepingCounterOperator)?
-        .register_factory(HybridChannelOperator)?
-        .register_factory(MergedInputOperator)?
-        .register_factory(TransformChainOperator)?
-        .register_factory(CallEchoOperator)?
-        .register_factory(CallDownstreamOperator)?
-        .register_factory(CallSplitOperator)?
+        .register_factory(DoNothingRelay)?
+        .register_factory(CompleteFlowRelay)?
+        .register_factory(StoreInputRelay)?
+        .register_factory(CompareFilterRelay)?
+        .register_factory(StaticCellRelay)?
+        .register_factory(CellStressRelay)?
+        .register_factory(BoundedMailboxDropNothingRelay)?
+        .register_factory(BoundedMailboxDropNewestRelay)?
+        .register_factory(BoundedMailboxDropOldestRelay)?
+        .register_factory(StatefulCounterRelay)?
+        .register_factory(CoalescingCounterRelay)?
+        .register_factory(PersistenceOffRelay)?
+        .register_factory(SleepingCounterRelay)?
+        .register_factory(HybridChannelRelay)?
+        .register_factory(MergedInputRelay)?
+        .register_factory(TransformChainRelay)?
+        .register_factory(CallEchoRelay)?
+        .register_factory(CallDownstreamRelay)?
+        .register_factory(CallSplitRelay)?
         .register_factory(CallTurnSteps)?
-        .register_factory(CallPricingOperator)?
-        .register_factory(CallOrdersOperator)?
+        .register_factory(CallPricingRelay)?
+        .register_factory(CallOrdersRelay)?
         .register_factory(CallAgentSteps)?
-        .register_factory(CallGatewayOperator)?
+        .register_factory(CallGatewayRelay)?
         .register_factory(CallToolSessionSteps)?
-        .register_factory(PartEchoOperator)?
+        .register_factory(PartEchoRelay)?
         .register_factory(PartEchoSteps)?
-        .register_factory(ResumeProbeOperator)?
-        .register_factory(SchemaEvolutionV1Operator)?
-        .register_factory(SchemaEvolutionV2Operator)?
-        .register_factory(DynamicCellOperator)?
-        .register_factory(PartitionRelayOperator)?
-        .register_factory(SessionTimeoutOperator)?
-        .register_factory(MixedOperator)?
-        .register_factory(TierStoreOperator)?
-        .register_factory(RemoteTierStoreOperator)?
-        .register_factory(TierChainOperator)?
-        .register_factory(BenchEchoOperator)?
-        .register_factory(BenchKeyedOperator)?
-        .register_factory(BenchKeyedNoPersistOperator)?
-        .register_factory(CheckpointStoreOperator)?
-        .register_factory(CheckpointBatchedOperator)?
-        .register_factory(BenchCheckpointOperator)?
-        .register_factory(PoisonProbeOperator)?
-        .register_factory(WedgeProbeOperator)?
-        .register_factory(CandleOperator)?
-        .register_factory(SpawnRequesterOperator)?
-        .register_factory(SpawnHoldRequesterOperator)?
-        .register_factory(SpawnOnceRequesterOperator)?
+        .register_factory(ResumeProbeRelay)?
+        .register_factory(SchemaEvolutionV1Relay)?
+        .register_factory(SchemaEvolutionV2Relay)?
+        .register_factory(DynamicCellRelay)?
+        .register_factory(PartitionPassRelay)?
+        .register_factory(SessionTimeoutRelay)?
+        .register_factory(MixedRelay)?
+        .register_factory(TierStoreRelay)?
+        .register_factory(RemoteTierStoreRelay)?
+        .register_factory(TierChainRelay)?
+        .register_factory(BenchEchoRelay)?
+        .register_factory(BenchKeyedRelay)?
+        .register_factory(BenchKeyedNoPersistRelay)?
+        .register_factory(CheckpointStoreRelay)?
+        .register_factory(CheckpointBatchedRelay)?
+        .register_factory(BenchCheckpointRelay)?
+        .register_factory(PoisonProbeRelay)?
+        .register_factory(WedgeProbeRelay)?
+        .register_factory(CandleRelay)?
+        .register_factory(SpawnRequesterRelay)?
+        .register_factory(SpawnHoldRequesterRelay)?
+        .register_factory(SpawnOnceRequesterRelay)?
         .register_factory(SugarDoNothing)?
         .register_factory(SugarStoreInput)?
         .register_factory(SugarNamedInput)?
@@ -230,23 +230,23 @@ fn admin_answer(
 }
 
 /// Each local send of the drill once its trigger file exists, printing
-/// `local_send <operator> ok` or `local_send <operator> err <code>`.
+/// `local_send <relay> ok` or `local_send <relay> err <code>`.
 fn run_local_sends(script: String) {
     thread::spawn(move || {
         let sends: Vec<serde_json::Value> =
             serde_json::from_str(&script).expect("FLEZHA_LOCAL_SEND_SCRIPT is a JSON array");
         for send in sends {
             let field = |name: &str| send[name].as_str().unwrap_or_default().to_string();
-            let operator = field("operator");
+            let relay = field("relay");
             while !std::path::Path::new(&field("when")).exists() {
                 thread::sleep(Duration::from_millis(50));
             }
             let runner = Flezha::current_runner().expect("the runner is serving");
             let opts = flezha_runner::SendOpts::new().local();
-            match runner.send(&operator, &field("message"), &field("channel"), &opts) {
-                Ok(_) => println!("local_send {operator} ok"),
+            match runner.send(&relay, &field("message"), &field("channel"), &opts) {
+                Ok(_) => println!("local_send {relay} ok"),
                 Err(e) => println!(
-                    "local_send {operator} err {}",
+                    "local_send {relay} err {}",
                     flezha_runner::ErrorModel::code(&e)
                 ),
             }

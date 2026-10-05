@@ -1,4 +1,4 @@
-use flezha_runner::{ChannelBuilder, Operator};
+use flezha_runner::{ChannelBuilder, Relay};
 use serde::Deserialize;
 
 use crate::buy_above_average::BuyAboveAverage;
@@ -20,14 +20,14 @@ pub struct TradeMessage {
 /// The desk's stream: trades in, each price compared with its symbol's recent
 /// average, and an order started when a price jumps far enough above it.
 ///
-/// A flow operator runs for as long as the desk does. The exchange sends
+/// A flow relay runs for as long as the desk does. The exchange sends
 /// other messages beside its trades and delivers several trades in one message,
 /// so the wiring keeps the trade messages, splits each into its trades before
 /// anything else sees them, drops what the desk does not follow, and routes the
 /// rest to a cell per symbol.
-pub struct TradeWatcherOperator;
+pub struct TradeWatcherRelay;
 
-impl Operator for TradeWatcherOperator {
+impl Relay for TradeWatcherRelay {
     fn factory_id() -> &'static str {
         "trade_watcher"
     }

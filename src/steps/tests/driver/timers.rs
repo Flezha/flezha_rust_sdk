@@ -1,4 +1,4 @@
-//! Timers inside a steps operator: a firing opens a pass at the tasklet that set it,
+//! Timers inside a steps relay: a firing opens a pass at the tasklet that set it,
 //! joins that tasklet's stage while it runs, or waits its turn behind the pass
 //! in flight; the root's commit names it, a resume either fires it again or
 //! knows it fired, and a sleeper parks naming the earliest one.
@@ -6,8 +6,8 @@
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crossbeam::channel::Receiver;
-use flz_core::steps::instance::{CommittedTask, EdgeHandoff, FiringKey, JournalResume};
 use flz_core::runner::RunnerNode;
+use flz_core::steps::instance::{CommittedTask, EdgeHandoff, FiringKey, JournalResume};
 use flz_core::timer::{TimerKind, TimerOp};
 use flz_core::util::LockRecover;
 
@@ -40,7 +40,7 @@ fn a_firing_opens_a_pass_at_the_tasklet_that_set_it(
     let at = drain_armed()[0];
     assert_eq!(
         texts(&outs),
-        [format!("relay:armed:{at}"), format!("relay:fired:{at}")],
+        [format!("tock:armed:{at}"), format!("tock:fired:{at}")],
         "the firing reached the sink with no second message"
     );
     settle(rx, id);
@@ -100,9 +100,9 @@ fn a_firing_during_a_pass_waits_and_runs_before_a_later_message(
     assert_eq!(
         texts(&outs),
         [
-            format!("relay:armed-slow:{at}"),
-            format!("relay:fired:{at}"),
-            "relay:later".to_string()
+            format!("tock:armed-slow:{at}"),
+            format!("tock:fired:{at}"),
+            "tock:later".to_string()
         ],
         "the firing waited for the boundary and ran ahead of the message that came after it"
     );
@@ -130,9 +130,9 @@ fn a_firing_joins_its_own_stage_while_it_runs(node: &RunnerNode, rx: &Receiver<R
     assert_eq!(
         texts(&outs),
         [
-            format!("relay:armed:{at}"),
-            "relay:hold:250".to_string(),
-            format!("relay:fired:{at}")
+            format!("tock:armed:{at}"),
+            "tock:hold:250".to_string(),
+            format!("tock:fired:{at}")
         ]
     );
     settle(rx, id);
@@ -172,18 +172,16 @@ fn a_chained_loops_carry_yields_to_a_queued_firing(
                 command,
             } => {
                 if !held
-                    && matches!(&*command, crate::pb::command_request::Command::IterCommit(c) if c.operator_id == id)
+                    && matches!(&*command, crate::pb::command_request::Command::IterCommit(c) if c.relay_id == id)
                 {
                     held = true;
                     std::thread::sleep(Duration::from_millis(60));
                 }
                 ack_control_request(reference_id, *command);
             }
-            RunnerMessage::EmitOperatorCompleted {
-                operator_id,
-                status,
-                ..
-            } if operator_id == id => break status,
+            RunnerMessage::EmitRelayCompleted {
+                relay_id, status, ..
+            } if relay_id == id => break status,
             _ => {}
         }
     };
@@ -233,7 +231,7 @@ fn a_crash_before_the_roots_ack_fires_the_timer_again(
     restored(&inst);
 
     let outs = pump(rx, id, |outs| outs.len() == 1);
-    assert_eq!(texts(&outs), [format!("relay:fired:{at}")]);
+    assert_eq!(texts(&outs), [format!("tock:fired:{at}")]);
     settle(rx, id);
     assert_eq!(
         stages(&task_commits_of(id)),
@@ -250,7 +248,7 @@ fn a_crash_after_the_roots_ack_does_not_fire_it_again(
     let id = "timer-resume-after";
     let at = now_ms() + 30;
     let tick_id = crate::cell::flusher::encode_cell_identity(id, "timer_tick", "");
-    let ticked = flz_core::operator::registry::get_class("test-timer-loop")
+    let ticked = flz_core::relay::registry::get_class("test-timer-loop")
         .and_then(|t| t.lookup_channel_id("ticked"))
         .expect("the loop declares `ticked`");
     // `tick` committed the firing's stage; the crash landed before its
@@ -293,8 +291,8 @@ fn a_crash_after_the_roots_ack_does_not_fire_it_again(
     let outs = pump(rx, id, |outs| outs.len() == 1);
     assert_eq!(
         texts(&outs),
-        [format!("relay:fired:{at}")],
-        "`relay` ran seeded from `tick`'s journaled handoff"
+        [format!("tock:fired:{at}")],
+        "`tock` ran seeded from `tick`'s journaled handoff"
     );
     settle(rx, id);
     assert_eq!(
@@ -316,7 +314,7 @@ fn a_sleeper_parks_naming_its_earliest_timer(node: &RunnerNode, rx: &Receiver<Ru
     let armed = drain_armed();
     let parks: Vec<_> = drain_iter_parks()
         .into_iter()
-        .filter(|p| p.operator_id == id)
+        .filter(|p| p.relay_id == id)
         .collect();
     assert_eq!(
         parks[0].wake_deadline_ms, armed[1],
@@ -331,7 +329,7 @@ fn a_sleeper_parks_naming_its_earliest_timer(node: &RunnerNode, rx: &Receiver<Ru
 fn start_loop(
     node: &RunnerNode,
     id: &str,
-) -> std::sync::Arc<flz_core::operator::instance::OperatorInstance> {
+) -> std::sync::Arc<flz_core::relay::instance::RelayInstance> {
     assert!(start(node, "test-timer-loop".into(), id.into(), "").expect("a JSON object"));
     instance(node, id).expect("registered")
 }
@@ -344,7 +342,7 @@ fn bind_restoring(
     journal: JournalResume,
     at: u64,
 ) -> (
-    std::sync::Arc<flz_core::operator::instance::OperatorInstance>,
+    std::sync::Arc<flz_core::relay::instance::RelayInstance>,
     std::sync::Arc<crate::cell::CellSlot>,
 ) {
     assert!(start_resumable(
@@ -393,14 +391,14 @@ fn stages(commits: &[crate::pb::TaskCommit]) -> Vec<(u32, u32, bool)> {
 fn task_commits_of(id: &str) -> Vec<crate::pb::TaskCommit> {
     drain_task_commits()
         .into_iter()
-        .filter(|c| c.operator_id == id && !c.compensating)
+        .filter(|c| c.relay_id == id && !c.compensating)
         .collect()
 }
 
 fn iter_commits_of(id: &str) -> Vec<crate::pb::IterCommit> {
     drain_iter_commits()
         .into_iter()
-        .filter(|c| c.operator_id == id)
+        .filter(|c| c.relay_id == id)
         .collect()
 }
 

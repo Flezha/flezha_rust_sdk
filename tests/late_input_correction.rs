@@ -1,7 +1,7 @@
 //! Late-input correction: a replayed slice is re-forwarded in event-time
 //! order, not arrival order, and the replay never lowers the high-water.
 
-use flezha_runner::{AckGranularity, BeyondWindowPolicy, Exactly, OperatorSettings, Run};
+use flezha_runner::{AckGranularity, BeyondWindowPolicy, Exactly, RelaySettings, Run};
 use flz_transport::transport::FlezhaStream;
 
 mod common;
@@ -32,10 +32,10 @@ impl Tasklet for ReplayTasklet {
     }
 }
 
-struct ReplayOperator;
-impl Operator for ReplayOperator {
+struct ReplayRelay;
+impl Relay for ReplayRelay {
     fn factory_id() -> &'static str {
-        "replay_operator"
+        "replay_relay"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
@@ -44,10 +44,16 @@ impl Operator for ReplayOperator {
             .sink_named("out");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
-            run: Run::Flow { exactly: Exactly::EffectivelyOnce { ack: AckGranularity::PerInput, correction_ms: Some(600_000), beyond_window: BeyondWindowPolicy::ProcessAsArrival } },
-            ..OperatorSettings::default()
+    fn settings() -> RelaySettings {
+        RelaySettings {
+            run: Run::Flow {
+                exactly: Exactly::EffectivelyOnce {
+                    ack: AckGranularity::PerInput,
+                    correction_ms: Some(600_000),
+                    beyond_window: BeyondWindowPolicy::ProcessAsArrival,
+                },
+            },
+            ..RelaySettings::default()
         }
     }
 }
@@ -55,7 +61,7 @@ impl Operator for ReplayOperator {
 #[test]
 fn a_replayed_slice_dispatches_in_event_time_order() {
     REPLAY_OBSERVED.lock().unwrap().clear();
-    let (handle, _instance) = setup::<ReplayOperator>("replay-instance");
+    let (handle, _instance) = setup::<ReplayRelay>("replay-instance");
     let stream = dummy_stream();
 
     // The controller re-forwards in offset (arrival) order — the late "200"
@@ -140,10 +146,10 @@ impl Tasklet for HighWaterTasklet {
     }
 }
 
-struct HighWaterOperator;
-impl Operator for HighWaterOperator {
+struct HighWaterRelay;
+impl Relay for HighWaterRelay {
     fn factory_id() -> &'static str {
-        "high_water_operator"
+        "high_water_relay"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
@@ -152,16 +158,22 @@ impl Operator for HighWaterOperator {
             .sink_named("out");
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
-            run: Run::Flow { exactly: Exactly::EffectivelyOnce { ack: AckGranularity::PerInput, correction_ms: Some(600_000), beyond_window: BeyondWindowPolicy::ProcessAsArrival } },
-            ..OperatorSettings::default()
+    fn settings() -> RelaySettings {
+        RelaySettings {
+            run: Run::Flow {
+                exactly: Exactly::EffectivelyOnce {
+                    ack: AckGranularity::PerInput,
+                    correction_ms: Some(600_000),
+                    beyond_window: BeyondWindowPolicy::ProcessAsArrival,
+                },
+            },
+            ..RelaySettings::default()
         }
     }
 }
 
 fn dispatch_hw(
-    handle: &OperatorDispatchHandle,
+    handle: &RelayDispatchHandle,
     payload: &str,
     stream: &Arc<FlezhaStream>,
     marks: &[(&str, &str)],
@@ -194,7 +206,7 @@ fn a_replay_does_not_lower_the_event_time_high_water() {
     // processed as an arrival, so the observable dispatch would not distinguish the
     // two. The invariant is about the water mark.
     HIGHWATER_OBSERVED.lock().unwrap().clear();
-    let (handle, instance) = setup::<HighWaterOperator>("high-water-instance");
+    let (handle, instance) = setup::<HighWaterRelay>("high-water-instance");
     let stream = dummy_stream();
 
     // Live traffic establishes a high-water of 900.

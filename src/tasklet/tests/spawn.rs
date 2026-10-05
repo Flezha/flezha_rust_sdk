@@ -87,17 +87,15 @@ fn a_flow_factory_is_answered_by_name() {
     let handle = ctx.spawn_steps("prices", b"p".to_vec());
     let (reference_id, request) = shipped(&rx);
     assert_eq!(request.factory_id, "prices");
-    let refusal = flz_core::FlezhaError::with(
-        "operator.factory_not_steps",
-        [("factory", "prices".into())],
-    );
+    let refusal =
+        flz_core::FlezhaError::with("relay.factory_not_steps", [("factory", "prices".into())]);
     flz_core::shutdown::signal_result(&reference_id, Err(refusal.clone()));
 
     let answer = handle.wait();
     assert_eq!(answer, Err(SpawnError::Refused(refusal)));
     assert_eq!(
         answer.unwrap_err().code(),
-        "operator.factory_not_steps",
+        "relay.factory_not_steps",
         "a flow factory is refused under the controller's own code"
     );
 }

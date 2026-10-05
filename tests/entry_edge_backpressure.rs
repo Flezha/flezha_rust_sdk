@@ -24,20 +24,20 @@ test_tasklet!(WireFastBTasklet, "wire_fast_b_tasklet", Vec<u8> => (), (), |_inpu
     Ok(())
 });
 
-struct WireOperatorADefault;
-impl Operator for WireOperatorADefault {
+struct WireRelayADefault;
+impl Relay for WireRelayADefault {
     fn factory_id() -> &'static str {
-        "wire_operator_a_default"
+        "wire_relay_a_default"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<Vec<u8>>("input").into::<WireSlowATasklet>();
     }
 }
 
-struct WireOperatorABlock;
-impl Operator for WireOperatorABlock {
+struct WireRelayABlock;
+impl Relay for WireRelayABlock {
     fn factory_id() -> &'static str {
-        "wire_operator_a_block"
+        "wire_relay_a_block"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<Vec<u8>>("input")
@@ -46,10 +46,10 @@ impl Operator for WireOperatorABlock {
     }
 }
 
-struct WireOperatorADropNewest;
-impl Operator for WireOperatorADropNewest {
+struct WireRelayADropNewest;
+impl Relay for WireRelayADropNewest {
     fn factory_id() -> &'static str {
-        "wire_operator_a_drop_newest"
+        "wire_relay_a_drop_newest"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<Vec<u8>>("input")
@@ -58,10 +58,10 @@ impl Operator for WireOperatorADropNewest {
     }
 }
 
-struct WireOperatorB;
-impl Operator for WireOperatorB {
+struct WireRelayB;
+impl Relay for WireRelayB {
     fn factory_id() -> &'static str {
-        "wire_operator_b"
+        "wire_relay_b"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<Vec<u8>>("input").into::<WireFastBTasklet>();
@@ -69,21 +69,21 @@ impl Operator for WireOperatorB {
 }
 
 /// Spec scenario "A declared drop policy keeps the wire reader running":
-/// when Operator A's entry mailbox is artificially saturated under a
+/// when Relay A's entry mailbox is artificially saturated under a
 /// declared `DropNewest`, the simulated wire-reader continues dispatching
-/// frames to sibling Operator B without delay.
+/// frames to sibling Relay B without delay.
 #[test]
-fn declared_drop_newest_entry_does_not_stall_sibling_operators() {
+fn declared_drop_newest_entry_does_not_stall_sibling_relays() {
     let _serial = WIRE_TEST_LOCK.lock().unwrap();
     WIRE_A_DELIVERED.store(0, Ordering::Release);
     WIRE_B_DELIVERED.store(0, Ordering::Release);
 
-    let registry = Arc::new(OperatorRegistry::new());
+    let registry = Arc::new(RelayRegistry::new());
 
-    let topology_a = build_topology_for::<WireOperatorADropNewest>().expect("topology a");
-    let topology_b = build_topology_for::<WireOperatorB>().expect("topology b");
-    let instance_a = OperatorInstance::new(topology_a, Arc::from("wire-a-drop"));
-    let instance_b = OperatorInstance::new(topology_b, Arc::from("wire-b-drop"));
+    let topology_a = build_topology_for::<WireRelayADropNewest>().expect("topology a");
+    let topology_b = build_topology_for::<WireRelayB>().expect("topology b");
+    let instance_a = RelayInstance::new(topology_a, Arc::from("wire-a-drop"));
+    let instance_b = RelayInstance::new(topology_b, Arc::from("wire-b-drop"));
     registry.register(Arc::clone(&instance_a));
     registry.register(Arc::clone(&instance_b));
 
@@ -92,7 +92,7 @@ fn declared_drop_newest_entry_does_not_stall_sibling_operators() {
     let slot_a = Arc::clone(&instance_a.cells[0][0]);
     assert!(slot_a.mailbox.claim_inflight());
 
-    let handle = OperatorDispatchHandle {
+    let handle = RelayDispatchHandle {
         registry: Arc::clone(&registry),
     };
     let stream = dummy_stream();
@@ -135,35 +135,35 @@ fn declared_drop_newest_entry_does_not_stall_sibling_operators() {
 /// `.on_full(...)` waits exactly like a declared `DropNothing`.
 #[test]
 fn default_entry_policy_waits_and_loses_nothing() {
-    entry_drop_nothing_parks_reader_until_pool_drains::<WireOperatorADefault>("default");
+    entry_drop_nothing_parks_reader_until_pool_drains::<WireRelayADefault>("default");
 }
 
 #[test]
 fn declared_entry_drop_nothing_parks_the_reader_until_the_pool_drains() {
-    entry_drop_nothing_parks_reader_until_pool_drains::<WireOperatorABlock>("block");
+    entry_drop_nothing_parks_reader_until_pool_drains::<WireRelayABlock>("block");
 }
 
-/// Shared body of the entry-edge `Block` scenarios: when Operator A's
+/// Shared body of the entry-edge `Block` scenarios: when Relay A's
 /// entry channel saturates while A's round is queued but not yet served, the
 /// wire-reader thread parks on the push. It never runs A's tasklets itself
 /// — serving a consumer inline is a pool thread's move; a reader doing it
-/// would run one operator's work while every sibling on the connection waits
+/// would run one relay's work while every sibling on the connection waits
 /// — so B's frame, queued behind the parked push, waits too. Once the pool
 /// serves A's round, a pop unparks the reader and every frame lands, none
 /// lost and none counted as dropped.
-fn entry_drop_nothing_parks_reader_until_pool_drains<A: Operator>(tag: &str) {
+fn entry_drop_nothing_parks_reader_until_pool_drains<A: Relay>(tag: &str) {
     let _serial = WIRE_TEST_LOCK.lock().unwrap();
     WIRE_A_DELIVERED.store(0, Ordering::Release);
     WIRE_B_DELIVERED.store(0, Ordering::Release);
 
-    let registry = Arc::new(OperatorRegistry::new());
+    let registry = Arc::new(RelayRegistry::new());
 
     let id_a = format!("wire-a-{tag}");
     let id_b = format!("wire-b-{tag}");
     let topology_a = build_topology_for::<A>().expect("topology a");
-    let topology_b = build_topology_for::<WireOperatorB>().expect("topology b");
-    let instance_a = OperatorInstance::new(topology_a, Arc::from(id_a.as_str()));
-    let instance_b = OperatorInstance::new(topology_b, Arc::from(id_b.as_str()));
+    let topology_b = build_topology_for::<WireRelayB>().expect("topology b");
+    let instance_a = RelayInstance::new(topology_a, Arc::from(id_a.as_str()));
+    let instance_b = RelayInstance::new(topology_b, Arc::from(id_b.as_str()));
     registry.register(Arc::clone(&instance_a));
     registry.register(Arc::clone(&instance_b));
 
@@ -173,7 +173,7 @@ fn entry_drop_nothing_parks_reader_until_pool_drains<A: Operator>(tag: &str) {
     assert!(slot_a.mailbox.claim_inflight());
     let blocked_before = flezha_runner::cell::pushes_blocked_total();
 
-    let handle = OperatorDispatchHandle {
+    let handle = RelayDispatchHandle {
         registry: Arc::clone(&registry),
     };
     let stream = dummy_stream();

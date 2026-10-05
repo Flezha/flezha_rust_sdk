@@ -1,12 +1,12 @@
-//! Running a declared operator graph in this process, with no controller.
+//! Running a declared relay graph in this process, with no controller.
 //!
-//! [`LocalOperator::start`] takes the operator type you deploy, runs the
+//! [`LocalRelay::start`] takes the relay type you deploy, runs the
 //! `channels()` graph it already declares, and drives it on the crate's own
 //! poll workers — the same ones a started runner uses. Nothing about the
 //! class changes: no local-mode member, no second declaration.
 //!
 //! ```ignore
-//! let run = LocalOperator::start::<WordCount>()?;
+//! let run = LocalRelay::start::<WordCount>()?;
 //! run.on_sink("totals", |output| println!("{:?}", output.payload))?;
 //! run.feed("lines", "the quick brown fox")?;
 //! run.run_until_idle(Duration::from_secs(5))?;
@@ -23,21 +23,21 @@ use std::time::Duration;
 use flz_core::local::LocalRun;
 pub use flz_core::local::{SinkOutput, NON_DURABILITY_NOTICE};
 
-use crate::operator::Operator;
+use crate::relay::Relay;
 use crate::runner_handle::FlezhaError;
 
-/// One operator graph running in this process. Dropping it stops the run.
-pub struct LocalOperator {
+/// One relay graph running in this process. Dropping it stops the run.
+pub struct LocalRelay {
     run: LocalRun,
 }
 
-impl LocalOperator {
+impl LocalRelay {
     /// Register `R`'s declared graph and start it locally. Refuses a
     /// declaration that needs a controller, naming the capability.
-    pub fn start<R: Operator>() -> Result<Self, FlezhaError> {
+    pub fn start<R: Relay>() -> Result<Self, FlezhaError> {
         crate::register_class::<R>()?;
-        crate::operator::poll_pool::ensure_poll_workers();
-        Ok(LocalOperator {
+        crate::relay::poll_pool::ensure_poll_workers();
+        Ok(LocalRelay {
             run: LocalRun::start(R::factory_id(), &format!("{}-local", R::factory_id()))?,
         })
     }

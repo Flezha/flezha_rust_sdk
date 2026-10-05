@@ -1,4 +1,4 @@
-//! A graph's call to another operator: where it goes ([`CallTarget`]) and the
+//! A graph's call to another relay: where it goes ([`CallTarget`]) and the
 //! outcome that comes back on the Response channel ([`Response`]).
 
 use std::any::Any;
@@ -7,7 +7,7 @@ use std::sync::Arc;
 use flz_transport::errors::FlezhaError;
 use serde::de::DeserializeOwned;
 
-/// The operator a `call(...)` reaches: a named instance (or a partition group,
+/// The relay a `call(...)` reaches: a named instance (or a partition group,
 /// whose member the request's key chooses), or a factory's instance.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallTarget {
@@ -41,7 +41,7 @@ impl CallTarget {
     }
 
     /// Whether a factory call starts the instance its key names when none
-    /// holds it (the default); `false` answers `operator.not_found` instead.
+    /// holds it (the default); `false` answers `relay.not_found` instead.
     pub fn create(mut self, create: bool) -> Self {
         self.create = create;
         self

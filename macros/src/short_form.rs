@@ -1,12 +1,12 @@
-//! `#[flezha::operator]`: a whole one-tasklet operator, on one of two
+//! `#[flezha::relay]`: a whole one-tasklet relay, on one of two
 //! targets.
 //!
 //! - A function with no state parameter, returning its output: the attribute
-//!   emits the operator type under the author's PascalCase name and, beside it,
+//!   emits the relay type under the author's PascalCase name and, beside it,
 //!   the tasklet under that name suffixed `Tasklet`, an `impl Tasklet` block
 //!   completed the way `#[flezha::tasklet]` completes one.
 //! - An `impl Tasklet for X` block: the attribute completes the block, naming
-//!   the tasklet after the `id`, and implements the operator trait on `X`
+//!   the tasklet after the `id`, and implements the relay trait on `X`
 //!   itself, generating no type.
 //!
 //! The class's settings tree is written as keys (`run`, `durable`,
@@ -18,16 +18,16 @@ use quote::{format_ident, quote};
 use syn::spanned::Spanned;
 use syn::{FnArg, ImplItem, Item, ItemFn, ItemImpl, LitStr, Meta, Pat, ReturnType, Type};
 
-use crate::operator::{operator_item, Wiring};
+use crate::relay::{relay_item, Wiring};
 use crate::settings::Written;
 use crate::tasklet::{
-    complete, impl_target, key_of, lit_str, parse_metas, unknown_key, TaskletKeys, OPERATOR_KEYS,
+    complete, impl_target, key_of, lit_str, parse_metas, unknown_key, TaskletKeys, RELAY_KEYS,
 };
 use crate::util::{generic_args, snake_ident_to_pascal};
 
-/// The operator keys, beside the tasklet keys both targets share.
+/// The relay keys, beside the tasklet keys both targets share.
 #[derive(Default)]
-struct OperatorKeys {
+struct RelayKeys {
     id: Option<LitStr>,
     /// The plugin sink; `None` declares no plugin channel.
     sink: Option<String>,
@@ -40,7 +40,7 @@ struct OperatorKeys {
 }
 
 /// The attribute every refusal names.
-const ATTRIBUTE: &str = "#[flezha::operator]";
+const ATTRIBUTE: &str = "#[flezha::relay]";
 
 pub(crate) fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> {
     let (keys, tasklet) = parse_keys(attr)?;
@@ -51,8 +51,8 @@ pub(crate) fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
     }
 }
 
-fn parse_keys(attr: TokenStream) -> syn::Result<(OperatorKeys, TaskletKeys)> {
-    let mut keys = OperatorKeys::default();
+fn parse_keys(attr: TokenStream) -> syn::Result<(RelayKeys, TaskletKeys)> {
+    let mut keys = RelayKeys::default();
     let mut tasklet = TaskletKeys::default();
     for meta in parse_metas(attr)? {
         let key = key_of(&meta)?;
@@ -79,7 +79,7 @@ fn refused_key(meta: &Meta, key: &str, attribute: &str) -> syn::Error {
             format!("{attribute}: the tasklet is named after the `id`; remove `name`"),
         );
     }
-    unknown_key(meta, key, attribute, &OPERATOR_KEYS)
+    unknown_key(meta, key, attribute, &RELAY_KEYS)
 }
 
 fn ident(expr: &syn::Expr) -> syn::Result<syn::Ident> {
@@ -90,13 +90,13 @@ fn ident(expr: &syn::Expr) -> syn::Result<syn::Ident> {
     ident.ok_or_else(|| syn::Error::new_spanned(expr, "expected a bare identifier"))
 }
 
-/// The `id` every operator needs: a factory id is an address a user types.
-fn required_id(keys: &OperatorKeys, span: proc_macro2::Span) -> syn::Result<LitStr> {
+/// The `id` every relay needs: a factory id is an address a user types.
+fn required_id(keys: &RelayKeys, span: proc_macro2::Span) -> syn::Result<LitStr> {
     keys.id.clone().ok_or_else(|| {
         syn::Error::new(
             span,
             format!(
-                "{ATTRIBUTE} needs an `id`: an operator's factory id is an address a user types, \
+                "{ATTRIBUTE} needs an `id`: a relay's factory id is an address a user types, \
                  so it is written rather than derived from the function name"
             ),
         )
@@ -111,17 +111,17 @@ fn sink_without_output(span: proc_macro2::Span) -> syn::Error {
     )
 }
 
-/// The operator wiring the entry channel into `tasklet`, and `tasklet` to the
+/// The relay wiring the entry channel into `tasklet`, and `tasklet` to the
 /// sink when one is written.
 fn wiring<'a>(
-    keys: &'a OperatorKeys,
+    keys: &'a RelayKeys,
     id: &'a LitStr,
     tasklet: &Type,
     vis: Option<&'a syn::Visibility>,
     ident: &'a syn::Ident,
 ) -> syn::Result<TokenStream> {
     let id = id.value();
-    operator_item(Wiring {
+    relay_item(Wiring {
         vis,
         ident,
         id: &id,
@@ -136,12 +136,8 @@ fn wiring<'a>(
 }
 
 /// The `impl Tasklet for X` target: the block completed under the `id`, and
-/// the operator trait on `X` itself.
-fn on_impl(
-    keys: &OperatorKeys,
-    tasklet: &TaskletKeys,
-    item: Item,
-) -> syn::Result<TokenStream> {
+/// the relay trait on `X` itself.
+fn on_impl(keys: &RelayKeys, tasklet: &TaskletKeys, item: Item) -> syn::Result<TokenStream> {
     let block: ItemImpl = impl_target(quote! { #item }, ATTRIBUTE)?;
     let id = required_id(keys, block.self_ty.span())?;
     if keys.sink.is_some() && !writes_output(&block) {
@@ -160,11 +156,11 @@ fn on_impl(
         .last()
         .expect("a type path has a segment")
         .ident;
-    let operator = wiring(keys, &id, &self_ty, None, ident)?;
+    let relay = wiring(keys, &id, &self_ty, None, ident)?;
     let completed = complete(tasklet, &id, block)?;
     Ok(quote! {
         #completed
-        #operator
+        #relay
     })
 }
 
@@ -177,16 +173,16 @@ fn writes_output(block: &ItemImpl) -> bool {
 }
 
 /// The function target: the tasklet `XTasklet`, whose `run` emits what the
-/// function returns, and the operator `X` wiring it.
-fn on_function(keys: &OperatorKeys, tasklet: &TaskletKeys, func: ItemFn) -> syn::Result<TokenStream> {
+/// function returns, and the relay `X` wiring it.
+fn on_function(keys: &RelayKeys, tasklet: &TaskletKeys, func: ItemFn) -> syn::Result<TokenStream> {
     let (input_pat, input_ty) = input_param(&func, ATTRIBUTE)?;
     let output = resolve_output(&func.sig.output);
     let id = required_id(keys, func.sig.span())?;
     if keys.sink.is_some() && !output.emits() {
         return Err(sink_without_output(func.sig.span()));
     }
-    let operator_ident = snake_ident_to_pascal(&func.sig.ident);
-    let tasklet_ident = format_ident!("{}Tasklet", operator_ident);
+    let relay_ident = snake_ident_to_pascal(&func.sig.ident);
+    let tasklet_ident = format_ident!("{}Tasklet", relay_ident);
     let output_ty = match &output.shape {
         Shape::Value(ty) | Shape::OptionValue(ty) => quote! { #ty },
         Shape::Unit => quote! { () },
@@ -213,12 +209,12 @@ fn on_function(keys: &OperatorKeys, tasklet: &TaskletKeys, func: ItemFn) -> syn:
     let completed = complete(tasklet, &id, block)?;
     let tasklet_ty: Type = syn::parse_quote! { #tasklet_ident };
     let vis = &func.vis;
-    let operator = wiring(keys, &id, &tasklet_ty, Some(vis), &operator_ident)?;
+    let relay = wiring(keys, &id, &tasklet_ty, Some(vis), &relay_ident)?;
     Ok(quote! {
         #[derive(::core::default::Default)]
         #vis struct #tasklet_ident;
         #completed
-        #operator
+        #relay
     })
 }
 

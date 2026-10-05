@@ -1,5 +1,0 @@
-error: `each` is not a setting of `flow`
- --> tests/ui/operator_misplaced_setting.rs:3:65
-  |
-3 | #[flezha_runner::operator(id = "echo", sink = "out", run = flow(each = per_input))]
-  |                                                                 ^^^^

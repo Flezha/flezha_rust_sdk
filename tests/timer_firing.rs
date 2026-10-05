@@ -17,7 +17,7 @@ fn crossing_the_high_water_fires_in_order_before_the_input() {
     let _guard = timer_test_guard();
     take_order();
 
-    let (handle, instance) = setup::<WindowOperator>("timers-window-order");
+    let (handle, instance) = setup::<WindowRelay>("timers-window-order");
     let stream = dummy_stream();
     dispatch_input(&handle, "timers-window-order", "in", tick(50), &stream);
     assert!(wait_until(
@@ -54,7 +54,7 @@ fn a_quiet_cell_never_fires_its_event_time_timer() {
     let _guard = timer_test_guard();
     take_order();
 
-    let (handle, instance) = setup::<WindowOperator>("timers-window-quiet");
+    let (handle, instance) = setup::<WindowRelay>("timers-window-quiet");
     let stream = dummy_stream();
     dispatch_input(&handle, "timers-window-quiet", "in", tick(50), &stream);
     assert!(wait_until(
@@ -86,7 +86,7 @@ fn a_processing_time_timer_fires_from_the_wake_list_with_its_scheduled_time() {
     let _guard = timer_test_guard();
     take_firings();
 
-    let (handle, _instance) = setup::<SessionOperator>("timers-session-fire");
+    let (handle, _instance) = setup::<SessionRelay>("timers-session-fire");
     let stream = dummy_stream();
     let before = wall_now_ms();
     dispatch_input(
@@ -133,7 +133,7 @@ fn a_firing_into_a_saturated_consumer_waits_for_room_without_holding_a_poller() 
         flezha_runner::transport::FlezhaStream::Unix(sock),
     )));
 
-    let (handle, instance) = setup::<SaturatedSessionOperator>("timers-saturated");
+    let (handle, instance) = setup::<SaturatedSessionRelay>("timers-saturated");
     let registry = Arc::clone(instance.dynamic_registries[0].as_ref().expect("dynamic"));
     let slot = registry.get_or_create("alice").expect("cell");
     let stream = dummy_stream();

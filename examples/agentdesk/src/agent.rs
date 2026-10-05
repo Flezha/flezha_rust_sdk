@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use flezha_runner::{
-    ChannelBuilder, Durable, Each, OnFailure, Operator, OperatorSettings, Run, SleepAfter,
+    ChannelBuilder, Durable, Each, OnFailure, Relay, RelaySettings, Run, SleepAfter,
 };
 use serde::{Deserialize, Serialize};
 
@@ -15,18 +15,18 @@ pub struct Message {
     pub text: String,
 }
 
-/// One conversation: a steps operator that runs one turn per message it is
+/// One conversation: a steps relay that runs one turn per message it is
 /// sent, for as long as the session lasts. Every session is an instance of its
 /// own, with its own state.
-pub struct AgentOperator;
+pub struct AgentRelay;
 
-impl Operator for AgentOperator {
+impl Relay for AgentRelay {
     fn factory_id() -> &'static str {
         "agent"
     }
 
     fn channels(c: &ChannelBuilder) {
-        c.input::<String>("turn") // entry 1: `flz operator call`
+        c.input::<String>("turn") // entry 1: `flz relay call`
             .into::<Reply>()
             .sink_named("answer") // to whoever listens; the chain goes on
             .into::<Deliver>()
@@ -36,8 +36,8 @@ impl Operator for AgentOperator {
             .into::<Reply>();
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
+    fn settings() -> RelaySettings {
+        RelaySettings {
             run: Run::Steps {
                 each: Each::PerInput,                // one turn per message
                 on_failure: OnFailure::KeepProgress, // a failed turn fails alone
@@ -45,7 +45,7 @@ impl Operator for AgentOperator {
             durable: Durable::Local {
                 sleep_after: SleepAfter::After(Duration::from_secs(10)), // an idle session sleeps after 10 s
             },
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }

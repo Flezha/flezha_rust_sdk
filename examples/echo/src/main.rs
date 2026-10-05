@@ -1,10 +1,10 @@
 //! Starts a runner: a process that connects to the controller and serves your
-//! operators.
+//! relays.
 //!
-//! Declare every operator you want served before `start()`. One runner can
-//! serve several, and the same call takes a steps operator.
+//! Declare every relay you want served before `start()`. One runner can
+//! serve several, and the same call takes a steps relay.
 
-mod operator;
+mod relay;
 mod tasklet;
 
 use flezha_runner::Flezha;
@@ -19,18 +19,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The runner is bound to a name because a chained temporary would be
     // dropped, and shut down, at the end of the statement.
     let runner = Flezha::create_runner(namespace)?;
-    // connects to the controller and serves these operators
-    runner.register_factory(operator::EchoOperator)?.start()?;
+    // connects to the controller and serves these relays
+    runner.register_factory(relay::EchoRelay)?.start()?;
 
-    // Everything `flz operator` and `flz plugin` do is also a method of
-    // `control()`, and `send` hands a message to an operator. Uncomment to
+    // Everything `flz relay` and `flz plugin` do is also a method of
+    // `control()`, and `send` hands a message to a relay. Uncomment to
     // drive this namespace from the application instead of from a terminal:
     //
     // let control = runner.control();
-    // control.start_operator(&flezha_runner::OperatorSpec::new("echo").id("my_echo"))?;
+    // control.start_relay(&flezha_runner::RelaySpec::new("echo").id("my_echo"))?;
     // control.enable_plugin(
     //     "writer",
-    //     &flezha_runner::PluginSpec::new("operator_file_sink")
+    //     &flezha_runner::PluginSpec::new("relay_file_sink")
     //         .opts(serde_json::json!({ "path": "echo-out.txt" })),
     // )?;
     // control.bind_plugin("writer", "my_echo", serde_json::json!([["on_output", {}]]), "")?;

@@ -27,10 +27,10 @@ test_tasklet!(TransientTasklet, "transient_tasklet", String => String, (), |_inp
     }
 });
 
-struct TransientOperator;
-impl Operator for TransientOperator {
+struct TransientRelay;
+impl Relay for TransientRelay {
     fn factory_id() -> &'static str {
-        "transient_operator"
+        "transient_relay"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
@@ -45,7 +45,7 @@ fn transient_failure_recovers_within_retry_budget() {
     let _g = SINK_LOCK.lock().unwrap();
     let retries_before = park::RETRIES_TOTAL.load(Ordering::SeqCst);
     let parked_before = park::PARKED_TOTAL.load(Ordering::SeqCst);
-    let (handle, _instance) = setup::<TransientOperator>("transient-instance");
+    let (handle, _instance) = setup::<TransientRelay>("transient-instance");
     let stream = dummy_stream();
 
     dispatch_input(
@@ -91,10 +91,10 @@ test_tasklet!(NonRetryableTasklet, "non_retryable_tasklet", String => String, ()
     }
 });
 
-struct NonRetryableOperator;
-impl Operator for NonRetryableOperator {
+struct NonRetryableRelay;
+impl Relay for NonRetryableRelay {
     fn factory_id() -> &'static str {
-        "non_retryable_operator"
+        "non_retryable_relay"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
@@ -107,7 +107,7 @@ impl Operator for NonRetryableOperator {
 fn non_retryable_error_parks_immediately() {
     let _g = SINK_LOCK.lock().unwrap();
     let parked = install_auto_acking_sink();
-    let (handle, _instance) = setup::<NonRetryableOperator>("nonretry-instance");
+    let (handle, _instance) = setup::<NonRetryableRelay>("nonretry-instance");
     let stream = dummy_stream();
 
     dispatch_input(
@@ -159,10 +159,10 @@ test_tasklet!(PanickyTasklet, "panicky_tasklet", String => String, (), |input, _
     Ok(())
 });
 
-struct PanickyOperator;
-impl Operator for PanickyOperator {
+struct PanickyRelay;
+impl Relay for PanickyRelay {
     fn factory_id() -> &'static str {
-        "panicky_operator"
+        "panicky_relay"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
@@ -175,7 +175,7 @@ impl Operator for PanickyOperator {
 fn panic_parity_exhausts_budget_then_parks_and_continues() {
     let _g = SINK_LOCK.lock().unwrap();
     let parked = install_auto_acking_sink();
-    let (handle, _instance) = setup::<PanickyOperator>("panicky-instance");
+    let (handle, _instance) = setup::<PanickyRelay>("panicky-instance");
     let stream = dummy_stream();
 
     dispatch_input(
@@ -233,10 +233,10 @@ test_tasklet!(TypedOrderTasklet, "typed_order_tasklet", TypedOrder => String, ()
     Ok(())
 });
 
-struct TypedEntryOperator;
-impl Operator for TypedEntryOperator {
+struct TypedEntryRelay;
+impl Relay for TypedEntryRelay {
     fn factory_id() -> &'static str {
-        "typed_entry_operator"
+        "typed_entry_relay"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<TypedOrder>("orders")
@@ -253,7 +253,7 @@ impl Operator for TypedEntryOperator {
 fn entry_parse_failure_exhausts_budget_then_parks() {
     let _g = SINK_LOCK.lock().unwrap();
     let parked = install_auto_acking_sink();
-    let (handle, _instance) = setup::<TypedEntryOperator>("typed-entry-instance");
+    let (handle, _instance) = setup::<TypedEntryRelay>("typed-entry-instance");
     let stream = dummy_stream();
 
     dispatch_input(

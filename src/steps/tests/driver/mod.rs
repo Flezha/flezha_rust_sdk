@@ -10,8 +10,8 @@ use flz_core::runner::RunnerNode;
 
 use super::fake_controller::*;
 use super::fixtures::*;
-use crate::steps::*;
 use crate::runner::{install_reconnect_trigger, RunnerMessage};
+use crate::steps::*;
 
 mod durable_loop;
 mod entrance;
@@ -26,7 +26,7 @@ mod timers;
 // ---- single driver-observation test --------------------------------------
 //
 // Installs the process-global coordinator trigger so it can observe the
-// control requests and `EmitOperatorCompleted` messages the driver routes
+// control requests and `EmitRelayCompleted` messages the driver routes
 // through it; the shared runner-state lock keeps that install exclusive
 // against the other tests that install one. Scenarios run strictly
 // sequentially (each drained to its completion before the next) so a
@@ -37,7 +37,7 @@ fn steps_driver_scenarios() {
     let (tx, rx) = crossbeam::channel::unbounded::<RunnerMessage>();
     install_reconnect_trigger(tx);
 
-    // Durable steps operators in this test ship WAL frames through the
+    // Durable steps relays in this test ship WAL frames through the
     // process-global sink; hold the shared sink lock for the whole test so
     // it never races the cell-state sink tests, and install a capturing
     // sink to observe the frames.
@@ -53,7 +53,7 @@ fn steps_driver_scenarios() {
     );
     crate::cell::state_sink::install_global_sink(wal_sink);
     // An opted-out class's plugin output leaves on the connection its item
-    // rode, which for a fed or re-seeded steps operator is the secondary.
+    // rode, which for a fed or re-seeded steps relay is the secondary.
     crate::cell::state_sink::set_secondary_stream(Some(capturing_wire()));
 
     crate::register_class::<EmitSteps>().unwrap();
@@ -120,7 +120,7 @@ fn steps_driver_scenarios() {
     lifecycle::loop_stop_and_removal(&mut node, &rx);
     lifecycle::structured_chains(&mut node, &rx);
     saga::saga_compensation(&mut node, &rx);
-    lifecycle::add_operator_routing(&mut node, &rx);
+    lifecycle::add_relay_routing(&mut node, &rx);
     task_journal::durable_wal_and_journal(&mut node, &rx);
     task_journal::task_journal_commits(&mut node, &rx);
     task_journal::record_outputs(&mut node, &rx);
@@ -146,7 +146,7 @@ fn steps_driver_scenarios() {
 }
 
 /// Respawn `test-chain-steps` as a crash-resume carrying `journal` on the
-/// bind (exactly what the AddOperator handler passes), release the restore
+/// bind (exactly what the AddRelay handler passes), release the restore
 /// gate, and drain it to completion.
 pub(super) fn resume_chain_with_journal(
     node: &RunnerNode,

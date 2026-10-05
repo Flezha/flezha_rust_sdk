@@ -46,7 +46,7 @@ impl StreamTarget for NodeTarget {
 pub type EntryStream<'b, T> = Stream<'b, T, EntryTarget>;
 
 /// A tasklet's output stream handle, returned by `.into::<Task>()`: a
-/// lightweight `Copy` reference into the operator's topology builder.
+/// lightweight `Copy` reference into the relay's topology builder.
 ///
 /// - `stream.into::<Next>()` wires Next as a consumer and returns Next's own
 ///   stream, so chains read in flow order.
@@ -241,8 +241,8 @@ impl<'b, T: 'static + Send + Sync, K: StreamTarget> Stream<'b, T, K> {
 
     /// Override the default `OverflowPolicy` (`DropNothing` for every
     /// channel kind). On an entry channel `DropNothing` parks the shared wire
-    /// reader on this operator's saturation (see
-    /// `docs/sdk/rust_operator_architecture.md` for the co-tenancy cost);
+    /// reader on this relay's saturation (see
+    /// `docs/sdk/rust_relay_architecture.md` for the co-tenancy cost);
     /// declare `DropNewest` / `DropOldest` when shedding under saturation is
     /// acceptable and ordering or completeness can be sacrificed for liveness.
     pub fn on_full(self, policy: OverflowPolicy) -> Self {
@@ -391,7 +391,7 @@ impl<'b, T: 'static + Send + Sync> Stream<'b, T, NodeTarget> {
         )
     }
 
-    /// End this chain in a call to another operator: every value that reaches
+    /// End this chain in a call to another relay: every value that reaches
     /// it, after this chain's transforms and key, is one request, serialized
     /// as [`sink`](Stream::sink) serializes it. The call waits for nothing:
     /// its outcome arrives later as a [`Response`](crate::Response) on the
@@ -450,7 +450,7 @@ impl<'b, T: 'static + Send + Sync> Stream<'b, T, NodeTarget> {
         self.with_channel(|st, cid| {
             st.record_link(cid, link);
             // This SDK builds its descriptors from `entry.name` rather than
-            // from the core's derived answer (`operator/builder.rs`), so a
+            // from the core's derived answer (`relay/builder.rs`), so a
             // sink that names the channel writes both, exactly as `named`
             // does. Without it Rust would silently keep the old answer while
             // the five host SDKs took the new one.

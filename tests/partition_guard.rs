@@ -1,15 +1,15 @@
 //! The partition dispatch guard.
 //!
-//! A partitioned operator's correctness rests on one convention: the routing
+//! A partitioned relay's correctness rests on one convention: the routing
 //! item — the source's subscription string, the emitter's `flz.key` — equals
 //! what `key_by` extracts. Nothing enforces that upstream, so the guard turns
 //! every violation into a first-frame park naming the contract, before any
 //! state exists for the key. In-range traffic must be untouched, or
-//! partitioning would cost every operator that uses it.
+//! partitioning would cost every relay that uses it.
 
 use std::collections::HashSet;
 
-use flezha_runner::operator::KeyGroupRange;
+use flezha_runner::relay::KeyGroupRange;
 
 mod common;
 use common::prelude::*;
@@ -17,7 +17,7 @@ use common::{
     dispatch_input, dummy_stream, install_auto_acking_sink, setup, setup_partitioned, wait_until,
 };
 
-/// The two cases driving `KeyedOperator` share its statics — and one of them
+/// The two cases driving `KeyedRelay` share its statics — and one of them
 /// installs the process-global park sink — so they run one at a time.
 static KEYED_LOCK: Mutex<()> = Mutex::new(());
 
@@ -30,10 +30,10 @@ test_tasklet!(KeyedTasklet, "keyed_tasklet", String => String, (), |input, _ctx|
     Ok(())
 });
 
-struct KeyedOperator;
-impl Operator for KeyedOperator {
+struct KeyedRelay;
+impl Relay for KeyedRelay {
     fn factory_id() -> &'static str {
-        "partition_guard_operator"
+        "partition_guard_relay"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
@@ -52,10 +52,10 @@ test_tasklet!(StaticTasklet, "static_tasklet", String => String, (), |input, _ct
     Ok(())
 });
 
-struct StaticOperator;
-impl Operator for StaticOperator {
+struct StaticRelay;
+impl Relay for StaticRelay {
     fn factory_id() -> &'static str {
-        "partition_static_operator"
+        "partition_static_relay"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input").into::<StaticTasklet>();
@@ -96,7 +96,7 @@ fn a_mis_routed_key_parks_naming_the_contract_and_creates_no_cell() {
     // BTC-USD hashes to key group 129, which member 0 of 3 (groups 0..84) does
     // not own — the exact shape a source that was not partition-filtered
     // produces.
-    let (handle, instance) = setup_partitioned::<KeyedOperator>("guard-p0", member(0, 3));
+    let (handle, instance) = setup_partitioned::<KeyedRelay>("guard-p0", member(0, 3));
     let stream = dummy_stream();
 
     dispatch_input(&handle, "guard-p0", "input", payload("BTC-USD"), &stream);
@@ -133,13 +133,13 @@ fn a_mis_routed_key_parks_naming_the_contract_and_creates_no_cell() {
 }
 
 #[test]
-fn in_range_traffic_is_identical_to_an_unpartitioned_operator() {
+fn in_range_traffic_is_identical_to_an_unpartitioned_relay() {
     let _guard = KEYED_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     reset();
     let stream = dummy_stream();
 
     // SOL-USD hashes to group 60 — member 0 of 3 owns 0..84.
-    let (partitioned, _) = setup_partitioned::<KeyedOperator>("guard-in", member(0, 3));
+    let (partitioned, _) = setup_partitioned::<KeyedRelay>("guard-in", member(0, 3));
     dispatch_input(
         &partitioned,
         "guard-in",
@@ -155,7 +155,7 @@ fn in_range_traffic_is_identical_to_an_unpartitioned_operator() {
     let partitioned_seen = SEEN.lock().unwrap().clone();
 
     reset();
-    let (plain, _) = setup::<KeyedOperator>("guard-plain");
+    let (plain, _) = setup::<KeyedRelay>("guard-plain");
     dispatch_input(&plain, "guard-plain", "input", payload("SOL-USD"), &stream);
 
     assert!(wait_until(
@@ -214,7 +214,7 @@ fn a_static_class_serves_only_its_own_declared_keys() {
     // The single-cell class has no keys at all, so a partitioned member
     // still serves it: partitioning subtracts declared keys, it does not
     // silence a tasklet that has none.
-    let (handle, _) = setup_partitioned::<StaticOperator>("guard-static", member(1, 3));
+    let (handle, _) = setup_partitioned::<StaticRelay>("guard-static", member(1, 3));
     dispatch_input(
         &handle,
         "guard-static",

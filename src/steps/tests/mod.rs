@@ -1,4 +1,4 @@
-//! The steps operator authoring surface's tests: the fixtures they are written
+//! The steps relay authoring surface's tests: the fixtures they are written
 //! against, the fake controller they run into, the registration and spec
 //! refusals, and the one ordered driver scenario suite.
 

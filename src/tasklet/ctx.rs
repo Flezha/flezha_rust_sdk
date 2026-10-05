@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use flz_core::operator::instance::{fnv1a128, FNV128_OFFSET_BASIS};
+use flz_core::relay::instance::{fnv1a128, FNV128_OFFSET_BASIS};
 use flz_transport::transport::FlezhaStream;
 
 use crate::cell::timer::{TimerFire, TimerKind, TimerSession};
@@ -91,7 +91,7 @@ impl PartSource<'_> {
             .and_then(|tasklet| tasklet.output_channel_id)
             .and_then(|id| topology.channel(id));
         match channel.and_then(|c| c.plugin_sink.as_ref().map(|sink| (c, sink))) {
-            Some((channel, sink)) => crate::operator::dispatcher::emit_sink::serialize_contained(
+            Some((channel, sink)) => crate::relay::dispatcher::emit_sink::serialize_contained(
                 &sink.serializer,
                 &channel.name,
                 value,
@@ -135,7 +135,7 @@ impl PartSource<'_> {
 /// `cell identity ‖ change seq ‖ per-invocation call ordinal` — the
 /// algorithm is fixed by spec, independent of any library version.
 /// `Display` renders 32 lowercase hex chars. The drop-in replacement for
-/// `Uuid::new_v4()` in operator code.
+/// `Uuid::new_v4()` in relay code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct StableId(pub u128);
 
@@ -229,7 +229,7 @@ impl<'a, S: Tasklet> Ctx<'a, S> {
     }
 
     /// Apply `change` to the Cell's state and record it for the flusher, which
-    /// makes it durable. The change is recorded whether or not the operator
+    /// makes it durable. The change is recorded whether or not the relay
     /// persists, so `TaskletTestHarness::replay_equals` sees every one.
     pub fn change(&mut self, change: S::Change) {
         change.apply_to(self.state);
@@ -297,10 +297,10 @@ impl<'a, S: Tasklet> Ctx<'a, S> {
     /// last checkpoint — this one included — is acknowledged, and the state
     /// they accumulated is made durable, as one atomic record.
     ///
-    /// Only meaningful under `ack: checkpoint` in the class's run. An operator
+    /// Only meaningful under `ack: checkpoint` in the class's run. A relay
     /// on the default per-input granularity already acknowledges every input,
     /// so the call is a no-op there rather than an error — a checkpointing
-    /// Tasklet stays correct if its operator later drops the declaration.
+    /// Tasklet stays correct if its relay later drops the declaration.
     ///
     /// Call it where the accumulated state is genuinely coherent (a closed
     /// window, a completed batch): the interval you leave open is the work a
@@ -433,7 +433,7 @@ impl<'a, S: Tasklet> Ctx<'a, S> {
     /// The anchor is `ctx.now()` (the declared clock), not an ambient read,
     /// which is what makes a replayed invocation register the same absolute
     /// timestamp the live one did. Under an event-time clock the anchor is
-    /// therefore the input's event time; a flow operator that is caught up schedules
+    /// therefore the input's event time; a flow relay that is caught up schedules
     /// the same instant a wall clock would, and one replaying history schedules
     /// a past instant, which fires at once.
     pub fn timer_after(&self, delay: Duration) -> Result<u64, TaskletError> {
@@ -463,7 +463,7 @@ impl<'a, S: Tasklet> Ctx<'a, S> {
     }
 
     /// Emit a value on this tasklet's output channel. The channel id was
-    /// cached at operator-build time from the producer's output-stream wiring
+    /// cached at relay-build time from the producer's output-stream wiring
     /// (`.into::<S>()`), so this call performs no name lookups.
     ///
     /// On a `.keyed()` channel the emit carries this Cell's own key
@@ -478,7 +478,7 @@ impl<'a, S: Tasklet> Ctx<'a, S> {
     /// Send `value` as a part: a preview of the output this invocation is
     /// producing, which leaves the runner now rather than when `run` returns.
     /// It previews the tasklet's own output channel and is encoded as an emit
-    /// of the same value on it would be. The operator's listeners receive it
+    /// of the same value on it would be. The relay's listeners receive it
     /// before the output; a sink never does, and it is never durable or
     /// replayed. Parts are numbered from 0 within each attempt, so a retry
     /// starts its preview again.

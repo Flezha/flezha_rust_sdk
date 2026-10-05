@@ -1,0 +1,22 @@
+#[flezha_runner::relay(id = "x", sink = "s")]
+fn f(a: String) {
+    let _ = a;
+}
+
+#[derive(Default)]
+struct G;
+
+#[flezha_runner::relay(id = "g", sink = "s")]
+impl flezha_runner::Tasklet for G {
+    type Input = String;
+
+    fn run(
+        &mut self,
+        _: String,
+        _: &mut flezha_runner::Ctx<'_, Self>,
+    ) -> Result<(), flezha_runner::TaskletError> {
+        Ok(())
+    }
+}
+
+fn main() {}

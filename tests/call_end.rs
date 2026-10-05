@@ -1,5 +1,5 @@
 //! `call(...)`: a chain's end that makes every value a request to another
-//! operator. Declared, it is a plugin end beside no other and answers an entry
+//! relay. Declared, it is a plugin end beside no other and answers an entry
 //! channel, `<channel>.response`, carrying [`Response`]s; live, each request
 //! leaves as a plugin output stamped with the call's facts and the chain's
 //! key, a filtered-out value making none; a `Response` fed back reaches the
@@ -9,7 +9,7 @@ use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 
 use flezha_runner::channel::{ChannelBuilder, ChannelKind};
-use flezha_runner::{CallTarget, Each, ErrorModel, OnFailure, Operator, OperatorSettings, Response, Run};
+use flezha_runner::{CallTarget, Each, ErrorModel, OnFailure, Relay, RelaySettings, Response, Run};
 use flz_transport::service::payloader;
 use flz_transport::transport::FlezhaStream;
 
@@ -45,7 +45,7 @@ test_tasklet!(Read, "call_end_read", Response<String, String> => String, (), |in
 });
 
 struct Caller;
-impl Operator for Caller {
+impl Relay for Caller {
     fn factory_id() -> &'static str {
         "call_end_caller"
     }
@@ -65,7 +65,7 @@ impl Operator for Caller {
 }
 
 struct CallBesideSink;
-impl Operator for CallBesideSink {
+impl Relay for CallBesideSink {
     fn factory_id() -> &'static str {
         "call_end_beside_sink"
     }
@@ -77,7 +77,7 @@ impl Operator for CallBesideSink {
 }
 
 struct OnceCaller;
-impl Operator for OnceCaller {
+impl Relay for OnceCaller {
     fn factory_id() -> &'static str {
         "call_end_once"
     }
@@ -88,11 +88,14 @@ impl Operator for OnceCaller {
             .into::<Read>();
     }
 
-    fn settings() -> OperatorSettings {
-        OperatorSettings {
-            run: Run::Steps { each: Each::Once, on_failure: OnFailure::UndoAll },
+    fn settings() -> RelaySettings {
+        RelaySettings {
+            run: Run::Steps {
+                each: Each::Once,
+                on_failure: OnFailure::UndoAll,
+            },
             max_duration: Some(Duration::from_secs(60)),
-            ..OperatorSettings::default()
+            ..RelaySettings::default()
         }
     }
 }

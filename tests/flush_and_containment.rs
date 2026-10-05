@@ -45,10 +45,10 @@ test_tasklet!(FlushOrderSinkTasklet, "flush_order_sink_tasklet", String => (), (
     Ok(())
 });
 
-struct FlushOrderOperator;
-impl Operator for FlushOrderOperator {
+struct FlushOrderRelay;
+impl Relay for FlushOrderRelay {
     fn factory_id() -> &'static str {
-        "flush_order_operator"
+        "flush_order_relay"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
@@ -77,11 +77,8 @@ fn change_is_flushed_before_output_is_emitted() {
     );
     state_sink::install_global_sink(sink);
 
-    let (handle, instance) = setup::<FlushOrderOperator>("flush-order-instance");
-    assert!(
-        instance.keeps_state(),
-        "operator must be persistent"
-    );
+    let (handle, instance) = setup::<FlushOrderRelay>("flush-order-instance");
+    assert!(instance.keeps_state(), "relay must be persistent");
     let stream = dummy_stream();
 
     let mut md = HashMap::new();
@@ -118,20 +115,20 @@ test_tasklet!(StatelessSleeperTasklet, "stateless_sleeper_tasklet", String => ()
     Ok(())
 });
 
-struct StatelessSleeperOperator;
-impl Operator for StatelessSleeperOperator {
+struct StatelessSleeperRelay;
+impl Relay for StatelessSleeperRelay {
     fn factory_id() -> &'static str {
-        "stateless_sleeper_operator"
+        "stateless_sleeper_relay"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input").into::<StatelessSleeperTasklet>();
     }
-    fn settings() -> flezha_runner::OperatorSettings {
-        flezha_runner::OperatorSettings {
+    fn settings() -> flezha_runner::RelaySettings {
+        flezha_runner::RelaySettings {
             durable: flezha_runner::Durable::Local {
                 sleep_after: flezha_runner::SleepAfter::After(Duration::from_secs(60)),
             },
-            ..flezha_runner::OperatorSettings::default()
+            ..flezha_runner::RelaySettings::default()
         }
     }
 }
@@ -148,7 +145,7 @@ fn a_sleeping_class_with_stateless_cells_reports_its_processed_prefix() {
     let _serial = WAL_TEST_LOCK.lock().unwrap();
     install_capturing_tier_sink();
     let instance_id = "stateless-sleeper-instance";
-    let (handle, _instance) = setup::<StatelessSleeperOperator>(instance_id);
+    let (handle, _instance) = setup::<StatelessSleeperRelay>(instance_id);
 
     let identity = flezha_runner::cell::flusher::encode_cell_identity(instance_id, "", "");
     dispatch_at(&handle, instance_id, 7, "one");
@@ -178,10 +175,10 @@ test_tasklet!(PanicTasklet, "panic_tasklet", String => (), (), |input, _ctx| {
     Ok(())
 });
 
-struct PanicOperator;
-impl Operator for PanicOperator {
+struct PanicRelay;
+impl Relay for PanicRelay {
     fn factory_id() -> &'static str {
-        "panic_operator"
+        "panic_relay"
     }
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input").into::<PanicTasklet>();
@@ -212,7 +209,7 @@ fn tasklet_panic_does_not_wedge_the_cell() {
             }
         }
     });
-    let (handle, instance) = setup::<PanicOperator>("panic-instance");
+    let (handle, instance) = setup::<PanicRelay>("panic-instance");
     let stream = dummy_stream();
 
     dispatch_input(
@@ -247,8 +244,8 @@ fn tasklet_panic_does_not_wedge_the_cell() {
 // ----- DropNothing producer on a one-worker pool must not self-deadlock -----
 //
 // The single pool worker, mid-producer-dispatch, emits into a full DropNothing
-// consumer mailbox whose drain steps operator sits queued behind the producer's own
-// steps operator. Parking the worker there is a permanent self-deadlock; the
+// consumer mailbox whose drain steps relay sits queued behind the producer's own
+// steps relay. Parking the worker there is a permanent self-deadlock; the
 // DropNothing arm must drain the full slot inline instead.
 
 static BLOCKED_CONSUMED: AtomicUsize = AtomicUsize::new(0);
@@ -265,10 +262,10 @@ test_tasklet!(BlockedConsumerTasklet, "blocked_consumer_tasklet", String => Stri
     Ok(())
 });
 
-struct BlockDeadlockOperator;
-impl Operator for BlockDeadlockOperator {
+struct BlockDeadlockRelay;
+impl Relay for BlockDeadlockRelay {
     fn factory_id() -> &'static str {
-        "block_deadlock_operator"
+        "block_deadlock_relay"
     }
     fn channels(c: &ChannelBuilder) {
         // Inter-tasklet channel: OverflowPolicy defaults to Block.
@@ -282,7 +279,7 @@ impl Operator for BlockDeadlockOperator {
 #[test]
 fn block_policy_emit_on_single_worker_pool_does_not_deadlock() {
     BLOCKED_CONSUMED.store(0, Ordering::Release);
-    let (handle, _instance) = setup::<BlockDeadlockOperator>("block-deadlock-instance");
+    let (handle, _instance) = setup::<BlockDeadlockRelay>("block-deadlock-instance");
     let stream = dummy_stream();
 
     dispatch_input(

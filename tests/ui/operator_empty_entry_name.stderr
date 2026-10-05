@@ -1,5 +1,0 @@
-error: an entry channel name may not be empty
- --> tests/ui/operator_empty_entry_name.rs:4:31
-  |
-4 |     pipeline: input::<String>("") -> A -> plugin::<Vec<u8>>("k")
-  |                               ^^

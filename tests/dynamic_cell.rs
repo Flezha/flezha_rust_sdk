@@ -24,10 +24,10 @@ fn key_of(input: &str) -> String {
 
 /// A `String`-in, `()`-state dynamic-mode Tasklet keyed by [`key_of`]. The
 /// base form takes the `init_state` + `run` bodies; `dyn_tasklet!` adds
-/// trivial ones plus a paired single-entry Operator. Extra trait items (TTL,
+/// trivial ones plus a paired single-entry Relay. Extra trait items (TTL,
 /// cap) are appended verbatim.
 macro_rules! dyn_tasklet_base {
-    ($tasklet:ident, $operator:ident, $name:tt, $factory:literal, { $($item:item)* }) => {
+    ($tasklet:ident, $relay:ident, $name:tt, $factory:literal, { $($item:item)* }) => {
         #[derive(Default)]
         struct $tasklet;
         #[flezha_runner::tasklet(name = $name)]
@@ -35,8 +35,8 @@ macro_rules! dyn_tasklet_base {
             type Input = String;
             $($item)*
         }
-        struct $operator;
-        impl Operator for $operator {
+        struct $relay;
+        impl Relay for $relay {
             fn factory_id() -> &'static str { $factory }
             fn channels(c: &ChannelBuilder) {
                 c.input::<String>("inp")
@@ -49,8 +49,8 @@ macro_rules! dyn_tasklet_base {
 }
 
 macro_rules! dyn_tasklet {
-    ($tasklet:ident, $operator:ident, $name:tt, $factory:literal $($extra:item)*) => {
-        dyn_tasklet_base!($tasklet, $operator, $name, $factory, {
+    ($tasklet:ident, $relay:ident, $name:tt, $factory:literal $($extra:item)*) => {
+        dyn_tasklet_base!($tasklet, $relay, $name, $factory, {
             fn run(&mut self, _: String, _: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
                 Ok(())
             }
@@ -59,43 +59,37 @@ macro_rules! dyn_tasklet {
     };
 }
 
-dyn_tasklet!(DynTasklet, DynOperator, "dyn_tasklet", "dyn_operator");
-dyn_tasklet!(CappedTasklet, CappedOperator, "capped_tasklet", "capped_operator"
+dyn_tasklet!(DynTasklet, DynRelay, "dyn_tasklet", "dyn_relay");
+dyn_tasklet!(CappedTasklet, CappedRelay, "capped_tasklet", "capped_relay"
     fn max_cells() -> usize { 2 }
 );
-dyn_tasklet!(TtlTasklet, TtlOperator, "ttl_tasklet", "ttl_operator"
+dyn_tasklet!(TtlTasklet, TtlRelay, "ttl_tasklet", "ttl_relay"
     fn cell_idle_ttl() -> Option<Duration> { Some(Duration::from_millis(100)) }
 );
 
 static SLEEP_RUN_STARTED: AtomicBool = AtomicBool::new(false);
 static SLEEP_RUN_RELEASE: AtomicBool = AtomicBool::new(false);
 static SLEEP_RUN_DONE: AtomicBool = AtomicBool::new(false);
-dyn_tasklet_base!(
-    SleepTasklet,
-    SleepOperator,
-    "sleep_tasklet",
-    "sleep_operator",
-    {
-        fn run(&mut self, _: String, _: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
-            // Held until the test releases it: a run that lasts exactly as
-            // long as the sweep it must survive.
-            SLEEP_RUN_STARTED.store(true, Ordering::Release);
-            common::wait_until(
-                || SLEEP_RUN_RELEASE.load(Ordering::Acquire),
-                Duration::from_secs(30),
-            );
-            SLEEP_RUN_DONE.store(true, Ordering::Release);
-            Ok(())
-        }
+dyn_tasklet_base!(SleepTasklet, SleepRelay, "sleep_tasklet", "sleep_relay", {
+    fn run(&mut self, _: String, _: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        // Held until the test releases it: a run that lasts exactly as
+        // long as the sweep it must survive.
+        SLEEP_RUN_STARTED.store(true, Ordering::Release);
+        common::wait_until(
+            || SLEEP_RUN_RELEASE.load(Ordering::Acquire),
+            Duration::from_secs(30),
+        );
+        SLEEP_RUN_DONE.store(true, Ordering::Release);
+        Ok(())
     }
-);
+});
 
 static INIT_KEYS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 dyn_tasklet_base!(
     InitTrackTasklet,
-    InitTrackOperator,
+    InitTrackRelay,
     "init_track_tasklet",
-    "init_track_operator",
+    "init_track_relay",
     {
         fn init_state(key: Option<&str>) {
             if let Some(k) = key {
@@ -108,8 +102,8 @@ dyn_tasklet_base!(
     }
 );
 
-/// The single dynamic registry on a one-tasklet operator instance.
-fn registry(instance: &Arc<OperatorInstance>) -> Arc<DynamicCellRegistry> {
+/// The single dynamic registry on a one-tasklet relay instance.
+fn registry(instance: &Arc<RelayInstance>) -> Arc<DynamicCellRegistry> {
     Arc::clone(
         instance.dynamic_registries[0]
             .as_ref()
@@ -126,7 +120,7 @@ fn evicted(reg: &DynamicCellRegistry) -> u64 {
 
 #[test]
 fn lazy_create_two_keys() {
-    let (handle, instance) = setup::<DynOperator>("dyn-2");
+    let (handle, instance) = setup::<DynRelay>("dyn-2");
     let stream = dummy_stream();
     dispatch_input(&handle, "dyn-2", "inp", b"a:1".to_vec(), &stream);
     dispatch_input(&handle, "dyn-2", "inp", b"b:2".to_vec(), &stream);
@@ -138,7 +132,7 @@ fn lazy_create_two_keys() {
 
 #[test]
 fn soft_cap_drops_overflow_key() {
-    let (handle, instance) = setup::<CappedOperator>("capped-1");
+    let (handle, instance) = setup::<CappedRelay>("capped-1");
     let stream = dummy_stream();
     for inp in [b"a:1", b"b:2", b"c:3"] {
         dispatch_input(&handle, "capped-1", "inp", inp.to_vec(), &stream);
@@ -157,7 +151,7 @@ fn soft_cap_drops_overflow_key() {
 
 #[test]
 fn filtered_inputs_reach_no_cell() {
-    let (handle, instance) = setup::<DynOperator>("dyn-nokey");
+    let (handle, instance) = setup::<DynRelay>("dyn-nokey");
     let stream = dummy_stream();
     // 10 inputs; 4 "drop" sentinels → 6 slot creations.
     for inp in [
@@ -187,7 +181,7 @@ fn an_eviction_with_no_stream_bound_holds_the_delete_for_the_reconnect() {
     let _guard = state_sink::test_guard();
     state_sink::set_secondary_stream(None);
 
-    let (_handle, instance) = setup::<DynOperator>("dyn-delete-1");
+    let (_handle, instance) = setup::<DynRelay>("dyn-delete-1");
     let reg = registry(&instance);
     let identity = reg
         .get_or_create("K")
@@ -237,7 +231,7 @@ fn idle_cell_is_reaped() {
     // after it goes idle. Generous deadline absorbs full-suite scheduling
     // starvation (the reaper retries every sweep).
     std::env::set_var("FLEZHA_REAP_INTERVAL_MS", "25");
-    let (handle, instance) = setup::<TtlOperator>("ttl-1");
+    let (handle, instance) = setup::<TtlRelay>("ttl-1");
     let stream = dummy_stream();
     dispatch_input(&handle, "ttl-1", "inp", b"K:1".to_vec(), &stream);
 
@@ -255,7 +249,7 @@ fn reaper_skips_cell_with_active_run() {
     SLEEP_RUN_STARTED.store(false, Ordering::Release);
     SLEEP_RUN_RELEASE.store(false, Ordering::Release);
     SLEEP_RUN_DONE.store(false, Ordering::Release);
-    let (handle, instance) = setup::<SleepOperator>("sleep-1");
+    let (handle, instance) = setup::<SleepRelay>("sleep-1");
     let stream = dummy_stream();
     dispatch_input(&handle, "sleep-1", "inp", b"K:1".to_vec(), &stream);
     let reg = registry(&instance);
@@ -288,7 +282,7 @@ fn reaper_skips_cell_with_active_run() {
 #[test]
 fn recreate_after_evict_cold_starts_fresh() {
     INIT_KEYS.lock().unwrap().clear();
-    let (handle, instance) = setup::<InitTrackOperator>("recreate-1");
+    let (handle, instance) = setup::<InitTrackRelay>("recreate-1");
     let stream = dummy_stream();
     let reg = registry(&instance);
 
@@ -318,7 +312,7 @@ fn recreate_after_evict_cold_starts_fresh() {
 
 #[test]
 fn concurrent_producers_share_one_slot() {
-    let (handle, instance) = setup::<DynOperator>("dyn-concurrent");
+    let (handle, instance) = setup::<DynRelay>("dyn-concurrent");
     let reg = registry(&instance);
 
     const N: usize = 16;
