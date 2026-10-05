@@ -49,7 +49,7 @@ impl Relay for OrderExecutorRelay {
     /// rather than a race. A step that fails poisons its whole level, which is
     /// why a refusal on either arm unwinds what the other arm did.
     ///
-    /// Nothing ends on a sink: the last step ends the instance with its result,
+    /// Nothing ends on an output: the last step ends the instance with its result,
     /// which `flz relay info` shows.
     fn channels(c: &ChannelBuilder) {
         c.input::<OrderTicket>("order") // the order to carry out

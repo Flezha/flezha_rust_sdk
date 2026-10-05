@@ -29,8 +29,8 @@ use crate::util::{generic_args, snake_ident_to_pascal};
 #[derive(Default)]
 struct RelayKeys {
     id: Option<LitStr>,
-    /// The plugin sink; `None` declares no plugin channel.
-    sink: Option<String>,
+    /// The plugin output; `None` declares no plugin channel.
+    output: Option<String>,
     /// The entry channel name.
     input: Option<LitStr>,
     /// The entry channel's `.on_full(..)` call, empty when none was written.
@@ -59,7 +59,7 @@ fn parse_keys(attr: TokenStream) -> syn::Result<(RelayKeys, TaskletKeys)> {
         let value = || meta.require_name_value().map(|nv| &nv.value);
         match key.as_str() {
             "id" => keys.id = Some(lit_str(value()?)?.clone()),
-            "sink" => keys.sink = Some(lit_str(value()?)?.value()),
+            "output" => keys.output = Some(lit_str(value()?)?.value()),
             "input" => keys.input = Some(lit_str(value()?)?.clone()),
             "on_full" => keys.on_full = on_full_call(ATTRIBUTE, &ident(value()?)?)?,
             "run" | "durable" | "max_duration_ms" | "description" => {
@@ -103,16 +103,16 @@ fn required_id(keys: &RelayKeys, span: proc_macro2::Span) -> syn::Result<LitStr>
     })
 }
 
-fn sink_without_output(span: proc_macro2::Span) -> syn::Error {
+fn output_without_type(span: proc_macro2::Span) -> syn::Error {
     syn::Error::new(
         span,
-        "topology.sink_without_output: a `sink` requires an output to feed the plugin: a non-unit \
+        "topology.output_without_type: an `output` needs a value to feed it: a non-unit \
          return, or a written `type Output`",
     )
 }
 
 /// The relay wiring the entry channel into `tasklet`, and `tasklet` to the
-/// sink when one is written.
+/// output when one is written.
 fn wiring<'a>(
     keys: &'a RelayKeys,
     id: &'a LitStr,
@@ -130,7 +130,7 @@ fn wiring<'a>(
         on_full: keys.on_full.clone(),
         chain: quote! { .into::<#tasklet>(); },
         payload: quote! { <#tasklet as ::flezha_runner::Tasklet>::Output },
-        sink: keys.sink.as_deref(),
+        output: keys.output.as_deref(),
         settings: keys.settings.item(),
     })
 }
@@ -140,8 +140,8 @@ fn wiring<'a>(
 fn on_impl(keys: &RelayKeys, tasklet: &TaskletKeys, item: Item) -> syn::Result<TokenStream> {
     let block: ItemImpl = impl_target(quote! { #item }, ATTRIBUTE)?;
     let id = required_id(keys, block.self_ty.span())?;
-    if keys.sink.is_some() && !writes_output(&block) {
-        return Err(sink_without_output(block.self_ty.span()));
+    if keys.output.is_some() && !writes_output(&block) {
+        return Err(output_without_type(block.self_ty.span()));
     }
     let self_ty = (*block.self_ty).clone();
     let Type::Path(path) = &self_ty else {
@@ -178,8 +178,8 @@ fn on_function(keys: &RelayKeys, tasklet: &TaskletKeys, func: ItemFn) -> syn::Re
     let (input_pat, input_ty) = input_param(&func, ATTRIBUTE)?;
     let output = resolve_output(&func.sig.output);
     let id = required_id(keys, func.sig.span())?;
-    if keys.sink.is_some() && !output.emits() {
-        return Err(sink_without_output(func.sig.span()));
+    if keys.output.is_some() && !output.emits() {
+        return Err(output_without_type(func.sig.span()));
     }
     let relay_ident = snake_ident_to_pascal(&func.sig.ident);
     let tasklet_ident = format_ident!("{}Tasklet", relay_ident);

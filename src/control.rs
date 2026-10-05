@@ -289,10 +289,10 @@ mod tests {
     #[test]
     fn a_plugin_is_enabled_by_name_and_bound_by_relay() {
         assert_eq!(
-            PluginSpec::new("relay_file_sink")
+            PluginSpec::new("relay_file_output")
                 .opts(json!({ "path": "out.txt" }))
                 .to_fields(),
-            json!({ "provider": "relay_file_sink", "opts": { "path": "out.txt" } })
+            json!({ "provider": "relay_file_output", "opts": { "path": "out.txt" } })
         );
         assert_eq!(
             PluginSpec::new("relay_websocket")

@@ -13,7 +13,7 @@ use crate::*;
 // `chat_loop_steps`: the durable-loop + suspension shape
 // (`steps-durable-loop-and-suspension`). One iteration per inbox item: task
 // TURN commits the turn to Cell state (so a resumed iteration is visible in
-// the WAL) and emits it; task REPLY emits the answer to the sink. Between turns
+// the WAL) and emits it; task REPLY emits the answer to the output. Between turns
 // the loop finds an empty inbox at a committed boundary and PARKS — the
 // instance is evicted from the runner and rehydrated by the next message.
 //
@@ -72,7 +72,7 @@ impl Relay for StatelessLoopSteps {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<ChatReply>()
-            .sink_named("out");
+            .output_named("out");
     }
 
     fn settings() -> RelaySettings {
@@ -119,7 +119,7 @@ impl Relay for KeyedLoopSteps {
         c.input::<String>("trades")
             .key_by(|trade: &String| key_prefix(trade))
             .into::<KeyedLoopCount>()
-            .sink_named("keyed_loop_steps_out");
+            .output_named("keyed_loop_steps_out");
     }
 
     fn settings() -> RelaySettings {
@@ -176,7 +176,7 @@ impl Relay for SpawnRequesterRelay {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<SpawnRequester>()
-            .sink_named("out");
+            .output_named("out");
     }
 }
 
@@ -221,7 +221,7 @@ impl Relay for SpawnHoldRequesterRelay {
             .on_full(OverflowPolicy::DropNothing)
             .into::<SpawnHoldRequester>()
             .keyed()
-            .sink_named("out");
+            .output_named("out");
     }
 
     fn settings() -> RelaySettings {
@@ -240,7 +240,7 @@ impl Relay for SpawnHoldRequesterRelay {
 // with `{"text": <input>}` as the payload and prints the handle's answer as
 // `spawn_result once <id> <outcome>`. `typed_once_steps` is the `once`
 // shape whose entry channel `order` decodes that JSON into a `Ticket`; its one
-// tasklet prints `once_ran <text>`, emits `placed:<text>` to its sink and
+// tasklet prints `once_ran <text>`, emits `placed:<text>` to its output and
 // completes with the text, so the pass ends on the payload it was spawned
 // with (KB-381).
 
@@ -277,7 +277,7 @@ impl Relay for SpawnOnceRequesterRelay {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<SpawnOnceRequester>()
-            .sink_named("out");
+            .output_named("out");
     }
 }
 
@@ -302,7 +302,7 @@ impl Relay for TypedOnceSteps {
     fn channels(c: &ChannelBuilder) {
         c.input::<Ticket>("order")
             .into::<OncePlaced>()
-            .sink_named("placed");
+            .output_named("placed");
     }
 
     fn settings() -> RelaySettings {
@@ -343,7 +343,7 @@ impl Relay for ReplyBlockLoopSteps {
             .into::<ChatTurn>()
             .named("mid")
             .into::<BlockingReply>()
-            .sink_named("out");
+            .output_named("out");
     }
 
     fn settings() -> RelaySettings {
@@ -424,7 +424,7 @@ impl Relay for ChatRewindSteps {
             .into::<ChatTurn>()
             .named("mid")
             .into::<ChatReplyUndoable>()
-            .sink_named("out");
+            .output_named("out");
     }
 
     fn settings() -> RelaySettings {
@@ -452,7 +452,7 @@ impl Relay for ChatLoopSteps {
             .into::<ChatTurn>()
             .named("mid")
             .into::<ChatReply>()
-            .sink_named("out");
+            .output_named("out");
     }
 
     fn settings() -> RelaySettings {
@@ -472,7 +472,7 @@ impl Relay for ChatLoopSteps {
 //
 // `failing_turn_loop_steps`: a session whose turn can fail after `note`
 // committed. `note` records each message in its state and its undo moves the
-// latest one to `undone`; `answer` replies `re:<message>` on the sink `answer`.
+// latest one to `undone`; `answer` replies `re:<message>` on the output `answer`.
 // `answer` fails every attempt on `boom`, on `boom-once` while the release env
 // is unset (so it fails on the first runner of a crash drill only), and on
 // `boom-until-healed` until a `heal` turn set its state.
@@ -574,7 +574,7 @@ macro_rules! failing_turn_loop {
                     .into::<Note>()
                     .named("noted")
                     .into::<Answer>()
-                    .sink_named("answer");
+                    .output_named("answer");
             }
 
             fn settings() -> RelaySettings {
@@ -608,7 +608,7 @@ failing_turn_loop!(
 // Durable K-tasklet chains and a long-lived chat loop for the steps relay
 // relay bench. Every chain step is the `durable_step!` shape — one
 // idempotent Change per task, the payload passed through unchanged — so the
-// sink receives the seed input and the bench reads its own seq + send
+// output receives the seed input and the bench reads its own seq + send
 // timestamp back. The loop is the `chat_loop_steps` shape with a bounded
 // per-turn state and a day-long duration backstop (soaks outlive 600 s); with
 // `FLEZHA_BENCH_WAKE_AFTER_MS` set each turn arms a timer that far out, whose
@@ -648,7 +648,7 @@ macro_rules! bench_chain {
                         .named(concat!("edge_", stringify!($rest)))
                         .into::<$rest>();
                 )*
-                s.sink_named("out");
+                s.output_named("out");
             }
 
             fn settings() -> RelaySettings {
@@ -750,7 +750,7 @@ impl Relay for BenchLoopSteps {
             .into::<BenchTurn>()
             .named("mid")
             .into::<ChatReply>()
-            .sink_named("out");
+            .output_named("out");
     }
 
     fn settings() -> RelaySettings {

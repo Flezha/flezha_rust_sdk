@@ -97,7 +97,7 @@ fn a_plugin_bound_terminal_carries_no_codec() {
     let cb = ChannelBuilder::new();
     cb.input::<String>("in")
         .into::<TierTask>()
-        .sink_named("out");
+        .output_named("out");
     let topology = build_topology("plugin_terminal_codec", cb).expect("topology");
     let out = topology
         .channels
@@ -118,7 +118,7 @@ fn effectively_once_with_keyed_plugin_channel_builds() {
     cb.input::<String>("in")
         .into::<TierTask>()
         .keyed()
-        .sink_named("out");
+        .output_named("out");
     let topology =
         build_topology_with_settings("tier_keyed_ok", cb, &tier(AckGranularity::PerInput, None))
             .expect("topology");
@@ -130,7 +130,7 @@ fn effectively_once_rejects_unkeyed_plugin_channel() {
     let cb = ChannelBuilder::new();
     cb.input::<String>("in")
         .into::<TierTask>()
-        .sink_named("out");
+        .output_named("out");
     let err = match build_topology_with_settings(
         "tier_unkeyed_plugin",
         cb,
@@ -146,11 +146,11 @@ fn effectively_once_rejects_unkeyed_plugin_channel() {
 }
 
 #[test]
-fn effectively_once_rejects_unkeyed_hybrid_sink() {
+fn effectively_once_rejects_an_unkeyed_hybrid_output() {
     let cb = ChannelBuilder::new();
     cb.input::<String>("in")
         .into::<TierTask>()
-        .sink_named_with("mid", |s: &String| s.as_bytes().to_vec());
+        .output_named_with("mid", |s: &String| s.as_bytes().to_vec());
     let err = match build_topology_with_settings(
         "tier_unkeyed_hybrid",
         cb,
@@ -178,7 +178,7 @@ fn non_tier_unkeyed_plugin_channel_still_builds() {
     let cb = ChannelBuilder::new();
     cb.input::<String>("in")
         .into::<TierTask>()
-        .sink_named("out");
+        .output_named("out");
     let topology = build_topology("no_tier_unkeyed_ok", cb).expect("topology");
     assert!(!topology.effectively_once);
 }
@@ -241,7 +241,7 @@ fn correction_builder<S: Tasklet<Input = String, Output = String> + Default>() -
     cb.input::<String>("in")
         .into::<S>()
         .keyed()
-        .sink_named("out");
+        .output_named("out");
     cb
 }
 
@@ -267,7 +267,7 @@ fn ack_at_checkpoint_with_the_tier_builds() {
     cb.input::<String>("in")
         .into::<TierTask>()
         .keyed()
-        .sink_named("out");
+        .output_named("out");
     let topology =
         build_topology_with_settings("checkpoint_ok", cb, &tier(checkpoint(None, None), None))
             .expect("topology");
@@ -280,7 +280,7 @@ fn the_interval_options_reach_the_topology_and_imply_the_granularity() {
     cb.input::<String>("in")
         .into::<TierTask>()
         .keyed()
-        .sink_named("out");
+        .output_named("out");
     let topology = build_topology_with_settings(
         "checkpoint_options",
         cb,
@@ -307,7 +307,7 @@ fn a_bare_ack_at_checkpoint_holds_no_outputs() {
     cb.input::<String>("in")
         .into::<TierTask>()
         .keyed()
-        .sink_named("out");
+        .output_named("out");
     let topology =
         build_topology_with_settings("checkpoint_bare", cb, &tier(checkpoint(None, None), None))
             .expect("topology");
@@ -327,7 +327,7 @@ fn a_zero_interval_is_refused() {
     cb.input::<String>("in")
         .into::<TierTask>()
         .keyed()
-        .sink_named("out");
+        .output_named("out");
     let err = build_topology_with_settings(
         "checkpoint_zero",
         cb,
@@ -347,7 +347,7 @@ fn per_input_is_the_default_ack_granularity() {
     cb.input::<String>("in")
         .into::<TierTask>()
         .keyed()
-        .sink_named("out");
+        .output_named("out");
     let topology = build_topology_with_settings(
         "per_input_default",
         cb,
@@ -369,7 +369,7 @@ fn a_dropping_policy_under_the_tier_is_refused_naming_the_channel() {
             .on_full(policy)
             .into::<TierTask>()
             .keyed()
-            .sink_named("out");
+            .output_named("out");
 
         let err =
             build_topology_with_settings("tier_sheds", cb, &tier(AckGranularity::PerInput, None))
@@ -395,7 +395,7 @@ fn a_dropping_policy_off_the_tier_still_builds() {
     cb.input::<String>("in")
         .on_full(OverflowPolicy::DropNewest)
         .into::<TierTask>()
-        .sink_named("out");
+        .output_named("out");
 
     build_topology("plain_sheds", cb).expect("a shedding class without the tier builds");
 }

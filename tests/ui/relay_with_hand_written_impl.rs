@@ -3,7 +3,7 @@
 //! second impl, which rustc refuses as conflicting.
 use flezha_runner::{ChannelBuilder, Relay};
 
-#[flezha_runner::relay(id = "echo", sink = "out")]
+#[flezha_runner::relay(id = "echo", output = "out")]
 fn echo(input: String) -> Vec<u8> {
     input.into_bytes()
 }

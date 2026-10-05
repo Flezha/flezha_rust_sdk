@@ -75,7 +75,7 @@ impl Relay for CandleRelay {
         c.input::<String>("input")
             .into::<CandleTasklet>()
             .keyed()
-            .sink_named("sink");
+            .output_named("sink");
     }
 
     fn settings() -> RelaySettings {
@@ -128,7 +128,7 @@ impl Relay for PoisonProbeRelay {
         c.input::<String>("input")
             .retry_backoff_ms(25)
             .into::<PoisonProbeTasklet>()
-            .sink_named("out");
+            .output_named("out");
     }
 }
 
@@ -183,7 +183,7 @@ impl Relay for WedgeProbeRelay {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .into::<WedgeProbeTasklet>()
-            .sink_named("out");
+            .output_named("out");
     }
 }
 
@@ -242,7 +242,7 @@ impl Relay for ResumeProbeRelay {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .into::<ResumeProbeTasklet>()
-            .sink_named("total");
+            .output_named("total");
     }
 }
 
@@ -370,7 +370,7 @@ impl Relay for SchemaEvolutionV1Relay {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .into::<SchemaEvolutionV1Tasklet>()
-            .sink_named("total");
+            .output_named("total");
     }
 }
 
@@ -382,6 +382,6 @@ impl Relay for SchemaEvolutionV2Relay {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .into::<SchemaEvolutionV2Tasklet>()
-            .sink_named("total");
+            .output_named("total");
     }
 }

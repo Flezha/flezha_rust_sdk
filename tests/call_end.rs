@@ -63,7 +63,7 @@ impl Relay for Caller {
                 60_000,
             )
             .into::<Read>()
-            .sink_named("read");
+            .output_named("read");
     }
 }
 
@@ -73,7 +73,7 @@ impl Relay for CallBesideSink {
         "call_end_beside_sink"
     }
     fn channels(c: &ChannelBuilder) {
-        let ask = c.input::<String>("in").into::<Ask>().sink_named("out");
+        let ask = c.input::<String>("in").into::<Ask>().output_named("out");
         ask.call::<String>(CallTarget::id("pricing"), 500)
             .into::<Read>();
     }
@@ -128,7 +128,7 @@ fn a_call_is_a_plugin_end_answering_an_entry_channel() {
 }
 
 #[test]
-fn a_call_beside_a_sink_ends_the_channel_twice() {
+fn a_call_beside_an_output_ends_the_channel_twice() {
     let Err(err) = build_topology_for::<CallBesideSink>() else {
         panic!("a channel with two plugin ends registered");
     };

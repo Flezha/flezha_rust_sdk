@@ -75,7 +75,7 @@ pub(crate) fn take_delivered(id: &str) -> Vec<Vec<u8>> {
 
 /// The outputs of the effect records `cells` name, as the controller releases
 /// them once the entry naming them is durable, read back from the frames the
-/// run shipped to the state sink.
+/// run shipped to the state output.
 pub(crate) fn released(cells: &[crate::pb::CommittedCell]) -> Vec<Vec<u8>> {
     let frames = super::fixtures::WAL_FRAMES.lock().unwrap();
     let records: Vec<(Vec<u8>, u64, Vec<Vec<u8>>)> = frames

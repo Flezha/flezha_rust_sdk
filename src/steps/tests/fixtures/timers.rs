@@ -83,7 +83,7 @@ impl Relay for TimerLoop {
             .into::<Tick>()
             .named("ticked")
             .into::<Tock>()
-            .sink_named("out");
+            .output_named("out");
     }
 
     fn settings() -> RelaySettings {

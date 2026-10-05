@@ -2,7 +2,7 @@
 #[derive(Default)]
 struct S;
 
-#[flezha_runner::relay(id = "f", sink = "out", run = steps)]
+#[flezha_runner::relay(id = "f", output = "out", run = steps)]
 fn f(a: String, s: &S) -> Vec<u8> {
     let _ = s;
     a.into_bytes()

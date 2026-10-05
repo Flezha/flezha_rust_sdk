@@ -88,7 +88,7 @@ where
 }
 
 /// Decode one Response channel payload: the envelope, then its request and
-/// answer with the rule an entry decodes and a sink encodes by.
+/// answer with the rule an entry decodes and an output encodes by.
 fn decode_response<Req, Ans>(bytes: &[u8]) -> Result<Response<Req, Ans>, String>
 where
     Req: DeserializeOwned + Send + Sync + 'static,

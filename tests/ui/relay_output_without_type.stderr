@@ -1,0 +1,11 @@
+error: topology.output_without_type: an `output` needs a value to feed it: a non-unit return, or a written `type Output`
+ --> tests/ui/relay_output_without_type.rs:2:1
+  |
+2 | fn f(a: String) {
+  | ^^
+
+error: topology.output_without_type: an `output` needs a value to feed it: a non-unit return, or a written `type Output`
+  --> tests/ui/relay_output_without_type.rs:10:33
+   |
+10 | impl flezha_runner::Tasklet for G {
+   |                                 ^

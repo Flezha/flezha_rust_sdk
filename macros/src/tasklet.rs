@@ -83,7 +83,7 @@ const FLAGS: [(&str, &str); 4] = [
 /// channel.
 pub(crate) const RELAY_KEYS: [&str; 8] = [
     "id",
-    "sink",
+    "output",
     "input",
     "on_full",
     "description",

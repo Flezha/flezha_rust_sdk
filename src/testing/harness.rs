@@ -576,7 +576,7 @@ where
     postcard::from_bytes(bytes).expect("deserialize_snapshot: postcard failed")
 }
 
-/// Emit sink used by the harness — captures emits without dispatching
+/// Emit output used by the harness — captures emits without dispatching
 /// them. In keyed mode it applies the same `flz.*` identity stamps the
 /// runtime's plugin frames carry, via the shared stamp helper.
 struct RecordingEmitSink<'a> {
@@ -617,7 +617,7 @@ impl<'a> EmitSink for RecordingEmitSink<'a> {
         self.channel_name
     }
 
-    /// Keyed harness mode stands in for a channel carrying a `sink(...)`, so
+    /// Keyed harness mode stands in for a channel carrying an `output(...)`, so
     /// a keyed emit picks up its identity stamps and metadata is accepted.
     fn has_plugin_sink(&self) -> bool {
         self.keyed

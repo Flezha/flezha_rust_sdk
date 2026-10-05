@@ -1,6 +1,6 @@
 //! Producer-first fluent graph builder.
 //!
-//! `c.input::<T>("name").into::<A>().into::<B>().sink_named("plugin")` — `.into`
+//! `c.input::<T>("name").into::<A>().into::<B>().output_named("plugin")` — `.into`
 //! wires a consumer and returns that tasklet's **output stream handle**
 //! ([`Stream`]), so a linear pipeline is one chained expression. Branching is
 //! handle reuse or the equivalent [`Stream::branch`] sugar; fan-in is two

@@ -11,7 +11,7 @@ use crate::*;
 // Effectively-once e2e fixture: inputs are "key:value" strings; state upserts
 // the latest value per key; every input emits `key=value` under the natural
 // key on a keyed plugin channel. Deterministic, so a crash-replay regenerates
-// byte-identical outputs and a changelog sink converges to the last value per
+// byte-identical outputs and a changelog output converges to the last value per
 // key — the §6.1 equivalence assertion.
 
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -71,7 +71,7 @@ impl Relay for TierStoreRelay {
             .retry_backoff_ms(300)
             .into::<TierStoreTasklet>()
             .keyed()
-            .sink_named("sink");
+            .output_named("sink");
     }
 
     fn settings() -> RelaySettings {
@@ -156,7 +156,7 @@ impl Relay for TierChainRelay {
             .retry_max(1_000)
             .into::<TierTallyTasklet>()
             .keyed()
-            .sink_named("sink");
+            .output_named("sink");
     }
 
     fn settings() -> RelaySettings {
@@ -187,7 +187,7 @@ impl Relay for BenchEchoRelay {
         c.input::<String>("input")
             .on_full(OverflowPolicy::DropNothing)
             .into::<DoNothingTasklet>()
-            .sink_named("echo");
+            .output_named("echo");
     }
 }
 
@@ -201,7 +201,7 @@ impl Relay for BenchKeyedRelay {
             .on_full(OverflowPolicy::DropNothing)
             .into::<TierStoreTasklet>()
             .keyed()
-            .sink_named("sink");
+            .output_named("sink");
     }
 }
 
@@ -220,7 +220,7 @@ impl Relay for BenchKeyedNoPersistRelay {
             .on_full(OverflowPolicy::DropNothing)
             .into::<TierStoreTasklet>()
             .keyed()
-            .sink_named("sink");
+            .output_named("sink");
     }
 
     fn settings() -> RelaySettings {
@@ -235,7 +235,7 @@ impl Relay for BenchKeyedNoPersistRelay {
 //
 // Same store as TierStoreRelay, but acknowledging only at an explicit
 // checkpoint: a `commit:` input closes the interval, every other input folds
-// into it. Emits still flush as they happen, so the sink sees an interval's
+// into it. Emits still flush as they happen, so the output sees an interval's
 // outputs long before its offsets are acknowledged — which is exactly what the
 // e2e crashes in the middle of.
 
@@ -268,7 +268,7 @@ impl Relay for CheckpointStoreRelay {
         c.input::<String>("input")
             .into::<CheckpointStoreTasklet>()
             .keyed()
-            .sink_named("sink");
+            .output_named("sink");
     }
 
     fn settings() -> RelaySettings {
@@ -305,7 +305,7 @@ impl Relay for CheckpointBatchedRelay {
         c.input::<String>("input")
             .into::<CheckpointStoreTasklet>()
             .keyed()
-            .sink_named("sink");
+            .output_named("sink");
     }
 
     fn settings() -> RelaySettings {
@@ -360,7 +360,7 @@ impl Relay for BenchCheckpointRelay {
             .on_full(OverflowPolicy::DropNothing)
             .into::<BenchCheckpointTasklet>()
             .keyed()
-            .sink_named("sink");
+            .output_named("sink");
     }
 
     fn settings() -> RelaySettings {
@@ -457,7 +457,7 @@ impl Tasklet for CounterEntryTasklet {
 // -- SleepingCounterRelay -----------------------------------------------------
 //
 // A flow relay that sleeps when idle: `key:delta` inputs fold into one running
-// total per key, and every input emits `key=total` on the `totals` sink. The
+// total per key, and every input emits `key=total` on the `totals` output. The
 // sleep e2e reads the total after a wake to prove the Cell came back with the
 // state it slept with.
 
@@ -487,7 +487,7 @@ impl Relay for SleepingCounterRelay {
         c.input::<String>("input")
             .key_by(|input: &String| crate::cell::key_prefix(input))
             .into::<SleepingCounterTasklet>()
-            .sink_named("totals");
+            .output_named("totals");
     }
 
     fn settings() -> RelaySettings {

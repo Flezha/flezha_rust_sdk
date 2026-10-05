@@ -13,8 +13,8 @@
 //! What runs here is the deployed machinery, not an imitation: the entry
 //! channel's decode, the edge's `flat_map` and `key_by`, one Cell per
 //! word with its own mailbox, and the inter-tasklet hop from `Split` to
-//! `Tally` performed by the runtime, and `.sink_named("totals")` is what the
-//! sink callback registers against: a sink names the channel it terminates,
+//! `Tally` performed by the runtime, and `.output_named("totals")` is what the
+//! output callback registers against: an output names the channel it terminates,
 //! and the no-name form leaves it the producing tasklet's. `WordCount` is an
 //! ordinary relay class. Hand the same type to
 //! `Flezha::create_runner(..).register_factory(..)` and it deploys unchanged.
@@ -90,13 +90,13 @@ impl Relay for WordCount {
             .key_by(|word: &String| word.clone())
             .into::<Tally>()
             .keyed()
-            .sink_named("totals");
+            .output_named("totals");
     }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let run = LocalRelay::start::<WordCount>()?;
-    run.on_sink("totals", |output| {
+    run.on_output("totals", |output| {
         println!("totals <- {}", String::from_utf8_lossy(&output.payload));
     })?;
 

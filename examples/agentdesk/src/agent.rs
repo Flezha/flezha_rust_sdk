@@ -27,7 +27,7 @@ impl Relay for AgentRelay {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("turn") // entry 1: `flz relay call`
             .into::<Reply>()
-            .sink_named("answer"); // to whoever called, and whoever listens
+            .output_named("answer"); // to whoever called, and whoever listens
         c.input::<Message>("message") // entry 2: the gateway, into the same Reply
             .map(|message| message.text)
             .into::<Reply>();

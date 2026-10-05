@@ -1,4 +1,4 @@
-#[flezha_runner::relay(id = "x", sink = "s")]
+#[flezha_runner::relay(id = "x", output = "s")]
 fn f(a: String) {
     let _ = a;
 }
@@ -6,7 +6,7 @@ fn f(a: String) {
 #[derive(Default)]
 struct G;
 
-#[flezha_runner::relay(id = "g", sink = "s")]
+#[flezha_runner::relay(id = "g", output = "s")]
 impl flezha_runner::Tasklet for G {
     type Input = String;
 

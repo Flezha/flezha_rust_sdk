@@ -1,8 +1,8 @@
-error: #[flezha::tasklet] declares a tasklet; `sink` belongs to a relay declaration: write the short form as `#[flezha::relay(..)]`, or wire it in a full form's topology
+error: #[flezha::tasklet] declares a tasklet; `output` belongs to a relay declaration: write the short form as `#[flezha::relay(..)]`, or wire it in a full form's topology
   --> tests/ui/tasklet_relay_keys.rs:21:13
    |
-21 | refused!(A, sink = "echo");
-   |             ^^^^
+21 | refused!(A, output = "echo");
+   |             ^^^^^^
 
 error: #[flezha::tasklet] declares a tasklet; `input` belongs to a relay declaration: write the short form as `#[flezha::relay(..)]`, or wire it in a full form's topology
   --> tests/ui/tasklet_relay_keys.rs:22:13
@@ -22,10 +22,10 @@ error: #[flezha::tasklet] declares a tasklet; `on_full` belongs to a relay decla
 24 | refused!(E, on_full = drop_oldest);
    |             ^^^^^^^
 
-error: #[flezha::relay]: unknown attribute `kind`; accepted: id, sink, input, on_full, description, max_duration_ms, run, durable, keys, capacity, max_cells, idle_ttl_seconds, schema_version, min_readable_schema_version, compact_after_bytes, max_timers_per_cell, logical_clock
+error: #[flezha::relay]: unknown attribute `kind`; accepted: id, output, input, on_full, description, max_duration_ms, run, durable, keys, capacity, max_cells, idle_ttl_seconds, schema_version, min_readable_schema_version, compact_after_bytes, max_timers_per_cell, logical_clock
   --> tests/ui/tasklet_relay_keys.rs:26:34
    |
-26 | #[flezha_runner::relay(id = "d", kind = "flow", sink = "echo")]
+26 | #[flezha_runner::relay(id = "d", kind = "flow", output = "echo")]
    |                                  ^^^^
 
 warning: unused imports: `Ctx`, `TaskletError`, and `Tasklet`

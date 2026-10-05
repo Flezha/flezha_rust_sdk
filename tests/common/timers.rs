@@ -1,5 +1,5 @@
 //! Per-Cell timer fixtures: the classes the timer suites arm deadlines on,
-//! the process-global sink guard they share, and the readers that turn a
+//! the process-global output guard they share, and the readers that turn a
 //! pending set, a WAL record and a captured frame back into assertions.
 
 use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
@@ -19,7 +19,7 @@ use flezha_runner::OverflowPolicy;
 
 use super::*;
 
-/// The state sink is process-global and several cases arm real deadlines;
+/// The state output is process-global and several cases arm real deadlines;
 /// every such case takes this so they cannot clobber each other.
 pub fn timer_test_guard() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -35,7 +35,7 @@ pub fn wall_now_ms() -> u64 {
         .as_millis() as u64
 }
 
-/// Restore the process-global sink to a discarding one so a recording case
+/// Restore the process-global output to a discarding one so a recording case
 /// cannot leak its buffer into whatever runs next.
 pub fn reset_sink() {
     let sink: SendFrameFn = Arc::new(|_: &str, _: &[u8]| Ok(()));
@@ -149,7 +149,7 @@ impl Relay for SessionRelay {
         c.input::<String>("in")
             .key_by(|s: &String| s.clone())
             .into::<SessionTask>()
-            .sink_named("out");
+            .output_named("out");
     }
 }
 
@@ -165,7 +165,7 @@ impl Relay for SaturatedSessionRelay {
             .on_full(OverflowPolicy::DropNothing)
             .key_by(|s: &String| s.clone())
             .into::<SessionTask<2>>()
-            .sink_named("out");
+            .output_named("out");
     }
 }
 
@@ -349,7 +349,7 @@ where
 /// Every state frame the runtime shipped, as `(payload_id, frame)`.
 pub type ShippedFrames = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
 
-/// Install a sink that records every state frame the runtime ships.
+/// Install an output that records every state frame the runtime ships.
 pub fn recording_sink() -> ShippedFrames {
     let seen: ShippedFrames = Arc::new(Mutex::new(Vec::new()));
     let seen_c = Arc::clone(&seen);

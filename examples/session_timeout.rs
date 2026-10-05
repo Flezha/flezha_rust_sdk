@@ -111,7 +111,7 @@ impl Relay for SessionRelay {
         c.input::<String>("clicks")
             .key_by(|click: &String| click.split(':').next().unwrap_or(click).to_string())
             .into::<SessionWindow>()
-            .sink_named("closed_sessions");
+            .output_named("closed_sessions");
     }
 }
 

@@ -177,7 +177,7 @@ impl Relay for ScaleControlSteps {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<ShortTask>()
-            .sink_named("out");
+            .output_named("out");
     }
 
     fn settings() -> RelaySettings {

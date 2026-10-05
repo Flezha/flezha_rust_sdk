@@ -1,17 +1,17 @@
 error[E0277]: the trait bound `DoNothing: Tasklet` is not satisfied
   --> tests/ui/short_form_relay_is_not_a_tasklet.rs:18:33
    |
-18 |         c.input::<String>("in").into::<DoNothing>().sink_named("out");
+18 |         c.input::<String>("in").into::<DoNothing>().output_named("out");
    |                                 ^^^^ unsatisfied trait bound
    |
 help: the trait `Tasklet` is not implemented for `DoNothing`
   --> tests/ui/short_form_relay_is_not_a_tasklet.rs:5:1
    |
- 5 | #[flezha_runner::relay(id = "do_nothing", sink = "echo")]
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ 5 | #[flezha_runner::relay(id = "do_nothing", output = "echo")]
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 help: the trait `Tasklet` is implemented for `DoNothingTasklet`
   --> tests/ui/short_form_relay_is_not_a_tasklet.rs:5:1
    |
- 5 | #[flezha_runner::relay(id = "do_nothing", sink = "echo")]
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ 5 | #[flezha_runner::relay(id = "do_nothing", output = "echo")]
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
    = note: this error originates in the attribute macro `flezha_runner::relay` (in Nightly builds, run with -Z macro-backtrace for more info)

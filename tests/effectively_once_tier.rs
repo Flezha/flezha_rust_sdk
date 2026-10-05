@@ -1,5 +1,5 @@
 //! The effectively-once tier: one atomic effect record per activation on
-//! the state sink, the consumed-offset floor a replay skips, and the logical
+//! the state output, the consumed-offset floor a replay skips, and the logical
 //! clock a restore re-arms.
 
 use std::io::Read;
@@ -19,11 +19,11 @@ fn pinned_pool() {
     ONCE.call_once(|| std::env::set_var("FLEZHA_WORKER_POOL_SIZE", "4"));
 }
 
-// ----- Effectively-once tier: atomic effect record on the state sink -----
+// ----- Effectively-once tier: atomic effect record on the state output -----
 
 /// Spec "Emits leave the primary stream in tier mode" + "Offset
 /// round-trips": an effectively-once invocation's keyed emit travels inside
-/// a `cell_effect_record` on the reliable state sink — carrying the
+/// a `cell_effect_record` on the reliable state output — carrying the
 /// change, the output (channel/key/payload), and the `flz.offset` the
 /// input arrived with — and no output frame appears on the primary stream.
 #[test]
@@ -240,7 +240,7 @@ fn tier_replay_skips_inputs_at_or_below_the_consumed_floor() {
     );
 
     // No late effect record appears for the skipped offsets. Counted by
-    // payload id: the sink is process-global, and a sibling test's park frame
+    // payload id: the output is process-global, and a sibling test's park frame
     // landing in this window says nothing about these offsets.
     let effect_records = || {
         TIER_SINK_FRAMES

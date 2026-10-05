@@ -94,7 +94,7 @@ pub(crate) fn retry_chain(c: &ChannelBuilder, attempts: u32, backoff_ms: u64) {
         .retry_max(attempts)
         .retry_backoff_ms(backoff_ms)
         .into::<FlakyFan>()
-        .sink_named("out");
+        .output_named("out");
 }
 
 /// The default 3-attempt ladder, backoff shrunk so the scenarios do not
@@ -238,7 +238,7 @@ impl Relay for StepProbeSteps {
         c.input::<String>("in")
             .retry_backoff_ms(200)
             .into::<StepProbe>()
-            .sink_named("probe_out");
+            .output_named("probe_out");
     }
 
     fn settings() -> RelaySettings {
@@ -294,7 +294,7 @@ impl Relay for ItemRetrySteps {
             .named("pieces")
             .retry_backoff_ms(10)
             .into::<ItemFlaky>()
-            .sink_named("item_out");
+            .output_named("item_out");
     }
 
     fn settings() -> RelaySettings {

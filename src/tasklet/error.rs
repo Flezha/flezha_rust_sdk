@@ -33,7 +33,7 @@ pub enum TaskletError {
     /// Only a tasklet's `run` / `on_timer` may register timers.
     TimersUnavailable,
     /// A part the runtime refused, carrying its catalogue error
-    /// (`part.no_sink`, `part.outside_invocation`).
+    /// (`part.no_output`, `part.outside_invocation`).
     Part(flz_core::FlezhaError),
     Custom(String),
     NonRetryable(String),

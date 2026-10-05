@@ -84,7 +84,7 @@ impl Relay for BoundedMailboxDropNothingRelay {
         c.input::<String>("drop_nothing_input")
             .on_full(OverflowPolicy::DropNothing)
             .into::<DropNothingTestTasklet>()
-            .sink_named("drop_nothing_echo");
+            .output_named("drop_nothing_echo");
     }
 }
 
@@ -97,7 +97,7 @@ impl Relay for BoundedMailboxDropNewestRelay {
         c.input::<String>("drop_newest_input")
             .on_full(OverflowPolicy::DropNewest)
             .into::<DropNewestTestTasklet>()
-            .sink_named("drop_newest_echo");
+            .output_named("drop_newest_echo");
     }
 }
 
@@ -110,13 +110,13 @@ impl Relay for BoundedMailboxDropOldestRelay {
         c.input::<String>("drop_oldest_input")
             .on_full(OverflowPolicy::DropOldest)
             .into::<DropOldestTestTasklet>()
-            .sink_named("drop_oldest_echo");
+            .output_named("drop_oldest_echo");
     }
 }
 
 // -- HybridChannelRelay -------------------------------------------------------
 //
-// Demonstrates `sink_with(...)`: the producer Tasklet emits a
+// Demonstrates `output_with(...)`: the producer Tasklet emits a
 // `u32` value that fans out to an inter-tasklet consumer and is also
 // serialized to bytes for the `hybrid_indicators` plugin. The
 // serializer panics on the sentinel `0xDEADBEEF` so a user can
@@ -160,7 +160,7 @@ impl Relay for HybridChannelRelay {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .into::<HybridProducerTasklet>()
-            .sink_named_with("hybrid_indicator", |v: &u32| {
+            .output_named_with("hybrid_indicator", |v: &u32| {
                 if *v == 0xDEAD_BEEF {
                     panic!("hybrid_indicators: serializer rejected sentinel 0xDEADBEEF");
                 }
@@ -216,7 +216,7 @@ impl Relay for MergedInputRelay {
             .key_by(|v: &MergedInput| v.symbol.clone())
             .into::<MergeLabelTasklet>()
             .keyed()
-            .sink_named("merged");
+            .output_named("merged");
     }
 }
 
@@ -249,6 +249,6 @@ impl Relay for TransformChainRelay {
             .key_by(|t: &String| key_prefix(t))
             .into::<TransformLabelTasklet>()
             .keyed()
-            .sink_named("transformed");
+            .output_named("transformed");
     }
 }

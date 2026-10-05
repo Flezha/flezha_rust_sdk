@@ -11,7 +11,7 @@ permanently supported.
 
 The shortest way to see a relay work. `LocalRelay::start::<R>()` takes
 the class you would deploy, runs its declared `channels()` graph in this
-process, and hands sink output to a callback — no controller, no socket, no
+process, and hands output to a callback — no controller, no socket, no
 container:
 
 ```rust
@@ -19,13 +19,13 @@ use std::time::Duration;
 use flezha_runner::LocalRelay;
 
 let run = LocalRelay::start::<WordCount>()?;
-run.on_sink("totals", |out| println!("{}", String::from_utf8_lossy(&out.payload)))?;
+run.on_output("totals", |out| println!("{}", String::from_utf8_lossy(&out.payload)))?;
 run.feed("lines", "the quick brown fox")?;
 run.run_until_idle(Duration::from_secs(5))?;
 ```
 
-`on_sink` registers against the sink's **channel** name — the string the
-declaration's `sink_named(...)` or `named(...)` supplied, else the producing
+`on_output` registers against the output's **channel** name — the string the
+declaration's `output_named(...)` or `named(...)` supplied, else the producing
 tasklet's name. `feed` takes the wire bytes
 the channel's declared decoder parses, and blocks while the consumer's mailbox
 is full. Worked example: `cargo run -p flezha_runner --example local_word_count`.
@@ -74,8 +74,8 @@ Graphs are declared producer-first (`sdk-graph-authoring`): `.into::<Task>()`
 wires a consumer and returns **that tasklet's** output stream handle, so a
 linear pipeline is one expression. The channel between two tasklets carries
 the producer's declared `Output` type — no type token, no channel name unless
-you want one (`.sink_named(...)` names the channel it terminates and
-`.named(...)` names one that has no sink; either overrides the name derived
+you want one (`.output_named(...)` names the channel it terminates and
+`.named(...)` names one that has no output; either overrides the name derived
 from the producer's identity, and declaring both on one channel is refused.
 Entry names are explicit, they are the relay's address).
 
@@ -91,7 +91,7 @@ impl Relay for OrdersRelay {
         c.input::<OrderEvent>("orders")
             .into::<Validate>()
             .into::<Alert>()
-            .sink_named("alerts"); // plugin egress; terminal — nothing wired after it
+            .output_named("alerts"); // plugin egress; terminal — nothing wired after it
     }
 }
 ```
@@ -143,8 +143,8 @@ One class can sit at several graph positions via named nodes
 (`into_named::<Filter>("spam_filter")`) — each named node keeps its own state
 identity. Graphs must be acyclic; per-channel config (`keyed`, `on_full`,
 `retry_max`, `retry_backoff_ms`) chains on the handle; the hybrid
-tap is the SAME method — `sink()` / `sink_named(name)` / `sink_with(serializer)`
-/ `sink_named_with(name, serializer)` all return the handle, so a consumer wires
+tap is the SAME method — `output()` / `output_named(name)` / `output_with(serializer)`
+/ `output_named_with(name, serializer)` all return the handle, so a consumer wires
 after it. A channel is terminal by having none.
 
 A tasklet that needs **two feeds** — a data stream plus a live config
@@ -182,13 +182,13 @@ over a remembered key set — is what keeps every emitted key one this member
 owns. The price is one tick of latency per key; §4.1 of
 `docs/sdk/authoring_contract.md` has the full contract.
 
-### A fuller graph: named nodes, a hybrid tap, a keyed sink
+### A fuller graph: named nodes, a hybrid tap, a keyed output
 
 Everything composes on the same handles. Here one `Filter` class serves two
 positions with independent state, the validated stream is tapped to an audit
 plugin *and* consumed downstream, the join accumulates both filters'
 verdicts, and the terminal channel carries output identity for a
-changelog-style sink:
+changelog-style output:
 
 ```rust
 struct RiskRelay;
@@ -203,7 +203,7 @@ impl Relay for RiskRelay {
             .retry_backoff_ms(20)
             .into::<Validate>()
             // tap: default JSON, on a channel this call names
-            .sink_named("orders.validated");
+            .output_named("orders.validated");
 
         // One class, two nodes: each keeps its own per-cell state under
         // its node identity (state dirs, journals, diagnostics). Both arms
@@ -214,8 +214,8 @@ impl Relay for RiskRelay {
 
         // The join's output closes plugin-bound and keyed: every emit calls
         // ctx.emit_keyed(key, value) and frames carry flz.* identity stamps,
-        // so a changelog sink upserts instead of appending.
-        verdicts.keyed().sink_named("risk.verdicts");
+        // so a changelog output upserts instead of appending.
+        verdicts.keyed().output_named("risk.verdicts");
     }
 }
 ```
@@ -248,7 +248,7 @@ impl Relay for SettleSteps {
             .named("reserved");
         reserved.into::<Charge>().named("charged").into::<Reconcile>();
         reserved.into::<Ledger>().named("booked").into::<Reconcile>()
-            .sink_named("reconciled");
+            .output_named("reconciled");
     }
 }
 ```
@@ -320,9 +320,9 @@ including the block written without the attribute.
 
 `ctx.part(value)` sends a preview of the output while `run` is still working,
 encoded as `ctx.emit(value)` would be. Listeners attached to the relay see
-it before the output; a sink never does. It never waits: a part that cannot
-leave at once is dropped. A channel that does not end in a sink refuses it
-with `part.no_sink`.
+it before the output; an output never does. It never waits: a part that cannot
+leave at once is dropped. A channel that does not end in an output refuses it
+with `part.no_output`.
 
 ## Public API workflow
 

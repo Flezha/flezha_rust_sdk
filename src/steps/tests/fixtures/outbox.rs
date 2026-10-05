@@ -18,7 +18,7 @@ string_task!(EmitThenFail, "steps_emit_then_fail", |input, ctx| {
     Err(TaskletError::Custom("failed after emitting".into()))
 });
 
-/// One tasklet that emits then fails, straight to a plugin sink.
+/// One tasklet that emits then fails, straight to a plugin output.
 pub(crate) struct LeakSteps;
 impl Relay for LeakSteps {
     fn factory_id() -> &'static str {
@@ -27,7 +27,7 @@ impl Relay for LeakSteps {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<EmitThenFail>()
-            .sink_named("out");
+            .output_named("out");
     }
 
     fn settings() -> RelaySettings {
@@ -42,7 +42,7 @@ impl Relay for LeakSteps {
 }
 
 /// Compensable task on a hybrid channel: its forward output feeds the next
-/// tasklet AND a plugin sink, so its `compensate` hook's `ctx.emit`
+/// tasklet AND a plugin output, so its `compensate` hook's `ctx.emit`
 /// produces plugin-bound undo output (staged for the `compensated` entry).
 #[derive(Default)]
 pub(crate) struct UndoEmit;
@@ -76,9 +76,9 @@ impl Relay for UndoSaga {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<UndoEmit>()
-            .sink_named_with("mid", |s: &String| s.clone().into_bytes())
+            .output_named_with("mid", |s: &String| s.clone().into_bytes())
             .into::<FailLast>()
-            .sink_named("out");
+            .output_named("out");
     }
 
     fn settings() -> RelaySettings {
@@ -105,7 +105,7 @@ impl Relay for ResumeSaga {
             .into::<ResumeUndoB>()
             .named("c2")
             .into::<SagaShipFails>()
-            .sink_named("out");
+            .output_named("out");
     }
 
     fn settings() -> RelaySettings {

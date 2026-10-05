@@ -1,4 +1,4 @@
-#[flezha_runner::relay(id = "chat", sink = "replies", run = steps(each = forever))]
+#[flezha_runner::relay(id = "chat", output = "replies", run = steps(each = forever))]
 fn chat(message: String) -> Vec<u8> {
     message.into_bytes()
 }

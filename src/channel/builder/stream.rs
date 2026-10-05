@@ -41,7 +41,7 @@ impl StreamTarget for NodeTarget {
 
 /// The entry channel's handle: wires the graph's root consumer via `.into` and
 /// carries the entry-side channel config. Same surface as [`Stream`] for
-/// everything that is not producer-side (no plugin sink, no `named` — the
+/// everything that is not producer-side (no plugin output, no `named` — the
 /// entry channel's name is given at `input(...)`).
 pub type EntryStream<'b, T> = Stream<'b, T, EntryTarget>;
 
@@ -302,7 +302,7 @@ impl<'b, T: 'static + Send + Sync> Stream<'b, T, NodeTarget> {
     /// natural key (the Cell's own via `ctx.emit(value)`, another via
     /// `ctx.emit_keyed(key, value)`) and the runtime stamps `flz.cell` /
     /// `flz.seq` / `flz.key` on the wire frame.
-    /// Requires a plugin wire (`sink`); `build_topology` refuses a keyed
+    /// Requires a plugin wire (`output`); `build_topology` refuses a keyed
     /// channel without one.
     pub fn keyed(self) -> Self {
         self.with_channel(|st, cid| st.channels[cid as usize].keyed = true);
@@ -317,45 +317,45 @@ impl<'b, T: 'static + Send + Sync> Stream<'b, T, NodeTarget> {
     ///
     /// The handle is returned, so `.into::<S>()` consumer wiring chains after
     /// it and the value then reaches both the consumer mailboxes (typed) and
-    /// the sink (as bytes). A channel with no consumers is the plugin-bound
+    /// the output (as bytes). A channel with no consumers is the plugin-bound
     /// terminal — terminality is the absence of further wiring, not a
     /// different method.
     ///
     /// The serializer runs once per emit regardless of consumer count.
-    /// Declaring a second sink on one channel is a registration error
-    /// (`TopologyIssue::DuplicatePluginSink`); the first call wins.
-    pub fn sink(self) -> Self
+    /// Declaring a second output on one channel is a registration error
+    /// (`TopologyIssue::DuplicatePluginOutput`); the first call wins.
+    pub fn output(self) -> Self
     where
         T: serde::Serialize,
     {
         self.attach_plugin_sink(None, default_plugin_serializer::<T>())
     }
 
-    /// [`sink`](Stream::sink), naming the channel: the string written here is
+    /// [`output`](Stream::output), naming the channel: the string written here is
     /// the channel's name everywhere one appears — wire metadata, journals,
     /// diagnostics, and the address a plugin filter and a local-mode callback
     /// use. Naming the channel here AND with [`named`](Stream::named) is
     /// refused (`TopologyIssue::ChannelNamedTwice`), as is two channels
-    /// naming one sink (`TopologyIssue::DuplicateSinkName`).
-    pub fn sink_named(self, name: &'static str) -> Self
+    /// naming one output (`TopologyIssue::DuplicateOutputName`).
+    pub fn output_named(self, name: &'static str) -> Self
     where
         T: serde::Serialize,
     {
         self.attach_plugin_sink(Some(name), default_plugin_serializer::<T>())
     }
 
-    /// [`sink`](Stream::sink) with a serializer of your own, replacing the
+    /// [`output`](Stream::output) with a serializer of your own, replacing the
     /// default rules (passthrough for `Vec<u8>`, UTF-8 for `String`, the
     /// SDK's default JSON codec otherwise).
-    pub fn sink_with<F>(self, serializer: F) -> Self
+    pub fn output_with<F>(self, serializer: F) -> Self
     where
         F: Fn(&T) -> Vec<u8> + Send + Sync + 'static,
     {
         self.attach_plugin_sink(None, erase::<T, _, _>("plugin serializer", serializer))
     }
 
-    /// [`sink_named`](Stream::sink_named) with a serializer of your own.
-    pub fn sink_named_with<F>(self, name: &'static str, serializer: F) -> Self
+    /// [`output_named`](Stream::output_named) with a serializer of your own.
+    pub fn output_named_with<F>(self, name: &'static str, serializer: F) -> Self
     where
         F: Fn(&T) -> Vec<u8> + Send + Sync + 'static,
     {
@@ -367,13 +367,13 @@ impl<'b, T: 'static + Send + Sync> Stream<'b, T, NodeTarget> {
 
     /// End this chain in a call to another relay: every value that reaches
     /// it, after this chain's transforms and key, is one request, serialized
-    /// as [`sink`](Stream::sink) serializes it. The call waits for nothing:
+    /// as [`output`](Stream::output) serializes it. The call waits for nothing:
     /// its outcome arrives later as a [`Response`](crate::Response) on the
     /// entry channel this answers, named `<this channel>.response`, which
     /// must feed a tasklet (the one that made the call included) and decodes
     /// the answer as `input::<A>` decodes. The caller hears of the outcome
     /// within `deadline_ms` milliseconds of the emit, `call.timeout` at the
-    /// latest. A channel ends in one sink or one call.
+    /// latest. A channel ends in one output or one call.
     pub fn call<A>(
         self,
         target: crate::CallTarget,
@@ -402,7 +402,7 @@ impl<'b, T: 'static + Send + Sync> Stream<'b, T, NodeTarget> {
         }
     }
 
-    /// Record a sink, which serializes the value through `serializer`; the
+    /// Record an output, which serializes the value through `serializer`; the
     /// core refuses a second end on a channel.
     fn attach_plugin_sink(
         self,
@@ -415,8 +415,8 @@ impl<'b, T: 'static + Send + Sync> Stream<'b, T, NodeTarget> {
             };
             st.record_link(cid, link);
             // This SDK builds its descriptors from `entry.name` rather than
-            // from the core's derived answer (`relay/builder.rs`), so a
-            // sink that names the channel writes both, exactly as `named`
+            // from the core's derived answer (`relay/builder.rs`), so an
+            // output that names the channel writes both, exactly as `named`
             // does. Without it Rust would silently keep the old answer while
             // the five host SDKs took the new one.
             let entry = &mut st.channels[cid as usize];
@@ -436,7 +436,7 @@ impl<'b, T: 'static + Send + Sync> Stream<'b, T, NodeTarget> {
 
 /// The default plugin serialization for `T`: passthrough for `Vec<u8>`, UTF-8
 /// bytes for `String`, the SDK's default JSON codec otherwise — what
-/// `sink(...)` applies when the author supplies no serializer.
+/// `output(...)` applies when the author supplies no serializer.
 fn default_plugin_serializer<T: serde::Serialize + Send + Sync + 'static>(
 ) -> crate::channel::PluginSerializeFn {
     Arc::new(|val: &dyn Any| -> Vec<u8> {

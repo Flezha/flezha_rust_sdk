@@ -1,6 +1,6 @@
 //! The effectively-once tier's shared test surface: the lock that serialises
-//! every WAL-producing test against the process-global sink, the capturing
-//! sink itself, the controller-format WAL record, and the two stamped classes
+//! every WAL-producing test against the process-global output, the capturing
+//! output itself, the controller-format WAL record, and the two stamped classes
 //! the identity, tier and checkpoint suites are all written against.
 
 use std::collections::HashMap;
@@ -16,7 +16,7 @@ use flezha_runner::{Durable, Exactly, Relay, RelaySettings, Run, SleepAfter};
 use super::dummy_stream;
 
 /// Serializes every test whose dispatches produce WAL frames: the
-/// flush-order test installs a process-global recording sink, so a
+/// flush-order test installs a process-global recording output, so a
 /// concurrent WAL-producing test would leak "wal" entries into its log.
 pub static WAL_TEST_LOCK: Mutex<()> = Mutex::new(());
 
@@ -54,7 +54,7 @@ impl Relay for KeyedStampRelay {
         c.input::<String>("input")
             .into::<KeyedStampTasklet>()
             .keyed()
-            .sink_named("out");
+            .output_named("out");
     }
 
     /// A plain class that never sleeps: nothing journals its input.
@@ -111,7 +111,7 @@ impl Relay for TierRelay {
         c.input::<String>("input")
             .into::<TierStampTasklet>()
             .keyed()
-            .sink_named("out");
+            .output_named("out");
     }
 
     fn settings() -> RelaySettings {
@@ -124,7 +124,7 @@ impl Relay for TierRelay {
     }
 }
 
-/// Decode every `cell_effect_record` the tier sink captured, in order.
+/// Decode every `cell_effect_record` the tier output captured, in order.
 pub fn captured_effect_bodies() -> Vec<flezha_runner::cell::flusher::EffectRecordBody> {
     use flezha_runner::cell::flusher::EffectRecordBody;
 

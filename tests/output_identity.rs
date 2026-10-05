@@ -66,7 +66,7 @@ fn non_keyed_frame_is_byte_identical_to_prechange_layout() {
         fn channels(c: &ChannelBuilder) {
             c.input::<String>("input")
                 .into::<PlainPluginTasklet>()
-                .sink_named("out");
+                .output_named("out");
         }
     }
 

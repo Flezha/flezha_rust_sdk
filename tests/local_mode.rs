@@ -1,7 +1,7 @@
 //! The Rust SDK's local mode: a user's own relay type, its declared
 //! two-tasklet graph, and no controller anywhere.
 //!
-//! The graph and its expected sink output are read from
+//! The graph and its expected output are read from
 //! `test/fixtures/local_mode_word_count.txt`, which the Java and Elixir
 //! local-mode suites read too — so the Elixir SDK's own core and `flz_core`
 //! are compared against one recorded expectation instead of by inspection.
@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use flezha_runner::local::SinkOutput;
+use flezha_runner::local::LocalOutput;
 use flezha_runner::state::Change;
 use flezha_runner::tasklet::{Ctx, Tasklet, TaskletError};
 use flezha_runner::{ChannelBuilder, Flezha, LocalRelay, Relay};
@@ -81,7 +81,7 @@ impl Relay for WordCount {
             .key_by(|word: &String| word.clone())
             .into::<Tally>()
             .keyed()
-            .sink_named("totals");
+            .output_named("totals");
     }
 }
 
@@ -105,7 +105,7 @@ fn an_in_tree_contract_copy_does_not_shadow_the_checkout() {
     assert_eq!(vendored, package.join("contract"));
 }
 
-/// The scenario every core runs: the lines to feed, and the sink values to
+/// The scenario every core runs: the lines to feed, and the output values to
 /// release as a multiset.
 fn scenario() -> (Vec<String>, BTreeMap<String, usize>) {
     let path = contract_file("test/fixtures/local_mode_word_count.txt");
@@ -125,15 +125,15 @@ fn scenario() -> (Vec<String>, BTreeMap<String, usize>) {
 #[test]
 fn a_declared_graph_runs_locally_and_releases_the_recorded_output() {
     let (lines, expected) = scenario();
-    let released: Arc<Mutex<Vec<SinkOutput>>> = Arc::new(Mutex::new(Vec::new()));
+    let released: Arc<Mutex<Vec<LocalOutput>>> = Arc::new(Mutex::new(Vec::new()));
     let into = Arc::clone(&released);
 
     let run = LocalRelay::start::<WordCount>().expect("the run starts");
-    // `sink_named("totals")` is the declaration's ONLY naming call, and this
-    // registers under that same string: local mode addresses a sink by the
-    // channel name, and a sink names the channel, so `sdk-local-mode`'s "the
-    // sink's declared name" and the implementation are one answer.
-    run.on_sink("totals", move |output| {
+    // `output_named("totals")` is the declaration's ONLY naming call, and this
+    // registers under that same string: local mode addresses an output by the
+    // channel name, and an output names the channel, so `sdk-local-mode`'s "the
+    // output's declared name" and the implementation are one answer.
+    run.on_output("totals", move |output| {
         into.lock().unwrap_or_else(|p| p.into_inner()).push(output);
     })
     .expect("`totals` is declared");

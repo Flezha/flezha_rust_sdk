@@ -25,12 +25,12 @@ string_task!(Stage2, "steps_stage2", |input, ctx| ctx
     .emit(format!("{input}-2")));
 
 /// `steps-branching`: Stage1 fans out to Stage2 and EchoTask on one channel,
-/// each branch ending at its own plugin sink. The edge is (channel,
+/// each branch ending at its own plugin output. The edge is (channel,
 /// consumer), so both branches read exactly what Stage1 released on `mid`.
 pub(crate) fn tree_chain(c: &ChannelBuilder) {
     let mid = c.input::<String>("in").into::<Stage1>().named("mid");
-    mid.into::<Stage2>().sink_named("out_b");
-    mid.into::<EchoTask>().sink_named("out_c");
+    mid.into::<Stage2>().output_named("out_b");
+    mid.into::<EchoTask>().output_named("out_c");
 }
 
 pub(crate) struct TreeSteps;
@@ -61,7 +61,7 @@ pub(crate) fn two_stage_chain(c: &ChannelBuilder) {
         .into::<Stage1>()
         .named("mid")
         .into::<Stage2>()
-        .sink_named("out");
+        .output_named("out");
 }
 
 pub(crate) struct ChainSteps;
@@ -129,7 +129,7 @@ impl Relay for PartLoop {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<PartTurn>()
-            .sink_named("answer");
+            .output_named("answer");
     }
 
     fn settings() -> RelaySettings {
@@ -237,11 +237,11 @@ pub(crate) fn loop_saga_chain(c: &ChannelBuilder) {
         .into::<LoopReserve>()
         .named("mid")
         .into::<LoopMaybeFail>()
-        .sink_named("out");
+        .output_named("out");
 }
 
 /// A durable handoff-chained loop whose terminal tasklet releases nothing:
-/// no consumer is wired from it and it names no sink, so it owns no output
+/// no consumer is wired from it and it names no output, so it owns no output
 /// channel at all and iteration N+1 has no handoff to be re-seeded from.
 pub(crate) struct ChainedLoopNoTerminalOutput;
 impl Relay for ChainedLoopNoTerminalOutput {
@@ -264,7 +264,7 @@ impl Relay for ChainedLoopNoTerminalOutput {
 }
 
 /// The second shape the same refusal covers: the terminal DOES own a channel,
-/// but its only wiring is a plugin sink, so the channel derives plugin-bound
+/// but its only wiring is a plugin output, so the channel derives plugin-bound
 /// and carries no journal codec. The iteration commit would ship an empty
 /// handoff and the resume would read the loop as converged.
 pub(crate) struct ChainedLoopPluginTerminal;
@@ -277,7 +277,7 @@ impl Relay for ChainedLoopPluginTerminal {
             .into::<Stage1>()
             .named("mid")
             .into::<Stage2>()
-            .sink_named("out");
+            .output_named("out");
     }
 
     fn settings() -> RelaySettings {
@@ -347,7 +347,7 @@ impl Relay for FanSteps {
             .into::<SplitTask>()
             .named("mid")
             .into::<FanTask>()
-            .sink_named("out");
+            .output_named("out");
     }
 
     fn settings() -> RelaySettings {
@@ -373,7 +373,7 @@ impl Relay for FanOptOutSteps {
             .into::<SplitTask>()
             .named("mid")
             .into::<FanTask>()
-            .sink_named("out");
+            .output_named("out");
     }
 
     fn settings() -> RelaySettings {
@@ -394,8 +394,8 @@ string_task!(HybridStage1, "steps_hybrid_stage1", |input, ctx| ctx
 string_task!(HybridStage2, "steps_hybrid_stage2", |input, ctx| ctx
     .emit(format!("final:{input}")));
 
-/// Hybrid inter-tasklet channel (`sink_with`): Stage1's output
-/// both feeds Stage2 AND is serialized to a plugin sink.
+/// Hybrid inter-tasklet channel (`output_with`): Stage1's output
+/// both feeds Stage2 AND is serialized to a plugin output.
 pub(crate) struct HybridSteps;
 impl Relay for HybridSteps {
     fn factory_id() -> &'static str {
@@ -404,9 +404,9 @@ impl Relay for HybridSteps {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<HybridStage1>()
-            .sink_named_with("mid", |s: &String| format!("mid:{s}").into_bytes())
+            .output_named_with("mid", |s: &String| format!("mid:{s}").into_bytes())
             .into::<HybridStage2>()
-            .sink_named("out");
+            .output_named("out");
     }
 
     fn settings() -> RelaySettings {

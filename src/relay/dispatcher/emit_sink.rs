@@ -1,4 +1,4 @@
-//! The sink an invocation's outputs leave through, [`CellEmitSink`], on the
+//! The output an invocation's outputs leave through, [`CellEmitSink`], on the
 //! connection its item rode in on. An emit is routed to its consumers (a
 //! steps relay's held on its pass for the stage's commit) and its plugin output
 //! written, or, for a Cell that records effects, captured into the
@@ -23,7 +23,7 @@ use crate::tasklet::TaskletError;
 /// the durable WAL path, invoked before each output frame is written.
 pub(super) type FlushBeforeEmit<'a> = Box<dyn FnMut() + 'a>;
 
-/// Per-invocation emit sink, constructed fresh inside each `dispatch`
+/// Per-invocation emit output, constructed fresh inside each `dispatch`
 /// call. Holds an upgraded `Arc<RelayInstance>` for the duration of the
 /// run; if the instance has been dropped, every emit returns
 /// `UnknownChannel`.
@@ -56,7 +56,7 @@ pub(super) struct CellEmitSink<'a> {
     pub(super) consumed_offset: Option<u64>,
     /// The outside call the invocation's input carried (a steps pass's for
     /// every stage), inherited by inter-tasklet emits and stamped on every
-    /// sink output.
+    /// output.
     pub(super) reply_to: Option<Arc<str>>,
     /// `Some` for a Cell that records effects: plugin emits are pushed here
     /// (for the invocation's atomic effect record) instead of being written
@@ -117,7 +117,7 @@ impl<'a> CellEmitSink<'a> {
         }
     }
 
-    /// Plugin-sink tail: serialize once inside `catch_unwind` and write the
+    /// Plugin-output tail: serialize once inside `catch_unwind` and write the
     /// bytes as the channel's plugin output. A serializer panic surfaces as
     /// `TaskletError::PluginSerializerPanic` to the producing Tasklet; the
     /// dispatcher thread is unaffected.
@@ -188,7 +188,7 @@ impl<'a> CellEmitSink<'a> {
 }
 
 impl<'a> EmitSink for CellEmitSink<'a> {
-    /// Fan out to the consumer mailboxes, then to the plugin sink if the
+    /// Fan out to the consumer mailboxes, then to the plugin output if the
     /// channel has one. The plugin-bound terminal is the same path with an
     /// empty consumer list, which is why there is no second arm for it.
     fn emit(

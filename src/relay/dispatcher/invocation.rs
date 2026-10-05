@@ -1,6 +1,6 @@
 //! One invocation of the author's code, from the call to the settle.
 //!
-//! The retry ladder, the emit sink, the effect record and the DLQ park are the
+//! The retry ladder, the emit output, the effect record and the DLQ park are the
 //! same machinery for an input, a timer firing and a steps relay undo; only
 //! [`Call`] differs, which is why all three reach `invoke_once`.
 
@@ -69,7 +69,7 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
     }
 
     /// Drain this cell's pending changes to the durable WAL path before the
-    /// sink writes the matching output frame, so change N reaches the
+    /// output writes the matching output frame, so change N reaches the
     /// controller's WAL before N's output reaches Kafka. `None` when there is
     /// nothing to order against: a `NoChange` / non-persistent relay keeps
     /// the zero-cost inline emit, a Cell that records effects ships the
@@ -99,7 +99,7 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
         }))
     }
 
-    /// The emit sink one invocation writes through, on this Cell's producer
+    /// The emit output one invocation writes through, on this Cell's producer
     /// edge and the connection its item rode in on.
     fn emit_sink<'a>(
         &'a self,
@@ -131,7 +131,7 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
     }
 
     /// The call into the author's code, contained: `run` on an input or
-    /// `on_timer` on a firing, inside the emit sink and the timer session both
+    /// `on_timer` on a firing, inside the emit output and the timer session both
     /// share. `Ok((ops, checkpointed))` is a completed attempt and what its
     /// session committed; `Err` is the failure text and whether the ladder may
     /// retry it. The panic containment is what keeps a poison payload from
@@ -328,7 +328,7 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
     }
 
     /// Run ONE ATTEMPT of one invocation — `run` on an input, or `on_timer`
-    /// on a firing — through the emit sink, the timer session and the durable
+    /// on a firing — through the emit output, the timer session and the durable
     /// record it produces. The two differ only in the call into the author's
     /// code; everything a failure has to be contained by is shared, which is
     /// what makes a poison timer park exactly like a poison input.
@@ -396,7 +396,7 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
 }
 
 /// The call into the author's code one invocation makes. The retry ladder, the
-/// emit sink, the effect record and the DLQ park are the same machinery either
+/// emit output, the effect record and the DLQ park are the same machinery either
 /// way — only this differs, which is why they share one code path.
 pub(super) enum Call<S: Tasklet> {
     Input {
@@ -405,8 +405,8 @@ pub(super) enum Call<S: Tasklet> {
         /// carries none — it consumes no input — which is why it lives on the
         /// variant rather than beside it.
         consumed_offset: Option<u64>,
-        /// The outside call waiting on the input (`flz.reply_to`), which a
-        /// sink output answers. A firing answers nobody.
+        /// The outside call waiting on the input (`flz.reply_to`), which an
+        /// output answers. A firing answers nobody.
         reply_to: Option<Arc<str>>,
         replay: bool,
     },

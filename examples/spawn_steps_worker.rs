@@ -42,7 +42,7 @@ impl Relay for AlertDetector {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("events")
             .into::<Detect>()
-            .sink_named("alerts");
+            .output_named("alerts");
     }
 }
 
@@ -85,7 +85,7 @@ impl Relay for Triage {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("alert")
             .into::<TriageStep>()
-            .sink_named("triaged");
+            .output_named("triaged");
     }
 
     fn settings() -> RelaySettings {

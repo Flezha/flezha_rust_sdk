@@ -13,7 +13,7 @@ impl Tasklet for Watch {
     type Output = Http;
 
     fn run(&mut self, request: Request, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
-        // keyed by the user: a sink of an effectively-once relay needs a key
+        // keyed by the user: an output of an effectively-once relay needs a key
         ctx.emit_keyed(
             request.user(),
             if request.listens() {

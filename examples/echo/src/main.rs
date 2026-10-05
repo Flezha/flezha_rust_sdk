@@ -30,7 +30,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // control.start_relay(&flezha_runner::RelaySpec::new("echo").id("my_echo"))?;
     // control.enable_plugin(
     //     "writer",
-    //     &flezha_runner::PluginSpec::new("relay_file_sink")
+    //     &flezha_runner::PluginSpec::new("relay_file_output")
     //         .opts(serde_json::json!({ "path": "echo-out.txt" })),
     // )?;
     // control.bind_plugin("writer", "my_echo", serde_json::json!([["on_output", {}]]), "")?;

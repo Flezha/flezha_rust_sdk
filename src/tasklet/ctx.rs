@@ -29,7 +29,7 @@ pub const RESERVED_METADATA_PREFIX: &str = "flz.";
 /// carries the replay-stable inputs [`Self::stable_id`] derives from.
 pub struct Ctx<'a, S: Tasklet> {
     state: &'a mut S::State,
-    /// Shared with the emit sink, which drains just-recorded changes onto the
+    /// Shared with the emit output, which drains just-recorded changes onto the
     /// durable path before the matching output frame is written. Both run on
     /// the one dispatch thread inside one invocation, so the borrows never
     /// overlap.
@@ -155,7 +155,7 @@ impl StableId {
 }
 
 /// Internal trait the runtime implements per-cell: where an emit goes, kept
-/// out of the typed context so one sink serves every tasklet type.
+/// out of the typed context so one output serves every tasklet type.
 pub(crate) trait EmitSink {
     /// Emit one value on this Tasklet's output channel. Where it goes —
     /// consumer mailboxes, the plugin wire, a steps stage handoff, or
@@ -164,7 +164,7 @@ pub(crate) trait EmitSink {
     /// [`Ctx::route`].
     ///
     /// One method, because the shape is one question: the authoring surface
-    /// declares egress with a single `sink(...)`, and a channel is the
+    /// declares egress with a single `output(...)`, and a channel is the
     /// plugin-bound terminal by having no consumers rather than by a second
     /// declaration.
     fn emit(
@@ -176,7 +176,7 @@ pub(crate) trait EmitSink {
 
     fn channel_name(&self) -> &str;
 
-    /// True iff the channel carries a `sink(...)`. User metadata rides the
+    /// True iff the channel carries an `output(...)`. User metadata rides the
     /// plugin frame, so a channel without one has nowhere to put it.
     fn has_plugin_sink(&self) -> bool {
         false
@@ -188,7 +188,7 @@ pub(crate) trait EmitSink {
         false
     }
 
-    /// Ask to end the instance with `result`. A sink that runs no instance
+    /// Ask to end the instance with `result`. An output that runs no instance
     /// has nothing to end.
     fn complete(&mut self, _result: Vec<u8>) -> Result<(), TaskletError> {
         Ok(())
@@ -479,15 +479,15 @@ impl<'a, S: Tasklet> Ctx<'a, S> {
     /// producing, which leaves the runner now rather than when `run` returns.
     /// It previews the tasklet's own output channel and is encoded as an emit
     /// of the same value on it would be. The relay's listeners receive it
-    /// before the output; a sink never does, and it is never durable or
+    /// before the output; an output never does, and it is never durable or
     /// replayed. Parts are numbered from 0 within each attempt, so a retry
     /// starts its preview again.
     ///
     /// It never waits: a part that cannot leave at once (no connection to
     /// the controller, a local run, a stream that would block, a frame over
     /// the size limit) is dropped and counted, and a replayed input sends
-    /// none. Fails with `part.no_sink` when the output channel does not end
-    /// in a sink, as for a channel that only feeds another tasklet or ends in
+    /// none. Fails with `part.no_output` when the output channel does not end
+    /// in an output, as for a channel that only feeds another tasklet or ends in
     /// a call, and with `part.outside_invocation` in `compensate`,
     /// which previews no work item. In the testing harness it sends nothing.
     pub fn part(&self, value: S::Output) -> Result<(), TaskletError> {
@@ -514,8 +514,8 @@ impl<'a, S: Tasklet> Ctx<'a, S> {
     }
 
     /// Emit with user-attached string-keyed metadata. Valid on any channel
-    /// carrying a `sink(...)`. Pure inter-tasklet channels with
-    /// no plugin sink return `MetadataNotAllowedOnInterTaskletChannel`.
+    /// carrying an `output(...)`. Pure inter-tasklet channels with
+    /// no plugin output return `MetadataNotAllowedOnInterTaskletChannel`.
     /// Keys in the reserved `flz.` namespace are refused.
     pub fn emit_with_meta(
         &mut self,
@@ -555,7 +555,7 @@ impl<'a, S: Tasklet> Ctx<'a, S> {
     /// Single emit funnel: enforces the keyed-channel contract (the
     /// channel declaration is the single source of truth for whether a
     /// key is required), refuses reserved `flz.` metadata keys and metadata
-    /// with nowhere to ride, then hands the value to the sink. Supplying no
+    /// with nowhere to ride, then hands the value to the output. Supplying no
     /// key on a keyed channel resolves to this Cell's own key here, so the
     /// defaulted emit and an explicit `emit_keyed` are one path from this
     /// point on and their stamping cannot diverge.

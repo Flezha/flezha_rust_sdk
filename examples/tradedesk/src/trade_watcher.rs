@@ -50,6 +50,6 @@ impl Relay for TradeWatcherRelay {
             .key_by(|trade| trade.symbol.clone()) // one cell per symbol
             .into::<TrackPrices>()
             .into::<BuyAboveAverage>() // fed by the tasklet above
-            .sink_named("signals"); // out to the file plugin
+            .output_named("signals"); // out to the file plugin
     }
 }

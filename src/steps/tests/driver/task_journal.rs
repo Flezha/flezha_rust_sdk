@@ -13,7 +13,7 @@ use crate::steps::*;
 pub(super) fn durable_wal_and_journal(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
     // --- §5b.1/§7c.1 durable steps relay actually writes WAL; opt-out writes nothing ---
     // FanSteps is durable-by-default; its FanTask applies a Change per item,
-    // which the driver flushes as a cell_state_change frame to the sink.
+    // which the driver flushes as a cell_state_change frame to the output.
     WAL_FRAMES.lock().unwrap().clear();
     assert!(start_fed(node, "test-fan-steps", "fan-wal", b"a,bb"));
     let (_o, done) = drain(rx, "fan-wal");

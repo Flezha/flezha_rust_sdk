@@ -1,11 +1,11 @@
-//! Unit tests for plugin egress (`sink` / `sink_with`): the hybrid channel
-//! (a sink with consumers wired after it), the plugin-bound terminal (a sink
+//! Unit tests for plugin egress (`output` / `output_with`): the hybrid channel
+//! (an output with consumers wired after it), the plugin-bound terminal (an output
 //! with none), and the equivalence of the two declarations on the wire.
 //!
 //! Each test uses the live dispatcher: an entry channel feeds bytes
 //! into a producer Tasklet, which calls `ctx.emit(typed_value)` on a
 //! channel wired to one or more inter-tasklet consumers and a plugin
-//! sink. The consumer-side delivery is observed via static state in
+//! output. The consumer-side delivery is observed via static state in
 //! the consumer Tasklet; the plugin-side delivery is observed by reading
 //! the receiving end of the unix socket pair and parsing wire frames.
 
@@ -60,7 +60,7 @@ fn dispatch_input(
     );
 }
 
-// ---------- 2.5: 1 consumer + plugin sink ----------
+// ---------- 2.5: 1 consumer + plugin output ----------
 
 fn single_consumer_observed() -> &'static Mutex<Vec<u32>> {
     static OBSERVED: OnceLock<Mutex<Vec<u32>>> = OnceLock::new();
@@ -85,7 +85,7 @@ impl Relay for SingleHybridRelay {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .into::<SingleProducer>()
-            .sink_named_with("hybrid_out", |v: &u32| v.to_be_bytes().to_vec())
+            .output_named_with("hybrid_out", |v: &u32| v.to_be_bytes().to_vec())
             .into::<SingleConsumer>();
     }
 }
@@ -159,7 +159,7 @@ impl Relay for ThreeHybridRelay {
         let out = c
             .input::<String>("input")
             .into::<ThreeProducer>()
-            .sink_named_with("three_out", |v: &u32| {
+            .output_named_with("three_out", |v: &u32| {
                 SERIALIZER_CALLS.fetch_add(1, Ordering::SeqCst);
                 v.to_be_bytes().to_vec()
             });
@@ -234,7 +234,7 @@ impl Relay for PanicHybridRelay {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .into::<PanicProducer>()
-            .sink_named_with("panic_out", |v: &u32| {
+            .output_named_with("panic_out", |v: &u32| {
                 if *v == 13 {
                     panic!("test serializer rejected 13");
                 }
@@ -293,7 +293,7 @@ fn hybrid_serializer_panic_is_caught() {
     assert_eq!(body, &5u32.to_be_bytes().to_vec());
 }
 
-// ---------- 2.8: duplicate sink_with rejected at registration ----------
+// ---------- 2.8: duplicate output_with rejected at registration ----------
 
 test_tasklet!(DupProducer, "hybrid_dup_producer", String => u32, (), |_input, _ctx| {
     Ok(())
@@ -307,13 +307,13 @@ impl Relay for DupHybridRelay {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .into::<DupProducer>()
-            .sink_named_with("dup_out", |v: &u32| v.to_be_bytes().to_vec())
-            .sink_with(|v: &u32| v.to_be_bytes().to_vec());
+            .output_named_with("dup_out", |v: &u32| v.to_be_bytes().to_vec())
+            .output_with(|v: &u32| v.to_be_bytes().to_vec());
     }
 }
 
 #[test]
-fn hybrid_duplicate_plugin_sink_is_rejected() {
+fn hybrid_duplicate_plugin_output_is_rejected() {
     let result = build_topology_for::<DupHybridRelay>();
     let err = match result {
         Ok(_) => panic!("expected topology error"),
@@ -321,8 +321,8 @@ fn hybrid_duplicate_plugin_sink_is_rejected() {
     };
     let msg = format!("{err:?}");
     assert!(
-        msg.contains("DuplicatePluginSink") && msg.contains("dup_out"),
-        "expected DuplicatePluginSink for dup_out, got: {msg}"
+        msg.contains("DuplicatePluginOutput") && msg.contains("dup_out"),
+        "expected DuplicatePluginOutput for dup_out, got: {msg}"
     );
 }
 
@@ -356,7 +356,7 @@ impl Relay for MetaHybridRelay {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .into::<MetaProducer>()
-            .sink_named_with("meta_out", |v: &u32| v.to_be_bytes().to_vec())
+            .output_named_with("meta_out", |v: &u32| v.to_be_bytes().to_vec())
             .into::<MetaConsumer>();
     }
 }
@@ -475,7 +475,7 @@ fn emit_with_meta_on_pure_inter_tasklet_channel_is_rejected() {
     );
 }
 
-// ---------- one `sink`: terminal and hybrid are one declaration ----------
+// ---------- one `output`: terminal and hybrid are one declaration ----------
 
 fn unified_consumer_observed() -> &'static Mutex<Vec<String>> {
     static C: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
@@ -491,7 +491,7 @@ test_tasklet!(UnifiedConsumer, "unified_consumer", String => (), (), |input, _ct
     Ok(())
 });
 
-/// `sink` and nothing after it — what the removed `output(...)` declared.
+/// `output` and nothing after it — what the removed `output(...)` declared.
 struct TerminalSinkRelay;
 impl Relay for TerminalSinkRelay {
     fn factory_id() -> &'static str {
@@ -500,11 +500,11 @@ impl Relay for TerminalSinkRelay {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .into::<UnifiedProducer>()
-            .sink_named("unified_out");
+            .output_named("unified_out");
     }
 }
 
-/// The same sink with a consumer wired after it — what `also_output` declared.
+/// The same output with a consumer wired after it — what `also_output` declared.
 struct HybridSinkRelay;
 impl Relay for HybridSinkRelay {
     fn factory_id() -> &'static str {
@@ -513,12 +513,12 @@ impl Relay for HybridSinkRelay {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .into::<UnifiedProducer>()
-            .sink_named("unified_out")
+            .output_named("unified_out")
             .into::<UnifiedConsumer>();
     }
 }
 
-/// Everything about one channel the sink declaration decides.
+/// Everything about one channel the output declaration decides.
 fn sink_shape<R: Relay>(channel: &str) -> (ChannelKind, usize, Option<String>, bool) {
     let topology = build_topology_for::<R>().expect("topology");
     let cid = topology.lookup_channel_id(channel).expect("channel id");
@@ -535,7 +535,7 @@ fn sink_shape<R: Relay>(channel: &str) -> (ChannelKind, usize, Option<String>, b
 }
 
 /// Terminality is the absence of consumers, not a second method: the same
-/// `.sink(...)` call yields the plugin-bound terminal or the hybrid channel
+/// `.output(...)` call yields the plugin-bound terminal or the hybrid channel
 /// depending only on what is wired after it.
 #[test]
 fn terminality_is_derived_from_the_wiring() {
@@ -566,11 +566,11 @@ fn terminality_is_derived_from_the_wiring() {
 
 /// Wire fixture, held against the bytes the removed `output(...)` wrote:
 /// default serialization (UTF-8 for `String`), the channel name under
-/// `channel`, and no other metadata. Both shapes of the one `sink` method are
+/// `channel`, and no other metadata. Both shapes of the one `output` method are
 /// held against the same literals, so neither can drift from the other or
 /// from what the rename replaced.
 #[test]
-fn terminal_and_hybrid_sink_frames_match_the_pre_rename_fixture() {
+fn terminal_and_hybrid_output_frames_match_the_pre_rename_fixture() {
     let expected_meta: HashMap<String, String> =
         HashMap::from([("channel".to_string(), "unified_out".to_string())]);
 
@@ -611,9 +611,9 @@ fn terminal_and_hybrid_sink_frames_match_the_pre_rename_fixture() {
     );
 }
 
-// ---------- the sink names the channel ----------
+// ---------- the output names the channel ----------
 
-/// `sink("items_output")` with no `.named(...)` anywhere in the declaration.
+/// `output("items_output")` with no `.named(...)` anywhere in the declaration.
 /// The channel this produces is the one the frame is stamped with, so the
 /// string an author can read in the source is the string a plugin filters on.
 struct SinkNamesChannelRelay;
@@ -624,14 +624,14 @@ impl Relay for SinkNamesChannelRelay {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .into::<UnifiedProducer>()
-            .sink_named("items_output");
+            .output_named("items_output");
     }
 }
 
 /// The reproduction: a hand-written relay whose only naming call is its
-/// sink ships frames stamped with the sink's name, not the producing node's.
+/// output ships frames stamped with the output's name, not the producing node's.
 #[test]
-fn sink_name_is_the_channel_name_on_the_wire() {
+fn output_name_is_the_channel_name_on_the_wire() {
     let (handle, _instance) = setup::<SinkNamesChannelRelay>("sink-names");
     let (stream, frames) = duplex_stream_with_reader();
 
@@ -652,7 +652,7 @@ fn sink_name_is_the_channel_name_on_the_wire() {
     );
 }
 
-/// A channel both `.named(...)` and `.sink_named(...)` name is refused rather
+/// A channel both `.named(...)` and `.output_named(...)` name is refused rather
 /// than resolved by precedence, and the refusal names both declarations.
 struct DoubleNamedRelay;
 impl Relay for DoubleNamedRelay {
@@ -663,7 +663,7 @@ impl Relay for DoubleNamedRelay {
         c.input::<String>("input")
             .into::<UnifiedProducer>()
             .named("a")
-            .sink_named("b");
+            .output_named("b");
     }
 }
 

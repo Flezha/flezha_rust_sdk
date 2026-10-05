@@ -291,10 +291,10 @@ pub fn flezha_runner::Stream<'b, T, flezha_runner::channel::NodeTarget>::branch<
 pub fn flezha_runner::Stream<'b, T, flezha_runner::channel::NodeTarget>::call<A>(self, flezha_runner::CallTarget, u64) -> flezha_runner::EntryStream<'b, flezha_runner::Response<T, A>> where T: serde_core::ser::Serialize + serde_core::de::DeserializeOwned, A: serde_core::de::DeserializeOwned + core::marker::Send + core::marker::Sync + 'static
 pub fn flezha_runner::Stream<'b, T, flezha_runner::channel::NodeTarget>::keyed(self) -> Self
 pub fn flezha_runner::Stream<'b, T, flezha_runner::channel::NodeTarget>::named(self, &'static str) -> Self
-pub fn flezha_runner::Stream<'b, T, flezha_runner::channel::NodeTarget>::sink(self) -> Self where T: serde_core::ser::Serialize
-pub fn flezha_runner::Stream<'b, T, flezha_runner::channel::NodeTarget>::sink_named(self, &'static str) -> Self where T: serde_core::ser::Serialize
-pub fn flezha_runner::Stream<'b, T, flezha_runner::channel::NodeTarget>::sink_named_with<F>(self, &'static str, F) -> Self where F: core::ops::function::Fn(&T) -> alloc::vec::Vec<u8> + core::marker::Send + core::marker::Sync + 'static
-pub fn flezha_runner::Stream<'b, T, flezha_runner::channel::NodeTarget>::sink_with<F>(self, F) -> Self where F: core::ops::function::Fn(&T) -> alloc::vec::Vec<u8> + core::marker::Send + core::marker::Sync + 'static
+pub fn flezha_runner::Stream<'b, T, flezha_runner::channel::NodeTarget>::output(self) -> Self where T: serde_core::ser::Serialize
+pub fn flezha_runner::Stream<'b, T, flezha_runner::channel::NodeTarget>::output_named(self, &'static str) -> Self where T: serde_core::ser::Serialize
+pub fn flezha_runner::Stream<'b, T, flezha_runner::channel::NodeTarget>::output_named_with<F>(self, &'static str, F) -> Self where F: core::ops::function::Fn(&T) -> alloc::vec::Vec<u8> + core::marker::Send + core::marker::Sync + 'static
+pub fn flezha_runner::Stream<'b, T, flezha_runner::channel::NodeTarget>::output_with<F>(self, F) -> Self where F: core::ops::function::Fn(&T) -> alloc::vec::Vec<u8> + core::marker::Send + core::marker::Sync + 'static
 impl<'b, T, K> core::clone::Clone for flezha_runner::Stream<'b, T, K>
 pub fn flezha_runner::Stream<'b, T, K>::clone(&self) -> Self
 impl<'b, T, K> core::marker::Copy for flezha_runner::Stream<'b, T, K>
@@ -652,10 +652,10 @@ pub fn flezha_runner::Stream<'b, T, flezha_runner::channel::NodeTarget>::branch<
 pub fn flezha_runner::Stream<'b, T, flezha_runner::channel::NodeTarget>::call<A>(self, flezha_runner::CallTarget, u64) -> flezha_runner::EntryStream<'b, flezha_runner::Response<T, A>> where T: serde_core::ser::Serialize + serde_core::de::DeserializeOwned, A: serde_core::de::DeserializeOwned + core::marker::Send + core::marker::Sync + 'static
 pub fn flezha_runner::Stream<'b, T, flezha_runner::channel::NodeTarget>::keyed(self) -> Self
 pub fn flezha_runner::Stream<'b, T, flezha_runner::channel::NodeTarget>::named(self, &'static str) -> Self
-pub fn flezha_runner::Stream<'b, T, flezha_runner::channel::NodeTarget>::sink(self) -> Self where T: serde_core::ser::Serialize
-pub fn flezha_runner::Stream<'b, T, flezha_runner::channel::NodeTarget>::sink_named(self, &'static str) -> Self where T: serde_core::ser::Serialize
-pub fn flezha_runner::Stream<'b, T, flezha_runner::channel::NodeTarget>::sink_named_with<F>(self, &'static str, F) -> Self where F: core::ops::function::Fn(&T) -> alloc::vec::Vec<u8> + core::marker::Send + core::marker::Sync + 'static
-pub fn flezha_runner::Stream<'b, T, flezha_runner::channel::NodeTarget>::sink_with<F>(self, F) -> Self where F: core::ops::function::Fn(&T) -> alloc::vec::Vec<u8> + core::marker::Send + core::marker::Sync + 'static
+pub fn flezha_runner::Stream<'b, T, flezha_runner::channel::NodeTarget>::output(self) -> Self where T: serde_core::ser::Serialize
+pub fn flezha_runner::Stream<'b, T, flezha_runner::channel::NodeTarget>::output_named(self, &'static str) -> Self where T: serde_core::ser::Serialize
+pub fn flezha_runner::Stream<'b, T, flezha_runner::channel::NodeTarget>::output_named_with<F>(self, &'static str, F) -> Self where F: core::ops::function::Fn(&T) -> alloc::vec::Vec<u8> + core::marker::Send + core::marker::Sync + 'static
+pub fn flezha_runner::Stream<'b, T, flezha_runner::channel::NodeTarget>::output_with<F>(self, F) -> Self where F: core::ops::function::Fn(&T) -> alloc::vec::Vec<u8> + core::marker::Send + core::marker::Sync + 'static
 impl<'b, T, K> core::clone::Clone for flezha_runner::Stream<'b, T, K>
 pub fn flezha_runner::Stream<'b, T, K>::clone(&self) -> Self
 impl<'b, T, K> core::marker::Copy for flezha_runner::Stream<'b, T, K>
@@ -996,11 +996,11 @@ pub const flezha_runner::diag::DEFAULT_DIRECTIVES: &str
 pub fn flezha_runner::diag::init_default_tracing()
 pub mod flezha_runner::local
 pub use flezha_runner::local::NON_DURABILITY_NOTICE
-pub use flezha_runner::local::SinkOutput
+pub use flezha_runner::local::LocalOutput
 pub struct flezha_runner::local::LocalRelay
 impl flezha_runner::local::LocalRelay
 pub fn flezha_runner::local::LocalRelay::feed(&self, &str, impl core::convert::AsRef<[u8]>) -> core::result::Result<(), flezha_runner::FlezhaError>
-pub fn flezha_runner::local::LocalRelay::on_sink(&self, &str, impl core::ops::function::Fn(flz_core::local::SinkOutput) + core::marker::Send + core::marker::Sync + 'static) -> core::result::Result<(), flezha_runner::FlezhaError>
+pub fn flezha_runner::local::LocalRelay::on_output(&self, &str, impl core::ops::function::Fn(flz_core::local::LocalOutput) + core::marker::Send + core::marker::Sync + 'static) -> core::result::Result<(), flezha_runner::FlezhaError>
 pub fn flezha_runner::local::LocalRelay::run_until_idle(&self, core::time::Duration) -> core::result::Result<(), flezha_runner::FlezhaError>
 pub fn flezha_runner::local::LocalRelay::start<R: flezha_runner::relay::Relay>() -> core::result::Result<Self, flezha_runner::FlezhaError>
 impl core::marker::Freeze for flezha_runner::local::LocalRelay
@@ -2635,7 +2635,7 @@ pub fn flezha_runner::FlezhaRunner::vzip(self) -> V
 pub struct flezha_runner::LocalRelay
 impl flezha_runner::local::LocalRelay
 pub fn flezha_runner::local::LocalRelay::feed(&self, &str, impl core::convert::AsRef<[u8]>) -> core::result::Result<(), flezha_runner::FlezhaError>
-pub fn flezha_runner::local::LocalRelay::on_sink(&self, &str, impl core::ops::function::Fn(flz_core::local::SinkOutput) + core::marker::Send + core::marker::Sync + 'static) -> core::result::Result<(), flezha_runner::FlezhaError>
+pub fn flezha_runner::local::LocalRelay::on_output(&self, &str, impl core::ops::function::Fn(flz_core::local::LocalOutput) + core::marker::Send + core::marker::Sync + 'static) -> core::result::Result<(), flezha_runner::FlezhaError>
 pub fn flezha_runner::local::LocalRelay::run_until_idle(&self, core::time::Duration) -> core::result::Result<(), flezha_runner::FlezhaError>
 pub fn flezha_runner::local::LocalRelay::start<R: flezha_runner::relay::Relay>() -> core::result::Result<Self, flezha_runner::FlezhaError>
 impl core::marker::Freeze for flezha_runner::local::LocalRelay
@@ -3053,10 +3053,10 @@ pub fn flezha_runner::Stream<'b, T, flezha_runner::channel::NodeTarget>::branch<
 pub fn flezha_runner::Stream<'b, T, flezha_runner::channel::NodeTarget>::call<A>(self, flezha_runner::CallTarget, u64) -> flezha_runner::EntryStream<'b, flezha_runner::Response<T, A>> where T: serde_core::ser::Serialize + serde_core::de::DeserializeOwned, A: serde_core::de::DeserializeOwned + core::marker::Send + core::marker::Sync + 'static
 pub fn flezha_runner::Stream<'b, T, flezha_runner::channel::NodeTarget>::keyed(self) -> Self
 pub fn flezha_runner::Stream<'b, T, flezha_runner::channel::NodeTarget>::named(self, &'static str) -> Self
-pub fn flezha_runner::Stream<'b, T, flezha_runner::channel::NodeTarget>::sink(self) -> Self where T: serde_core::ser::Serialize
-pub fn flezha_runner::Stream<'b, T, flezha_runner::channel::NodeTarget>::sink_named(self, &'static str) -> Self where T: serde_core::ser::Serialize
-pub fn flezha_runner::Stream<'b, T, flezha_runner::channel::NodeTarget>::sink_named_with<F>(self, &'static str, F) -> Self where F: core::ops::function::Fn(&T) -> alloc::vec::Vec<u8> + core::marker::Send + core::marker::Sync + 'static
-pub fn flezha_runner::Stream<'b, T, flezha_runner::channel::NodeTarget>::sink_with<F>(self, F) -> Self where F: core::ops::function::Fn(&T) -> alloc::vec::Vec<u8> + core::marker::Send + core::marker::Sync + 'static
+pub fn flezha_runner::Stream<'b, T, flezha_runner::channel::NodeTarget>::output(self) -> Self where T: serde_core::ser::Serialize
+pub fn flezha_runner::Stream<'b, T, flezha_runner::channel::NodeTarget>::output_named(self, &'static str) -> Self where T: serde_core::ser::Serialize
+pub fn flezha_runner::Stream<'b, T, flezha_runner::channel::NodeTarget>::output_named_with<F>(self, &'static str, F) -> Self where F: core::ops::function::Fn(&T) -> alloc::vec::Vec<u8> + core::marker::Send + core::marker::Sync + 'static
+pub fn flezha_runner::Stream<'b, T, flezha_runner::channel::NodeTarget>::output_with<F>(self, F) -> Self where F: core::ops::function::Fn(&T) -> alloc::vec::Vec<u8> + core::marker::Send + core::marker::Sync + 'static
 impl<'b, T, K> core::clone::Clone for flezha_runner::Stream<'b, T, K>
 pub fn flezha_runner::Stream<'b, T, K>::clone(&self) -> Self
 impl<'b, T, K> core::marker::Copy for flezha_runner::Stream<'b, T, K>

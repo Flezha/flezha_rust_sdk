@@ -27,6 +27,6 @@ impl Relay for EchoRelay {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("in") // messages arrive on the entry channel "in"
             .into::<Echo>() // each one runs through the echo tasklet
-            .sink_named("out"); // the result leaves on "out", for a plugin to pick up
+            .output_named("out"); // the result leaves on "out", for a plugin to pick up
     }
 }

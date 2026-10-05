@@ -1,5 +1,5 @@
 //! Call fixtures (`call_response`): relays an outside caller calls and
-//! whose sink output answers it — from the first tasklet, from a downstream
+//! whose output answers it — from the first tasklet, from a downstream
 //! one, from whichever of two filtered paths the input took, and from a
 //! durable steps turn.
 
@@ -14,7 +14,7 @@ impl Relay for CallEchoRelay {
         "call_echo"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<String>("in").into::<CallEcho>().sink();
+        c.input::<String>("in").into::<CallEcho>().output();
     }
 }
 
@@ -31,7 +31,7 @@ impl Relay for CallDownstreamRelay {
         c.input::<String>("in")
             .into::<CallParse>()
             .into::<CallAnswer>()
-            .sink();
+            .output();
     }
 }
 
@@ -52,11 +52,11 @@ impl Relay for CallSplitRelay {
         admitted
             .filter(|v: &String| !v.starts_with("no"))
             .into::<CallAccept>()
-            .sink();
+            .output();
         admitted
             .filter(|v: &String| v.starts_with("no"))
             .into::<CallRefuse>()
-            .sink();
+            .output();
     }
 }
 
@@ -68,7 +68,7 @@ impl Relay for CallTurnSteps {
         "call_turn"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<String>("in").into::<CallTurn>().sink();
+        c.input::<String>("in").into::<CallTurn>().output();
     }
 
     fn settings() -> RelaySettings {

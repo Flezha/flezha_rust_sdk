@@ -160,7 +160,7 @@ pub fn dispatch_marked(
     handle.dispatch(relay_id, payload, &md, Arc::clone(stream));
 }
 
-/// Install a recording global sink whose park frames are auto-acked from a
+/// Install a recording global output whose park frames are auto-acked from a
 /// watcher thread — the controller's fsync-then-ack, minus the controller.
 /// Returns the `ParkBody`s it collected. Shared by every suite that drives a
 /// payload to the dead-letter queue.
@@ -177,7 +177,7 @@ pub fn install_auto_acking_sink() -> Arc<Mutex<Vec<ParkBody>>> {
             }
             drop(seen);
             // Ack from another thread: the caller is blocked inside
-            // `park_blocking` while this sink call returns.
+            // `park_blocking` while this output call returns.
             std::thread::spawn(move || park::complete_ack(&park_id));
         }
         Ok(())

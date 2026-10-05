@@ -1,5 +1,5 @@
 //! Flush-before-emit ordering and failure containment: a durable change
-//! reaches the sink before the output it justifies, a sleeping class's
+//! reaches the output before the output it justifies, a sleeping class's
 //! stateless Cells still move its processed prefix, and a panicking tasklet
 //! takes nothing else down.
 
@@ -9,7 +9,7 @@ use common::prelude::*;
 // ----- Flush-before-emit ordering (durability fix) -----
 //
 // A persistence-enabled Tasklet applies a Change then emits. The change's
-// WAL frame must reach the durable sink BEFORE the output frame is
+// WAL frame must reach the durable output BEFORE the output frame is
 // written, so a hard kill can never lose a change whose output already
 // shipped. Both signals are recorded on this single ordered log; the WAL
 // `send` and the plugin serializer run on the same dispatch thread inside
@@ -53,7 +53,7 @@ impl Relay for FlushOrderRelay {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .into::<FlushOrderTasklet>()
-            .sink_named_with("out", |_v: &String| {
+            .output_named_with("out", |_v: &String| {
                 FLUSH_ORDER_LOG.lock().unwrap().push("emit");
                 Vec::new()
             })
@@ -68,7 +68,7 @@ fn change_is_flushed_before_output_is_emitted() {
 
     let _serial = WAL_TEST_LOCK.lock().unwrap();
     FLUSH_ORDER_LOG.lock().unwrap().clear();
-    // WAL sink records every shipped change frame on the shared log.
+    // WAL output records every shipped change frame on the shared log.
     let sink: SendFrameFn = Arc::new(
         |_payload_id: &str, _frame: &[u8]| -> Result<(), SendError> {
             FLUSH_ORDER_LOG.lock().unwrap().push("wal");
@@ -189,8 +189,8 @@ impl Relay for PanicRelay {
 fn tasklet_panic_does_not_wedge_the_cell() {
     PANIC_AFTER.store(0, Ordering::Release);
     // The exhausted retry budget parks the poison payload. With no global
-    // sink the park drops immediately (transport-less fallback), but a
-    // concurrently-running sink test may have installed a non-acking sink
+    // output the park drops immediately (transport-less fallback), but a
+    // concurrently-running output test may have installed a non-acking output
     // — then the park (correctly) holds the cell until acked. Ack it
     // out-of-band: park ids are `<cell_label>#<process nonce>`, and
     // this binary parks only here, so a small nonce sweep always hits.

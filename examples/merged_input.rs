@@ -131,7 +131,7 @@ impl Relay for Thermostat {
             .from(c.input::<Reading>("readings"), DetectorInput::Reading)
             .from(c.input::<Threshold>("config"), DetectorInput::Threshold)
             .into::<Detector>()
-            .sink_named("alerts");
+            .output_named("alerts");
     }
 }
 

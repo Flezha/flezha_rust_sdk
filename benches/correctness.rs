@@ -270,7 +270,7 @@ impl Relay for TierOffRelay {
             .on_full(OverflowPolicy::DropNothing)
             .into::<TierOffTasklet>()
             .keyed()
-            .sink_named("out");
+            .output_named("out");
     }
 }
 
@@ -284,7 +284,7 @@ impl Relay for TierOnRelay {
             .on_full(OverflowPolicy::DropNothing)
             .into::<TierOnTasklet>()
             .keyed()
-            .sink_named("out");
+            .output_named("out");
     }
 
     fn settings() -> RelaySettings {

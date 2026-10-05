@@ -407,9 +407,9 @@ fn channel_names(t: &flezha_runner::relay::RelayTopology) -> Vec<String> {
     t.channels.iter().map(|c| c.name.to_string()).collect()
 }
 
-/// The short form: `sink = "..."` is the only naming call the author writes,
+/// The short form: `output = "..."` is the only naming call the author writes,
 /// and it is the channel's name.
-#[flezha_runner::relay(id = "generated_naming", sink = "items_output")]
+#[flezha_runner::relay(id = "generated_naming", output = "items_output")]
 fn generated_naming(input: String) -> Option<String> {
     Some(input)
 }
@@ -423,7 +423,7 @@ impl Relay for HandWrittenNaming {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .into::<GeneratedNamingTasklet>()
-            .sink_named("items_output");
+            .output_named("items_output");
     }
 }
 
@@ -473,7 +473,7 @@ fn a_short_form_is_a_relay_beside_its_tasklet() {
 }
 
 /// The short form's entry channel carries the overflow policy it declares.
-#[flezha_runner::relay(id = "shedding_entry", sink = "shed_items", on_full = drop_oldest)]
+#[flezha_runner::relay(id = "shedding_entry", output = "shed_items", on_full = drop_oldest)]
 fn shedding_entry(input: String) -> Vec<u8> {
     input.into_bytes()
 }
@@ -489,7 +489,7 @@ fn a_short_form_sets_its_entry_channels_overflow_policy() {
     );
 }
 
-// ---- the short form with no sink ------------------------------------------
+// ---- the short form with no output ------------------------------------------
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Default, PartialEq, Debug)]
 struct CounterState {
@@ -505,7 +505,7 @@ impl flezha_runner::Change<CounterState> for Seen {
     }
 }
 
-/// A short form that only keeps state: no `sink`, so no plugin channel.
+/// A short form that only keeps state: no `output`, so no plugin channel.
 #[derive(Default)]
 struct SinklessCounter;
 
@@ -532,10 +532,10 @@ impl Relay for HandWrittenCounter {
     }
 }
 
-/// fails when: a short form with no `sink` stops declaring exactly the entry
+/// fails when: a short form with no `output` stops declaring exactly the entry
 /// channel into its tasklet, which is what the full form declares.
 #[test]
-fn a_short_form_with_no_sink_declares_only_its_entry_channel() {
+fn a_short_form_with_no_output_declares_only_its_entry_channel() {
     let generated =
         build_topology_for::<SinklessCounter>().expect("the sinkless short form builds");
     let by_hand = build_topology_for::<HandWrittenCounter>().expect("the hand-written twin builds");
@@ -553,14 +553,14 @@ fn a_short_form_with_no_sink_declares_only_its_entry_channel() {
 // ---- the shorthand's entry channel takes the name the author writes ------
 
 /// The attribute shorthand, naming its entry channel.
-#[flezha_runner::relay(id = "named_entry_attribute", sink = "attr_items", input = "prices")]
+#[flezha_runner::relay(id = "named_entry_attribute", output = "attr_items", input = "prices")]
 fn named_entry_attribute(input: String) -> Vec<u8> {
     input.into_bytes()
 }
 
 /// The attribute shorthand with no name written: the entry channel keeps the
 /// default address every existing relay already ships under.
-#[flezha_runner::relay(id = "default_entry_attribute", sink = "default_items")]
+#[flezha_runner::relay(id = "default_entry_attribute", output = "default_items")]
 fn default_entry_attribute(input: String) -> Vec<u8> {
     input.into_bytes()
 }
@@ -652,16 +652,16 @@ fn a_frame_reaches_an_unnamed_shorthand_on_input() {
 
 /// A steps short form: one declaration is a whole `once` steps relay, with
 /// every steps setting at its default.
-#[flezha_runner::relay(id = "place_order", sink = "placed", input = "order", run = steps)]
+#[flezha_runner::relay(id = "place_order", output = "placed", input = "order", run = steps)]
 fn place_order(order: String) -> String {
     order
 }
 
 /// fails when: the steps attribute stops producing a steps relay, or the
-/// entry and sink names the declaration wrote stop reaching the spec — the
+/// entry and output names the declaration wrote stop reaching the spec — the
 /// short form would then declare a shape the author never wrote.
 #[test]
-fn a_steps_short_form_is_a_once_steps_wiring_its_entry_to_its_sink() {
+fn a_steps_short_form_is_a_once_steps_wiring_its_entry_to_its_output() {
     let class =
         flezha_runner::steps::spec::build_spec::<PlaceOrder>().expect("the short form builds");
     let spec = class.steps.as_ref().expect("a steps class");

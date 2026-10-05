@@ -22,7 +22,7 @@ use crate::{Relay, RelaySettings, Run};
 pub(crate) static COMPENSATION_LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 // Captures the `(payload_id, frame)` pairs a durable steps relay ships to the
-// reliable sink — `cell_state_change` from the flush plus the saga
+// reliable output — `cell_state_change` from the flush plus the saga
 // `compensation_intent` / `compensation_done` markers.
 pub(crate) static WAL_FRAMES: Mutex<Vec<(String, Vec<u8>)>> = Mutex::new(Vec::new());
 
@@ -140,7 +140,7 @@ impl Relay for TreeSaga {
         t1.into::<SagaCharge>()
             .named("t2")
             .into::<SagaShipFails>()
-            .sink_named("t_ship");
+            .output_named("t_ship");
         // The archive leaf releases an inter-task batch nobody consumes: it
         // stays a leaf, and its retained output is what its undo reverses
         // (a plugin-bound leaf would stage instead of collect, leaving the
@@ -171,7 +171,7 @@ impl Relay for SagaSteps {
             .into::<SagaCharge>()
             .named("c2")
             .into::<SagaShipFails>()
-            .sink_named("out");
+            .output_named("out");
     }
 
     fn settings() -> RelaySettings {
@@ -201,7 +201,7 @@ impl Relay for KeepProgressSaga {
             .into::<SagaCharge>()
             .named("c2")
             .into::<SagaShipFails>()
-            .sink_named("out");
+            .output_named("out");
     }
 
     fn settings() -> RelaySettings {
@@ -228,7 +228,7 @@ impl Relay for CleanSaga {
             .into::<SagaCharge>()
             .named("c2")
             .into::<EchoTask>()
-            .sink_named("out");
+            .output_named("out");
     }
 
     fn settings() -> RelaySettings {
@@ -307,7 +307,7 @@ impl Relay for FanSaga {
             .into::<SagaFan>()
             .named("mid2")
             .into::<FailLast>()
-            .sink_named("out");
+            .output_named("out");
     }
 
     fn settings() -> RelaySettings {
@@ -361,7 +361,7 @@ impl Relay for StopSaga {
             .into::<StopReserve>()
             .named("mid")
             .into::<EchoTask>()
-            .sink_named("out");
+            .output_named("out");
     }
 
     fn settings() -> RelaySettings {

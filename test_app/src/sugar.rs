@@ -8,7 +8,7 @@ use crate::*;
 // `DoNothingRelay`. One declaration is the whole relay: it generates
 // the relay `SugarDoNothing`, which `main.rs` registers, and the tasklet
 // `SugarDoNothingTasklet` beside it.
-#[flezha_runner::relay(id = "sugar_do_nothing", sink = "sugar_do_nothing_echo")]
+#[flezha_runner::relay(id = "sugar_do_nothing", output = "sugar_do_nothing_echo")]
 pub(crate) fn sugar_do_nothing(input: String) -> Vec<u8> {
     input.into_bytes()
 }
@@ -34,7 +34,7 @@ impl Change<SugarStoreState> for Kept {
 #[derive(Default)]
 pub(crate) struct SugarStoreInput;
 
-#[flezha_runner::relay(id = "sugar_store_input", sink = "sugar_store_sink")]
+#[flezha_runner::relay(id = "sugar_store_input", output = "sugar_store_sink")]
 impl Tasklet for SugarStoreInput {
     type Input = String;
     type Output = String;
@@ -50,7 +50,7 @@ impl Tasklet for SugarStoreInput {
 // The short form naming its entry channel: `prices`, not the default `input`.
 #[flezha_runner::relay(
     id = "sugar_named_input",
-    sink = "sugar_named_input_sink",
+    output = "sugar_named_input_sink",
     input = "prices"
 )]
 pub(crate) fn sugar_named_input(input: String) -> Vec<u8> {
@@ -61,7 +61,7 @@ pub(crate) fn sugar_named_input(input: String) -> Vec<u8> {
 // its first message on `order` and completing after one run.
 #[flezha_runner::relay(
     id = "sugar_steps",
-    sink = "sugar_steps_placed",
+    output = "sugar_steps_placed",
     input = "order",
     run = steps
 )]
@@ -73,14 +73,14 @@ pub(crate) fn sugar_steps(order: String) -> Vec<u8> {
 // instance stays after each.
 #[flezha_runner::relay(
     id = "sugar_steps_per_input",
-    sink = "sugar_steps_per_input_out",
+    output = "sugar_steps_per_input_out",
     run = steps(each = per_input)
 )]
 pub(crate) fn sugar_steps_per_input(message: String) -> Vec<u8> {
     message.into_bytes()
 }
 
-// The short form with no sink: `ticks` feeds a tasklet that only keeps state.
+// The short form with no output: `ticks` feeds a tasklet that only keeps state.
 #[derive(Serialize, Deserialize, Clone, Default, PartialEq, Debug)]
 pub(crate) struct SugarStateOnlyState {
     seen: Vec<String>,
@@ -211,7 +211,7 @@ impl Relay for MixedRelay {
             .into::<MixedMacroEntry>()
             .named("hop")
             .into::<MixedHandDownstream>()
-            .sink_named("kafka");
+            .output_named("kafka");
     }
 }
 

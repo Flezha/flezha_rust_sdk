@@ -1,5 +1,5 @@
 //! The one driver test. Its phases are ordered functions, not separate
-//! `#[test]`s: they share the reconnect trigger, the global sink lock and
+//! `#[test]`s: they share the reconnect trigger, the global output lock and
 //! the class registry this function installs, so the order is a fact only
 //! while one test owns it.
 
@@ -38,9 +38,9 @@ fn steps_driver_scenarios() {
     install_reconnect_trigger(tx);
 
     // Durable steps relays in this test ship WAL frames through the
-    // process-global sink; hold the shared sink lock for the whole test so
-    // it never races the cell-state sink tests, and install a capturing
-    // sink to observe the frames.
+    // process-global output; hold the shared output lock for the whole test so
+    // it never races the cell-state output tests, and install a capturing
+    // output to observe the frames.
     let _sink_guard = crate::cell::state_sink::SINK_TEST_LOCK.lock().unwrap();
     let wal_sink: crate::cell::flusher::SendFrameFn = Arc::new(
         |payload_id: &str, frame: &[u8]| -> Result<(), crate::cell::flusher::SendError> {

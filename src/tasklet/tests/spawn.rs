@@ -14,7 +14,7 @@ use crate::ErrorModel;
 
 const IDENTITY: &[u8] = b"spawn/test/";
 
-/// Minimal sink: `spawn_steps` touches nothing on the emit path, which is
+/// Minimal output: `spawn_steps` touches nothing on the emit path, which is
 /// exactly what these tests pin.
 pub(super) struct NullSink;
 

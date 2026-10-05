@@ -109,7 +109,7 @@ pub use flz_core::channel::{
     BuildCellArgs, CellBuilder, CellsForFn, DeserializeStateFn, ErasedFn, SerializeStateFn,
 };
 
-/// Plugin sink attached to a channel via `sink(...)` / `sink_with(...)` — the
+/// Plugin output attached to a channel via `output(...)` / `output_with(...)` — the
 /// one representation of plugin egress. A channel that also has consumers is
 /// hybrid; one that has none is the plugin-bound terminal, and
 /// `build_topology` derives that `ChannelKind` from the wiring rather than
@@ -129,11 +129,11 @@ pub(crate) struct ChannelEntry {
     /// retry→DLQ ladder; `Vec<u8>`/`String` passthrough entries drop and log
     /// invalid input instead.
     pub entry_parsed: bool,
-    /// The channel's plugin egress, populated by `sink(...)` / `sink_with(...)`.
+    /// The channel's plugin egress, populated by `output(...)` / `output_with(...)`.
     pub plugin_sink: Option<PluginSink>,
     /// Output-identity opt-in set by `.keyed()`. Valid only on channels
     /// with a plugin wire; `build_topology` refuses a keyed channel that
-    /// has no `sink`.
+    /// has no `output`.
     pub keyed: bool,
     /// What this channel discards when the consumer mailbox is full,
     /// applied at the push site. Initialized at channel-creation time to
@@ -152,7 +152,7 @@ pub(crate) struct ChannelEntry {
     pub codec: Option<crate::channel::ChannelCodec>,
     /// The authoring record: one entry per fluent sequence declared off this
     /// channel's handle, in the order the author closed them. The consumers,
-    /// the kind and the plugin-sink name are DERIVED from these by
+    /// the kind and the plugin-output name are DERIVED from these by
     /// `flz_core::host::check`, never declared.
     pub chains: Vec<Vec<HostLink>>,
     /// The closures each chain ends in, under the chain's own index — the half
@@ -343,7 +343,7 @@ impl BuilderState {
         id
     }
 
-    /// Record one link that stands on its own — `.named(...)`, `.sink(...)`,
+    /// Record one link that stands on its own — `.named(...)`, `.output(...)`,
     /// the `branch(...)` arity — as its own chain, carrying no closures.
     pub(super) fn record_link(&mut self, channel: ChannelId, link: HostLink) {
         self.push_chain(channel, vec![link], None, None);

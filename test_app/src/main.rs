@@ -93,7 +93,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     // The local-send drill: `{"relay", "channel", "message", "when"}` sends
     // this app's own code makes with `local`, each once the file `when` names
-    // exists, so the e2e can prove the relay's sink live first.
+    // exists, so the e2e can prove the relay's output live first.
     if let Ok(script) = env::var("FLEZHA_LOCAL_SEND_SCRIPT") {
         run_local_sends(script);
     }

@@ -11,12 +11,12 @@ use flezha_runner::{
 };
 use serde::{Deserialize, Serialize};
 
-/// Every value released on `sink` while `feed` runs through `R`'s graph.
+/// Every value released on `output` while `feed` runs through `R`'s graph.
 fn released<R: Relay>(entry: &str, sink: &str, feed: &[&str]) -> Vec<String> {
     let out = Arc::new(Mutex::new(Vec::new()));
     let into = Arc::clone(&out);
     let run = LocalRelay::start::<R>().expect("the run starts");
-    run.on_sink(sink, move |o| {
+    run.on_output(sink, move |o| {
         into.lock()
             .unwrap()
             .push(String::from_utf8(o.payload).unwrap());
@@ -49,7 +49,7 @@ impl Change<StoreInputState> for Stored {
 #[derive(Default)]
 struct StoreInput;
 
-#[flezha_runner::relay(id = "store_input", sink = "stored", max_cells = 10)]
+#[flezha_runner::relay(id = "store_input", output = "stored", max_cells = 10)]
 impl Tasklet for StoreInput {
     type Input = String;
     type Output = String;
@@ -73,7 +73,7 @@ fn a_stateful_short_form_sits_on_the_impl_block() {
     );
 }
 
-/// No `sink`: the entry channel feeds the tasklet and nothing else is declared.
+/// No `output`: the entry channel feeds the tasklet and nothing else is declared.
 #[derive(Default)]
 struct Ticks;
 
@@ -87,7 +87,7 @@ impl Tasklet for Ticks {
 }
 
 #[test]
-fn a_short_form_with_no_sink_wires_only_the_entry_channel() {
+fn a_short_form_with_no_output_wires_only_the_entry_channel() {
     let run = LocalRelay::start::<Ticks>().expect("the run starts");
     run.feed("ticks", "1")
         .expect("`ticks` is the entry channel");
@@ -101,7 +101,7 @@ struct PlaceIt;
 
 #[flezha_runner::relay(
     id = "place_it",
-    sink = "placed",
+    output = "placed",
     input = "order",
     run = steps(each = per_input)
 )]
@@ -122,7 +122,7 @@ fn a_steps_short_form_on_the_impl_block_declares_its_run() {
     assert_eq!(PlaceIt::CLOCK, ClockKind::Wall);
 }
 
-#[flezha_runner::relay(id = "evens_only", sink = "evens")]
+#[flezha_runner::relay(id = "evens_only", output = "evens")]
 fn evens_only(n: String) -> Option<String> {
     (n.parse::<u64>().ok()? % 2 == 0).then_some(n)
 }
@@ -179,7 +179,7 @@ impl Relay for Mixed {
         c.input::<String>("words")
             .into::<Shout>()
             .into::<Bang>()
-            .sink_named("loud");
+            .output_named("loud");
     }
 }
 
@@ -199,7 +199,7 @@ impl Relay for PlaceShouted {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("order")
             .into::<Shout>()
-            .sink_named("placed");
+            .output_named("placed");
     }
 
     fn settings() -> RelaySettings {

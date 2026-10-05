@@ -1,5 +1,5 @@
 //! Part fixtures (`parts`): for an input `n` the tasklet sends the parts `1`
-//! .. `n` and then emits `done:<n>` on its sink `answer`, in a flow
+//! .. `n` and then emits `done:<n>` on its output `answer`, in a flow
 //! relay and in a `per_input` steps one. `retry:<n>` sends its parts and
 //! then fails retryably the first time this process sees it, so the retry's
 //! parts number from 0 again under the next attempt.
@@ -49,7 +49,7 @@ impl Relay for PartEchoRelay {
         c.input::<String>("in")
             .retry_backoff_ms(25)
             .into::<PartEcho>()
-            .sink_named("answer");
+            .output_named("answer");
     }
 }
 
@@ -62,7 +62,7 @@ impl Relay for PartEchoSteps {
         c.input::<String>("in")
             .retry_backoff_ms(25)
             .into::<PartEchoTurn>()
-            .sink_named("answer");
+            .output_named("answer");
     }
 
     fn settings() -> RelaySettings {

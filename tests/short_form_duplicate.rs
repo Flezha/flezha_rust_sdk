@@ -15,8 +15,8 @@ use flezha_runner::{
     ChannelBuilder, Ctx, ErrorModel, Flezha, FlezhaError, Relay, Tasklet, TaskletError,
 };
 
-/// The steps short form under `plain`: one tasklet, one sink, nothing else.
-#[flezha_runner::relay(id = "plain", sink = "plain_sink", run = steps)]
+/// The steps short form under `plain`: one tasklet, one output, nothing else.
+#[flezha_runner::relay(id = "plain", output = "plain_sink", run = steps)]
 fn plain(input: String) -> String {
     input
 }
@@ -42,7 +42,7 @@ impl Relay for HandWrittenPlain {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<HandWrittenTask>()
-            .sink_named("hand_written_sink");
+            .output_named("hand_written_sink");
     }
 }
 

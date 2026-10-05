@@ -363,7 +363,7 @@ refusal!(DanglingRelay, "refuse_dangling", |c| {
 refusal!(AfterTerminalRelay, "refuse_after_terminal", |c| {
     c.input::<String>("in")
         .into::<PlainTarget>()
-        .sink()
+        .output()
         .filter(|_b: &Vec<u8>| true)
         .into::<Recorder2>();
 });
@@ -495,4 +495,4 @@ fn keying_a_static_mode_consumer_is_refused() {
     );
 }
 
-// ----- park-sink plumbing (mirrors `dlq_retry`'s controller stand-in) -----
+// ----- park-output plumbing (mirrors `dlq_retry`'s controller stand-in) -----

@@ -10,7 +10,7 @@ mod common;
 use common::prelude::*;
 use common::{dispatch_input, dummy_stream, install_auto_acking_sink, setup, wait_until};
 
-/// Serializes the tests that install the process-global sink.
+/// Serializes the tests that install the process-global output.
 static SINK_LOCK: Mutex<()> = Mutex::new(());
 
 // ----- Transient failure recovers within the retry budget -----

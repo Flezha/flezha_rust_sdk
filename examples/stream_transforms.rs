@@ -13,7 +13,7 @@
 //!     .key_by(|s: &Slot| format!("{}@{}", s.symbol, s.tf))
 //!     .into::<Candle>()                         // one Cell per slot
 //!     .keyed()
-//!     .sink_named("candles");
+//!     .output_named("candles");
 //! ```
 //!
 //! The whole topology contains exactly ONE Tasklet node. The transforms add
@@ -148,7 +148,7 @@ impl Relay for Candles {
             .key_by(|s: &Slot| format!("{}@{}", s.symbol, s.tf))
             .into::<Candle>()
             .keyed()
-            .sink_named("candles");
+            .output_named("candles");
     }
 }
 

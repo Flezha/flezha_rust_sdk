@@ -346,7 +346,7 @@ pub(super) fn merge_mapping(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>)
     // resumed iteration's completed list from the journal. The comp log is
     // NOT the signal to read: `diamond_op!` logs once per completed output
     // and a journal-rebuilt CellRun carries none, so a real compensation
-    // leaves it empty. The compensation-done markers the sink already
+    // leaves it empty. The compensation-done markers the output already
     // captures are, and they carry the cell they undid.
     let done_frames: Vec<Vec<u8>> = WAL_FRAMES
         .lock()

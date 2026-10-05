@@ -1,4 +1,4 @@
-//! The typed half of restoration: the snapshot decode, and the sink that
+//! The typed half of restoration: the snapshot decode, and the output that
 //! folds change bodies into `S::State`. Everything erased — payload shape,
 //! record framing, header resolution — lives in `flz_core::restore`.
 
@@ -94,7 +94,7 @@ pub(crate) fn decode_change<S: crate::tasklet::Tasklet>(
     }
 }
 
-/// The in-process sink: each change body is decoded (or migrated) into the
+/// The in-process output: each change body is decoded (or migrated) into the
 /// Tasklet's `Change` and folded straight into its state.
 struct TypedSink<'a, S: crate::tasklet::Tasklet> {
     state: &'a mut S::State,

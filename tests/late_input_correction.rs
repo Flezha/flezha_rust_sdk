@@ -41,7 +41,7 @@ impl Relay for ReplayRelay {
         c.input::<String>("input")
             .into::<ReplayTasklet>()
             .keyed()
-            .sink_named("out");
+            .output_named("out");
     }
 
     fn settings() -> RelaySettings {
@@ -155,7 +155,7 @@ impl Relay for HighWaterRelay {
         c.input::<String>("input")
             .into::<HighWaterTasklet>()
             .keyed()
-            .sink_named("out");
+            .output_named("out");
     }
 
     fn settings() -> RelaySettings {

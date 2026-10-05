@@ -1,4 +1,4 @@
-//! Per-emit cost of hybrid channels (`sink_with`) vs. pure
+//! Per-emit cost of hybrid channels (`output_with`) vs. pure
 //! inter-tasklet and pure plugin-bound channels. Establishes that the
 //! hybrid path is `inter-tasklet fan-out + serializer call`, with the
 //! serializer paying the same fixed cost regardless of consumer count.
@@ -7,8 +7,8 @@
 //! - `pure_inter_tasklet_1c`  — pure inter-tasklet, 1 consumer
 //! - `pure_inter_tasklet_3c`  — pure inter-tasklet, 3 consumers
 //! - `pure_plugin_bound`    — pure `output(...)` channel
-//! - `hybrid_1c`            — hybrid, 1 consumer + plugin sink
-//! - `hybrid_3c`            — hybrid, 3 consumers + plugin sink
+//! - `hybrid_1c`            — hybrid, 1 consumer + plugin output
+//! - `hybrid_3c`            — hybrid, 3 consumers + plugin output
 //!
 //! Each iteration drives one emit per relay through the live
 //! dispatcher (`RelayDispatchHandle::dispatch` on the shared poll-worker
@@ -147,7 +147,7 @@ impl Relay for PluginBoundRelay {
         c.input::<Vec<u8>>("input")
             .on_full(OverflowPolicy::DropNothing)
             .into::<PluginBoundProducer>()
-            .sink_named("out");
+            .output_named("out");
     }
 }
 
@@ -184,7 +184,7 @@ impl Relay for Hybrid1Relay {
         c.input::<Vec<u8>>("input")
             .on_full(OverflowPolicy::DropNothing)
             .into::<Hybrid1Producer>()
-            .sink_named_with("out", |v: &u32| v.to_be_bytes().to_vec())
+            .output_named_with("out", |v: &u32| v.to_be_bytes().to_vec())
             .into::<Hybrid1Consumer>();
     }
 }
@@ -231,7 +231,7 @@ impl Relay for Hybrid3Relay {
             .input::<Vec<u8>>("input")
             .on_full(OverflowPolicy::DropNothing)
             .into::<Hybrid3Producer>()
-            .sink_named_with("out", |v: &u32| v.to_be_bytes().to_vec());
+            .output_named_with("out", |v: &u32| v.to_be_bytes().to_vec());
         out.into::<Hybrid3ConsumerA>();
         out.into::<Hybrid3ConsumerB>();
         out.into::<Hybrid3ConsumerC>();

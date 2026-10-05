@@ -1,7 +1,7 @@
 //! Relay call fixtures (`relay_call`): relays that call another
 //! relay from their graph and read the outcome as a `Response`.
 //!
-//! - `call_pricing`: a flow callee answering `price:<input>` on its sink
+//! - `call_pricing`: a flow callee answering `price:<input>` on its output
 //!   `quotes`; an input starting `silent` is never answered.
 //! - `call_orders`: a flow caller calling the instance `pricing` by name,
 //!   answered from `quotes`.
@@ -14,7 +14,7 @@
 //! - `call_tool_session`: a durable `:per_input` session calling `pricing`
 //!   from a turn and reading the outcome as its next turn.
 //!
-//! Every outcome is written to a sink as one line,
+//! Every outcome is written to an output as one line,
 //! `<request>=ok:<answer>@<target>/<created>` or
 //! `<request>=error:<code>@<target>/<created>`.
 
@@ -38,7 +38,7 @@ fn render(response: &Response<String, String>) -> String {
 }
 
 /// The prefix a caller's tasklet puts on an outcome line, which no request
-/// carries, so one output channel can feed both the call and the sink.
+/// carries, so one output channel can feed both the call and the output.
 const OUTCOME: &str = "response ";
 
 /// The prefix of a turn that must not start its session.
@@ -84,7 +84,7 @@ impl Relay for CallPricingRelay {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<PricingQuote>()
-            .sink_named("quotes");
+            .output_named("quotes");
     }
 }
 
@@ -130,7 +130,7 @@ impl Relay for CallOrdersRelay {
                 DEADLINE_MS,
             )
             .into::<OrderPriced>()
-            .sink_named("priced");
+            .output_named("priced");
     }
 }
 
@@ -161,7 +161,7 @@ impl Relay for CallAgentSteps {
         "call_agent"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<String>("turn").into::<AgentTurn>().sink();
+        c.input::<String>("turn").into::<AgentTurn>().output();
     }
 
     fn settings() -> RelaySettings {
@@ -259,7 +259,7 @@ impl Relay for CallGatewayRelay {
             .key_by(|line: &String| session_of(line))
             .into::<OutcomeLog>()
             .keyed()
-            .sink_named("gateway_out");
+            .output_named("gateway_out");
     }
 
     fn settings() -> RelaySettings {
@@ -294,7 +294,7 @@ impl Relay for CallToolSessionSteps {
             .into_named::<CallerTurn>("tool_turn");
         turn.filter(|line: &String| is_outcome(line))
             .into_named::<OutcomeLog>("tool_log")
-            .sink_named("tool_out");
+            .output_named("tool_out");
     }
 
     fn settings() -> RelaySettings {

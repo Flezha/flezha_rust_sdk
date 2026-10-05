@@ -7,7 +7,7 @@
 //!
 //! ```ignore
 //! let run = LocalRelay::start::<WordCount>()?;
-//! run.on_sink("totals", |output| println!("{:?}", output.payload))?;
+//! run.on_output("totals", |output| println!("{:?}", output.payload))?;
 //! run.feed("lines", "the quick brown fox")?;
 //! run.run_until_idle(Duration::from_secs(5))?;
 //! ```
@@ -21,7 +21,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use flz_core::local::LocalRun;
-pub use flz_core::local::{SinkOutput, NON_DURABILITY_NOTICE};
+pub use flz_core::local::{LocalOutput, NON_DURABILITY_NOTICE};
 
 use crate::relay::Relay;
 use crate::runner_handle::FlezhaError;
@@ -42,15 +42,15 @@ impl LocalRelay {
         })
     }
 
-    /// Deliver every value released on the sink `channel` to `callback`, in
+    /// Deliver every value released on the output `channel` to `callback`, in
     /// release order. The bytes are what the channel's serializer produced
     /// and the metadata is what a deployed run would have put on the wire.
-    pub fn on_sink(
+    pub fn on_output(
         &self,
         channel: &str,
-        callback: impl Fn(SinkOutput) + Send + Sync + 'static,
+        callback: impl Fn(LocalOutput) + Send + Sync + 'static,
     ) -> Result<(), FlezhaError> {
-        self.run.on_sink(channel, Arc::new(callback))?;
+        self.run.on_output(channel, Arc::new(callback))?;
         Ok(())
     }
 

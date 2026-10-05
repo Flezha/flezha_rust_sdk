@@ -72,11 +72,11 @@ impl Relay for KeyedRelay {
         c.input::<String>("in")
             .into::<KeyedTask>()
             .keyed()
-            .sink_named("out");
+            .output_named("out");
     }
 }
 
-/// An emit sink that takes nothing: what a context with no timer session
+/// An emit output that takes nothing: what a context with no timer session
 /// needs to exist.
 struct NoSink;
 impl EmitSink for NoSink {

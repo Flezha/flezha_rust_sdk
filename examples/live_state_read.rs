@@ -4,7 +4,7 @@
 //! CURRENT value of one key — a dashboard, an ops question, a health check.
 //! `flz state at` serves the controller's WAL at a point in the PAST, so
 //! "what is BTCUSD doing right now" is a question for `flz state get`, which
-//! reads the Cell itself rather than a copy that reached a sink.
+//! reads the Cell itself rather than a copy that reached an output.
 //!
 //! **This example declares nothing special.** That is the point: every Cell
 //! of a running Relay is readable, because the read reuses the
@@ -103,7 +103,7 @@ impl Tasklet for CandleTasklet {
 
     fn run(&mut self, trade: Trade, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         // Applied here, visible to a read immediately — before the flusher has
-        // shipped it, and before any sink has seen it.
+        // shipped it, and before any output has seen it.
         ctx.change(Traded {
             price: trade.price,
             qty: trade.qty,

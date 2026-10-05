@@ -1,4 +1,4 @@
-//! A called input's sink outputs answer the call: every one carries
+//! A called input's outputs answer the call: every one carries
 //! `flz.reply_to` with the token of the input that caused it, a downstream
 //! tasklet's included, and an output of an input nobody called carries none.
 
@@ -44,7 +44,7 @@ impl Relay for DownstreamAnswer {
         c.input::<String>("in")
             .into::<Parse>()
             .into::<Answer>()
-            .sink_named("quotes");
+            .output_named("quotes");
     }
 }
 

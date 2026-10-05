@@ -23,7 +23,7 @@
 //! them.
 //!
 //! What the typed builder cannot author, and why the report skips it: the
-//! producer-side links (`named`, `sink`, `keyed`, `branch`) live on
+//! producer-side links (`named`, `output`, `keyed`, `branch`) live on
 //! `Stream<'b, T, NodeTarget>` and an entry channel's handle is a different
 //! type, so a row applying one to an entry channel has no Rust spelling; and a
 //! settings tree with a setting under the wrong parent is a type error here,
@@ -478,8 +478,8 @@ fn producer_link(s: Stream<'_, String, NodeTarget>, link: &str) {
     let (verb, arg) = split_call(link);
     match verb {
         "named" => s.named(leak(arg)),
-        "sink" if arg.is_empty() => s.sink(),
-        "sink" => s.sink_named(leak(arg)),
+        "output" if arg.is_empty() => s.output(),
+        "output" => s.output_named(leak(arg)),
         "keyed" => s.keyed(),
         other => panic!("the fixture spells a link this interpreter does not map: {other}"),
     };
@@ -586,8 +586,8 @@ fn citation(s: &Shorthand) -> (&'static str, &'static str) {
             "sdk/rust/tests/ui/relay_with_hand_written_impl.rs",
         ),
         Shorthand::NoOutput => (
-            "topology.sink_without_output",
-            "sdk/rust/tests/ui/relay_sink_without_output.stderr",
+            "topology.output_without_type",
+            "sdk/rust/tests/ui/relay_output_without_type.stderr",
         ),
         Shorthand::Plain => {
             panic!("a well-formed shorthand declaration earns no refusal of its own")
@@ -598,12 +598,12 @@ fn citation(s: &Shorthand) -> (&'static str, &'static str) {
 // The duplicate row's pair, declared here rather than beside the app's
 // fixtures because nothing but that row registers them: two short forms, one of
 // each kind, under one factory id.
-#[flezha_runner::relay(id = "plain", sink = "out")]
+#[flezha_runner::relay(id = "plain", output = "out")]
 fn shorthand_dup_flow(input: String) -> Vec<u8> {
     input.into_bytes()
 }
 
-#[flezha_runner::relay(id = "plain", sink = "twin_sink", run = steps)]
+#[flezha_runner::relay(id = "plain", output = "twin_sink", run = steps)]
 fn shorthand_dup_steps(input: String) -> Vec<u8> {
     input.into_bytes()
 }

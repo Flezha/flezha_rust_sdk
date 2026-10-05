@@ -52,7 +52,7 @@ impl Relay for CheckpointRelay {
         c.input::<String>("input")
             .into::<CheckpointTasklet>()
             .keyed()
-            .sink_named("out");
+            .output_named("out");
     }
 
     fn settings() -> RelaySettings {

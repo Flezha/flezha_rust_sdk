@@ -4,7 +4,7 @@
 //! - mailbox payloads are downcast to `Arc<S::Input>` without allocation
 //! - the cell's state is downcast to `(S, S::State)` and threaded
 //!   through `S::run` with a typed signature
-//! - the emit sink already knows the cached output channel id
+//! - the emit output already knows the cached output channel id
 //!
 //! The dispatcher trait object stores a single `Arc<dyn TaskletDispatcher>`
 //! per `CellSlot`. The inflight CAS on the mailbox guarantees that
@@ -102,7 +102,7 @@ pub struct TaskletDispatcherImpl<S: Tasklet> {
     /// `ctx.cell_key()` and the default key of a keyed-channel emit.
     cell_key: Option<Arc<str>>,
     /// Flush-before-emit wiring, mirrored from the owning `CellSlot`
-    /// so the emit sink can drain this cell's just-applied changes to
+    /// so the emit output can drain this cell's just-applied changes to
     /// the durable WAL path before its output frame is written.
     flush: FlushWiring,
     /// What this Tasklet declares about its timers, resolved once.
@@ -111,7 +111,7 @@ pub struct TaskletDispatcherImpl<S: Tasklet> {
 }
 
 /// Per-cell state the dispatcher needs to drive flush-before-emit.
-/// Cloned cheaply (Arc handles + a Copy header) into the emit sink.
+/// Cloned cheaply (Arc handles + a Copy header) into the emit output.
 #[derive(Clone)]
 struct FlushWiring {
     cell_identity: Arc<Vec<u8>>,
@@ -120,7 +120,7 @@ struct FlushWiring {
     keeps_state: bool,
     /// One effect record per invocation (`RelayTopology::records_effects`):
     /// the effectively-once tier or a durable steps relay. The invocation's plugin
-    /// emits are captured into the record on the reliable state sink instead
+    /// emits are captured into the record on the reliable state output instead
     /// of the primary stream.
     records_effects: bool,
     /// Checkpoint ack-granularity (`AckGranularity::Checkpoint`): the

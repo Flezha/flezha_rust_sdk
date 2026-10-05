@@ -63,7 +63,7 @@ impl Relay for DynamicCellRelay {
             .filter(|input: &String| input != "drop")
             .key_by(|input: &String| key_prefix(input))
             .into::<DynamicCellTasklet>()
-            .sink_named("kafka");
+            .output_named("kafka");
     }
 }
 
@@ -121,7 +121,7 @@ impl Relay for PartitionPassRelay {
             .key_by(|input: &String| key_prefix(input))
             .into::<PartitionPassTasklet>()
             .keyed()
-            .sink_named("input");
+            .output_named("input");
     }
 }
 
@@ -193,7 +193,7 @@ impl Relay for SessionTimeoutRelay {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .into::<SessionTimeoutTasklet>()
-            .sink_named("kafka");
+            .output_named("kafka");
     }
 }
 
@@ -221,7 +221,7 @@ impl Relay for DoNothingRelay {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .into::<DoNothingTasklet>()
-            .sink_named("echo");
+            .output_named("echo");
     }
 }
 
@@ -252,7 +252,7 @@ impl Relay for CompleteFlowRelay {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .into::<CompleteFlowTasklet>()
-            .sink_named("complete_flow_out");
+            .output_named("complete_flow_out");
     }
 }
 
@@ -298,7 +298,7 @@ impl Relay for StoreInputRelay {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .into::<StoreInputTasklet>()
-            .sink_named("sink");
+            .output_named("sink");
     }
 }
 
@@ -342,7 +342,7 @@ impl Relay for CompareFilterRelay {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .into::<CompareFilterTasklet>()
-            .sink_named("sink");
+            .output_named("sink");
     }
 }
 
@@ -408,7 +408,7 @@ impl Relay for StaticCellRelay {
             .into::<StaticEntryTasklet>()
             .named("hop")
             .into::<StaticDownstreamTasklet>()
-            .sink_named("kafka");
+            .output_named("kafka");
     }
 }
 
@@ -498,6 +498,6 @@ impl Relay for CellStressRelay {
             .into::<StressTaskletC>()
             .named("c_to_d")
             .into::<StressTaskletD>()
-            .sink_named("echo");
+            .output_named("echo");
     }
 }

@@ -29,7 +29,7 @@ fn ui_compile_fail() {
     t.compile_fail("tests/ui/relay_empty_entry_name.rs");
 
     // The short-form attribute `#[flezha::relay]`.
-    t.compile_fail("tests/ui/relay_sink_without_output.rs");
+    t.compile_fail("tests/ui/relay_output_without_type.rs");
     t.compile_fail("tests/ui/relay_no_id.rs");
     t.compile_fail("tests/ui/relay_empty_input.rs");
     t.compile_fail("tests/ui/relay_with_hand_written_impl.rs");

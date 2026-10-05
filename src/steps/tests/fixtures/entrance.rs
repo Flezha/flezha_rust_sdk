@@ -30,7 +30,7 @@ impl Relay for TwoChainsSteps {
     fn channels(c: &ChannelBuilder) {
         let a = c.input::<String>("a").into::<ChainA>().named("a_out");
         let b = c.input::<String>("b").into::<ChainB>().named("b_out");
-        a.into::<ChainJoin>().sink_named("out");
+        a.into::<ChainJoin>().output_named("out");
         b.into::<ChainJoin>();
     }
 
@@ -58,11 +58,11 @@ impl Relay for FanEntrySteps {
         entry
             .map(|s: String| -> String { format!("l:{s}") })
             .into::<ChainA>()
-            .sink_named("out_a");
+            .output_named("out_a");
         entry
             .map(|s: String| -> String { format!("r:{s}") })
             .into::<ChainB>()
-            .sink_named("out_b");
+            .output_named("out_b");
     }
 
     fn settings() -> RelaySettings {
@@ -175,7 +175,7 @@ impl Relay for BudgetOnce {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<BudgetTask>()
-            .sink_named("out");
+            .output_named("out");
     }
 
     fn settings() -> RelaySettings {

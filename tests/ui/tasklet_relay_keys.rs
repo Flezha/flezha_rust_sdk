@@ -1,4 +1,4 @@
-//! `sink`, `input`, `kind` and `on_full` declare a relay, so a tasklet
+//! `output`, `input`, `kind` and `on_full` declare a relay, so a tasklet
 //! refuses them, and a short form's kind is its attribute's name, never a key.
 use flezha_runner::{tasklet, Ctx, Tasklet, TaskletError};
 
@@ -18,12 +18,12 @@ macro_rules! refused {
     };
 }
 
-refused!(A, sink = "echo");
+refused!(A, output = "echo");
 refused!(B, input = "prices");
 refused!(C, kind = "flow");
 refused!(E, on_full = drop_oldest);
 
-#[flezha_runner::relay(id = "d", kind = "flow", sink = "echo")]
+#[flezha_runner::relay(id = "d", kind = "flow", output = "echo")]
 fn d(input: String) -> Vec<u8> {
     input.into_bytes()
 }

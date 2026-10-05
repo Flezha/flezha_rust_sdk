@@ -1,6 +1,6 @@
 //! `ctx.part(value)`: a preview of an invocation's output that leaves the
 //! runner while `run` still runs, numbered within its attempt, and refused
-//! with `part.no_sink` where the output channel ends in no sink.
+//! with `part.no_output` where the output channel ends in no output.
 
 use std::sync::Condvar;
 
@@ -46,7 +46,7 @@ impl Relay for ThreePartsOp {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<ThreeParts>()
-            .sink_named("answer");
+            .output_named("answer");
     }
 }
 
@@ -91,7 +91,7 @@ impl Relay for FlakyPartsOp {
         c.input::<String>("in")
             .retry_backoff_ms(1)
             .into::<FlakyParts>()
-            .sink_named("answer");
+            .output_named("answer");
     }
 }
 
@@ -112,7 +112,7 @@ fn a_retry_numbers_its_parts_from_zero_under_the_next_attempt() {
     assert_eq!(frames[4].message, b"done");
 }
 
-/// The codes the no-sink tasklets' refused parts answered, in order.
+/// The codes the no-output tasklets' refused parts answered, in order.
 static REFUSALS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 fn refused_part<S: Tasklet<Output = String>>(ctx: &mut Ctx<'_, S>) {
@@ -146,7 +146,7 @@ impl Relay for FeederOp {
         c.input::<String>("in")
             .into::<Feeder>()
             .into::<Forward>()
-            .sink_named("answer");
+            .output_named("answer");
     }
 }
 
@@ -164,7 +164,7 @@ impl Relay for AskerOp {
 }
 
 #[test]
-fn a_channel_without_a_sink_refuses_a_part_and_sends_nothing() {
+fn a_channel_without_an_output_refuses_a_part_and_sends_nothing() {
     let (feeder, _a) = setup::<FeederOp>("parts-feeder");
     let (asker, _b) = setup::<AskerOp>("parts-asker");
     let mut fed = dispatch(&feeder, "parts-feeder", "x");
@@ -176,7 +176,7 @@ fn a_channel_without_a_sink_refuses_a_part_and_sends_nothing() {
     assert!(!is_part(&asked[0]) && asked[0].message == b"y");
     assert_eq!(
         *REFUSALS.lock().unwrap(),
-        ["part.no_sink", "part.no_sink"],
+        ["part.no_output", "part.no_output"],
         "a channel feeding another tasklet and a call end preview nothing"
     );
 }
@@ -205,7 +205,7 @@ impl Relay for BlockingOp {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<Blocking>()
-            .sink_named("answer");
+            .output_named("answer");
     }
 }
 

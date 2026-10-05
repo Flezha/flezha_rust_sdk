@@ -25,7 +25,7 @@ impl Relay for KeyedPluginRelay {
         c.input::<String>("inp")
             .into::<KeyedProducerTasklet>()
             .keyed()
-            .sink_named("out");
+            .output_named("out");
     }
 }
 
@@ -37,7 +37,7 @@ fn keyed_plugin_channel_is_accepted_and_marked() {
     assert!(!topology.channels[0].keyed, "entry channel is not keyed");
 }
 
-/// `.keyed()` on a hybrid (`sink_with`) channel is accepted.
+/// `.keyed()` on a hybrid (`output_with`) channel is accepted.
 struct KeyedHybridRelay;
 impl Relay for KeyedHybridRelay {
     fn factory_id() -> &'static str {
@@ -46,7 +46,7 @@ impl Relay for KeyedHybridRelay {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("inp")
             .into::<KeyedProducerTasklet>()
-            .sink_named_with("out", |v: &String| v.clone().into_bytes())
+            .output_named_with("out", |v: &String| v.clone().into_bytes())
             .keyed()
             .into::<KeyedConsumerTasklet>();
     }

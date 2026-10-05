@@ -121,7 +121,9 @@ impl Relay for EchoSteps {
         "echo_steps"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<String>("in").into::<EchoStep>().sink_named("out");
+        c.input::<String>("in")
+            .into::<EchoStep>()
+            .output_named("out");
     }
 
     fn settings() -> RelaySettings {
@@ -162,7 +164,7 @@ impl Relay for StaticCellSteps {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<StaticCellStep>()
-            .sink_named("out");
+            .output_named("out");
     }
 
     fn settings() -> RelaySettings {
@@ -242,10 +244,10 @@ impl Relay for SyncDurableSteps {
 }
 
 // `optout_commit_block_steps`: the opt-out twin of `commit_block_steps`
-// with a live mid-chain signal — task A's output also reaches a plugin sink, so
+// with a live mid-chain signal — task A's output also reaches a plugin output, so
 // the crash-resume e2e can observe the mid-run point without durable state
 // (there is none). A crash + resume re-runs the whole chain from the top, so
-// the sink sees task A's marker once per run and no journal/WAL file exists.
+// the output sees task A's marker once per run and no journal/WAL file exists.
 pub(crate) struct OptOutCommitBlockSteps;
 impl Relay for OptOutCommitBlockSteps {
     fn factory_id() -> &'static str {
@@ -254,7 +256,7 @@ impl Relay for OptOutCommitBlockSteps {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<CommitA>()
-            .sink_named_with("mid", |s: &String| format!("a-ran:{s}").into_bytes())
+            .output_named_with("mid", |s: &String| format!("a-ran:{s}").into_bytes())
             .into::<BlockB>();
     }
 
@@ -273,7 +275,7 @@ impl Relay for OptOutCommitBlockSteps {
 // `tier_commit_block_steps`: the hybrid mid-chain shape the conformance
 // fixture's `commit_block_chain` twin is transcribed from. Task A commits
 // durable state AND emits `committed:<input>` on a channel that both reaches a
-// plugin sink and feeds task B, which blocks until the resumed runner sets the
+// plugin output and feeds task B, which blocks until the resumed runner sets the
 // release env.
 #[derive(Default)]
 struct TierCommitA;
@@ -297,7 +299,7 @@ impl Relay for TierCommitBlockSteps {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<TierCommitA>()
-            .sink_named_with("mid", |s: &String| s.as_bytes().to_vec())
+            .output_named_with("mid", |s: &String| s.as_bytes().to_vec())
             .into::<BlockB>();
     }
 
@@ -421,7 +423,7 @@ impl Relay for KeyedSagaSteps {
 
 // `outbox_block_steps`: a steps output's identity. Task A commits
 // durable state AND emits once, keyed `k` with one metadata pair, on a keyed
-// hybrid channel; the output rides A's Cell record and reaches the sink once
+// hybrid channel; the output rides A's Cell record and reaches the output once
 // A's stage commits. Task B blocks, so a SIGKILL lands with A committed and B
 // unfinished.
 #[derive(Default)]
@@ -448,7 +450,7 @@ impl Relay for OutboxBlockSteps {
         c.input::<String>("in")
             .into::<OutboxA>()
             .keyed()
-            .sink_named_with("mid", |s: &String| format!("a-out:{s}").into_bytes())
+            .output_named_with("mid", |s: &String| format!("a-out:{s}").into_bytes())
             .into::<BlockB>();
     }
 
@@ -490,7 +492,7 @@ impl Relay for UndoOutboxSteps {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<UndoOutboxA>()
-            .sink_named_with("mid", |s: &String| format!("out:{s}").into_bytes())
+            .output_named_with("mid", |s: &String| format!("out:{s}").into_bytes())
             .into::<UndoC>();
     }
 
@@ -526,7 +528,7 @@ impl Relay for FailedStageSteps {
         c.input::<String>("in")
             .into::<KeySplit>()
             .into::<FailedStage>()
-            .sink_named_with("mid", |s: &String| format!("lost:{s}").into_bytes());
+            .output_named_with("mid", |s: &String| format!("lost:{s}").into_bytes());
     }
 
     fn settings() -> RelaySettings {
@@ -547,7 +549,7 @@ impl Relay for FailedStageSteps {
 //              └─▶ BranchC
 //
 // Every tasklet commits durable state and compensates by emitting an undo
-// record, so both tree behaviours are observable at one sink:
+// record, so both tree behaviours are observable at one output:
 //
 //   * crash-resume — BranchD BLOCKS until the resumed runner sets the release
 //     env, so the SIGKILL lands with A, B and C committed and only D's subtree
@@ -558,8 +560,8 @@ impl Relay for FailedStageSteps {
 //     blocking. A, B and C have all completed, so the rollback must unwind the
 //     two branches before the root they share: `undo-c`, `undo-b`, `undo-a`.
 //
-// The inter-task channels are hybrid (`sink_with`), which is what makes
-// a non-leaf tasklet's forward and undo output visible at the sink.
+// The inter-task channels are hybrid (`output_with`), which is what makes
+// a non-leaf tasklet's forward and undo output visible at the output.
 const BRANCH_FAIL_ENV: &str = "FLEZHA_BRANCH_FAIL";
 
 durable_step!(BranchA, "branch_a", compensate: |ctx| ctx
@@ -567,7 +569,7 @@ durable_step!(BranchA, "branch_a", compensate: |ctx| ctx
 durable_step!(BranchB, "branch_b", compensate: |ctx| ctx
     .emit("undo-b".to_string()));
 
-// The sibling leaf: emits straight to the sink, and its undo does too.
+// The sibling leaf: emits straight to the output, and its undo does too.
 #[derive(Default)]
 struct BranchC;
 #[flezha_runner::tasklet(name = "branch_c")]
@@ -616,15 +618,15 @@ impl Relay for BranchSteps {
         let mid = c
             .input::<String>("in")
             .into::<BranchA>()
-            .sink_named_with("mid", |s: &String| format!("a:{s}").into_bytes());
+            .output_named_with("mid", |s: &String| format!("a:{s}").into_bytes());
         // Fail fast: the compensation scenario is about the rollback order,
         // not the ladder that precedes it.
         mid.into::<BranchB>()
-            .sink_named_with("bmid", |s: &String| format!("b:{s}").into_bytes())
+            .output_named_with("bmid", |s: &String| format!("b:{s}").into_bytes())
             .retry_max(1)
             .into::<BranchD>()
-            .sink_named("d_out");
-        mid.into::<BranchC>().sink_named("c_out");
+            .output_named("d_out");
+        mid.into::<BranchC>().output_named("c_out");
     }
 
     fn settings() -> RelaySettings {
@@ -708,16 +710,16 @@ impl Relay for DiamondSteps {
         let fan = c
             .input::<String>("in")
             .into::<DiamA>()
-            .sink_named_with("dfan", |s: &String| format!("a:{s}").into_bytes());
+            .output_named_with("dfan", |s: &String| format!("a:{s}").into_bytes());
         fan.into::<DiamB1>()
             .named("db1")
             .into::<DiamB2>()
-            .sink_named_with("db2", |s: &String| s.clone().into_bytes())
+            .output_named_with("db2", |s: &String| s.clone().into_bytes())
             .into::<DiamJoin>();
         fan.into::<DiamC>()
-            .sink_named_with("dc", |s: &String| s.clone().into_bytes())
+            .output_named_with("dc", |s: &String| s.clone().into_bytes())
             .into::<DiamJoin>()
-            .sink_named("j_out");
+            .output_named("j_out");
     }
 
     fn settings() -> RelaySettings {
@@ -737,7 +739,7 @@ impl Relay for DiamondSteps {
 // emitting an undo record; task `retry_flaky` fails its first
 // `FLEZHA_STEPS_RETRY_FAILS` attempts (0 by default — the env is what each
 // scenario arms) and then emits `attempt:<n>:<input>`. One armed failure is
-// absorbed by the ladder (the run completes `ok`, the sink sees attempt 2);
+// absorbed by the ladder (the run completes `ok`, the output sees attempt 2);
 // arming more failures than the ladder has attempts exhausts it — RA rolls back
 // and the run reports `error`.
 const RETRY_FAILS_ENV: &str = "FLEZHA_STEPS_RETRY_FAILS";
@@ -779,9 +781,9 @@ impl Relay for RetrySteps {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<RetryA>()
-            .sink_named_with("mid", |s: &String| format!("res:{s}").into_bytes())
+            .output_named_with("mid", |s: &String| format!("res:{s}").into_bytes())
             .into::<RetryFlaky>()
-            .sink_named("out");
+            .output_named("out");
     }
 
     fn settings() -> RelaySettings {

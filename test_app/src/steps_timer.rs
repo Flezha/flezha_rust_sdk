@@ -66,7 +66,7 @@ impl Relay for TimerLoopSteps {
             .into::<Tick>()
             .named("ticked")
             .into::<Tock>()
-            .sink_named("out");
+            .output_named("out");
     }
 
     fn settings() -> RelaySettings {
@@ -119,7 +119,7 @@ impl Relay for EventTimerSteps {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("in")
             .into::<EventTick>()
-            .sink_named("out");
+            .output_named("out");
     }
 
     fn settings() -> RelaySettings {

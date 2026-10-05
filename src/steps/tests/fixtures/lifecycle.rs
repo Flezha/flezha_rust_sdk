@@ -69,7 +69,9 @@ impl Relay for EmitSteps {
         "test-emit-steps"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<String>("in").into::<EmitTask>().sink_named("out");
+        c.input::<String>("in")
+            .into::<EmitTask>()
+            .output_named("out");
     }
 
     fn settings() -> RelaySettings {
@@ -156,7 +158,9 @@ impl Relay for LoopSteps {
         "test-loop-steps"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<String>("in").into::<GotTask>().sink_named("out");
+        c.input::<String>("in")
+            .into::<GotTask>()
+            .output_named("out");
     }
 
     fn settings() -> RelaySettings {
@@ -178,7 +182,9 @@ impl Relay for TimedSteps {
         "test-timed-steps"
     }
     fn channels(c: &ChannelBuilder) {
-        c.input::<String>("in").into::<GotTask>().sink_named("out");
+        c.input::<String>("in")
+            .into::<GotTask>()
+            .output_named("out");
     }
 
     fn settings() -> RelaySettings {
@@ -289,7 +295,7 @@ impl Relay for CompletingChat {
             .into::<ChatTurn>()
             .named("mid")
             .into::<Stage2>()
-            .sink_named("out");
+            .output_named("out");
     }
 
     fn settings() -> RelaySettings {

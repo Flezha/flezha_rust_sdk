@@ -10,7 +10,7 @@ use super::ProbeCell;
 use crate::tasklet::ctx::{EmitSink, StableId};
 use crate::tasklet::error::TaskletError;
 
-/// Minimal sink: records what reached it, configurable channel shape.
+/// Minimal output: records what reached it, configurable channel shape.
 #[derive(Default)]
 struct StubSink {
     keyed: bool,
@@ -147,7 +147,7 @@ fn plain_emit_in_a_keyed_cell_carries_the_cell_key() {
 
 /// fails when: a single-cell tasklet's keyless emit is accepted on a
 /// keyed channel — it has no key to default to, so the record would ship
-/// keyless and a keyed sink could not upsert it.
+/// keyless and a keyed output could not upsert it.
 #[test]
 fn plain_emit_on_keyed_channel_is_rejected() {
     let mut sink = StubSink {

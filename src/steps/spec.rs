@@ -78,7 +78,7 @@ fn refuse_chained_loop_shape(
 
 /// A durable chained loop seeds iteration N+1 from iteration N's terminal
 /// handoff, so the terminal tasklet has to release one the journal carries.
-/// Two shapes do not: a tasklet nothing is wired from and that names no sink
+/// Two shapes do not: a tasklet nothing is wired from and that names no output
 /// owns no output channel at all, and one whose only output is plugin-bound
 /// gets no journal codec, by the rule `channel_descriptor` applies on both the
 /// typed and the byte-passing path. Either way a crash mid-loop would resume

@@ -18,7 +18,7 @@ use common::{
 };
 
 /// The two cases driving `KeyedRelay` share its statics — and one of them
-/// installs the process-global park sink — so they run one at a time.
+/// installs the process-global park output — so they run one at a time.
 static KEYED_LOCK: Mutex<()> = Mutex::new(());
 
 static SEEN: Mutex<Vec<String>> = Mutex::new(Vec::new());

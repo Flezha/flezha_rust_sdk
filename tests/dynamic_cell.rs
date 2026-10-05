@@ -190,7 +190,7 @@ fn an_eviction_with_no_stream_bound_holds_the_delete_for_the_reconnect() {
         .to_vec();
 
     // Backdate the activity stamp so the sweep decides on the TTL, not on the
-    // clock, and evict with no sink and no secondary: the reconnect window.
+    // clock, and evict with no output and no secondary: the reconnect window.
     reg.cells
         .get("K")
         .expect("live before the sweep")
@@ -200,7 +200,7 @@ fn an_eviction_with_no_stream_bound_holds_the_delete_for_the_reconnect() {
     assert!(reg.cells.is_empty(), "the idle Cell is evicted");
     assert_eq!(evicted(&reg), 1);
 
-    // The reconnect: the sink an install wires must receive the held delete.
+    // The reconnect: the output an install wires must receive the held delete.
     let seen: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
     let seen_c = Arc::clone(&seen);
     let sink: SendFrameFn = Arc::new(move |payload_id: &str, frame: &[u8]| {
@@ -220,7 +220,7 @@ fn an_eviction_with_no_stream_bound_holds_the_delete_for_the_reconnect() {
          exactly as the live path frames it"
     );
 
-    // The sink is process-global: hand the rest of this binary a no-op rather
+    // The output is process-global: hand the rest of this binary a no-op rather
     // than a recorder that keeps every frame they ship.
     install_global_sink(Arc::new(|_: &str, _: &[u8]| Ok(())));
 }

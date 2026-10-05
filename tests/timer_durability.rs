@@ -262,7 +262,7 @@ impl Relay for TierSessionRelay {
         c.input::<String>("in")
             .into::<TierSessionTask>()
             .keyed()
-            .sink_named("out");
+            .output_named("out");
     }
 
     fn settings() -> RelaySettings {

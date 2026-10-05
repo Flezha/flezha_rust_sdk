@@ -144,7 +144,7 @@ impl Parse for RelayDef {
 }
 
 /// A generated relay: one entry channel threaded through a tasklet
-/// chain, and, when a `sink` is written, the terminal payload type pinned and
+/// chain, and, when an `output` is written, the terminal payload type pinned and
 /// the stream sunk under it. The relay is a type the author can name, so
 /// registration is a call they write.
 pub(crate) struct Wiring<'a> {
@@ -165,9 +165,9 @@ pub(crate) struct Wiring<'a> {
     pub chain: TokenStream,
     /// The type the terminal stream's payload is pinned against.
     pub payload: TokenStream,
-    /// The plugin sink's name, the producing channel named after it; `None`
+    /// The plugin output's name, the producing channel named after it; `None`
     /// declares no plugin channel.
-    pub sink: Option<&'a str>,
+    pub output: Option<&'a str>,
     /// The relay items the short form sets beyond the graph (a steps relay's
     /// `each`), empty when every item keeps its trait default.
     pub settings: TokenStream,
@@ -197,18 +197,18 @@ pub(crate) fn relay_item(wiring: Wiring<'_>) -> syn::Result<TokenStream> {
         on_full,
         chain,
         payload,
-        sink,
+        output,
         settings,
     } = wiring;
     let entry = entry_channel_name(input_name)?;
     let declared = vis.map(|vis| quote! { #vis struct #ident; });
-    // Pins the declared sink payload type against the terminal tasklet's
-    // `Output`; with no sink the tasklet's output is left unconsumed, as a
+    // Pins the declared output payload type against the terminal tasklet's
+    // `Output`; with no output the tasklet's output is left unconsumed, as a
     // hand-written channel ending at a tasklet leaves it.
-    let sunk = match sink {
-        Some(sink) => quote! {
+    let sunk = match output {
+        Some(output) => quote! {
             let stream: ::flezha_runner::Stream<'_, #payload> = stream;
-            stream.sink_named(#sink);
+            stream.output_named(#output);
         },
         None => quote! { let _ = stream; },
     };
@@ -253,7 +253,7 @@ pub fn expand(item: TokenStream) -> syn::Result<TokenStream> {
         on_full: quote! {},
         chain: quote! { .into::<#first_tasklet>(); #hops },
         payload: quote! { #plugin_ty },
-        sink: Some(&def.plugin_name),
+        output: Some(&def.plugin_name),
         settings: quote! {},
     })
 }

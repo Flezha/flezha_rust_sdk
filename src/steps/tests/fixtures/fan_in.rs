@@ -66,7 +66,7 @@ impl Relay for DiamondSteps {
         a.into::<DiamondC>()
             .named("d_c")
             .into::<DiamondJoin>()
-            .sink_named("d_out");
+            .output_named("d_out");
     }
 
     fn settings() -> RelaySettings {
@@ -119,7 +119,7 @@ impl Relay for DiamondSaga {
             .into::<DiamondJoin>()
             .named("d_join");
         a.into::<DiamondC>().named("d_c").into::<DiamondJoin>();
-        join.into::<SagaShipFails>().sink_named("d_out");
+        join.into::<SagaShipFails>().output_named("d_out");
     }
 
     fn settings() -> RelaySettings {
@@ -177,7 +177,7 @@ impl Relay for MergeSteps {
             .from(b, MergedJoinInput::B)
             .from(cc, MergedJoinInput::C)
             .into::<MergeJoinTask>()
-            .sink_named("m_out");
+            .output_named("m_out");
     }
 
     fn settings() -> RelaySettings {
@@ -208,7 +208,7 @@ impl Relay for PanickingMergeSteps {
             .from(b, |_: String| panic!("merge mapping blew up"))
             .from(cc, MergedJoinInput::C)
             .into::<MergeJoinTask>()
-            .sink_named("pm_out");
+            .output_named("pm_out");
     }
 
     fn settings() -> RelaySettings {
@@ -235,7 +235,7 @@ impl Relay for PanickingTransformSteps {
             .named("pt_fan")
             .map(|_: String| -> String { panic!("edge map blew up") })
             .into::<DiamondB>()
-            .sink_named("pt_out");
+            .output_named("pt_out");
     }
 
     fn settings() -> RelaySettings {

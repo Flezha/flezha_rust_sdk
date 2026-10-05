@@ -199,13 +199,13 @@ pub(super) fn structured_chains(node: &mut RunnerNode, rx: &Receiver<RunnerMessa
     expected.sort();
     assert_eq!(fan_outs, expected);
 
-    // --- hybrid channel: inter-task output also routed to a plugin sink ---
+    // --- hybrid channel: inter-task output also routed to a plugin output ---
     assert!(start_fed(node, "test-hybrid-steps", "hybrid-1", b"z"));
     let (mut hybrid_outs, done) = drain(rx, "hybrid-1");
     assert_eq!(done.0, "ok");
     hybrid_outs.sort();
-    // "mid:h:z" from the hybrid sink on Stage1's output; "final:h:z" from
-    // Stage2's terminal plugin — Stage1's value reached both Stage2 and the sink.
+    // "mid:h:z" from the hybrid output on Stage1's output; "final:h:z" from
+    // Stage2's terminal plugin — Stage1's value reached both Stage2 and the output.
     let mut hybrid_expected = vec![b"final:h:z".to_vec(), b"mid:h:z".to_vec()];
     hybrid_expected.sort();
     assert_eq!(hybrid_outs, hybrid_expected);
