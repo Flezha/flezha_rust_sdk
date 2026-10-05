@@ -58,8 +58,12 @@ pub use flz_core::relay::topology::DEFAULT_COMPACT_AFTER_BYTES;
 /// Ambient non-determinism inside these functions (`SystemTime::now()`,
 /// random numbers, `Uuid::new_v4()`, reads of external mutable state) is
 /// a contract violation. Obtain time via [`Ctx::now`] and identifiers via
-/// [`Ctx::stable_id`]. `TaskletTestHarness::replay_emits_equal` verifies the
-/// output side of the contract; `replay_equals` the state side.
+/// [`Ctx::stable_id`]. A call to anything outside the instance (a model, a
+/// tool, a service) in `run` or `compensate` goes through [`Ctx::effect`],
+/// which keeps its result so a re-run reads the same value; `apply_to` makes
+/// no outside call at all. `TaskletTestHarness::replay_emits_equal` verifies
+/// the output side of the contract, serving each kept result on its replay
+/// pass; `replay_equals` the state side.
 pub trait Tasklet: Send + Sync + 'static + Default {
     /// Inter-tasklet transport is `Arc<Self::Input>`-zero-copy; the
     /// runtime hands the consumer the unique Arc when possible and

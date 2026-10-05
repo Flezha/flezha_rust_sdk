@@ -429,7 +429,12 @@ impl<S: Tasklet> TaskletDispatcher for TaskletDispatcherImpl<S> {
         Some(S::event_time(input))
     }
 
-    fn compensate(&self, slot: &Arc<CellSlot>, outputs: Vec<Arc<dyn Any + Send + Sync>>) {
+    fn compensate(
+        &self,
+        slot: &Arc<CellSlot>,
+        outputs: Vec<Arc<dyn Any + Send + Sync>>,
+        offset: Option<u64>,
+    ) {
         // The outputs this Cell recorded forward; empty after a crash-resume,
         // which is why a compensable tasklet keeps its undo handle in State.
         let typed: Vec<Arc<S::Output>> = outputs
@@ -459,7 +464,7 @@ impl<S: Tasklet> TaskletDispatcher for TaskletDispatcherImpl<S> {
         // Compensation has no current input: an event-time clock yields 0 here. A
         // failing hook is the undo's to report, never a retry.
         let _ = self.invoke_once(
-            Invocation::compensation(typed, self.invocation_inputs(None).0),
+            Invocation::compensation(typed, offset, self.invocation_inputs(None).0),
             scope,
         );
     }
@@ -599,10 +604,11 @@ fn cell_work(
             slot,
             kind: flz_core::schema::ActivationKind::CompensateRun { .. },
             values,
+            offset,
             reply,
             ..
         } => {
-            slot.dispatcher.compensate(&slot, values);
+            slot.dispatcher.compensate(&slot, values, offset);
             reply.answer(flz_core::schema::ActivationOutcome::Work(Vec::new()));
             None
         }

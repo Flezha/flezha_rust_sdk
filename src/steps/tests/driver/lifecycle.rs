@@ -234,6 +234,45 @@ pub(super) fn add_relay_routing(node: &mut RunnerNode, rx: &Receiver<RunnerMessa
     assert_eq!(outs, vec![b"argz".to_vec()]);
     assert_eq!(done.0, "ok");
 
+    // --- a bind that ships effect results holds the first tasklet until they
+    // have landed, counted with the Cell restores ---
+    let add = AddRelay {
+        relay_id: "steps-effects-gated".into(),
+        factory_id: "test-emit-steps".into(),
+        run: "steps".into(),
+        effect_result_count: 2,
+        ..Default::default()
+    };
+    let mut errors = Vec::new();
+    add.handle(node, "", &mut errors);
+    assert!(errors.is_empty(), "{errors:?}");
+    assert!(feed(node, "steps-effects-gated", b"held"));
+    let early = rx.recv_timeout(std::time::Duration::from_millis(300));
+    assert!(
+        !matches!(early, Ok(RunnerMessage::EmitRelayCompleted { ref relay_id, .. }) if relay_id == "steps-effects-gated"),
+        "the pass ran before the effect results landed"
+    );
+    let shipped = |identity: &str| crate::pb::EffectResult {
+        identity: identity.to_string(),
+        offset: 1,
+        cell_identity: crate::cell::flusher::encode_cell_identity("steps-effects-gated", "x", ""),
+        ..Default::default()
+    };
+    let results = crate::pb::EffectResults {
+        relay_id: "steps-effects-gated".into(),
+        results: vec![shipped("a"), shipped("b")],
+    };
+    let mut errors = Vec::new();
+    results.handle(node, "", &mut errors);
+    assert!(errors.is_empty(), "{errors:?}");
+    let (outs, done) = drain(rx, "steps-effects-gated");
+    assert_eq!(
+        outs,
+        vec![b"held".to_vec()],
+        "the gate opened once both landed"
+    );
+    assert_eq!(done.0, "ok");
+
     // --- init_values that are not a JSON object are refused at the bind ---
     let add_text = AddRelay {
         relay_id: "steps-text-init".into(),

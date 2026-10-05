@@ -995,8 +995,8 @@ pub mod flezha_runner::diag
 pub const flezha_runner::diag::DEFAULT_DIRECTIVES: &str
 pub fn flezha_runner::diag::init_default_tracing()
 pub mod flezha_runner::local
-pub use flezha_runner::local::NON_DURABILITY_NOTICE
 pub use flezha_runner::local::LocalOutput
+pub use flezha_runner::local::NON_DURABILITY_NOTICE
 pub struct flezha_runner::local::LocalRelay
 impl flezha_runner::local::LocalRelay
 pub fn flezha_runner::local::LocalRelay::feed(&self, &str, impl core::convert::AsRef<[u8]>) -> core::result::Result<(), flezha_runner::FlezhaError>
@@ -1148,7 +1148,7 @@ pub struct flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S: flezha_run
 impl<S: flezha_runner::tasklet::Tasklet> flz_core::cell::TaskletDispatcher for flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>
 pub fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::cell_label(&self) -> &str
 pub fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::close_interval(&self, &mut alloc::boxed::Box<dyn flz_core::flusher::FlushableBuffer>) -> bool
-pub fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::compensate(&self, &alloc::sync::Arc<flz_core::cell::CellSlot>, alloc::vec::Vec<alloc::sync::Arc<(dyn core::any::Any + core::marker::Send + core::marker::Sync)>>)
+pub fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::compensate(&self, &alloc::sync::Arc<flz_core::cell::CellSlot>, alloc::vec::Vec<alloc::sync::Arc<(dyn core::any::Any + core::marker::Send + core::marker::Sync)>>, core::option::Option<u64>)
 pub fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::correction_policy(&self) -> core::option::Option<flz_core::relay::topology::CorrectionPolicy>
 pub fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::dispatch_item(&self, flz_core::poll_core::ItemAttempt, &alloc::sync::Arc<flz_core::cell::CellSlot>, &mut alloc::boxed::Box<(dyn core::any::Any + core::marker::Send)>, &mut alloc::boxed::Box<dyn flz_core::flusher::FlushableBuffer>, &mut flz_core::timer::PendingTimers, &alloc::sync::Weak<flz_core::relay::instance::RelayInstance>) -> flz_core::cell::ItemDisposition
 pub fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::event_time_of(&self, &flz_core::cell::CellPayload) -> core::option::Option<u64>
@@ -1489,6 +1489,7 @@ pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::cell_key(&self) -> core::option:
 pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::change(&mut self, <S as flezha_runner::tasklet::Tasklet>::Change)
 pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::checkpoint(&mut self)
 pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::complete(&mut self, impl core::convert::Into<alloc::vec::Vec<u8>>) -> core::result::Result<(), flezha_runner::tasklet::error::TaskletError>
+pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::effect<T, E>(&self, &str, impl core::ops::function::FnOnce() -> core::result::Result<T, E>) -> core::result::Result<T, E> where T: serde_core::ser::Serialize + serde_core::de::DeserializeOwned, E: core::convert::From<flezha_runner::tasklet::error::TaskletError>
 pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::emit(&mut self, <S as flezha_runner::tasklet::Tasklet>::Output) -> core::result::Result<(), flezha_runner::tasklet::error::TaskletError>
 pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::emit_keyed(&mut self, impl core::convert::Into<alloc::string::String>, <S as flezha_runner::tasklet::Tasklet>::Output) -> core::result::Result<(), flezha_runner::tasklet::error::TaskletError>
 pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::emit_keyed_with_meta(&mut self, impl core::convert::Into<alloc::string::String>, <S as flezha_runner::tasklet::Tasklet>::Output, std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>) -> core::result::Result<(), flezha_runner::tasklet::error::TaskletError>
@@ -1602,6 +1603,7 @@ pub mod flezha_runner::tasklet::error
 pub use flezha_runner::tasklet::error::format_panic
 pub enum flezha_runner::tasklet::error::TaskletError
 pub flezha_runner::tasklet::error::TaskletError::Custom(alloc::string::String)
+pub flezha_runner::tasklet::error::TaskletError::Effect(flz_transport::errors::FlezhaError)
 pub flezha_runner::tasklet::error::TaskletError::EventTimeTimerWithoutEventTimeClock
 pub flezha_runner::tasklet::error::TaskletError::EventTimeTimerWithoutEventTimeClock::clock: alloc::string::String
 pub flezha_runner::tasklet::error::TaskletError::EventTimeTimerWithoutEventTimeClock::tasklet: alloc::string::String
@@ -1736,6 +1738,7 @@ impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::tasklet::change::NoChan
 pub fn flezha_runner::tasklet::change::NoChange::vzip(self) -> V
 pub enum flezha_runner::tasklet::TaskletError
 pub flezha_runner::tasklet::TaskletError::Custom(alloc::string::String)
+pub flezha_runner::tasklet::TaskletError::Effect(flz_transport::errors::FlezhaError)
 pub flezha_runner::tasklet::TaskletError::EventTimeTimerWithoutEventTimeClock
 pub flezha_runner::tasklet::TaskletError::EventTimeTimerWithoutEventTimeClock::clock: alloc::string::String
 pub flezha_runner::tasklet::TaskletError::EventTimeTimerWithoutEventTimeClock::tasklet: alloc::string::String
@@ -1872,6 +1875,7 @@ pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::cell_key(&self) -> core::option:
 pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::change(&mut self, <S as flezha_runner::tasklet::Tasklet>::Change)
 pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::checkpoint(&mut self)
 pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::complete(&mut self, impl core::convert::Into<alloc::vec::Vec<u8>>) -> core::result::Result<(), flezha_runner::tasklet::error::TaskletError>
+pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::effect<T, E>(&self, &str, impl core::ops::function::FnOnce() -> core::result::Result<T, E>) -> core::result::Result<T, E> where T: serde_core::ser::Serialize + serde_core::de::DeserializeOwned, E: core::convert::From<flezha_runner::tasklet::error::TaskletError>
 pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::emit(&mut self, <S as flezha_runner::tasklet::Tasklet>::Output) -> core::result::Result<(), flezha_runner::tasklet::error::TaskletError>
 pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::emit_keyed(&mut self, impl core::convert::Into<alloc::string::String>, <S as flezha_runner::tasklet::Tasklet>::Output) -> core::result::Result<(), flezha_runner::tasklet::error::TaskletError>
 pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::emit_keyed_with_meta(&mut self, impl core::convert::Into<alloc::string::String>, <S as flezha_runner::tasklet::Tasklet>::Output, std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>) -> core::result::Result<(), flezha_runner::tasklet::error::TaskletError>
@@ -2209,6 +2213,7 @@ impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::control::StartOutcome w
 pub fn flezha_runner::control::StartOutcome::vzip(self) -> V
 pub enum flezha_runner::TaskletError
 pub flezha_runner::TaskletError::Custom(alloc::string::String)
+pub flezha_runner::TaskletError::Effect(flz_transport::errors::FlezhaError)
 pub flezha_runner::TaskletError::EventTimeTimerWithoutEventTimeClock
 pub flezha_runner::TaskletError::EventTimeTimerWithoutEventTimeClock::clock: alloc::string::String
 pub flezha_runner::TaskletError::EventTimeTimerWithoutEventTimeClock::tasklet: alloc::string::String
@@ -2501,6 +2506,7 @@ pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::cell_key(&self) -> core::option:
 pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::change(&mut self, <S as flezha_runner::tasklet::Tasklet>::Change)
 pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::checkpoint(&mut self)
 pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::complete(&mut self, impl core::convert::Into<alloc::vec::Vec<u8>>) -> core::result::Result<(), flezha_runner::tasklet::error::TaskletError>
+pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::effect<T, E>(&self, &str, impl core::ops::function::FnOnce() -> core::result::Result<T, E>) -> core::result::Result<T, E> where T: serde_core::ser::Serialize + serde_core::de::DeserializeOwned, E: core::convert::From<flezha_runner::tasklet::error::TaskletError>
 pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::emit(&mut self, <S as flezha_runner::tasklet::Tasklet>::Output) -> core::result::Result<(), flezha_runner::tasklet::error::TaskletError>
 pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::emit_keyed(&mut self, impl core::convert::Into<alloc::string::String>, <S as flezha_runner::tasklet::Tasklet>::Output) -> core::result::Result<(), flezha_runner::tasklet::error::TaskletError>
 pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::emit_keyed_with_meta(&mut self, impl core::convert::Into<alloc::string::String>, <S as flezha_runner::tasklet::Tasklet>::Output, std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>) -> core::result::Result<(), flezha_runner::tasklet::error::TaskletError>

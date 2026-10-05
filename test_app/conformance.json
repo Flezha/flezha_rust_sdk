@@ -173,7 +173,8 @@
       "schema_evolution_v1",
       "schema_evolution_v2"
     ],
-    "local_send": ["bench_keyed_nopersist", "store_input", "tier_store", "sugar_steps_per_input"]
+    "local_send": ["bench_keyed_nopersist", "store_input", "tier_store", "sugar_steps_per_input"],
+    "recorded_effects": ["effect_block_steps", "effect_flow"]
   },
   "docs": "docs/architecture/runner.md"
 }

@@ -35,6 +35,8 @@ pub enum TaskletError {
     /// A part the runtime refused, carrying its catalogue error
     /// (`part.no_output`, `part.outside_invocation`).
     Part(flz_core::FlezhaError),
+    /// A `ctx.effect` the runtime refused or could not keep (`effect.*`).
+    Effect(flz_core::FlezhaError),
     Custom(String),
     NonRetryable(String),
 }
@@ -79,7 +81,7 @@ impl crate::ErrorModel for TaskletError {
             }
             .to_error(),
             Self::TimersUnavailable => E::with("runtime.timers_unavailable", []),
-            Self::Part(error) => error.clone(),
+            Self::Part(error) | Self::Effect(error) => error.clone(),
             Self::Custom(error) | Self::NonRetryable(error) => {
                 E::with("runtime.tasklet_failed", [("error", error.as_str().into())])
             }
@@ -106,7 +108,12 @@ impl TaskletError {
 
     /// Whether the retry policy must skip further attempts for this error.
     pub fn is_non_retryable(&self) -> bool {
-        matches!(self, Self::NonRetryable(_))
+        match self {
+            Self::NonRetryable(_) => true,
+            // Only an unkept result is worth another attempt.
+            Self::Effect(error) => error.code != "effect.not_recorded",
+            _ => false,
+        }
     }
 }
 pub use flz_core::util::format_panic;

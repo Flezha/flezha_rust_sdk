@@ -12,6 +12,7 @@ use crate::cell::{CellItem, CellPayload, CellSlot};
 use crate::runner::poll_core::ItemAttempt;
 use crate::tasklet::error::TaskletError;
 use crate::tasklet::{Change, SpawnHandle, SpawnOptions, Tasklet};
+use flz_core::origin::Phase;
 
 /// Reserved metadata namespace: runtime identity stamps (`flz.cell`,
 /// `flz.seq`, `flz.key`) live here; user-supplied keys with this prefix
@@ -57,6 +58,27 @@ pub struct Ctx<'a, S: Tasklet> {
     /// numbers the next one.
     part: PartRoute<'a>,
     part_sequence: Cell<u32>,
+    /// Which hook runs, the offset an undo's iteration took, the effects asked
+    /// for so far by name, whether one's function is running, and where they
+    /// are kept.
+    phase: Phase,
+    undo_offset: Option<u64>,
+    effect_ordinals: RefCell<Vec<(String, u32)>>,
+    in_effect: Cell<bool>,
+    /// The testing harness's results, which stand in for the controller's.
+    #[cfg(any(test, feature = "testing"))]
+    harness_effects: Option<&'a RefCell<HarnessEffects>>,
+}
+
+/// The harness's effect results: kept by identity, with their names, on the
+/// live pass and served on the replay pass, where a function that runs is
+/// named in `ran` and a result never asked for stays in `kept`.
+#[cfg(any(test, feature = "testing"))]
+#[derive(Default)]
+pub(crate) struct HarnessEffects {
+    pub(crate) kept: HashMap<String, (String, Vec<u8>)>,
+    pub(crate) replaying: bool,
+    pub(crate) ran: Vec<String>,
 }
 
 /// Where [`Ctx::part`] sends.
@@ -128,6 +150,66 @@ impl PartSource<'_> {
             is_final: false,
         }
     }
+}
+
+/// An effect's result as JSON.
+fn encode_effect<T: serde::Serialize, E: From<TaskletError>>(
+    name: &str,
+    value: &T,
+) -> Result<Vec<u8>, E> {
+    serde_json::to_vec(value).map_err(|e| {
+        TaskletError::NonRetryable(format!("effect `{name}`: the result does not encode: {e}"))
+            .into()
+    })
+}
+
+/// A kept effect result read back from JSON.
+fn decode_effect<T: serde::de::DeserializeOwned, E: From<TaskletError>>(
+    name: &str,
+    bytes: &[u8],
+) -> Result<T, E> {
+    serde_json::from_slice(bytes).map_err(|e| {
+        TaskletError::NonRetryable(format!(
+            "effect `{name}`: the kept result does not decode: {e}"
+        ))
+        .into()
+    })
+}
+
+/// An effect in the testing harness: the live pass keeps its result, the
+/// replay pass is served it, and a function that runs on the replay pass is
+/// named.
+#[cfg(any(test, feature = "testing"))]
+fn in_harness<T, E>(
+    effects: &RefCell<HarnessEffects>,
+    name: &str,
+    identity: String,
+    f: impl FnOnce() -> Result<T, E>,
+) -> Result<T, E>
+where
+    T: serde::Serialize + serde::de::DeserializeOwned,
+    E: From<TaskletError>,
+{
+    let served = {
+        let mut effects = effects.borrow_mut();
+        match effects.replaying {
+            true => effects.kept.remove(&identity),
+            false => effects.kept.get(&identity).cloned(),
+        }
+    };
+    if let Some((_, kept)) = served {
+        return decode_effect(name, &kept);
+    }
+    let value = f()?;
+    let bytes = encode_effect(name, &value)?;
+    flz_core::effect_result::fits(name, &bytes).map_err(TaskletError::Effect)?;
+    let mut effects = effects.borrow_mut();
+    if effects.replaying {
+        effects.ran.push(name.to_string());
+    } else {
+        effects.kept.insert(identity, (name.to_string(), bytes));
+    }
+    Ok(value)
 }
 
 /// Replay-stable 128-bit identifier returned by [`Ctx::stable_id`].
@@ -220,6 +302,12 @@ impl<'a, S: Tasklet> Ctx<'a, S> {
             timers: None,
             part: PartRoute::NoItem,
             part_sequence: Cell::new(0),
+            phase: Phase::Run,
+            undo_offset: None,
+            effect_ordinals: RefCell::new(Vec::new()),
+            in_effect: Cell::new(false),
+            #[cfg(any(test, feature = "testing"))]
+            harness_effects: None,
         }
     }
 
@@ -251,15 +339,19 @@ impl<'a, S: Tasklet> Ctx<'a, S> {
         self
     }
 
-    /// Where the next spawn of this invocation comes from.
-    fn spawn_origin(&self) -> flz_core::spawn::SpawnOrigin<'_> {
-        let position = self.spawn_ordinal.get();
-        self.spawn_ordinal.set(position + 1);
-        flz_core::spawn::SpawnOrigin {
+    /// The invocation this context runs.
+    fn origin(&self) -> flz_core::origin::InvocationOrigin<'_> {
+        flz_core::origin::InvocationOrigin {
             cell_identity: self.cell_identity,
             offset: self.offset,
-            position,
         }
+    }
+
+    /// The next spawn's position in this invocation.
+    fn spawn_position(&self) -> u32 {
+        let position = self.spawn_ordinal.get();
+        self.spawn_ordinal.set(position + 1);
+        position
     }
 
     /// Attach this invocation's timer session. Set by the stream dispatcher
@@ -273,6 +365,21 @@ impl<'a, S: Tasklet> Ctx<'a, S> {
     /// `run` and `on_timer`, and by the testing harness.
     pub(crate) fn with_part(mut self, route: PartRoute<'a>) -> Self {
         self.part = route;
+        self
+    }
+
+    /// Run `compensate` for the iteration that took the input-log `offset`:
+    /// its effects are named apart from the run's.
+    pub(crate) fn compensating(mut self, offset: Option<u64>) -> Self {
+        self.phase = Phase::Compensate;
+        self.undo_offset = offset;
+        self
+    }
+
+    /// Keep this invocation's effect results in the testing harness.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn with_harness_effects(mut self, effects: &'a RefCell<HarnessEffects>) -> Self {
+        self.harness_effects = Some(effects);
         self
     }
 
@@ -379,7 +486,8 @@ impl<'a, S: Tasklet> Ctx<'a, S> {
             payload.into(),
             None,
             self.replay,
-            self.spawn_origin(),
+            self.origin(),
+            self.spawn_position(),
         )
     }
 
@@ -402,7 +510,8 @@ impl<'a, S: Tasklet> Ctx<'a, S> {
             payload.into(),
             Some(options),
             self.replay,
-            self.spawn_origin(),
+            self.origin(),
+            self.spawn_position(),
         )
     }
 
@@ -511,6 +620,110 @@ impl<'a, S: Tasklet> Ctx<'a, S> {
         self.part_sequence.set(sequence);
         sent.map(drop)
             .map_err(|refusal| TaskletError::Part(flz_core::ErrorModel::to_error(&refusal)))
+    }
+
+    /// Run `f`, a call to anything outside the instance (a model, a tool, a
+    /// service), and keep its result: when this invocation runs again (a crash
+    /// re-run, a replay, a wake, a move), the call returns the kept result and
+    /// `f` does not run. The result is kept, synced on the controller, before
+    /// this returns; a crash between `f` finishing and that point runs `f`
+    /// again, so give the outside service [`Self::stable_id`] as an idempotency
+    /// key where it takes one.
+    ///
+    /// `name` names the call: a non-empty string of at most 255 bytes, counted
+    /// per invocation, so a call of another name added before this one leaves
+    /// its kept result where it was. One call runs at a time; one made from
+    /// `f` is refused. The result is encoded as JSON (`T: Serialize + DeserializeOwned`).
+    /// An invocation that took no input-log offset (local mode, a relay with
+    /// no input log) runs `f` each time and keeps nothing.
+    ///
+    /// `f`'s own error is returned unchanged and nothing is kept. The call
+    /// fails with `effect.bad_name`, `effect.nested` when `f` calls `effect`
+    /// itself, `effect.too_large` over `FLEZHA_EFFECT_MAX_BYTES`, and
+    /// `effect.not_recorded` (retryable) when the controller did not keep the
+    /// result.
+    pub fn effect<T, E>(&self, name: &str, f: impl FnOnce() -> Result<T, E>) -> Result<T, E>
+    where
+        T: serde::Serialize + serde::de::DeserializeOwned,
+        E: From<TaskletError>,
+    {
+        use flz_core::effect_result;
+        effect_result::check_name(name).map_err(TaskletError::Effect)?;
+        if self.in_effect.get() {
+            return Err(TaskletError::Effect(effect_result::nested(name)).into());
+        }
+        let ordinal = self
+            .effect_ordinals
+            .borrow()
+            .iter()
+            .find(|(counted, _)| counted == name)
+            .map_or(0, |(_, next)| *next);
+        let origin = flz_core::origin::InvocationOrigin {
+            cell_identity: self.cell_identity,
+            offset: match (self.phase, &self.part) {
+                (Phase::Compensate, _) => self.undo_offset,
+                (Phase::Run, PartRoute::Item(source)) => self
+                    .offset
+                    .or_else(|| flz_core::steps::pass_offset(source.slot)),
+                (Phase::Run, _) => self.offset,
+            },
+        };
+        self.in_effect.set(true);
+        let result = self.kept_or_run(name, origin, ordinal, f);
+        self.in_effect.set(false);
+        result
+    }
+
+    /// Count the calls of `name` this invocation made up to `next`.
+    fn counted(&self, name: &str, next: u32) {
+        let mut ordinals = self.effect_ordinals.borrow_mut();
+        match ordinals.iter_mut().find(|(counted, _)| counted == name) {
+            Some((_, counted)) => *counted = next,
+            None => ordinals.push((name.to_string(), next)),
+        }
+    }
+
+    fn kept_or_run<T, E>(
+        &self,
+        name: &str,
+        origin: flz_core::origin::InvocationOrigin<'_>,
+        ordinal: u32,
+        f: impl FnOnce() -> Result<T, E>,
+    ) -> Result<T, E>
+    where
+        T: serde::Serialize + serde::de::DeserializeOwned,
+        E: From<TaskletError>,
+    {
+        use flz_core::effect_result;
+        if origin.offset.is_none() {
+            return f();
+        }
+        #[cfg(any(test, feature = "testing"))]
+        if let Some(effects) = self.harness_effects {
+            let identity = origin.effect_identity(self.phase, name, ordinal);
+            self.counted(name, ordinal + 1);
+            return in_harness(effects, name, identity, f);
+        }
+        let attempt = match &self.part {
+            PartRoute::Item(source) => source.attempt,
+            _ => 1,
+        };
+        let resolved = effect_result::resolve(origin, self.phase, name, ordinal, attempt);
+        self.counted(name, resolved.ordinal + 1);
+        if let Some(kept) = resolved.kept {
+            return decode_effect(name, &kept);
+        }
+        let value = f()?;
+        match effect_result::keep(
+            origin,
+            name,
+            resolved.identity,
+            encode_effect(name, &value)?,
+        ) {
+            Ok(None) => Ok(value),
+            Ok(Some(first)) => decode_effect(name, &first),
+            Err(refusal) => Err(TaskletError::Effect(refusal).into()),
+        }
     }
 
     /// Emit with user-attached string-keyed metadata. Valid on any channel

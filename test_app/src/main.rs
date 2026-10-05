@@ -159,6 +159,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register_factory(EventTimerSteps)?
         .register_factory(StaticCellSteps)?
         .register_factory(CommitBlockSteps)?
+        .register_factory(EffectBlockSteps)?
+        .register_factory(EffectFlow)?
         .register_factory(SyncDurableSteps)?
         .register_factory(OptOutCommitBlockSteps)?
         .register_factory(TierCommitBlockSteps)?

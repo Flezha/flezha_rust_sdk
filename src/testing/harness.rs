@@ -28,7 +28,7 @@ use crate::cell::restore::{decode_change, init_cell_with_payload, RestoreInitPay
 use crate::cell::timer::{PendingTimers, TimerKind, TimerOp, TimerSession};
 use crate::relay::dispatcher::emit_sink::apply_identity_stamps;
 use crate::tasklet::clock::{evaluate, wall_now_ms};
-use crate::tasklet::ctx::{EmitSink, PartRoute};
+use crate::tasklet::ctx::{EmitSink, HarnessEffects, PartRoute};
 use crate::tasklet::{Change, Ctx, Tasklet, TaskletError};
 
 /// Cell identity the harness stands in for the runtime's per-slot
@@ -117,6 +117,11 @@ pub struct TaskletTestHarness<S: Tasklet> {
     /// Ops the harness's invocations committed, in order — the durable record
     /// a restore would fold.
     recorded_timer_ops: Vec<TimerOp>,
+    /// The `ctx.effect` results this harness's invocations kept, which a
+    /// replay pass serves; each input stands for the input-log offset of its
+    /// place in the inputs.
+    effects: RefCell<HarnessEffects>,
+    inputs_taken: u64,
 }
 
 impl<S: Tasklet> TaskletTestHarness<S>
@@ -155,6 +160,8 @@ impl<S: Tasklet> TaskletTestHarness<S> {
             timers: PendingTimers::default(),
             initial_timers: PendingTimers::default(),
             recorded_timer_ops: Vec::new(),
+            effects: RefCell::new(HarnessEffects::default()),
+            inputs_taken: 0,
         }
     }
 
@@ -246,7 +253,11 @@ impl<S: Tasklet> TaskletTestHarness<S> {
         for input in inputs {
             let seq = self.recorded_changes.len() as u64;
             let now = evaluate::<S>(Some(&input), || self.next_wall_ms(), || seq);
-            self.invoke("run", now, None, |tasklet, ctx| tasklet.run(input, ctx));
+            let offset = self.inputs_taken;
+            self.inputs_taken += 1;
+            self.invoke("run", now, None, Some(offset), |tasklet, ctx| {
+                tasklet.run(input, ctx)
+            });
         }
         self
     }
@@ -261,6 +272,7 @@ impl<S: Tasklet> TaskletTestHarness<S> {
         hook: &str,
         now: u64,
         firing: Option<(TimerKind, u64)>,
+        offset: Option<u64>,
         call: impl FnOnce(&mut S, &mut Ctx<'_, S>) -> Result<(), TaskletError>,
     ) {
         let recorded = RefCell::new(std::mem::take(&mut self.recorded_changes));
@@ -282,8 +294,10 @@ impl<S: Tasklet> TaskletTestHarness<S> {
             HARNESS_CELL_IDENTITY,
         )
         .with_cell_key(self.cell_key.as_deref())
+        .taking(offset)
         .with_timers(&session)
-        .with_part(PartRoute::Harness);
+        .with_part(PartRoute::Harness)
+        .with_harness_effects(&self.effects);
         if let Err(e) = call(&mut self.tasklet, &mut ctx) {
             panic!("TaskletTestHarness: Tasklet::{hook} returned Err: {e}");
         }
@@ -307,6 +321,7 @@ impl<S: Tasklet> TaskletTestHarness<S> {
             "on_timer",
             scheduled_at,
             Some((kind, scheduled_at)),
+            None,
             |tasklet, ctx| tasklet.on_timer(scheduled_at, kind, ctx),
         );
         self
@@ -458,13 +473,39 @@ impl<S: Tasklet> TaskletTestHarness<S> {
     /// passes; a scripted wall clock restarts per pass. A Tasklet that
     /// reads ambient time, randomness, or external mutable state fails
     /// here because the passes emit different bytes.
+    ///
+    /// The second pass is the replay: every `ctx.effect` is served the result
+    /// the first pass kept, and a function that runs there fails the check,
+    /// naming its effect.
     pub fn replay_emits_equal(&self, inputs: &[S::Input]) -> Result<(), EmitStreamMismatch>
     where
         S::State: serde::de::DeserializeOwned,
         S::Output: serde::Serialize,
     {
-        let first = self.run_emit_pass(inputs)?;
-        let second = self.run_emit_pass(inputs)?;
+        let (first, kept) = self.run_emit_pass(inputs, HarnessEffects::default())?;
+        let replay = HarnessEffects {
+            replaying: true,
+            ..kept
+        };
+        let (second, replayed) = self.run_emit_pass(inputs, replay)?;
+        if let Some(name) = replayed.ran.first() {
+            return Err(EmitStreamMismatch {
+                index: 0,
+                detail: format!(
+                    "effect `{name}` ran its function on the replay pass instead of \
+                     returning the result the first pass kept"
+                ),
+            });
+        }
+        if let Some((name, _)) = replayed.kept.values().next() {
+            return Err(EmitStreamMismatch {
+                index: 0,
+                detail: format!(
+                    "effect `{name}` kept a result on the first pass that the replay \
+                     pass never asked for: an outside call made around `ctx.effect`"
+                ),
+            });
+        }
         if first.len() != second.len() {
             return Err(EmitStreamMismatch {
                 index: first.len().min(second.len()),
@@ -489,7 +530,11 @@ impl<S: Tasklet> TaskletTestHarness<S> {
     /// One `replay_emits_equal` pass: a fresh harness re-hydrated from
     /// this harness's initial state and configuration, run over `inputs`,
     /// emits serialized to comparable form.
-    fn run_emit_pass(&self, inputs: &[S::Input]) -> Result<Vec<SerializedEmit>, EmitStreamMismatch>
+    fn run_emit_pass(
+        &self,
+        inputs: &[S::Input],
+        effects: HarnessEffects,
+    ) -> Result<(Vec<SerializedEmit>, HarnessEffects), EmitStreamMismatch>
     where
         S::State: serde::de::DeserializeOwned,
         S::Output: serde::Serialize,
@@ -502,6 +547,7 @@ impl<S: Tasklet> TaskletTestHarness<S> {
         pass.wall_script = self.wall_script.clone();
         pass.initial_timers = self.initial_timers.clone();
         pass.timers = self.initial_timers.clone();
+        pass.effects = RefCell::new(effects);
         pass.apply_inputs(inputs.iter().cloned());
 
         let mut out = Vec::with_capacity(pass.recorded_emits.len());
@@ -515,7 +561,7 @@ impl<S: Tasklet> TaskletTestHarness<S> {
             let meta = emit.meta.as_ref().map(|m| m.clone().into_iter().collect());
             out.push(SerializedEmit { bytes, meta });
         }
-        Ok(out)
+        Ok((out, pass.effects.into_inner()))
     }
 
     /// Read the harness's terminal state.

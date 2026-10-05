@@ -34,7 +34,7 @@ impl EmitSink for NullSink {
 }
 
 /// Route control requests to a channel this test reads.
-fn capture_control_requests() -> crossbeam::channel::Receiver<crate::runner::RunnerMessage> {
+pub(super) fn capture_control_requests() -> crossbeam::channel::Receiver<crate::runner::RunnerMessage> {
     let (tx, rx) = crossbeam::channel::unbounded::<crate::runner::RunnerMessage>();
     crate::runner::install_reconnect_trigger(tx);
     rx

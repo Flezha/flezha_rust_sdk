@@ -98,6 +98,7 @@ fn a_command_activation_is_served_at_the_cap() {
         change_seq: 0,
         kind: flz_core::schema::ActivationKind::SnapshotRequest,
         values: Vec::new(),
+        offset: None,
         reply: flz_core::poll_core::CommandReply::new(|_| {}),
     });
 
@@ -157,6 +158,7 @@ fn starvation_wakes_at_a_queued_direct_activation() {
         change_seq: 0,
         kind: flz_core::schema::ActivationKind::SnapshotRequest,
         values: Vec::new(),
+        offset: None,
         reply: flz_core::poll_core::CommandReply::new(|_| {}),
     });
 

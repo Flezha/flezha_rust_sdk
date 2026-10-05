@@ -243,6 +243,65 @@ impl Relay for SyncDurableSteps {
     }
 }
 
+// `effect_block_steps`: the one tasklet calls an outside function through
+// `ctx.effect`, then blocks until released. The input names a file the
+// function appends one line to per run, so a SIGKILL after the effect and a
+// resume on a released runner shows whether the function ran again.
+fn count_run(path: &str) -> Result<String, TaskletError> {
+    use std::io::Write;
+    let mut runs = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|e| TaskletError::Custom(format!("{path}: {e}")))?;
+    writeln!(runs, "ran").map_err(|e| TaskletError::Custom(format!("{path}: {e}")))?;
+    Ok("answer".to_string())
+}
+
+stateless_step!(EffectBlock, "effect_block", |input, ctx| {
+    ctx.effect("model", || count_run(&input))?;
+    block_until_released();
+    Ok(())
+});
+
+// `effect_flow`: the same call in a flow relay at the default tier, which
+// keeps no input log, so nothing re-runs an input and nothing is kept.
+stateless_step!(EffectOnce, "effect_once", |input, ctx| {
+    ctx.effect("model", || count_run(&input))?;
+    Ok(())
+});
+
+pub(crate) struct EffectFlow;
+impl Relay for EffectFlow {
+    fn factory_id() -> &'static str {
+        "effect_flow"
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("in").into::<EffectOnce>();
+    }
+}
+
+pub(crate) struct EffectBlockSteps;
+impl Relay for EffectBlockSteps {
+    fn factory_id() -> &'static str {
+        "effect_block_steps"
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("in").into::<EffectBlock>();
+    }
+
+    fn settings() -> RelaySettings {
+        RelaySettings {
+            run: Run::Steps {
+                each: Each::Once,
+                on_failure: OnFailure::UndoAll,
+            },
+            durable: fixture_durable(),
+            ..RelaySettings::default()
+        }
+    }
+}
+
 // `optout_commit_block_steps`: the opt-out twin of `commit_block_steps`
 // with a live mid-chain signal — task A's output also reaches a plugin output, so
 // the crash-resume e2e can observe the mid-run point without durable state

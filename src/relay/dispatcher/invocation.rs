@@ -179,16 +179,15 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
         .during_replay(replay);
         // A rollback is no place to arm a deadline: `compensate` answers
         // `TimersUnavailable`, in either kind, and has no work item to preview.
-        let mut ctx = if matches!(call, Call::Compensate { .. }) {
-            ctx
-        } else {
-            ctx.with_timers(&session).with_part(part)
+        let mut ctx = match &call {
+            Call::Compensate { offset, .. } => ctx.compensating(*offset),
+            _ => ctx.with_timers(&session).with_part(part),
         };
         let tasklet = &mut state.tasklet;
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match call {
             Call::Input { input, .. } => tasklet.run(input, &mut ctx),
             Call::Timer { fired_at, kind } => tasklet.on_timer(fired_at, kind, &mut ctx),
-            Call::Compensate { outputs } => tasklet.compensate(outputs, &mut ctx),
+            Call::Compensate { outputs, .. } => tasklet.compensate(outputs, &mut ctx),
         }));
         match outcome {
             Ok(Ok(())) => {
@@ -414,9 +413,11 @@ pub(super) enum Call<S: Tasklet> {
         fired_at: u64,
         kind: TimerKind,
     },
-    /// A steps relay undo over the outputs the Cell recorded forward.
+    /// A steps relay undo over the outputs the Cell recorded forward, in the
+    /// iteration that took the input-log `offset`.
     Compensate {
         outputs: Vec<Arc<S::Output>>,
+        offset: Option<u64>,
     },
 }
 
@@ -487,9 +488,13 @@ impl<'a, S: Tasklet> Invocation<'a, S> {
 
     /// A steps relay undo: one attempt, never retried, and nothing a park could
     /// record.
-    pub(super) fn compensation(outputs: Vec<Arc<S::Output>>, now: u64) -> Self {
+    pub(super) fn compensation(
+        outputs: Vec<Arc<S::Output>>,
+        offset: Option<u64>,
+        now: u64,
+    ) -> Self {
         Self {
-            call: Call::Compensate { outputs },
+            call: Call::Compensate { outputs, offset },
             now,
             attempt: 1,
             is_final: true,
