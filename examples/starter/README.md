@@ -13,7 +13,7 @@ released version, the way your own project does.
 ## Run it
 
 You need a controller running and reachable, as
-[Start the controller](https://github.com/flezha/flezha/blob/main/docs/tutorials/echo/start_the_controller.md)
+[Start the controller](https://github.com/flezha/flezha/blob/main/docs/getting_started/up_and_running.md#start-the-controller)
 starts one. From this folder, run the test and start the runner:
 
 ```sh
