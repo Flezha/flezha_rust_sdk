@@ -29,6 +29,9 @@ bench-internals = ["flz_core/bench-internals"]
 # crates that want to write replay-equality tests. Test code in this crate
 # also compiles the surface under `cfg(test)` regardless of the feature.
 testing = []
+# `derive_schema()` on a channel handle: the channel's JSON Schema in the
+# relay's API, derived from a type implementing `schemars::JsonSchema`.
+schemars = ["dep:schemars"]
 
 [dependencies]
 # The core at the tag this SDK is proven against. The core's own tree builds this
@@ -39,6 +42,7 @@ flz_transport = { git = "https://github.com/flezha/flezha", tag = "v0.1.0" }
 flezha-macros = { path = "macros" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+schemars = { version = "1", optional = true }
 lazy_static = "1.4.0"
 erased-serde = "0.4.6"
 prost = "0.13.5"

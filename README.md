@@ -283,6 +283,29 @@ A `Response<Req, Ans>` carries `request`, `result: Result<Ans, FlezhaError>`
 `created`. `CallTarget::id("pricing")` calls an instance or a partition group by
 name. See `docs/sdk/calls.md` in the core repository.
 
+### A relay's API
+
+The entry channels are the relay's public API. `describe` says what a channel is
+for and `schema` gives its input's JSON Schema; with the `schemars` feature,
+`derive_schema()` reads it from a type implementing `schemars::JsonSchema`. A
+described channel is a tool an AI agent can call over MCP.
+
+```rust
+c.input::<PlaceOrder>("place")
+    .describe("Places an order")
+    .schema(serde_json::json!({"type": "object", "properties": {"pair": {"type": "string"}}}))
+    .into::<PlaceTasklet>()
+    .output_named("placed");
+```
+
+`runner.call` calls a channel of any relay by value, beside `runner.send`, and
+reads the answer into the type you name:
+
+```rust
+let placed: serde_json::Value =
+    runner.call("orders-eu", "place", &serde_json::json!({"pair": "EUR/USD", "amount": 1000}))?;
+```
+
 ### Writing a tasklet
 
 A tasklet is your own type: `#[flezha::tasklet(name = "...")]` on its
@@ -347,6 +370,9 @@ After any public-API-affecting change:
   own benches/tests. NOT a stable API.
 - `testing` — exposes `flezha_runner::testing::TaskletTestHarness`
   for downstream crates that want replay-equality tests.
+- `schemars`: `derive_schema()` on a channel handle, the channel's JSON
+  Schema in the relay's API derived from a `schemars::JsonSchema` type. Off by
+  default.
 
 ## Architecture
 

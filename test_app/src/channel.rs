@@ -252,3 +252,69 @@ impl Relay for TransformChainRelay {
             .output_named("transformed");
     }
 }
+
+// -- OrdersRelay ----------------------------------------------------------------
+
+/// `orders`, the relay API fixture: `place` is a described JSON channel that
+/// answers through `placed`, and `audit` takes text and answers nothing.
+pub(crate) struct OrdersRelay;
+impl Relay for OrdersRelay {
+    fn factory_id() -> &'static str {
+        "orders"
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.input::<PlaceOrder>("place")
+            .describe("Places an order")
+            .schema(serde_json::json!({
+                "type": "object",
+                "properties": {"pair": {"type": "string"}, "amount": {"type": "number"}},
+                "required": ["pair", "amount"]
+            }))
+            .into::<PlaceTasklet>()
+            .output_named("placed");
+        c.input::<String>("audit").into::<AuditTasklet>();
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct PlaceOrder {
+    pair: String,
+    amount: f64,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct Placed {
+    pair: String,
+    amount: f64,
+    status: String,
+}
+
+#[derive(Default)]
+struct PlaceTasklet;
+#[flezha_runner::tasklet(name = "orders_place")]
+impl Tasklet for PlaceTasklet {
+    type Input = PlaceOrder;
+    type Output = Placed;
+    type State = ();
+    type Change = NoChange;
+    fn run(&mut self, order: PlaceOrder, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        ctx.emit(Placed {
+            pair: order.pair,
+            amount: order.amount,
+            status: "placed".to_string(),
+        })
+    }
+}
+
+#[derive(Default)]
+struct AuditTasklet;
+#[flezha_runner::tasklet(name = "orders_audit")]
+impl Tasklet for AuditTasklet {
+    type Input = String;
+    type Output = String;
+    type State = ();
+    type Change = NoChange;
+    fn run(&mut self, _line: String, _ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        Ok(())
+    }
+}

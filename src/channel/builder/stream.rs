@@ -5,10 +5,10 @@ use std::any::Any;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use flz_core::host::HostLink;
+use flz_core::host::{HostCodec, HostLink};
 
 use super::state::{erase, erase_transform, BuilderState, PluginSink};
-use super::ChannelBuilder;
+use super::{codec_of, ChannelBuilder};
 use crate::channel::{EdgeKeyFn, EdgeTransformFn, EdgeYield, OverflowPolicy};
 use crate::tasklet::Tasklet;
 
@@ -266,6 +266,37 @@ impl<'b, T: 'static + Send + Sync, K: StreamTarget> Stream<'b, T, K> {
     }
 }
 
+impl<'b, T: 'static + Send + Sync> Stream<'b, T, EntryTarget> {
+    /// Say what this entry channel is for. The description is part of the
+    /// relay's API (`flz relay info`), and a described channel is a tool an
+    /// AI agent can call over MCP.
+    pub fn describe(self, description: &str) -> Self {
+        self.with_channel(|st, cid| st.channels[cid as usize].api.description = description.into());
+        self
+    }
+
+    /// The JSON Schema of this channel's input, announced in the relay's API.
+    /// Only a JSON channel carries one, and it must be an object with a
+    /// `type`: anything else refuses the class at registration
+    /// (`topology.schema_invalid`). It overrides a derived schema.
+    pub fn schema(self, schema: serde_json::Value) -> Self {
+        self.with_channel(|st, cid| st.channels[cid as usize].api.schema = Some(schema));
+        self
+    }
+}
+
+#[cfg(feature = "schemars")]
+impl<'b, T: 'static + Send + Sync + schemars::JsonSchema, K: StreamTarget> Stream<'b, T, K> {
+    /// The channel's schema derived from `T`: the input type on the handle
+    /// `input` returns, or the value an output sends. An explicit
+    /// [`schema`](Stream::schema) written after it replaces it.
+    pub fn derive_schema(self) -> Self {
+        let schema = serde_json::to_value(schemars::schema_for!(T)).ok();
+        self.with_channel(|st, cid| st.channels[cid as usize].api.schema = schema);
+        self
+    }
+}
+
 impl<'b, T: 'static + Send + Sync> Stream<'b, T, NodeTarget> {
     /// Branching sugar: each arm receives a copy of this handle, so
     /// `s.branch([&|b| { b.into::<A>(); }, &|b| { b.into::<B>(); }])` builds
@@ -328,7 +359,7 @@ impl<'b, T: 'static + Send + Sync> Stream<'b, T, NodeTarget> {
     where
         T: serde::Serialize,
     {
-        self.attach_plugin_sink(None, default_plugin_serializer::<T>())
+        self.attach_plugin_sink(None, default_plugin_serializer::<T>(), codec_of::<T>())
     }
 
     /// [`output`](Stream::output), naming the channel: the string written here is
@@ -341,7 +372,11 @@ impl<'b, T: 'static + Send + Sync> Stream<'b, T, NodeTarget> {
     where
         T: serde::Serialize,
     {
-        self.attach_plugin_sink(Some(name), default_plugin_serializer::<T>())
+        self.attach_plugin_sink(
+            Some(name),
+            default_plugin_serializer::<T>(),
+            codec_of::<T>(),
+        )
     }
 
     /// [`output`](Stream::output) with a serializer of your own, replacing the
@@ -351,7 +386,11 @@ impl<'b, T: 'static + Send + Sync> Stream<'b, T, NodeTarget> {
     where
         F: Fn(&T) -> Vec<u8> + Send + Sync + 'static,
     {
-        self.attach_plugin_sink(None, erase::<T, _, _>("plugin serializer", serializer))
+        self.attach_plugin_sink(
+            None,
+            erase::<T, _, _>("plugin serializer", serializer),
+            HostCodec::Custom,
+        )
     }
 
     /// [`output_named`](Stream::output_named) with a serializer of your own.
@@ -362,6 +401,7 @@ impl<'b, T: 'static + Send + Sync> Stream<'b, T, NodeTarget> {
         self.attach_plugin_sink(
             Some(name),
             erase::<T, _, _>("plugin serializer", serializer),
+            HostCodec::Custom,
         )
     }
 
@@ -408,6 +448,7 @@ impl<'b, T: 'static + Send + Sync> Stream<'b, T, NodeTarget> {
         self,
         name: Option<&'static str>,
         serializer: crate::channel::PluginSerializeFn,
+        codec: HostCodec,
     ) -> Self {
         self.with_channel(|st, cid| {
             let link = HostLink::Sink {
@@ -428,6 +469,7 @@ impl<'b, T: 'static + Send + Sync> Stream<'b, T, NodeTarget> {
             // half-built descriptor.
             if entry.plugin_sink.is_none() {
                 entry.plugin_sink = Some(PluginSink { serializer });
+                entry.api.codec = Some(codec);
             }
         });
         self
@@ -437,7 +479,7 @@ impl<'b, T: 'static + Send + Sync> Stream<'b, T, NodeTarget> {
 /// The default plugin serialization for `T`: passthrough for `Vec<u8>`, UTF-8
 /// bytes for `String`, the SDK's default JSON codec otherwise — what
 /// `output(...)` applies when the author supplies no serializer.
-fn default_plugin_serializer<T: serde::Serialize + Send + Sync + 'static>(
+pub(crate) fn default_plugin_serializer<T: serde::Serialize + Send + Sync + 'static>(
 ) -> crate::channel::PluginSerializeFn {
     Arc::new(|val: &dyn Any| -> Vec<u8> {
         if let Some(bytes) = val.downcast_ref::<Vec<u8>>() {

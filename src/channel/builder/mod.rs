@@ -24,6 +24,7 @@ use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
+use flz_core::host::HostCodec;
 pub use issue::TopologyIssue;
 pub use merge::{Merge, MergeSource};
 use serde::de::DeserializeOwned;
@@ -31,6 +32,7 @@ pub use state::{
     BuildCellArgs, CellBuilder, CellsForFn, DeserializeStateFn, ErasedFn, SerializeStateFn,
 };
 pub(crate) use state::{BuilderState, ChannelEntry, TaskletEntry};
+pub(crate) use stream::default_plugin_serializer;
 pub use stream::{EntryStream, EntryTarget, NodeTarget, Stream, StreamTarget};
 
 use crate::channel::ChannelKind;
@@ -83,7 +85,7 @@ impl ChannelBuilder {
         name: &'static str,
     ) -> EntryStream<'_, T> {
         let (wrap, parsed) = default_entry_wrap::<T>();
-        self.entry_channel(name, wrap, parsed)
+        self.entry_channel(name, wrap, parsed, codec_of::<T>())
     }
 
     /// Declare the entry channel with a custom `bytes → T` parser, replacing
@@ -101,7 +103,7 @@ impl ChannelBuilder {
         let wrap: crate::channel::EntryWrapFn = Arc::new(move |bytes: Vec<u8>| {
             parser(bytes).map(|v| Arc::new(v) as Arc<dyn Any + Send + Sync>)
         });
-        self.entry_channel(name, wrap, true)
+        self.entry_channel(name, wrap, true, HostCodec::Custom)
     }
 
     /// Open a **merged** subscription: one tasklet fed by two or more source
@@ -167,18 +169,32 @@ impl ChannelBuilder {
         name: &'static str,
         wrap: crate::channel::EntryWrapFn,
         entry_parsed: bool,
+        codec: HostCodec,
     ) -> EntryStream<'_, T> {
         let mut st = self.state.borrow_mut();
         let id = st.push_channel(name, ChannelKind::Entry);
         let entry = &mut st.channels[id as usize];
         entry.wrap_input = Some(wrap);
         entry.entry_parsed = entry_parsed;
+        entry.api.codec = Some(codec);
         EntryStream {
             builder: self,
             target: id,
             pending: None,
             _phantom: PhantomData,
         }
+    }
+}
+
+/// The format the default codec reads and writes `T` in: bytes for
+/// `Vec<u8>`, text for `String`, JSON otherwise.
+pub(crate) fn codec_of<T: 'static>() -> HostCodec {
+    if TypeId::of::<T>() == TypeId::of::<Vec<u8>>() {
+        HostCodec::Bytes
+    } else if TypeId::of::<T>() == TypeId::of::<String>() {
+        HostCodec::Text
+    } else {
+        HostCodec::Json
     }
 }
 

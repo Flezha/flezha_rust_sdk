@@ -38,7 +38,8 @@
     "steps",
     "shorthand",
     "shorthand_typed_output",
-    "call"
+    "call",
+    "schema"
   ],
   "toolchain": "rustc --version",
   "deferred": [],
@@ -174,7 +175,8 @@
       "schema_evolution_v2"
     ],
     "local_send": ["bench_keyed_nopersist", "store_input", "tier_store", "sugar_steps_per_input"],
-    "recorded_effects": ["effect_block_steps", "effect_flow"]
+    "recorded_effects": ["effect_block_steps", "effect_flow"],
+    "relay_api": ["orders"]
   },
   "docs": "docs/architecture/runner.md"
 }

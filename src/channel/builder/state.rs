@@ -159,6 +159,17 @@ pub(crate) struct ChannelEntry {
     /// the record never carries. Attached to the edge the core derives from
     /// that chain.
     pub chain_edges: Vec<(Option<EdgeTransformFn>, Option<EdgeKeyFn>)>,
+    /// What the channel announces in its relay's API.
+    pub api: ChannelApiDecl,
+}
+
+/// A channel's API facts as the author declared them: an entry's input, or
+/// the value an output sends.
+#[derive(Clone, Default)]
+pub(crate) struct ChannelApiDecl {
+    pub codec: Option<flz_core::host::HostCodec>,
+    pub schema: Option<serde_json::Value>,
+    pub description: String,
 }
 
 /// A transform/key chain declared on a stream handle but not yet closed by
@@ -214,6 +225,7 @@ impl BuilderState {
             codec: None,
             chains: Vec::new(),
             chain_edges: Vec::new(),
+            api: ChannelApiDecl::default(),
         });
         id
     }

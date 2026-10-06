@@ -114,6 +114,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register_factory(HybridChannelRelay)?
         .register_factory(MergedInputRelay)?
         .register_factory(TransformChainRelay)?
+        .register_factory(OrdersRelay)?
         .register_factory(CallEchoRelay)?
         .register_factory(CallDownstreamRelay)?
         .register_factory(CallSplitRelay)?
@@ -232,7 +233,9 @@ fn admin_answer(
 }
 
 /// Each local send of the drill once its trigger file exists, printing
-/// `local_send <relay> ok` or `local_send <relay> err <code>`.
+/// `local_send <relay> ok` or `local_send <relay> err <code>`; an entry with
+/// `call` calls the channel with its `value` through the controller instead,
+/// printing `call <relay> ok <answer>` or `call <relay> err <code>`.
 fn run_local_sends(script: String) {
     thread::spawn(move || {
         let sends: Vec<serde_json::Value> =
@@ -244,6 +247,15 @@ fn run_local_sends(script: String) {
                 thread::sleep(Duration::from_millis(50));
             }
             let runner = Flezha::current_runner().expect("the runner is serving");
+            if send["call"] == true {
+                let called: Result<serde_json::Value, _> =
+                    runner.call(&relay, &field("channel"), &send["value"]);
+                match called {
+                    Ok(answer) => println!("call {relay} ok {answer}"),
+                    Err(e) => println!("call {relay} err {}", flezha_runner::ErrorModel::code(&e)),
+                }
+                continue;
+            }
             let opts = flezha_runner::SendOpts::new().local();
             match runner.send(&relay, &field("message"), &field("channel"), &opts) {
                 Ok(_) => println!("local_send {relay} ok"),

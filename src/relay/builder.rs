@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use flz_core::host::{
     check, DerivedChannel, HostCellModeDecl, HostChannelDecl, HostChannelKind, HostClassDecl,
-    HostLink, HostOverflow, HostTaskletDecl,
+    HostCodec, HostLink, HostOverflow, HostTaskletDecl,
 };
 use flz_core::relay::settings::{durable_json, run_json, Exactly, RelaySettings, Run};
 
@@ -26,7 +26,7 @@ use crate::channel::{
     ChannelDescriptor, ChannelKind, ConsumerEdge, OverflowPolicy, PluginSink, TaskletId,
 };
 use crate::relay::topology::{
-    AckGranularity, CellMode, CorrectionPolicy, RelayTopology, TaskletDescriptor,
+    AckGranularity, CellMode, ChannelApi, CorrectionPolicy, RelayTopology, TaskletDescriptor,
 };
 
 /// Built-in default per-Cell mailbox capacity used when a Tasklet does
@@ -83,6 +83,7 @@ pub fn build_topology_with_settings(
         ..
     } = state;
 
+    let api = channels.iter().map(channel_api).collect();
     let mut descriptors = Vec::with_capacity(channels.len());
     let mut name_to_id: HashMap<&'static str, u32> = HashMap::new();
     for (id, (entry, derived_channel)) in channels.into_iter().zip(derived.channels).enumerate() {
@@ -122,7 +123,21 @@ pub fn build_topology_with_settings(
         correction,
         ack_granularity,
         steps: None,
+        api,
     }))
+}
+
+fn channel_api(entry: &ChannelEntry) -> ChannelApi {
+    ChannelApi {
+        codec: entry.api.codec.map(HostCodec::name).unwrap_or_default(),
+        schema_json: entry
+            .api
+            .schema
+            .as_ref()
+            .map(serde_json::Value::to_string)
+            .unwrap_or_default(),
+        description: entry.api.description.clone(),
+    }
 }
 
 /// The record the core judges: every fact a rule reads, and nothing derived.
@@ -172,6 +187,9 @@ fn channel_decl(entry: &ChannelEntry) -> HostChannelDecl {
             OverflowPolicy::DropOldest => HostOverflow::DropOldest,
         },
         keyed: entry.keyed,
+        codec: entry.api.codec,
+        schema: entry.api.schema.clone(),
+        description: entry.api.description.clone(),
     }
 }
 

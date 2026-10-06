@@ -363,6 +363,38 @@ impl FlezhaRunner {
         crate::control::read("Relay.send", &answer)
     }
 
+    /// Call the entry channel `channel` of `relay_id` with `value`, by the
+    /// relay's API (`Relay.call_channel`), under the role check
+    /// [`Self::send`] takes. `value` is encoded as an output with no
+    /// serializer encodes it: `Vec<u8>` as it is, a `String` as its UTF-8,
+    /// anything else as JSON. The answer is read into `A` by its format: JSON
+    /// as JSON, text as a string, bytes as a byte array, and
+    /// `{"accepted": true}` for a channel that does not answer.
+    pub fn call<V, A>(
+        &self,
+        relay_id: &str,
+        channel: &str,
+        value: &V,
+    ) -> Result<A, crate::ControlError>
+    where
+        V: serde::Serialize + Send + Sync + 'static,
+        A: serde::de::DeserializeOwned,
+    {
+        let payload = crate::channel::builder::default_plugin_serializer::<V>()(value);
+        let answer = flz_core::admin::call_channel(relay_id, channel, &payload)?;
+        let answer: serde_json::Value = crate::control::read("Relay.call_channel", &answer)?;
+        let value = match (answer["answer_codec"].as_str(), &answer["answer"]) {
+            (Some("json" | "text"), value) => value.clone(),
+            (Some(_), serde_json::Value::String(base64)) => {
+                flz_core::call::base64_decode(base64).map_or(serde_json::Value::Null, |bytes| {
+                    serde_json::Value::from(bytes)
+                })
+            }
+            _ => answer,
+        };
+        crate::control::read("Relay.call_channel", &value.to_string())
+    }
+
     /// Declare a relay class the runtime can spawn instances of later
     /// (via the controller's `AddRelay`). Builds the class once, under its
     /// [`Relay::settings`], and records it in the global class registry.

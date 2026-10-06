@@ -286,6 +286,9 @@ pub fn flezha_runner::Stream<'b, T, K>::map<U, F>(self, F) -> flezha_runner::Str
 pub fn flezha_runner::Stream<'b, T, K>::on_full(self, flz_core::channel::OverflowPolicy) -> Self
 pub fn flezha_runner::Stream<'b, T, K>::retry_backoff_ms(self, u64) -> Self
 pub fn flezha_runner::Stream<'b, T, K>::retry_max(self, u32) -> Self
+impl<'b, T: 'static + core::marker::Send + core::marker::Sync> flezha_runner::Stream<'b, T, flezha_runner::channel::EntryTarget>
+pub fn flezha_runner::Stream<'b, T, flezha_runner::channel::EntryTarget>::describe(self, &str) -> Self
+pub fn flezha_runner::Stream<'b, T, flezha_runner::channel::EntryTarget>::schema(self, serde_json::value::Value) -> Self
 impl<'b, T: 'static + core::marker::Send + core::marker::Sync> flezha_runner::Stream<'b, T, flezha_runner::channel::NodeTarget>
 pub fn flezha_runner::Stream<'b, T, flezha_runner::channel::NodeTarget>::branch<const N: usize>(self, [&dyn core::ops::function::Fn(flezha_runner::Stream<'b, T>); N]) -> Self
 pub fn flezha_runner::Stream<'b, T, flezha_runner::channel::NodeTarget>::call<A>(self, flezha_runner::CallTarget, u64) -> flezha_runner::EntryStream<'b, flezha_runner::Response<T, A>> where T: serde_core::ser::Serialize + serde_core::de::DeserializeOwned, A: serde_core::de::DeserializeOwned + core::marker::Send + core::marker::Sync + 'static
@@ -647,6 +650,9 @@ pub fn flezha_runner::Stream<'b, T, K>::map<U, F>(self, F) -> flezha_runner::Str
 pub fn flezha_runner::Stream<'b, T, K>::on_full(self, flz_core::channel::OverflowPolicy) -> Self
 pub fn flezha_runner::Stream<'b, T, K>::retry_backoff_ms(self, u64) -> Self
 pub fn flezha_runner::Stream<'b, T, K>::retry_max(self, u32) -> Self
+impl<'b, T: 'static + core::marker::Send + core::marker::Sync> flezha_runner::Stream<'b, T, flezha_runner::channel::EntryTarget>
+pub fn flezha_runner::Stream<'b, T, flezha_runner::channel::EntryTarget>::describe(self, &str) -> Self
+pub fn flezha_runner::Stream<'b, T, flezha_runner::channel::EntryTarget>::schema(self, serde_json::value::Value) -> Self
 impl<'b, T: 'static + core::marker::Send + core::marker::Sync> flezha_runner::Stream<'b, T, flezha_runner::channel::NodeTarget>
 pub fn flezha_runner::Stream<'b, T, flezha_runner::channel::NodeTarget>::branch<const N: usize>(self, [&dyn core::ops::function::Fn(flezha_runner::Stream<'b, T>); N]) -> Self
 pub fn flezha_runner::Stream<'b, T, flezha_runner::channel::NodeTarget>::call<A>(self, flezha_runner::CallTarget, u64) -> flezha_runner::EntryStream<'b, flezha_runner::Response<T, A>> where T: serde_core::ser::Serialize + serde_core::de::DeserializeOwned, A: serde_core::de::DeserializeOwned + core::marker::Send + core::marker::Sync + 'static
@@ -2594,6 +2600,7 @@ pub fn flezha_runner::Flezha::vzip(self) -> V
 pub struct flezha_runner::FlezhaRunner
 impl flezha_runner::FlezhaRunner
 pub fn flezha_runner::FlezhaRunner::await_termination(&self) -> core::result::Result<(), flezha_runner::FlezhaError>
+pub fn flezha_runner::FlezhaRunner::call<V, A>(&self, &str, &str, &V) -> core::result::Result<A, flz_core::admin::AdminError> where V: serde_core::ser::Serialize + core::marker::Send + core::marker::Sync + 'static, A: serde_core::de::DeserializeOwned
 pub fn flezha_runner::FlezhaRunner::control(&self) -> flezha_runner::control::Control
 pub fn flezha_runner::FlezhaRunner::namespace(&self) -> &str
 pub fn flezha_runner::FlezhaRunner::register_factory<O: flezha_runner::relay::Relay>(&self, O) -> core::result::Result<&Self, flezha_runner::FlezhaError>
@@ -3054,6 +3061,9 @@ pub fn flezha_runner::Stream<'b, T, K>::map<U, F>(self, F) -> flezha_runner::Str
 pub fn flezha_runner::Stream<'b, T, K>::on_full(self, flz_core::channel::OverflowPolicy) -> Self
 pub fn flezha_runner::Stream<'b, T, K>::retry_backoff_ms(self, u64) -> Self
 pub fn flezha_runner::Stream<'b, T, K>::retry_max(self, u32) -> Self
+impl<'b, T: 'static + core::marker::Send + core::marker::Sync> flezha_runner::Stream<'b, T, flezha_runner::channel::EntryTarget>
+pub fn flezha_runner::Stream<'b, T, flezha_runner::channel::EntryTarget>::describe(self, &str) -> Self
+pub fn flezha_runner::Stream<'b, T, flezha_runner::channel::EntryTarget>::schema(self, serde_json::value::Value) -> Self
 impl<'b, T: 'static + core::marker::Send + core::marker::Sync> flezha_runner::Stream<'b, T, flezha_runner::channel::NodeTarget>
 pub fn flezha_runner::Stream<'b, T, flezha_runner::channel::NodeTarget>::branch<const N: usize>(self, [&dyn core::ops::function::Fn(flezha_runner::Stream<'b, T>); N]) -> Self
 pub fn flezha_runner::Stream<'b, T, flezha_runner::channel::NodeTarget>::call<A>(self, flezha_runner::CallTarget, u64) -> flezha_runner::EntryStream<'b, flezha_runner::Response<T, A>> where T: serde_core::ser::Serialize + serde_core::de::DeserializeOwned, A: serde_core::de::DeserializeOwned + core::marker::Send + core::marker::Sync + 'static

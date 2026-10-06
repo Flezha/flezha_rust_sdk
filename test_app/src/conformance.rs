@@ -369,7 +369,9 @@ impl<'b> Interp<'b> {
         match self.handle(head) {
             Handle::Entry(s) => {
                 let s = reshape(s, reshaping);
-                if !self.terminate(s, last) {
+                if let ("schema", schema) = split_call(last) {
+                    s.schema(serde_json::from_str(schema).expect("a schema step carries JSON"));
+                } else if !self.terminate(s, last) {
                     panic!(
                         "`{head}.{last}` is a producer-side link on an entry channel, which \
                          this SDK's typed builder does not carry"
