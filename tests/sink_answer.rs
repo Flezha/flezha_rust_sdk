@@ -25,7 +25,7 @@ fn duplex_stream_with_reader() -> (Arc<FlezhaStream>, Arc<Mutex<Vec<ReceivedFram
             seen.lock().unwrap().push(frame);
         }
     });
-    (Arc::new(FlezhaStream::Unix(a)), received)
+    (Arc::new(FlezhaStream::unix(a)), received)
 }
 
 test_tasklet!(Parse, "sink_answer_parse", String => String, (), |input, ctx| {

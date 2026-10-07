@@ -62,7 +62,7 @@ fn start_fake_controller(dir: &Path) -> Frames {
             let Ok(s) = stream else { break };
             let sink = Arc::clone(&sink);
             thread::spawn(move || {
-                let stream = FlezhaStream::Unix(s);
+                let stream = FlezhaStream::unix(s);
                 while let Ok((payload_id, message, _metadata)) =
                     flezha_runner::service::payloader::extract_payload(&stream)
                 {

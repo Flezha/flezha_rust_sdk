@@ -17,7 +17,7 @@ use super::wait_until;
 pub fn stream_pair() -> (Arc<FlezhaStream>, UnixStream) {
     let (a, b) = UnixStream::pair().expect("UnixStream::pair");
     b.set_nonblocking(true).expect("set_nonblocking");
-    (Arc::new(FlezhaStream::Unix(a)), b)
+    (Arc::new(FlezhaStream::unix(a)), b)
 }
 
 pub struct WireFrame {

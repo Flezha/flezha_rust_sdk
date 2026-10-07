@@ -346,7 +346,7 @@ fn a_restore_re_arms_the_wake_list_and_fires_what_is_already_due() {
     take_firings();
     let (sock, _peer) = std::os::unix::net::UnixStream::pair().expect("pair");
     state_sink::set_secondary_stream(Some(Arc::new(
-        flezha_runner::transport::FlezhaStream::Unix(sock),
+        flezha_runner::transport::FlezhaStream::unix(sock),
     )));
 
     let (_handle, instance) = setup::<SessionRelay>("timers-restore");

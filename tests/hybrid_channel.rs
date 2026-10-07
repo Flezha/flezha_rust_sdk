@@ -41,7 +41,7 @@ fn duplex_stream_with_reader() -> (Arc<FlezhaStream>, Arc<Mutex<Vec<ReceivedFram
             }
         }
     });
-    (Arc::new(FlezhaStream::Unix(a)), received)
+    (Arc::new(FlezhaStream::unix(a)), received)
 }
 
 fn dispatch_input(

@@ -33,7 +33,7 @@ pub(crate) mod fixtures {
     /// away — the engine only carries the handle, it never writes to it.
     pub(crate) fn unix_stream() -> Arc<FlezhaStream> {
         let (sock, _peer) = std::os::unix::net::UnixStream::pair().expect("pair");
-        Arc::new(FlezhaStream::Unix(sock))
+        Arc::new(FlezhaStream::unix(sock))
     }
 
     pub(crate) fn payload(ordinal: usize, stream: &Arc<FlezhaStream>) -> CellItem {
