@@ -148,6 +148,8 @@ impl Relay for PoisonProbeRelay {
 //     panic rides the retry ladder. That is what the scenario asserts is
 //     survivable — whatever the host does with a violent failure, the Cell
 //     must be served again and the aborting item must not produce twice.
+//   "slow" — emits two seconds late, so the relay can be stopped or moved
+//     while the activation still runs.
 //
 // Every other input emits `ok:<input>`, which is how the e2e proves the
 // relay produces again once the remedy has landed.
@@ -170,6 +172,9 @@ impl Tasklet for WedgeProbeTasklet {
         if input == "abort" && !WEDGE_PROBE_ABORTED.swap(true, std::sync::atomic::Ordering::SeqCst)
         {
             panic!("wedge_probe: killing the worker holding this activation");
+        }
+        if input == "slow" {
+            thread::sleep(Duration::from_secs(2));
         }
         ctx.emit(format!("ok:{input}"))
     }

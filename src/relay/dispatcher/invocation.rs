@@ -312,7 +312,9 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
         } else if !buffer.is_empty() && !flusher_registered::<S>(self.flush.records_effects) {
             self.flush_now(buffer);
         }
-        if let Some(entry) = tier_off_dlq {
+        // A Cell whose relay is gone parks nothing: its input is the new owner's.
+        if let Some((entry, relay)) = tier_off_dlq.and_then(|e| Some((e, slot.instance.upgrade()?)))
+        {
             // Park-then-advance, never a drop: ship the park frame and hold
             // this cell (the drain thread) until the controller acks the
             // dead-letter append as durable.
@@ -322,6 +324,7 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
                 consumed_offset,
                 reply_to,
                 entry,
+                &*relay,
             );
         }
     }

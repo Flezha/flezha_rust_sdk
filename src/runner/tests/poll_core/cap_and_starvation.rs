@@ -52,9 +52,10 @@ fn occupy(core: &PollCore, slots: &[Arc<CellSlot>], stream: &Arc<FlezhaStream>) 
 #[test]
 fn handout_stops_at_the_cap_and_resumes_on_completion() {
     let core = PollCore::with_max_inflight(2);
-    let slots: Vec<Arc<CellSlot>> = (0..3)
-        .map(|i| build_slot(&format!("poll-cap-{i}")).1)
+    let built: Vec<_> = (0..3)
+        .map(|i| build_slot(&format!("poll-cap-{i}")))
         .collect();
+    let slots: Vec<Arc<CellSlot>> = built.iter().map(|(_, slot)| Arc::clone(slot)).collect();
     let stream = unix_stream();
 
     let held = occupy(&core, &slots[..2], &stream);
@@ -240,9 +241,10 @@ fn no_starvation_while_a_poller_is_waiting() {
 #[test]
 fn a_saturated_runner_does_not_read_as_starved() {
     let core = Arc::new(PollCore::new());
-    let slots: Vec<Arc<CellSlot>> = (0..4)
-        .map(|i| build_slot(&format!("poll-saturated-{i}")).1)
+    let built: Vec<_> = (0..4)
+        .map(|i| build_slot(&format!("poll-saturated-{i}")))
         .collect();
+    let slots: Vec<Arc<CellSlot>> = built.iter().map(|(_, slot)| Arc::clone(slot)).collect();
     let stop = Arc::new(AtomicBool::new(false));
 
     // Keeps every cell's queue non-empty for the whole run.
