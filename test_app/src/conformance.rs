@@ -54,13 +54,14 @@ const FIXTURE: &str = "test/fixtures/reference_topologies.txt";
 /// The authoring surfaces this builder carries — the same set the app's
 /// `conformance.json` declares. A row needing anything else is skipped BY NAME,
 /// which is what makes the skip checkable.
-const SURFACES: [&str; 6] = [
+const SURFACES: [&str; 7] = [
     "merge",
     "branch",
     "steps",
     "shorthand",
     "shorthand_typed_output",
     "call",
+    "schema",
 ];
 
 /// A row of the four-column refusal table. The refusal NAME is the fixture's
