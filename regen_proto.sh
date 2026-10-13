@@ -42,6 +42,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut config = prost_build::Config::new();
     config.out_dir("../../flz_core/src/generated");
+    // The connect frame writes these as JSON under their field names.
+    for message in ["ApiEntry", "RelayGraph", "GraphChannel", "GraphTasklet"] {
+        config.type_attribute(format!(".runner_commands.{message}"), "#[derive(serde::Serialize)]");
+    }
     config.compile_protos(&[proto_file_str.as_str()], &[proto_dir_str.as_str()])?;
 
     println!("Generated protobuf files in flz_core/src/generated/");

@@ -4,6 +4,13 @@ All notable changes to the Rust SDK crate.
 
 ## Unreleased
 
+### Added: the runner announces each relay's graph
+
+The runner announces each factory's graph with its API: every channel with its
+kind, producer, consumers, plugin end, call target and overflow policy, and every
+tasklet with its cell mode, cell keys and mailbox capacity. Nothing in the
+crate's API changes; `flz relay graph <relay_id>` prints it.
+
 ### Changed: plugins are enabled by name and bound to relays
 
 **Breaking.** `Admin::enable_plugin(name, &PluginSpec)` enables a plugin by
