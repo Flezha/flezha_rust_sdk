@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use flz_core::origin::Phase;
 use flz_core::relay::instance::{fnv1a128, FNV128_OFFSET_BASIS};
 use flz_transport::transport::FlezhaStream;
 
@@ -12,7 +13,6 @@ use crate::cell::{CellItem, CellPayload, CellSlot};
 use crate::runner::poll_core::ItemAttempt;
 use crate::tasklet::error::TaskletError;
 use crate::tasklet::{Change, SpawnHandle, SpawnOptions, Tasklet};
-use flz_core::origin::Phase;
 
 /// Reserved metadata namespace: runtime identity stamps (`flz.cell`,
 /// `flz.seq`, `flz.key`) live here; user-supplied keys with this prefix

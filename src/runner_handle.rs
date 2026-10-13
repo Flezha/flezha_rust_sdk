@@ -385,11 +385,10 @@ impl FlezhaRunner {
         let answer: serde_json::Value = crate::control::read("Relay.call_channel", &answer)?;
         let value = match (answer["answer_codec"].as_str(), &answer["answer"]) {
             (Some("json" | "text"), value) => value.clone(),
-            (Some(_), serde_json::Value::String(base64)) => {
-                flz_core::call::base64_decode(base64).map_or(serde_json::Value::Null, |bytes| {
+            (Some(_), serde_json::Value::String(base64)) => flz_core::call::base64_decode(base64)
+                .map_or(serde_json::Value::Null, |bytes| {
                     serde_json::Value::from(bytes)
-                })
-            }
+                }),
             _ => answer,
         };
         crate::control::read("Relay.call_channel", &value.to_string())

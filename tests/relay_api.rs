@@ -40,7 +40,10 @@ impl Relay for Orders {
 
 #[test]
 fn the_announcement_carries_each_entry_with_its_answer() {
-    register_class(Orders::factory_id(), build_topology_for::<Orders>().expect("topology"));
+    register_class(
+        Orders::factory_id(),
+        build_topology_for::<Orders>().expect("topology"),
+    );
     let api = advertised_for_factory(Orders::factory_id()).api;
 
     let place = api.iter().find(|e| e.channel == "place").expect("place");
@@ -49,13 +52,17 @@ fn the_announcement_carries_each_entry_with_its_answer() {
         ("json", "Places an order")
     );
     assert_eq!(
-        serde_json::from_str::<serde_json::Value>(&place.schema_json).unwrap()["properties"]["pair"],
+        serde_json::from_str::<serde_json::Value>(&place.schema_json).unwrap()["properties"]
+            ["pair"],
         json!({"type": "string"})
     );
     assert_eq!(place.answer_codec, "json");
 
     let audit = api.iter().find(|e| e.channel == "audit").expect("audit");
-    assert_eq!((audit.codec.as_str(), audit.answer_codec.as_str()), ("text", ""));
+    assert_eq!(
+        (audit.codec.as_str(), audit.answer_codec.as_str()),
+        ("text", "")
+    );
 }
 
 struct BrokenSchema;
@@ -99,7 +106,10 @@ mod derived {
 
     #[test]
     fn a_json_schema_type_derives_the_input_and_the_answer_schema() {
-        register_class(Derived::factory_id(), build_topology_for::<Derived>().expect("topology"));
+        register_class(
+            Derived::factory_id(),
+            build_topology_for::<Derived>().expect("topology"),
+        );
         let api = advertised_for_factory(Derived::factory_id()).api;
         let schema: serde_json::Value = serde_json::from_str(&api[0].schema_json).unwrap();
         let answer: serde_json::Value = serde_json::from_str(&api[0].answer_schema_json).unwrap();
