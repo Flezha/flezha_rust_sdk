@@ -40,6 +40,7 @@ mod conformance;
 mod part;
 mod probe;
 mod relay_call;
+mod showcase;
 mod state;
 mod steps;
 mod steps_loop;
@@ -52,6 +53,7 @@ use crate::channel::*;
 use crate::part::*;
 use crate::probe::*;
 use crate::relay_call::*;
+use crate::showcase::*;
 use crate::state::*;
 use crate::steps::*;
 use crate::steps_loop::*;
@@ -114,6 +116,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register_factory(HybridChannelRelay)?
         .register_factory(MergedInputRelay)?
         .register_factory(TransformChainRelay)?
+        .register_factory(ShowcaseRelay)?
         .register_factory(OrdersRelay)?
         .register_factory(CallEchoRelay)?
         .register_factory(CallDownstreamRelay)?
