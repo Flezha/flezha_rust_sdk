@@ -4,6 +4,17 @@ All notable changes to the Rust SDK crate.
 
 ## Unreleased
 
+### Changed: a steps class's DAG shape is refused by the core's check
+
+**Breaking.** A tasklet producing two channels, a `chained` loop over a chain
+that branches, and a durable `chained` loop whose last tasklet hands nothing on
+are refused by the same check every SDK submits to, so `build_spec` answers
+`BuildStepsError::Topology` with the codes `topology.multiple_output_channels`,
+`topology.branching_chained_loop` and
+`topology.chained_loop_terminal_without_handoff`. The variants
+`MultipleOutputChannels`, `BranchingChainedLoop` and
+`LoopTerminalWithoutHandoff` are removed; match on the error's code instead.
+
 ### Changed: `Control::cell_state` takes the controller's selector
 
 **Breaking.** `cell_state(relay_id, cell)` takes `cell: Option<&str>`, the

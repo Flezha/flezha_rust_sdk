@@ -10,6 +10,15 @@ use crate::steps::*;
 use crate::tasklet::{Ctx, Tasklet, TaskletError};
 use crate::{Durable, ErrorModel, Relay, RelaySettings, Run, SleepAfter};
 
+/// The shared topology check's refusal, which `build_spec` carries whole.
+fn core_refusal(refused: spec::BuildStepsError) -> flz_core::FlezhaError {
+    assert!(
+        matches!(refused, spec::BuildStepsError::Topology { .. }),
+        "expected the shared topology's refusal, got {refused:?}"
+    );
+    refused.to_error()
+}
+
 #[test]
 fn steps_error_conversions() {
     // String conversions stay retryable-by-default: the ladder is opt-out.
@@ -169,15 +178,15 @@ fn loop_authoring_is_validated() {
             _ => spec::build_spec::<ChainedLoopPluginTerminal>(),
         }
         .expect_err("a chained loop's terminal tasklet must release a handoff");
-        match err {
-            spec::BuildStepsError::LoopTerminalWithoutHandoff { tasklet, .. } => {
-                assert_eq!(
-                    tasklet, "steps_stage2",
-                    "the error names the terminal tasklet ({shape})"
-                );
-            }
-            other => panic!("expected LoopTerminalWithoutHandoff for {shape}, got {other:?}"),
-        }
+        let refusal = core_refusal(err);
+        assert_eq!(
+            refusal.code,
+            "topology.chained_loop_terminal_without_handoff"
+        );
+        assert_eq!(
+            refusal.details["tasklet"], "steps_stage2",
+            "the error names the terminal tasklet ({shape})"
+        );
     }
 
     // An inbox-driven loop over the same topology is fine: it re-seeds each
@@ -451,11 +460,7 @@ fn dag_topology_is_validated() {
         }
     }
     let refused = spec::build_spec::<Cyclic>().expect_err("a cycle is refused");
-    assert!(
-        matches!(refused, spec::BuildStepsError::Topology { .. }),
-        "expected the shared topology's refusal, got {refused:?}"
-    );
-    assert_eq!(refused.code(), "topology.cycle");
+    assert_eq!(core_refusal(refused).code, "topology.cycle");
 
     // `multi-input-tasklets`: every message carries the channel it arrived
     // on, so an entry channel is a merge source on a steps relay as on a
@@ -533,16 +538,15 @@ fn dag_topology_is_validated() {
             }
         }
     }
-    match spec::build_spec::<BranchingChained>()
-        .expect_err("a chained loop needs one terminal tasklet")
-    {
-        spec::BuildStepsError::BranchingChainedLoop {
-            channel, leaves, ..
-        } => {
-            assert_eq!((channel.as_str(), leaves), ("in", 2));
-        }
-        other => panic!("expected BranchingChainedLoop, got {other:?}"),
-    }
+    let refusal = core_refusal(
+        spec::build_spec::<BranchingChained>()
+            .expect_err("a chained loop needs one terminal tasklet"),
+    );
+    assert_eq!(refusal.code, "topology.branching_chained_loop");
+    assert_eq!(
+        (&refusal.details["channel"], &refusal.details["leaves"]),
+        (&"in".into(), &2.into())
+    );
 }
 
 #[test]
