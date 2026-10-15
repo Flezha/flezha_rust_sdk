@@ -111,6 +111,25 @@ pub(crate) fn drain_task_commits() -> Vec<crate::pb::TaskCommit> {
     std::mem::take(&mut *TASK_COMMITS.lock().unwrap())
 }
 
+/// Wait, three seconds at most, until the journal holds a commit naming
+/// `tasklet`'s Cell of instance `relay_id`; whether it does. Leaves the
+/// commits in place, so a tasklet can watch its sibling's.
+pub(crate) fn await_commit(relay_id: &str, tasklet: &str) -> bool {
+    let cell = crate::cell::flusher::encode_cell_identity(relay_id, tasklet, "");
+    let committed = || {
+        TASK_COMMITS
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|commit| commit.cells_ran.iter().any(|ran| ran.cell_id == cell))
+    };
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !committed() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    committed()
+}
+
 pub(crate) fn drain_iter_commits() -> Vec<crate::pb::IterCommit> {
     std::mem::take(&mut *ITER_COMMITS.lock().unwrap())
 }

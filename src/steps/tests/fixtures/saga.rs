@@ -451,23 +451,13 @@ pub(crate) const SIBLING_SAGA_ID: &str = "sibling-commit";
 // Fails only once the journal holds its sibling's commit, so the failure
 // lands after that sibling's stage committed on its own.
 string_task!(SiblingSlow, "sibling_slow", |_input, _ctx| {
-    let fast = crate::cell::flusher::encode_cell_identity(SIBLING_SAGA_ID, "sibling_fast", "");
-    let committed = || {
-        super::super::fake_controller::TASK_COMMITS
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|commit| commit.cells_ran.iter().any(|cell| cell.cell_id == fast))
-    };
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-    while !committed() && std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(2));
-    }
-    Err(TaskletError::non_retryable(if committed() {
-        "slow sibling failed after its sibling committed"
-    } else {
-        "slow sibling never saw its sibling commit"
-    }))
+    Err(TaskletError::non_retryable(
+        if super::super::fake_controller::await_commit(SIBLING_SAGA_ID, "sibling_fast") {
+            "slow sibling failed after its sibling committed"
+        } else {
+            "slow sibling never saw its sibling commit"
+        },
+    ))
 });
 
 /// A root into two leaves: `SiblingFast` commits while `SiblingSlow` still

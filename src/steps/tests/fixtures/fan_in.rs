@@ -205,7 +205,7 @@ impl Relay for PanickingMergeSteps {
         let b = a.into::<DiamondB>().named("pm_b");
         let cc = a.into::<DiamondC>().named("pm_c");
         c.merge::<MergedJoinInput>()
-            .from(b, |_: String| panic!("merge mapping blew up"))
+            .from(b, panic_once_c_committed)
             .from(cc, MergedJoinInput::C)
             .into::<MergeJoinTask>()
             .output_named("pm_out");
@@ -220,6 +220,24 @@ impl Relay for PanickingMergeSteps {
             ..RelaySettings::default()
         }
     }
+}
+
+/// The instance the panicking merge's forward run is started as.
+pub(crate) const MERGE_PANIC_ID: &str = "merge-panic";
+
+/// Fails only once sibling C's stage committed, so the failure always lands
+/// with both branches done. It runs inside B's emit; a re-seed maps B's
+/// journaled handoff before B runs, and fails at once.
+fn panic_once_c_committed(_: String) -> MergedJoinInput {
+    if DIAMOND_LOG
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|entry| entry.starts_with("b:"))
+    {
+        super::super::fake_controller::await_commit(MERGE_PANIC_ID, "diamond_c");
+    }
+    panic!("merge mapping blew up")
 }
 
 /// A plain edge `map` on an inter-tasklet edge — the same routing seam a

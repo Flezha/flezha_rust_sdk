@@ -219,19 +219,19 @@ pub(super) fn merge_mapping(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>)
         "the resumed join banks B's journaled handoff mapped, C's fresh output mapped"
     );
 
-    // --- a panicking mapping is CONTAINED. It runs on the driver thread,
-    // outside any cell invocation, so an unguarded unwind would kill the
-    // thread before `emit_relay_completed` and strand the instance ---
+    // --- a panicking mapping is CONTAINED. It runs in the routing seam of
+    // the producer's emit, so an unguarded unwind would strand the instance
+    // before `emit_relay_completed` ---
     let _ = drain_comp_log();
     let _ = drain_diamond_log();
     let _ = drain_task_commits();
     assert!(start_fed(
         node,
         "test-panic-merge-steps",
-        "merge-panic",
+        MERGE_PANIC_ID,
         b"x"
     ));
-    let (outs, done) = drain(rx, "merge-panic");
+    let (outs, done) = drain(rx, MERGE_PANIC_ID);
     assert_eq!(
         done.0, "error",
         "the relay still REPORTS — the panic did not take the driver with it"
@@ -243,8 +243,8 @@ pub(super) fn merge_mapping(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>)
     );
     assert!(outs.is_empty(), "the join never ran, so nothing shipped");
     // The saga undoes every stage that ran: the producer whose edge blew up
-    // (B, its tasklet ran to its end), the sibling that committed on its own
-    // (C) in whichever order the two finished, and their parent (A) last.
+    // (B, its tasklet ran to its end), the sibling whose commit the mapping
+    // waited for (C), and their parent (A) last.
     let mut comp = drain_comp_log();
     assert_eq!(
         comp.pop().as_deref(),
@@ -260,13 +260,12 @@ pub(super) fn merge_mapping(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>)
     let panic_log = drain_diamond_log();
     assert!(
         panic_log.contains(&"c:a:x".to_string()),
-        "the sibling DID run in the same level (and is deliberately not in the \
-         undo list above): {panic_log:?}"
+        "the sibling ran and committed before the mapping failed: {panic_log:?}"
     );
 
     // --- the same containment reached WITHOUT a merge: a plain `.map` on
     // an inter-tasklet edge is the same composed closure on the same
-    // driver-thread seam ---
+    // routing seam ---
     let _ = drain_comp_log();
     let _ = drain_diamond_log();
     let _ = drain_task_commits();
