@@ -229,9 +229,11 @@ impl Control {
         self.call("PluginManager.list", &[])
     }
 
-    /// One cell's live state, and the change sequence it was read at.
-    pub fn cell_state(&self, relay_id: &str, cell_key: &str) -> Result<Value, ControlError> {
-        self.call("Relay.cell_state", &[json!(relay_id), json!(cell_key)])
+    /// A relay's live state, and the change sequence it was read at. `cell`
+    /// is `<tasklet>[/<cell_key>]`: a tasklet's Cells, or one of them; `None`
+    /// reads every Cell of the relay.
+    pub fn cell_state(&self, relay_id: &str, cell: Option<&str>) -> Result<Value, ControlError> {
+        self.call("Relay.cell_state", &[json!(relay_id), json!(cell)])
     }
 
     /// Any published function, by name, for a verb this surface has not yet

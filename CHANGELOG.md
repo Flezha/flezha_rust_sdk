@@ -4,6 +4,13 @@ All notable changes to the Rust SDK crate.
 
 ## Unreleased
 
+### Changed: `Control::cell_state` takes the controller's selector
+
+**Breaking.** `cell_state(relay_id, cell)` takes `cell: Option<&str>`, the
+`<tasklet>[/<cell_key>]` selector the controller reads: `Some("count/home")`
+reads one Cell, `Some("count")` a tasklet's Cells, and `None` every Cell of
+the relay. A bare Cell key was refused as `state.tasklet_not_found`.
+
 ### Added: the runner announces each relay's graph
 
 The runner announces each factory's graph with its API: every channel with its
