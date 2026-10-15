@@ -5,11 +5,11 @@
 //! waiting on its ack.
 
 mod common;
-use common::prelude::*;
+use std::sync::PoisonError;
 
+use common::prelude::*;
 use flezha_runner::cell::park;
 use flezha_runner::cell::state_sink::PARK_PAYLOAD_PAYLOAD_ID;
-use std::sync::PoisonError;
 
 /// The longest either Cell is held: a cap that lets a red run end.
 const HOLD_CAP: Duration = Duration::from_secs(3);
