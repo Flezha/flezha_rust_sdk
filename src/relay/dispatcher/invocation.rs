@@ -21,6 +21,7 @@ use crate::relay::instance::RelayInstance;
 use crate::steps::StepsError;
 use crate::tasklet::ctx::{PartRoute, PartSource};
 use crate::tasklet::{Ctx, Tasklet, TaskletError};
+use crate::util::LockRecover;
 
 impl<S: Tasklet> TaskletDispatcherImpl<S> {
     /// Fresh per-invocation capture: `Some` where the Cell's record keeps the
@@ -57,26 +58,19 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
         );
     }
 
-    /// The changes one invocation applies into, seeded with a previous failed
-    /// attempt's: those state mutations stayed applied (at-least-once), so
-    /// durable state must not diverge from memory. The `RefCell` built over them is
-    /// shared with the flush-before-emit hook — both run on this one dispatch
-    /// thread inside one invocation, so the `RefCell` borrows never overlap.
-    fn carry_over(&self, buffer: &mut TypedBuffer<S>) -> Vec<S::Change> {
-        let mut carried = std::mem::take(&mut buffer.changes);
-        carried.append(&mut buffer.pending_attempt);
-        carried
-    }
-
     /// Drain this cell's pending changes to the durable WAL path before the
     /// output writes the matching output frame, so change N reaches the
     /// controller's WAL before N's output reaches Kafka. `None` when there is
     /// nothing to order against: a `NoChange` / non-persistent relay keeps
     /// the zero-cost inline emit, a Cell that records effects ships the
     /// changes and the outputs in ONE effect record, and a Cell that consumes
-    /// input offsets ships its changes in the record carrying the offset.
+    /// input offsets ships its changes in the record carrying the offset, as
+    /// does one whose buffer still holds such a record when it emits. The
+    /// `changes` `RefCell` is shared with the invocation's `Ctx`; both run on
+    /// this one dispatch thread, so its borrows never overlap.
     fn flush_before_emit<'a>(
-        &self,
+        &'a self,
+        slot: &'a CellSlot,
         changes: &'a RefCell<Vec<S::Change>>,
         consumes_offsets: bool,
     ) -> Option<FlushBeforeEmit<'a>> {
@@ -87,15 +81,16 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
         {
             return None;
         }
-        let identity = Arc::clone(&self.flush.cell_identity);
-        let seq = Arc::clone(&self.flush.change_seq);
-        let header = self.flush.header;
         Some(Box::new(move || {
-            let mut buf = TypedBuffer::<S> {
-                changes: std::mem::take(&mut *changes.borrow_mut()),
-                ..Default::default()
-            };
-            crate::cell::flusher::flush_one(&mut buf, &identity, &seq, &header, true);
+            with_buffer::<S, _>(slot, |buffer| {
+                if !buffer.effects.is_empty() {
+                    return;
+                }
+                // A failed attempt's changes were applied first, so they ship first.
+                buffer.changes.append(&mut buffer.pending_attempt);
+                buffer.changes.append(&mut changes.borrow_mut());
+                self.flush_now(buffer);
+            })
         }))
     }
 
@@ -120,8 +115,9 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
             instance: scope.instance.upgrade(),
             stream: Arc::clone(scope.stream),
             flush_before_emit: self.flush_before_emit(
+                scope.slot,
                 changes,
-                consumed_offset.is_some() || !scope.buffer.effects.is_empty(),
+                consumed_offset.is_some(),
             ),
             consumed_offset,
             reply_to,
@@ -281,21 +277,80 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
         }
     }
 
-    /// Settle one attempt into this Cell's buffer through the one settlement
-    /// rule the erased host also calls, then act on what it hands back: a
-    /// steps relay Cell's record ships at once and is named on its pass sheet, a
-    /// class with no flusher entry has nothing that would ever drain what it
-    /// buffered, so it drains it here, and a tier-off park holds the Cell until
-    /// the controller acks the dead-letter append.
+    /// The dead letter a final failure mints. A steps relay's final attempt is
+    /// its kind's: the stage fails into compensation, and none is minted.
+    fn dead_letter(
+        &self,
+        slot: &Arc<CellSlot>,
+        error: String,
+        attempt: u32,
+        parked_payload_bytes: Option<Vec<u8>>,
+        retained_input: Option<&Arc<S::Input>>,
+    ) -> Option<crate::cell::flusher::DlqEntryBody> {
+        if !self.flush.steps {
+            return Some(self.park_entry(error, attempt, parked_payload_bytes, retained_input));
+        }
+        flz_core::steps::note_failure(
+            slot,
+            StepsError::from(format!("tasklet {} failed: {error}", S::NAME)),
+            None,
+            attempt,
+        );
+        None
+    }
+
+    /// Settle one attempt into this Cell's buffer, then hold the Cell through
+    /// a tier-off park until the controller acks the dead-letter append. The
+    /// buffer is held only to settle, never across the park's wait; the
+    /// input's hold joins the buffer once the park is durable.
     fn settle(
+        &self,
+        scope: CellScope<'_, S>,
+        effects: crate::cell::flusher::InvocationEffects<S::Change>,
+        dlq: Option<crate::cell::flusher::DlqEntryBody>,
+        reply_to: Option<&Arc<str>>,
+    ) {
+        let slot = scope.slot;
+        let consumed_offset = effects.offset;
+        let park = with_buffer::<S, _>(slot, |buffer| {
+            // A Cell whose relay is gone parks nothing: its input is the new owner's.
+            let park = self
+                .settle_into_buffer(slot, buffer, effects, dlq)
+                .and_then(|entry| Some((entry, slot.instance.upgrade()?)));
+            if park.is_none() {
+                flz_core::cell::keep_hold(slot, buffer, scope.hold.take());
+            }
+            park
+        });
+        let Some((entry, relay)) = park else {
+            return;
+        };
+        // Park-then-advance, never a drop: ship the park frame and hold this
+        // cell (the drain thread) until the controller acks the dead-letter
+        // append as durable.
+        crate::cell::park::park_tier_off(
+            &self.flush.cell_identity,
+            &self.cell_label,
+            consumed_offset,
+            reply_to,
+            entry,
+            &*relay,
+        );
+        keep_hold::<S>(slot, scope.hold.take());
+    }
+
+    /// The one settlement rule the erased host also calls, then what its
+    /// result asks of this Cell: a steps relay Cell's record ships at once and
+    /// is named on its pass sheet, and a class with no flusher entry has
+    /// nothing that would ever drain what it buffered, so it drains it here.
+    /// Answers the tier-off park still owed.
+    fn settle_into_buffer(
         &self,
         slot: &Arc<CellSlot>,
         buffer: &mut TypedBuffer<S>,
         effects: crate::cell::flusher::InvocationEffects<S::Change>,
         dlq: Option<crate::cell::flusher::DlqEntryBody>,
-        reply_to: Option<&Arc<str>>,
-    ) {
-        let consumed_offset = effects.offset;
+    ) -> Option<crate::cell::flusher::DlqEntryBody> {
         let channels: Vec<String> = effects.outputs.iter().map(|o| o.channel.clone()).collect();
         let tier_off_dlq = crate::cell::flusher::settle_effects::<TypedBodies<S>>(
             buffer,
@@ -312,21 +367,7 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
         } else if !buffer.is_empty() && !flusher_registered::<S>(self.flush.records_effects) {
             self.flush_now(buffer);
         }
-        // A Cell whose relay is gone parks nothing: its input is the new owner's.
-        if let Some((entry, relay)) = tier_off_dlq.and_then(|e| Some((e, slot.instance.upgrade()?)))
-        {
-            // Park-then-advance, never a drop: ship the park frame and hold
-            // this cell (the drain thread) until the controller acks the
-            // dead-letter append as durable.
-            crate::cell::park::park_tier_off(
-                &self.flush.cell_identity,
-                &self.cell_label,
-                consumed_offset,
-                reply_to,
-                entry,
-                &*relay,
-            );
-        }
+        tier_off_dlq
     }
 
     /// Run ONE ATTEMPT of one invocation — `run` on an input, or `on_timer`
@@ -356,7 +397,7 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
         let offset = call.consumed_offset();
         let reply_to = call.reply_to().cloned();
         let firing = call.firing();
-        let changes = RefCell::new(self.carry_over(scope.buffer));
+        let changes = RefCell::new(Vec::new());
         let captured = Self::effect_capture(scope.slot, offset);
 
         let outcome =
@@ -365,34 +406,28 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
             match self.resolve_attempt(outcome, firing, now, is_final, &mut scope, captured) {
                 Ok(settled) => settled,
                 // Keep the attempt's changes out of the flusher's reach until
-                // the item resolves — the next attempt re-takes them.
+                // the item resolves — the next attempt's settle re-takes them.
                 Err(error) => {
-                    scope.buffer.pending_attempt = changes.into_inner();
+                    with_buffer::<S, _>(scope.slot, |buffer| {
+                        buffer.pending_attempt.append(&mut changes.into_inner());
+                    });
                     return Err(error);
                 }
             };
 
-        // A steps relay's final attempt is its kind's: the stage fails into
-        // compensation, and no dead letter is minted.
-        let dlq = match settled.park_error.take() {
-            Some(error) if self.flush.steps => {
-                flz_core::steps::note_failure(
-                    scope.slot,
-                    StepsError::from(format!("tasklet {} failed: {error}", S::NAME)),
-                    None,
-                    attempt,
-                );
-                None
-            }
-            Some(error) => {
-                Some(self.park_entry(error, attempt, parked_payload_bytes, retained_input))
-            }
-            None => None,
-        };
+        let dlq = settled.park_error.take().and_then(|error| {
+            self.dead_letter(
+                scope.slot,
+                error,
+                attempt,
+                parked_payload_bytes,
+                retained_input,
+            )
+        });
         let committed = settled.timers.clone();
         flz_core::timer::hold_firing_removal(scope.slot, &mut settled.timers, firing);
         let effects = settled.into_effects(changes.into_inner(), offset, now);
-        self.settle(scope.slot, scope.buffer, effects, dlq, reply_to.as_ref());
+        self.settle(scope, effects, dlq, reply_to.as_ref());
         Ok(committed)
     }
 }
@@ -561,16 +596,43 @@ impl<'a, S: Tasklet> Invocation<'a, S> {
 }
 
 /// The Cell's live state for one dispatch, behind the slot locks the engine
-/// already holds.
+/// already holds. The flush buffer is not among them: the flusher drains it on
+/// its own thread, so an invocation takes it only briefly: to settle, per emit, on a retry.
 pub(super) struct CellScope<'a, S: Tasklet> {
     pub(super) slot: &'a Arc<CellSlot>,
     pub(super) state: &'a mut CellState<S>,
-    pub(super) buffer: &'a mut TypedBuffer<S>,
     pub(super) timers: &'a mut PendingTimers,
     /// The connection this invocation's emits ride — the one its item came in
     /// on, inherited by any processing-time timer it arms.
     pub(super) stream: &'a Arc<FlezhaStream>,
     pub(super) instance: &'a Weak<RelayInstance>,
+    /// The input's hold on its instance's processed prefix: the settle keeps
+    /// it with the buffer, a retry leaves it for the re-handed item.
+    pub(super) hold: &'a mut Option<Arc<flz_core::prefix::Hold>>,
+}
+
+/// This Cell's flush buffer as its tasklet's type.
+pub(super) fn typed_buffer<S: Tasklet>(
+    buffer: &mut Box<dyn crate::cell::flusher::FlushableBuffer>,
+) -> &mut TypedBuffer<S> {
+    buffer
+        .as_any_mut()
+        .downcast_mut::<TypedBuffer<S>>()
+        .expect("flush buffer type mismatch for tasklet")
+}
+
+/// Run `f` on this Cell's flush buffer under its lock: the flusher drains the
+/// same buffer on its own thread, so an invocation holds it only this long.
+fn with_buffer<S: Tasklet, R>(slot: &CellSlot, f: impl FnOnce(&mut TypedBuffer<S>) -> R) -> R {
+    f(typed_buffer::<S>(&mut slot.flush_buffer.lock_recover()))
+}
+
+/// Keep an input's hold with the buffer outside a settle, so it lasts until
+/// the next drain writes what the Cell recorded before it.
+pub(super) fn keep_hold<S: Tasklet>(slot: &CellSlot, hold: Option<Arc<flz_core::prefix::Hold>>) {
+    if hold.is_some() {
+        with_buffer::<S, _>(slot, |buffer| flz_core::cell::keep_hold(slot, buffer, hold));
+    }
 }
 
 /// What a Cell that records effects captures from one attempt for its

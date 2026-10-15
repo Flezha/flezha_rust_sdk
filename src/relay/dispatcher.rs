@@ -178,10 +178,7 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
             .change_seq
             .load(Ordering::Acquire)
             .saturating_sub(1);
-        let owed = flush_buffer
-            .as_any_mut()
-            .downcast_mut::<TypedBuffer<S>>()
-            .expect("snapshot_frame: flush buffer type mismatch for tasklet")
+        let owed = invocation::typed_buffer::<S>(flush_buffer)
             .restate_above_snapshot(timers.as_register_ops());
         if owed {
             self.flush_now(&mut **flush_buffer);
@@ -298,7 +295,6 @@ impl<S: Tasklet> TaskletDispatcher for TaskletDispatcherImpl<S> {
         work: crate::runner::poll_core::ItemAttempt,
         slot: &Arc<CellSlot>,
         state: &mut Box<dyn Any + Send>,
-        flush_buffer: &mut Box<dyn FlushableBuffer>,
         timers: &mut PendingTimers,
         instance: &Weak<RelayInstance>,
     ) -> crate::cell::ItemDisposition {
@@ -307,13 +303,9 @@ impl<S: Tasklet> TaskletDispatcher for TaskletDispatcherImpl<S> {
         let typed_state = state
             .downcast_mut::<CellState<S>>()
             .expect("dispatcher: state type mismatch for tasklet");
-        let typed_buffer = flush_buffer
-            .as_any_mut()
-            .downcast_mut::<TypedBuffer<S>>()
-            .expect("dispatcher: flush buffer type mismatch for tasklet");
 
         let crate::runner::poll_core::ItemAttempt {
-            item,
+            mut item,
             now,
             attempt,
             is_final,
@@ -326,20 +318,23 @@ impl<S: Tasklet> TaskletDispatcher for TaskletDispatcherImpl<S> {
             CellItem::Timer(fire) => Arc::clone(&fire.stream),
             CellItem::CloseInterval => return ItemDisposition::Done { ops: Vec::new() },
         };
+        // The input's hold outlives the run: the settle keeps it with the
+        // buffer, a retry hands it back with the item.
+        let mut hold = match &mut item {
+            CellItem::Input(payload) => payload.hold.take(),
+            _ => None,
+        };
         let scope = CellScope {
             slot,
             state: typed_state,
-            buffer: typed_buffer,
             timers,
             stream: &stream,
             instance,
+            hold: &mut hold,
         };
         match item {
             CellItem::Timer(fire) => self.dispatch_firing(fire, attempt, is_final, scope),
-            // The input's hold outlives the run: kept with the buffer once it
-            // settled, handed back with the item when it retries.
-            CellItem::Input(mut payload) => {
-                let hold = payload.hold.take();
+            CellItem::Input(payload) => {
                 match self.dispatch_input(payload, now, attempt, is_final, scope) {
                     ItemDisposition::RetryLater {
                         item: CellItem::Input(mut retried),
@@ -351,8 +346,9 @@ impl<S: Tasklet> TaskletDispatcher for TaskletDispatcherImpl<S> {
                             error,
                         }
                     }
+                    // Only an input of the wrong type is done without a settle.
                     settled => {
-                        flz_core::cell::keep_hold(slot, &mut **flush_buffer, hold);
+                        invocation::keep_hold::<S>(slot, hold);
                         settled
                     }
                 }
@@ -442,24 +438,19 @@ impl<S: Tasklet> TaskletDispatcher for TaskletDispatcherImpl<S> {
             .filter_map(|value| Arc::downcast::<S::Output>(value).ok())
             .collect();
         let mut state_guard = slot.state.lock_recover();
-        let mut buffer_guard = slot.flush_buffer.lock_recover();
         let mut timer_guard = slot.timers.lock_recover();
         let typed_state = state_guard
             .downcast_mut::<CellState<S>>()
             .expect("compensate: state type mismatch for tasklet");
-        let typed_buffer = buffer_guard
-            .as_any_mut()
-            .downcast_mut::<TypedBuffer<S>>()
-            .expect("compensate: flush buffer type mismatch for tasklet");
         let stream = flz_core::steps::unwired_stream();
         let instance = Weak::clone(&slot.instance);
         let scope = CellScope {
             slot,
             state: typed_state,
-            buffer: typed_buffer,
             timers: &mut timer_guard,
             stream: &stream,
             instance: &instance,
+            hold: &mut None,
         };
         // Compensation has no current input: an event-time clock yields 0 here. A
         // failing hook is the undo's to report, never a retry.
@@ -556,21 +547,19 @@ fn item_stream(item: &CellItem) -> Option<Arc<FlezhaStream>> {
     }
 }
 
-/// One item through the typed dispatch, holding the slot's three locks in
-/// dispatch order (state, then flush_buffer, then timers).
+/// One item through the typed dispatch, holding the slot's state and timers;
+/// the flush buffer is taken under them only briefly: to settle, per emit, on a retry.
 fn dispatch_locked(
     slot: &Arc<CellSlot>,
     work: crate::runner::poll_core::ItemAttempt,
 ) -> crate::cell::ItemDisposition {
     let mut state_guard = slot.state.lock_recover();
-    let mut buffer_guard = slot.flush_buffer.lock_recover();
     let mut timer_guard = slot.timers.lock_recover();
     let instance_weak = Weak::clone(&slot.instance);
     slot.dispatcher.dispatch_item(
         work,
         slot,
         &mut state_guard,
-        &mut buffer_guard,
         &mut timer_guard,
         &instance_weak,
     )

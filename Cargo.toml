@@ -229,6 +229,10 @@ required-features = ["bench-internals"]
 name = "drop_nothing_holdback_bound"
 required-features = ["bench-internals"]
 
+[[test]]
+name = "one_blocked_cell_stalls_the_flusher"
+required-features = ["bench-internals"]
+
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(rust_analyzer)", "cfg(loom)"] }
 
