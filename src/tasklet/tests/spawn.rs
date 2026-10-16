@@ -103,6 +103,17 @@ fn a_flow_factory_is_answered_by_name() {
 
 #[test]
 fn a_dropped_handle_is_not_an_error_for_the_tasklet() {
+    let test = "tasklet::tests::spawn::a_dropped_handle_is_not_an_error_for_the_tasklet";
+    if let Some(stderr) = flz_core::bench_support::passes_alone(test) {
+        assert_eq!(
+            stderr
+                .matches("spawn_steps(factory `worker`, id `w1`) failed (spawn.unavailable)")
+                .count(),
+            1,
+            "one line for the dropped handle's failure:\n{stderr}"
+        );
+        return;
+    }
     let _guard = crate::runner::env_test_guard();
     // Fire-and-forget: dropping the handle must neither panic nor block. The
     // failure it carries is reported to the log, not to the caller.
