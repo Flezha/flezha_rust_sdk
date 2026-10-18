@@ -70,7 +70,6 @@ impl<T> tracing::instrument::Instrument for flezha_runner::cell::flusher::TypedB
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::cell::flusher::TypedBodies<S>
 impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::cell::flusher::TypedBodies<S> where V: ppv_lite86::types::MultiLane<T>
 pub fn flezha_runner::cell::flusher::TypedBodies<S>::vzip(self) -> V
-pub fn flezha_runner::cell::flusher::build_cell_state_change_frame<C: serde_core::ser::Serialize>(&[u8], u64, &flz_core::header::HeaderTemplate, &C) -> alloc::vec::Vec<u8>
 pub fn flezha_runner::cell::flusher::coalesce<S, C: flezha_runner::tasklet::change::Change<S>>(alloc::vec::Vec<C>) -> alloc::vec::Vec<C>
 pub type flezha_runner::cell::flusher::TypedBuffer<S> = flz_core::effect::EffectBuffer<flezha_runner::cell::flusher::TypedBodies<S>>
 pub mod flezha_runner::cell::header
@@ -784,7 +783,7 @@ pub struct flezha_runner::control::Control
 impl flezha_runner::control::Control
 pub fn flezha_runner::control::Control::bind_plugin(&self, &str, &str, serde_json::value::Value, &str) -> core::result::Result<serde_json::value::Value, flz_core::admin::AdminError>
 pub fn flezha_runner::control::Control::call(&self, &str, &[serde_json::value::Value]) -> core::result::Result<serde_json::value::Value, flz_core::admin::AdminError>
-pub fn flezha_runner::control::Control::cell_state(&self, &str, &str) -> core::result::Result<serde_json::value::Value, flz_core::admin::AdminError>
+pub fn flezha_runner::control::Control::cell_state(&self, &str, core::option::Option<&str>) -> core::result::Result<serde_json::value::Value, flz_core::admin::AdminError>
 pub fn flezha_runner::control::Control::disable_plugin(&self, &str) -> core::result::Result<serde_json::value::Value, flz_core::admin::AdminError>
 pub fn flezha_runner::control::Control::enable_plugin(&self, &str, &flezha_runner::control::PluginSpec) -> core::result::Result<serde_json::value::Value, flz_core::admin::AdminError>
 pub fn flezha_runner::control::Control::list_plugins(&self) -> core::result::Result<serde_json::value::Value, flz_core::admin::AdminError>
@@ -1156,7 +1155,7 @@ pub fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::cell_label(&s
 pub fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::close_interval(&self, &mut alloc::boxed::Box<dyn flz_core::flusher::FlushableBuffer>) -> bool
 pub fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::compensate(&self, &alloc::sync::Arc<flz_core::cell::CellSlot>, alloc::vec::Vec<alloc::sync::Arc<(dyn core::any::Any + core::marker::Send + core::marker::Sync)>>, core::option::Option<u64>)
 pub fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::correction_policy(&self) -> core::option::Option<flz_core::relay::topology::CorrectionPolicy>
-pub fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::dispatch_item(&self, flz_core::poll_core::ItemAttempt, &alloc::sync::Arc<flz_core::cell::CellSlot>, &mut alloc::boxed::Box<(dyn core::any::Any + core::marker::Send)>, &mut alloc::boxed::Box<dyn flz_core::flusher::FlushableBuffer>, &mut flz_core::timer::PendingTimers, &alloc::sync::Weak<flz_core::relay::instance::RelayInstance>) -> flz_core::cell::ItemDisposition
+pub fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::dispatch_item(&self, flz_core::poll_core::ItemAttempt, &alloc::sync::Arc<flz_core::cell::CellSlot>, &mut alloc::boxed::Box<(dyn core::any::Any + core::marker::Send)>, &mut flz_core::timer::PendingTimers, &alloc::sync::Weak<flz_core::relay::instance::RelayInstance>) -> flz_core::cell::ItemDisposition
 pub fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::event_time_of(&self, &flz_core::cell::CellPayload) -> core::option::Option<u64>
 pub fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::interval_deadline(&self, &mut alloc::boxed::Box<dyn flz_core::flusher::FlushableBuffer>) -> core::option::Option<u64>
 pub fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::is_event_time(&self) -> bool
@@ -2451,7 +2450,7 @@ pub struct flezha_runner::Control
 impl flezha_runner::control::Control
 pub fn flezha_runner::control::Control::bind_plugin(&self, &str, &str, serde_json::value::Value, &str) -> core::result::Result<serde_json::value::Value, flz_core::admin::AdminError>
 pub fn flezha_runner::control::Control::call(&self, &str, &[serde_json::value::Value]) -> core::result::Result<serde_json::value::Value, flz_core::admin::AdminError>
-pub fn flezha_runner::control::Control::cell_state(&self, &str, &str) -> core::result::Result<serde_json::value::Value, flz_core::admin::AdminError>
+pub fn flezha_runner::control::Control::cell_state(&self, &str, core::option::Option<&str>) -> core::result::Result<serde_json::value::Value, flz_core::admin::AdminError>
 pub fn flezha_runner::control::Control::disable_plugin(&self, &str) -> core::result::Result<serde_json::value::Value, flz_core::admin::AdminError>
 pub fn flezha_runner::control::Control::enable_plugin(&self, &str, &flezha_runner::control::PluginSpec) -> core::result::Result<serde_json::value::Value, flz_core::admin::AdminError>
 pub fn flezha_runner::control::Control::list_plugins(&self) -> core::result::Result<serde_json::value::Value, flz_core::admin::AdminError>

@@ -8,7 +8,6 @@ use std::collections::HashMap;
 use std::marker::PhantomData;
 
 pub use flz_core::flusher::*;
-use flz_core::header::HeaderTemplate;
 
 use crate::tasklet::change::{Change, CoalesceKey};
 use crate::tasklet::Tasklet;
@@ -73,18 +72,6 @@ pub fn coalesce<S, C: Change<S>>(buf: Vec<C>) -> Vec<C> {
     out
 }
 
-/// Build one wire frame matching `Flezha.State.Wire.decode_frame/1`.
-pub fn build_cell_state_change_frame<C: serde::Serialize>(
-    cell_identity: &[u8],
-    seq: u64,
-    header: &HeaderTemplate,
-    change: &C,
-) -> Vec<u8> {
-    let change_bytes = encode_change(change);
-    let header_bytes = header.stamp(&change_bytes);
-    build_cell_frame(cell_identity, seq, &header_bytes, &change_bytes)
-}
-
 /// A cell frame split back into its parts: the inverse of
 /// [`build_cell_frame`], for tests that read what a run shipped.
 #[cfg(test)]
@@ -112,7 +99,7 @@ pub(crate) fn split_cell_frame(frame: &[u8]) -> Option<CellFrame<'_>> {
 mod tests {
     use std::sync::atomic::AtomicU64;
 
-    use flz_core::header::FORMAT_ID_EFFECT_RECORD;
+    use flz_core::header::{HeaderTemplate, FORMAT_ID_EFFECT_RECORD};
     use serde::{Deserialize, Serialize};
 
     use super::*;
@@ -223,7 +210,8 @@ mod tests {
             value: 42,
         };
         let identity = encode_cell_identity("MarketRelay", "OhlcTasklet", "M1");
-        let frame = build_cell_state_change_frame::<TestChange>(&identity, 99, &template, &change);
+        let body = encode_change(&change);
+        let frame = build_cell_frame(&identity, 99, &template.stamp(&body), &body);
 
         let body_bytes = postcard::to_allocvec(&change).unwrap();
 
@@ -340,9 +328,10 @@ mod tests {
 
         assert_eq!(count, 1);
         assert_eq!(frames[0].payload_id, "cell_state_change");
+        let body = encode_change(&change);
         assert_eq!(
             frames[0].bytes,
-            build_cell_state_change_frame::<TestChange>(&identity, 5, &template, &change)
+            build_cell_frame(&identity, 5, &template.stamp(&body), &body)
         );
     }
 
