@@ -182,6 +182,10 @@ name = "timer_surface"
 required-features = ["bench-internals", "testing"]
 
 [[test]]
+name = "wire_constants"
+required-features = ["bench-internals", "testing"]
+
+[[test]]
 name = "timer_firing"
 required-features = ["bench-internals", "testing"]
 
