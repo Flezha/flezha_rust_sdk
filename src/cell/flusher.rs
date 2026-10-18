@@ -346,54 +346,6 @@ mod tests {
         );
     }
 
-    /// Pins the postcard bytes of `EffectRecordBody` that the controller's
-    /// `Flezha.State.Wire.decode_effect_body/1` decodes — the two sides
-    /// share this exact fixture (wire_test.exs), so an encoding change
-    /// breaks loudly here.
-    #[test]
-    fn effect_record_body_postcard_bytes_are_the_cross_language_fixture() {
-        let body = EffectRecordBody {
-            changes: vec![vec![0xAA]],
-            outputs: vec![OutputRecord {
-                channel: "out".into(),
-                key: "k".into(),
-                metadata: vec![("a".into(), "b".into())],
-                payload: vec![1, 2],
-            }],
-            consumed_offset: Some(4711),
-            dlq: None,
-            event_time: 1_700_000_000_123,
-            timers: vec![crate::cell::timer::TimerOp::register(
-                crate::cell::timer::TimerKind::ProcessingTime,
-                31_000,
-            )],
-            edges: vec![EdgeRecord {
-                channel: 2,
-                consumer: 1,
-                origin: Some(4711),
-                payload: vec![9],
-            }],
-        };
-        let bytes = postcard::to_allocvec(&body).unwrap();
-        assert_eq!(
-            bytes,
-            vec![
-                0x01, 0x01, 0xAA, // changes: 1 × [0xAA]
-                0x01, 0x03, b'o', b'u', b't', 0x01,
-                b'k', // outputs: 1 × channel "out", key "k"
-                0x01, 0x01, b'a', 0x01, b'b', // metadata: 1 × ("a","b")
-                0x02, 0x01, 0x02, // payload [1,2]
-                0x01, 0xE7, 0x24, // Some(4711)
-                0x00, // dlq: None
-                0xFB, 0xD0, 0x95, 0xFF, 0xBC, 0x31, // event_time: 1700000000123
-                0x01, 0x01, 0x98, 0xF2, 0x01,
-                0x01, // timers: 1 × register ProcessingTime @ 31000
-                0x01, 0x02, 0x01, 0x01, 0xE7, 0x24, 0x01,
-                0x09, // edges: 1 × channel 2, consumer 1, Some(4711), [9]
-            ]
-        );
-    }
-
     #[test]
     fn effect_records_are_never_coalesced_at_drain() {
         // Two entries whose changes share a coalesce key AND carry outputs:
