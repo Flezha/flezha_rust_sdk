@@ -7,8 +7,9 @@
 //! State is held in memory and NOTHING is durable: the run says so on
 //! stderr before it does any work. Durability, plugins, placement and
 //! migration, the dead-letter queue, observability export, authz and
-//! multi-runner scale all need a controller. `docs/quickstart.md` walks
-//! through the same graph.
+//! multi-runner scale all need a controller. The "Local mode" section of
+//! <https://github.com/flezha/flezha/blob/main/docs/topics/core/running_and_testing.md#local-mode>
+//! walks through the same graph.
 //!
 //! What runs here is the deployed machinery, not an imitation: the entry
 //! channel's decode, the edge's `flat_map` and `key_by`, one Cell per
