@@ -13,7 +13,7 @@ mod wire;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use flezha_runner::__dispatch_internals::RelayDispatchHandle;
 use flezha_runner::cell::flusher::{SendError, SendFrameFn};
@@ -52,18 +52,10 @@ pub fn dummy_stream() -> Arc<FlezhaStream> {
     flz_core::bench_support::stream_pair().0
 }
 
-/// Spin-wait until `predicate` holds, or `timeout` elapses. The one polling
-/// loop in these tests: a state read is the settle signal of last resort, and
-/// its interval is the suite's one deliberate sleep.
+/// Poll `predicate` every millisecond until it holds, or `false` once
+/// `timeout` elapses: a state read is the settle signal of last resort.
 pub fn wait_until<F: Fn() -> bool>(predicate: F, timeout: Duration) -> bool {
-    let start = Instant::now();
-    while !predicate() {
-        if start.elapsed() > timeout {
-            return false;
-        }
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    true
+    flz_core::test_support::wait_until(timeout, Duration::from_millis(1), predicate)
 }
 
 /// `true` when `happened` never holds inside `window` — the time-boxed negative

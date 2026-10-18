@@ -59,17 +59,17 @@ pub(crate) mod fixtures {
 
     /// Drive `done` until it holds, failing the test at a 10 s deadline with
     /// `what` naming the condition. Shared by the engine's own tests and the
-    /// poll pool's. The one polling loop in the crate's own tests; its
-    /// interval is the one deliberate sleep.
-    pub(crate) fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while !done() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "timed out waiting for {what}"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
+    /// poll pool's.
+    pub(crate) fn wait_until(what: &str, done: impl FnMut() -> bool) {
+        use std::time::Duration;
+        assert!(
+            flz_core::test_support::wait_until(
+                Duration::from_secs(10),
+                Duration::from_millis(10),
+                done
+            ),
+            "timed out waiting for {what}"
+        );
     }
 
     /// Queue one input and claim its round — the producer protocol.
