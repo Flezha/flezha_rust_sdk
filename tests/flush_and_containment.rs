@@ -79,7 +79,10 @@ fn change_is_flushed_before_output_is_emitted() {
 
     let (handle, instance) = setup::<FlushOrderRelay>("flush-order-instance");
     assert!(instance.keeps_state(), "relay must be persistent");
-    let stream = dummy_stream();
+    // A live peer: an output write that fails is held in the process-global
+    // reconnect ring, which no later test in this binary can replay, and a
+    // non-empty ring withholds every processed-prefix marker.
+    let (stream, _observer) = stream_pair();
 
     let mut md = HashMap::new();
     md.insert("channel".to_string(), "input".to_string());
