@@ -5,33 +5,15 @@
 //! key, a filtered-out value making none; a `Response` fed back reaches the
 //! tasklet the Response channel feeds.
 
-use std::os::unix::net::UnixStream;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use flezha_runner::channel::{ChannelBuilder, ChannelKind};
 use flezha_runner::{CallTarget, Each, ErrorModel, OnFailure, Relay, RelaySettings, Response, Run};
-use flz_transport::service::payloader;
-use flz_transport::transport::FlezhaStream;
 
 mod common;
 use common::contract::contract_file;
 use common::prelude::*;
 use common::{setup, wait_until};
-
-type ReceivedFrame = (String, Vec<u8>, HashMap<String, String>);
-
-fn duplex_stream_with_reader() -> (Arc<FlezhaStream>, Arc<Mutex<Vec<ReceivedFrame>>>) {
-    let (a, b) = UnixStream::pair().expect("UnixStream::pair");
-    let received = Arc::new(Mutex::new(Vec::new()));
-    let seen = Arc::clone(&received);
-    std::thread::spawn(move || {
-        let mut reader = b;
-        while let Ok(frame) = payloader::extract_payload(&mut reader) {
-            seen.lock().unwrap().push(frame);
-        }
-    });
-    (Arc::new(FlezhaStream::unix(a)), received)
-}
 
 test_tasklet!(Ask, "call_end_ask", String => String, (), |input, ctx| {
     ctx.emit(input)

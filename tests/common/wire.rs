@@ -5,9 +5,10 @@
 use std::collections::HashMap;
 use std::io::Read;
 use std::os::unix::net::UnixStream;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use flz_transport::service::payloader;
 use flz_transport::transport::FlezhaStream;
 
 use super::wait_until;
@@ -15,9 +16,26 @@ use super::wait_until;
 /// Socketpair whose write half is the dispatch stream and whose read half
 /// lets the test observe emitted plugin frames.
 pub fn stream_pair() -> (Arc<FlezhaStream>, UnixStream) {
-    let (a, b) = UnixStream::pair().expect("UnixStream::pair");
-    b.set_nonblocking(true).expect("set_nonblocking");
-    (Arc::new(FlezhaStream::unix(a)), b)
+    let (stream, observer) = flz_core::bench_support::stream_pair();
+    observer.set_nonblocking(true).expect("set_nonblocking");
+    (stream, observer)
+}
+
+/// One frame as `payloader::extract_payload` parses it.
+pub type ReceivedFrame = (String, Vec<u8>, HashMap<String, String>);
+
+/// The dispatch stream of a socketpair, and every frame a reader thread
+/// parses off its other half.
+pub fn duplex_stream_with_reader() -> (Arc<FlezhaStream>, Arc<Mutex<Vec<ReceivedFrame>>>) {
+    let (stream, mut reader) = flz_core::bench_support::stream_pair();
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&received);
+    std::thread::spawn(move || {
+        while let Ok(frame) = payloader::extract_payload(&mut reader) {
+            seen.lock().unwrap().push(frame);
+        }
+    });
+    (stream, received)
 }
 
 pub struct WireFrame {

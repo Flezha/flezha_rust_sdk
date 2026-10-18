@@ -9,56 +9,15 @@
 //! the consumer Tasklet; the plugin-side delivery is observed by reading
 //! the receiving end of the unix socket pair and parsing wire frames.
 
-use std::io::Read;
-use std::os::unix::net::UnixStream;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock};
 
 use flezha_runner::channel::{ChannelBuilder, ChannelKind};
-use flz_transport::service::payloader;
-use flz_transport::transport::FlezhaStream;
 
 // ---------- shared scaffolding ----------
 
 mod common;
 use common::prelude::*;
 use common::{setup, stays_quiet, wait_until};
-
-type ReceivedFrame = (String, Vec<u8>, HashMap<String, String>);
-
-/// Build a unix socket pair, wrap the producer side as a `FlezhaStream`,
-/// and spawn a reader thread on the receiver side that parses incoming
-/// payload frames and pushes them onto the returned `Mutex<Vec<...>>`.
-fn duplex_stream_with_reader() -> (Arc<FlezhaStream>, Arc<Mutex<Vec<ReceivedFrame>>>) {
-    let (a, b) = UnixStream::pair().expect("UnixStream::pair");
-    let received = Arc::new(Mutex::new(Vec::new()));
-    let received_clone = Arc::clone(&received);
-    std::thread::spawn(move || {
-        let mut reader = b;
-        loop {
-            match payloader::extract_payload(&mut reader) {
-                Ok(frame) => received_clone.lock().unwrap().push(frame),
-                Err(_) => return,
-            }
-        }
-    });
-    (Arc::new(FlezhaStream::unix(a)), received)
-}
-
-fn dispatch_input(
-    handle: &RelayDispatchHandle,
-    instance_id: &str,
-    stream: &Arc<FlezhaStream>,
-    input: &str,
-) {
-    let mut md = HashMap::new();
-    md.insert("channel".to_string(), "input".to_string());
-    handle.dispatch(
-        instance_id,
-        input.as_bytes().to_vec(),
-        &md,
-        Arc::clone(stream),
-    );
-}
 
 // ---------- 2.5: 1 consumer + plugin output ----------
 
@@ -96,7 +55,7 @@ fn hybrid_single_consumer_receives_typed_and_plugin_bytes() {
     let (handle, _instance) = setup::<SingleHybridRelay>("hyb-single");
     let (stream, received) = duplex_stream_with_reader();
 
-    dispatch_input(&handle, "hyb-single", &stream, "42");
+    dispatch_input(&handle, "hyb-single", "input", b"42".to_vec(), &stream);
 
     assert!(
         wait_until(
@@ -179,7 +138,7 @@ fn hybrid_three_consumers_single_serializer_call() {
     let (handle, _instance) = setup::<ThreeHybridRelay>("hyb-three");
     let (stream, received) = duplex_stream_with_reader();
 
-    dispatch_input(&handle, "hyb-three", &stream, "7");
+    dispatch_input(&handle, "hyb-three", "input", b"7".to_vec(), &stream);
 
     assert!(
         wait_until(
@@ -253,9 +212,9 @@ fn hybrid_serializer_panic_is_caught() {
     let (stream, received) = duplex_stream_with_reader();
 
     // First emit panics in the serializer.
-    dispatch_input(&handle, "hyb-panic", &stream, "13");
+    dispatch_input(&handle, "hyb-panic", "input", b"13".to_vec(), &stream);
     // Second emit succeeds — proves the dispatcher thread is still alive.
-    dispatch_input(&handle, "hyb-panic", &stream, "5");
+    dispatch_input(&handle, "hyb-panic", "input", b"5".to_vec(), &stream);
 
     assert!(
         wait_until(
@@ -367,7 +326,7 @@ fn emit_with_meta_on_hybrid_channel_forwards_meta_to_plugin_only() {
     let (handle, _instance) = setup::<MetaHybridRelay>("hyb-meta");
     let (stream, received) = duplex_stream_with_reader();
 
-    dispatch_input(&handle, "hyb-meta", &stream, "9");
+    dispatch_input(&handle, "hyb-meta", "input", b"9".to_vec(), &stream);
 
     assert!(
         wait_until(
@@ -443,7 +402,7 @@ fn emit_with_meta_on_pure_inter_tasklet_channel_is_rejected() {
     let (handle, _instance) = setup::<PureRelay>("hyb-pure");
     let (stream, received) = duplex_stream_with_reader();
 
-    dispatch_input(&handle, "hyb-pure", &stream, "1");
+    dispatch_input(&handle, "hyb-pure", "input", b"1".to_vec(), &stream);
 
     assert!(
         wait_until(
@@ -578,11 +537,23 @@ fn terminal_and_hybrid_output_frames_match_the_pre_rename_fixture() {
 
     let (terminal_handle, _t) = setup::<TerminalSinkRelay>("uni-terminal");
     let (terminal_stream, terminal_frames) = duplex_stream_with_reader();
-    dispatch_input(&terminal_handle, "uni-terminal", &terminal_stream, "hello");
+    dispatch_input(
+        &terminal_handle,
+        "uni-terminal",
+        "input",
+        b"hello".to_vec(),
+        &terminal_stream,
+    );
 
     let (hybrid_handle, _h) = setup::<HybridSinkRelay>("uni-hybrid");
     let (hybrid_flow, hybrid_frames) = duplex_stream_with_reader();
-    dispatch_input(&hybrid_handle, "uni-hybrid", &hybrid_flow, "hello");
+    dispatch_input(
+        &hybrid_handle,
+        "uni-hybrid",
+        "input",
+        b"hello".to_vec(),
+        &hybrid_flow,
+    );
 
     assert!(
         wait_until(
@@ -635,7 +606,7 @@ fn output_name_is_the_channel_name_on_the_wire() {
     let (handle, _instance) = setup::<SinkNamesChannelRelay>("sink-names");
     let (stream, frames) = duplex_stream_with_reader();
 
-    dispatch_input(&handle, "sink-names", &stream, "hello");
+    dispatch_input(&handle, "sink-names", "input", b"hello".to_vec(), &stream);
 
     assert!(
         wait_until(|| frames.lock().unwrap().len() == 1, Duration::from_secs(5)),
@@ -678,10 +649,4 @@ fn a_channel_named_twice_is_refused_naming_both() {
         msg.contains("ChannelNamedTwice") && msg.contains("\"a\"") && msg.contains("\"b\""),
         "expected ChannelNamedTwice naming both declarations, got: {msg}"
     );
-}
-
-// Suppress unused-import lint if std::io::Read is only needed transitively.
-#[allow(dead_code)]
-fn _unused() {
-    let _ = std::io::empty().bytes();
 }

@@ -68,21 +68,10 @@ impl Relay for KeyedStampRelay {
     }
 }
 
-/// Build one controller-format WAL record:
-/// `[seq u64 BE][len u32 BE][header 16B][body][crc32 u32 BE]`,
-/// `len = 16 + body.len()`, trailing crc over `header + body`. `template`
-/// decides what the header says the body is — a change, or timer ops.
+/// Build one controller-format WAL record; `template` decides what the header
+/// says the body is — a change, or timer ops.
 pub fn wal_record(seq: u64, change_bytes: &[u8], template: HeaderTemplate) -> Vec<u8> {
-    let header = template.stamp(change_bytes);
-    let mut record = Vec::new();
-    record.extend_from_slice(&seq.to_be_bytes());
-    record.extend_from_slice(&((16 + change_bytes.len()) as u32).to_be_bytes());
-    record.extend_from_slice(&header);
-    record.extend_from_slice(change_bytes);
-    let mut crc_input = header.to_vec();
-    crc_input.extend_from_slice(change_bytes);
-    record.extend_from_slice(&crc32fast::hash(&crc_input).to_be_bytes());
-    record
+    flz_core::restore::frame_record(seq, &template.stamp(change_bytes), change_bytes)
 }
 
 pub static TIER_SINK_FRAMES: Mutex<Vec<(String, Vec<u8>)>> = Mutex::new(Vec::new());
