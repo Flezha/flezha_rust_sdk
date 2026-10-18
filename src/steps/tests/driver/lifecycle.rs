@@ -212,13 +212,12 @@ pub(super) fn structured_chains(node: &mut RunnerNode, rx: &Receiver<RunnerMessa
 }
 
 pub(super) fn add_relay_routing(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
-    // --- AddRelay --kind steps relay routes to the steps path; its
+    // --- AddRelay of a steps class routes to the steps path; its
     // init_values are state, never the first message ---
     let add = AddRelay {
         relay_id: "steps-via-add".into(),
         factory_id: "test-emit-steps".into(),
         init_values: "{}".into(),
-        run: "steps".into(),
         resume_cell_count: 0,
         task_journal: None,
         ..Default::default()
@@ -227,7 +226,7 @@ pub(super) fn add_relay_routing(node: &mut RunnerNode, rx: &Receiver<RunnerMessa
     add.handle(node, "", &mut errors);
     assert!(
         errors.is_empty(),
-        "AddRelay --kind steps should not error: {errors:?}"
+        "AddRelay of a steps class should not error: {errors:?}"
     );
     assert!(feed(node, "steps-via-add", b"argz"));
     let (outs, done) = drain(rx, "steps-via-add");
@@ -239,7 +238,6 @@ pub(super) fn add_relay_routing(node: &mut RunnerNode, rx: &Receiver<RunnerMessa
     let add = AddRelay {
         relay_id: "steps-effects-gated".into(),
         factory_id: "test-emit-steps".into(),
-        run: "steps".into(),
         effect_result_count: 2,
         ..Default::default()
     };
@@ -278,7 +276,6 @@ pub(super) fn add_relay_routing(node: &mut RunnerNode, rx: &Receiver<RunnerMessa
         relay_id: "steps-text-init".into(),
         factory_id: "test-emit-steps".into(),
         init_values: "argz".into(),
-        run: "steps".into(),
         ..Default::default()
     };
     let mut errors_text = Vec::new();
@@ -309,20 +306,4 @@ pub(super) fn add_relay_routing(node: &mut RunnerNode, rx: &Receiver<RunnerMessa
         "{errors_bad:?}"
     );
     assert!(errors_bad[0].to_string().contains("test-unregistered"));
-
-    // --- the class says how it runs: the wire's run string is not read ---
-    let add_other_kind = AddRelay {
-        relay_id: "kind-other".into(),
-        factory_id: "test-emit-steps".into(),
-        run: "flow".into(),
-        ..Default::default()
-    };
-    let mut errors_other = Vec::new();
-    add_other_kind.handle(node, "", &mut errors_other);
-    assert!(errors_other.is_empty(), "{errors_other:?}");
-    assert!(
-        instance(node, "kind-other").is_some_and(|i| i.steps.is_some()),
-        "a steps class binds a steps instance whatever the wire says"
-    );
-    assert!(node.stop_relay("kind-other"));
 }

@@ -138,7 +138,7 @@ fn await_captured<T>(
     found.into_inner().expect("probed value")
 }
 
-/// The `factory_ids` list of the `index`-th connect init frame (0-based),
+/// The factory ids the `index`-th connect init frame (0-based) advertises,
 /// waiting until that many init frames exist.
 fn init_frame_factories(frames: &Arc<Mutex<Vec<CapturedFrame>>>, index: usize) -> Vec<String> {
     await_captured(frames, &format!("init frame #{index}"), |captured| {
@@ -148,11 +148,16 @@ fn init_frame_factories(frames: &Arc<Mutex<Vec<CapturedFrame>>>, index: usize) -
             .nth(index)?;
         let json: serde_json::Value = serde_json::from_slice(message).expect("init frame is JSON");
         Some(
-            json["factory_ids"]
+            json["factories"]
                 .as_array()
-                .expect("factory_ids is an array")
+                .expect("factories is an array")
                 .iter()
-                .map(|v| v.as_str().expect("factory id is a string").to_string())
+                .map(|f| {
+                    f["id"]
+                        .as_str()
+                        .expect("factory id is a string")
+                        .to_string()
+                })
                 .collect(),
         )
     })

@@ -74,7 +74,8 @@ fn start_fake_controller(dir: &Path) -> Frames {
     frames
 }
 
-/// The `factory_ids` of the first connect init frame, polled until it arrives.
+/// The factory ids the first connect init frame advertises, polled until it
+/// arrives.
 fn init_frame_factories(frames: &Frames) -> Vec<String> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
@@ -85,11 +86,16 @@ fn init_frame_factories(frames: &Frames) -> Vec<String> {
         {
             let json: serde_json::Value =
                 serde_json::from_slice(message).expect("init frame is JSON");
-            return json["factory_ids"]
+            return json["factories"]
                 .as_array()
-                .expect("factory_ids is an array")
+                .expect("factories is an array")
                 .iter()
-                .map(|v| v.as_str().expect("factory id is a string").to_string())
+                .map(|f| {
+                    f["id"]
+                        .as_str()
+                        .expect("factory id is a string")
+                        .to_string()
+                })
                 .collect();
         }
         drop(captured);

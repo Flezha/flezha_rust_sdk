@@ -121,20 +121,23 @@ pub(super) fn loop_saga_and_rewind(node: &mut RunnerNode, rx: &Receiver<RunnerMe
     // --- KeepProgress/UndoAll are backed by the JOURNAL — the
     // `committed` iterations a crash-resumed run rolls back come from
     // `iter_committed` records, not from memory ---
-    for (factory, id, expected) in [
+    for (factory, id, ended, expected) in [
         // All-or-nothing: the failing turn unwinds itself AND the journaled
-        // turn below it. `undo-loop:1` is the in-flight iteration (outputs
-        // retained in memory); `undo-loop:0` the journal-rebuilt one.
+        // turn below it and ends the run. `undo-loop:1` is the in-flight
+        // iteration (outputs retained in memory); `undo-loop:0` the
+        // journal-rebuilt one.
         (
             "test-loop-saga-aon",
             "loop-saga-aon",
+            "error",
             vec!["undo-loop:1".to_string(), "undo-loop:0".to_string()],
         ),
-        // Keep-progress: the committed turn is kept; only the in-flight one
-        // unwinds.
+        // Keep-progress: the failing turn is dead-lettered and only it
+        // unwinds; the committed turn is kept and the loop parks once idle.
         (
             "test-loop-saga-keep",
             "loop-saga-keep",
+            "parked",
             vec!["undo-loop:1".to_string()],
         ),
     ] {
@@ -176,7 +179,7 @@ pub(super) fn loop_saga_and_rewind(node: &mut RunnerNode, rx: &Receiver<RunnerMe
         feed_at(&inst, b"boom", 5);
 
         let (_outs, done) = drain(rx, id);
-        assert_eq!(done.0, "error", "the failing turn terminates the run");
+        assert_eq!(done.0, ended, "{factory}: how the failing turn ends");
         assert_eq!(
             drain_comp_log(),
             expected,
@@ -226,12 +229,15 @@ pub(super) fn loop_saga_and_rewind(node: &mut RunnerNode, rx: &Receiver<RunnerMe
     let (inst, _slot) =
         find_cell(node, &seg).expect("the loop saga's Cell is reachable by the restore handler");
     restored(&inst);
-    // The resumed turn fails, so the run reaches a terminal state (the fake
-    // controller must stay in `drain` to ack the undo commits).
+    // The resumed turn fails and is dead-lettered, and the loop parks once
+    // idle (the fake controller must stay in `drain` to ack the undo commits).
     feed_at(&inst, b"boom", 2);
 
     let (_outs, done) = drain(rx, id);
-    assert_eq!(done.0, "error", "the resumed turn's own failure terminates");
+    assert_eq!(
+        done.0, "parked",
+        "the resumed turn's own failure ends only it"
+    );
     assert_eq!(
         drain_comp_log(),
         vec![
@@ -250,10 +256,11 @@ pub(super) fn loop_saga_and_rewind(node: &mut RunnerNode, rx: &Receiver<RunnerMe
         .collect();
     assert_eq!(
         undo,
-        vec![(1, 2), (0, 2), (1, 1), (0, 1)],
+        vec![(1, 2), (0, 2), (1, 1), (0, 1), (0, 1)],
         "reverse iteration, reverse stage — and the hookless terminal task still \
          journals its (empty) `compensated` record, which is what drains it out \
-         of the next fold's outstanding work"
+         of the next fold's outstanding work; then the dead-lettered turn's own \
+         undo"
     );
 }
 
