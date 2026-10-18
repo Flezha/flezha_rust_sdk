@@ -123,11 +123,7 @@ pub(crate) fn await_commit(relay_id: &str, tasklet: &str) -> bool {
             .iter()
             .any(|commit| commit.cells_ran.iter().any(|ran| ran.cell_id == cell))
     };
-    let deadline = Instant::now() + Duration::from_secs(3);
-    while !committed() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(2));
-    }
-    committed()
+    flz_core::test_support::wait_until(Duration::from_secs(3), Duration::from_millis(2), committed)
 }
 
 pub(crate) fn drain_iter_commits() -> Vec<crate::pb::IterCommit> {
