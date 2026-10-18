@@ -21,7 +21,7 @@
 //! width N adds `N × 3` on top of the shared registry lookup.
 //!
 //! These benches report raw msg/s; CI compares against
-//! `SINGLE_CELL_FLOOR_MSG_PER_SEC` in `docs/operations/benchmarking.md` as a
+//! `SINGLE_CELL_FLOOR_MSG_PER_SEC` in `docs/internal/operations/benchmarking.md` as a
 //! diagnostic, not a hard gate.
 
 use std::sync::Arc;

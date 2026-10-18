@@ -13,7 +13,7 @@
 //!   registers with `runner.register_factory(Name)`.
 //!
 //! Everything expands to the existing trait surface; see
-//! `docs/sdk/authoring_contract.md`.
+//! `docs/internal/sdk/authoring_contract.md`.
 
 use proc_macro::TokenStream;
 

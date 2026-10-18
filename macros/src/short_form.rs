@@ -11,7 +11,7 @@
 //!
 //! The class's settings tree is written as keys (`run`, `durable`,
 //! `max_duration_ms`, `description`); see `crate::settings`. See
-//! `docs/sdk/authoring_contract.md` §5.
+//! `docs/internal/sdk/authoring_contract.md` §5.
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};

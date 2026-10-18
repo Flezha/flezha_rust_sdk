@@ -142,7 +142,7 @@ impl ChannelBuilder {
     /// (stream) or turned into a terminal chain error the saga compensates
     /// (steps relay). The one unguarded seam is a flow relay's entry-channel source,
     /// where the mapping runs on the wire-reader path — the same exposure the
-    /// entry parser there already carries. `docs/sdk/multi_input_tasklets.md`
+    /// entry parser there already carries. `docs/internal/sdk/multi_input_tasklets.md`
     /// tabulates it.
     ///
     /// A source's payload must be [`Clone`]: the mapping is handed the

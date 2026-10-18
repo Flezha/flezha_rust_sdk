@@ -378,7 +378,7 @@ support on `state_sink`: `reset_for_test`, `reconnect_requested_for_test`.
   than "never existed". Beyond the cap it degrades to the latter, which is the
   safe direction.
 - Example: `sdk/rust/examples/live_state_read.rs`. Docs:
-  `docs/internals/state_persistence.md`.
+  `docs/internal/state_persistence.md`.
 
 ### Stream transforms and edge keying (`stream-dsl-keyby-and-transforms`)
 
@@ -443,7 +443,7 @@ support on `state_sink`: `reset_for_test`, `reconnect_requested_for_test`.
   **crash-resume re-seed** site Rust also unwinds the journaled stages (the
   resumed iteration's completed list is seeded from the journal); the Java arm
   does not, a pre-existing gap in its resumed chains recorded under "Known
-  limitation" in `docs/sdk/multi_input_tasklets.md`. `Merge` is `#[must_use]`: a merge left unclosed by
+  limitation" in `docs/internal/sdk/multi_input_tasklets.md`. `Merge` is `#[must_use]`: a merge left unclosed by
   `.into` declares no edges at all.
 - **Per-source FIFO is preserved; nothing is ordered across sources** — the
   guarantee two independent consumers already had. Mappings MUST be pure: they

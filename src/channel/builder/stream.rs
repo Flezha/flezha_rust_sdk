@@ -242,7 +242,7 @@ impl<'b, T: 'static + Send + Sync, K: StreamTarget> Stream<'b, T, K> {
     /// Override the default `OverflowPolicy` (`DropNothing` for every
     /// channel kind). On an entry channel `DropNothing` parks the shared wire
     /// reader on this relay's saturation (see
-    /// `docs/sdk/rust_relay_architecture.md` for the co-tenancy cost);
+    /// `docs/internal/sdk/rust_relay_architecture.md` for the co-tenancy cost);
     /// declare `DropNewest` / `DropOldest` when shedding under saturation is
     /// acceptable and ordering or completeness can be sacrificed for liveness.
     pub fn on_full(self, policy: OverflowPolicy) -> Self {

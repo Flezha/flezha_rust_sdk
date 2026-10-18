@@ -3,7 +3,7 @@
 //! `channels()` body. The author registers it with
 //! `runner.register_factory(Name)`; nothing is collected. Fan-out / multi-input
 //! is refused with a message pointing at an explicit `channels()`. See
-//! `docs/sdk/authoring_contract.md` §5.
+//! `docs/internal/sdk/authoring_contract.md` §5.
 
 use proc_macro2::TokenStream;
 use quote::quote;

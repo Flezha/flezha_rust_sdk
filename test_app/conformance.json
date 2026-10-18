@@ -179,5 +179,5 @@
     "relay_api": ["orders"]
   },
   "reference_only": ["showcase"],
-  "docs": "docs/architecture/runner.md"
+  "docs": "docs/public/architecture/runner.md"
 }

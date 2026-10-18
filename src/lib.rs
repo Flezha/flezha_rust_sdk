@@ -9,9 +9,9 @@
 //!
 //! Worked examples live in `sdk/rust/examples/` — start with
 //! `append_relay.rs` (sticky ordering with persistent state). Method names
-//! and lifecycle verbs follow `docs/sdk/naming_conventions.md`, mirrored 1:1
+//! and lifecycle verbs follow `docs/internal/sdk/naming_conventions.md`, mirrored 1:1
 //! with the Java SDK; every environment knob the runner reads is listed in
-//! `docs/configuration.md`.
+//! `docs/public/configuration.md`.
 
 pub mod channel;
 pub mod control;
@@ -65,7 +65,7 @@ pub use channel::{
 pub use control::{Control, ControlError, PluginSpec, RelaySpec, StartOutcome, StartResult};
 /// Authoring sugar. `#[flezha::tasklet]` on an `impl Tasklet` block, the
 /// short-form `#[flezha::relay]` and `flezha::pipeline!` expand to the
-/// trait surface above; see `docs/sdk/authoring_contract.md`.
+/// trait surface above; see `docs/internal/sdk/authoring_contract.md`.
 pub use flezha_macros::{pipeline, relay, tasklet};
 pub use flz_core::pb;
 pub use flz_transport::{errors, service, transport};

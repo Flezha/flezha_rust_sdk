@@ -3,7 +3,7 @@
 //! `NAME`, the settings given as keys, the `*_OVERRIDDEN` flags from the hooks
 //! the block writes, the `CLOCK`, a default `init_state`, and the default
 //! associated types. The short-form attributes reuse the same completion. See
-//! `docs/sdk/authoring_contract.md` §2.
+//! `docs/internal/sdk/authoring_contract.md` §2.
 
 use proc_macro2::{Span, TokenStream};
 use quote::quote;

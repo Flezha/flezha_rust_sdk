@@ -3,7 +3,7 @@
 Rust SDK for the Flezha runner platform.
 
 **Support tier:**
-[tier 1](https://github.com/flezha/flezha/blob/main/docs/publishing/maturity.md#sdk-rust),
+[tier 1](https://github.com/flezha/flezha/blob/main/docs/public/publishing/maturity.md#sdk-rust),
 run by the maintainer in a live deployment, passes the full conformance run in CI and is
 permanently supported.
 
@@ -66,7 +66,7 @@ process: a second `start()` returns
 `Err(FlezhaError::AlreadyRunning { .. })` naming the running namespace. Every
 fallible call returns `Result<_, FlezhaError>` — the whole chain compiles
 under a single `?`; invalid topologies surface at the `register_factory` call
-site — no panics. Lifecycle vocabulary: `docs/sdk/naming_conventions.md`.
+site — no panics. Lifecycle vocabulary: `docs/internal/sdk/naming_conventions.md`.
 
 ## Authoring a topology
 
@@ -159,7 +159,7 @@ c.merge::<DetectorInput>()
 ```
 
 Per-source FIFO is preserved and nothing is ordered across sources; see
-`docs/sdk/multi_input_tasklets.md`.
+`docs/internal/sdk/multi_input_tasklets.md`.
 
 When that config stream is **relay-wide** and the consumer is keyed, a merge
 alone is not enough: a keyed tasklet cannot receive a broadcast, since the key
@@ -180,7 +180,7 @@ c.merge::<DetectorInput>()
 Delivering on the key's own traffic — rather than fanning a new document out
 over a remembered key set — is what keeps every emitted key one this member
 owns. The price is one tick of latency per key; §4.1 of
-`docs/sdk/authoring_contract.md` has the full contract.
+`docs/internal/sdk/authoring_contract.md` has the full contract.
 
 ### A fuller graph: named nodes, a hybrid tap, a keyed output
 
@@ -281,7 +281,7 @@ c.input::<String>("in")
 A `Response<Req, Ans>` carries `request`, `result: Result<Ans, FlezhaError>`
 (`call.timeout` among the errors), `target` (the instance that answered) and
 `created`. `CallTarget::id("pricing")` calls an instance or a partition group by
-name. See `docs/sdk/calls.md` in the core repository.
+name. See `docs/internal/sdk/calls.md` in the core repository.
 
 ### A relay's API
 
@@ -338,7 +338,7 @@ is declared by writing it: `event_time` (which makes the clock event time),
 `on_timer`, `compensate`, `cells_for`, `init_state`, `migrate_state`,
 `migrate_change`. A one-tasklet relay is shorter still: the short-form
 attributes go on a stateless function, or on the `impl Tasklet` block of one
-with state. `docs/sdk/rust_relay_architecture.md` has the whole surface,
+with state. `docs/internal/sdk/rust_relay_architecture.md` has the whole surface,
 including the block written without the attribute.
 
 `ctx.part(value)` sends a preview of the output while `run` is still working,
@@ -378,11 +378,11 @@ After any public-API-affecting change:
 
 This crate is the typed layer over the shared runner kernel: the `flz_core`
 workspace crate owns dispatch, durability, retries, timers and transport,
-and this crate's poll workers drive it (`docs/sdk/poll_core.md`). See
-`docs/sdk/rust_relay_architecture.md` for the dispatch pipeline,
-`docs/sdk/state_persistence.md` for the state-persistence trait
+and this crate's poll workers drive it (`docs/internal/sdk/poll_core.md`). See
+`docs/internal/sdk/rust_relay_architecture.md` for the dispatch pipeline,
+`docs/internal/sdk/state_persistence.md` for the state-persistence trait
 surface,
-and `docs/sdk/protocol_spec.md` for the wire format.
+and `docs/internal/sdk/protocol_spec.md` for the wire format.
 
 ## License
 

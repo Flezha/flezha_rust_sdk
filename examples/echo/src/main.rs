@@ -37,7 +37,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // let opts = flezha_runner::SendOpts::new().msg_id("hello-1");
     // runner.send("my_echo", "hello world", "in", &opts)?;
     //
-    // docs/topics/core/sending_and_calling.md covers sending. An
+    // docs/public/topics/core/sending_and_calling.md covers sending. An
     // enforced controller refuses all of it until
     // `flz role bind runner@default app default`.
 

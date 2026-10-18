@@ -153,7 +153,7 @@ static ACTIVE_RUNNER: Mutex<Option<ActiveRunner>> = Mutex::new(None);
 /// Static-only entry point of the SDK: [`Flezha::create_runner`] to create
 /// the process's runner, [`Flezha::current_runner`] to reach it from code
 /// that does not control startup ordering. Method names and lifecycle verbs
-/// follow `docs/sdk/naming_conventions.md`, mirrored 1:1 with the Java SDK's
+/// follow `docs/internal/sdk/naming_conventions.md`, mirrored 1:1 with the Java SDK's
 /// `com.flezha.sdk.Flezha`.
 pub struct Flezha;
 
