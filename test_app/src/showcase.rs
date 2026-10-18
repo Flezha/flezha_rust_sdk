@@ -4,7 +4,7 @@
 //! fan-in, a call end with its answer channel, single, static and dynamic
 //! Cells, and five outputs. It runs on the testnet generator's trades and its
 //! order-book snapshots as quotes. It is not a conformance scenario, so
-//! `conformance.json` does not list it.
+//! `conformance.json` lists it under `reference_only`, not `fixtures`.
 //!
 //! Every tasklet passes a line it cannot read on unchanged, so a malformed
 //! input never stalls it. `volume_window`, `audit_sample` and `detect_spike`

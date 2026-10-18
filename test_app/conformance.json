@@ -178,5 +178,6 @@
     "recorded_effects": ["effect_block_steps", "effect_flow"],
     "relay_api": ["orders"]
   },
+  "reference_only": ["showcase"],
   "docs": "docs/architecture/runner.md"
 }
