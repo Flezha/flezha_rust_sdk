@@ -1,7 +1,7 @@
-# Agentdesk: the Rust project for guides Part 3
+# Agentdesk: the Rust project of the agentdesk tutorial
 
-The chat sessions the [Part 3 guides](../../../../docs/guides/advanced/advanced_topics.md)
-build, as a standalone project. Nothing here depends on the Flezha source tree:
+The chat sessions the [agentdesk tutorial](https://github.com/flezha/flezha/blob/main/docs/public/tutorials/agentdesk/agentdesk.md)
+builds, as a standalone project. Nothing here depends on the Flezha source tree:
 `Cargo.toml` names one released version of `flezha_runner`, the way your own
 project would.
 
@@ -67,8 +67,7 @@ flz relay call anna --namespace agents --text 'Hello'
 
 ## Talk to it over HTTP
 
-With the HTTP plugin's package in `controller/plugins/` (the guide's
-[`custom_plugins.md`](../../../../docs/guides/advanced/custom_plugins.md) builds it), start
+With the HTTP plugin's package in `controller/plugins/` ([Add your own plugin](https://github.com/flezha/flezha/blob/main/docs/public/tutorials/agentdesk/add_your_own_plugin.md) builds it), start
 the gateway, enable the plugin on it, and send a message from this machine:
 
 ```sh
@@ -87,8 +86,8 @@ demonstration, not a setup to expose.
 
 With `RELEASE_COOKIE` and `DURABILITY_PASSWORD` set in the shell,
 `COMPOSE_FILE=compose.yaml:cluster.yaml docker compose up -d --build --wait` adds a
-second controller; the guide's [`clustering.md`](../../../../docs/guides/advanced/clustering.md)
-walks it. [`kubernetes_deployment.md`](../../../../docs/guides/advanced/kubernetes_deployment.md)
+second controller; [Run a cluster](https://github.com/flezha/flezha/blob/main/docs/public/tutorials/agentdesk/run_a_cluster.md)
+walks it. [Run on Kubernetes](https://github.com/flezha/flezha/blob/main/docs/public/tutorials/agentdesk/run_on_kubernetes.md)
 builds the images and deploys `k8s/agentdesk.yaml` on k3s.
 
 ## Building from a checkout
@@ -124,6 +123,6 @@ claiming this folder, and does nothing in a copy of its own.
 
 ## Where to go next
 
-The tradedesk in [`../tradedesk`](../tradedesk/README.md) is the Part 2 project, and
-[`docs/internal/sdk/calls.md`](../../../../docs/internal/sdk/calls.md) is the contract `flz relay call`
+The tradedesk in [`../tradedesk`](../tradedesk/README.md) is the tradedesk tutorial's project, and
+the [calls contract](https://github.com/flezha/flezha/blob/main/docs/internal/sdk/calls.md) is what `flz relay call`
 follows.

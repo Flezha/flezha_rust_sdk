@@ -7,36 +7,39 @@ Rust SDK for the Flezha runner platform.
 run by the maintainer in a live deployment, passes the full conformance run in CI and is
 permanently supported.
 
-## Local mode: run a graph with no controller
+## Install
 
-The shortest way to see a relay work. `LocalRelay::start::<R>()` takes
-the class you would deploy, runs its declared `channels()` graph in this
-process, and hands output to a callback — no controller, no socket, no
-container:
-
-```rust
-use std::time::Duration;
-use flezha_runner::LocalRelay;
-
-let run = LocalRelay::start::<WordCount>()?;
-run.on_output("totals", |out| println!("{}", String::from_utf8_lossy(&out.payload)))?;
-run.feed("lines", "the quick brown fox")?;
-run.run_until_idle(Duration::from_secs(5))?;
+```toml
+[dependencies]
+flezha_runner = "0.1.0"
 ```
 
-`on_output` registers against the output's **channel** name — the string the
-declaration's `output_named(...)` or `named(...)` supplied, else the producing
-tasklet's name. `feed` takes the wire bytes
-the channel's declared decoder parses, and blocks while the consumer's mailbox
-is full. Worked example: `cargo run -p flezha_runner --example local_word_count`.
+`flezha_runner` is not on crates.io yet, and the core it builds on has no
+release tag yet. Until both exist, point Cargo at a checkout as
+[`examples/echo`](examples/echo/README.md#building-from-a-checkout) shows.
 
-**State is held in memory and nothing is durable** — no write-ahead log, no
-snapshots, no dead-letter queue. Every run says so on stderr and it is not
-suppressible. Durability, effectively-once delivery, plugins, placement and
-migration, the dead-letter queue, observability export, authz and multi-runner
-scale need a controller; a declaration asking for one of those is refused at
-startup, naming it. Local mode ships in every SDK. Walk-through:
-`docs/quickstart.md`.
+## Supported Rust versions
+
+A stable Rust toolchain. The crate is edition 2021 and declares no minimum
+Rust version.
+
+## The native library
+
+There is none to install. The kernel, `flz_core`, is an ordinary Cargo
+dependency at a git tag, compiled into your binary with the rest of the crate,
+so nothing is loaded at run time.
+
+## Local mode, testing and the relay API
+
+- **Local mode**: `LocalRelay::start::<R>()` runs a relay's declared graph in
+  your own process, with no controller. See
+  [Local mode](https://github.com/flezha/flezha/blob/main/docs/public/topics/core/running_and_testing.md#local-mode).
+- **Testing**: `flezha_runner::testing::TaskletTestHarness`, behind the
+  `testing` feature, drives one tasklet and checks its replay. See
+  [Check a tasklet on its own](https://github.com/flezha/flezha/blob/main/docs/public/topics/core/running_and_testing.md#check-a-tasklet-on-its-own).
+- **The relay API**: a relay's entry channels, answering a caller, `call` to
+  another relay, and `runner.send` and `runner.call` from application code.
+  See [Sending and calling](https://github.com/flezha/flezha/blob/main/docs/public/topics/core/sending_and_calling.md).
 
 ## Quickstart: connect to a controller
 
@@ -260,52 +263,6 @@ still runs exactly once. Cycles are refused at registration; a chained loop
 terminal that releases an output channel, since that handoff is what seeds the
 next iteration.
 
-### Calling another relay
-
-`call` ends a chain on a call to another relay: each value that reaches it,
-after the chain's `filter`/`map`/`key_by`, is one request, and the outcome comes
-back later as a `Response` on the entry channel `<channel>.response`. Nothing
-waits for it; wire that channel into any tasklet, the calling one included.
-
-```rust
-use flezha_runner::{CallTarget, Response};
-
-c.input::<String>("in")
-    .into::<Turn>()
-    .named("turn")
-    .key_by(|line: &String| line.split(':').next().unwrap_or_default().to_string())
-    .call::<String>(CallTarget::factory("agent").create(false), 60_000)
-    .into::<Meter>(); // Meter: Tasklet<Input = Response<String, String>>
-```
-
-A `Response<Req, Ans>` carries `request`, `result: Result<Ans, FlezhaError>`
-(`call.timeout` among the errors), `target` (the instance that answered) and
-`created`. `CallTarget::id("pricing")` calls an instance or a partition group by
-name. See `docs/internal/sdk/calls.md` in the core repository.
-
-### A relay's API
-
-The entry channels are the relay's public API. `describe` says what a channel is
-for and `schema` gives its input's JSON Schema; with the `schemars` feature,
-`derive_schema()` reads it from a type implementing `schemars::JsonSchema`. A
-described channel is a tool an AI agent can call over MCP.
-
-```rust
-c.input::<PlaceOrder>("place")
-    .describe("Places an order")
-    .schema(serde_json::json!({"type": "object", "properties": {"pair": {"type": "string"}}}))
-    .into::<PlaceTasklet>()
-    .output_named("placed");
-```
-
-`runner.call` calls a channel of any relay by value, beside `runner.send`, and
-reads the answer into the type you name:
-
-```rust
-let placed: serde_json::Value =
-    runner.call("orders-eu", "place", &serde_json::json!({"pair": "EUR/USD", "amount": 1000}))?;
-```
-
 ### Writing a tasklet
 
 A tasklet is your own type: `#[flezha::tasklet(name = "...")]` on its
@@ -386,5 +343,4 @@ and `docs/internal/sdk/protocol_spec.md` for the wire format.
 
 ## License
 
-Apache-2.0 — [`LICENSES/Apache-2.0.txt`](../../LICENSES/Apache-2.0.txt). The
-per-path map for the whole repository is [`REUSE.toml`](../../REUSE.toml).
+Apache-2.0, [`LICENSE`](LICENSE).

@@ -4,7 +4,7 @@ The Rust hello world, as a standalone project. Nothing here depends on the
 Flezha source tree: `Cargo.toml` names one released version of `flezha_runner`,
 the way your own project would.
 
-Three files, one for each part the guides describe:
+Three files, one for each of the [building blocks](https://github.com/flezha/flezha/blob/main/docs/public/topics/core/building_blocks.md):
 
 | File | Part | What it does |
 |---|---|---|
@@ -15,7 +15,7 @@ Three files, one for each part the guides describe:
 ## Run it
 
 You need a controller running and reachable first
-([`docs/guides/controller_deployment.md`](../../../../docs/guides/controller_deployment.md)).
+([Up and running](https://github.com/flezha/flezha/blob/main/docs/public/getting_started/up_and_running.md)).
 
 ```sh
 cargo run --release
@@ -64,7 +64,7 @@ workspace from claiming this folder, and does nothing in a copy of its own.
 
 ## Where to go next
 
-[`docs/guides/runner_deployment.md`](../../../../docs/guides/runner_deployment.md)
+[Building blocks](https://github.com/flezha/flezha/blob/main/docs/public/topics/core/building_blocks.md)
 walks through what each of the three parts is and why the split is the way it
 is. The other Rust examples, covering state, keys, timers, steps relays and the
 rest, are the SDK crate's own examples in `sdk/rust/examples/`.
