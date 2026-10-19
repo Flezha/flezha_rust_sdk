@@ -32,6 +32,13 @@ mod remove_factory_tests {
         }
     }
 
+    /// The coordinator's answer to one removal.
+    fn remove(runner: &RunnerNode, factory_id: &str) -> Result<(), usize> {
+        let (answer, answered) = crossbeam::channel::bounded(1);
+        runner.remove_factory(factory_id, &RemovalReply::new(Some(answer)));
+        answered.recv().expect("the removal is answered")
+    }
+
     #[test]
     fn removal_refuses_while_instances_live_and_unregisters_after() {
         let runner = RunnerNode::new("seam_ns".to_string());
@@ -47,7 +54,7 @@ mod remove_factory_tests {
             .expect("instance spawns");
 
         assert_eq!(
-            runner.remove_factory("remove_factory_seam_probe"),
+            remove(&runner, "remove_factory_seam_probe"),
             Err(1),
             "a live instance must refuse the removal with its count"
         );
@@ -57,13 +64,13 @@ mod remove_factory_tests {
         );
 
         assert!(runner.stop_relay("seam-inst-1"));
-        assert_eq!(runner.remove_factory("remove_factory_seam_probe"), Ok(()));
+        assert_eq!(remove(&runner, "remove_factory_seam_probe"), Ok(()));
         assert!(
             flz_core::relay::registry::get_class("remove_factory_seam_probe").is_none(),
             "the removal must unregister the class"
         );
         // Idempotent on an unknown id (registry contract).
-        assert_eq!(runner.remove_factory("remove_factory_seam_probe"), Ok(()));
+        assert_eq!(remove(&runner, "remove_factory_seam_probe"), Ok(()));
     }
 }
 
