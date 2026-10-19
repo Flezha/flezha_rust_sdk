@@ -279,8 +279,9 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
         match Arc::downcast::<S::Input>(value) {
             Ok(arc) => Some(arc),
             Err(_) => {
-                eprintln!(
-                    "[flezha] dispatcher: payload type mismatch for tasklet {}",
+                flz_transport::notice!(
+                    Error,
+                    "dispatcher: payload type mismatch for tasklet {}",
                     S::NAME
                 );
                 None

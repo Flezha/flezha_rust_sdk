@@ -492,7 +492,7 @@ pub(crate) fn default_plugin_serializer<T: serde::Serialize + Send + Sync + 'sta
             .downcast_ref::<T>()
             .expect("plugin serializer: type mismatch (build-time invariant)");
         serde_json::to_vec(typed).unwrap_or_else(|e| {
-            eprintln!("[flezha] default plugin serialization failed: {e}");
+            flz_transport::notice!(Error, "default plugin serialization failed: {e}");
             Vec::new()
         })
     })

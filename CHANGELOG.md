@@ -4,6 +4,17 @@ All notable changes to the Rust SDK crate.
 
 ## Unreleased
 
+### Changed: the core's notices reach `tracing`
+
+`diag::init_default_tracing` now also sends the core's notices (a retry, a reconnect, a
+refusal, the local-mode banner) to `tracing` on target `flezha`, with the line's origin in the
+field `source`; the banner at `error`. With `RUST_LOG` unset, its default directives take the
+level `FLEZHA_LOG_LEVEL` names (`warn` when unset). Without the call, the notices go to
+standard error as before.
+
+**Breaking.** `local::NON_DURABILITY_NOTICE` no longer starts with `[flezha] `, and a notice
+on standard error reads `[flezha] warning: ...` or `[flezha] error: ...` for those levels.
+
 ### Changed: a steps class's DAG shape is refused by the core's check
 
 **Breaking.** A tasklet producing two channels, a `chained` loop over a chain

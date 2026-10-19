@@ -14,8 +14,9 @@
 //!
 //! State is held in memory and nothing is durable. Durability, plugins,
 //! placement and migration, the dead-letter queue, observability export,
-//! authz and multi-runner scale all need a controller; the run says so on
-//! stderr every time it starts. The "Local mode" section of
+//! authz and multi-runner scale all need a controller; the run says so every
+//! time it starts, on standard error or, after `diag::init_default_tracing`,
+//! through `tracing`. The "Local mode" section of
 //! <https://github.com/flezha/flezha/blob/main/docs/public/topics/core/running_and_testing.md#local-mode>
 //! walks through it.
 

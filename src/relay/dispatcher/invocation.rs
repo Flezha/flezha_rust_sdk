@@ -255,13 +255,7 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
         parked_payload_bytes: Option<Vec<u8>>,
         retained_input: Option<&Arc<S::Input>>,
     ) -> crate::cell::flusher::DlqEntryBody {
-        crate::cell::park::PARKED_TOTAL.fetch_add(1, Ordering::Relaxed);
-        eprintln!(
-            "[flezha] tasklet {} parking poison payload to DLQ after {} attempt(s): {}",
-            S::NAME,
-            attempt,
-            error
-        );
+        crate::cell::retry::note_parked(&format!("tasklet {}", S::NAME), attempt, &error);
         crate::cell::flusher::DlqEntryBody {
             channel: self
                 .edges
