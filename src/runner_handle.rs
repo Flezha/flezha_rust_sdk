@@ -117,13 +117,7 @@ impl ErrorModel for TopologyBuildError {
     }
 }
 
-impl std::fmt::Display for FlezhaError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.to_error().message)
-    }
-}
-
-impl std::error::Error for FlezhaError {}
+flz_transport::model_error!(FlezhaError);
 
 impl From<TopologyBuildError> for FlezhaError {
     fn from(e: TopologyBuildError) -> Self {

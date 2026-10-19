@@ -89,13 +89,7 @@ impl crate::ErrorModel for TaskletError {
     }
 }
 
-impl std::fmt::Display for TaskletError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&crate::ErrorModel::to_error(self).message)
-    }
-}
-
-impl std::error::Error for TaskletError {}
+flz_transport::model_error!(TaskletError);
 
 impl TaskletError {
     /// Classify a domain failure as non-retryable: the dispatcher parks the
