@@ -362,16 +362,16 @@ impl<S: Tasklet> TaskletDispatcher for TaskletDispatcherImpl<S> {
         flush_buffer: &mut Box<dyn flz_core::flusher::FlushableBuffer>,
     ) -> bool {
         // Only a checkpoint class has an interval to close.
-        if self.flush.checkpoint.is_none() {
+        let Some(policy) = self.flush.checkpoint else {
             return false;
-        }
+        };
         let Some(buffer) = flush_buffer
             .as_any_mut()
             .downcast_mut::<crate::cell::flusher::TypedBuffer<S>>()
         else {
             return false;
         };
-        buffer.close_interval()
+        buffer.close_interval(policy)
     }
 
     fn write_timer_ops(&self, slot: &Arc<CellSlot>, ops: Vec<TimerOp>) {
