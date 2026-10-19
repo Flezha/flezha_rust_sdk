@@ -5,7 +5,7 @@
 //! `test/fixtures/reference_topologies.txt`.
 
 use super::*;
-use crate::channel::ChannelBuilder;
+use crate::channel::{ChannelBuilder, OverflowPolicy};
 use crate::relay::settings::{Exactly, RelaySettings, Run};
 use crate::relay::topology::{
     AckGranularity, BeyondWindowPolicy, CheckpointOutputs, CheckpointPolicy,

@@ -10,21 +10,19 @@
 //! the closures this builder held aside for each chain attached to the edge
 //! that chain produced.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use flz_core::host::{
-    check, DerivedChannel, HostCellModeDecl, HostChannelDecl, HostChannelKind, HostClassDecl,
-    HostCodec, HostLink, HostOverflow, HostTaskletDecl,
+    check, DerivedChannel, HostChannelDecl, HostChannelKind, HostClassDecl, HostCodec,
+    HostTaskletDecl,
 };
 use flz_core::relay::settings::{durable_json, run_json, Exactly, RelaySettings, Run};
 
 use crate::channel::builder::{
     BuilderState, ChannelBuilder, ChannelEntry, TaskletEntry, TopologyIssue,
 };
-use crate::channel::{
-    ChannelDescriptor, ChannelKind, ConsumerEdge, OverflowPolicy, PluginSink, TaskletId,
-};
+use crate::channel::{ChannelDescriptor, ChannelKind, ConsumerEdge, PluginSink};
 use crate::relay::topology::{
     AckGranularity, CellMode, ChannelApi, CorrectionPolicy, RelayTopology, TaskletDescriptor,
 };
@@ -65,16 +63,9 @@ pub fn build_topology_with_settings(
     let mut state = builder.into_state();
     // A chain nothing closed is recorded as written; the core answers it.
     state.record_open_chains();
-    let keyed_consumers = derive_keyed_consumers(&state.channels);
     let capacities = resolve_capacities(&state.tasklets);
-    let derived = check(declaration(
-        factory_id,
-        settings,
-        &state,
-        &capacities,
-        &keyed_consumers,
-    ))
-    .map_err(|errors| TopologyBuildError { errors })?;
+    let derived = check(declaration(factory_id, settings, &state, &capacities))
+        .map_err(|errors| TopologyBuildError { errors })?;
 
     let BuilderState {
         channels,
@@ -113,7 +104,7 @@ pub fn build_topology_with_settings(
         sdk_lang: flz_core::header::SDK_LANG_RUST,
         channels: descriptors,
         name_to_id,
-        tasklets: build_tasklet_descs(tasklets, capacities, &keyed_consumers),
+        tasklets: build_tasklet_descs(tasklets, capacities, &derived.modes),
         tasklet_name_to_id,
         factory_id,
         description: settings.description,
@@ -147,7 +138,6 @@ fn declaration(
     settings: &RelaySettings,
     state: &BuilderState,
     capacities: &[usize],
-    keyed_consumers: &HashSet<TaskletId>,
 ) -> HostClassDecl {
     HostClassDecl {
         factory_id: factory_id.to_string(),
@@ -163,8 +153,8 @@ fn declaration(
         tasklets: state
             .tasklets
             .iter()
-            .enumerate()
-            .map(|(id, entry)| tasklet_decl(id, entry, capacities[id], keyed_consumers))
+            .zip(capacities)
+            .map(|(entry, capacity)| tasklet_decl(entry, *capacity))
             .collect(),
     }
 }
@@ -181,11 +171,7 @@ fn channel_decl(entry: &ChannelEntry) -> HostChannelDecl {
         chains: entry.chains.clone(),
         retry_max: entry.retry.max_attempts,
         retry_backoff_ms: entry.retry.backoff_base_ms,
-        overflow: match entry.overflow_policy {
-            OverflowPolicy::DropNothing => HostOverflow::DropNothing,
-            OverflowPolicy::DropNewest => HostOverflow::DropNewest,
-            OverflowPolicy::DropOldest => HostOverflow::DropOldest,
-        },
+        overflow: entry.overflow_policy,
         keyed: entry.keyed,
         codec: entry.api.codec,
         schema: entry.api.schema.clone(),
@@ -193,19 +179,9 @@ fn channel_decl(entry: &ChannelEntry) -> HostChannelDecl {
     }
 }
 
-fn tasklet_decl(
-    id: usize,
-    entry: &TaskletEntry,
-    mailbox_capacity: usize,
-    keyed_consumers: &HashSet<TaskletId>,
-) -> HostTaskletDecl {
+fn tasklet_decl(entry: &TaskletEntry, mailbox_capacity: usize) -> HostTaskletDecl {
     HostTaskletDecl {
         name: entry.name.to_string(),
-        cell_mode: match cell_mode(id, entry, keyed_consumers) {
-            CellMode::Single => HostCellModeDecl::Single,
-            CellMode::Static => HostCellModeDecl::Static,
-            CellMode::Dynamic => HostCellModeDecl::Dynamic,
-        },
         cell_keys: entry.cell_keys.iter().map(|k| k.to_string()).collect(),
         idle_ttl_ms: entry.idle_ttl.map(|ttl| ttl.as_millis() as u64),
         max_cells: Some(entry.max_cells),
@@ -218,40 +194,8 @@ fn tasklet_decl(
         // records it writes, which is not a topology fact.
         schema_version: 1,
         min_readable_schema_version: None,
+        migrates: false,
     }
-}
-
-/// Cell mode is read off the WIRING: a tasklet that names its own keys is
-/// static, one reached by a chain that keys its values is dynamic, and a
-/// tasklet nothing keys serves one Cell.
-fn cell_mode(id: usize, entry: &TaskletEntry, keyed_consumers: &HashSet<TaskletId>) -> CellMode {
-    if !entry.cell_keys.is_empty() {
-        CellMode::Static
-    } else if keyed_consumers.contains(&(id as TaskletId)) {
-        CellMode::Dynamic
-    } else {
-        CellMode::Single
-    }
-}
-
-/// The tasklets some chain names a Cell for, read off the record's links.
-fn derive_keyed_consumers(channels: &[ChannelEntry]) -> HashSet<TaskletId> {
-    let mut keyed = HashSet::new();
-    for entry in channels {
-        for links in &entry.chains {
-            let mut key = false;
-            for link in links {
-                match link {
-                    HostLink::Key => key = true,
-                    HostLink::Into { tasklet } | HostLink::Merge { tasklet, .. } if key => {
-                        keyed.insert(*tasklet);
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-    keyed
 }
 
 /// One channel as the runtime holds it: the ends and the kind the core
@@ -310,26 +254,25 @@ fn channel_descriptor(entry: ChannelEntry, derived: DerivedChannel) -> ChannelDe
     }
 }
 
+/// Each tasklet's descriptor, in the Cell mode the core derived for it.
 fn build_tasklet_descs(
     tasklets: Vec<TaskletEntry>,
     capacities: Vec<usize>,
-    keyed_consumers: &HashSet<TaskletId>,
+    modes: &[CellMode],
 ) -> Vec<TaskletDescriptor> {
     tasklets
         .into_iter()
         .zip(capacities)
-        .enumerate()
-        .map(|(id, (entry, capacity))| build_tasklet_desc(id, entry, capacity, keyed_consumers))
+        .zip(modes)
+        .map(|((entry, capacity), mode)| build_tasklet_desc(entry, capacity, *mode))
         .collect()
 }
 
 fn build_tasklet_desc(
-    id: usize,
     entry: TaskletEntry,
     mailbox_capacity: usize,
-    keyed_consumers: &HashSet<TaskletId>,
+    mode: CellMode,
 ) -> TaskletDescriptor {
-    let mode = cell_mode(id, &entry, keyed_consumers);
     TaskletDescriptor {
         host_facts: None,
         name: Arc::from(entry.name),

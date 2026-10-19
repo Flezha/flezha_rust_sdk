@@ -4,6 +4,12 @@ All notable changes to the Rust SDK crate.
 
 ## Unreleased
 
+### Changed: the core derives each tasklet's cell mode
+
+**Breaking.** `flz_core::host::HostTaskletDecl` has no `cell_mode` and gains `migrates`; a
+channel's `overflow` is an `OverflowPolicy` (`HostOverflow` is gone). The builder takes each
+tasklet's mode from the core's derived declaration instead of deriving its own.
+
 ### Changed: `start()` waits for the controller for a bounded time
 
 **Breaking.** `FlezhaRunner::start()` waits `FLEZHA_RUNNER_START_WAIT_MS` (default 10 000;
