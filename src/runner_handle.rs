@@ -5,14 +5,12 @@
 //! the started owning handle drops — so a second runner may start afterwards,
 //! and an observer handle from [`Flezha::current_runner`] never shuts one down.
 
-use std::sync::{Arc, Condvar, Mutex, RwLock, Weak};
+use std::sync::{Arc, Condvar, Mutex, Weak};
 
-use crossbeam::channel::{Receiver, Sender};
+use flz_core::session::{Session, SessionError};
 
 use crate::relay::Relay;
-use crate::runner::{ClientResponseMessage, RunnerMessage};
-use crate::shutdown::ShutdownBridge;
-use crate::{pb, relay, runner, shutdown, BuildStepsError, TopologyBuildError};
+use crate::{shutdown, BuildStepsError, TopologyBuildError};
 
 /// The ONE public error of the entry-point chain: every fallible call on
 /// [`FlezhaRunner`] returns `Result<_, FlezhaError>`, so
@@ -32,6 +30,9 @@ pub enum FlezhaError {
     ConnectFailed(String),
     /// The controller refused the connect, under its own code.
     Refused(flz_core::FlezhaError),
+    /// No controller confirmed the connect within the start wait,
+    /// `FLEZHA_RUNNER_START_WAIT_MS`.
+    ConnectUnconfirmed { wait_ms: u64 },
     /// `register_factory` found an invalid topology (duplicate channel names,
     /// unwired channels, type mismatches, ...) — reported at the declaring
     /// call site, never a panic.
@@ -76,6 +77,10 @@ impl ErrorModel for FlezhaError {
                 [("reason", reason.as_str().into())],
             ),
             FlezhaError::Refused(error) => error.clone(),
+            FlezhaError::ConnectUnconfirmed { wait_ms } => E::with(
+                "runtime.connect_unconfirmed",
+                [("wait_ms", (*wait_ms).into())],
+            ),
             FlezhaError::InvalidTopology(e) => e.to_error(),
             FlezhaError::InvalidSteps(e) => e.to_error(),
             FlezhaError::DuplicateFactoryId { factory_id } => E::with(
@@ -138,6 +143,31 @@ impl From<flz_core::Error> for FlezhaError {
     }
 }
 
+impl FlezhaError {
+    fn of_session(e: SessionError) -> Self {
+        match e {
+            SessionError::DuplicateFactoryId(factory_id) => {
+                FlezhaError::DuplicateFactoryId { factory_id }
+            }
+            SessionError::NotDefined(factory_id) => FlezhaError::NotDefined { factory_id },
+            SessionError::RelayTypeInUse {
+                factory_id,
+                live_instances,
+            } => FlezhaError::RelayTypeInUse {
+                factory_id,
+                live_instances,
+            },
+            SessionError::AlreadyStarted => FlezhaError::AlreadyRunning {
+                namespace: String::new(),
+            },
+            SessionError::ConnectFailed(reason) => FlezhaError::ConnectFailed(reason.into()),
+            SessionError::Refused(error) => FlezhaError::Refused(error),
+            SessionError::Unconfirmed { wait_ms } => FlezhaError::ConnectUnconfirmed { wait_ms },
+            SessionError::Unavailable(reason) => FlezhaError::RunnerUnavailable(reason.into()),
+        }
+    }
+}
+
 /// The one runner slot this process has. `namespace` backs the
 /// [`FlezhaError::AlreadyRunning`] message; `core` backs
 /// [`Flezha::current_runner`]. Claimed by CAS inside [`FlezhaRunner::start`]
@@ -186,8 +216,7 @@ impl Flezha {
         Ok(FlezhaRunner {
             core: Arc::new(RunnerCore {
                 namespace,
-                declared: Arc::new(RwLock::new(Vec::new())),
-                started: Mutex::new(None),
+                session: Session::default(),
                 terminated: Mutex::new(false),
                 terminated_cv: Condvar::new(),
             }),
@@ -210,61 +239,14 @@ impl Flezha {
     }
 }
 
-/// Map the runner thread's startup confirmation onto the typed start error:
-/// a closed channel means the thread died before confirming — a connect
-/// failure the caller handles, never a panic.
-fn await_confirmation(irx: &Receiver<ClientResponseMessage>) -> Result<(), FlezhaError> {
-    match irx.recv() {
-        Ok(ClientResponseMessage::RunnerIdConfirmation) => Ok(()),
-        Ok(ClientResponseMessage::ConnectRefused(error)) => Err(FlezhaError::Refused(error)),
-        Ok(_) => Err(FlezhaError::ConnectFailed(
-            "unexpected confirmation message from the runner thread".to_string(),
-        )),
-        Err(_) => Err(FlezhaError::ConnectFailed(
-            "the runner thread exited before confirming the connection".to_string(),
-        )),
-    }
-}
-
 /// State shared between the owning handle [`Flezha::create_runner`] returned
-/// and observer handles from [`Flezha::current_runner`]. `declared` is this
-/// runner's factory set — per-runner, empty at creation (generation 2 must
-/// re-define its types); the runner thread serializes it into every
-/// connect/reconnect init frame, so post-start mutations resync naturally.
+/// and observer handles from [`Flezha::current_runner`]: the session, whose
+/// factory set is per-runner and empty at creation, and the termination latch.
 struct RunnerCore {
     namespace: String,
-    declared: Arc<RwLock<Vec<String>>>,
-    started: Mutex<Option<Started>>,
+    session: Session,
     terminated: Mutex<bool>,
     terminated_cv: Condvar,
-}
-
-/// The runner's live-thread plumbing, present only after a successful
-/// `start()`. `client_rx` is locked across each send+recv exchange so two
-/// concurrent request/response round-trips never interleave replies.
-struct Started {
-    runner_tx: Sender<RunnerMessage>,
-    client_rx: Mutex<Receiver<ClientResponseMessage>>,
-    _runner_thread: std::thread::JoinHandle<()>,
-    shutdown_bridge: Arc<ShutdownBridge>,
-}
-
-impl Started {
-    /// One serialized request/reply round-trip with the runner thread: the
-    /// `client_rx` lock is held across send+recv, so the reply belongs to
-    /// this request by construction.
-    fn exchange(&self, request: RunnerMessage) -> Result<ClientResponseMessage, FlezhaError> {
-        let unavailable = || FlezhaError::RunnerUnavailable("runner thread exited".to_string());
-        let rx = self.client_rx.lock().unwrap();
-        self.runner_tx.send(request).map_err(|_| unavailable())?;
-        rx.recv().map_err(|_| unavailable())
-    }
-
-    /// The reply an exchange cannot belong to: the runner thread answered with
-    /// a message that is not this request's. One text, both round trips.
-    fn unexpected_reply() -> FlezhaError {
-        FlezhaError::RunnerUnavailable("unexpected reply from the runner thread".to_string())
-    }
 }
 
 /// How a [`FlezhaRunner::send`](crate::FlezhaRunner::send) travels: through
@@ -409,9 +391,13 @@ impl FlezhaRunner {
     pub fn register_factory<O: Relay>(&self, _relay: O) -> Result<&Self, FlezhaError> {
         // Build/validate BEFORE touching the declared set.
         let class = crate::relay::build_class::<O>()?;
-        self.declare(O::factory_id(), || {
-            crate::relay::registry::register_class(O::factory_id(), class)
-        })?;
+        let register = || {
+            crate::relay::registry::register_class(O::factory_id(), class);
+            Ok(())
+        };
+        (self.core.session)
+            .declare(O::factory_id(), register)
+            .map_err(FlezhaError::of_session)?;
         Ok(self)
     }
 
@@ -423,12 +409,17 @@ impl FlezhaRunner {
     /// A post-start removal ships the remaining full factory set to the
     /// controller (`UpdateFactories`).
     pub fn unregister_factory<O: Relay>(&self, _relay: O) -> Result<&Self, FlezhaError> {
-        self.remove(O::factory_id())
+        (self.core.session)
+            .undeclare(O::factory_id())
+            .map_err(FlezhaError::of_session)?;
+        Ok(self)
     }
 
     /// Connect to the controller. Blocks only for the connect handshake
-    /// (retried with exponential backoff until the controller is reachable),
-    /// never for the runner's ongoing lifetime. Claims the process-wide
+    /// (retried with exponential backoff), never for the runner's ongoing
+    /// lifetime, and for at most `FLEZHA_RUNNER_START_WAIT_MS` (10 s by
+    /// default, `0` for ever): past it the start fails with
+    /// [`FlezhaError::ConnectUnconfirmed`] and leaves no runner dialling. Claims the process-wide
     /// singleton slot by compare-and-set — at most one runner may be started
     /// per process; the loser fails with [`FlezhaError::AlreadyRunning`]
     /// WITHOUT connecting, mutating shared state, or spawning a thread.
@@ -439,10 +430,10 @@ impl FlezhaRunner {
     /// (`let runner = Flezha::create_runner(ns)?; runner.start()?;`): a
     /// chained temporary Drops (and shuts the runner down) at statement end.
     pub fn start(&self) -> Result<&Self, FlezhaError> {
-        let mut started = self.core.started.lock().unwrap();
-        if started.is_some() {
+        let namespace = || self.namespace().to_string();
+        if self.core.session.is_started() {
             return Err(FlezhaError::AlreadyRunning {
-                namespace: self.core.namespace.clone(),
+                namespace: namespace(),
             });
         }
 
@@ -456,21 +447,18 @@ impl FlezhaRunner {
                 });
             }
             *active = Some(ActiveRunner {
-                namespace: self.core.namespace.clone(),
+                namespace: namespace(),
                 core: Arc::downgrade(&self.core),
             });
         }
 
-        match self.connect() {
-            Ok(live) => {
-                *started = Some(live);
-                Ok(self)
-            }
-            Err(e) => {
+        (self.core.session)
+            .start(&self.core.namespace, Vec::new())
+            .map_err(|e| {
                 *ACTIVE_RUNNER.lock().unwrap() = None;
-                Err(e)
-            }
-        }
+                FlezhaError::of_session(e)
+            })?;
+        Ok(self)
     }
 
     /// Sugar for standalone binaries: [`Self::start`] followed by
@@ -485,7 +473,7 @@ impl FlezhaRunner {
     /// partition member by its member id, read without the controller.
     /// `Err(NotStarted)` on a never-started runner — never a panic.
     pub fn relays(&self) -> Result<Vec<String>, FlezhaError> {
-        if self.core.started.lock().unwrap().is_none() {
+        if !self.core.session.is_started() {
             return Err(FlezhaError::NotStarted);
         }
         Ok(flz_core::runner::bound().ids())
@@ -496,7 +484,7 @@ impl FlezhaRunner {
     /// process). Replaces every hand-rolled keep-alive loop.
     /// `Err(NotStarted)` on a never-started runner — returns immediately.
     pub fn await_termination(&self) -> Result<(), FlezhaError> {
-        if self.core.started.lock().unwrap().is_none() {
+        if !self.core.session.is_started() {
             return Err(FlezhaError::NotStarted);
         }
         let mut terminated = self.core.terminated.lock().unwrap();
@@ -504,130 +492,6 @@ impl FlezhaRunner {
             terminated = self.core.terminated_cv.wait(terminated).unwrap();
         }
         Ok(())
-    }
-
-    /// Add `factory_id` to this runner's declared set and register the class
-    /// globally, refusing a duplicate id; a post-start call ships the full
-    /// set to the controller.
-    fn declare(&self, factory_id: &str, register: impl FnOnce()) -> Result<(), FlezhaError> {
-        {
-            let mut declared = self.core.declared.write().unwrap();
-            if declared.iter().any(|id| id == factory_id) {
-                return Err(FlezhaError::DuplicateFactoryId {
-                    factory_id: factory_id.to_string(),
-                });
-            }
-            register();
-            declared.push(factory_id.to_string());
-        }
-        self.sync_factories_if_started();
-        Ok(())
-    }
-
-    /// Remove `factory_id` from this runner. Post-start, the live-instance
-    /// check + class unregistration run on the coordinator loop — serialized
-    /// with `AddRelay` handling by construction, so the check is
-    /// race-free. Pre-start no instances can exist, so the class is
-    /// unregistered directly.
-    fn remove(&self, factory_id: &str) -> Result<&Self, FlezhaError> {
-        if !self
-            .core
-            .declared
-            .read()
-            .unwrap()
-            .iter()
-            .any(|id| id == factory_id)
-        {
-            return Err(FlezhaError::NotDefined {
-                factory_id: factory_id.to_string(),
-            });
-        }
-
-        {
-            let started = self.core.started.lock().unwrap();
-            match started.as_ref() {
-                Some(live) => refuse_live_instances(live, factory_id)?,
-                None => relay::registry::unregister_class(factory_id),
-            }
-        }
-
-        self.core
-            .declared
-            .write()
-            .unwrap()
-            .retain(|id| id != factory_id);
-        self.sync_factories_if_started();
-        Ok(self)
-    }
-
-    /// Ship the runner's FULL current factory set to the controller after a
-    /// post-start registration or removal. Fire-and-forget (no waiter): full-set
-    /// semantics make redelivery idempotent, and the reconnect init frame —
-    /// built from the same `declared` set — remains the resync of record.
-    /// A no-op on a never-started runner.
-    fn sync_factories_if_started(&self) {
-        let started = self.core.started.lock().unwrap();
-        if let Some(live) = started.as_ref() {
-            let factories = self
-                .core
-                .declared
-                .read()
-                .unwrap()
-                .iter()
-                .map(|id| flz_core::relay::registry::advertised_for_factory(id))
-                .collect();
-            let _ = live.runner_tx.send(RunnerMessage::control_request(
-                format!("update-factories-{}", crate::util::nonce_suffix()),
-                pb::command_request::Command::UpdateFactories(pb::UpdateFactories { factories }),
-            ));
-        }
-    }
-
-    fn connect(&self) -> Result<Started, FlezhaError> {
-        let (otx, orx): (Sender<RunnerMessage>, Receiver<RunnerMessage>) =
-            crossbeam::channel::unbounded();
-        let (ctx, irx): (
-            Sender<ClientResponseMessage>,
-            Receiver<ClientResponseMessage>,
-        ) = crossbeam::channel::unbounded();
-
-        let shutdown_bridge = ShutdownBridge::new();
-        shutdown::register_bridge(Arc::clone(&shutdown_bridge));
-
-        let runner_thread = runner::start(
-            self.core.namespace.clone(),
-            Arc::clone(&self.core.declared),
-            (otx.clone(), orx),
-            ctx,
-            Arc::clone(&shutdown_bridge),
-        );
-
-        await_confirmation(&irx)?;
-
-        Ok(Started {
-            runner_tx: otx,
-            client_rx: Mutex::new(irx),
-            _runner_thread: runner_thread,
-            shutdown_bridge,
-        })
-    }
-}
-
-/// Post-start removal: the live-instance check and the class unregistration
-/// run on the coordinator loop, serialized with `AddRelay` handling by
-/// construction, so the check is race-free. Refuses while instances exist.
-fn refuse_live_instances(live: &Started, factory_id: &str) -> Result<(), FlezhaError> {
-    match live.exchange(RunnerMessage::RemoveFactory {
-        factory_id: factory_id.to_string(),
-    })? {
-        ClientResponseMessage::RemoveFactoryResult(Ok(())) => Ok(()),
-        ClientResponseMessage::RemoveFactoryResult(Err(live_instances)) => {
-            Err(FlezhaError::RelayTypeInUse {
-                factory_id: factory_id.to_string(),
-                live_instances,
-            })
-        }
-        _ => Err(Started::unexpected_reply()),
     }
 }
 
@@ -637,37 +501,12 @@ fn refuse_live_instances(live: &Started, factory_id: &str) -> Result<(), FlezhaE
 /// are always a no-op.
 impl Drop for FlezhaRunner {
     fn drop(&mut self) {
-        if !self.owner {
+        if !self.owner || !self.core.session.is_started() {
             return;
         }
-        let started = self.core.started.lock().unwrap();
-        let Some(live) = started.as_ref() else {
-            return;
-        };
-        live.shutdown_bridge.run_graceful_shutdown();
-        drop(started);
+        shutdown::exit(shutdown::Exit::default());
         *ACTIVE_RUNNER.lock().unwrap() = None;
         *self.core.terminated.lock().unwrap() = true;
         self.core.terminated_cv.notify_all();
-    }
-}
-
-#[cfg(test)]
-mod entry_point_tests {
-    use super::*;
-
-    #[test]
-    fn a_dead_runner_thread_is_a_connect_failed_result() {
-        let (ctx, irx) = crossbeam::channel::unbounded::<ClientResponseMessage>();
-        // The runner thread panicking/exiting before confirming manifests as
-        // every sender dropping — recv() fails. That must map to a typed
-        // ConnectFailed, not a panic in the caller's thread.
-        drop(ctx);
-        match await_confirmation(&irx) {
-            Err(FlezhaError::ConnectFailed(reason)) => {
-                assert!(reason.contains("exited before confirming"), "got: {reason}");
-            }
-            other => panic!("expected ConnectFailed, got: {other:?}"),
-        }
     }
 }

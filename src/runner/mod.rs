@@ -2,6 +2,7 @@
 //! poll workers live in `relay::poll_pool`.
 
 pub(crate) use flz_core::poll_core;
+#[cfg(test)]
 pub(crate) use flz_core::runner::*;
 
 #[cfg(test)]

@@ -4,6 +4,15 @@ All notable changes to the Rust SDK crate.
 
 ## Unreleased
 
+### Changed: `start()` waits for the controller for a bounded time
+
+**Breaking.** `FlezhaRunner::start()` waits `FLEZHA_RUNNER_START_WAIT_MS` (default 10 000;
+`0` waits for ever, as before) for the controller to confirm or refuse the connect, then fails
+with the new `FlezhaError::ConnectUnconfirmed { wait_ms }` (`runtime.connect_unconfirmed`) and
+leaves no runner dialling. The runner's session (declared set, start, post-start
+`UpdateFactories`, the coordinator's live-instance check) is now `flz_core::session::Session`,
+the one every other SDK reaches through the C ABI; the rest of the public API is unchanged.
+
 ### Changed: the core's notices reach `tracing`
 
 `diag::init_default_tracing` now also sends the core's notices (a retry, a reconnect, a

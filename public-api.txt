@@ -2034,6 +2034,8 @@ pub enum flezha_runner::FlezhaError
 pub flezha_runner::FlezhaError::AlreadyRunning
 pub flezha_runner::FlezhaError::AlreadyRunning::namespace: alloc::string::String
 pub flezha_runner::FlezhaError::ConnectFailed(alloc::string::String)
+pub flezha_runner::FlezhaError::ConnectUnconfirmed
+pub flezha_runner::FlezhaError::ConnectUnconfirmed::wait_ms: u64
 pub flezha_runner::FlezhaError::DuplicateFactoryId
 pub flezha_runner::FlezhaError::DuplicateFactoryId::factory_id: alloc::string::String
 pub flezha_runner::FlezhaError::InvalidNamespace
