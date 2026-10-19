@@ -22,7 +22,6 @@ use flezha_runner::transport::FlezhaStream;
 use flezha_runner::{
     ChannelBuilder, ErrorModel, Flezha, FlezhaError, Relay, Tasklet, TaskletError,
 };
-use prost::Message;
 
 #[derive(serde::Serialize, serde::Deserialize, Default)]
 struct EmptyState;
@@ -174,8 +173,7 @@ fn update_factories_set(frames: &Arc<Mutex<Vec<CapturedFrame>>>, min_count: usiz
                 .iter()
                 .filter(|(id, _)| id == "control_command")
                 .filter_map(|(_, message)| {
-                    let request =
-                        flezha_runner::pb::CommandRequest::decode(message.as_slice()).ok()?;
+                    let request = flz_core::command::request_of(message).ok()?;
                     match request.command {
                         Some(flezha_runner::pb::command_request::Command::UpdateFactories(
                             update,
