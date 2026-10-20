@@ -4,6 +4,12 @@ All notable changes to the Rust SDK crate.
 
 ## Unreleased
 
+### Changed: identity stamps come from the core
+
+A keyed output's `flz.cell`, `flz.seq` and `flz.key` are written by
+`flz_core::host::output_identity`, the function every SDK's outputs go through; the crate's
+own `apply_identity_stamps` is gone. The stamps and the test harness's are unchanged.
+
 ### Changed: the core derives each tasklet's cell mode
 
 **Breaking.** `flz_core::host::HostTaskletDecl` has no `cell_mode` and gains `migrates`; a

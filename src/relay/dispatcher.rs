@@ -574,7 +574,7 @@ fn cell_work(
 ) -> Option<(Arc<CellSlot>, Vec<crate::runner::poll_core::ItemAttempt>)> {
     use crate::runner::poll_core::EnginePayload;
     match payload {
-        EnginePayload::Work { slot, items } => Some((slot, items)),
+        EnginePayload::Work { slot, items, .. } => Some((slot, items)),
         EnginePayload::Command {
             slot,
             kind: flz_core::schema::ActivationKind::CompensateRun { .. },

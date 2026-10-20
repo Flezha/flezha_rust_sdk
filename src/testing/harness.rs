@@ -21,12 +21,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use flz_core::header::RestoreError;
+use flz_core::host::output_identity;
 
 use crate::cell::flusher::encode_change;
 use crate::cell::header::SchemaDecision;
 use crate::cell::restore::{decode_change, init_cell_with_payload, RestoreInitPayload};
 use crate::cell::timer::{PendingTimers, TimerKind, TimerOp, TimerSession};
-use crate::relay::dispatcher::emit_sink::apply_identity_stamps;
 use crate::tasklet::clock::{evaluate, wall_now_ms};
 use crate::tasklet::ctx::{EmitSink, HarnessEffects, PartRoute};
 use crate::tasklet::{Change, Ctx, Tasklet, TaskletError};
@@ -624,7 +624,7 @@ where
 
 /// Emit output used by the harness — captures emits without dispatching
 /// them. In keyed mode it applies the same `flz.*` identity stamps the
-/// runtime's plugin frames carry, via the shared stamp helper.
+/// runtime's plugin frames carry, through the core's stamp.
 struct RecordingEmitSink<'a> {
     emits: &'a mut Vec<Emit>,
     channel_name: &'static str,
@@ -644,13 +644,9 @@ impl<'a> EmitSink for RecordingEmitSink<'a> {
     ) -> Result<(), TaskletError> {
         let meta = if self.keyed {
             let mut metadata = meta.unwrap_or_default();
-            apply_identity_stamps(
-                &mut metadata,
-                std::str::from_utf8(HARNESS_CELL_IDENTITY).expect("ascii"),
-                self.seq,
-                &mut self.ordinal,
-                key,
-            );
+            let label = std::str::from_utf8(HARNESS_CELL_IDENTITY).expect("ascii");
+            let (seq, ordinal) = (self.seq, &mut self.ordinal);
+            output_identity(label, true, || seq, ordinal, key.as_deref(), &mut metadata);
             Some(metadata)
         } else {
             meta

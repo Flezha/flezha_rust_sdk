@@ -110,7 +110,6 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
             output_channel_name: self.edges.output_channel_name.as_deref(),
             keyed: self.edges.output_channel_keyed,
             cell_label: &self.cell_label,
-            change_seq: &self.flush.change_seq,
             emit_ordinal: 0,
             instance: scope.instance.upgrade(),
             stream: Arc::clone(scope.stream),
