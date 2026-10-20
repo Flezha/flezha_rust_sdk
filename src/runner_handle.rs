@@ -10,7 +10,7 @@ use std::sync::{Arc, Condvar, Mutex, Weak};
 use flz_core::session::{Session, SessionError};
 
 use crate::relay::Relay;
-use crate::{shutdown, BuildStepsError, TopologyBuildError};
+use crate::{shutdown, TopologyBuildError};
 
 /// The ONE public error of the entry-point chain: every fallible call on
 /// [`FlezhaRunner`] returns `Result<_, FlezhaError>`, so
@@ -37,8 +37,6 @@ pub enum FlezhaError {
     /// unwired channels, type mismatches, ...) — reported at the declaring
     /// call site, never a panic.
     InvalidTopology(TopologyBuildError),
-    /// `register_factory` found invalid steps relay authoring.
-    InvalidSteps(BuildStepsError),
     /// The factory id is already in this runner's declared set, whichever kind
     /// either relay is.
     DuplicateFactoryId { factory_id: String },
@@ -82,7 +80,6 @@ impl ErrorModel for FlezhaError {
                 [("wait_ms", (*wait_ms).into())],
             ),
             FlezhaError::InvalidTopology(e) => e.to_error(),
-            FlezhaError::InvalidSteps(e) => e.to_error(),
             FlezhaError::DuplicateFactoryId { factory_id } => E::with(
                 "topology.duplicate_factory_id",
                 [("factory_id", factory_id.as_str().into())],
@@ -122,12 +119,6 @@ flz_transport::model_error!(FlezhaError);
 impl From<TopologyBuildError> for FlezhaError {
     fn from(e: TopologyBuildError) -> Self {
         FlezhaError::InvalidTopology(e)
-    }
-}
-
-impl From<BuildStepsError> for FlezhaError {
-    fn from(e: BuildStepsError) -> Self {
-        FlezhaError::InvalidSteps(e)
     }
 }
 

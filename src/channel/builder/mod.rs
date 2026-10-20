@@ -64,12 +64,6 @@ impl ChannelBuilder {
         self.state.into_inner()
     }
 
-    /// Whether any tasklet was declared (a steps relay without one is
-    /// refused).
-    pub(crate) fn has_tasklets(&self) -> bool {
-        !self.state.borrow().tasklets.is_empty()
-    }
-
     /// Declare the entry channel fed by the controller — the relay's
     /// external input address, so its name is explicit and mandatory.
     ///

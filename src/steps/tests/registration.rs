@@ -10,15 +10,6 @@ use crate::steps::*;
 use crate::tasklet::{Ctx, Tasklet, TaskletError};
 use crate::{Durable, ErrorModel, Relay, RelaySettings, Run, SleepAfter};
 
-/// The shared topology check's refusal, which `build_spec` carries whole.
-fn core_refusal(refused: spec::BuildStepsError) -> flz_core::FlezhaError {
-    assert!(
-        matches!(refused, spec::BuildStepsError::Topology { .. }),
-        "expected the shared topology's refusal, got {refused:?}"
-    );
-    refused.to_error()
-}
-
 #[test]
 fn steps_error_conversions() {
     // String conversions stay retryable-by-default: the ladder is opt-out.
@@ -85,12 +76,7 @@ fn the_one_registry_holds_a_steps_instance() {
 #[test]
 fn a_steps_without_tasklets_is_refused() {
     let err = spec::build_spec::<NoTaskletsSteps>().expect_err("a steps always runs tasklets");
-    assert!(
-        matches!(err, spec::BuildStepsError::NoTasklets { .. }),
-        "expected NoTasklets, got {err:?}"
-    );
     assert_eq!(err.code(), "topology.no_tasklets");
-    assert_eq!(err.to_error().details["factory_id"], "test-no-tasklets");
 }
 
 #[test]
@@ -178,7 +164,7 @@ fn loop_authoring_is_validated() {
             _ => spec::build_spec::<ChainedLoopPluginTerminal>(),
         }
         .expect_err("a chained loop's terminal tasklet must release a handoff");
-        let refusal = core_refusal(err);
+        let refusal = err.to_error();
         assert_eq!(
             refusal.code,
             "topology.chained_loop_terminal_without_handoff"
@@ -460,7 +446,7 @@ fn dag_topology_is_validated() {
         }
     }
     let refused = spec::build_spec::<Cyclic>().expect_err("a cycle is refused");
-    assert_eq!(core_refusal(refused).code, "topology.cycle");
+    assert_eq!(refused.code(), "topology.cycle");
 
     // `multi-input-tasklets`: every message carries the channel it arrived
     // on, so an entry channel is a merge source on a steps relay as on a
@@ -538,10 +524,9 @@ fn dag_topology_is_validated() {
             }
         }
     }
-    let refusal = core_refusal(
-        spec::build_spec::<BranchingChained>()
-            .expect_err("a chained loop needs one terminal tasklet"),
-    );
+    let refusal = spec::build_spec::<BranchingChained>()
+        .expect_err("a chained loop needs one terminal tasklet")
+        .to_error();
     assert_eq!(refusal.code, "topology.branching_chained_loop");
     assert_eq!(
         (&refusal.details["channel"], &refusal.details["leaves"]),

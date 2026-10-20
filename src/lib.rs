@@ -76,7 +76,6 @@ pub use relay::topology::{
 };
 pub use relay::{Durable, Each, Exactly, OnFailure, Relay, RelaySettings, Run, SleepAfter};
 pub use runner_handle::{ErrorModel, Flezha, FlezhaError, FlezhaRunner, SendOpts};
-pub use steps::spec::BuildStepsError;
 pub use steps::StepsError;
 pub use tasklet::{Change, ClockKind, CoalesceKey, Ctx, NoChange, StableId, Tasklet, TaskletError};
 

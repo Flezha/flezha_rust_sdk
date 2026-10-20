@@ -4,6 +4,13 @@ All notable changes to the Rust SDK crate.
 
 ## Unreleased
 
+### Removed: `BuildStepsError`
+
+**Breaking.** `steps::spec::build_spec` returns `TopologyBuildError`, the refusal every class
+gets from the core's check, and builds its DAG with `flz_core::steps::spec::TaskDag::of`.
+`BuildStepsError`, its crate-root re-export and `FlezhaError::InvalidSteps` are gone; a steps
+class with no tasklets is refused `topology.no_tasklets` with no `factory_id` detail.
+
 ### Changed: identity stamps come from the core
 
 A keyed output's `flz.cell`, `flz.seq` and `flz.key` are written by
