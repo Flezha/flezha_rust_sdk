@@ -647,15 +647,21 @@ impl Settled {
     }
 }
 
-/// The error text of a failed attempt and whether the ladder may retry it. A
-/// panic is retryable by default — the author never got to classify it.
+/// The error text of a failed attempt and whether the ladder may retry it: the
+/// author's own words as written, a runtime refusal with its catalogue code as
+/// the core's settle names it. A panic is retryable by default — the author
+/// never got to classify it.
 fn classify_failure(
     failed: Result<Result<(), TaskletError>, Box<dyn Any + Send>>,
 ) -> (String, bool) {
     match failed {
         Ok(Err(err)) => {
             let retryable = !err.is_non_retryable();
-            (err.to_string(), retryable)
+            let text = match &err {
+                TaskletError::Custom(text) | TaskletError::NonRetryable(text) => text.clone(),
+                refusal => crate::ErrorModel::to_error(refusal).text(),
+            };
+            (text, retryable)
         }
         Err(panic) => (crate::tasklet::error::format_panic(panic), true),
         Ok(Ok(())) => unreachable!("handled above"),
