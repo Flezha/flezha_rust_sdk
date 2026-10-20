@@ -81,14 +81,7 @@ fn a_compaction_re_states_the_pending_timers_above_the_snapshot_seq() {
     ));
     frames.lock().unwrap().clear();
 
-    let (_frame, snapshot_seq, _size) = {
-        let mut state = slot.state.lock().unwrap();
-        let mut buffer = slot.flush_buffer.lock().unwrap();
-        let timers = slot.timers.lock().unwrap();
-        slot.dispatcher
-            .snapshot_frame(&mut state, &mut buffer, &timers)
-            .expect("snapshot")
-    };
+    let (_frame, snapshot_seq, _size) = slot.dispatcher.snapshot_frame(&slot).expect("snapshot");
 
     let restated = frames.lock().unwrap().clone();
     let timer_frames: Vec<&(String, Vec<u8>)> = restated

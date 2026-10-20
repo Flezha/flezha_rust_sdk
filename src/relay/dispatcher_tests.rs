@@ -152,40 +152,34 @@ impl Tasklet for CounterTask {
 /// highest seq the snapshot already contains (`change_seq - 1`), so the
 /// controller's `truncate_up_to` — which keeps records strictly above it —
 /// drops exactly what the snapshot folds.
+struct CounterRelay;
+impl Relay for CounterRelay {
+    fn factory_id() -> &'static str {
+        "snapshot_counter_relay"
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("in")
+            .into::<CounterTask>()
+            .output_named("out");
+    }
+}
+
 #[test]
 fn snapshot_frame_round_trips_through_restore() {
     use crate::cell::restore::init_cell_with_payload;
+    use crate::runner::poll_core_tests::fixtures::build_slot_of;
 
-    let dispatcher = TaskletDispatcherImpl::<CounterTask>::new(
-        0,
-        EdgeFacts {
-            output_channel_id: None,
-            output_channel_name: None,
-            output_channel_keyed: false,
-            retry: RetryPolicy::default(),
-        },
-        Arc::from("inst/task/"),
-        None,
-        FlushWiring {
-            cell_identity: Arc::new(flz_core::flusher::encode_cell_identity("inst", "task", "")),
-            change_seq: Arc::new(AtomicU64::new(3)),
-            header: crate::cell::header::header_template_for::<CounterTask>(),
-            keeps_state: false,
-            records_effects: false,
-            checkpoint: None,
-            correction: None,
-            steps: false,
-        },
-    );
+    let (_instance, slot) = build_slot_of::<CounterRelay>("dispatcher-snapshot");
+    slot.state
+        .lock_recover()
+        .downcast_mut::<CellState<CounterTask>>()
+        .expect("a counter Cell")
+        .state = 115;
+    slot.change_seq.store(3, Ordering::Release);
 
-    let mut state: Box<dyn Any + Send> = Box::new(CellState::<CounterTask> {
-        tasklet: CounterTask,
-        state: 115i64,
-    });
-    let mut buffer: Box<dyn FlushableBuffer> = Box::new(TypedBuffer::<CounterTask>::default());
-
-    let (frame, seq, size) = dispatcher
-        .snapshot_frame(&mut state, &mut buffer, &PendingTimers::default())
+    let (frame, seq, size) = slot
+        .dispatcher
+        .snapshot_frame(&slot)
         .expect("snapshot_frame must succeed for a live-typed state");
     assert_eq!(
         seq, 2,
@@ -205,9 +199,12 @@ fn snapshot_frame_round_trips_through_restore() {
         snapshot_bytes: body,
         change_log_bytes: &[],
     };
-    let (restored, _timers, migrated) = init_cell_with_payload::<CounterTask>(None, Some(&payload))
+    let (restored, _timers, outcome) = init_cell_with_payload::<CounterTask>(None, Some(&payload))
         .expect("the snapshot body must decode through the restore path");
-    assert!(!migrated, "same version restores without a migration");
+    assert!(
+        !outcome.migrated,
+        "same version restores without a migration"
+    );
     assert_eq!(
         restored, 115,
         "snapshot round-trips back to the original state"

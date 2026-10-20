@@ -18,7 +18,7 @@ use std::sync::{Arc, Weak};
 
 use flz_transport::transport::FlezhaStream;
 
-use crate::cell::flusher::{FlushableBuffer, TypedBuffer};
+use crate::cell::flusher::TypedBuffer;
 use crate::cell::header::HeaderTemplate;
 use crate::cell::timer::{PendingTimers, TimerOp, TimerPolicy};
 use crate::cell::{CellItem, CellPayload, CellSlot, TaskletDispatcher};
@@ -153,34 +153,6 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
             timers: crate::cell::timer::timer_policy_for::<S>(),
             _phantom: std::marker::PhantomData,
         }
-    }
-
-    /// Drain the buffer, then re-state the pending timers and the consumed
-    /// offset ABOVE the seq the snapshot carries. The drain comes first, so the snapshot's state and
-    /// its seq are captured together and `change_seq - 1` is exactly the
-    /// highest record the snapshot folds — which is what lets the controller's
-    /// `truncate_up_to`, keeping records strictly above it, drop exactly what
-    /// the snapshot folds and no more. Both are re-stated AFTER the seq is
-    /// read, landing at `snapshot_seq + 1`, which that truncation keeps; a
-    /// crash between the two leaves an untruncated log that still holds the
-    /// originals, so neither order can lose a timer or the offset.
-    fn drain_for_snapshot(
-        &self,
-        flush_buffer: &mut Box<dyn FlushableBuffer>,
-        timers: &PendingTimers,
-    ) -> u64 {
-        self.flush_now(&mut **flush_buffer);
-        let seq = self
-            .flush
-            .change_seq
-            .load(Ordering::Acquire)
-            .saturating_sub(1);
-        let owed = invocation::typed_buffer::<S>(flush_buffer)
-            .restate_above_snapshot(timers.as_register_ops());
-        if owed {
-            self.flush_now(&mut **flush_buffer);
-        }
-        seq
     }
 }
 
@@ -458,79 +430,49 @@ impl<S: Tasklet> TaskletDispatcher for TaskletDispatcherImpl<S> {
         );
     }
 
-    fn restore_state(
+    fn restore(
         &self,
-        state: &mut Box<dyn Any + Send>,
-        timers: &mut PendingTimers,
-        snapshot_header: &[u8],
-        snapshot_bytes: &[u8],
-        change_log_bytes: &[u8],
-        cell_key: Option<&str>,
-    ) -> Result<flz_core::restore::RestoreOutcome, flz_core::header::RestoreError> {
-        use crate::cell::restore::{
-            init_cell_with_payload, iter_change_log_records, RestoreInitPayload,
-        };
-
-        let payload = RestoreInitPayload {
-            snapshot_header,
-            snapshot_bytes,
-            change_log_bytes,
-        };
-
-        // Rebuild the typed state from snapshot + change-log replay. This runs
-        // the same path as cold-start `init_state` + `apply_to`, so a
-        // counter that summed to N comes back at N rather than 0.
-        let (new_state, restored_timers, migrated) =
-            init_cell_with_payload::<S>(cell_key, Some(&payload))?;
-
-        let typed = state
+        slot: &Arc<CellSlot>,
+        payload: &crate::cell::restore::RestoreInitPayload<'_>,
+    ) -> Result<flz_core::restore::RestoreOutcome, flz_core::Error> {
+        let mut state = slot.state.lock_recover();
+        let mut timers = slot.timers.lock_recover();
+        // The same path as a cold start's `init_state` + `apply_to`, so a
+        // counter that summed to N comes back at N rather than 0; the pending
+        // timers fold out of the same log.
+        let (restored, restored_timers, outcome) =
+            crate::cell::restore::init_cell_with_payload::<S>(
+                slot.cell_key.as_deref(),
+                Some(payload),
+            )
+            .map_err(flz_core::host::restore_failed)?;
+        state
             .downcast_mut::<CellState<S>>()
-            .expect("restore_state: state type mismatch for tasklet");
-        typed.state = new_state;
-        // Pending timers are folded out of the same log, so a resumed Cell
-        // owes exactly the timers it owed before the crash — no marker, no
-        // side-file, no re-registration by the author.
+            .expect("restore: state type mismatch for tasklet")
+            .state = restored;
         *timers = restored_timers;
-
-        // Terminal seq = highest WAL seq applied, so the caller can re-arm the
-        // cell's change_seq and post-restore appends continue contiguously
-        // (no controller-side epoch realign / truncation).
-        let mut terminal: u64 = 0;
-        for record in iter_change_log_records(change_log_bytes) {
-            terminal = terminal.max(record?.seq);
-        }
-        Ok(flz_core::restore::RestoreOutcome {
-            terminal_seq: terminal,
-            migrated,
-        })
+        Ok(outcome)
     }
 
     fn snapshot_frame(
         &self,
-        state: &mut Box<dyn Any + Send>,
-        flush_buffer: &mut Box<dyn FlushableBuffer>,
-        timers: &PendingTimers,
+        slot: &Arc<CellSlot>,
     ) -> Result<(Vec<u8>, u64, usize), flz_core::Error> {
-        let seq = self.drain_for_snapshot(flush_buffer, timers);
-        let typed = state.downcast_ref::<CellState<S>>().ok_or_else(|| {
-            flz_core::Error::State(
-                flz_core::Code::SnapshotFailed
-                    .with([("reason", "the state is not this tasklet's type".into())]),
-            )
-        })?;
-        // Postcard — the codec `cell/restore.rs` decodes — NOT the JSON
-        // migration serializer `build_state_fns` produces.
-        let body = postcard::to_allocvec(&typed.state).map_err(|e| {
-            flz_core::Error::State(
-                flz_core::Code::SnapshotFailed.with([("reason", e.to_string().into())]),
-            )
-        })?;
-        let header = self.flush.header.stamp(&body);
-        let frame =
-            crate::cell::flusher::build_cell_frame(&self.flush.cell_identity, seq, &header, &body);
-        let size = body.len();
-        Ok((frame, seq, size))
+        // The state lock first, as a dispatch takes it, then the buffer.
+        let state = slot.state.lock_recover();
+        flz_core::host::snapshot_frame(slot, &self.flush.header, || {
+            let typed = state
+                .downcast_ref::<CellState<S>>()
+                .ok_or_else(|| snapshot_failed("the state is not this tasklet's type".into()))?;
+            // Postcard — the codec `cell/restore.rs` decodes — NOT the JSON
+            // migration serializer `build_state_fns` produces.
+            postcard::to_allocvec(&typed.state).map_err(|e| snapshot_failed(e.to_string()))
+        })
     }
+}
+
+fn snapshot_failed(reason: String) -> flz_core::Error {
+    flz_core::Error::State(flz_core::Code::SnapshotFailed.with([("reason", reason.into())]))
 }
 
 /// One item through the typed dispatch, holding the slot's state and timers;

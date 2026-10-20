@@ -337,19 +337,12 @@ fn logical_clock_serves_change_seq_and_survives_restore_rearm() {
         &change_bytes,
         header_template_for::<LogicalNowTasklet>(),
     ));
-    let terminal = {
-        let mut guard = slot.state.lock().unwrap();
-        slot.dispatcher
-            .restore_state(
-                &mut guard,
-                &mut flezha_runner::cell::timer::PendingTimers::default(),
-                &[],
-                &[],
-                &change_log,
-                None,
-            )
-            .expect("restore_state")
+    let payload = flezha_runner::cell::restore::RestoreInitPayload {
+        snapshot_header: &[],
+        snapshot_bytes: &[],
+        change_log_bytes: &change_log,
     };
+    let terminal = slot.dispatcher.restore(&slot, &payload).expect("restore");
     assert_eq!(terminal.terminal_seq, 1);
     slot.change_seq.store(
         terminal.terminal_seq + 1,

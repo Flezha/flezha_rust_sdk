@@ -184,7 +184,7 @@ impl<S: Tasklet> TaskletTestHarness<S> {
     where
         S::State: serde::de::DeserializeOwned + serde::Serialize,
     {
-        let (state, timers, _migrated) = init_cell_with_payload::<S>(cell_key, Some(&payload))?;
+        let (state, timers, _outcome) = init_cell_with_payload::<S>(cell_key, Some(&payload))?;
         let initial_state_bytes = serialize_snapshot(&state);
         let mut harness = Self::from_state(state, initial_state_bytes);
         harness.cell_key = cell_key.map(str::to_string);

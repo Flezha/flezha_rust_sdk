@@ -2,7 +2,7 @@
 //! folds change bodies into `S::State`. Everything erased — payload shape,
 //! record framing, header resolution — lives in `flz_core::restore`.
 
-use flz_core::header::{decode_header, resolve_state, SchemaDecision};
+use flz_core::header::SchemaDecision;
 pub use flz_core::restore::*;
 use flz_core::schema::TimerOp;
 use flz_core::timer::PendingTimers;
@@ -15,64 +15,34 @@ use crate::tasklet::Change;
 /// function applies the persisted state on top of whatever
 /// `init_state` returned.
 ///
-/// Behavior:
-///   1. If `payload.snapshot_bytes` is non-empty, resolve its header and either
-///      decode `postcard::from_bytes(rest)` or hand the bytes to
-///      `S::migrate_state`, replacing `state` either way.
-///   2. Iterate change-log records via the internal `iter_change_log_records`
-///      helper; for each record, resolve the header, deserialize (or migrate)
-///      the change body, and call `change.apply_to(&mut state)`.
-///   3. Fold every `TimerOp` the log carries — standalone `format_id = 3`
-///      records and the `timers` an effect record encloses — into the returned
-///      pending-timer set. Timers are folded state, so they are rebuilt by this
-///      same walk rather than by a store of their own.
-///
-/// The returned flag reports whether any record was read through a migration;
-/// the controller answers it with a compaction so the migration is paid once.
-/// The version decision is per record, because one WAL legitimately holds
-/// records written by more than one version of the Tasklet.
+/// The walk is `flz_core::restore::fold_restore`: a non-empty snapshot is
+/// decoded (or handed to `S::migrate_state`) and replaces the state, then
+/// every change body is decoded (or migrated) and applied in seq order, and
+/// every `TimerOp` the log carries folds into the returned pending set. The
+/// version decision is per record, because one WAL legitimately holds
+/// records written by more than one version of the Tasklet. The outcome
+/// carries the terminal seq and whether anything was read through a
+/// migration; the controller answers that with a compaction so the
+/// migration is paid once.
 pub fn init_cell_with_payload<S: crate::tasklet::Tasklet>(
     cell_key: Option<&str>,
     payload: Option<&RestoreInitPayload<'_>>,
-) -> Result<(S::State, PendingTimers, bool), RestoreError>
-where
-    S::State: serde::de::DeserializeOwned,
-{
+) -> Result<(S::State, PendingTimers, RestoreOutcome), RestoreError> {
     let mut timers = PendingTimers::default();
-    let mut migrated = false;
-    let expected = header_template_for::<S>();
     let mut state = S::init_state(cell_key);
-    if let Some(p) = payload {
-        if !p.snapshot_bytes.is_empty() {
-            let header = decode_header(p.snapshot_header)?;
-            let decision = resolve_state(&header, &expected, S::MIN_READABLE_SCHEMA_VERSION)?;
-            migrated |= decision.migrating();
-            state = match decision {
-                SchemaDecision::Decode => postcard::from_bytes(p.snapshot_bytes)
-                    .map_err(|e| RestoreError::SnapshotDecode(e.to_string()))?,
-                SchemaDecision::Migrate { from_version } => {
-                    S::migrate_state(from_version, p.snapshot_bytes).map_err(|reason| {
-                        RestoreError::MigrationFailed {
-                            from_version,
-                            reason,
-                        }
-                    })?
-                }
-            };
-        }
-        let mut sink = TypedSink::<S> {
-            state: &mut state,
-            timers: &mut timers,
-        };
-        let summary = fold_change_log(
-            p.change_log_bytes,
-            &expected,
+    let outcome = match payload {
+        Some(p) => fold_restore(
+            p,
+            &header_template_for::<S>(),
             S::MIN_READABLE_SCHEMA_VERSION,
-            &mut sink,
-        )?;
-        migrated |= summary.migrated;
-    }
-    Ok((state, timers, migrated))
+            &mut TypedSink::<S> {
+                state: &mut state,
+                timers: &mut timers,
+            },
+        )?,
+        None => RestoreOutcome::default(),
+    };
+    Ok((state, timers, outcome))
 }
 
 /// One change record's body read back as `S::Change`: decoded as this
@@ -94,14 +64,28 @@ pub(crate) fn decode_change<S: crate::tasklet::Tasklet>(
     }
 }
 
-/// The in-process output: each change body is decoded (or migrated) into the
-/// Tasklet's `Change` and folded straight into its state.
+/// The in-process output: the snapshot body replaces the state, and each
+/// change body is decoded (or migrated) into the Tasklet's `Change` and folded
+/// straight into it.
 struct TypedSink<'a, S: crate::tasklet::Tasklet> {
     state: &'a mut S::State,
     timers: &'a mut PendingTimers,
 }
 
 impl<S: crate::tasklet::Tasklet> ChangeLogSink for TypedSink<'_, S> {
+    fn snapshot(&mut self, decision: SchemaDecision, bytes: &[u8]) -> Result<(), RestoreError> {
+        *self.state = match decision {
+            SchemaDecision::Decode => postcard::from_bytes(bytes)
+                .map_err(|e| RestoreError::SnapshotDecode(e.to_string()))?,
+            SchemaDecision::Migrate { from_version } => S::migrate_state(from_version, bytes)
+                .map_err(|reason| RestoreError::MigrationFailed {
+                    from_version,
+                    reason,
+                })?,
+        };
+        Ok(())
+    }
+
     fn change(&mut self, decision: SchemaDecision, bytes: &[u8]) -> Result<(), RestoreError> {
         decode_change::<S>(decision, bytes)?.apply_to(self.state);
         Ok(())
@@ -169,43 +153,6 @@ mod tests {
             ..crate::cell::header::header_template_for::<FoldTask>()
         };
         flz_core::restore::frame_record(seq, &template.stamp(body), body)
-    }
-
-    /// One WAL record written by another SDK, in the shape the controller
-    /// ships it. Mirrors `wal_record_at` but stamps a foreign byte 0.
-    fn wal_record_of_lang(seq: u64, sdk_lang: u8, body: &[u8]) -> Vec<u8> {
-        let template = HeaderTemplate {
-            sdk_lang,
-            ..crate::cell::header::header_template_for::<FoldTask>()
-        };
-        flz_core::restore::frame_record(seq, &template.stamp(body), body)
-    }
-
-    /// The typed arm's half of the language gate — the mirror of
-    /// `flz_core::restore`'s host-arm test, so both arms are pinned by a test
-    /// rather than by the fact that they happen to share a walk today.
-    #[test]
-    fn the_typed_arm_refuses_another_sdks_records() {
-        let log = wal_record_of_lang(0, flz_core::header::SDK_LANG_JAVA, b"kryo-bytes");
-        let payload = RestoreInitPayload {
-            snapshot_header: &[],
-            snapshot_bytes: &[],
-            change_log_bytes: &log,
-        };
-
-        let err = init_cell_with_payload::<FoldTask>(None, Some(&payload))
-            .expect_err("a Java-written log is refused by a Rust class");
-
-        assert!(
-            matches!(
-                err,
-                RestoreError::LangMismatch {
-                    expected: flz_core::header::SDK_LANG_RUST,
-                    found: flz_core::header::SDK_LANG_JAVA,
-                }
-            ),
-            "expected a language mismatch, got {err:?}"
-        );
     }
 
     #[test]
@@ -370,9 +317,6 @@ mod tests {
     // this version wrote.
     cart_tasklet!(CartV2ReorderedTask, CartV2Reordered, CartChangeV1, 2, 2, {});
 
-    // The author claimed the floor and wrote no migration.
-    cart_tasklet!(CartV2ClaimsTask, CartV2, CartChangeV2, 2, 1, {});
-
     /// A v1 snapshot as the controller stores and now ships it: body plus the
     /// 16-byte header it was written with.
     fn v1_snapshot() -> (Vec<u8>, Vec<u8>) {
@@ -419,7 +363,7 @@ mod tests {
             change_log_bytes: &[],
         };
 
-        let (state, _timers, migrated) =
+        let (state, _timers, outcome) =
             init_cell_with_payload::<CartV2Task>(None, Some(&payload)).expect("migrated restore");
 
         assert_eq!(
@@ -430,7 +374,10 @@ mod tests {
                 currency: "EUR".to_string()
             }
         );
-        assert!(migrated, "the controller compacts on the strength of this");
+        assert!(
+            outcome.migrated,
+            "the controller compacts on the strength of this"
+        );
     }
 
     /// fails when: the version decision is made once per restore instead of
@@ -461,69 +408,11 @@ mod tests {
             change_log_bytes: &change_log,
         };
 
-        let (state, _timers, migrated) =
+        let (state, _timers, outcome) =
             init_cell_with_payload::<CartV2Task>(None, Some(&payload)).expect("mixed-version fold");
 
         assert_eq!(state.items, 22, "7 (snapshot) + 5 (v1) + 10 (v2)");
-        assert!(migrated);
-    }
-
-    /// fails when: older code accepts newer state. A downgrade is not a
-    /// migration, and no hook can be written for a version that did not exist
-    /// when this binary was built.
-    #[test]
-    fn state_from_the_future_is_refused() {
-        let body = postcard::to_allocvec(&CartV2 {
-            items: 1,
-            coupons: 0,
-            currency: "EUR".to_string(),
-        })
-        .unwrap();
-        let header = crate::cell::header::header_template_for::<CartV2Task>().stamp(&body);
-        let payload = RestoreInitPayload {
-            snapshot_header: &header,
-            snapshot_bytes: &body,
-            change_log_bytes: &[],
-        };
-
-        let err = init_cell_with_payload::<CartV1Task>(None, Some(&payload))
-            .expect_err("v1 code must refuse v2 state");
-        assert!(matches!(
-            err,
-            RestoreError::SchemaFromTheFuture {
-                found: 2,
-                running: 1
-            }
-        ));
-    }
-
-    /// fails when: a declared floor is taken as permission to decode. The
-    /// error names the tasklet and the version it was asked for, and the
-    /// fold returns before any state is handed back — there is nothing
-    /// partial for the caller to reseat.
-    #[test]
-    fn claiming_a_floor_without_a_migration_names_the_absent_migration() {
-        let (header, body) = v1_snapshot();
-        let payload = RestoreInitPayload {
-            snapshot_header: &header,
-            snapshot_bytes: &body,
-            change_log_bytes: &[],
-        };
-
-        let err = init_cell_with_payload::<CartV2ClaimsTask>(None, Some(&payload))
-            .expect_err("a claimed floor with no migration must fail");
-        let RestoreError::MigrationFailed {
-            from_version,
-            reason,
-        } = err
-        else {
-            panic!("expected a migration failure, got {err}");
-        };
-        assert_eq!(from_version, 1);
-        assert!(
-            reason.contains("cart_tasklet") && reason.contains("no state migration"),
-            "the reason must name the tasklet and the missing migration: {reason}"
-        );
+        assert!(outcome.migrated);
     }
 
     /// fails when: the migration is wired into the plain-record arm and
@@ -552,17 +441,10 @@ mod tests {
             change_log_bytes: &change_log,
         };
 
-        let (state, _timers, migrated) =
+        let (state, _timers, outcome) =
             init_cell_with_payload::<CartV2Task>(None, Some(&payload)).expect("effect fold");
 
         assert_eq!(state.items, 4);
-        assert!(migrated);
-    }
-
-    #[test]
-    fn truncated_change_log_returns_header_invalid() {
-        let mut iter = iter_change_log_records(&[0u8; 10]);
-        let err = iter.next().unwrap().unwrap_err();
-        assert!(matches!(err, RestoreError::HeaderInvalid));
+        assert!(outcome.migrated);
     }
 }

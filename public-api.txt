@@ -84,7 +84,7 @@ pub use flezha_runner::cell::header::resolve_record
 pub use flezha_runner::cell::header::resolve_state
 pub fn flezha_runner::cell::header::header_template_for<S: flezha_runner::tasklet::Tasklet>() -> flz_core::header::HeaderTemplate
 pub mod flezha_runner::cell::restore
-pub fn flezha_runner::cell::restore::init_cell_with_payload<S: flezha_runner::tasklet::Tasklet>(core::option::Option<&str>, core::option::Option<&flz_core::restore::RestoreInitPayload<'_>>) -> core::result::Result<(<S as flezha_runner::tasklet::Tasklet>::State, flz_core::timer::PendingTimers, bool), flz_core::header::RestoreError> where <S as flezha_runner::tasklet::Tasklet>::State: serde_core::de::DeserializeOwned
+pub fn flezha_runner::cell::restore::init_cell_with_payload<S: flezha_runner::tasklet::Tasklet>(core::option::Option<&str>, core::option::Option<&flz_core::restore::RestoreInitPayload<'_>>) -> core::result::Result<(<S as flezha_runner::tasklet::Tasklet>::State, flz_core::timer::PendingTimers, flz_core::restore::RestoreOutcome), flz_core::header::RestoreError>
 pub mod flezha_runner::cell::timer
 pub use flezha_runner::cell::timer::<<flz_core::timer::*>>
 pub use flezha_runner::cell::timer::TimerKind
@@ -1159,9 +1159,9 @@ pub fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::dispatch_item
 pub fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::event_time_of(&self, &flz_core::cell::CellPayload) -> core::option::Option<u64>
 pub fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::interval_deadline(&self, &mut alloc::boxed::Box<dyn flz_core::flusher::FlushableBuffer>) -> core::option::Option<u64>
 pub fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::is_event_time(&self) -> bool
-pub fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::restore_state(&self, &mut alloc::boxed::Box<(dyn core::any::Any + core::marker::Send)>, &mut flz_core::timer::PendingTimers, &[u8], &[u8], &[u8], core::option::Option<&str>) -> core::result::Result<flz_core::restore::RestoreOutcome, flz_core::header::RestoreError>
+pub fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::restore(&self, &alloc::sync::Arc<flz_core::cell::CellSlot>, &flz_core::restore::RestoreInitPayload<'_>) -> core::result::Result<flz_core::restore::RestoreOutcome, flz_core::error::Error>
 pub fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::retry_policy(&self) -> flz_core::channel::RetryPolicy
-pub fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::snapshot_frame(&self, &mut alloc::boxed::Box<(dyn core::any::Any + core::marker::Send)>, &mut alloc::boxed::Box<dyn flz_core::flusher::FlushableBuffer>, &flz_core::timer::PendingTimers) -> core::result::Result<(alloc::vec::Vec<u8>, u64, usize), flz_core::error::Error>
+pub fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::snapshot_frame(&self, &alloc::sync::Arc<flz_core::cell::CellSlot>) -> core::result::Result<(alloc::vec::Vec<u8>, u64, usize), flz_core::error::Error>
 pub fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::tasklet_id(&self) -> flz_core::channel::TaskletId
 pub fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::tasklet_name(&self) -> &'static str
 pub fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::write_timer_ops(&self, &alloc::sync::Arc<flz_core::cell::CellSlot>, alloc::vec::Vec<flz_core::schema::TimerOp>)
@@ -1344,6 +1344,7 @@ pub fn flezha_runner::steps::spec::build_spec<T: flezha_runner::relay::Relay>() 
 pub mod flezha_runner::tasklet
 pub use flezha_runner::tasklet::ClockKind
 pub use flezha_runner::tasklet::DEFAULT_COMPACT_AFTER_BYTES
+pub use flezha_runner::tasklet::DEFAULT_MAX_TIMERS_PER_CELL
 pub use flezha_runner::tasklet::IfRunning
 pub use flezha_runner::tasklet::SpawnError
 pub use flezha_runner::tasklet::SpawnHandle
@@ -1989,7 +1990,6 @@ impl<T> tracing::instrument::Instrument for flezha_runner::tasklet::ctx::StableI
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::tasklet::ctx::StableId
 impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::tasklet::ctx::StableId where V: ppv_lite86::types::MultiLane<T>
 pub fn flezha_runner::tasklet::ctx::StableId::vzip(self) -> V
-pub const flezha_runner::tasklet::DEFAULT_MAX_TIMERS_PER_CELL: usize
 pub trait flezha_runner::tasklet::Change<S>: serde_core::ser::Serialize + serde_core::de::DeserializeOwned + core::marker::Send + core::marker::Sync + 'static
 pub fn flezha_runner::tasklet::Change::apply_to(&self, &mut S)
 pub fn flezha_runner::tasklet::Change::coalesce_key(&self) -> core::option::Option<flezha_runner::tasklet::change::CoalesceKey>

@@ -334,7 +334,7 @@ pub fn restore<S: Tasklet>(change_log: &[u8]) -> (S::State, PendingTimers)
 where
     S::State: serde::de::DeserializeOwned,
 {
-    let (state, timers, _migrated) = flezha_runner::cell::restore::init_cell_with_payload::<S>(
+    let (state, timers, _outcome) = flezha_runner::cell::restore::init_cell_with_payload::<S>(
         None,
         Some(&RestoreInitPayload {
             snapshot_header: &[],

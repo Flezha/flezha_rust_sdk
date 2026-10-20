@@ -103,7 +103,7 @@ test_tasklet!(PlainPluginTasklet, "plain_plugin_tasklet", String => String, (), 
 
 /// Spec "Stamps present and replay-stable" (crash-restore e2e): after a
 /// simulated crash, a fresh instance restored via the runtime's
-/// `restore_state` + change_seq re-arm replays the same input and emits a
+/// `restore` + change_seq re-arm replays the same input and emits a
 /// frame whose `flz.*` stamps (and payload) are identical to the original.
 #[test]
 fn keyed_stamps_replay_identically_after_crash_restore() {
@@ -134,19 +134,12 @@ fn keyed_stamps_replay_identically_after_crash_restore() {
     let slot = Arc::clone(&instance_b.cells[0][0]);
     let change_bytes = postcard::to_allocvec(&TickChange).expect("encode change");
     let change_log = wal_record(0, &change_bytes, header_template_for::<KeyedStampTasklet>());
-    let terminal = {
-        let mut guard = slot.state.lock().unwrap();
-        slot.dispatcher
-            .restore_state(
-                &mut guard,
-                &mut flezha_runner::cell::timer::PendingTimers::default(),
-                &[],
-                &[],
-                &change_log,
-                None,
-            )
-            .expect("restore_state")
+    let payload = flezha_runner::cell::restore::RestoreInitPayload {
+        snapshot_header: &[],
+        snapshot_bytes: &[],
+        change_log_bytes: &change_log,
     };
+    let terminal = slot.dispatcher.restore(&slot, &payload).expect("restore");
     assert_eq!(terminal.terminal_seq, 0);
     slot.change_seq.store(
         terminal.terminal_seq + 1,
