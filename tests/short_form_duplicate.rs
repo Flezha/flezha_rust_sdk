@@ -10,13 +10,13 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use flezha_runner::transport::FlezhaStream;
 use flezha_runner::{
     ChannelBuilder, Ctx, ErrorModel, Flezha, FlezhaError, Relay, Tasklet, TaskletError,
 };
+use flz_transport::transport::FlezhaStream;
 
 /// The steps short form under `plain`: one tasklet, one output, nothing else.
-#[flezha_runner::relay(id = "plain", output = "plain_sink", run = steps)]
+#[flezha_runner::relay(factory_id = "plain", output = "plain_sink", run = steps)]
 fn plain(input: String) -> String {
     input
 }
@@ -64,7 +64,7 @@ fn start_fake_controller(dir: &Path) -> Frames {
             thread::spawn(move || {
                 let stream = FlezhaStream::unix(s);
                 while let Ok((payload_id, message, _metadata)) =
-                    flezha_runner::service::payloader::extract_payload(&stream)
+                    flz_transport::service::payloader::extract_payload(&stream)
                 {
                     sink.lock().unwrap().push((payload_id, message));
                 }
@@ -132,7 +132,7 @@ fn a_steps_short_form_colliding_with_a_stream_is_refused() {
         "expected DuplicateFactoryId naming `plain`, got: {err}"
     );
     assert_eq!(err.code(), "topology.duplicate_factory_id", "{err}");
-    assert_eq!(err.class(), flezha_runner::errors::Class::Invalid);
+    assert_eq!(err.class(), flz_transport::errors::Class::Invalid);
 
     // The refused registration left the declared set exactly as it was.
     runner.start().expect("start");

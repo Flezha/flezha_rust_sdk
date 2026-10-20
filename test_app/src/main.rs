@@ -137,6 +137,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register_factory(PartitionPassRelay)?
         .register_factory(SessionTimeoutRelay)?
         .register_factory(TimerCapRelay)?
+        .register_factory(TimerChurnRelay)?
+        .register_factory(SendForwardRelay)?
         .register_factory(MixedRelay)?
         .register_factory(TierStoreRelay)?
         .register_factory(RemoteTierStoreRelay)?

@@ -218,15 +218,16 @@ impl Control {
         self.call("PluginManager.disable", &[json!(name), json!({})])
     }
 
-    /// The relay ids running in this namespace.
+    /// The relays in this namespace, one row each: its id, health, runner and
+    /// node, and a partition group's width and members.
     pub fn list_relays(&self) -> Result<Value, ControlError> {
-        self.call("Relay.list_relays", &[])
+        self.call("Relay.list", &[])
     }
 
-    /// The plugins enabled in this namespace: name, provider, single, bound
-    /// relays.
+    /// The plugins enabled in this namespace, one row each: name, provider,
+    /// single, bound relays and where it runs.
     pub fn list_plugins(&self) -> Result<Value, ControlError> {
-        self.call("PluginManager.list", &[])
+        self.call("PluginManager.enabled", &[])
     }
 
     /// A relay's live state, and the change sequence it was read at. `cell`

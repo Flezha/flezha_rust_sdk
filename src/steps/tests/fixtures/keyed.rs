@@ -93,7 +93,7 @@ impl Tasklet for CappedKeyed {
 /// Static, its keys declared out of alphabetical order, every value to both.
 #[derive(Default)]
 pub(crate) struct ZyStatic;
-#[flezha_runner::tasklet(name = "zy_static", keys = ["z", "y"])]
+#[flezha_runner::tasklet(name = "zy_static", cell_keys = ["z", "y"])]
 impl Tasklet for ZyStatic {
     type Input = String;
     type Output = String;

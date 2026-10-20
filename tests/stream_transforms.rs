@@ -466,7 +466,7 @@ fn transform_declarations_are_validated() {
 
 #[derive(Default)]
 struct StaticFan;
-#[flezha_runner::tasklet(name = "transform_static_fan", keys = ["a", "b"])]
+#[flezha_runner::tasklet(name = "transform_static_fan", cell_keys = ["a", "b"])]
 impl Tasklet for StaticFan {
     type Input = String;
     fn cells_for(_input: &String) -> Vec<&'static str> {

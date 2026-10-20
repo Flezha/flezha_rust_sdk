@@ -52,7 +52,7 @@ impl Tasklet for RetryReserve {
 /// counts the items it saw.
 #[derive(Default)]
 pub(crate) struct FlakyFan;
-#[flezha_runner::tasklet(name = "flaky_fan", keys = ["even", "odd"])]
+#[flezha_runner::tasklet(name = "flaky_fan", cell_keys = ["even", "odd"])]
 impl Tasklet for FlakyFan {
     type Input = String;
     type Output = String;
@@ -191,7 +191,7 @@ pub(crate) struct ProbeState {
 /// records the thread that ran it.
 #[derive(Default)]
 pub(crate) struct StepProbe;
-#[flezha_runner::tasklet(name = "step_probe", keys = probe_keys())]
+#[flezha_runner::tasklet(name = "step_probe", cell_keys = probe_keys())]
 impl Tasklet for StepProbe {
     type Input = String;
     type Output = String;

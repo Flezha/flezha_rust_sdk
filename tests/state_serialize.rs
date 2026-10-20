@@ -1,11 +1,11 @@
 //! Round-trip tests for `serialize_relay_state` + `apply_init_values`
 //! per `cell_state.rs` Section 4 / Decision 10.
 
-use flezha_runner::command::cell_state::{
-    apply_init_values, serialize_relay_state, serialize_selected_state, StatePurpose, StateSelector,
-};
 use flezha_runner::state::Change;
 use flezha_runner::ErrorModel;
+use flz_core::command::cell_state::{
+    apply_init_values, serialize_relay_state, serialize_selected_state, StatePurpose, StateSelector,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -87,7 +87,7 @@ struct OhlcState {
 
 #[derive(Default)]
 struct OhlcTasklet;
-#[flezha_runner::tasklet(name = "ohlc", keys = ["1m", "1h"])]
+#[flezha_runner::tasklet(name = "ohlc", cell_keys = ["1m", "1h"])]
 impl Tasklet for OhlcTasklet {
     type Input = String;
     type State = OhlcState;
@@ -208,7 +208,7 @@ struct CandleTasklet;
 impl Tasklet for CandleTasklet {
     type Input = String;
     type State = CandleState;
-    fn cell_idle_ttl() -> Option<std::time::Duration> {
+    fn idle_ttl() -> Option<std::time::Duration> {
         Some(std::time::Duration::from_millis(50))
     }
     fn run(&mut self, _: String, _: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
@@ -495,7 +495,7 @@ fn a_read_leaves_the_cell_undrained_and_its_seq_unchanged() {
 fn a_selector_less_cell_state_command_encodes_exactly_as_before() {
     use prost::Message;
 
-    let selectorless = flezha_runner::pb::CellState {
+    let selectorless = flz_core::pb::CellState {
         relay_id: "op-1".to_string(),
         tasklet: String::new(),
         cell_key: String::new(),
@@ -507,7 +507,7 @@ fn a_selector_less_cell_state_command_encodes_exactly_as_before() {
         vec![0x0a, 0x04, b'o', b'p', b'-', b'1'],
     );
 
-    let selected = flezha_runner::pb::CellState {
+    let selected = flz_core::pb::CellState {
         relay_id: "op-1".to_string(),
         tasklet: "candle".to_string(),
         cell_key: "BTCUSD@1m".to_string(),

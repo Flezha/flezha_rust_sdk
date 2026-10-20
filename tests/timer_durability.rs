@@ -1,11 +1,11 @@
 //! The pending set is folded state: it reaches the WAL as timer ops, and a
 //! replay rebuilds it exactly, overdue entries included.
 
-use flezha_runner::cell::header::FORMAT_ID_TIMER_OPS;
 use flezha_runner::cell::state_sink;
 use flezha_runner::cell::timer::{TimerKind, TimerOp};
 use flezha_runner::testing::TaskletTestHarness;
 use flezha_runner::{Exactly, RelaySettings, Run};
+use flz_core::header::FORMAT_ID_TIMER_OPS;
 
 mod common;
 use common::prelude::*;
@@ -339,7 +339,7 @@ fn a_restore_re_arms_the_wake_list_and_fires_what_is_already_due() {
     take_firings();
     let (sock, _peer) = std::os::unix::net::UnixStream::pair().expect("pair");
     state_sink::set_secondary_stream(Some(Arc::new(
-        flezha_runner::transport::FlezhaStream::unix(sock),
+        flz_transport::transport::FlezhaStream::unix(sock),
     )));
 
     let (_handle, instance) = setup::<SessionRelay>("timers-restore");

@@ -7,12 +7,12 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use crossbeam::channel::Receiver;
+use flz_core::command::CommandAction;
+use flz_core::pb::StepsStop;
 use flz_core::runner::RunnerNode;
 use flz_core::test_support::steps::*;
 
 use super::super::fixtures::*;
-use crate::command::CommandAction;
-use crate::pb::StepsStop;
 use crate::runner::RunnerMessage;
 use crate::steps::instance;
 

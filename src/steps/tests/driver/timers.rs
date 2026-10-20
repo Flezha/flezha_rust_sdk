@@ -172,7 +172,7 @@ fn a_chained_loops_carry_yields_to_a_queued_firing(
                 command,
             } => {
                 if !held
-                    && matches!(&*command, crate::pb::command_request::Command::IterCommit(c) if c.relay_id == id)
+                    && matches!(&*command, flz_core::pb::command_request::Command::IterCommit(c) if c.relay_id == id)
                 {
                     held = true;
                     std::thread::sleep(Duration::from_millis(60));
@@ -381,21 +381,21 @@ fn texts(outs: &[Vec<u8>]) -> Vec<String> {
 }
 
 /// `(iter, task_idx, names a firing)` per commit, in commit order.
-fn stages(commits: &[crate::pb::TaskCommit]) -> Vec<(u32, u32, bool)> {
+fn stages(commits: &[flz_core::pb::TaskCommit]) -> Vec<(u32, u32, bool)> {
     commits
         .iter()
         .map(|c| (c.iter, c.task_idx, c.trigger.is_some()))
         .collect()
 }
 
-fn task_commits_of(id: &str) -> Vec<crate::pb::TaskCommit> {
+fn task_commits_of(id: &str) -> Vec<flz_core::pb::TaskCommit> {
     drain_task_commits()
         .into_iter()
         .filter(|c| c.relay_id == id && !c.compensating)
         .collect()
 }
 
-fn iter_commits_of(id: &str) -> Vec<crate::pb::IterCommit> {
+fn iter_commits_of(id: &str) -> Vec<flz_core::pb::IterCommit> {
     drain_iter_commits()
         .into_iter()
         .filter(|c| c.relay_id == id)

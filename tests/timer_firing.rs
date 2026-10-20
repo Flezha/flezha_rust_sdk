@@ -130,7 +130,7 @@ fn a_firing_into_a_saturated_consumer_waits_for_room_without_holding_a_poller() 
     take_firings();
     let (sock, _peer) = std::os::unix::net::UnixStream::pair().expect("pair");
     state_sink::set_secondary_stream(Some(Arc::new(
-        flezha_runner::transport::FlezhaStream::unix(sock),
+        flz_transport::transport::FlezhaStream::unix(sock),
     )));
 
     let (handle, instance) = setup::<SaturatedSessionRelay>("timers-saturated");

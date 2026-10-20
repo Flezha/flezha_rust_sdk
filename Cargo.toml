@@ -204,7 +204,7 @@ required-features = ["testing"]
 
 [[test]]
 name = "state_evolution"
-required-features = ["testing"]
+required-features = ["bench-internals", "testing"]
 
 [[test]]
 name = "starter"

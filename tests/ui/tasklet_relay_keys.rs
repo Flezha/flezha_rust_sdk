@@ -23,7 +23,7 @@ refused!(B, input = "prices");
 refused!(C, kind = "flow");
 refused!(E, on_full = drop_oldest);
 
-#[flezha_runner::relay(id = "d", kind = "flow", output = "echo")]
+#[flezha_runner::relay(factory_id = "d", kind = "flow", output = "echo")]
 fn d(input: String) -> Vec<u8> {
     input.into_bytes()
 }

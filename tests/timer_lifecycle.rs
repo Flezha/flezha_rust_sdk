@@ -70,7 +70,7 @@ struct EvictTask;
 #[flezha_runner::tasklet(name = "timers_evict_tasklet")]
 impl Tasklet for EvictTask {
     type Input = String;
-    fn cell_idle_ttl() -> Option<Duration> {
+    fn idle_ttl() -> Option<Duration> {
         // Long enough that the reaper thread never beats the test to the
         // sweep; the case drives `reap_sweep` itself with a short TTL.
         Some(Duration::from_secs(3_600))

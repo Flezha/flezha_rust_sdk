@@ -17,7 +17,7 @@ use flz_core::bench_support::{fan_in, stream_pair, Settle};
 
 static DYN_COUNTER: Settle = Settle::new();
 
-/// Dynamic Tasklet with eviction OFF (default `cell_idle_ttl == None`),
+/// Dynamic Tasklet with eviction OFF (default `idle_ttl == None`),
 /// so the steady-state bench measures routing only, not reaping.
 #[derive(Default)]
 struct SteadyDynTasklet;

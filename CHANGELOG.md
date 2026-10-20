@@ -4,6 +4,18 @@ All notable changes to the Rust SDK crate.
 
 ## Unreleased
 
+### Changed: one spelling per concept, internals hidden
+
+**Breaking.** `#[flezha::relay(id = ..)]` is `#[flezha::relay(factory_id = ..)]`, and the
+`#[flezha::tasklet]` keys `keys` and `capacity` are `cell_keys` and `mailbox_capacity`, the
+names of the trait items they write. `Tasklet::cell_idle_ttl()` is `Tasklet::idle_ttl()`.
+`Ctx::replay()` answers whether the invocation replays input the Cell already processed.
+The re-exports `flezha_runner::{pb, transport, service, errors, command}` are gone (use
+`flz_core` and `flz_transport`), and `relay::dispatcher`, `cell::header` and
+`cell::flusher` are no longer public. `Control::list_relays` and `Control::list_plugins`
+read `Relay.list` and `PluginManager.enabled` and answer one row per relay or plugin.
+`public-api.txt` is the surface `cargo public-api --features testing` records.
+
 ### Removed: `BuildStepsError`
 
 **Breaking.** `steps::spec::build_spec` returns `TopologyBuildError`, the refusal every class

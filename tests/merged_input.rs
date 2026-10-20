@@ -333,7 +333,7 @@ static PER_CELL: Mutex<Vec<(String, TunedInput)>> = Mutex::new(Vec::new());
 
 #[derive(Default)]
 struct CellTunedTasklet;
-#[flezha_runner::tasklet(name = "merge_cell_tuned_tasklet", keys = ["data", "config"])]
+#[flezha_runner::tasklet(name = "merge_cell_tuned_tasklet", cell_keys = ["data", "config"])]
 impl Tasklet for CellTunedTasklet {
     type Input = TunedInput;
     type Output = String;

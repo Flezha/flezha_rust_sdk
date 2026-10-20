@@ -10,7 +10,7 @@ error: #[flezha::tasklet] declares a tasklet; `input` belongs to a relay declara
 22 | refused!(B, input = "prices");
    |             ^^^^^
 
-error: #[flezha::tasklet]: unknown attribute `kind`; accepted: name, keys, capacity, max_cells, idle_ttl_seconds, schema_version, min_readable_schema_version, compact_after_bytes, max_timers_per_cell, logical_clock
+error: #[flezha::tasklet]: unknown attribute `kind`; accepted: name, cell_keys, mailbox_capacity, max_cells, idle_ttl_seconds, schema_version, min_readable_schema_version, compact_after_bytes, max_timers_per_cell, logical_clock
   --> tests/ui/tasklet_relay_keys.rs:23:13
    |
 23 | refused!(C, kind = "flow");
@@ -22,11 +22,11 @@ error: #[flezha::tasklet] declares a tasklet; `on_full` belongs to a relay decla
 24 | refused!(E, on_full = drop_oldest);
    |             ^^^^^^^
 
-error: #[flezha::relay]: unknown attribute `kind`; accepted: id, output, input, on_full, description, max_duration_ms, run, durable, keys, capacity, max_cells, idle_ttl_seconds, schema_version, min_readable_schema_version, compact_after_bytes, max_timers_per_cell, logical_clock
-  --> tests/ui/tasklet_relay_keys.rs:26:34
+error: #[flezha::relay]: unknown attribute `kind`; accepted: factory_id, output, input, on_full, description, max_duration_ms, run, durable, cell_keys, mailbox_capacity, max_cells, idle_ttl_seconds, schema_version, min_readable_schema_version, compact_after_bytes, max_timers_per_cell, logical_clock
+  --> tests/ui/tasklet_relay_keys.rs:26:42
    |
-26 | #[flezha_runner::relay(id = "d", kind = "flow", output = "echo")]
-   |                                  ^^^^
+26 | #[flezha_runner::relay(factory_id = "d", kind = "flow", output = "echo")]
+   |                                          ^^^^
 
 warning: unused imports: `Ctx`, `TaskletError`, and `Tasklet`
  --> tests/ui/tasklet_relay_keys.rs:3:30

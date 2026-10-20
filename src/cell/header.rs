@@ -1,11 +1,7 @@
 //! The typed view of the core's 16-byte record header: this SDK's `Tasklet`
 //! consts bound to the core's stamping and resolution.
 
-use flz_core::header::pack_version;
-pub use flz_core::header::{
-    decode_header, resolve_record, resolve_state, HeaderTemplate, RecordKind, SchemaDecision,
-    FORMAT_ID_EFFECT_RECORD, FORMAT_ID_POSTCARD, FORMAT_ID_TIMER_OPS,
-};
+use flz_core::header::{pack_version, HeaderTemplate};
 
 /// Build a template bound to a specific Tasklet's `SCHEMA_VERSION`. Every
 /// record this Tasklet writes is stamped from it, and every record it reads

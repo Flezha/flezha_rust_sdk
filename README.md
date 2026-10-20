@@ -306,14 +306,16 @@ with `part.no_output`.
 
 ## Public API workflow
 
-The public API surface baseline lives at `sdk/rust/public-api.txt`.
-After any public-API-affecting change:
+The public API surface baseline lives at `sdk/rust/public-api.txt`, recorded
+with the `testing` feature so the test harness is part of it.
+`tests/public_names.rs` holds it to the cross-SDK names in
+`test/fixtures/sdk_public_names.txt`. After any public-API-affecting change:
 
 1. Install the tool: `cargo install cargo-public-api` (one-time).
 2. Re-record the baseline:
 
    ```
-   cargo public-api -p flezha_runner > sdk/rust/public-api.txt
+   cargo public-api -p flezha_runner --features testing > sdk/rust/public-api.txt
    ```
 
 3. Review the diff in your PR. Treat new pub items as additive;

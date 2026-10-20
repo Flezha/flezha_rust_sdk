@@ -5,7 +5,7 @@ use flezha_runner::{tasklet, Ctx, Tasklet, TaskletError};
 #[derive(Default)]
 struct Counter;
 
-#[flezha_runner::relay(id = "counter")]
+#[flezha_runner::relay(factory_id = "counter")]
 #[tasklet(name = "counter")]
 impl Tasklet for Counter {
     type Input = String;

@@ -1,4 +1,4 @@
-error: #[flezha::tasklet] a static cell needs both its keys (`keys = [..]` or a written `fn cell_keys`) and a written `fn cells_for`
+error: #[flezha::tasklet] a static cell needs both its keys (`cell_keys = [..]` or a written `fn cell_keys`) and a written `fn cells_for`
  --> tests/ui/cell_keys_without_cells_for.rs:8:18
   |
 8 | impl Tasklet for F {

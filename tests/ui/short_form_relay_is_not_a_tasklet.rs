@@ -2,7 +2,7 @@
 //! the tasklet beside it: the relay type is not a tasklet.
 use flezha_runner::{ChannelBuilder, Relay};
 
-#[flezha_runner::relay(id = "do_nothing", output = "echo")]
+#[flezha_runner::relay(factory_id = "do_nothing", output = "echo")]
 fn do_nothing(input: String) -> Vec<u8> {
     input.into_bytes()
 }

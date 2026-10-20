@@ -64,7 +64,7 @@ dyn_tasklet!(CappedTasklet, CappedRelay, "capped_tasklet", "capped_relay"
     fn max_cells() -> usize { 2 }
 );
 dyn_tasklet!(TtlTasklet, TtlRelay, "ttl_tasklet", "ttl_relay"
-    fn cell_idle_ttl() -> Option<Duration> { Some(Duration::from_millis(100)) }
+    fn idle_ttl() -> Option<Duration> { Some(Duration::from_millis(100)) }
 );
 
 static SLEEP_RUN_STARTED: AtomicBool = AtomicBool::new(false);

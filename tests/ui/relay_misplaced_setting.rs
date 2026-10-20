@@ -1,6 +1,6 @@
 //! The short form refuses a setting under a parent that does not carry it,
 //! naming both.
-#[flezha_runner::relay(id = "echo", output = "out", run = flow(each = per_input))]
+#[flezha_runner::relay(factory_id = "echo", output = "out", run = flow(each = per_input))]
 fn echo(input: String) -> String {
     input
 }

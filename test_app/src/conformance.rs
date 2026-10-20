@@ -601,12 +601,12 @@ fn citation(s: &Shorthand) -> (&'static str, &'static str) {
 // The duplicate row's pair, declared here rather than beside the app's
 // fixtures because nothing but that row registers them: two short forms, one of
 // each kind, under one factory id.
-#[flezha_runner::relay(id = "plain", output = "out")]
+#[flezha_runner::relay(factory_id = "plain", output = "out")]
 fn shorthand_dup_flow(input: String) -> Vec<u8> {
     input.into_bytes()
 }
 
-#[flezha_runner::relay(id = "plain", output = "twin_sink", run = steps)]
+#[flezha_runner::relay(factory_id = "plain", output = "twin_sink", run = steps)]
 fn shorthand_dup_steps(input: String) -> Vec<u8> {
     input.into_bytes()
 }

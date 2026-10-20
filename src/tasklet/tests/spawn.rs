@@ -44,7 +44,7 @@ pub(super) fn capture_control_requests(
 /// The one `SpawnStepsRequest` a call shipped, and its reference id.
 fn shipped(
     rx: &crossbeam::channel::Receiver<crate::runner::RunnerMessage>,
-) -> (String, crate::pb::SpawnStepsRequest) {
+) -> (String, flz_core::pb::SpawnStepsRequest) {
     let unexpected = "expected a SpawnStepsRequest on the coordinator channel";
     let message = rx.try_recv().expect("a live invocation ships one request");
     let crate::runner::RunnerMessage::EmitControlRequest {
@@ -54,7 +54,7 @@ fn shipped(
     else {
         panic!("{unexpected}");
     };
-    let crate::pb::command_request::Command::SpawnStepsRequest(request) = *command else {
+    let flz_core::pb::command_request::Command::SpawnStepsRequest(request) = *command else {
         panic!("{unexpected}");
     };
     (reference_id, request)

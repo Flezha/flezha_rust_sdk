@@ -250,7 +250,7 @@ impl Relay for CompleteThenFail {
 /// Every cell of a static tasklet completes with its own key.
 #[derive(Default)]
 pub(crate) struct KeyedComplete;
-#[flezha_runner::tasklet(name = "steps_keyed_complete", keys = ["a", "b"])]
+#[flezha_runner::tasklet(name = "steps_keyed_complete", cell_keys = ["a", "b"])]
 impl Tasklet for KeyedComplete {
     type Input = String;
     type Output = String;

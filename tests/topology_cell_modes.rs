@@ -29,7 +29,7 @@ impl Change<Vec<String>> for AppendChange {
 
 #[derive(Default)]
 struct StaticTasklet;
-#[flezha_runner::tasklet(name = "static_tasklet", keys = ["a", "b", "c"])]
+#[flezha_runner::tasklet(name = "static_tasklet", cell_keys = ["a", "b", "c"])]
 impl Tasklet for StaticTasklet {
     type Input = String;
     type Output = String;

@@ -409,7 +409,7 @@ fn channel_names(t: &flezha_runner::relay::RelayTopology) -> Vec<String> {
 
 /// The short form: `output = "..."` is the only naming call the author writes,
 /// and it is the channel's name.
-#[flezha_runner::relay(id = "generated_naming", output = "items_output")]
+#[flezha_runner::relay(factory_id = "generated_naming", output = "items_output")]
 fn generated_naming(input: String) -> Option<String> {
     Some(input)
 }
@@ -473,7 +473,7 @@ fn a_short_form_is_a_relay_beside_its_tasklet() {
 }
 
 /// The short form's entry channel carries the overflow policy it declares.
-#[flezha_runner::relay(id = "shedding_entry", output = "shed_items", on_full = drop_oldest)]
+#[flezha_runner::relay(factory_id = "shedding_entry", output = "shed_items", on_full = drop_oldest)]
 fn shedding_entry(input: String) -> Vec<u8> {
     input.into_bytes()
 }
@@ -509,7 +509,7 @@ impl flezha_runner::Change<CounterState> for Seen {
 #[derive(Default)]
 struct SinklessCounter;
 
-#[flezha_runner::relay(id = "sinkless_counter", input = "ticks")]
+#[flezha_runner::relay(factory_id = "sinkless_counter", input = "ticks")]
 impl flezha_runner::Tasklet for SinklessCounter {
     type Input = String;
     type State = CounterState;
@@ -553,14 +553,18 @@ fn a_short_form_with_no_output_declares_only_its_entry_channel() {
 // ---- the shorthand's entry channel takes the name the author writes ------
 
 /// The attribute shorthand, naming its entry channel.
-#[flezha_runner::relay(id = "named_entry_attribute", output = "attr_items", input = "prices")]
+#[flezha_runner::relay(
+    factory_id = "named_entry_attribute",
+    output = "attr_items",
+    input = "prices"
+)]
 fn named_entry_attribute(input: String) -> Vec<u8> {
     input.into_bytes()
 }
 
 /// The attribute shorthand with no name written: the entry channel keeps the
 /// default address every existing relay already ships under.
-#[flezha_runner::relay(id = "default_entry_attribute", output = "default_items")]
+#[flezha_runner::relay(factory_id = "default_entry_attribute", output = "default_items")]
 fn default_entry_attribute(input: String) -> Vec<u8> {
     input.into_bytes()
 }
@@ -652,7 +656,7 @@ fn a_frame_reaches_an_unnamed_shorthand_on_input() {
 
 /// A steps short form: one declaration is a whole `once` steps relay, with
 /// every steps setting at its default.
-#[flezha_runner::relay(id = "place_order", output = "placed", input = "order", run = steps)]
+#[flezha_runner::relay(factory_id = "place_order", output = "placed", input = "order", run = steps)]
 fn place_order(order: String) -> String {
     order
 }

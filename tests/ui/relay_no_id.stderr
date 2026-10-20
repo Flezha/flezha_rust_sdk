@@ -1,5 +1,0 @@
-error: #[flezha::relay] needs an `id`: a relay's factory id is an address a user types, so it is written rather than derived from the function name
- --> tests/ui/relay_no_id.rs:2:1
-  |
-2 | fn f(a: String) -> Vec<u8> {
-  | ^^

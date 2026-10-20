@@ -1,8 +1,8 @@
 error[E0119]: conflicting implementations of trait `Relay` for type `Echo`
   --> tests/ui/relay_with_hand_written_impl.rs:6:1
    |
- 6 | #[flezha_runner::relay(id = "echo", output = "out")]
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ conflicting implementation for `Echo`
+ 6 | #[flezha_runner::relay(factory_id = "echo", output = "out")]
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ conflicting implementation for `Echo`
 ...
 11 | impl Relay for Echo {
    | ------------------- first implementation here

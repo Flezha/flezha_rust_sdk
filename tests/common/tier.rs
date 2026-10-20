@@ -7,11 +7,11 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use flezha_runner::__dispatch_internals::RelayDispatchHandle;
-use flezha_runner::cell::header::HeaderTemplate;
 use flezha_runner::channel::ChannelBuilder;
 use flezha_runner::state::Change;
 use flezha_runner::tasklet::{Ctx, Tasklet, TaskletError};
 use flezha_runner::{Durable, Exactly, Relay, RelaySettings, Run, SleepAfter};
+use flz_core::header::HeaderTemplate;
 
 use super::dummy_stream;
 

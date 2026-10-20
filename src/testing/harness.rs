@@ -20,11 +20,10 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use flz_core::header::RestoreError;
+use flz_core::header::{RestoreError, SchemaDecision};
 use flz_core::host::output_identity;
 
 use crate::cell::flusher::encode_change;
-use crate::cell::header::SchemaDecision;
 use crate::cell::restore::{decode_change, init_cell_with_payload, RestoreInitPayload};
 use crate::cell::timer::{PendingTimers, TimerKind, TimerOp, TimerSession};
 use crate::tasklet::clock::{evaluate, wall_now_ms};

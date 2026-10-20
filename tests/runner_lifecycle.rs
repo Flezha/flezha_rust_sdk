@@ -18,10 +18,10 @@ use std::thread;
 mod common;
 use common::prelude::*;
 use common::{stays_quiet, wait_until};
-use flezha_runner::transport::FlezhaStream;
 use flezha_runner::{
     ChannelBuilder, ErrorModel, Flezha, FlezhaError, Relay, Tasklet, TaskletError,
 };
+use flz_transport::transport::FlezhaStream;
 
 #[derive(serde::Serialize, serde::Deserialize, Default)]
 struct EmptyState;
@@ -109,7 +109,7 @@ fn start_fake_controller(dir: &Path) -> (Arc<AtomicUsize>, Arc<Mutex<Vec<Capture
             thread::spawn(move || {
                 let stream = FlezhaStream::unix(s);
                 while let Ok((payload_id, message, _metadata)) =
-                    flezha_runner::service::payloader::extract_payload(&stream)
+                    flz_transport::service::payloader::extract_payload(&stream)
                 {
                     sink.lock().unwrap().push((payload_id, message));
                 }
@@ -175,9 +175,9 @@ fn update_factories_set(frames: &Arc<Mutex<Vec<CapturedFrame>>>, min_count: usiz
                 .filter_map(|(_, message)| {
                     let request = flz_core::command::request_of(message).ok()?;
                     match request.command {
-                        Some(flezha_runner::pb::command_request::Command::UpdateFactories(
-                            update,
-                        )) => Some(update.factories.into_iter().map(|f| f.id).collect()),
+                        Some(flz_core::pb::command_request::Command::UpdateFactories(update)) => {
+                            Some(update.factories.into_iter().map(|f| f.id).collect())
+                        }
                         _ => None,
                     }
                 })

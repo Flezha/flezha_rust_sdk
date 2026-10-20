@@ -35,7 +35,7 @@ impl Tasklet for DynamicCellTasklet {
     type Output = Vec<u8>;
     type State = DynState;
     type Change = DynChange;
-    fn cell_idle_ttl() -> Option<Duration> {
+    fn idle_ttl() -> Option<Duration> {
         env::var("DYN_TEST_TTL_MS")
             .ok()
             .and_then(|s| s.parse().ok())
@@ -250,6 +250,64 @@ impl Relay for TimerCapRelay {
     }
 }
 
+// -- TimerChurnRelay -------------------------------------------------------
+//
+// `mix bench --shape timer`: each input arms a processing-time timer one
+// millisecond ahead, cancels the one the previous input armed and echoes; a
+// firing emits `fired:<at>`, which the bench does not count.
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+struct TimerChurnState {
+    last: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+struct Armed(u64);
+impl Change<TimerChurnState> for Armed {
+    fn apply_to(&self, state: &mut TimerChurnState) {
+        state.last = self.0;
+    }
+}
+
+#[derive(Default)]
+struct TimerChurnTasklet;
+#[flezha_runner::tasklet(name = "timer_churn_tasklet")]
+impl Tasklet for TimerChurnTasklet {
+    type Input = String;
+    type Output = Vec<u8>;
+    type State = TimerChurnState;
+    type Change = Armed;
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        let at = ctx.timer_after(Duration::from_millis(1))?;
+        let last = ctx.state().last;
+        if last != 0 && last != at {
+            ctx.cancel_processing_time_timer(last)?;
+        }
+        ctx.change(Armed(at));
+        ctx.emit(input.into_bytes())
+    }
+    fn on_timer(
+        &mut self,
+        fired_at: u64,
+        _kind: flezha_runner::state::TimerKind,
+        ctx: &mut Ctx<'_, Self>,
+    ) -> Result<(), TaskletError> {
+        ctx.emit(format!("fired:{fired_at}").into_bytes())
+    }
+}
+
+pub(crate) struct TimerChurnRelay;
+impl Relay for TimerChurnRelay {
+    fn factory_id() -> &'static str {
+        "timer_churn"
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("input")
+            .into::<TimerChurnTasklet>()
+            .output_named("echo");
+    }
+}
+
 // -- DoNothingRelay -----------------------------------------------------------
 //
 // Echoes the input bytes on the plugin-bound `echo` channel. Stateless;
@@ -275,6 +333,41 @@ impl Relay for DoNothingRelay {
         c.input::<String>("input")
             .into::<DoNothingTasklet>()
             .output_named("echo");
+    }
+}
+
+// -- SendForwardRelay -----------------------------------------------------
+//
+// `mix bench --shape send`: each `target:message` input is sent on to the
+// `input` channel of `target` through the controller, by the runner's own
+// send; it emits nothing.
+
+#[derive(Default)]
+struct SendForwardTasklet;
+#[flezha_runner::tasklet(name = "send_forward_tasklet")]
+impl Tasklet for SendForwardTasklet {
+    type Input = String;
+    type Output = Vec<u8>;
+    fn run(&mut self, input: String, _ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        let (target, message) = input.split_once(':').unwrap_or((input.as_str(), ""));
+        let runner = Flezha::current_runner()
+            .ok_or_else(|| TaskletError::Custom("no runner is serving".into()))?;
+        runner
+            .send(target, message, "input", &flezha_runner::SendOpts::new())
+            .map(drop)
+            .map_err(|e| TaskletError::Custom(format!("send to {target}: {e}")))
+    }
+}
+
+pub(crate) struct SendForwardRelay;
+impl Relay for SendForwardRelay {
+    fn factory_id() -> &'static str {
+        "send_forward"
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("input")
+            .into::<SendForwardTasklet>()
+            .output_named("out");
     }
 }
 
@@ -420,7 +513,7 @@ impl Change<StaticEntryState> for StaticEntryChange {
 
 #[derive(Default)]
 struct StaticEntryTasklet;
-#[flezha_runner::tasklet(name = "static_entry_tasklet", keys = ["a", "b", "c", "d"])]
+#[flezha_runner::tasklet(name = "static_entry_tasklet", cell_keys = ["a", "b", "c", "d"])]
 impl Tasklet for StaticEntryTasklet {
     type Input = String;
     type Output = String;

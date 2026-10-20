@@ -24,12 +24,12 @@ struct Setting {
 
 const SETTINGS: [Setting; 8] = [
     Setting {
-        key: "keys",
+        key: "cell_keys",
         item: "cell_keys",
         write: |v| quote! { fn cell_keys() -> ::std::vec::Vec<&'static str> { ::std::vec::Vec::from(#v) } },
     },
     Setting {
-        key: "capacity",
+        key: "mailbox_capacity",
         item: "mailbox_capacity",
         write: |v| quote! { fn mailbox_capacity() -> usize { #v } },
     },
@@ -40,10 +40,10 @@ const SETTINGS: [Setting; 8] = [
     },
     Setting {
         key: "idle_ttl_seconds",
-        item: "cell_idle_ttl",
+        item: "idle_ttl",
         write: |v| {
             quote! {
-                fn cell_idle_ttl() -> ::core::option::Option<::core::time::Duration> {
+                fn idle_ttl() -> ::core::option::Option<::core::time::Duration> {
                     ::core::option::Option::Some(::core::time::Duration::from_secs(#v))
                 }
             }
@@ -82,7 +82,7 @@ const FLAGS: [(&str, &str); 4] = [
 /// The keys the short forms take to describe a relay and its entry
 /// channel.
 pub(crate) const RELAY_KEYS: [&str; 8] = [
-    "id",
+    "factory_id",
     "output",
     "input",
     "on_full",
@@ -287,7 +287,7 @@ pub(crate) fn complete(
     if (keys.setting_for("cell_keys").is_some() || writes("cell_keys")) != writes("cells_for") {
         return Err(syn::Error::new(
             block.self_ty.span(),
-            "#[flezha::tasklet] a static cell needs both its keys (`keys = [..]` or a written \
+            "#[flezha::tasklet] a static cell needs both its keys (`cell_keys = [..]` or a written \
              `fn cell_keys`) and a written `fn cells_for`",
         ));
     }

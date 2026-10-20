@@ -159,7 +159,7 @@ fn parallel_observed() -> &'static Mutex<HashMap<&'static str, Vec<String>>> {
 
 #[derive(Default)]
 struct ParallelStaticTasklet;
-#[flezha_runner::tasklet(name = "parallel_static_tasklet", keys = ["a", "b", "c", "d"])]
+#[flezha_runner::tasklet(name = "parallel_static_tasklet", cell_keys = ["a", "b", "c", "d"])]
 impl Tasklet for ParallelStaticTasklet {
     type Input = String;
     type Output = String;

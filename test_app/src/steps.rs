@@ -143,7 +143,7 @@ impl Relay for EchoSteps {
 // emits `<cell key>:<message>`, so one message yields exactly two outputs.
 #[derive(Default)]
 struct StaticCellStep;
-#[flezha_runner::tasklet(name = "static_cell_step", keys = ["a", "b", "c"])]
+#[flezha_runner::tasklet(name = "static_cell_step", cell_keys = ["a", "b", "c"])]
 impl Tasklet for StaticCellStep {
     type Input = String;
     type Output = String;

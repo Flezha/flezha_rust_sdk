@@ -109,7 +109,7 @@ macro_rules! test_tasklet {
      |$inp:tt, $ctx:tt| $body:block) => {
         #[derive(Default)]
         struct $tasklet;
-        #[flezha_runner::tasklet(name = $name, capacity = $cap)]
+        #[flezha_runner::tasklet(name = $name, mailbox_capacity = $cap)]
         impl flezha_runner::tasklet::Tasklet for $tasklet {
             type Input = $input;
             type Output = $output;

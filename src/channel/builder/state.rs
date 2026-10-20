@@ -76,7 +76,7 @@ pub(crate) struct TaskletEntry {
     /// then routes everything to cell index 0.
     pub cells_for_erased: CellsForFn,
 
-    /// Dynamic-mode knobs captured at registration (`Tasklet::cell_idle_ttl`,
+    /// Dynamic-mode knobs captured at registration (`Tasklet::idle_ttl`,
     /// `max_cells`). Carried through to the `TaskletDescriptor` for the
     /// reaper / registry; inert for non-dynamic Tasklets. `idle_ttl == None`
     /// means no eviction.
@@ -489,7 +489,7 @@ fn tasklet_entry<S: Tasklet>(name: &'static str, named: bool) -> TaskletEntry {
         compact_after_bytes: S::compact_after_bytes(),
         build_cell,
         cells_for_erased,
-        idle_ttl: S::cell_idle_ttl(),
+        idle_ttl: S::idle_ttl(),
         max_cells: S::max_cells(),
         serialize_state,
         deserialize_state,

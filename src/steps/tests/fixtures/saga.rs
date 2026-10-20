@@ -237,7 +237,7 @@ pub(crate) struct FanKeyState {
 }
 #[derive(Default)]
 pub(crate) struct SagaFan;
-#[flezha_runner::tasklet(name = "saga_fan", keys = ["even", "odd"])]
+#[flezha_runner::tasklet(name = "saga_fan", cell_keys = ["even", "odd"])]
 impl Tasklet for SagaFan {
     type Input = String;
     type Output = String;

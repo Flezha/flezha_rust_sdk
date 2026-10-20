@@ -4,7 +4,7 @@ use flezha_runner::{tasklet, Ctx, Tasklet, TaskletError};
 #[derive(Default)]
 struct F;
 
-#[tasklet(name = "f", keys = ["a", "b"])]
+#[tasklet(name = "f", cell_keys = ["a", "b"])]
 impl Tasklet for F {
     type Input = String;
 

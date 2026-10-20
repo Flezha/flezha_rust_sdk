@@ -49,7 +49,7 @@ impl Change<StoreInputState> for Stored {
 #[derive(Default)]
 struct StoreInput;
 
-#[flezha_runner::relay(id = "store_input", output = "stored", max_cells = 10)]
+#[flezha_runner::relay(factory_id = "store_input", output = "stored", max_cells = 10)]
 impl Tasklet for StoreInput {
     type Input = String;
     type Output = String;
@@ -77,7 +77,7 @@ fn a_stateful_short_form_sits_on_the_impl_block() {
 #[derive(Default)]
 struct Ticks;
 
-#[flezha_runner::relay(id = "ticks_counter", input = "ticks")]
+#[flezha_runner::relay(factory_id = "ticks_counter", input = "ticks")]
 impl Tasklet for Ticks {
     type Input = String;
 
@@ -100,7 +100,7 @@ fn a_short_form_with_no_output_wires_only_the_entry_channel() {
 struct PlaceIt;
 
 #[flezha_runner::relay(
-    id = "place_it",
+    factory_id = "place_it",
     output = "placed",
     input = "order",
     run = steps(each = per_input)
@@ -122,7 +122,7 @@ fn a_steps_short_form_on_the_impl_block_declares_its_run() {
     assert_eq!(PlaceIt::CLOCK, ClockKind::Wall);
 }
 
-#[flezha_runner::relay(id = "evens_only", output = "evens")]
+#[flezha_runner::relay(factory_id = "evens_only", output = "evens")]
 fn evens_only(n: String) -> Option<String> {
     (n.parse::<u64>().ok()? % 2 == 0).then_some(n)
 }

@@ -1,5 +1,5 @@
 error: an entry channel name may not be empty
- --> tests/ui/relay_empty_input.rs:1:56
+ --> tests/ui/relay_empty_input.rs:1:64
   |
-1 | #[flezha_runner::relay(id = "f", output = "s", input = "")]
-  |                                                        ^^
+1 | #[flezha_runner::relay(factory_id = "f", output = "s", input = "")]
+  |                                                                ^^

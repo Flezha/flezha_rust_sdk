@@ -5,12 +5,12 @@
 use std::sync::atomic::Ordering;
 
 use crossbeam::channel::Receiver;
+use flz_core::command::CommandAction;
+use flz_core::pb::{AddRelay, StepsStop};
 use flz_core::runner::RunnerNode;
 use flz_core::test_support::steps::*;
 
 use super::super::fixtures::*;
-use crate::command::CommandAction;
-use crate::pb::{AddRelay, StepsStop};
 use crate::runner::RunnerMessage;
 use crate::ErrorModel;
 
@@ -112,7 +112,7 @@ pub(super) fn completions(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
 }
 
 /// The completion each of `id`'s forward task commits carried, in order.
-fn completions_of(commits: Vec<crate::pb::TaskCommit>, id: &str) -> Vec<Option<Vec<u8>>> {
+fn completions_of(commits: Vec<flz_core::pb::TaskCommit>, id: &str) -> Vec<Option<Vec<u8>>> {
     commits
         .into_iter()
         .filter(|c| c.relay_id == id && !c.compensating)
@@ -251,13 +251,13 @@ pub(super) fn add_relay_routing(node: &mut RunnerNode, rx: &Receiver<RunnerMessa
         !matches!(early, Ok(RunnerMessage::EmitRelayCompleted { ref relay_id, .. }) if relay_id == "steps-effects-gated"),
         "the pass ran before the effect results landed"
     );
-    let shipped = |identity: &str| crate::pb::EffectResult {
+    let shipped = |identity: &str| flz_core::pb::EffectResult {
         identity: identity.to_string(),
         offset: 1,
         cell_identity: crate::cell::flusher::encode_cell_identity("steps-effects-gated", "x", ""),
         ..Default::default()
     };
-    let results = crate::pb::EffectResults {
+    let results = flz_core::pb::EffectResults {
         relay_id: "steps-effects-gated".into(),
         results: vec![shipped("a"), shipped("b")],
     };

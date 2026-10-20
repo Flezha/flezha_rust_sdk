@@ -225,7 +225,7 @@ pub trait Tasklet: Send + Sync + 'static + Default {
     /// opts a per-Tasklet reaper in; eviction is destructive (in-memory slot +
     /// on-disk WAL/snapshot dropped) and a later input cold-starts fresh —
     /// no restore-from-disk. Ignored for single/static Tasklets.
-    fn cell_idle_ttl() -> Option<std::time::Duration> {
+    fn idle_ttl() -> Option<std::time::Duration> {
         None
     }
 
@@ -250,7 +250,7 @@ pub trait Tasklet: Send + Sync + 'static + Default {
     ///   2. `FLEZHA_MAILBOX_CAPACITY` env var (parsed as `usize`).
     ///   3. The built-in default (`DEFAULT_MAILBOX_CAPACITY`).
     ///
-    /// `#[flezha::tasklet]` sets the flag from the `capacity` key or a written
+    /// `#[flezha::tasklet]` sets the flag from the `mailbox_capacity` key or a written
     /// `mailbox_capacity`, so the runtime can tell an explicit value equal to
     /// the default from the inherited default. Capacity must be in `1..=1_048_576`; out-of-range values fail
     /// `register_factory(R)` with the offending Tasklet name.

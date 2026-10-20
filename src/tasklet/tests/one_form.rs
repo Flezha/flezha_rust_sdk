@@ -422,7 +422,7 @@ struct Knobs;
     name = "knobs",
     max_cells = 10,
     idle_ttl_seconds = 5,
-    capacity = 64,
+    mailbox_capacity = 64,
     schema_version = 3,
     min_readable_schema_version = 2,
     compact_after_bytes = 4096,
@@ -440,7 +440,7 @@ impl Tasklet for Knobs {
 fn each_setting_key_takes_effect() {
     assert_eq!(Knobs::max_cells(), 10);
     const { assert!(Knobs::MAX_CELLS_OVERRIDDEN) };
-    assert_eq!(Knobs::cell_idle_ttl(), Some(Duration::from_secs(5)));
+    assert_eq!(Knobs::idle_ttl(), Some(Duration::from_secs(5)));
     assert_eq!(Knobs::mailbox_capacity(), 64);
     const { assert!(Knobs::MAILBOX_CAPACITY_OVERRIDDEN) };
     assert_eq!(Knobs::SCHEMA_VERSION, 3);
@@ -453,7 +453,7 @@ fn each_setting_key_takes_effect() {
 #[derive(Default)]
 struct StaticEntry;
 
-#[flezha_runner::tasklet(name = "static_entry_tasklet", keys = ["a", "b", "c", "d"])]
+#[flezha_runner::tasklet(name = "static_entry_tasklet", cell_keys = ["a", "b", "c", "d"])]
 impl Tasklet for StaticEntry {
     type Input = String;
 

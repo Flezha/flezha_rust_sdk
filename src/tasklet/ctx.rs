@@ -363,6 +363,13 @@ impl<'a, S: Tasklet> Ctx<'a, S> {
         self.cell_key
     }
 
+    /// Whether this invocation replays input the Cell already processed.
+    /// [`Self::spawn_steps`] starts nothing on a replay; read it to skip a
+    /// side effect of the tasklet's own the same way.
+    pub fn replay(&self) -> bool {
+        self.replay
+    }
+
     /// A deterministic, replay-stable 128-bit identifier: derived from the
     /// Cell identity, the invocation's durable change seq, and a
     /// per-invocation call ordinal. Repeated calls in one invocation

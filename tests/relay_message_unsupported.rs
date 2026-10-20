@@ -3,8 +3,8 @@
 //! and until it is, every request must come back with an empty payload and the
 //! one refusal code — never with silence, and never with a decode error.
 
-use flezha_runner::command::CommandAction;
-use flezha_runner::pb::{RelayMessage, RelayMessageResponse};
+use flz_core::command::CommandAction;
+use flz_core::pb::{RelayMessage, RelayMessageResponse};
 use prost::Message;
 
 #[test]

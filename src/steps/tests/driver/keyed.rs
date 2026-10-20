@@ -39,7 +39,7 @@ fn sweep(registry: &DynamicCellRegistry) {
     registry.reap_sweep(Duration::ZERO);
 }
 
-fn cells_ran_of(commits: &[crate::pb::TaskCommit], task_idx: u32) -> Vec<Vec<u8>> {
+fn cells_ran_of(commits: &[flz_core::pb::TaskCommit], task_idx: u32) -> Vec<Vec<u8>> {
     commits
         .iter()
         .find(|c| c.task_idx == task_idx && !c.compensating)
@@ -59,8 +59,8 @@ fn restore(
     terminal_seq: u64,
     intent: bool,
     done: bool,
-) -> crate::pb::RestoreInitStateResponse {
-    let command = crate::pb::RestoreInitState {
+) -> flz_core::pb::RestoreInitStateResponse {
+    let command = flz_core::pb::RestoreInitState {
         cell_id,
         terminal_seq,
         has_compensation_intent: intent,
@@ -70,7 +70,7 @@ fn restore(
     let mut errors = Vec::new();
     let reply = command.handle(node, "", &mut errors);
     assert!(errors.is_empty(), "the restore applied: {errors:?}");
-    crate::pb::RestoreInitStateResponse::decode(reply.bytes.as_slice())
+    flz_core::pb::RestoreInitStateResponse::decode(reply.bytes.as_slice())
         .expect("a restore answers a response")
 }
 
@@ -341,7 +341,7 @@ fn acked_parks(id: &str) -> Vec<crate::cell::park::ParkBody> {
 }
 
 /// Answer `id`'s control requests until its next iteration commits.
-fn await_iter_commit(rx: &Receiver<RunnerMessage>, id: &str) -> crate::pb::IterCommit {
+fn await_iter_commit(rx: &Receiver<RunnerMessage>, id: &str) -> flz_core::pb::IterCommit {
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     loop {
         if let Some(commit) = drain_iter_commits().into_iter().find(|c| c.relay_id == id) {

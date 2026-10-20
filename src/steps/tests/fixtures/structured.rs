@@ -315,7 +315,7 @@ impl Change<CountState> for Inc {
 /// length parity, counts per-cell (independent state), emits `<n>:<item>`.
 #[derive(Default)]
 pub(crate) struct FanTask;
-#[flezha_runner::tasklet(name = "steps_fan_op", keys = ["even", "odd"])]
+#[flezha_runner::tasklet(name = "steps_fan_op", cell_keys = ["even", "odd"])]
 impl Tasklet for FanTask {
     type Input = String;
     type Output = String;

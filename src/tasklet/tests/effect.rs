@@ -19,7 +19,7 @@ fn identity(test: &str) -> Vec<u8> {
 fn answer_next(
     rx: crossbeam::channel::Receiver<crate::runner::RunnerMessage>,
     first: Option<&'static [u8]>,
-) -> std::thread::JoinHandle<crate::pb::EffectResult> {
+) -> std::thread::JoinHandle<flz_core::pb::EffectResult> {
     std::thread::spawn(move || {
         let message = rx
             .recv_timeout(std::time::Duration::from_secs(5))
@@ -31,7 +31,7 @@ fn answer_next(
         else {
             panic!("expected a control request");
         };
-        let crate::pb::command_request::Command::EffectResult(result) = *command else {
+        let flz_core::pb::command_request::Command::EffectResult(result) = *command else {
             panic!("expected an EffectResult");
         };
         let ack = flz_core::effect_result::encode_ack(first.is_some(), first.unwrap_or_default());
@@ -62,7 +62,7 @@ fn a_first_run_keeps_its_result_and_a_re_run_is_served_it() {
         cell_identity: &rebound,
         offset: Some(4),
     };
-    flz_core::effect_result::landed(vec![crate::pb::EffectResult {
+    flz_core::effect_result::landed(vec![flz_core::pb::EffectResult {
         identity: origin.effect_identity(flz_core::origin::Phase::Run, "model", 0),
         offset: 4,
         payload: sent.payload,

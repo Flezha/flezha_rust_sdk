@@ -13,16 +13,15 @@
 //! with the Java SDK; every environment knob the runner reads is listed in
 //! `docs/public/configuration.md`.
 
+pub mod cell;
 pub mod channel;
 pub mod control;
-pub mod steps;
-pub use flz_core::command;
-pub mod cell;
 pub mod diag;
 pub mod local;
 pub mod relay;
 mod runner;
 mod runner_handle;
+pub mod steps;
 pub mod tasklet;
 mod util;
 
@@ -67,8 +66,6 @@ pub use control::{Control, ControlError, PluginSpec, RelaySpec, StartOutcome, St
 /// short-form `#[flezha::relay]` and `flezha::pipeline!` expand to the
 /// trait surface above; see `docs/internal/sdk/authoring_contract.md`.
 pub use flezha_macros::{pipeline, relay, tasklet};
-pub use flz_core::pb;
-pub use flz_transport::{errors, service, transport};
 pub use local::LocalRelay;
 pub use relay::builder::TopologyBuildError;
 pub use relay::topology::{

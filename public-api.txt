@@ -20,68 +20,11 @@ pub use flezha_runner::SleepAfter
 pub use flezha_runner::StepsError
 pub use flezha_runner::TimerKind
 pub use flezha_runner::TopologyIssue
-pub use flezha_runner::errors
-pub use flezha_runner::pb
 pub use flezha_runner::pipeline
 pub use flezha_runner::relay
-pub use flezha_runner::service
 pub use flezha_runner::tasklet
-pub use flezha_runner::transport
 pub mod flezha_runner::cell
 pub use flezha_runner::cell::<<flz_core::cell::*>>
-pub mod flezha_runner::cell::flusher
-pub struct flezha_runner::cell::flusher::TypedBodies<S: flezha_runner::tasklet::Tasklet>(_)
-impl<S: flezha_runner::tasklet::Tasklet> flz_core::effect::Bodies for flezha_runner::cell::flusher::TypedBodies<S>
-pub type flezha_runner::cell::flusher::TypedBodies<S>::Change = <S as flezha_runner::tasklet::Tasklet>::Change
-pub fn flezha_runner::cell::flusher::TypedBodies<S>::coalesce(alloc::vec::Vec<<S as flezha_runner::tasklet::Tasklet>::Change>) -> alloc::vec::Vec<<S as flezha_runner::tasklet::Tasklet>::Change>
-pub fn flezha_runner::cell::flusher::TypedBodies<S>::into_bodies(alloc::vec::Vec<<S as flezha_runner::tasklet::Tasklet>::Change>) -> alloc::vec::Vec<alloc::vec::Vec<u8>>
-impl<S> core::marker::Freeze for flezha_runner::cell::flusher::TypedBodies<S>
-impl<S> core::marker::Send for flezha_runner::cell::flusher::TypedBodies<S>
-impl<S> core::marker::Sync for flezha_runner::cell::flusher::TypedBodies<S>
-impl<S> core::marker::Unpin for flezha_runner::cell::flusher::TypedBodies<S>
-impl<S> core::marker::UnsafeUnpin for flezha_runner::cell::flusher::TypedBodies<S>
-impl<S> core::panic::unwind_safe::RefUnwindSafe for flezha_runner::cell::flusher::TypedBodies<S>
-impl<S> core::panic::unwind_safe::UnwindSafe for flezha_runner::cell::flusher::TypedBodies<S>
-impl<T, U> core::convert::Into<U> for flezha_runner::cell::flusher::TypedBodies<S> where U: core::convert::From<T>
-pub fn flezha_runner::cell::flusher::TypedBodies<S>::into(self) -> U
-impl<T, U> core::convert::TryFrom<U> for flezha_runner::cell::flusher::TypedBodies<S> where U: core::convert::Into<T>
-pub type flezha_runner::cell::flusher::TypedBodies<S>::Error = core::convert::Infallible
-pub fn flezha_runner::cell::flusher::TypedBodies<S>::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
-impl<T, U> core::convert::TryInto<U> for flezha_runner::cell::flusher::TypedBodies<S> where U: core::convert::TryFrom<T>
-pub type flezha_runner::cell::flusher::TypedBodies<S>::Error = <U as core::convert::TryFrom<T>>::Error
-pub fn flezha_runner::cell::flusher::TypedBodies<S>::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
-impl<T> core::any::Any for flezha_runner::cell::flusher::TypedBodies<S> where T: 'static + ?core::marker::Sized
-pub fn flezha_runner::cell::flusher::TypedBodies<S>::type_id(&self) -> core::any::TypeId
-impl<T> core::borrow::Borrow<T> for flezha_runner::cell::flusher::TypedBodies<S> where T: ?core::marker::Sized
-pub fn flezha_runner::cell::flusher::TypedBodies<S>::borrow(&self) -> &T
-impl<T> core::borrow::BorrowMut<T> for flezha_runner::cell::flusher::TypedBodies<S> where T: ?core::marker::Sized
-pub fn flezha_runner::cell::flusher::TypedBodies<S>::borrow_mut(&mut self) -> &mut T
-impl<T> core::convert::From<T> for flezha_runner::cell::flusher::TypedBodies<S>
-pub fn flezha_runner::cell::flusher::TypedBodies<S>::from(T) -> T
-impl<T> crossbeam_epoch::atomic::Pointable for flezha_runner::cell::flusher::TypedBodies<S>
-pub type flezha_runner::cell::flusher::TypedBodies<S>::Init = T
-pub const flezha_runner::cell::flusher::TypedBodies<S>::ALIGN: usize
-pub unsafe fn flezha_runner::cell::flusher::TypedBodies<S>::deref<'a>(usize) -> &'a T
-pub unsafe fn flezha_runner::cell::flusher::TypedBodies<S>::deref_mut<'a>(usize) -> &'a mut T
-pub unsafe fn flezha_runner::cell::flusher::TypedBodies<S>::drop(usize)
-pub unsafe fn flezha_runner::cell::flusher::TypedBodies<S>::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
-impl<T> tracing::instrument::Instrument for flezha_runner::cell::flusher::TypedBodies<S>
-impl<T> tracing::instrument::WithSubscriber for flezha_runner::cell::flusher::TypedBodies<S>
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::cell::flusher::TypedBodies<S> where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::cell::flusher::TypedBodies<S>::vzip(self) -> V
-pub fn flezha_runner::cell::flusher::coalesce<S, C: flezha_runner::tasklet::change::Change<S>>(alloc::vec::Vec<C>) -> alloc::vec::Vec<C>
-pub type flezha_runner::cell::flusher::TypedBuffer<S> = flz_core::effect::EffectBuffer<flezha_runner::cell::flusher::TypedBodies<S>>
-pub mod flezha_runner::cell::header
-pub use flezha_runner::cell::header::FORMAT_ID_EFFECT_RECORD
-pub use flezha_runner::cell::header::FORMAT_ID_POSTCARD
-pub use flezha_runner::cell::header::FORMAT_ID_TIMER_OPS
-pub use flezha_runner::cell::header::HeaderTemplate
-pub use flezha_runner::cell::header::RecordKind
-pub use flezha_runner::cell::header::SchemaDecision
-pub use flezha_runner::cell::header::decode_header
-pub use flezha_runner::cell::header::resolve_record
-pub use flezha_runner::cell::header::resolve_state
-pub fn flezha_runner::cell::header::header_template_for<S: flezha_runner::tasklet::Tasklet>() -> flz_core::header::HeaderTemplate
 pub mod flezha_runner::cell::restore
 pub fn flezha_runner::cell::restore::init_cell_with_payload<S: flezha_runner::tasklet::Tasklet>(core::option::Option<&str>, core::option::Option<&flz_core::restore::RestoreInitPayload<'_>>) -> core::result::Result<(<S as flezha_runner::tasklet::Tasklet>::State, flz_core::timer::PendingTimers, flz_core::restore::RestoreOutcome), flz_core::header::RestoreError>
 pub mod flezha_runner::cell::timer
@@ -1110,95 +1053,6 @@ pub const flezha_runner::relay::builder::ENV_MAILBOX_CAPACITY: &str
 pub fn flezha_runner::relay::builder::build_topology(&'static str, flezha_runner::channel::builder::ChannelBuilder) -> core::result::Result<alloc::sync::Arc<flz_core::relay::topology::RelayTopology>, flezha_runner::relay::builder::TopologyBuildError>
 pub fn flezha_runner::relay::builder::build_topology_for<R: flezha_runner::relay::Relay>() -> core::result::Result<alloc::sync::Arc<flz_core::relay::topology::RelayTopology>, flezha_runner::relay::builder::TopologyBuildError>
 pub fn flezha_runner::relay::builder::build_topology_with_settings(&'static str, flezha_runner::channel::builder::ChannelBuilder, &flz_core::relay::settings::RelaySettings) -> core::result::Result<alloc::sync::Arc<flz_core::relay::topology::RelayTopology>, flezha_runner::relay::builder::TopologyBuildError>
-pub mod flezha_runner::relay::dispatcher
-pub struct flezha_runner::relay::dispatcher::CellState<S: flezha_runner::tasklet::Tasklet>
-pub flezha_runner::relay::dispatcher::CellState::state: <S as flezha_runner::tasklet::Tasklet>::State
-pub flezha_runner::relay::dispatcher::CellState::tasklet: S
-impl<S> core::marker::Freeze for flezha_runner::relay::dispatcher::CellState<S> where S: core::marker::Freeze, <S as flezha_runner::tasklet::Tasklet>::State: core::marker::Freeze
-impl<S> core::marker::Send for flezha_runner::relay::dispatcher::CellState<S>
-impl<S> core::marker::Sync for flezha_runner::relay::dispatcher::CellState<S>
-impl<S> core::marker::Unpin for flezha_runner::relay::dispatcher::CellState<S> where S: core::marker::Unpin, <S as flezha_runner::tasklet::Tasklet>::State: core::marker::Unpin
-impl<S> core::marker::UnsafeUnpin for flezha_runner::relay::dispatcher::CellState<S> where S: core::marker::UnsafeUnpin, <S as flezha_runner::tasklet::Tasklet>::State: core::marker::UnsafeUnpin
-impl<S> core::panic::unwind_safe::RefUnwindSafe for flezha_runner::relay::dispatcher::CellState<S> where S: core::panic::unwind_safe::RefUnwindSafe, <S as flezha_runner::tasklet::Tasklet>::State: core::panic::unwind_safe::RefUnwindSafe
-impl<S> core::panic::unwind_safe::UnwindSafe for flezha_runner::relay::dispatcher::CellState<S> where S: core::panic::unwind_safe::UnwindSafe, <S as flezha_runner::tasklet::Tasklet>::State: core::panic::unwind_safe::UnwindSafe
-impl<T, U> core::convert::Into<U> for flezha_runner::relay::dispatcher::CellState<S> where U: core::convert::From<T>
-pub fn flezha_runner::relay::dispatcher::CellState<S>::into(self) -> U
-impl<T, U> core::convert::TryFrom<U> for flezha_runner::relay::dispatcher::CellState<S> where U: core::convert::Into<T>
-pub type flezha_runner::relay::dispatcher::CellState<S>::Error = core::convert::Infallible
-pub fn flezha_runner::relay::dispatcher::CellState<S>::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
-impl<T, U> core::convert::TryInto<U> for flezha_runner::relay::dispatcher::CellState<S> where U: core::convert::TryFrom<T>
-pub type flezha_runner::relay::dispatcher::CellState<S>::Error = <U as core::convert::TryFrom<T>>::Error
-pub fn flezha_runner::relay::dispatcher::CellState<S>::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
-impl<T> core::any::Any for flezha_runner::relay::dispatcher::CellState<S> where T: 'static + ?core::marker::Sized
-pub fn flezha_runner::relay::dispatcher::CellState<S>::type_id(&self) -> core::any::TypeId
-impl<T> core::borrow::Borrow<T> for flezha_runner::relay::dispatcher::CellState<S> where T: ?core::marker::Sized
-pub fn flezha_runner::relay::dispatcher::CellState<S>::borrow(&self) -> &T
-impl<T> core::borrow::BorrowMut<T> for flezha_runner::relay::dispatcher::CellState<S> where T: ?core::marker::Sized
-pub fn flezha_runner::relay::dispatcher::CellState<S>::borrow_mut(&mut self) -> &mut T
-impl<T> core::convert::From<T> for flezha_runner::relay::dispatcher::CellState<S>
-pub fn flezha_runner::relay::dispatcher::CellState<S>::from(T) -> T
-impl<T> crossbeam_epoch::atomic::Pointable for flezha_runner::relay::dispatcher::CellState<S>
-pub type flezha_runner::relay::dispatcher::CellState<S>::Init = T
-pub const flezha_runner::relay::dispatcher::CellState<S>::ALIGN: usize
-pub unsafe fn flezha_runner::relay::dispatcher::CellState<S>::deref<'a>(usize) -> &'a T
-pub unsafe fn flezha_runner::relay::dispatcher::CellState<S>::deref_mut<'a>(usize) -> &'a mut T
-pub unsafe fn flezha_runner::relay::dispatcher::CellState<S>::drop(usize)
-pub unsafe fn flezha_runner::relay::dispatcher::CellState<S>::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
-impl<T> tracing::instrument::Instrument for flezha_runner::relay::dispatcher::CellState<S>
-impl<T> tracing::instrument::WithSubscriber for flezha_runner::relay::dispatcher::CellState<S>
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::relay::dispatcher::CellState<S> where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::relay::dispatcher::CellState<S>::vzip(self) -> V
-pub struct flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S: flezha_runner::tasklet::Tasklet>
-impl<S: flezha_runner::tasklet::Tasklet> flz_core::cell::TaskletDispatcher for flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>
-pub fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::cell_label(&self) -> &str
-pub fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::close_interval(&self, &mut alloc::boxed::Box<dyn flz_core::flusher::FlushableBuffer>) -> bool
-pub fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::compensate(&self, &alloc::sync::Arc<flz_core::cell::CellSlot>, alloc::vec::Vec<alloc::sync::Arc<(dyn core::any::Any + core::marker::Send + core::marker::Sync)>>, core::option::Option<u64>)
-pub fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::correction_policy(&self) -> core::option::Option<flz_core::relay::topology::CorrectionPolicy>
-pub fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::dispatch_item(&self, flz_core::poll_core::ItemAttempt, &alloc::sync::Arc<flz_core::cell::CellSlot>, &mut alloc::boxed::Box<(dyn core::any::Any + core::marker::Send)>, &mut flz_core::timer::PendingTimers, &alloc::sync::Weak<flz_core::relay::instance::RelayInstance>) -> flz_core::cell::ItemDisposition
-pub fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::event_time_of(&self, &flz_core::cell::CellPayload) -> core::option::Option<u64>
-pub fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::interval_deadline(&self, &mut alloc::boxed::Box<dyn flz_core::flusher::FlushableBuffer>) -> core::option::Option<u64>
-pub fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::is_event_time(&self) -> bool
-pub fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::restore(&self, &alloc::sync::Arc<flz_core::cell::CellSlot>, &flz_core::restore::RestoreInitPayload<'_>) -> core::result::Result<flz_core::restore::RestoreOutcome, flz_core::error::Error>
-pub fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::retry_policy(&self) -> flz_core::channel::RetryPolicy
-pub fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::snapshot_frame(&self, &alloc::sync::Arc<flz_core::cell::CellSlot>) -> core::result::Result<(alloc::vec::Vec<u8>, u64, usize), flz_core::error::Error>
-pub fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::tasklet_id(&self) -> flz_core::channel::TaskletId
-pub fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::tasklet_name(&self) -> &'static str
-pub fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::write_timer_ops(&self, &alloc::sync::Arc<flz_core::cell::CellSlot>, alloc::vec::Vec<flz_core::schema::TimerOp>)
-impl<S> core::marker::Freeze for flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>
-impl<S> core::marker::Send for flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>
-impl<S> core::marker::Sync for flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>
-impl<S> core::marker::Unpin for flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>
-impl<S> core::marker::UnsafeUnpin for flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>
-impl<S> core::panic::unwind_safe::RefUnwindSafe for flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>
-impl<S> core::panic::unwind_safe::UnwindSafe for flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>
-impl<T, U> core::convert::Into<U> for flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S> where U: core::convert::From<T>
-pub fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::into(self) -> U
-impl<T, U> core::convert::TryFrom<U> for flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S> where U: core::convert::Into<T>
-pub type flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::Error = core::convert::Infallible
-pub fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
-impl<T, U> core::convert::TryInto<U> for flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S> where U: core::convert::TryFrom<T>
-pub type flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::Error = <U as core::convert::TryFrom<T>>::Error
-pub fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
-impl<T> core::any::Any for flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S> where T: 'static + ?core::marker::Sized
-pub fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::type_id(&self) -> core::any::TypeId
-impl<T> core::borrow::Borrow<T> for flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S> where T: ?core::marker::Sized
-pub fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::borrow(&self) -> &T
-impl<T> core::borrow::BorrowMut<T> for flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S> where T: ?core::marker::Sized
-pub fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::borrow_mut(&mut self) -> &mut T
-impl<T> core::convert::From<T> for flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>
-pub fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::from(T) -> T
-impl<T> crossbeam_epoch::atomic::Pointable for flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>
-pub type flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::Init = T
-pub const flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::ALIGN: usize
-pub unsafe fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::deref<'a>(usize) -> &'a T
-pub unsafe fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::deref_mut<'a>(usize) -> &'a mut T
-pub unsafe fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::drop(usize)
-pub unsafe fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
-impl<T> tracing::instrument::Instrument for flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>
-impl<T> tracing::instrument::WithSubscriber for flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S> where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::relay::dispatcher::TaskletDispatcherImpl<S>::vzip(self) -> V
-pub fn flezha_runner::relay::dispatcher::build_cell_slot<S: flezha_runner::tasklet::Tasklet>(flz_core::channel::BuildCellArgs<'_>) -> alloc::sync::Arc<flz_core::cell::CellSlot>
 pub trait flezha_runner::relay::Relay: core::marker::Send + core::marker::Sync + 'static
 pub fn flezha_runner::relay::Relay::channels(&flezha_runner::channel::builder::ChannelBuilder)
 pub fn flezha_runner::relay::Relay::factory_id() -> &'static str
@@ -1500,6 +1354,7 @@ pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::emit_keyed_with_meta(&mut self, 
 pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::emit_with_meta(&mut self, <S as flezha_runner::tasklet::Tasklet>::Output, std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>) -> core::result::Result<(), flezha_runner::tasklet::error::TaskletError>
 pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::now(&self) -> u64
 pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::part(&self, <S as flezha_runner::tasklet::Tasklet>::Output) -> core::result::Result<(), flezha_runner::tasklet::error::TaskletError>
+pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::replay(&self) -> bool
 pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::spawn_steps(&self, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::vec::Vec<u8>>) -> flz_core::spawn::SpawnHandle
 pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::spawn_steps_with(&self, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::vec::Vec<u8>>, flz_core::spawn::SpawnOptions) -> flz_core::spawn::SpawnHandle
 pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::stable_id(&self) -> flezha_runner::tasklet::ctx::StableId
@@ -1887,6 +1742,7 @@ pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::emit_keyed_with_meta(&mut self, 
 pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::emit_with_meta(&mut self, <S as flezha_runner::tasklet::Tasklet>::Output, std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>) -> core::result::Result<(), flezha_runner::tasklet::error::TaskletError>
 pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::now(&self) -> u64
 pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::part(&self, <S as flezha_runner::tasklet::Tasklet>::Output) -> core::result::Result<(), flezha_runner::tasklet::error::TaskletError>
+pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::replay(&self) -> bool
 pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::spawn_steps(&self, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::vec::Vec<u8>>) -> flz_core::spawn::SpawnHandle
 pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::spawn_steps_with(&self, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::vec::Vec<u8>>, flz_core::spawn::SpawnOptions) -> flz_core::spawn::SpawnHandle
 pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::stable_id(&self) -> flezha_runner::tasklet::ctx::StableId
@@ -2017,12 +1873,12 @@ pub const flezha_runner::tasklet::Tasklet::MAX_CELLS_OVERRIDDEN: bool
 pub const flezha_runner::tasklet::Tasklet::MIN_READABLE_SCHEMA_VERSION: u32
 pub const flezha_runner::tasklet::Tasklet::NAME: &'static str
 pub const flezha_runner::tasklet::Tasklet::SCHEMA_VERSION: u32
-pub fn flezha_runner::tasklet::Tasklet::cell_idle_ttl() -> core::option::Option<core::time::Duration>
 pub fn flezha_runner::tasklet::Tasklet::cell_keys() -> alloc::vec::Vec<&'static str>
 pub fn flezha_runner::tasklet::Tasklet::cells_for(&Self::Input) -> alloc::vec::Vec<&'static str>
 pub fn flezha_runner::tasklet::Tasklet::compact_after_bytes() -> usize
 pub fn flezha_runner::tasklet::Tasklet::compensate(&mut self, alloc::vec::Vec<alloc::sync::Arc<Self::Output>>, &mut flezha_runner::tasklet::ctx::Ctx<'_, Self>) -> core::result::Result<(), flezha_runner::tasklet::error::TaskletError>
 pub fn flezha_runner::tasklet::Tasklet::event_time(&Self::Input) -> u64
+pub fn flezha_runner::tasklet::Tasklet::idle_ttl() -> core::option::Option<core::time::Duration>
 pub fn flezha_runner::tasklet::Tasklet::init_state(core::option::Option<&str>) -> Self::State
 pub fn flezha_runner::tasklet::Tasklet::mailbox_capacity() -> usize
 pub fn flezha_runner::tasklet::Tasklet::max_cells() -> usize
@@ -2031,6 +1887,260 @@ pub fn flezha_runner::tasklet::Tasklet::migrate_change(u32, &[u8]) -> core::resu
 pub fn flezha_runner::tasklet::Tasklet::migrate_state(u32, &[u8]) -> core::result::Result<Self::State, alloc::string::String>
 pub fn flezha_runner::tasklet::Tasklet::on_timer(&mut self, u64, flz_core::schema::TimerKind, &mut flezha_runner::tasklet::ctx::Ctx<'_, Self>) -> core::result::Result<(), flezha_runner::tasklet::error::TaskletError>
 pub fn flezha_runner::tasklet::Tasklet::run(&mut self, Self::Input, &mut flezha_runner::tasklet::ctx::Ctx<'_, Self>) -> core::result::Result<(), flezha_runner::tasklet::error::TaskletError>
+pub mod flezha_runner::testing
+pub mod flezha_runner::testing::harness
+pub struct flezha_runner::testing::harness::EmitStreamMismatch
+pub flezha_runner::testing::harness::EmitStreamMismatch::detail: alloc::string::String
+pub flezha_runner::testing::harness::EmitStreamMismatch::index: usize
+impl core::error::Error for flezha_runner::testing::harness::EmitStreamMismatch
+impl core::fmt::Debug for flezha_runner::testing::harness::EmitStreamMismatch
+pub fn flezha_runner::testing::harness::EmitStreamMismatch::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for flezha_runner::testing::harness::EmitStreamMismatch
+pub fn flezha_runner::testing::harness::EmitStreamMismatch::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for flezha_runner::testing::harness::EmitStreamMismatch
+impl core::marker::Send for flezha_runner::testing::harness::EmitStreamMismatch
+impl core::marker::Sync for flezha_runner::testing::harness::EmitStreamMismatch
+impl core::marker::Unpin for flezha_runner::testing::harness::EmitStreamMismatch
+impl core::marker::UnsafeUnpin for flezha_runner::testing::harness::EmitStreamMismatch
+impl core::panic::unwind_safe::RefUnwindSafe for flezha_runner::testing::harness::EmitStreamMismatch
+impl core::panic::unwind_safe::UnwindSafe for flezha_runner::testing::harness::EmitStreamMismatch
+impl<T, U> core::convert::Into<U> for flezha_runner::testing::harness::EmitStreamMismatch where U: core::convert::From<T>
+pub fn flezha_runner::testing::harness::EmitStreamMismatch::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for flezha_runner::testing::harness::EmitStreamMismatch where U: core::convert::Into<T>
+pub type flezha_runner::testing::harness::EmitStreamMismatch::Error = core::convert::Infallible
+pub fn flezha_runner::testing::harness::EmitStreamMismatch::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for flezha_runner::testing::harness::EmitStreamMismatch where U: core::convert::TryFrom<T>
+pub type flezha_runner::testing::harness::EmitStreamMismatch::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn flezha_runner::testing::harness::EmitStreamMismatch::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> alloc::string::ToString for flezha_runner::testing::harness::EmitStreamMismatch where T: core::fmt::Display + ?core::marker::Sized
+pub fn flezha_runner::testing::harness::EmitStreamMismatch::to_string(&self) -> alloc::string::String
+impl<T> core::any::Any for flezha_runner::testing::harness::EmitStreamMismatch where T: 'static + ?core::marker::Sized
+pub fn flezha_runner::testing::harness::EmitStreamMismatch::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for flezha_runner::testing::harness::EmitStreamMismatch where T: ?core::marker::Sized
+pub fn flezha_runner::testing::harness::EmitStreamMismatch::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for flezha_runner::testing::harness::EmitStreamMismatch where T: ?core::marker::Sized
+pub fn flezha_runner::testing::harness::EmitStreamMismatch::borrow_mut(&mut self) -> &mut T
+impl<T> core::convert::From<T> for flezha_runner::testing::harness::EmitStreamMismatch
+pub fn flezha_runner::testing::harness::EmitStreamMismatch::from(T) -> T
+impl<T> crossbeam_epoch::atomic::Pointable for flezha_runner::testing::harness::EmitStreamMismatch
+pub type flezha_runner::testing::harness::EmitStreamMismatch::Init = T
+pub const flezha_runner::testing::harness::EmitStreamMismatch::ALIGN: usize
+pub unsafe fn flezha_runner::testing::harness::EmitStreamMismatch::deref<'a>(usize) -> &'a T
+pub unsafe fn flezha_runner::testing::harness::EmitStreamMismatch::deref_mut<'a>(usize) -> &'a mut T
+pub unsafe fn flezha_runner::testing::harness::EmitStreamMismatch::drop(usize)
+pub unsafe fn flezha_runner::testing::harness::EmitStreamMismatch::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
+impl<T> tracing::instrument::Instrument for flezha_runner::testing::harness::EmitStreamMismatch
+impl<T> tracing::instrument::WithSubscriber for flezha_runner::testing::harness::EmitStreamMismatch
+impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::testing::harness::EmitStreamMismatch where V: ppv_lite86::types::MultiLane<T>
+pub fn flezha_runner::testing::harness::EmitStreamMismatch::vzip(self) -> V
+pub struct flezha_runner::testing::harness::ReplayMismatch
+pub flezha_runner::testing::harness::ReplayMismatch::actual_serialized: alloc::vec::Vec<u8>
+pub flezha_runner::testing::harness::ReplayMismatch::expected_serialized: alloc::vec::Vec<u8>
+impl core::error::Error for flezha_runner::testing::harness::ReplayMismatch
+impl core::fmt::Debug for flezha_runner::testing::harness::ReplayMismatch
+pub fn flezha_runner::testing::harness::ReplayMismatch::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for flezha_runner::testing::harness::ReplayMismatch
+pub fn flezha_runner::testing::harness::ReplayMismatch::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for flezha_runner::testing::harness::ReplayMismatch
+impl core::marker::Send for flezha_runner::testing::harness::ReplayMismatch
+impl core::marker::Sync for flezha_runner::testing::harness::ReplayMismatch
+impl core::marker::Unpin for flezha_runner::testing::harness::ReplayMismatch
+impl core::marker::UnsafeUnpin for flezha_runner::testing::harness::ReplayMismatch
+impl core::panic::unwind_safe::RefUnwindSafe for flezha_runner::testing::harness::ReplayMismatch
+impl core::panic::unwind_safe::UnwindSafe for flezha_runner::testing::harness::ReplayMismatch
+impl<T, U> core::convert::Into<U> for flezha_runner::testing::harness::ReplayMismatch where U: core::convert::From<T>
+pub fn flezha_runner::testing::harness::ReplayMismatch::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for flezha_runner::testing::harness::ReplayMismatch where U: core::convert::Into<T>
+pub type flezha_runner::testing::harness::ReplayMismatch::Error = core::convert::Infallible
+pub fn flezha_runner::testing::harness::ReplayMismatch::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for flezha_runner::testing::harness::ReplayMismatch where U: core::convert::TryFrom<T>
+pub type flezha_runner::testing::harness::ReplayMismatch::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn flezha_runner::testing::harness::ReplayMismatch::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> alloc::string::ToString for flezha_runner::testing::harness::ReplayMismatch where T: core::fmt::Display + ?core::marker::Sized
+pub fn flezha_runner::testing::harness::ReplayMismatch::to_string(&self) -> alloc::string::String
+impl<T> core::any::Any for flezha_runner::testing::harness::ReplayMismatch where T: 'static + ?core::marker::Sized
+pub fn flezha_runner::testing::harness::ReplayMismatch::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for flezha_runner::testing::harness::ReplayMismatch where T: ?core::marker::Sized
+pub fn flezha_runner::testing::harness::ReplayMismatch::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for flezha_runner::testing::harness::ReplayMismatch where T: ?core::marker::Sized
+pub fn flezha_runner::testing::harness::ReplayMismatch::borrow_mut(&mut self) -> &mut T
+impl<T> core::convert::From<T> for flezha_runner::testing::harness::ReplayMismatch
+pub fn flezha_runner::testing::harness::ReplayMismatch::from(T) -> T
+impl<T> crossbeam_epoch::atomic::Pointable for flezha_runner::testing::harness::ReplayMismatch
+pub type flezha_runner::testing::harness::ReplayMismatch::Init = T
+pub const flezha_runner::testing::harness::ReplayMismatch::ALIGN: usize
+pub unsafe fn flezha_runner::testing::harness::ReplayMismatch::deref<'a>(usize) -> &'a T
+pub unsafe fn flezha_runner::testing::harness::ReplayMismatch::deref_mut<'a>(usize) -> &'a mut T
+pub unsafe fn flezha_runner::testing::harness::ReplayMismatch::drop(usize)
+pub unsafe fn flezha_runner::testing::harness::ReplayMismatch::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
+impl<T> tracing::instrument::Instrument for flezha_runner::testing::harness::ReplayMismatch
+impl<T> tracing::instrument::WithSubscriber for flezha_runner::testing::harness::ReplayMismatch
+impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::testing::harness::ReplayMismatch where V: ppv_lite86::types::MultiLane<T>
+pub fn flezha_runner::testing::harness::ReplayMismatch::vzip(self) -> V
+pub struct flezha_runner::testing::harness::TaskletTestHarness<S: flezha_runner::tasklet::Tasklet>
+impl<S: flezha_runner::tasklet::Tasklet> flezha_runner::testing::harness::TaskletTestHarness<S> where <S as flezha_runner::tasklet::Tasklet>::State: serde_core::ser::Serialize + serde_core::de::DeserializeOwned
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::new() -> Self
+impl<S: flezha_runner::tasklet::Tasklet> flezha_runner::testing::harness::TaskletTestHarness<S>
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::advance_event_time(&mut self, u64) -> &mut Self
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::apply_inputs(&mut self, impl core::iter::traits::collect::IntoIterator<Item = <S as flezha_runner::tasklet::Tasklet>::Input>) -> &mut Self
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::emitted_meta(&self) -> alloc::vec::Vec<core::option::Option<&std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>>
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::expect_changes(self, &[<S as flezha_runner::tasklet::Tasklet>::Change]) -> Self where <S as flezha_runner::tasklet::Tasklet>::Change: core::cmp::PartialEq + core::fmt::Debug
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::expect_emits(self, &[<S as flezha_runner::tasklet::Tasklet>::Output]) -> Self where <S as flezha_runner::tasklet::Tasklet>::Output: core::cmp::PartialEq + core::fmt::Debug
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::expect_state(self, &<S as flezha_runner::tasklet::Tasklet>::State) -> Self where <S as flezha_runner::tasklet::Tasklet>::State: core::cmp::PartialEq + core::fmt::Debug
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::fire_timer(&mut self, flz_core::schema::TimerKind, u64) -> &mut Self
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::pending_timers(&self, flz_core::schema::TimerKind) -> alloc::vec::Vec<u64>
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::recorded_changes(&self) -> &[<S as flezha_runner::tasklet::Tasklet>::Change]
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::recorded_timer_ops(&self) -> &[flz_core::schema::TimerOp]
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::replay(<S as flezha_runner::tasklet::Tasklet>::State, &[<S as flezha_runner::tasklet::Tasklet>::Change]) -> <S as flezha_runner::tasklet::Tasklet>::State
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::replay_emits_equal(&self, &[<S as flezha_runner::tasklet::Tasklet>::Input]) -> core::result::Result<(), flezha_runner::testing::harness::EmitStreamMismatch> where <S as flezha_runner::tasklet::Tasklet>::State: serde_core::de::DeserializeOwned, <S as flezha_runner::tasklet::Tasklet>::Output: serde_core::ser::Serialize
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::replay_equals(&self) -> core::result::Result<(), flezha_runner::testing::harness::ReplayMismatch> where <S as flezha_runner::tasklet::Tasklet>::State: serde_core::ser::Serialize + serde_core::de::DeserializeOwned
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::state(&self) -> &<S as flezha_runner::tasklet::Tasklet>::State
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::with_cell_key(self, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::with_initial_state(<S as flezha_runner::tasklet::Tasklet>::State) -> Self where <S as flezha_runner::tasklet::Tasklet>::State: serde_core::ser::Serialize + serde_core::de::DeserializeOwned
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::with_keyed_channel(self) -> Self
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::with_payload(core::option::Option<&str>, flz_core::restore::RestoreInitPayload<'_>) -> core::result::Result<Self, flz_core::header::RestoreError> where <S as flezha_runner::tasklet::Tasklet>::State: serde_core::de::DeserializeOwned + serde_core::ser::Serialize
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::with_wall_clock(self, u64) -> Self
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::with_wall_clock_script(self, alloc::vec::Vec<u64>) -> Self
+impl<S: flezha_runner::tasklet::Tasklet> core::default::Default for flezha_runner::testing::harness::TaskletTestHarness<S> where <S as flezha_runner::tasklet::Tasklet>::State: serde_core::ser::Serialize + serde_core::de::DeserializeOwned
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::default() -> Self
+impl<S> !core::marker::Freeze for flezha_runner::testing::harness::TaskletTestHarness<S>
+impl<S> core::marker::Send for flezha_runner::testing::harness::TaskletTestHarness<S>
+impl<S> !core::marker::Sync for flezha_runner::testing::harness::TaskletTestHarness<S>
+impl<S> core::marker::Unpin for flezha_runner::testing::harness::TaskletTestHarness<S> where S: core::marker::Unpin, <S as flezha_runner::tasklet::Tasklet>::State: core::marker::Unpin, <S as flezha_runner::tasklet::Tasklet>::Change: core::marker::Unpin
+impl<S> core::marker::UnsafeUnpin for flezha_runner::testing::harness::TaskletTestHarness<S> where S: core::marker::UnsafeUnpin, <S as flezha_runner::tasklet::Tasklet>::State: core::marker::UnsafeUnpin
+impl<S> !core::panic::unwind_safe::RefUnwindSafe for flezha_runner::testing::harness::TaskletTestHarness<S>
+impl<S> !core::panic::unwind_safe::UnwindSafe for flezha_runner::testing::harness::TaskletTestHarness<S>
+impl<T, U> core::convert::Into<U> for flezha_runner::testing::harness::TaskletTestHarness<S> where U: core::convert::From<T>
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for flezha_runner::testing::harness::TaskletTestHarness<S> where U: core::convert::Into<T>
+pub type flezha_runner::testing::harness::TaskletTestHarness<S>::Error = core::convert::Infallible
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for flezha_runner::testing::harness::TaskletTestHarness<S> where U: core::convert::TryFrom<T>
+pub type flezha_runner::testing::harness::TaskletTestHarness<S>::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> core::any::Any for flezha_runner::testing::harness::TaskletTestHarness<S> where T: 'static + ?core::marker::Sized
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for flezha_runner::testing::harness::TaskletTestHarness<S> where T: ?core::marker::Sized
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for flezha_runner::testing::harness::TaskletTestHarness<S> where T: ?core::marker::Sized
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::borrow_mut(&mut self) -> &mut T
+impl<T> core::convert::From<T> for flezha_runner::testing::harness::TaskletTestHarness<S>
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::from(T) -> T
+impl<T> crossbeam_epoch::atomic::Pointable for flezha_runner::testing::harness::TaskletTestHarness<S>
+pub type flezha_runner::testing::harness::TaskletTestHarness<S>::Init = T
+pub const flezha_runner::testing::harness::TaskletTestHarness<S>::ALIGN: usize
+pub unsafe fn flezha_runner::testing::harness::TaskletTestHarness<S>::deref<'a>(usize) -> &'a T
+pub unsafe fn flezha_runner::testing::harness::TaskletTestHarness<S>::deref_mut<'a>(usize) -> &'a mut T
+pub unsafe fn flezha_runner::testing::harness::TaskletTestHarness<S>::drop(usize)
+pub unsafe fn flezha_runner::testing::harness::TaskletTestHarness<S>::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
+impl<T> tracing::instrument::Instrument for flezha_runner::testing::harness::TaskletTestHarness<S>
+impl<T> tracing::instrument::WithSubscriber for flezha_runner::testing::harness::TaskletTestHarness<S>
+impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::testing::harness::TaskletTestHarness<S> where V: ppv_lite86::types::MultiLane<T>
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::vzip(self) -> V
+pub struct flezha_runner::testing::ReplayMismatch
+pub flezha_runner::testing::ReplayMismatch::actual_serialized: alloc::vec::Vec<u8>
+pub flezha_runner::testing::ReplayMismatch::expected_serialized: alloc::vec::Vec<u8>
+impl core::error::Error for flezha_runner::testing::harness::ReplayMismatch
+impl core::fmt::Debug for flezha_runner::testing::harness::ReplayMismatch
+pub fn flezha_runner::testing::harness::ReplayMismatch::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for flezha_runner::testing::harness::ReplayMismatch
+pub fn flezha_runner::testing::harness::ReplayMismatch::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for flezha_runner::testing::harness::ReplayMismatch
+impl core::marker::Send for flezha_runner::testing::harness::ReplayMismatch
+impl core::marker::Sync for flezha_runner::testing::harness::ReplayMismatch
+impl core::marker::Unpin for flezha_runner::testing::harness::ReplayMismatch
+impl core::marker::UnsafeUnpin for flezha_runner::testing::harness::ReplayMismatch
+impl core::panic::unwind_safe::RefUnwindSafe for flezha_runner::testing::harness::ReplayMismatch
+impl core::panic::unwind_safe::UnwindSafe for flezha_runner::testing::harness::ReplayMismatch
+impl<T, U> core::convert::Into<U> for flezha_runner::testing::harness::ReplayMismatch where U: core::convert::From<T>
+pub fn flezha_runner::testing::harness::ReplayMismatch::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for flezha_runner::testing::harness::ReplayMismatch where U: core::convert::Into<T>
+pub type flezha_runner::testing::harness::ReplayMismatch::Error = core::convert::Infallible
+pub fn flezha_runner::testing::harness::ReplayMismatch::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for flezha_runner::testing::harness::ReplayMismatch where U: core::convert::TryFrom<T>
+pub type flezha_runner::testing::harness::ReplayMismatch::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn flezha_runner::testing::harness::ReplayMismatch::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> alloc::string::ToString for flezha_runner::testing::harness::ReplayMismatch where T: core::fmt::Display + ?core::marker::Sized
+pub fn flezha_runner::testing::harness::ReplayMismatch::to_string(&self) -> alloc::string::String
+impl<T> core::any::Any for flezha_runner::testing::harness::ReplayMismatch where T: 'static + ?core::marker::Sized
+pub fn flezha_runner::testing::harness::ReplayMismatch::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for flezha_runner::testing::harness::ReplayMismatch where T: ?core::marker::Sized
+pub fn flezha_runner::testing::harness::ReplayMismatch::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for flezha_runner::testing::harness::ReplayMismatch where T: ?core::marker::Sized
+pub fn flezha_runner::testing::harness::ReplayMismatch::borrow_mut(&mut self) -> &mut T
+impl<T> core::convert::From<T> for flezha_runner::testing::harness::ReplayMismatch
+pub fn flezha_runner::testing::harness::ReplayMismatch::from(T) -> T
+impl<T> crossbeam_epoch::atomic::Pointable for flezha_runner::testing::harness::ReplayMismatch
+pub type flezha_runner::testing::harness::ReplayMismatch::Init = T
+pub const flezha_runner::testing::harness::ReplayMismatch::ALIGN: usize
+pub unsafe fn flezha_runner::testing::harness::ReplayMismatch::deref<'a>(usize) -> &'a T
+pub unsafe fn flezha_runner::testing::harness::ReplayMismatch::deref_mut<'a>(usize) -> &'a mut T
+pub unsafe fn flezha_runner::testing::harness::ReplayMismatch::drop(usize)
+pub unsafe fn flezha_runner::testing::harness::ReplayMismatch::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
+impl<T> tracing::instrument::Instrument for flezha_runner::testing::harness::ReplayMismatch
+impl<T> tracing::instrument::WithSubscriber for flezha_runner::testing::harness::ReplayMismatch
+impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::testing::harness::ReplayMismatch where V: ppv_lite86::types::MultiLane<T>
+pub fn flezha_runner::testing::harness::ReplayMismatch::vzip(self) -> V
+pub struct flezha_runner::testing::TaskletTestHarness<S: flezha_runner::tasklet::Tasklet>
+impl<S: flezha_runner::tasklet::Tasklet> flezha_runner::testing::harness::TaskletTestHarness<S> where <S as flezha_runner::tasklet::Tasklet>::State: serde_core::ser::Serialize + serde_core::de::DeserializeOwned
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::new() -> Self
+impl<S: flezha_runner::tasklet::Tasklet> flezha_runner::testing::harness::TaskletTestHarness<S>
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::advance_event_time(&mut self, u64) -> &mut Self
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::apply_inputs(&mut self, impl core::iter::traits::collect::IntoIterator<Item = <S as flezha_runner::tasklet::Tasklet>::Input>) -> &mut Self
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::emitted_meta(&self) -> alloc::vec::Vec<core::option::Option<&std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>>
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::expect_changes(self, &[<S as flezha_runner::tasklet::Tasklet>::Change]) -> Self where <S as flezha_runner::tasklet::Tasklet>::Change: core::cmp::PartialEq + core::fmt::Debug
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::expect_emits(self, &[<S as flezha_runner::tasklet::Tasklet>::Output]) -> Self where <S as flezha_runner::tasklet::Tasklet>::Output: core::cmp::PartialEq + core::fmt::Debug
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::expect_state(self, &<S as flezha_runner::tasklet::Tasklet>::State) -> Self where <S as flezha_runner::tasklet::Tasklet>::State: core::cmp::PartialEq + core::fmt::Debug
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::fire_timer(&mut self, flz_core::schema::TimerKind, u64) -> &mut Self
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::pending_timers(&self, flz_core::schema::TimerKind) -> alloc::vec::Vec<u64>
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::recorded_changes(&self) -> &[<S as flezha_runner::tasklet::Tasklet>::Change]
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::recorded_timer_ops(&self) -> &[flz_core::schema::TimerOp]
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::replay(<S as flezha_runner::tasklet::Tasklet>::State, &[<S as flezha_runner::tasklet::Tasklet>::Change]) -> <S as flezha_runner::tasklet::Tasklet>::State
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::replay_emits_equal(&self, &[<S as flezha_runner::tasklet::Tasklet>::Input]) -> core::result::Result<(), flezha_runner::testing::harness::EmitStreamMismatch> where <S as flezha_runner::tasklet::Tasklet>::State: serde_core::de::DeserializeOwned, <S as flezha_runner::tasklet::Tasklet>::Output: serde_core::ser::Serialize
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::replay_equals(&self) -> core::result::Result<(), flezha_runner::testing::harness::ReplayMismatch> where <S as flezha_runner::tasklet::Tasklet>::State: serde_core::ser::Serialize + serde_core::de::DeserializeOwned
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::state(&self) -> &<S as flezha_runner::tasklet::Tasklet>::State
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::with_cell_key(self, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::with_initial_state(<S as flezha_runner::tasklet::Tasklet>::State) -> Self where <S as flezha_runner::tasklet::Tasklet>::State: serde_core::ser::Serialize + serde_core::de::DeserializeOwned
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::with_keyed_channel(self) -> Self
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::with_payload(core::option::Option<&str>, flz_core::restore::RestoreInitPayload<'_>) -> core::result::Result<Self, flz_core::header::RestoreError> where <S as flezha_runner::tasklet::Tasklet>::State: serde_core::de::DeserializeOwned + serde_core::ser::Serialize
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::with_wall_clock(self, u64) -> Self
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::with_wall_clock_script(self, alloc::vec::Vec<u64>) -> Self
+impl<S: flezha_runner::tasklet::Tasklet> core::default::Default for flezha_runner::testing::harness::TaskletTestHarness<S> where <S as flezha_runner::tasklet::Tasklet>::State: serde_core::ser::Serialize + serde_core::de::DeserializeOwned
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::default() -> Self
+impl<S> !core::marker::Freeze for flezha_runner::testing::harness::TaskletTestHarness<S>
+impl<S> core::marker::Send for flezha_runner::testing::harness::TaskletTestHarness<S>
+impl<S> !core::marker::Sync for flezha_runner::testing::harness::TaskletTestHarness<S>
+impl<S> core::marker::Unpin for flezha_runner::testing::harness::TaskletTestHarness<S> where S: core::marker::Unpin, <S as flezha_runner::tasklet::Tasklet>::State: core::marker::Unpin, <S as flezha_runner::tasklet::Tasklet>::Change: core::marker::Unpin
+impl<S> core::marker::UnsafeUnpin for flezha_runner::testing::harness::TaskletTestHarness<S> where S: core::marker::UnsafeUnpin, <S as flezha_runner::tasklet::Tasklet>::State: core::marker::UnsafeUnpin
+impl<S> !core::panic::unwind_safe::RefUnwindSafe for flezha_runner::testing::harness::TaskletTestHarness<S>
+impl<S> !core::panic::unwind_safe::UnwindSafe for flezha_runner::testing::harness::TaskletTestHarness<S>
+impl<T, U> core::convert::Into<U> for flezha_runner::testing::harness::TaskletTestHarness<S> where U: core::convert::From<T>
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for flezha_runner::testing::harness::TaskletTestHarness<S> where U: core::convert::Into<T>
+pub type flezha_runner::testing::harness::TaskletTestHarness<S>::Error = core::convert::Infallible
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for flezha_runner::testing::harness::TaskletTestHarness<S> where U: core::convert::TryFrom<T>
+pub type flezha_runner::testing::harness::TaskletTestHarness<S>::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> core::any::Any for flezha_runner::testing::harness::TaskletTestHarness<S> where T: 'static + ?core::marker::Sized
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for flezha_runner::testing::harness::TaskletTestHarness<S> where T: ?core::marker::Sized
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for flezha_runner::testing::harness::TaskletTestHarness<S> where T: ?core::marker::Sized
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::borrow_mut(&mut self) -> &mut T
+impl<T> core::convert::From<T> for flezha_runner::testing::harness::TaskletTestHarness<S>
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::from(T) -> T
+impl<T> crossbeam_epoch::atomic::Pointable for flezha_runner::testing::harness::TaskletTestHarness<S>
+pub type flezha_runner::testing::harness::TaskletTestHarness<S>::Init = T
+pub const flezha_runner::testing::harness::TaskletTestHarness<S>::ALIGN: usize
+pub unsafe fn flezha_runner::testing::harness::TaskletTestHarness<S>::deref<'a>(usize) -> &'a T
+pub unsafe fn flezha_runner::testing::harness::TaskletTestHarness<S>::deref_mut<'a>(usize) -> &'a mut T
+pub unsafe fn flezha_runner::testing::harness::TaskletTestHarness<S>::drop(usize)
+pub unsafe fn flezha_runner::testing::harness::TaskletTestHarness<S>::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
+impl<T> tracing::instrument::Instrument for flezha_runner::testing::harness::TaskletTestHarness<S>
+impl<T> tracing::instrument::WithSubscriber for flezha_runner::testing::harness::TaskletTestHarness<S>
+impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::testing::harness::TaskletTestHarness<S> where V: ppv_lite86::types::MultiLane<T>
+pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::vzip(self) -> V
 pub enum flezha_runner::FlezhaError
 pub flezha_runner::FlezhaError::AlreadyRunning
 pub flezha_runner::FlezhaError::AlreadyRunning::namespace: alloc::string::String
@@ -2517,6 +2627,7 @@ pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::emit_keyed_with_meta(&mut self, 
 pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::emit_with_meta(&mut self, <S as flezha_runner::tasklet::Tasklet>::Output, std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>) -> core::result::Result<(), flezha_runner::tasklet::error::TaskletError>
 pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::now(&self) -> u64
 pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::part(&self, <S as flezha_runner::tasklet::Tasklet>::Output) -> core::result::Result<(), flezha_runner::tasklet::error::TaskletError>
+pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::replay(&self) -> bool
 pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::spawn_steps(&self, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::vec::Vec<u8>>) -> flz_core::spawn::SpawnHandle
 pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::spawn_steps_with(&self, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::vec::Vec<u8>>, flz_core::spawn::SpawnOptions) -> flz_core::spawn::SpawnHandle
 pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::stable_id(&self) -> flezha_runner::tasklet::ctx::StableId
@@ -3196,12 +3307,12 @@ pub const flezha_runner::Tasklet::MAX_CELLS_OVERRIDDEN: bool
 pub const flezha_runner::Tasklet::MIN_READABLE_SCHEMA_VERSION: u32
 pub const flezha_runner::Tasklet::NAME: &'static str
 pub const flezha_runner::Tasklet::SCHEMA_VERSION: u32
-pub fn flezha_runner::Tasklet::cell_idle_ttl() -> core::option::Option<core::time::Duration>
 pub fn flezha_runner::Tasklet::cell_keys() -> alloc::vec::Vec<&'static str>
 pub fn flezha_runner::Tasklet::cells_for(&Self::Input) -> alloc::vec::Vec<&'static str>
 pub fn flezha_runner::Tasklet::compact_after_bytes() -> usize
 pub fn flezha_runner::Tasklet::compensate(&mut self, alloc::vec::Vec<alloc::sync::Arc<Self::Output>>, &mut flezha_runner::tasklet::ctx::Ctx<'_, Self>) -> core::result::Result<(), flezha_runner::tasklet::error::TaskletError>
 pub fn flezha_runner::Tasklet::event_time(&Self::Input) -> u64
+pub fn flezha_runner::Tasklet::idle_ttl() -> core::option::Option<core::time::Duration>
 pub fn flezha_runner::Tasklet::init_state(core::option::Option<&str>) -> Self::State
 pub fn flezha_runner::Tasklet::mailbox_capacity() -> usize
 pub fn flezha_runner::Tasklet::max_cells() -> usize

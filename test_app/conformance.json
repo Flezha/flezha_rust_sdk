@@ -99,7 +99,8 @@
     ],
     "cell_timers": [
       "session_timeout",
-      "timer_cap"
+      "timer_cap",
+      "timer_churn"
     ],
     "correction_window": [
       "candle"

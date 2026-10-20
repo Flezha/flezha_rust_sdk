@@ -7,7 +7,6 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
 use flezha_runner::cell::flusher::{EffectRecordBody, SendError, SendFrameFn};
-use flezha_runner::cell::header::{HeaderTemplate, FORMAT_ID_EFFECT_RECORD, FORMAT_ID_TIMER_OPS};
 use flezha_runner::cell::state_sink;
 use flezha_runner::cell::timer::{PendingTimers, TimerKind, TimerOp};
 use flezha_runner::channel::ChannelBuilder;
@@ -16,6 +15,7 @@ use flezha_runner::state::{Change, ClockKind, RestoreInitPayload};
 use flezha_runner::tasklet::{Ctx, Tasklet, TaskletError};
 use flezha_runner::testing::TaskletTestHarness;
 use flezha_runner::OverflowPolicy;
+use flz_core::header::{HeaderTemplate, FORMAT_ID_EFFECT_RECORD, FORMAT_ID_TIMER_OPS};
 
 use super::*;
 

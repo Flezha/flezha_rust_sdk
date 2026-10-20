@@ -8,7 +8,7 @@ use crate::*;
 // `DoNothingRelay`. One declaration is the whole relay: it generates
 // the relay `SugarDoNothing`, which `main.rs` registers, and the tasklet
 // `SugarDoNothingTasklet` beside it.
-#[flezha_runner::relay(id = "sugar_do_nothing", output = "sugar_do_nothing_echo")]
+#[flezha_runner::relay(factory_id = "sugar_do_nothing", output = "sugar_do_nothing_echo")]
 pub(crate) fn sugar_do_nothing(input: String) -> Vec<u8> {
     input.into_bytes()
 }
@@ -34,7 +34,7 @@ impl Change<SugarStoreState> for Kept {
 #[derive(Default)]
 pub(crate) struct SugarStoreInput;
 
-#[flezha_runner::relay(id = "sugar_store_input", output = "sugar_store_sink")]
+#[flezha_runner::relay(factory_id = "sugar_store_input", output = "sugar_store_sink")]
 impl Tasklet for SugarStoreInput {
     type Input = String;
     type Output = String;
@@ -49,7 +49,7 @@ impl Tasklet for SugarStoreInput {
 
 // The short form naming its entry channel: `prices`, not the default `input`.
 #[flezha_runner::relay(
-    id = "sugar_named_input",
+    factory_id = "sugar_named_input",
     output = "sugar_named_input_sink",
     input = "prices"
 )]
@@ -60,7 +60,7 @@ pub(crate) fn sugar_named_input(input: String) -> Vec<u8> {
 // The steps short form: one declaration is a whole `once` steps relay, run on
 // its first message on `order` and completing after one run.
 #[flezha_runner::relay(
-    id = "sugar_steps",
+    factory_id = "sugar_steps",
     output = "sugar_steps_placed",
     input = "order",
     run = steps
@@ -72,7 +72,7 @@ pub(crate) fn sugar_steps(order: String) -> Vec<u8> {
 // A steps short form that loops: one pass per message on `input`, and the
 // instance stays after each.
 #[flezha_runner::relay(
-    id = "sugar_steps_per_input",
+    factory_id = "sugar_steps_per_input",
     output = "sugar_steps_per_input_out",
     run = steps(each = per_input)
 )]
@@ -99,7 +99,7 @@ impl Change<SugarStateOnlyState> for Seen {
 #[derive(Default)]
 pub(crate) struct SugarStateOnly;
 
-#[flezha_runner::relay(id = "sugar_state_only", input = "ticks")]
+#[flezha_runner::relay(factory_id = "sugar_state_only", input = "ticks")]
 impl Tasklet for SugarStateOnly {
     type Input = String;
     type State = SugarStateOnlyState;
@@ -130,7 +130,7 @@ impl Change<MacroStaticEntryState> for EntrySeen {
 #[derive(Default)]
 struct MacroStaticEntry;
 
-#[flezha_runner::tasklet(name = "macro_static_entry_tasklet", keys = ["a", "b", "c", "d"])]
+#[flezha_runner::tasklet(name = "macro_static_entry_tasklet", cell_keys = ["a", "b", "c", "d"])]
 impl Tasklet for MacroStaticEntry {
     type Input = String;
     type Output = String;
@@ -327,7 +327,7 @@ mod macro_twin_tests {
     #[derive(Default)]
     struct Windowed;
 
-    #[flezha_runner::tasklet(name = "windowed", keys = ["win_2", "win_3"])]
+    #[flezha_runner::tasklet(name = "windowed", cell_keys = ["win_2", "win_3"])]
     impl Tasklet for Windowed {
         type Input = (String, f64);
         type Output = f64;

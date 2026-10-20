@@ -16,12 +16,12 @@ use std::any::Any;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 
+use flz_core::header::HeaderTemplate;
 use flz_core::poll_core::global;
 use flz_core::poll_pool::Governor;
 use flz_transport::transport::FlezhaStream;
 
 use crate::cell::flusher::TypedBuffer;
-use crate::cell::header::HeaderTemplate;
 use crate::cell::timer::{PendingTimers, TimerOp, TimerPolicy};
 use crate::cell::{CellItem, CellPayload, CellSlot, TaskletDispatcher};
 use crate::channel::{ChannelId, RetryPolicy, TaskletId};

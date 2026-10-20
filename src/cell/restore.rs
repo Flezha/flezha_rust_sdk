@@ -100,9 +100,10 @@ impl<S: crate::tasklet::Tasklet> ChangeLogSink for TypedSink<'_, S> {
 
 #[cfg(test)]
 mod tests {
+    use flz_core::header::{HeaderTemplate, FORMAT_ID_EFFECT_RECORD, FORMAT_ID_POSTCARD};
+
     use super::*;
     use crate::cell::flusher::{EffectRecordBody, OutputRecord};
-    use crate::cell::header::{HeaderTemplate, FORMAT_ID_EFFECT_RECORD, FORMAT_ID_POSTCARD};
 
     #[test]
     fn empty_change_log_yields_no_records() {

@@ -6,7 +6,7 @@
 //!   the tasklet under that name suffixed `Tasklet`, an `impl Tasklet` block
 //!   completed the way `#[flezha::tasklet]` completes one.
 //! - An `impl Tasklet for X` block: the attribute completes the block, naming
-//!   the tasklet after the `id`, and implements the relay trait on `X`
+//!   the tasklet after the `factory_id`, and implements the relay trait on `X`
 //!   itself, generating no type.
 //!
 //! The class's settings tree is written as keys (`run`, `durable`,
@@ -28,7 +28,7 @@ use crate::util::{generic_args, snake_ident_to_pascal};
 /// The relay keys, beside the tasklet keys both targets share.
 #[derive(Default)]
 struct RelayKeys {
-    id: Option<LitStr>,
+    factory_id: Option<LitStr>,
     /// The plugin output; `None` declares no plugin channel.
     output: Option<String>,
     /// The entry channel name.
@@ -58,7 +58,7 @@ fn parse_keys(attr: TokenStream) -> syn::Result<(RelayKeys, TaskletKeys)> {
         let key = key_of(&meta)?;
         let value = || meta.require_name_value().map(|nv| &nv.value);
         match key.as_str() {
-            "id" => keys.id = Some(lit_str(value()?)?.clone()),
+            "factory_id" => keys.factory_id = Some(lit_str(value()?)?.clone()),
             "output" => keys.output = Some(lit_str(value()?)?.value()),
             "input" => keys.input = Some(lit_str(value()?)?.clone()),
             "on_full" => keys.on_full = on_full_call(ATTRIBUTE, &ident(value()?)?)?,
@@ -76,7 +76,7 @@ fn refused_key(meta: &Meta, key: &str, attribute: &str) -> syn::Error {
     if key == "name" {
         return syn::Error::new_spanned(
             meta.path(),
-            format!("{attribute}: the tasklet is named after the `id`; remove `name`"),
+            format!("{attribute}: the tasklet is named after the `factory_id`; remove `name`"),
         );
     }
     unknown_key(meta, key, attribute, &RELAY_KEYS)
@@ -90,13 +90,13 @@ fn ident(expr: &syn::Expr) -> syn::Result<syn::Ident> {
     ident.ok_or_else(|| syn::Error::new_spanned(expr, "expected a bare identifier"))
 }
 
-/// The `id` every relay needs: a factory id is an address a user types.
+/// The `factory_id` every relay needs: it is an address a user types.
 fn required_id(keys: &RelayKeys, span: proc_macro2::Span) -> syn::Result<LitStr> {
-    keys.id.clone().ok_or_else(|| {
+    keys.factory_id.clone().ok_or_else(|| {
         syn::Error::new(
             span,
             format!(
-                "{ATTRIBUTE} needs an `id`: a relay's factory id is an address a user types, \
+                "{ATTRIBUTE} needs a `factory_id`: it is an address a user types, \
                  so it is written rather than derived from the function name"
             ),
         )
@@ -135,7 +135,7 @@ fn wiring<'a>(
     })
 }
 
-/// The `impl Tasklet for X` target: the block completed under the `id`, and
+/// The `impl Tasklet for X` target: the block completed under the `factory_id`, and
 /// the relay trait on `X` itself.
 fn on_impl(keys: &RelayKeys, tasklet: &TaskletKeys, item: Item) -> syn::Result<TokenStream> {
     let block: ItemImpl = impl_target(quote! { #item }, ATTRIBUTE)?;
