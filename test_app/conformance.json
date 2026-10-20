@@ -98,7 +98,8 @@
       "bench_checkpoint"
     ],
     "cell_timers": [
-      "session_timeout"
+      "session_timeout",
+      "timer_cap"
     ],
     "correction_window": [
       "candle"

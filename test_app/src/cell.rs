@@ -1,6 +1,6 @@
 //! Flow fixtures distinguished by cell shape: dynamic cells, keyed
-//! passes, session timeouts, static fan-out, the two pass-through classes and
-//! the four-stage stress pipeline.
+//! passes, session timeouts and the timer cap, static fan-out, the two
+//! pass-through classes and the four-stage stress pipeline.
 
 use crate::*;
 
@@ -193,6 +193,59 @@ impl Relay for SessionTimeoutRelay {
     fn channels(c: &ChannelBuilder) {
         c.input::<String>("input")
             .into::<SessionTimeoutTasklet>()
+            .output_named("kafka");
+    }
+}
+
+// -- TimerCapRelay --------------------------------------------------------
+//
+// A Cell's timers past the cap of two pending ones, and an event-time timer
+// under a tasklet whose clock is not event time (`cell_timers`): the typed
+// SDK refuses either at the call, so the change after it never lands. `event`
+// asks for the event-time timer, a number `n` for a processing-time one `n`
+// hours ahead.
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+struct TimerCapState {
+    touched: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+struct TimerCapChange(String);
+impl Change<TimerCapState> for TimerCapChange {
+    fn apply_to(&self, state: &mut TimerCapState) {
+        state.touched.push(self.0.clone());
+    }
+}
+
+#[derive(Default)]
+struct TimerCapTasklet;
+#[flezha_runner::tasklet(name = "timer_cap_tasklet", max_timers_per_cell = 2)]
+impl Tasklet for TimerCapTasklet {
+    type Input = String;
+    type Output = Vec<u8>;
+    type State = TimerCapState;
+    type Change = TimerCapChange;
+    fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        if input == "event" {
+            ctx.timer_at_event_time(1)?;
+        } else {
+            let hours: u64 = input.parse().unwrap_or(0);
+            ctx.timer_after(Duration::from_secs(hours * 3600))?;
+        }
+        ctx.change(TimerCapChange(input));
+        Ok(())
+    }
+}
+
+pub(crate) struct TimerCapRelay;
+impl Relay for TimerCapRelay {
+    fn factory_id() -> &'static str {
+        "timer_cap"
+    }
+    fn channels(c: &ChannelBuilder) {
+        c.input::<String>("input")
+            .into::<TimerCapTasklet>()
             .output_named("kafka");
     }
 }
