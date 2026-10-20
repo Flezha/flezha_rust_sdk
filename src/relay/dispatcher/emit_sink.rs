@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use flz_core::routing::send_plugin_frame;
+use flz_core::routing::{send_plugin_frame, REPLY_TO_KEY};
 use flz_transport::transport::FlezhaStream;
 
 use crate::cell::CellSlot;
@@ -134,7 +134,7 @@ impl<'a> CellEmitSink<'a> {
         let mut meta = meta;
         if let Some(token) = self.reply_to.as_deref() {
             meta.get_or_insert_with(HashMap::new)
-                .insert(flz_core::routing::CALL_KEY.to_string(), token.to_string());
+                .insert(REPLY_TO_KEY.to_string(), token.to_string());
         }
         self.write_plugin_output(instance, descriptor, bytes, meta, key)
     }
