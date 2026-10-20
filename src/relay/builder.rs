@@ -190,11 +190,13 @@ fn tasklet_decl(entry: &TaskletEntry, mailbox_capacity: usize) -> HostTaskletDec
         clock: entry.clock,
         mailbox_capacity,
         change_is_nochange: entry.change_is_nochange,
-        // No rule reads either: a typed class stamps `S::SCHEMA_VERSION` on the
-        // records it writes, which is not a topology fact.
+        // No rule reads these: a typed class stamps `S::SCHEMA_VERSION` on the
+        // records it writes and judges its timers at call time, neither a
+        // topology fact.
         schema_version: 1,
         min_readable_schema_version: None,
         migrates: false,
+        max_timers_per_cell: flz_core::timer::DEFAULT_MAX_TIMERS_PER_CELL,
     }
 }
 

@@ -28,12 +28,9 @@ pub const DEFAULT_TASKLET_ON_TIMER_PANIC_MESSAGE: &str =
      `fn on_timer(&mut self, fired_at: u64, kind: TimerKind, ctx: &mut Ctx<'_, Self>)` \
      to handle the firing.";
 
-/// Default per-Cell bound on pending timers, used by
-/// [`Tasklet::max_timers_per_cell`]. A per-Cell timer set is
-/// author-controlled memory multiplied by an unbounded Cell count; the cap
-/// is what keeps a runaway registration a refusal rather than an OOM.
-pub const DEFAULT_MAX_TIMERS_PER_CELL: usize = 10_000;
 pub use flz_core::relay::topology::DEFAULT_COMPACT_AFTER_BYTES;
+/// Used by [`Tasklet::max_timers_per_cell`].
+pub use flz_core::timer::DEFAULT_MAX_TIMERS_PER_CELL;
 
 /// One tasklet: the author's own type, whose `run` the runtime calls for each
 /// input a Cell receives. The Cell's state is held by the runtime and reached
