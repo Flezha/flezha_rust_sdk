@@ -13,6 +13,8 @@
 //!   reaches its session only if it runs (`create: false`).
 //! - `call_tool_session`: a durable `:per_input` session calling `pricing`
 //!   from a turn and reading the outcome as its next turn.
+//! - `call_orders_steps`: `call_orders` as a durable `:per_input` session, so
+//!   `order_ask`'s channel ends only in the call.
 //!
 //! Every outcome is written to an output as one line,
 //! `<request>=ok:<answer>@<target>/<created>` or
@@ -307,6 +309,21 @@ impl Relay for CallToolSessionSteps {
             durable: fixture_durable(),
             ..RelaySettings::default()
         }
+    }
+}
+
+// -- call_orders_steps ----------------------------------------------------------
+
+pub(crate) struct CallOrdersSteps;
+impl Relay for CallOrdersSteps {
+    fn factory_id() -> &'static str {
+        "call_orders_steps"
+    }
+    fn channels(c: &ChannelBuilder) {
+        CallOrdersRelay::channels(c);
+    }
+    fn settings() -> RelaySettings {
+        CallToolSessionSteps::settings()
     }
 }
 

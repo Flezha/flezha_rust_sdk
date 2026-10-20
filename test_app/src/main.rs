@@ -127,6 +127,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register_factory(CallAgentSteps)?
         .register_factory(CallGatewayRelay)?
         .register_factory(CallToolSessionSteps)?
+        .register_factory(CallOrdersSteps)?
         .register_factory(PartEchoRelay)?
         .register_factory(PartEchoSteps)?
         .register_factory(ResumeProbeRelay)?

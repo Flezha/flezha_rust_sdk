@@ -157,7 +157,8 @@
       "call_orders",
       "call_agent",
       "call_gateway",
-      "call_tool_session"
+      "call_tool_session",
+      "call_orders_steps"
     ],
     "parts": [
       "part_echo",
