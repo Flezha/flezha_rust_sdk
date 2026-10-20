@@ -28,7 +28,8 @@ use crate::cell::header::SchemaDecision;
 use crate::cell::restore::{decode_change, init_cell_with_payload, RestoreInitPayload};
 use crate::cell::timer::{PendingTimers, TimerKind, TimerOp, TimerSession};
 use crate::tasklet::clock::{evaluate, wall_now_ms};
-use crate::tasklet::ctx::{EmitSink, HarnessEffects, PartRoute};
+use crate::tasklet::ctx::effect::HarnessEffects;
+use crate::tasklet::ctx::{EmitSink, PartRoute};
 use crate::tasklet::{Change, Ctx, Tasklet, TaskletError};
 
 /// Cell identity the harness stands in for the runtime's per-slot
