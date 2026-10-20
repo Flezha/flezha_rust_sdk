@@ -25,7 +25,7 @@ use serde::Serialize;
 #[doc(hidden)]
 pub const DEFAULT_TASKLET_ON_TIMER_PANIC_MESSAGE: &str =
     "Tasklet registered a timer but did not write `on_timer`. Write \
-     `fn on_timer(&mut self, fired_at: u64, kind: TimerKind, ctx: &mut Ctx<'_, Self>)` \
+     `fn on_timer(&mut self, firing: TimerFiring, ctx: &mut Ctx<'_, Self>)` \
      to handle the firing.";
 
 pub use flz_core::relay::topology::DEFAULT_COMPACT_AFTER_BYTES;
@@ -277,12 +277,12 @@ pub trait Tasklet: Send + Sync + 'static + Default {
     /// [`Ctx`] as [`Self::run`], so it may change state, emit, and register
     /// further timers.
     ///
-    /// `fired_at` is the timestamp the timer was **scheduled at**, never the
-    /// wall clock at which it actually fired: a processing-time timer set for
-    /// T that fires at T+δ still reports T. Passing T+δ would make a replay
-    /// observe a different value and break the determinism contract in exactly
-    /// the way `SystemTime::now()` inside `run` does. For the same reason
-    /// [`Ctx::now`] equals `fired_at` inside this call, so a chained
+    /// `firing.scheduled_at` is the timestamp the timer was **scheduled at**,
+    /// never the wall clock at which it actually fired: a processing-time timer
+    /// set for T that fires at T+δ still reports T. Passing T+δ would make a
+    /// replay observe a different value and break the determinism contract in
+    /// exactly the way `SystemTime::now()` inside `run` does. For the same
+    /// reason [`Ctx::now`] equals `firing.scheduled_at` inside this call, so a chained
     /// `ctx.timer_after(..)` schedules off the timer that woke it.
     ///
     /// A failure here climbs the input channel's retry ladder and parks to the
@@ -295,8 +295,7 @@ pub trait Tasklet: Send + Sync + 'static + Default {
     /// so no build-time check can catch it.
     fn on_timer(
         &mut self,
-        _fired_at: u64,
-        _kind: crate::cell::timer::TimerKind,
+        _firing: crate::cell::timer::TimerFiring,
         _ctx: &mut Ctx<'_, Self>,
     ) -> Result<(), TaskletError> {
         panic!(

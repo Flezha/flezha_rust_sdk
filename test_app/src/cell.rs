@@ -176,12 +176,11 @@ impl Tasklet for SessionTimeoutTasklet {
     }
     fn on_timer(
         &mut self,
-        fired_at: u64,
-        _kind: flezha_runner::state::TimerKind,
+        firing: flezha_runner::state::TimerFiring,
         ctx: &mut Ctx<'_, Self>,
     ) -> Result<(), TaskletError> {
-        ctx.change(SessionChange::Closed(fired_at));
-        ctx.emit(format!("closed@{fired_at}").into_bytes())
+        ctx.change(SessionChange::Closed(firing.scheduled_at));
+        ctx.emit(format!("closed@{}", firing.scheduled_at).into_bytes())
     }
 }
 
@@ -281,18 +280,17 @@ impl Tasklet for TimerChurnTasklet {
         let at = ctx.timer_after(Duration::from_millis(1))?;
         let last = ctx.state().last;
         if last != 0 && last != at {
-            ctx.cancel_processing_time_timer(last)?;
+            ctx.cancel_timer(flezha_runner::state::TimerKind::ProcessingTime, last)?;
         }
         ctx.change(Armed(at));
         ctx.emit(input.into_bytes())
     }
     fn on_timer(
         &mut self,
-        fired_at: u64,
-        _kind: flezha_runner::state::TimerKind,
+        firing: flezha_runner::state::TimerFiring,
         ctx: &mut Ctx<'_, Self>,
     ) -> Result<(), TaskletError> {
-        ctx.emit(format!("fired:{fired_at}").into_bytes())
+        ctx.emit(format!("fired:{}", firing.scheduled_at).into_bytes())
     }
 }
 

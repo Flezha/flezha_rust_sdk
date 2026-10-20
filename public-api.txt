@@ -18,6 +18,7 @@ pub use flezha_runner::RetryPolicy
 pub use flezha_runner::Run
 pub use flezha_runner::SleepAfter
 pub use flezha_runner::StepsError
+pub use flezha_runner::TimerFiring
 pub use flezha_runner::TimerKind
 pub use flezha_runner::TopologyIssue
 pub use flezha_runner::pipeline
@@ -1061,6 +1062,7 @@ pub mod flezha_runner::state
 pub use flezha_runner::state::ClockKind
 pub use flezha_runner::state::RestoreError
 pub use flezha_runner::state::RestoreInitPayload
+pub use flezha_runner::state::TimerFiring
 pub use flezha_runner::state::TimerKind
 pub use flezha_runner::state::postcard
 pub enum flezha_runner::state::NoChange
@@ -1342,8 +1344,7 @@ pub use flezha_runner::tasklet::clock::ClockKind
 pub mod flezha_runner::tasklet::ctx
 pub struct flezha_runner::tasklet::ctx::Ctx<'a, S: flezha_runner::tasklet::Tasklet>
 impl<'a, S: flezha_runner::tasklet::Tasklet> flezha_runner::tasklet::ctx::Ctx<'a, S>
-pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::cancel_event_time_timer(&self, u64) -> core::result::Result<bool, flezha_runner::tasklet::error::TaskletError>
-pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::cancel_processing_time_timer(&self, u64) -> core::result::Result<bool, flezha_runner::tasklet::error::TaskletError>
+pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::cancel_timer(&self, flz_core::schema::TimerKind, u64) -> core::result::Result<bool, flezha_runner::tasklet::error::TaskletError>
 pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::cell_key(&self) -> core::option::Option<&str>
 pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::change(&mut self, <S as flezha_runner::tasklet::Tasklet>::Change)
 pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::checkpoint(&mut self)
@@ -1730,8 +1731,7 @@ impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::tasklet::change::Coales
 pub fn flezha_runner::tasklet::change::CoalesceKey::vzip(self) -> V
 pub struct flezha_runner::tasklet::Ctx<'a, S: flezha_runner::tasklet::Tasklet>
 impl<'a, S: flezha_runner::tasklet::Tasklet> flezha_runner::tasklet::ctx::Ctx<'a, S>
-pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::cancel_event_time_timer(&self, u64) -> core::result::Result<bool, flezha_runner::tasklet::error::TaskletError>
-pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::cancel_processing_time_timer(&self, u64) -> core::result::Result<bool, flezha_runner::tasklet::error::TaskletError>
+pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::cancel_timer(&self, flz_core::schema::TimerKind, u64) -> core::result::Result<bool, flezha_runner::tasklet::error::TaskletError>
 pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::cell_key(&self) -> core::option::Option<&str>
 pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::change(&mut self, <S as flezha_runner::tasklet::Tasklet>::Change)
 pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::checkpoint(&mut self)
@@ -1885,7 +1885,7 @@ pub fn flezha_runner::tasklet::Tasklet::max_cells() -> usize
 pub fn flezha_runner::tasklet::Tasklet::max_timers_per_cell() -> usize
 pub fn flezha_runner::tasklet::Tasklet::migrate_change(u32, &[u8]) -> core::result::Result<Self::Change, alloc::string::String>
 pub fn flezha_runner::tasklet::Tasklet::migrate_state(u32, &[u8]) -> core::result::Result<Self::State, alloc::string::String>
-pub fn flezha_runner::tasklet::Tasklet::on_timer(&mut self, u64, flz_core::schema::TimerKind, &mut flezha_runner::tasklet::ctx::Ctx<'_, Self>) -> core::result::Result<(), flezha_runner::tasklet::error::TaskletError>
+pub fn flezha_runner::tasklet::Tasklet::on_timer(&mut self, flz_core::schema::TimerFiring, &mut flezha_runner::tasklet::ctx::Ctx<'_, Self>) -> core::result::Result<(), flezha_runner::tasklet::error::TaskletError>
 pub fn flezha_runner::tasklet::Tasklet::run(&mut self, Self::Input, &mut flezha_runner::tasklet::ctx::Ctx<'_, Self>) -> core::result::Result<(), flezha_runner::tasklet::error::TaskletError>
 pub mod flezha_runner::testing
 pub mod flezha_runner::testing::harness
@@ -2615,8 +2615,7 @@ impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::control::Control where 
 pub fn flezha_runner::control::Control::vzip(self) -> V
 pub struct flezha_runner::Ctx<'a, S: flezha_runner::tasklet::Tasklet>
 impl<'a, S: flezha_runner::tasklet::Tasklet> flezha_runner::tasklet::ctx::Ctx<'a, S>
-pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::cancel_event_time_timer(&self, u64) -> core::result::Result<bool, flezha_runner::tasklet::error::TaskletError>
-pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::cancel_processing_time_timer(&self, u64) -> core::result::Result<bool, flezha_runner::tasklet::error::TaskletError>
+pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::cancel_timer(&self, flz_core::schema::TimerKind, u64) -> core::result::Result<bool, flezha_runner::tasklet::error::TaskletError>
 pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::cell_key(&self) -> core::option::Option<&str>
 pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::change(&mut self, <S as flezha_runner::tasklet::Tasklet>::Change)
 pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::checkpoint(&mut self)
@@ -3319,6 +3318,6 @@ pub fn flezha_runner::Tasklet::max_cells() -> usize
 pub fn flezha_runner::Tasklet::max_timers_per_cell() -> usize
 pub fn flezha_runner::Tasklet::migrate_change(u32, &[u8]) -> core::result::Result<Self::Change, alloc::string::String>
 pub fn flezha_runner::Tasklet::migrate_state(u32, &[u8]) -> core::result::Result<Self::State, alloc::string::String>
-pub fn flezha_runner::Tasklet::on_timer(&mut self, u64, flz_core::schema::TimerKind, &mut flezha_runner::tasklet::ctx::Ctx<'_, Self>) -> core::result::Result<(), flezha_runner::tasklet::error::TaskletError>
+pub fn flezha_runner::Tasklet::on_timer(&mut self, flz_core::schema::TimerFiring, &mut flezha_runner::tasklet::ctx::Ctx<'_, Self>) -> core::result::Result<(), flezha_runner::tasklet::error::TaskletError>
 pub fn flezha_runner::Tasklet::run(&mut self, Self::Input, &mut flezha_runner::tasklet::ctx::Ctx<'_, Self>) -> core::result::Result<(), flezha_runner::tasklet::error::TaskletError>
 pub type flezha_runner::EntryStream<'b, T> = flezha_runner::Stream<'b, T, flezha_runner::channel::EntryTarget>

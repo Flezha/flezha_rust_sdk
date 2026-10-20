@@ -15,7 +15,7 @@ use super::cell_slot::flusher_registered;
 use super::emit_sink::{flush_before_emit_enabled, CellEmitSink, FlushBeforeEmit};
 use super::{CellState, TaskletDispatcherImpl};
 use crate::cell::flusher::{FlushableBuffer, TypedBodies, TypedBuffer};
-use crate::cell::timer::{PendingTimers, TimerKind, TimerOp};
+use crate::cell::timer::{PendingTimers, TimerFiring, TimerKind, TimerOp};
 use crate::cell::CellSlot;
 use crate::relay::instance::RelayInstance;
 use crate::steps::StepsError;
@@ -181,7 +181,7 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
         let tasklet = &mut state.tasklet;
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match call {
             Call::Input { input, .. } => tasklet.run(input, &mut ctx),
-            Call::Timer { fired_at, kind } => tasklet.on_timer(fired_at, kind, &mut ctx),
+            Call::Timer(firing) => tasklet.on_timer(firing, &mut ctx),
             Call::Compensate { outputs, .. } => tasklet.compensate(outputs, &mut ctx),
         }));
         match outcome {
@@ -416,10 +416,7 @@ pub(super) enum Call<S: Tasklet> {
         reply_to: Option<Arc<str>>,
         replay: bool,
     },
-    Timer {
-        fired_at: u64,
-        kind: TimerKind,
-    },
+    Timer(TimerFiring),
     /// A steps relay undo over the outputs the Cell recorded forward, in the
     /// iteration that took the input-log `offset`.
     Compensate {
@@ -434,14 +431,14 @@ impl<S: Tasklet> Call<S> {
             Call::Input {
                 consumed_offset, ..
             } => *consumed_offset,
-            Call::Timer { .. } | Call::Compensate { .. } => None,
+            Call::Timer(_) | Call::Compensate { .. } => None,
         }
     }
 
     fn reply_to(&self) -> Option<&Arc<str>> {
         match self {
             Call::Input { reply_to, .. } => reply_to.as_ref(),
-            Call::Timer { .. } | Call::Compensate { .. } => None,
+            Call::Timer(_) | Call::Compensate { .. } => None,
         }
     }
 
@@ -453,7 +450,7 @@ impl<S: Tasklet> Call<S> {
     /// session and what a park still has to record.
     fn firing(&self) -> Option<(TimerKind, u64)> {
         match self {
-            Call::Timer { fired_at, kind } => Some((*kind, *fired_at)),
+            Call::Timer(firing) => Some((firing.kind, firing.scheduled_at)),
             Call::Input { .. } | Call::Compensate { .. } => None,
         }
     }
@@ -481,11 +478,8 @@ impl<'a, S: Tasklet> Invocation<'a, S> {
         is_final: bool,
     ) -> Self {
         Self {
-            call: Call::Timer {
-                fired_at: fire.scheduled_at,
-                kind: fire.kind,
-            },
-            now: fire.scheduled_at,
+            call: Call::Timer(fire.firing),
+            now: fire.firing.scheduled_at,
             attempt,
             is_final,
             parked_payload_bytes: None,

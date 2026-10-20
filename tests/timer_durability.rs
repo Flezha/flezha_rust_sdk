@@ -2,7 +2,7 @@
 //! replay rebuilds it exactly, overdue entries included.
 
 use flezha_runner::cell::state_sink;
-use flezha_runner::cell::timer::{TimerKind, TimerOp};
+use flezha_runner::cell::timer::{TimerFiring, TimerKind, TimerOp};
 use flezha_runner::testing::TaskletTestHarness;
 use flezha_runner::{Exactly, RelaySettings, Run};
 use flz_core::header::FORMAT_ID_TIMER_OPS;
@@ -235,13 +235,12 @@ impl Tasklet for TierSessionTask {
     }
     fn on_timer(
         &mut self,
-        fired_at: u64,
-        kind: TimerKind,
+        firing: TimerFiring,
         ctx: &mut Ctx<'_, Self>,
     ) -> Result<(), TaskletError> {
-        note_firing(&self.key, kind, fired_at);
-        ctx.change(SessionChange::Closed(fired_at));
-        ctx.emit_keyed("k".to_string(), format!("closed@{fired_at}"))?;
+        note_firing(&self.key, firing.kind, firing.scheduled_at);
+        ctx.change(SessionChange::Closed(firing.scheduled_at));
+        ctx.emit_keyed("k".to_string(), format!("closed@{}", firing.scheduled_at))?;
         Ok(())
     }
 }
@@ -292,9 +291,9 @@ fn replay_rebuilds_the_identical_pending_set() {
 }
 
 /// Spec: "on_timer may register a further timer" — the chained registration is
-/// anchored on `fired_at`, so a periodic tick is exactly reproducible.
+/// anchored on the firing's `scheduled_at`, so a periodic tick is exactly reproducible.
 #[test]
-fn on_timer_may_chain_a_further_timer_anchored_on_fired_at() {
+fn on_timer_may_chain_a_further_timer_anchored_on_scheduled_at() {
     let mut harness = TaskletTestHarness::<ChainTask>::new().with_wall_clock(1_000);
     harness.apply_inputs(vec![()]);
     assert_eq!(
@@ -305,7 +304,7 @@ fn on_timer_may_chain_a_further_timer_anchored_on_fired_at() {
     assert_eq!(
         harness.pending_timers(TimerKind::ProcessingTime),
         vec![1_200],
-        "the chained timer is fired_at + 100, not wall + 100"
+        "the chained timer is scheduled_at + 100, not wall + 100"
     );
     harness.replay_equals().expect("the chained set replays");
 }
@@ -321,8 +320,7 @@ impl Tasklet for ChainTask {
     }
     fn on_timer(
         &mut self,
-        _fired_at: u64,
-        _kind: TimerKind,
+        _firing: TimerFiring,
         ctx: &mut Ctx<'_, Self>,
     ) -> Result<(), TaskletError> {
         ctx.timer_after(Duration::from_millis(100))?;

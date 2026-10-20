@@ -732,11 +732,10 @@ impl Tasklet for BenchTurn {
     }
     fn on_timer(
         &mut self,
-        fired_at: u64,
-        _kind: flezha_runner::state::TimerKind,
+        firing: flezha_runner::state::TimerFiring,
         ctx: &mut Ctx<'_, Self>,
     ) -> Result<(), TaskletError> {
-        ctx.emit(format!("wake:{fired_at}"))
+        ctx.emit(format!("wake:{}", firing.scheduled_at))
     }
 }
 

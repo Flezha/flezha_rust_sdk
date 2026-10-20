@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::cell::flusher::encode_change;
 use crate::cell::header::header_template_for;
 use crate::cell::restore::{init_cell_with_payload, RestoreInitPayload};
-use crate::cell::timer::TimerKind;
+use crate::cell::timer::{TimerFiring, TimerKind};
 use crate::tasklet::clock::evaluate;
 use crate::tasklet::{Change, ClockKind, Ctx, NoChange, Tasklet, TaskletError};
 use crate::testing::TaskletTestHarness;
@@ -219,11 +219,10 @@ impl Tasklet for QuietSymbol {
 
     fn on_timer(
         &mut self,
-        fired_at: u64,
-        _: TimerKind,
+        firing: TimerFiring,
         ctx: &mut Ctx<'_, Self>,
     ) -> Result<(), TaskletError> {
-        ctx.emit(fired_at)
+        ctx.emit(firing.scheduled_at)
     }
 }
 

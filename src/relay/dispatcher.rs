@@ -170,7 +170,10 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
         scope: CellScope<'_, S>,
     ) -> crate::cell::ItemDisposition {
         use crate::cell::ItemDisposition;
-        if !scope.timers.contains(fire.kind, fire.scheduled_at) {
+        if !scope
+            .timers
+            .contains(fire.firing.kind, fire.firing.scheduled_at)
+        {
             return ItemDisposition::Done { ops: Vec::new() };
         }
         match self.invoke_once(Invocation::firing(&fire, attempt, is_final), scope) {

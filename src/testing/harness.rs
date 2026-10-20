@@ -25,7 +25,7 @@ use flz_core::host::output_identity;
 
 use crate::cell::flusher::encode_change;
 use crate::cell::restore::{decode_change, init_cell_with_payload, RestoreInitPayload};
-use crate::cell::timer::{PendingTimers, TimerKind, TimerOp, TimerSession};
+use crate::cell::timer::{PendingTimers, TimerFiring, TimerKind, TimerOp, TimerSession};
 use crate::tasklet::clock::{evaluate, wall_now_ms};
 use crate::tasklet::ctx::effect::HarnessEffects;
 use crate::tasklet::ctx::{EmitSink, PartRoute};
@@ -322,7 +322,7 @@ impl<S: Tasklet> TaskletTestHarness<S> {
             scheduled_at,
             Some((kind, scheduled_at)),
             None,
-            |tasklet, ctx| tasklet.on_timer(scheduled_at, kind, ctx),
+            |tasklet, ctx| tasklet.on_timer(TimerFiring { kind, scheduled_at }, ctx),
         );
         self
     }

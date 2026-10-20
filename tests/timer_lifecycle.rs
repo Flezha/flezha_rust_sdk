@@ -3,7 +3,7 @@
 
 use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 
-use flezha_runner::cell::timer::TimerKind;
+use flezha_runner::cell::timer::TimerFiring;
 use flezha_runner::tasklet::{Tasklet, TaskletError};
 
 mod common;
@@ -81,11 +81,10 @@ impl Tasklet for EvictTask {
     }
     fn on_timer(
         &mut self,
-        fired_at: u64,
-        kind: TimerKind,
+        firing: TimerFiring,
         _ctx: &mut Ctx<'_, Self>,
     ) -> Result<(), TaskletError> {
-        note_firing("gone", kind, fired_at);
+        note_firing("gone", firing.kind, firing.scheduled_at);
         Ok(())
     }
 }
@@ -173,8 +172,7 @@ impl Tasklet for ExclusionTask {
     }
     fn on_timer(
         &mut self,
-        _fired_at: u64,
-        _kind: TimerKind,
+        _firing: TimerFiring,
         _ctx: &mut Ctx<'_, Self>,
     ) -> Result<(), TaskletError> {
         Self::enter();

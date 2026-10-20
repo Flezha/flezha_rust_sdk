@@ -4,6 +4,13 @@ All notable changes to the Rust SDK crate.
 
 ## Unreleased
 
+### Changed: one timer cancel and one firing record
+
+**Breaking.** `Ctx::cancel_processing_time_timer` and `Ctx::cancel_event_time_timer` are one
+`Ctx::cancel_timer(kind, scheduled_at)`. `Tasklet::on_timer` takes one
+`TimerFiring { kind, scheduled_at }` in place of `fired_at` and `kind`; `TimerFiring` is
+`flz_core`'s, re-exported at the crate root and in `state`.
+
 ### Changed: one spelling per concept, internals hidden
 
 **Breaking.** `#[flezha::relay(id = ..)]` is `#[flezha::relay(factory_id = ..)]`, and the

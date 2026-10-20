@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use flezha_runner::channel::ChannelBuilder;
 use flezha_runner::relay::Relay;
-use flezha_runner::state::{Change, TimerKind};
+use flezha_runner::state::{Change, TimerFiring, TimerKind};
 use flezha_runner::tasklet::{Ctx, Tasklet, TaskletError};
 use flezha_runner::Flezha;
 use serde::{Deserialize, Serialize};
@@ -70,7 +70,7 @@ impl Tasklet for SessionWindow {
         // Both are durable ops on the pending set, so a crash between them is
         // not a state a restore can land in.
         if let Some(previous) = self.deadline.take() {
-            ctx.cancel_processing_time_timer(previous)?;
+            ctx.cancel_timer(TimerKind::ProcessingTime, previous)?;
         }
         self.deadline = Some(ctx.timer_after(IDLE)?);
         Ok(())
@@ -78,22 +78,21 @@ impl Tasklet for SessionWindow {
 
     fn on_timer(
         &mut self,
-        fired_at: u64,
-        _kind: TimerKind,
+        firing: TimerFiring,
         ctx: &mut Ctx<'_, Self>,
     ) -> Result<(), TaskletError> {
         self.deadline = None;
         let clicks = ctx.state().clicks.len();
-        // `fired_at` is the SCHEDULED instant, not the wall clock at firing,
-        // so this record is identical on a replay.
+        // `firing.scheduled_at` is the SCHEDULED instant, not the wall clock at
+        // firing, so this record is identical on a replay.
         ctx.change(SessionChange::Closed {
-            at: fired_at,
+            at: firing.scheduled_at,
             clicks,
         });
         ctx.emit(ClosedSession {
             user: String::new(),
             clicks,
-            closed_at: fired_at,
+            closed_at: firing.scheduled_at,
         })
     }
 }

@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::cell::restore::RestoreInitPayload;
+use crate::cell::timer::TimerKind;
 use crate::channel::ChannelBuilder;
 use crate::relay::Relay;
 use crate::tasklet::ctx::EmitSink;
@@ -132,8 +133,8 @@ fn a_context_without_a_timer_session_refuses_rather_than_dropping() {
         "{err}"
     );
     assert!(ctx.timer_at_event_time(1).is_err());
-    assert!(ctx.cancel_processing_time_timer(1).is_err());
-    assert!(ctx.cancel_event_time_timer(1).is_err());
+    assert!(ctx.cancel_timer(TimerKind::ProcessingTime, 1).is_err());
+    assert!(ctx.cancel_timer(TimerKind::EventTime, 1).is_err());
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]

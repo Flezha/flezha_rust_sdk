@@ -8,7 +8,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use flezha_runner::cell::flusher::{EffectRecordBody, SendError, SendFrameFn};
 use flezha_runner::cell::state_sink;
-use flezha_runner::cell::timer::{PendingTimers, TimerKind, TimerOp};
+use flezha_runner::cell::timer::{PendingTimers, TimerFiring, TimerKind, TimerOp};
 use flezha_runner::channel::ChannelBuilder;
 use flezha_runner::relay::Relay;
 use flezha_runner::state::{Change, ClockKind, RestoreInitPayload};
@@ -129,13 +129,12 @@ impl<const CAP: usize> Tasklet for SessionTask<CAP> {
     }
     fn on_timer(
         &mut self,
-        fired_at: u64,
-        kind: TimerKind,
+        firing: TimerFiring,
         ctx: &mut Ctx<'_, Self>,
     ) -> Result<(), TaskletError> {
-        note_firing(&self.key, kind, fired_at);
-        ctx.change(SessionChange::Closed(fired_at));
-        ctx.emit(format!("closed@{fired_at}"))?;
+        note_firing(&self.key, firing.kind, firing.scheduled_at);
+        ctx.change(SessionChange::Closed(firing.scheduled_at));
+        ctx.emit(format!("closed@{}", firing.scheduled_at))?;
         Ok(())
     }
 }
@@ -220,11 +219,10 @@ impl Tasklet for WindowTask {
     }
     fn on_timer(
         &mut self,
-        fired_at: u64,
-        _kind: TimerKind,
+        firing: TimerFiring,
         _ctx: &mut Ctx<'_, Self>,
     ) -> Result<(), TaskletError> {
-        note_order(format!("timer@{fired_at}"));
+        note_order(format!("timer@{}", firing.scheduled_at));
         Ok(())
     }
 }
@@ -259,7 +257,7 @@ impl Tasklet for SurfaceTask {
                 assert_eq!(at, 31_000, "the call returns the absolute schedule");
             }
             SurfaceCmd::Cancel => {
-                assert!(ctx.cancel_processing_time_timer(31_000)?);
+                assert!(ctx.cancel_timer(TimerKind::ProcessingTime, 31_000)?);
             }
             SurfaceCmd::RegisterMany(n) => {
                 for i in 0..n {
@@ -274,8 +272,7 @@ impl Tasklet for SurfaceTask {
     }
     fn on_timer(
         &mut self,
-        _fired_at: u64,
-        _kind: TimerKind,
+        _firing: TimerFiring,
         _ctx: &mut Ctx<'_, Self>,
     ) -> Result<(), TaskletError> {
         Ok(())

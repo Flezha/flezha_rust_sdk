@@ -8,7 +8,7 @@ use flz_core::origin::Phase;
 use flz_core::relay::instance::{fnv1a128, FNV128_OFFSET_BASIS};
 use flz_transport::transport::FlezhaStream;
 
-use crate::cell::timer::{TimerFire, TimerKind, TimerSession};
+use crate::cell::timer::{TimerFire, TimerFiring, TimerKind, TimerSession};
 use crate::cell::{CellItem, CellPayload, CellSlot};
 use crate::runner::poll_core::ItemAttempt;
 use crate::tasklet::error::TaskletError;
@@ -120,8 +120,7 @@ impl PartSource<'_> {
         let stream = Arc::clone(self.stream);
         let item = match self.firing {
             Some((kind, scheduled_at)) => CellItem::Timer(TimerFire {
-                kind,
-                scheduled_at,
+                firing: TimerFiring { kind, scheduled_at },
                 stream,
             }),
             None => CellItem::Input(CellPayload {
@@ -480,22 +479,11 @@ impl<'a, S: Tasklet> Ctx<'a, S> {
         Ok(self.timers()?.borrow_mut().register_after(delay)?)
     }
 
-    /// Cancel a pending event-time timer by the timestamp
-    /// [`Self::timer_at_event_time`] returned. `false` if none was pending.
-    pub fn cancel_event_time_timer(&self, scheduled_at: u64) -> Result<bool, TaskletError> {
-        Ok(self
-            .timers()?
-            .borrow_mut()
-            .cancel(TimerKind::EventTime, scheduled_at))
-    }
-
-    /// Cancel a pending processing-time timer by the timestamp
-    /// [`Self::timer_after`] returned. `false` if none was pending.
-    pub fn cancel_processing_time_timer(&self, scheduled_at: u64) -> Result<bool, TaskletError> {
-        Ok(self
-            .timers()?
-            .borrow_mut()
-            .cancel(TimerKind::ProcessingTime, scheduled_at))
+    /// Cancel a pending timer of `kind` by the timestamp
+    /// [`Self::timer_at_event_time`] or [`Self::timer_after`] returned.
+    /// `false` if none was pending.
+    pub fn cancel_timer(&self, kind: TimerKind, scheduled_at: u64) -> Result<bool, TaskletError> {
+        Ok(self.timers()?.borrow_mut().cancel(kind, scheduled_at))
     }
 
     fn timers(&self) -> Result<&'a RefCell<TimerSession>, TaskletError> {

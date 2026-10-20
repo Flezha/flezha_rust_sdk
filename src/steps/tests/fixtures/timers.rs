@@ -54,11 +54,10 @@ impl Tasklet for Tick {
     }
     fn on_timer(
         &mut self,
-        fired_at: u64,
-        _kind: crate::cell::timer::TimerKind,
+        firing: crate::cell::timer::TimerFiring,
         ctx: &mut Ctx<'_, Self>,
     ) -> Result<(), TaskletError> {
-        ctx.emit(format!("fired:{fired_at}"))
+        ctx.emit(format!("fired:{}", firing.scheduled_at))
     }
 }
 
@@ -117,8 +116,7 @@ impl Tasklet for ArmOnce {
     }
     fn on_timer(
         &mut self,
-        _fired_at: u64,
-        _kind: crate::cell::timer::TimerKind,
+        _firing: crate::cell::timer::TimerFiring,
         _ctx: &mut Ctx<'_, Self>,
     ) -> Result<(), TaskletError> {
         Ok(())

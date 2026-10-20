@@ -40,12 +40,11 @@ impl Tasklet for Tick {
     }
     fn on_timer(
         &mut self,
-        fired_at: u64,
-        _kind: flezha_runner::state::TimerKind,
+        firing: flezha_runner::state::TimerFiring,
         ctx: &mut Ctx<'_, Self>,
     ) -> Result<(), TaskletError> {
         hold_at("timer");
-        ctx.emit(format!("fired:{fired_at}"))
+        ctx.emit(format!("fired:{}", firing.scheduled_at))
     }
 }
 
@@ -103,11 +102,10 @@ impl Tasklet for EventTick {
     }
     fn on_timer(
         &mut self,
-        fired_at: u64,
-        _kind: flezha_runner::state::TimerKind,
+        firing: flezha_runner::state::TimerFiring,
         ctx: &mut Ctx<'_, Self>,
     ) -> Result<(), TaskletError> {
-        ctx.emit(format!("fired:{fired_at}"))
+        ctx.emit(format!("fired:{}", firing.scheduled_at))
     }
 }
 

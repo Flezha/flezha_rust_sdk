@@ -48,12 +48,12 @@ pub mod state {
     /// same guarantee.
     pub use postcard;
 
-    pub use crate::cell::timer::TimerKind;
+    pub use crate::cell::timer::{TimerFiring, TimerKind};
     pub use crate::tasklet::change::{Change, CoalesceKey, NoChange};
     pub use crate::tasklet::clock::ClockKind;
 }
 
-pub use cell::timer::TimerKind;
+pub use cell::timer::{TimerFiring, TimerKind};
 pub use cell::{RestoreError, RestoreInitPayload};
 pub use channel::builder::TopologyIssue;
 pub use channel::{
