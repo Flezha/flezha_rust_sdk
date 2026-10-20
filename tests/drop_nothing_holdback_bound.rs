@@ -188,13 +188,26 @@ fn concurrent_feeders_against_a_live_drain_never_leak_a_gate() {
         f.join().expect("feeder finished");
     }
 
-    // Nothing left gated once the last push landed: the gates went back.
+    // Nothing left gated once the last push landed: the gates went back and
+    // no Cell is still counted as owing a push. The tail can count the last
+    // item before the head's round hands its gates back, so the read waits for
+    // that; a leaked gate or a stale count never settles.
     let head = &instance.cells[0][0];
-    assert!(!head.push_deferred.load(Ordering::Acquire));
-    assert!(!head.push_gated.load(Ordering::Acquire));
+    let state = || {
+        (
+            head.push_deferred.load(Ordering::Acquire),
+            head.push_gated.load(Ordering::Acquire),
+            head.drain_active.load(Ordering::Acquire),
+            flz_core::poll_core::global().pending_push_count(),
+        )
+    };
     assert!(
-        !head.drain_active.load(Ordering::Acquire),
-        "the producing Cell is still holding its round after every push landed"
+        wait_until(
+            || state() == (false, false, false, 0),
+            Duration::from_secs(5)
+        ),
+        "the producing Cell still owes its round after every push landed \
+         (deferred, gated, drain_active, pending pushes): {:?}",
+        state()
     );
-    assert_eq!(flz_core::poll_core::global().pending_push_count(), 0);
 }
