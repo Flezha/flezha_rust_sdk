@@ -244,33 +244,6 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
         })
     }
 
-    /// The dead-letter entry a park records: the input channel that fed the
-    /// poison, the attempts it exhausted, and the payload bytes — a final
-    /// attempt captured them before the value moved into the call, a
-    /// re-handable one still holds the input and extracts them only here.
-    fn park_entry(
-        &self,
-        error: String,
-        attempt: u32,
-        parked_payload_bytes: Option<Vec<u8>>,
-        retained_input: Option<&Arc<S::Input>>,
-    ) -> crate::cell::flusher::DlqEntryBody {
-        crate::cell::retry::note_parked(&format!("tasklet {}", S::NAME), attempt, &error);
-        crate::cell::flusher::DlqEntryBody {
-            channel: self
-                .edges
-                .input_channel_name
-                .as_deref()
-                .unwrap_or("<unwired>")
-                .to_string(),
-            error,
-            attempts: attempt,
-            payload: parked_payload_bytes.or_else(|| {
-                retained_input.and_then(|arc| crate::cell::park::extract_payload_bytes(&**arc))
-            }),
-        }
-    }
-
     /// The dead letter a final failure mints. A steps relay's final attempt is
     /// its kind's: the stage fails into compensation, and none is minted.
     fn dead_letter(
@@ -282,7 +255,10 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
         retained_input: Option<&Arc<S::Input>>,
     ) -> Option<crate::cell::flusher::DlqEntryBody> {
         if !self.flush.steps {
-            return Some(self.park_entry(error, attempt, parked_payload_bytes, retained_input));
+            let payload = parked_payload_bytes.or_else(|| {
+                retained_input.and_then(|input| crate::cell::park::extract_payload_bytes(&**input))
+            });
+            return Some(flz_core::host::park_entry(slot, payload, error, attempt));
         }
         flz_core::steps::note_failure(
             slot,

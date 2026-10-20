@@ -82,9 +82,6 @@ struct EdgeFacts {
     output_channel_name: Option<Arc<str>>,
     /// `.keyed()` opt-in of the producer-edge channel.
     output_channel_keyed: bool,
-    /// Input-channel name stamped on dead-letter entries; `None` for
-    /// tasklets without a wired input channel.
-    input_channel_name: Option<Arc<str>>,
     /// Retry-then-park policy of the input channel (defaults when unwired).
     retry: RetryPolicy,
 }
@@ -536,18 +533,6 @@ impl<S: Tasklet> TaskletDispatcher for TaskletDispatcherImpl<S> {
     }
 }
 
-/// The connection one item rides — inherited by any processing-time timer it
-/// arms, so a firing's plugin emits leave the same way an input's would. A
-/// `CloseInterval` has no connection of its own and takes the live secondary;
-/// with none live the close cannot ship at all.
-fn item_stream(item: &CellItem) -> Option<Arc<FlezhaStream>> {
-    match item {
-        CellItem::Input(payload) => Some(Arc::clone(&payload.stream)),
-        CellItem::Timer(fire) => Some(Arc::clone(&fire.stream)),
-        CellItem::CloseInterval => flz_core::state_sink::secondary_stream(),
-    }
-}
-
 /// One item through the typed dispatch, holding the slot's state and timers;
 /// the flush buffer is taken under them only briefly: to settle, per emit, on a retry.
 fn dispatch_locked(
@@ -626,7 +611,7 @@ pub(super) fn run_activation(
     while let Some(work) = handout.next_item() {
         // Returning with no connection is safe only because the guard
         // abandons on the way out.
-        let Some(stream) = item_stream(&work.item) else {
+        let Some(stream) = flz_core::host::stream_of(&work.item) else {
             return;
         };
         let (now, attempt, is_final) = (work.now, work.attempt, work.is_final);

@@ -1,5 +1,6 @@
 //! Flush-before-emit ordering and failure containment: a durable change
-//! reaches the output before the output it justifies, a sleeping class's
+//! reaches the output before the output it justifies, which leaves at emit, a
+//! sleeping class's
 //! stateless Cells still move its processed prefix, and a panicking tasklet
 //! takes nothing else down.
 
@@ -11,9 +12,10 @@ use common::prelude::*;
 // A persistence-enabled Tasklet applies a Change then emits. The change's
 // WAL frame must reach the durable output BEFORE the output frame is
 // written, so a hard kill can never lose a change whose output already
-// shipped. Both signals are recorded on this single ordered log; the WAL
-// `send` and the plugin serializer run on the same dispatch thread inside
-// one `run`, so the recorded order is deterministic.
+// shipped; and a typed output leaves at emit, before `run` returns and the
+// item settles. Every signal is recorded on this single ordered log; the WAL
+// `send`, the plugin serializer and the frame write run on the same dispatch
+// thread inside one `run`, so the recorded order is deterministic.
 
 static FLUSH_ORDER_LOG: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
 
@@ -37,6 +39,7 @@ impl Tasklet for FlushOrderTasklet {
         ctx.change(AddChange(1));
         let total = *ctx.state();
         ctx.emit(format!("{total}"))?;
+        FLUSH_ORDER_LOG.lock().unwrap().push("emit returned");
         Ok(())
     }
 }
@@ -54,7 +57,7 @@ impl Relay for FlushOrderRelay {
         c.input::<String>("input")
             .into::<FlushOrderTasklet>()
             .output_named_with("out", |_v: &String| {
-                FLUSH_ORDER_LOG.lock().unwrap().push("emit");
+                FLUSH_ORDER_LOG.lock().unwrap().push("serialize");
                 Vec::new()
             })
             .into::<FlushOrderSinkTasklet>();
@@ -62,7 +65,7 @@ impl Relay for FlushOrderRelay {
 }
 
 #[test]
-fn change_is_flushed_before_output_is_emitted() {
+fn a_change_is_flushed_before_its_output_which_leaves_at_emit() {
     use flezha_runner::cell::flusher::{SendError, SendFrameFn};
     use flezha_runner::cell::state_sink;
 
@@ -79,10 +82,13 @@ fn change_is_flushed_before_output_is_emitted() {
 
     let (handle, instance) = setup::<FlushOrderRelay>("flush-order-instance");
     assert!(instance.keeps_state(), "relay must be persistent");
-    // A live peer: an output write that fails is held in the process-global
-    // reconnect ring, which no later test in this binary can replay, and a
-    // non-empty ring withholds every processed-prefix marker.
-    let (stream, _observer) = stream_pair();
+    // An output write that fails would be held in the process-global
+    // reconnect ring, which withholds every processed-prefix marker.
+    let wire: flz_transport::transport::LocalFrameSink = Arc::new(|_frame: &[u8]| {
+        FLUSH_ORDER_LOG.lock().unwrap().push("wire");
+        Ok(())
+    });
+    let stream = Arc::new(flz_transport::transport::FlezhaStream::Local(wire));
 
     let mut md = HashMap::new();
     md.insert("channel".to_string(), "input".to_string());
@@ -95,16 +101,16 @@ fn change_is_flushed_before_output_is_emitted() {
 
     assert!(
         wait_until(
-            || FLUSH_ORDER_LOG.lock().unwrap().len() == 2,
+            || FLUSH_ORDER_LOG.lock().unwrap().len() == 4,
             Duration::from_secs(5)
         ),
-        "expected both wal+emit signals, got {:?}",
+        "expected four signals, got {:?}",
         FLUSH_ORDER_LOG.lock().unwrap().clone()
     );
     assert_eq!(
         FLUSH_ORDER_LOG.lock().unwrap().clone(),
-        vec!["wal", "emit"],
-        "change must reach the WAL path before the output frame is written"
+        vec!["wal", "serialize", "wire", "emit returned"],
+        "change must reach the WAL path before the output frame, written at emit"
     );
 }
 

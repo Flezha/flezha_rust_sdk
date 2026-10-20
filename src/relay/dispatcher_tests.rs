@@ -162,7 +162,6 @@ fn snapshot_frame_round_trips_through_restore() {
             output_channel_id: None,
             output_channel_name: None,
             output_channel_keyed: false,
-            input_channel_name: None,
             retry: RetryPolicy::default(),
         },
         Arc::from("inst/task/"),

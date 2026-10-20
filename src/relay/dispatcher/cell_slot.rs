@@ -154,7 +154,6 @@ fn build_dispatcher<S: Tasklet>(
             output_channel_id: tasklet_desc.output_channel_id,
             output_channel_name: output_channel.map(|c| Arc::clone(&c.name)),
             output_channel_keyed: output_channel.map(|c| c.keyed).unwrap_or(false),
-            input_channel_name: input_channel.map(|c| Arc::clone(&c.name)),
             retry: input_channel.map(|c| c.retry).unwrap_or_default(),
         },
         Arc::clone(&parts.cell_label),

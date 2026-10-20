@@ -10,7 +10,9 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use flz_core::routing::{route_to_consumers, send_plugin_frame, Delivery, REPLY_TO_KEY};
+use flz_core::host::{end_stamps, ship_plugin_output, ShipAt};
+use flz_core::routing::{route_to_consumers, Delivery};
+use flz_core::util::wall_now_ms;
 use flz_transport::transport::FlezhaStream;
 
 use crate::cell::CellSlot;
@@ -129,35 +131,12 @@ impl<'a> CellEmitSink<'a> {
         }
     }
 
-    /// Plugin-output tail: serialize once inside `catch_unwind` and write the
-    /// bytes as the channel's plugin output. A serializer panic surfaces as
-    /// `TaskletError::PluginSerializerPanic` to the producing Tasklet; the
-    /// dispatcher thread is unaffected.
-    fn emit_plugin_sink(
-        &mut self,
-        instance: &RelayInstance,
-        descriptor: &crate::channel::ChannelDescriptor,
-        sink: &crate::channel::PluginSink,
-        value: &Arc<dyn Any + Send + Sync>,
-        meta: Option<HashMap<String, String>>,
-        key: Option<String>,
-    ) -> Result<(), TaskletError> {
-        let bytes = serialize_contained(&sink.serializer, &descriptor.name, value.as_ref())?;
-        let mut meta = meta;
-        if let Some(token) = self.reply_to.as_deref() {
-            meta.get_or_insert_with(HashMap::new)
-                .insert(REPLY_TO_KEY.to_string(), token.to_string());
-        }
-        self.write_plugin_output(instance, descriptor, bytes, meta, key)
-    }
-
     /// A call end's tail: each request the value makes (the chain's transform
     /// and key applied) serialized once and written with the end's stamps, its
     /// deadline read off the wall clock now. The ctx refuses a tasklet's own
     /// `flz.` keys, so the stamps are the only ones.
     fn emit_call(
         &mut self,
-        instance: &RelayInstance,
         descriptor: &crate::channel::ChannelDescriptor,
         end: &crate::channel::CallEnd,
         sink: &crate::channel::PluginSink,
@@ -167,34 +146,35 @@ impl<'a> CellEmitSink<'a> {
         let requests = end
             .requests(value)
             .map_err(|error| TaskletError::non_retryable(error.to_string()))?;
-        let now_ms = flz_core::util::wall_now_ms();
+        let now_ms = wall_now_ms();
         for (request, key) in requests {
             let bytes = serialize_contained(&sink.serializer, &descriptor.name, request.as_ref())?;
-            let mut metadata = meta.clone().unwrap_or_default();
-            metadata.extend(end.stamps(key.as_deref(), now_ms));
-            self.write_plugin_output(instance, descriptor, bytes, Some(metadata), key)?;
+            self.write_plugin_output(descriptor, bytes, meta.clone(), key, || now_ms)?;
         }
         Ok(())
     }
 
-    /// One plugin output: into the invocation's effect record for a Cell that
-    /// records effects, else framed and written to the wire with the channel's
-    /// name and, on a keyed channel, the identity stamps.
+    /// One plugin output with the core's end stamps: into the invocation's
+    /// effect record for a Cell that records effects, else shipped at emit
+    /// with, on a keyed channel, the identity stamps.
     fn write_plugin_output(
         &mut self,
-        instance: &RelayInstance,
         descriptor: &crate::channel::ChannelDescriptor,
         bytes: Vec<u8>,
         meta: Option<HashMap<String, String>>,
         key: Option<String>,
+        now_ms: impl FnOnce() -> u64,
     ) -> Result<(), TaskletError> {
+        let mut meta = meta.unwrap_or_default();
+        let reply_to = self.reply_to.as_ref();
+        end_stamps(descriptor, reply_to, key.as_deref(), now_ms, &mut meta);
         if let Some(captured) = self.effect_capture {
             push_effect_output(captured, &descriptor.name, key, meta, bytes);
             return Ok(());
         }
-        let mut metadata = channel_metadata(meta, &descriptor.name);
-        self.stamp_identity(&mut metadata, key);
-        send_plugin_frame(&self.stream, &instance.instance_id, &bytes, &metadata)
+        self.stamp_identity(&mut meta, key);
+        let (slot, channel) = (self.producer, descriptor.name.to_string());
+        ship_plugin_output(slot, &self.stream, channel, &bytes, meta, ShipAt::Emit)
             .map_err(|error| TaskletError::non_retryable(error.to_string()))
     }
 }
@@ -244,11 +224,11 @@ impl<'a> EmitSink for CellEmitSink<'a> {
                 ));
         }
         match (descriptor.call.as_ref(), descriptor.plugin_sink.as_ref()) {
-            (Some(end), Some(sink)) => {
-                self.emit_call(&instance, descriptor, end, sink, &value, meta)
-            }
+            (Some(end), Some(sink)) => self.emit_call(descriptor, end, sink, &value, meta),
             (None, Some(sink)) => {
-                self.emit_plugin_sink(&instance, descriptor, sink, &value, meta, key)
+                let bytes =
+                    serialize_contained(&sink.serializer, &descriptor.name, value.as_ref())?;
+                self.write_plugin_output(descriptor, bytes, meta, key, wall_now_ms)
             }
             _ => Ok(()),
         }
@@ -303,18 +283,6 @@ pub(crate) fn serialize_contained(
     })
 }
 
-/// Build the emit wire metadata: drop any caller-supplied reserved
-/// `channel` key, then stamp the descriptor's channel name.
-fn channel_metadata(
-    meta: Option<HashMap<String, String>>,
-    channel: &str,
-) -> HashMap<String, String> {
-    let mut metadata = meta.unwrap_or_default();
-    metadata.remove("channel");
-    metadata.insert("channel".to_string(), channel.to_string());
-    metadata
-}
-
 /// Output-identity stamps for one keyed-channel plugin frame: the emitting
 /// Cell (`flz.cell`), the replay-stable output sequence
 /// `<change_seq>.<emit_ordinal>` (`flz.seq`), and the caller's natural key
@@ -342,20 +310,18 @@ pub(crate) fn apply_identity_stamps(
 /// Tier-mode capture: push one plugin output into the invocation's atomic
 /// effect record instead of any wire path. Key-sorted user metadata keeps
 /// the record bytes replay-deterministic (HashMap iteration order is not);
-/// the reserved `channel` key is dropped like `channel_metadata` does, and
-/// identity stamps are derived controller-side from the durable record.
+/// the reserved `channel` key is dropped as the shipped frame's is
+/// overwritten, and identity stamps are derived controller-side from the
+/// durable record.
 fn push_effect_output(
     captured: &RefCell<super::invocation::Captured>,
     channel: &str,
     key: Option<String>,
-    meta: Option<HashMap<String, String>>,
+    meta: HashMap<String, String>,
     payload: Vec<u8>,
 ) {
-    let mut metadata: Vec<(String, String)> = meta
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|(k, _)| k != "channel")
-        .collect();
+    let mut metadata: Vec<(String, String)> =
+        meta.into_iter().filter(|(k, _)| k != "channel").collect();
     metadata.sort();
     captured
         .borrow_mut()
