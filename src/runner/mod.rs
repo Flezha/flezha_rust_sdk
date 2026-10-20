@@ -1,5 +1,5 @@
 //! Re-export shim: the runner kernel lives in `flz_core`; the typed layer's
-//! poll workers live in `relay::poll_pool`.
+//! poll workers live in `relay::dispatcher`.
 
 pub(crate) use flz_core::poll_core;
 #[cfg(test)]
@@ -7,6 +7,3 @@ pub(crate) use flz_core::runner::*;
 
 #[cfg(test)]
 mod fast_tests;
-#[cfg(test)]
-#[path = "tests/poll_core/mod.rs"]
-pub(crate) mod poll_core_tests;

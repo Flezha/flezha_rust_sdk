@@ -178,7 +178,7 @@ fn build_dispatcher<S: Tasklet>(
 pub fn build_cell_slot<S: Tasklet>(args: BuildCellArgs<'_>) -> Arc<CellSlot> {
     // The slot's rounds are served by the typed layer's poll workers; make
     // sure they exist before the first input can be scheduled.
-    crate::relay::poll_pool::ensure_poll_workers();
+    super::ensure_poll_workers();
     // v1 cold-start path: `init_payload` is `None`. The controller change
     // wires the warm-restart path through `init_cell_with_payload`
     // and calls a richer constructor.

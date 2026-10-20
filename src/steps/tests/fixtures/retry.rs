@@ -175,7 +175,7 @@ pub(crate) static STEP_ATTEMPTS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::
 pub(crate) fn probe_keys() -> &'static [&'static str] {
     static KEYS: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
     KEYS.get_or_init(|| {
-        (0..crate::relay::poll_pool::base_worker_count() * 2)
+        (0..crate::relay::dispatcher::ensure_poll_workers().base * 2)
             .map(|i| &*Box::leak(format!("probe{i}").into_boxed_str()))
             .collect()
     })

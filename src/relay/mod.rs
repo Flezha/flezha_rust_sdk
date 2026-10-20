@@ -3,7 +3,6 @@
 
 pub mod builder;
 pub mod dispatcher;
-pub(crate) mod poll_pool;
 pub use flz_core::relay::settings::{
     Durable, Each, Exactly, OnFailure, RelaySettings, Run, SleepAfter, DEFAULT_SLEEP_AFTER,
 };

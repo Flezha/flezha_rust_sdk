@@ -39,7 +39,7 @@ impl LocalRelay {
     /// declaration that needs a controller, naming the capability.
     pub fn start<R: Relay>() -> Result<Self, FlezhaError> {
         crate::register_class::<R>()?;
-        crate::relay::poll_pool::ensure_poll_workers();
+        crate::relay::dispatcher::ensure_poll_workers();
         Ok(LocalRelay {
             run: LocalRun::start(R::factory_id(), &format!("{}-local", R::factory_id()))?,
         })

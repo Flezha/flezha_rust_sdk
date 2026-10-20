@@ -13,9 +13,11 @@
 //! `Mutex` lock that is always uncontended in practice.
 
 use std::any::Any;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 
+use flz_core::poll_core::global;
+use flz_core::poll_pool::Governor;
 use flz_transport::transport::FlezhaStream;
 
 use crate::cell::flusher::TypedBuffer;
@@ -533,11 +535,31 @@ fn cell_work(
     }
 }
 
+/// Start the process-wide pool (once), sized from the host's parallelism:
+/// the host half of the poll/complete seam, one named thread per worker
+/// running [`run_activation`]. Called before the first input can be scheduled.
+pub(crate) fn ensure_poll_workers() -> &'static Governor {
+    static POOL: std::sync::OnceLock<Arc<Governor>> = std::sync::OnceLock::new();
+    POOL.get_or_init(|| {
+        let governor =
+            Governor::from_env(std::thread::available_parallelism().map_or(2, |n| n.get()));
+        let (pool, core, next_id) = (Arc::clone(&governor), global(), AtomicUsize::new(0));
+        governor.start(core, move |grown| {
+            let (pool, id) = (Arc::clone(&pool), next_id.fetch_add(1, Ordering::Relaxed));
+            std::thread::Builder::new()
+                .name(format!("flz-poll-{id}"))
+                .spawn(move || pool.work(core, grown, |act| run_activation(core, act)))
+                .map(|_| ())
+        });
+        governor
+    })
+}
+
 /// Run one activation: one attempt per item through the typed dispatch, then
 /// either complete the batch or hand the failed head (and unprocessed tail)
 /// back to the engine's ladder. The engine owns handout exclusivity,
 /// admission, and the drain-tail protocol (`runner::poll_core`).
-pub(super) fn run_activation(
+fn run_activation(
     core: &crate::runner::poll_core::PollCore,
     act: crate::runner::poll_core::EngineActivation,
 ) {

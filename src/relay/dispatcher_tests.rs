@@ -9,6 +9,18 @@ use crate::relay::Relay;
 use crate::tasklet::ctx::EmitSink;
 use crate::tasklet::{Ctx, Tasklet, TaskletError};
 
+/// One instance of `O` and its first Cell.
+fn build_slot_of<O: Relay>(instance_id: &str) -> (Arc<RelayInstance>, Arc<CellSlot>) {
+    let cb = ChannelBuilder::new();
+    O::channels(&cb);
+    let topology =
+        crate::relay::builder::build_topology_with_settings(O::factory_id(), cb, &O::settings())
+            .expect("topology");
+    let instance = RelayInstance::new(topology, Arc::from(instance_id));
+    let slot = Arc::clone(&instance.cells[0][0]);
+    (instance, slot)
+}
+
 /// The worker's guard, on exactly the path it exists for. Per-cell
 /// exclusivity IS the handout, so a worker that leaves without answering —
 /// a panic past the dispatcher's own `catch_unwind`s, or an early return
@@ -17,8 +29,9 @@ use crate::tasklet::{Ctx, Tasklet, TaskletError};
 /// abandon: the items come back untouched and the next worker serves them.
 #[test]
 fn an_unwinding_worker_re_hands_its_activation_instead_of_retiring_the_cell() {
+    use flz_core::test_support::push_input;
+
     use crate::runner::poll_core::{PollCore, Polled};
-    use crate::runner::poll_core_tests::fixtures::{build_slot_of, push_input};
 
     let core = PollCore::new();
     let (_instance, slot) = build_slot_of::<KeyedRelay>("dispatcher-unwind");
@@ -167,7 +180,6 @@ impl Relay for CounterRelay {
 #[test]
 fn snapshot_frame_round_trips_through_restore() {
     use crate::cell::restore::init_cell_with_payload;
-    use crate::runner::poll_core_tests::fixtures::build_slot_of;
 
     let (_instance, slot) = build_slot_of::<CounterRelay>("dispatcher-snapshot");
     slot.state
