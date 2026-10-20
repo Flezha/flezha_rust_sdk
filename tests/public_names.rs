@@ -40,11 +40,14 @@ fn cells() -> Vec<(String, String)> {
 fn item_path(text: &str) -> String {
     let mut depth = 0usize;
     let mut path = String::new();
-    for c in text.chars() {
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
         match c {
             '<' => depth += 1,
             '>' if depth > 0 => depth -= 1,
             _ if depth > 0 => {}
+            // A lone `:` ends the path: `Change<S>: Serialize`, `NAME: &str`.
+            ':' if !path.ends_with(':') && chars.peek() != Some(&':') => break,
             c if c.is_alphanumeric() || c == '_' || c == ':' => path.push(c),
             _ => break,
         }
