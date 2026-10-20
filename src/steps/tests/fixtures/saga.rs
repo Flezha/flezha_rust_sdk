@@ -1,5 +1,5 @@
 //! Saga classes and the observation logs every compensation scenario
-//! reads: what ran, what was undone, and what reached the WAL.
+//! reads: what ran and what was undone.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -20,20 +20,6 @@ use crate::{Relay, RelaySettings, Run};
 /// plumbing (a compensable inter-tasklet task's `ctx.emit` is collected, not
 /// wired).
 pub(crate) static COMPENSATION_LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
-
-// Captures the `(payload_id, frame)` pairs a durable steps relay ships to the
-// reliable output — `cell_state_change` from the flush plus the saga
-// `compensation_intent` / `compensation_done` markers.
-pub(crate) static WAL_FRAMES: Mutex<Vec<(String, Vec<u8>)>> = Mutex::new(Vec::new());
-
-pub(crate) fn count_wal_frames(payload_id: &str) -> usize {
-    WAL_FRAMES
-        .lock()
-        .unwrap()
-        .iter()
-        .filter(|(pid, _)| pid == payload_id)
-        .count()
-}
 
 pub(crate) fn comp_log(entry: String) {
     COMPENSATION_LOG.lock().unwrap().push(entry);
@@ -452,7 +438,7 @@ pub(crate) const SIBLING_SAGA_ID: &str = "sibling-commit";
 // lands after that sibling's stage committed on its own.
 string_task!(SiblingSlow, "sibling_slow", |_input, _ctx| {
     Err(TaskletError::non_retryable(
-        if super::super::fake_controller::await_commit(SIBLING_SAGA_ID, "sibling_fast") {
+        if flz_core::test_support::steps::await_commit(SIBLING_SAGA_ID, "sibling_fast") {
             "slow sibling failed after its sibling committed"
         } else {
             "slow sibling never saw its sibling commit"

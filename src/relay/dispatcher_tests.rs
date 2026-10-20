@@ -200,8 +200,8 @@ fn snapshot_frame_round_trips_through_restore() {
 
     // Extract the postcard body (header-less, exactly what the controller
     // ships back as RestoreInitState.snapshot_bytes) from the wire frame.
-    let crate::cell::flusher::CellFrame { header, body, .. } =
-        crate::cell::flusher::split_cell_frame(&frame).unwrap();
+    let flz_core::test_support::CellFrame { header, body, .. } =
+        flz_core::test_support::split_cell_frame(&frame).unwrap();
     assert_eq!(size, body.len(), "reported byte size is the body length");
 
     // The header the frame carries is what the controller stores and now

@@ -6,8 +6,8 @@ use std::sync::atomic::Ordering;
 
 use crossbeam::channel::Receiver;
 use flz_core::runner::RunnerNode;
+use flz_core::test_support::steps::*;
 
-use super::super::fake_controller::*;
 use super::super::fixtures::*;
 use crate::command::CommandAction;
 use crate::pb::{AddRelay, StepsStop};
@@ -30,7 +30,8 @@ pub(super) fn lifecycle(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
     // Instance stays registered; a duplicate start is idempotent (no re-run).
     assert!(node.has_relay("steps-ok"));
     assert!(
-        instance(node, "steps-ok").is_some_and(|i| i.steps.is_some()),
+        node.get_relay("steps-ok")
+            .is_some_and(|i| i.steps.is_some()),
         "a steps instance carries its run"
     );
     assert!(start_fed(node, "test-emit-steps", "steps-ok", b"hello"));
@@ -287,7 +288,7 @@ pub(super) fn add_relay_routing(node: &mut RunnerNode, rx: &Receiver<RunnerMessa
         "{errors_text:?}"
     );
     assert!(
-        instance(node, "steps-text-init").is_none(),
+        node.get_relay("steps-text-init").is_none(),
         "a refused document starts nothing"
     );
 

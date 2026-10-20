@@ -7,8 +7,8 @@ use std::sync::Arc;
 
 use crossbeam::channel::Receiver;
 use flz_core::runner::RunnerNode;
+use flz_core::test_support::steps::*;
 
-use super::fake_controller::*;
 use super::fixtures::*;
 use crate::runner::{install_reconnect_trigger, RunnerMessage};
 use crate::steps::*;
@@ -166,8 +166,9 @@ pub(super) fn resume_chain_with_journal(
     .expect("init_values is a JSON object"));
     assert!(feed(node, id, b"ignored-args"));
     let s1_id = crate::cell::flusher::encode_cell_identity(id, "steps_stage1", "");
-    let (inst, _slot) =
-        find_cell(node, &s1_id).expect("chain cell reachable by the restore handler");
+    let (inst, _slot) = node
+        .find_cell(&s1_id)
+        .expect("chain cell reachable by the restore handler");
     restored(&inst);
     drain(rx, id)
 }

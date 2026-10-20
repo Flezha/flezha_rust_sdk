@@ -10,15 +10,15 @@ use crossbeam::channel::Receiver;
 use flz_core::command::CommandAction;
 use flz_core::dynamic::DynamicCellRegistry;
 use flz_core::runner::RunnerNode;
+use flz_core::test_support::steps::*;
 use prost::Message;
 
-use super::super::fake_controller::*;
 use super::super::fixtures::*;
 use crate::cell::flusher::encode_cell_identity;
 use crate::runner::RunnerMessage;
 
 fn registry(node: &RunnerNode, id: &str, tasklet: &str) -> Arc<DynamicCellRegistry> {
-    let inst = instance(node, id).expect("a live instance");
+    let inst = node.get_relay(id).expect("a live instance");
     let tasklet_id = inst.topology.tasklet_name_to_id[tasklet] as usize;
     Arc::clone(
         inst.dynamic_registries[tasklet_id]
@@ -304,7 +304,7 @@ fn keyed_sweep(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
             live_keys(&plain).is_empty(),
             "{factory}: the hookless stage"
         );
-        flz_core::steps::stop(&instance(node, id).expect("live"));
+        flz_core::steps::stop(&node.get_relay(id).expect("live"));
         let (_o, done) = drain(rx, id);
         assert_eq!(done.0, "cancelled");
     }
@@ -377,7 +377,7 @@ fn partition_member(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
     let _ = drain_iter_commits();
     WAL_FRAMES.lock().unwrap().clear();
     assert!(start_partitioned(node, "test-keyed-entry-loop", id, range));
-    let inst = instance(node, id).expect("live");
+    let inst = node.get_relay(id).expect("live");
 
     feed_at(&inst, b"a", 3);
     let deadline = std::time::Instant::now() + Duration::from_secs(5);

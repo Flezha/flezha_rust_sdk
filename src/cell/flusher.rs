@@ -72,29 +72,6 @@ pub fn coalesce<S, C: Change<S>>(buf: Vec<C>) -> Vec<C> {
     out
 }
 
-/// A cell frame split back into its parts: the inverse of
-/// [`build_cell_frame`], for tests that read what a run shipped.
-#[cfg(test)]
-pub(crate) struct CellFrame<'a> {
-    pub identity: &'a [u8],
-    pub seq: u64,
-    pub header: &'a [u8],
-    pub body: &'a [u8],
-}
-
-#[cfg(test)]
-pub(crate) fn split_cell_frame(frame: &[u8]) -> Option<CellFrame<'_>> {
-    let id_len = u16::from_be_bytes(frame.get(..2)?.try_into().ok()?) as usize;
-    let at = 2 + id_len;
-    let body_len = u32::from_be_bytes(frame.get(at + 24..at + 28)?.try_into().ok()?) as usize;
-    Some(CellFrame {
-        identity: frame.get(2..at)?,
-        seq: u64::from_be_bytes(frame.get(at..at + 8)?.try_into().ok()?),
-        header: frame.get(at + 8..at + 24)?,
-        body: frame.get(at + 28..at + 28 + body_len)?,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::AtomicU64;
@@ -292,7 +269,7 @@ mod tests {
         );
 
         // Same outer layout as a change frame; header format_id = 2.
-        let split = super::split_cell_frame(&frame).unwrap();
+        let split = flz_core::test_support::split_cell_frame(&frame).unwrap();
         assert_eq!(split.header[9], FORMAT_ID_EFFECT_RECORD);
         let decoded: EffectRecordBody = postcard::from_bytes(split.body).unwrap();
 

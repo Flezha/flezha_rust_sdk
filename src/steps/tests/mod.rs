@@ -1,8 +1,8 @@
 //! The steps relay authoring surface's tests: the fixtures they are written
-//! against, the fake controller they run into, the registration and spec
-//! refusals, and the one ordered driver scenario suite.
+//! against, the registration and spec refusals, and the one ordered driver
+//! scenario suite, run into the core's fake controller
+//! (`flz_core::test_support::steps`).
 
 mod driver;
-mod fake_controller;
 mod fixtures;
 mod registration;

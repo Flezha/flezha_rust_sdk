@@ -3,8 +3,8 @@
 
 use crossbeam::channel::Receiver;
 use flz_core::runner::RunnerNode;
+use flz_core::test_support::steps::*;
 
-use super::super::fake_controller::*;
 use super::super::fixtures::*;
 use crate::runner::RunnerMessage;
 use crate::steps::*;
@@ -15,8 +15,9 @@ pub(super) fn durable_loop(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) 
     let _ = drain_task_commits();
     assert!(start(node, "test-chat-loop".into(), "chat-1".into(), "")
         .expect("init_values is a JSON object"));
-    let chat =
-        instance(node, "chat-1").expect("the loop's instance is registered before its driver runs");
+    let chat = node
+        .get_relay("chat-1")
+        .expect("the loop's instance is registered before its driver runs");
     // Two chat turns, at input-log offsets 4 and 7 (the controller's
     // offsets are opaque to the driver — it only echoes them back).
     feed_at(&chat, b"hi", 4);
@@ -96,8 +97,9 @@ pub(super) fn durable_loop(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) 
         })
     )
     .expect("init_values is a JSON object"));
-    let (chat2, _slot) =
-        find_cell(node, &s1_id).expect("the loop's Cell is reachable by the restore handler");
+    let (chat2, _slot) = node
+        .find_cell(&s1_id)
+        .expect("the loop's Cell is reachable by the restore handler");
     restored(&chat2);
     feed_at(&chat2, b"third", 9);
 
@@ -173,7 +175,8 @@ pub(super) fn loop_saga_and_rewind(node: &mut RunnerNode, rx: &Receiver<RunnerMe
             })
         )
         .expect("init_values is a JSON object"));
-        let (inst, _slot) = find_cell(node, &seg)
+        let (inst, _slot) = node
+            .find_cell(&seg)
             .expect("the loop saga's Cell is reachable by the restore handler");
         restored(&inst);
         feed_at(&inst, b"boom", 5);
@@ -226,8 +229,9 @@ pub(super) fn loop_saga_and_rewind(node: &mut RunnerNode, rx: &Receiver<RunnerMe
         })
     )
     .expect("init_values is a JSON object"));
-    let (inst, _slot) =
-        find_cell(node, &seg).expect("the loop saga's Cell is reachable by the restore handler");
+    let (inst, _slot) = node
+        .find_cell(&seg)
+        .expect("the loop saga's Cell is reachable by the restore handler");
     restored(&inst);
     // The resumed turn fails and is dead-lettered, and the loop parks once
     // idle (the fake controller must stay in `drain` to ack the undo commits).
@@ -274,8 +278,9 @@ pub(super) fn loop_completion(node: &mut RunnerNode, rx: &Receiver<RunnerMessage
         start(node, "test-completing-chat".into(), "bye-1".into(), "")
             .expect("init_values is a JSON object")
     );
-    let chat =
-        instance(node, "bye-1").expect("the loop's instance is registered before its driver runs");
+    let chat = node
+        .get_relay("bye-1")
+        .expect("the loop's instance is registered before its driver runs");
     feed_at(&chat, b"hi", 4);
     feed_at(&chat, b"bye", 5);
 
@@ -326,8 +331,9 @@ pub(super) fn loop_completion(node: &mut RunnerNode, rx: &Receiver<RunnerMessage
         })
     )
     .expect("init_values is a JSON object"));
-    let (inst, _slot) =
-        find_cell(node, &seg).expect("the loop's Cell is reachable by the restore handler");
+    let (inst, _slot) = node
+        .find_cell(&seg)
+        .expect("the loop's Cell is reachable by the restore handler");
     restored(&inst);
     let (outs, done) = drain(rx, "bye-2");
     assert_eq!(
@@ -369,8 +375,9 @@ pub(super) fn loop_completion(node: &mut RunnerNode, rx: &Receiver<RunnerMessage
     )
     .expect("init_values is a JSON object"));
     assert!(feed(node, id, b"ignored"));
-    let (inst, _slot) =
-        find_cell(node, &seg).expect("the loop's Cell is reachable by the restore handler");
+    let (inst, _slot) = node
+        .find_cell(&seg)
+        .expect("the loop's Cell is reachable by the restore handler");
     restored(&inst);
     let (outs, done) = drain(rx, id);
     assert_eq!(
@@ -453,7 +460,8 @@ pub(super) fn barrier_resend(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>
     lose_acks("resend-3", 3);
     assert!(start(node, "test-chat-loop".into(), "resend-3".into(), "")
         .expect("init_values is a JSON object"));
-    let resend_loop = instance(node, "resend-3")
+    let resend_loop = node
+        .get_relay("resend-3")
         .expect("the loop's instance is registered before its driver runs");
     feed_at(&resend_loop, b"hi", 4);
     let (outs, done) = drain(rx, "resend-3");

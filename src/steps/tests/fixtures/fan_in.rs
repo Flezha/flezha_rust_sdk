@@ -235,7 +235,7 @@ fn panic_once_c_committed(_: String) -> MergedJoinInput {
         .iter()
         .any(|entry| entry.starts_with("b:"))
     {
-        super::super::fake_controller::await_commit(MERGE_PANIC_ID, "diamond_c");
+        flz_core::test_support::steps::await_commit(MERGE_PANIC_ID, "diamond_c");
     }
     panic!("merge mapping blew up")
 }

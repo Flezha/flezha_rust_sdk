@@ -5,8 +5,8 @@ use std::sync::atomic::Ordering;
 
 use crossbeam::channel::Receiver;
 use flz_core::runner::RunnerNode;
+use flz_core::test_support::steps::*;
 
-use super::super::fake_controller::*;
 use super::super::fixtures::*;
 use crate::runner::RunnerMessage;
 
@@ -139,7 +139,9 @@ pub(super) fn retry_stop_and_stage(node: &mut RunnerNode, rx: &Receiver<RunnerMe
         "retry-stop",
         b"a,bb"
     ));
-    let stop_target = instance(node, "retry-stop").expect("live instance accepts cancel");
+    let stop_target = node
+        .get_relay("retry-stop")
+        .expect("live instance accepts cancel");
     let odd_cell = stop_target
         .cells
         .iter()

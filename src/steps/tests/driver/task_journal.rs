@@ -3,9 +3,8 @@
 
 use crossbeam::channel::Receiver;
 use flz_core::runner::RunnerNode;
+use flz_core::test_support::steps::*;
 
-use super::super::fake_controller::*;
-use super::super::fixtures::*;
 use super::resume_chain_with_journal;
 use crate::runner::RunnerMessage;
 use crate::steps::*;
@@ -61,7 +60,8 @@ pub(super) fn durable_wal_and_journal(node: &mut RunnerNode, rx: &Receiver<Runne
     // lookup only scans RelayInstance cells, so the restore handler
     // finds a steps relay Cell by identity or not at all.
     let even_id = crate::cell::flusher::encode_cell_identity("resume-inst", "steps_fan_op", "even");
-    let (resume_instance, _slot) = find_cell(node, &even_id)
+    let (resume_instance, _slot) = node
+        .find_cell(&even_id)
         .expect("a durable steps Cell is reachable by the restore handler");
     // Release one restore, exactly as the RestoreInitState handler does after
     // applying a persisted Cell: the parked driver wakes and runs to

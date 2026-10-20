@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use crossbeam::channel::Receiver;
 use flz_core::runner::RunnerNode;
+use flz_core::test_support::steps::*;
 
-use super::super::fake_controller::*;
 use super::super::fixtures::*;
 use crate::command::CommandAction;
 use crate::pb::StepsStop;
@@ -99,7 +99,8 @@ pub(super) fn entrance(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>) {
         ""
     )
     .expect("init_values is a JSON object"));
-    let countdown = instance(node, "countdown-1")
+    let countdown = node
+        .get_relay("countdown-1")
         .expect("the loop's instance is registered before its driver runs");
     feed_at(&countdown, b"2", 0);
     let (_outs, done) = drain(rx, "countdown-1");

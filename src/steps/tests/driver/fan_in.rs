@@ -3,8 +3,8 @@
 
 use crossbeam::channel::Receiver;
 use flz_core::runner::RunnerNode;
+use flz_core::test_support::steps::*;
 
-use super::super::fake_controller::*;
 use super::super::fixtures::*;
 use crate::cell::state_sink::COMPENSATION_DONE_PAYLOAD_ID as DONE;
 use crate::runner::RunnerMessage;
@@ -112,7 +112,8 @@ pub(super) fn fan_in_branching(node: &mut RunnerNode, rx: &Receiver<RunnerMessag
     )
     .expect("init_values is a JSON object"));
     assert!(feed(node, "diamond-r", b"x"));
-    let (diamond_inst, _slot) = find_cell(node, &da_id)
+    let (diamond_inst, _slot) = node
+        .find_cell(&da_id)
         .expect("a durable diamond Cell is reachable by the restore handler");
     restored(&diamond_inst);
     let (outs, done) = drain(rx, "diamond-r");
@@ -208,8 +209,9 @@ pub(super) fn merge_mapping(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>)
     )
     .expect("init_values is a JSON object"));
     assert!(feed(node, "merge-r", b"x"));
-    let (merge_inst, _slot) =
-        find_cell(node, &ma_id).expect("a durable merge Cell is reachable by the restore handler");
+    let (merge_inst, _slot) = node
+        .find_cell(&ma_id)
+        .expect("a durable merge Cell is reachable by the restore handler");
     restored(&merge_inst);
     let (outs, done) = drain(rx, "merge-r");
     assert_eq!(done.0, "ok");
@@ -327,7 +329,8 @@ pub(super) fn merge_mapping(node: &mut RunnerNode, rx: &Receiver<RunnerMessage>)
     )
     .expect("init_values is a JSON object"));
     assert!(feed(node, "merge-panic-r", b"x"));
-    let (panic_inst, _slot) = find_cell(node, &pa_id)
+    let (panic_inst, _slot) = node
+        .find_cell(&pa_id)
         .expect("a durable resumed Cell is reachable by the restore handler");
     restored(&panic_inst);
     let (outs, done) = drain(rx, "merge-panic-r");
@@ -428,7 +431,8 @@ pub(super) fn branching_resume(node: &mut RunnerNode, rx: &Receiver<RunnerMessag
     )
     .expect("init_values is a JSON object"));
     assert!(feed(node, id, b"ignored-args"));
-    let (inst, _slot) = find_cell(node, &root_seg)
+    let (inst, _slot) = node
+        .find_cell(&root_seg)
         .expect("the tree's root Cell is reachable by the restore handler");
     restored(&inst);
     let (outs, done) = drain(rx, id);

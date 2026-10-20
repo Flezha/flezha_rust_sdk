@@ -8,10 +8,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crossbeam::channel::Receiver;
 use flz_core::runner::RunnerNode;
 use flz_core::steps::instance::{CommittedTask, EdgeHandoff, FiringKey, JournalResume};
+use flz_core::test_support::steps::*;
 use flz_core::timer::{TimerKind, TimerOp};
 use flz_core::util::LockRecover;
 
-use super::super::fake_controller::*;
 use super::super::fixtures::*;
 use crate::runner::RunnerMessage;
 
@@ -331,7 +331,7 @@ fn start_loop(
     id: &str,
 ) -> std::sync::Arc<flz_core::relay::instance::RelayInstance> {
     assert!(start(node, "test-timer-loop".into(), id.into(), "").expect("a JSON object"));
-    instance(node, id).expect("registered")
+    node.get_relay(id).expect("registered")
 }
 
 /// Rebind `id` resuming at `journal` with one Cell restore owed, and put
@@ -356,7 +356,7 @@ fn bind_restoring(
     )
     .expect("a JSON object"));
     let tick_id = crate::cell::flusher::encode_cell_identity(id, "timer_tick", "");
-    let (inst, tick) = find_cell(node, &tick_id).expect("`tick`'s Cell is live");
+    let (inst, tick) = node.find_cell(&tick_id).expect("`tick`'s Cell is live");
     tick.timers
         .lock_recover()
         .apply(&TimerOp::register(TimerKind::ProcessingTime, at));
@@ -369,7 +369,7 @@ fn settle(rx: &Receiver<RunnerMessage>, id: &str) {
 }
 
 fn stop(node: &RunnerNode, rx: &Receiver<RunnerMessage>, id: &str) {
-    flz_core::steps::stop(&instance(node, id).expect("live"));
+    flz_core::steps::stop(&node.get_relay(id).expect("live"));
     let (_outs, done) = drain(rx, id);
     assert_eq!(done.0, "cancelled");
 }

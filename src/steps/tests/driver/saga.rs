@@ -5,8 +5,8 @@ use std::sync::atomic::Ordering;
 
 use crossbeam::channel::Receiver;
 use flz_core::runner::RunnerNode;
+use flz_core::test_support::steps::*;
 
-use super::super::fake_controller::*;
 use super::super::fixtures::*;
 use crate::runner::RunnerMessage;
 
@@ -79,7 +79,11 @@ pub(super) fn saga_compensation(node: &mut RunnerNode, rx: &Receiver<RunnerMessa
     while !STAGE0_RAN.load(Ordering::SeqCst) {
         std::thread::yield_now();
     }
-    flz_core::steps::stop(&instance(node, "stop-saga").expect("live instance accepts cancel"));
+    flz_core::steps::stop(
+        &node
+            .get_relay("stop-saga")
+            .expect("live instance accepts cancel"),
+    );
 
     STAGE0_RELEASE.store(true, Ordering::SeqCst);
     let (_o, done) = drain(rx, "stop-saga");
@@ -131,7 +135,8 @@ pub(super) fn saga_crash_resume(node: &mut RunnerNode, rx: &Receiver<RunnerMessa
     assert!(feed(node, "resume-saga", b"x"));
     let a_id = crate::cell::flusher::encode_cell_identity("resume-saga", "resume_undo_a", "");
     let b_id = crate::cell::flusher::encode_cell_identity("resume-saga", "resume_undo_b", "");
-    let (saga_inst, _slot) = find_cell(node, &a_id)
+    let (saga_inst, _slot) = node
+        .find_cell(&a_id)
         .expect("a durable steps saga Cell is reachable by the restore handler");
     // Original run: A + B both completed (intent); B was already undone before
     // the crash (done). Resume must undo A and SKIP B — in reverse — without
