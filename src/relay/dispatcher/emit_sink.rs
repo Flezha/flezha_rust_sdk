@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use flz_core::routing::{send_plugin_frame, REPLY_TO_KEY};
+use flz_core::routing::{route_to_consumers, send_plugin_frame, Delivery, REPLY_TO_KEY};
 use flz_transport::transport::FlezhaStream;
 
 use crate::cell::CellSlot;
@@ -68,6 +68,18 @@ pub(super) struct CellEmitSink<'a> {
 }
 
 impl<'a> CellEmitSink<'a> {
+    /// An inter-tasklet emit is never a replay member: the downstream
+    /// Tasklet receives the corrected outputs already in order, and a slice
+    /// it could never see the end of would hold its drain forever.
+    fn delivery(&self) -> Delivery<'_> {
+        Delivery {
+            stream: &self.stream,
+            consumed_offset: self.consumed_offset,
+            call: self.reply_to.as_ref(),
+            replay: false,
+        }
+    }
+
     /// Drain pending changes onto the WAL path before an output frame is
     /// written. No-op for non-persistent / `NoChange` relays.
     fn flush_pending(&mut self) {
@@ -214,19 +226,8 @@ impl<'a> EmitSink for CellEmitSink<'a> {
                 .ok_or_else(|| TaskletError::UnknownChannel {
                     channel: format!("<channel id {}>", cid),
                 })?;
-        // An inter-tasklet emit is never a replay member: the downstream
-        // Tasklet receives the corrected outputs already in order, and a
-        // slice it could never see the end of would hold its drain forever.
-        flz_core::routing::route_to_consumers(
-            &instance,
-            descriptor,
-            &value,
-            &self.stream,
-            self.consumed_offset,
-            self.reply_to.as_ref(),
-            false,
-            Some(self.producer),
-        );
+        let d = self.delivery();
+        route_to_consumers(&instance, descriptor, &value, &d, Some(self.producer));
         if let Some(captured) = self
             .edge_capture
             .filter(|_| !descriptor.consumers.is_empty())
