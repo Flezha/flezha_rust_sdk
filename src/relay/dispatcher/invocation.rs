@@ -15,7 +15,7 @@ use super::cell_slot::flusher_registered;
 use super::emit_sink::{flush_before_emit_enabled, CellEmitSink, FlushBeforeEmit};
 use super::{CellState, TaskletDispatcherImpl};
 use crate::cell::flusher::{FlushableBuffer, TypedBodies, TypedBuffer};
-use crate::cell::timer::{PendingTimers, TimerFiring, TimerKind, TimerOp};
+use crate::cell::timer::{PendingTimers, TimerFiring, TimerOp};
 use crate::cell::CellSlot;
 use crate::relay::instance::RelayInstance;
 use crate::steps::StepsError;
@@ -200,7 +200,7 @@ impl<S: Tasklet> TaskletDispatcherImpl<S> {
     fn resolve_attempt(
         &self,
         outcome: Result<(Vec<TimerOp>, bool), (String, bool)>,
-        firing: Option<(TimerKind, u64)>,
+        firing: Option<TimerFiring>,
         now: u64,
         is_final: bool,
         scope: &mut CellScope<'_, S>,
@@ -448,9 +448,9 @@ impl<S: Tasklet> Call<S> {
 
     /// The firing this invocation is, if it is one — what seeds the timer
     /// session and what a park still has to record.
-    fn firing(&self) -> Option<(TimerKind, u64)> {
+    fn firing(&self) -> Option<TimerFiring> {
         match self {
-            Call::Timer(firing) => Some((firing.kind, firing.scheduled_at)),
+            Call::Timer(firing) => Some(*firing),
             Call::Input { .. } | Call::Compensate { .. } => None,
         }
     }

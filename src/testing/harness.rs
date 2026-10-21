@@ -271,7 +271,7 @@ impl<S: Tasklet> TaskletTestHarness<S> {
         &mut self,
         hook: &str,
         now: u64,
-        firing: Option<(TimerKind, u64)>,
+        firing: Option<TimerFiring>,
         offset: Option<u64>,
         call: impl FnOnce(&mut S, &mut Ctx<'_, S>) -> Result<(), TaskletError>,
     ) {
@@ -317,12 +317,13 @@ impl<S: Tasklet> TaskletTestHarness<S> {
             "TaskletTestHarness::fire_timer: no {} timer pending at {scheduled_at}",
             kind.as_str(),
         );
+        let firing = TimerFiring { kind, scheduled_at };
         self.invoke(
             "on_timer",
             scheduled_at,
-            Some((kind, scheduled_at)),
+            Some(firing),
             None,
-            |tasklet, ctx| tasklet.on_timer(TimerFiring { kind, scheduled_at }, ctx),
+            |tasklet, ctx| tasklet.on_timer(firing, ctx),
         );
         self
     }
@@ -346,11 +347,7 @@ impl<S: Tasklet> TaskletTestHarness<S> {
         &self.recorded_timer_ops
     }
 
-    fn open_timer_session(
-        &self,
-        now: u64,
-        firing: Option<(TimerKind, u64)>,
-    ) -> RefCell<TimerSession> {
+    fn open_timer_session(&self, now: u64, firing: Option<TimerFiring>) -> RefCell<TimerSession> {
         crate::cell::timer::timer_policy_for::<S>().session(&self.timers, now, firing)
     }
 

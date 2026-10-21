@@ -9,7 +9,7 @@ use crossbeam::channel::Receiver;
 use flz_core::runner::RunnerNode;
 use flz_core::steps::instance::{CommittedTask, EdgeHandoff, FiringKey, JournalResume};
 use flz_core::test_support::steps::*;
-use flz_core::timer::{TimerKind, TimerOp};
+use flz_core::timer::{TimerFiring, TimerKind, TimerOp};
 use flz_core::util::LockRecover;
 
 use super::super::fixtures::*;
@@ -271,8 +271,10 @@ fn a_crash_after_the_roots_ack_does_not_fire_it_again(
             completion: None,
             trigger: Some(FiringKey {
                 cell_key: None,
-                kind: TimerKind::ProcessingTime,
-                scheduled_at: at,
+                firing: TimerFiring {
+                    kind: TimerKind::ProcessingTime,
+                    scheduled_at: at,
+                },
             }),
         }],
         ..Default::default()

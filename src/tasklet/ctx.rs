@@ -89,7 +89,7 @@ pub(crate) enum PartRoute<'a> {
 pub(crate) struct PartSource<'a> {
     pub(crate) slot: &'a Arc<CellSlot>,
     pub(crate) stream: &'a Arc<FlezhaStream>,
-    pub(crate) firing: Option<(TimerKind, u64)>,
+    pub(crate) firing: Option<TimerFiring>,
     pub(crate) attempt: u32,
 }
 
@@ -119,10 +119,7 @@ impl PartSource<'_> {
     fn work(&self, replay: bool) -> ItemAttempt {
         let stream = Arc::clone(self.stream);
         let item = match self.firing {
-            Some((kind, scheduled_at)) => CellItem::Timer(TimerFire {
-                firing: TimerFiring { kind, scheduled_at },
-                stream,
-            }),
+            Some(firing) => CellItem::Timer(TimerFire { firing, stream }),
             None => CellItem::Input(CellPayload {
                 value: Arc::new(()),
                 stream,
