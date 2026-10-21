@@ -49,8 +49,8 @@ cat > .cargo/config.toml <<'EOF'
 flezha_runner = { path = "../.." }
 
 [patch."https://github.com/flezha/flezha"]
-flz_core = { path = "../../../../flz_core" }
-flz_transport = { path = "../../../../flz_transport" }
+flz_core = { path = "../../../../crates/flz_core" }
+flz_transport = { path = "../../../../crates/flz_transport" }
 EOF
 ```
 

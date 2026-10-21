@@ -55,8 +55,8 @@ cat > .cargo/config.toml <<'TOML'
 flezha_runner = { path = "/path/to/flezha/sdk/rust" }
 
 [patch."https://github.com/flezha/flezha"]
-flz_core = { path = "/path/to/flezha/flz_core" }
-flz_transport = { path = "/path/to/flezha/flz_transport" }
+flz_core = { path = "/path/to/flezha/crates/flz_core" }
+flz_transport = { path = "/path/to/flezha/crates/flz_transport" }
 TOML
 ```
 

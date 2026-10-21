@@ -28,8 +28,8 @@ services:
     ports:
       - "127.0.0.1:8081:8080"              # the gateway's HTTP port, when it runs here
     volumes:
-      - app_data_2:/flezha/app_data
-      - sockets_2:/flezha/app_data/sockets
+      - app_data_2:/flezha/storage/app
+      - sockets_2:/flezha/storage/app/sockets
     networks:
       default:
         aliases: [controller-2.agentdesk]
@@ -39,9 +39,9 @@ services:
   runner-2:
     build: .
     environment:
-      FLEZHA_SOCKET_FILES_PATH: /flezha/app_data/sockets
+      FLEZHA_SOCKET_FILES_PATH: /flezha/storage/app/sockets
     volumes:
-      - sockets_2:/flezha/app_data/sockets
+      - sockets_2:/flezha/storage/app/sockets
     depends_on:
       controller-2:
         condition: service_healthy

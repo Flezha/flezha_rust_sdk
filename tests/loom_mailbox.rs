@@ -1,6 +1,6 @@
 //! Loom model check for the mailbox CAS dance.
 //!
-//! The real `Mailbox` in `flz_core/src/mailbox.rs` uses `ArrayQueue` (from
+//! The real `Mailbox` in `crates/flz_core/src/mailbox.rs` uses `ArrayQueue` (from
 //! crossbeam) and hands its rounds to the poll core, neither of which
 //! is loom-friendly. This file mirrors ONLY the live inflight-token protocol
 //! — the CAS+drain dance the engine drives — against loom's primitives, so

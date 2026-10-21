@@ -1,7 +1,7 @@
 //! The conformance run: every row of `test/fixtures/reference_topologies.txt`
 //! driven through THIS SDK's builder.
 //!
-//! `flz_core/src/host/check_tests.rs` is the same table driven against the
+//! `crates/flz_core/src/host/check_tests.rs` is the same table driven against the
 //! record directly, because the core has no builder. This one maps the same
 //! step vocabulary onto the typed graph builder, so what is measured here is
 //! what an author of a Rust relay actually writes.

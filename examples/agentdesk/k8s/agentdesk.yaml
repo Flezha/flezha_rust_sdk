@@ -46,7 +46,7 @@ spec:
             periodSeconds: 5
           volumeMounts:
             - name: app-data
-              mountPath: /flezha/app_data
+              mountPath: /flezha/storage/app
             - name: run
               mountPath: /flezha/run
         - name: runner
