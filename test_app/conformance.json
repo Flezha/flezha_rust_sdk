@@ -2,12 +2,12 @@
   "runtime": "rust",
   "sdk_lang": 1,
   "command": {
-    "test": "cargo run --quiet --manifest-path={artifact} --target-dir={repo}/_build/.target -- {namespace}",
+    "test": "{artifact} {namespace}",
     "bench": "{artifact} {namespace}"
   },
   "artifacts": {
     "test": [
-      "Cargo.toml"
+      "../../../_build/.target/debug/rust_runner"
     ],
     "bench": [
       "../../../_build/.target/release/rust_runner",
@@ -17,7 +17,7 @@
     ]
   },
   "build": {
-    "test": "cargo build --manifest-path=sdk/rust/test_app/Cargo.toml --target-dir=./_build/.target",
+    "test": "cargo build --quiet --manifest-path=sdk/rust/test_app/Cargo.toml --target-dir=./_build/.target",
     "bench": "cargo build -p rust_runner --release"
   },
   "connect_timeout_ms": 120000,
