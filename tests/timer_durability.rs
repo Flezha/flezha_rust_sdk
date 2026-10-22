@@ -335,6 +335,7 @@ impl Tasklet for ChainTask {
 fn a_restore_re_arms_the_wake_list_and_fires_what_is_already_due() {
     let _guard = timer_test_guard();
     take_firings();
+    let frames = recording_sink();
     let (sock, _peer) = std::os::unix::net::UnixStream::pair().expect("pair");
     state_sink::set_secondary_stream(Some(Arc::new(
         flz_transport::transport::FlezhaStream::unix(sock),
@@ -359,5 +360,30 @@ fn a_restore_re_arms_the_wake_list_and_fires_what_is_already_due() {
     );
     let fired: Vec<u64> = take_firings().into_iter().map(|(_, _, at)| at).collect();
     assert_eq!(fired, vec![1, 2], "ascending scheduled order");
+
+    // Each removal ships after its `on_timer` returns; waiting for both keeps
+    // them out of the sink the next case installs.
+    let removals = || -> Vec<TimerOp> {
+        frames
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, f)| frame_format_id(f) == FORMAT_ID_TIMER_OPS)
+            .flat_map(|(_, f)| decode_timer_frame(f).1)
+            .collect()
+    };
+    assert!(
+        wait_until(|| removals().len() == 2, Duration::from_secs(5)),
+        "both removals must reach the log, saw {:?}",
+        removals()
+    );
+    assert_eq!(
+        removals(),
+        vec![
+            TimerOp::cancel(TimerKind::ProcessingTime, 1),
+            TimerOp::cancel(TimerKind::ProcessingTime, 2),
+        ]
+    );
+    reset_sink();
     state_sink::set_secondary_stream(None);
 }
