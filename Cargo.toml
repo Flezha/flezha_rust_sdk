@@ -23,7 +23,8 @@ default = []
 # Exposes internal dispatch types (mailbox, dispatch handle, registry
 # constructors) for the crate's own benches/tests, and the shared bench
 # scaffolding in `flz_core::bench_support`. NOT a stable public API.
-# Only enabled by the `[[bench]]` and `[[test]]` targets via `required-features`.
+# Enabled by the `[[bench]]` targets via `required-features`, and for every test
+# build by the crate's own dev-dependency on itself.
 bench-internals = ["flz_core/bench-internals"]
 # Exposes `flezha_runner::testing::TaskletTestHarness` for downstream
 # crates that want to write replay-equality tests. Test code in this crate
@@ -66,6 +67,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 flz_core = { git = "https://github.com/flezha/flezha", tag = "v0.1.0", features = ["test-support"] }
+# This crate with its internals exposed: the integration tests reach the dispatch
+# internals, so a plain `cargo test --workspace` compiles them.
+flezha_runner = { path = ".", features = ["bench-internals", "testing"] }
 criterion = { version = "0.5", features = ["html_reports"] }
 erased-serde = "0.4.6"
 trybuild = "1.0"
