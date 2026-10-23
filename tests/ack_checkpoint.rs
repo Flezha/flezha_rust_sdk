@@ -325,13 +325,19 @@ fn compact(slot: &Arc<flezha_runner::cell::CellSlot>) -> Option<StoredSnapshot> 
 }
 
 /// The controller's WAL tail above `snapshot_seq` (all of it with no
-/// snapshot), re-framed as it stores it.
+/// snapshot), re-framed as it stores it. Only change and effect records reach
+/// the WAL; a `processed_prefix` frame goes to the input log.
 fn wal_above(snapshot_seq: Option<u64>) -> Vec<u8> {
+    use flezha_runner::cell::state_sink::{
+        CELL_EFFECT_RECORD_PAYLOAD_ID, CELL_STATE_CHANGE_PAYLOAD_ID,
+    };
     TIER_SINK_FRAMES
         .lock()
         .unwrap()
         .iter()
-        .filter(|(pid, _)| pid != "cell_state_snapshot")
+        .filter(|(pid, _)| {
+            [CELL_STATE_CHANGE_PAYLOAD_ID, CELL_EFFECT_RECORD_PAYLOAD_ID].contains(&pid.as_str())
+        })
         .filter_map(|(_, frame)| flz_core::test_support::split_cell_frame(frame))
         .filter(|f| snapshot_seq.is_none_or(|s| f.seq > s))
         .flat_map(|f| {
