@@ -327,15 +327,21 @@ pub fn effect_record<S: Tasklet>(seq: u64, changes: Vec<Vec<u8>>, timers: Vec<Ti
     )
 }
 
-pub fn restore<S: Tasklet>(change_log: &[u8]) -> (S::State, PendingTimers)
+/// A restore from an optional `(header, body)` snapshot and the change log
+/// above it.
+pub fn restore<S: Tasklet>(
+    snapshot: Option<(&[u8], &[u8])>,
+    change_log: &[u8],
+) -> (S::State, PendingTimers)
 where
     S::State: serde::de::DeserializeOwned,
 {
+    let (snapshot_header, snapshot_bytes) = snapshot.unwrap_or_default();
     let (state, timers, _outcome) = flezha_runner::cell::restore::init_cell_with_payload::<S>(
         None,
         Some(&RestoreInitPayload {
-            snapshot_header: &[],
-            snapshot_bytes: &[],
+            snapshot_header,
+            snapshot_bytes,
             change_log_bytes: change_log,
         }),
     )

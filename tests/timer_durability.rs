@@ -19,7 +19,7 @@ use common::prelude::*;
 fn a_crash_before_firing_leaves_the_timer_pending() {
     let log =
         timer_ops_record::<SessionTask>(0, &[TimerOp::register(TimerKind::ProcessingTime, 31_000)]);
-    let (_state, timers) = restore::<SessionTask>(&log);
+    let (_state, timers) = restore::<SessionTask>(None, &log);
     assert_eq!(timers.all(TimerKind::ProcessingTime), vec![31_000]);
 }
 
@@ -33,7 +33,7 @@ fn a_crash_after_firing_does_not_re_fire() {
         1,
         &[TimerOp::cancel(TimerKind::ProcessingTime, 31_000)],
     ));
-    let (_state, timers) = restore::<SessionTask>(&log);
+    let (_state, timers) = restore::<SessionTask>(None, &log);
     assert!(
         timers.is_empty(),
         "the fired timer is gone; nothing re-fires"
@@ -47,7 +47,7 @@ fn a_crash_after_firing_does_not_re_fire() {
 fn a_crash_mid_firing_leaves_no_partial_state_and_the_timer_pending() {
     let registered =
         timer_ops_record::<SessionTask>(0, &[TimerOp::register(TimerKind::ProcessingTime, 31_000)]);
-    let (state, timers) = restore::<SessionTask>(&registered);
+    let (state, timers) = restore::<SessionTask>(None, &registered);
     assert_eq!(state.closed_at, Vec::<u64>::new());
     assert_eq!(timers.all(TimerKind::ProcessingTime), vec![31_000]);
 
@@ -57,7 +57,7 @@ fn a_crash_mid_firing_leaves_no_partial_state_and_the_timer_pending() {
         vec![postcard::to_allocvec(&SessionChange::Closed(31_000)).unwrap()],
         vec![TimerOp::cancel(TimerKind::ProcessingTime, 31_000)],
     ));
-    let (state, timers) = restore::<SessionTask>(&both);
+    let (state, timers) = restore::<SessionTask>(None, &both);
     assert_eq!(state.closed_at, vec![31_000]);
     assert!(timers.is_empty());
 }

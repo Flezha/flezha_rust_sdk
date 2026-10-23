@@ -1,6 +1,6 @@
 //! The typed dispatcher's own tests: the worker guard on the path it exists
-//! for, a context with no timer session, and a snapshot round trip through
-//! the real restore path.
+//! for, a context with no timer session, a snapshot round trip through the
+//! real restore path, and a snapshot refused while an attempt is held.
 
 use super::*;
 use crate::cell::restore::RestoreInitPayload;
@@ -222,4 +222,40 @@ fn snapshot_frame_round_trips_through_restore() {
         restored, 115,
         "snapshot round-trips back to the original state"
     );
+}
+
+/// A retried attempt's changes are in the live state but in no record: a
+/// snapshot then would hold them under the last shipped seq, and the record
+/// that resolves the attempt would apply them again on restore. The snapshot
+/// is refused as retry-later until the attempt resolves.
+#[test]
+fn a_snapshot_waits_for_a_retried_attempt_to_resolve() {
+    use crate::cell::flusher::TypedBuffer;
+
+    let (_instance, slot) = build_slot_of::<CounterRelay>("dispatcher-snapshot-retry");
+    let held = |change: Option<AddChange>| {
+        let mut buffer = slot.flush_buffer.lock_recover();
+        let typed = buffer
+            .as_any_mut()
+            .downcast_mut::<TypedBuffer<CounterTask>>()
+            .expect("a typed counter buffer");
+        typed.pending_attempt.clear();
+        typed.pending_attempt.extend(change);
+    };
+
+    held(Some(AddChange(1)));
+    let refusal = slot
+        .dispatcher
+        .snapshot_frame(&slot)
+        .expect_err("a held attempt must refuse the snapshot");
+    assert_eq!(
+        crate::ErrorModel::code(&refusal),
+        "state.cell_busy",
+        "{refusal}"
+    );
+
+    held(None);
+    slot.dispatcher
+        .snapshot_frame(&slot)
+        .expect("a resolved attempt lets the snapshot through");
 }
