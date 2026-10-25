@@ -392,6 +392,10 @@ impl<S: Tasklet> TaskletDispatcher for TaskletDispatcherImpl<S> {
         &self.cell_label
     }
 
+    fn record_header(&self) -> HeaderTemplate {
+        self.flush.header
+    }
+
     fn event_time_of(&self, payload: &CellPayload) -> Option<u64> {
         if S::CLOCK != crate::tasklet::ClockKind::EventTime {
             return None;
@@ -465,7 +469,7 @@ impl<S: Tasklet> TaskletDispatcher for TaskletDispatcherImpl<S> {
     ) -> Result<(Vec<u8>, u64, usize), flz_core::Error> {
         // The state lock first, as a dispatch takes it, then the buffer.
         let state = slot.state.lock_recover();
-        flz_core::host::snapshot_frame(slot, &self.flush.header, || {
+        flz_core::host::snapshot_frame(slot, || {
             let typed = state
                 .downcast_ref::<CellState<S>>()
                 .ok_or_else(|| snapshot_failed("the state is not this tasklet's type".into()))?;
