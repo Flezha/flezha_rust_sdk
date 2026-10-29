@@ -208,8 +208,10 @@ struct CandleTasklet;
 impl Tasklet for CandleTasklet {
     type Input = String;
     type State = CandleState;
+    // Long enough that the background reaper never evicts during a test; the
+    // eviction test sweeps by hand with a zero TTL.
     fn idle_ttl() -> Option<std::time::Duration> {
-        Some(std::time::Duration::from_millis(50))
+        Some(std::time::Duration::from_secs(60))
     }
     fn run(&mut self, _: String, _: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
         Ok(())
