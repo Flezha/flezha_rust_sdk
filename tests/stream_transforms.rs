@@ -235,7 +235,7 @@ fn a_replayed_slice_transforms_exactly_as_the_live_run_did() {
         "in",
         Vec::new(),
         &stream,
-        &[("flz.replay_end", "1")],
+        &[("flz.control", "replay_end")],
     );
 
     assert!(

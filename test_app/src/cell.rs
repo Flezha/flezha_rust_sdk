@@ -420,6 +420,8 @@ impl Change<StoreInputState> for StoreInputChange {
     }
 }
 
+// `hold:<path>` keeps the Cell busy until a file exists at `path`, so a test
+// can stop the relay with inputs queued behind it.
 #[derive(Default)]
 struct StoreInputTasklet;
 #[flezha_runner::tasklet(name = "store_input_tasklet")]
@@ -429,6 +431,9 @@ impl Tasklet for StoreInputTasklet {
     type State = StoreInputState;
     type Change = StoreInputChange;
     fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
+        if let Some(path) = input.strip_prefix("hold:") {
+            crate::steps::block_until(|| std::path::Path::new(path).exists());
+        }
         ctx.change(StoreInputChange::PushText(input.clone()));
         ctx.emit(input)
     }

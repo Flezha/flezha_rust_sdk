@@ -135,7 +135,7 @@ pub fn dispatch_input(
 }
 
 /// Dispatch one wire frame carrying extra metadata — the controller's
-/// `flz.replay` / `flz.offset` / `flz.replay_end` marks ride there.
+/// `flz.replay` / `flz.offset` / `flz.control` marks ride there.
 pub fn dispatch_marked(
     handle: &RelayDispatchHandle,
     relay_id: &str,

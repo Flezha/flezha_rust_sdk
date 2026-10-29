@@ -312,7 +312,7 @@ fn a_replayed_merge_maps_exactly_as_the_live_run_did() {
         "data",
         Vec::new(),
         &stream,
-        &[("flz.replay_end", "1")],
+        &[("flz.control", "replay_end")],
     );
 
     assert!(

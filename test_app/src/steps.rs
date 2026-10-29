@@ -22,7 +22,12 @@ pub(crate) fn e2e_released() -> bool {
 
 // Park a pool worker (never the driver thread) until the release env is set.
 pub(crate) fn block_until_released() {
-    while !e2e_released() {
+    block_until(e2e_released);
+}
+
+// Park a pool worker until `released` holds.
+pub(crate) fn block_until(released: impl Fn() -> bool) {
+    while !released() {
         thread::sleep(Duration::from_millis(20));
     }
 }

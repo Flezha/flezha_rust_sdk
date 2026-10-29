@@ -97,7 +97,7 @@ fn a_replayed_slice_dispatches_in_event_time_order() {
         "input",
         Vec::new(),
         &stream,
-        &[("flz.replay_end", "1")],
+        &[("flz.control", "replay_end")],
     );
 
     // Post-slice live traffic. It must land AFTER the whole slice even though
@@ -226,7 +226,7 @@ fn a_replay_does_not_lower_the_event_time_high_water() {
         &stream,
         &[("flz.replay", "1"), ("flz.offset", "2")],
     );
-    dispatch_hw(&handle, "", &stream, &[("flz.replay_end", "1")]);
+    dispatch_hw(&handle, "", &stream, &[("flz.control", "replay_end")]);
     assert!(wait_until(
         || HIGHWATER_OBSERVED.lock().unwrap().len() == 2,
         Duration::from_secs(5)
