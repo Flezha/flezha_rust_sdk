@@ -8,7 +8,7 @@ use super::SHORT_SLEEP;
 use crate::channel::ChannelBuilder;
 use crate::steps::*;
 use crate::tasklet::{Ctx, Tasklet, TaskletError};
-use crate::{Durable, Relay, RelaySettings, Run, SleepAfter};
+use crate::{Durable, KeepFinished, Relay, RelaySettings, Run, SleepAfter};
 
 /// Every timestamp a fixture here armed, in registration order.
 pub(crate) static ARMED: Mutex<Vec<u64>> = Mutex::new(Vec::new());
@@ -94,6 +94,7 @@ impl Relay for TimerLoop {
             max_duration: Some(Duration::from_secs(30)),
             durable: Durable::Local {
                 sleep_after: SleepAfter::After(SHORT_SLEEP),
+                keep_finished: KeepFinished::Nothing,
             },
             ..RelaySettings::default()
         }

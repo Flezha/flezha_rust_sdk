@@ -8,7 +8,7 @@ use crate::channel::{ChannelBuilder, ChannelKind};
 use crate::relay::registry::RelayRegistry;
 use crate::steps::*;
 use crate::tasklet::{Ctx, Tasklet, TaskletError};
-use crate::{Durable, ErrorModel, Relay, RelaySettings, Run, SleepAfter};
+use crate::{Durable, ErrorModel, KeepFinished, Relay, RelaySettings, Run, SleepAfter};
 
 #[test]
 fn steps_error_conversions() {
@@ -243,6 +243,7 @@ fn the_sleep_interval_is_a_durable_setting_of_either_run() {
                 run: Run::steps(Each::Once),
                 durable: Durable::Local {
                     sleep_after: SleepAfter::After(std::time::Duration::from_secs(2)),
+                    keep_finished: KeepFinished::Nothing,
                 },
                 ..RelaySettings::default()
             }

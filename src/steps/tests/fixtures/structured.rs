@@ -11,7 +11,7 @@ use crate::channel::ChannelBuilder;
 use crate::steps::*;
 use crate::tasklet::change::Change;
 use crate::tasklet::{Ctx, Tasklet, TaskletError};
-use crate::{Durable, Relay, RelaySettings, Run, SleepAfter};
+use crate::{Durable, KeepFinished, Relay, RelaySettings, Run, SleepAfter};
 
 // ---- structured tasklets + relays ----------------------------------
 
@@ -81,6 +81,7 @@ impl Relay for ChainSteps {
             },
             durable: Durable::Local {
                 sleep_after: SleepAfter::After(SHORT_SLEEP),
+                keep_finished: KeepFinished::Nothing,
             },
             ..RelaySettings::default()
         }
@@ -108,6 +109,7 @@ impl Relay for ChatLoop {
             max_duration: Some(Duration::from_secs(30)),
             durable: Durable::Local {
                 sleep_after: SleepAfter::After(SHORT_SLEEP),
+                keep_finished: KeepFinished::Nothing,
             },
             ..RelaySettings::default()
         }
@@ -141,6 +143,7 @@ impl Relay for PartLoop {
             max_duration: Some(Duration::from_secs(30)),
             durable: Durable::Local {
                 sleep_after: SleepAfter::After(SHORT_SLEEP),
+                keep_finished: KeepFinished::Nothing,
             },
             ..RelaySettings::default()
         }
@@ -201,6 +204,7 @@ impl Relay for LoopSagaUndoAll {
             max_duration: Some(Duration::from_secs(30)),
             durable: Durable::Local {
                 sleep_after: SleepAfter::After(SHORT_SLEEP),
+                keep_finished: KeepFinished::Nothing,
             },
             ..RelaySettings::default()
         }
@@ -226,6 +230,7 @@ impl Relay for LoopSagaKeepProgress {
             max_duration: Some(Duration::from_secs(30)),
             durable: Durable::Local {
                 sleep_after: SleepAfter::After(SHORT_SLEEP),
+                keep_finished: KeepFinished::Nothing,
             },
             ..RelaySettings::default()
         }

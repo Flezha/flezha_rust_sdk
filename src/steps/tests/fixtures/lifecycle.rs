@@ -8,7 +8,7 @@ use super::*;
 use crate::channel::ChannelBuilder;
 use crate::steps::*;
 use crate::tasklet::{Ctx, Tasklet, TaskletError};
-use crate::{Durable, Relay, RelaySettings, Run, SleepAfter};
+use crate::{Durable, KeepFinished, Relay, RelaySettings, Run, SleepAfter};
 
 pub(crate) static EMIT_RUNS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static FAIL_RUNS: AtomicUsize = AtomicUsize::new(0);
@@ -82,6 +82,7 @@ impl Relay for EmitSteps {
             },
             durable: Durable::Local {
                 sleep_after: SleepAfter::After(SHORT_SLEEP),
+                keep_finished: KeepFinished::Nothing,
             },
             ..RelaySettings::default()
         }
@@ -306,6 +307,7 @@ impl Relay for CompletingChat {
             },
             durable: Durable::Local {
                 sleep_after: SleepAfter::After(SHORT_SLEEP),
+                keep_finished: KeepFinished::Nothing,
             },
             ..RelaySettings::default()
         }

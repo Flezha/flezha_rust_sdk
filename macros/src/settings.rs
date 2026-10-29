@@ -5,6 +5,7 @@
 //! run = steps(each = chained, on_failure = keep_progress)
 //! run = flow(exactly = effectively_once(ack = checkpoint(every = 100, max_delay_ms = 1000)))
 //! durable = local(sleep_after = 2000)   // milliseconds, or `false`
+//! durable = remote(keep_finished = 24)  // hours, `true` or `false`
 //! durable = false
 //! max_duration_ms = 600000
 //! description = "what it is for"
@@ -225,7 +226,8 @@ fn ack(expr: &Expr) -> syn::Result<TokenStream> {
     })
 }
 
-/// `durable = false | local | remote`, the last two with `sleep_after`.
+/// `durable = false | local | remote`, the last two with `sleep_after` and
+/// `keep_finished`.
 pub(crate) fn durable(expr: &Expr) -> syn::Result<TokenStream> {
     if let Expr::Lit(ExprLit {
         lit: Lit::Bool(b), ..
@@ -236,7 +238,7 @@ pub(crate) fn durable(expr: &Expr) -> syn::Result<TokenStream> {
         }
     }
     let written = branch("durable", expr, &["local", "remote"])?;
-    written.only(&["sleep_after"])?;
+    written.only(&["sleep_after", "keep_finished"])?;
     let level = syn::Ident::new(
         if written.name == "local" {
             "Local"
@@ -257,7 +259,30 @@ pub(crate) fn durable(expr: &Expr) -> syn::Result<TokenStream> {
             quote! { ::flezha_runner::SleepAfter::After(::core::time::Duration::from_millis(#ms)) }
         }
     };
-    Ok(quote! { ::flezha_runner::Durable::#level { sleep_after: #sleep_after } })
+    let keep_finished = keep_finished(written.get("keep_finished"))?;
+    Ok(quote! {
+        ::flezha_runner::Durable::#level { sleep_after: #sleep_after, keep_finished: #keep_finished }
+    })
+}
+
+/// `keep_finished = hours | true | false`; unwritten keeps nothing.
+fn keep_finished(expr: Option<&Expr>) -> syn::Result<TokenStream> {
+    Ok(match expr {
+        None => quote! { ::flezha_runner::KeepFinished::Nothing },
+        Some(Expr::Lit(ExprLit {
+            lit: Lit::Bool(b), ..
+        })) => {
+            if b.value {
+                quote! { ::flezha_runner::KeepFinished::ControllerWindow }
+            } else {
+                quote! { ::flezha_runner::KeepFinished::Nothing }
+            }
+        }
+        Some(hours) => {
+            let hours = integer(hours)?;
+            quote! { ::flezha_runner::KeepFinished::Hours(#hours) }
+        }
+    })
 }
 
 /// The settings the short form wrote, as struct fields.

@@ -11,7 +11,7 @@ use super::*;
 use crate::channel::ChannelBuilder;
 use crate::steps::*;
 use crate::tasklet::{Ctx, Tasklet, TaskletError};
-use crate::{Durable, Relay, RelaySettings, Run, SleepAfter};
+use crate::{Durable, KeepFinished, Relay, RelaySettings, Run, SleepAfter};
 
 /// Held until the running-pass sweep scenario releases it.
 pub(crate) static KEYED_BLOCK_RELEASE: AtomicBool = AtomicBool::new(false);
@@ -241,6 +241,7 @@ impl Relay for KeyedLoopUndoAll {
             max_duration: Some(Duration::from_secs(30)),
             durable: Durable::Local {
                 sleep_after: SleepAfter::After(LONG_SLEEP),
+                keep_finished: KeepFinished::Nothing,
             },
             ..RelaySettings::default()
         }
@@ -265,6 +266,7 @@ impl Relay for KeyedLoopKeepProgress {
             max_duration: Some(Duration::from_secs(30)),
             durable: Durable::Local {
                 sleep_after: SleepAfter::After(LONG_SLEEP),
+                keep_finished: KeepFinished::Nothing,
             },
             ..RelaySettings::default()
         }
@@ -293,6 +295,7 @@ impl Relay for KeyedEntryLoop {
             max_duration: Some(Duration::from_secs(30)),
             durable: Durable::Local {
                 sleep_after: SleepAfter::After(LONG_SLEEP),
+                keep_finished: KeepFinished::Nothing,
             },
             ..RelaySettings::default()
         }

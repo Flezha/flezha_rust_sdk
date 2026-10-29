@@ -4,7 +4,8 @@
 pub mod builder;
 pub(crate) mod dispatcher;
 pub use flz_core::relay::settings::{
-    Durable, Each, Exactly, OnFailure, RelaySettings, Run, SleepAfter, DEFAULT_SLEEP_AFTER,
+    Durable, Each, Exactly, KeepFinished, OnFailure, RelaySettings, Run, SleepAfter,
+    DEFAULT_SLEEP_AFTER,
 };
 pub use flz_core::relay::{instance, registry, settings, topology};
 pub use instance::{KeyGroupRange, RelayInstance};

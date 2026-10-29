@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use flezha_runner::{
-    ChannelBuilder, Durable, Each, OnFailure, Relay, RelaySettings, Run, SleepAfter,
+    ChannelBuilder, Durable, Each, KeepFinished, OnFailure, Relay, RelaySettings, Run, SleepAfter,
 };
 use serde::{Deserialize, Serialize};
 
@@ -41,6 +41,7 @@ impl Relay for AgentRelay {
             },
             durable: Durable::Local {
                 sleep_after: SleepAfter::After(Duration::from_secs(10)), // an idle session sleeps after 10 s
+                keep_finished: KeepFinished::Nothing,
             },
             ..RelaySettings::default()
         }

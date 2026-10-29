@@ -136,6 +136,7 @@ impl Relay for StatelessSleeperRelay {
         flezha_runner::RelaySettings {
             durable: flezha_runner::Durable::Local {
                 sleep_after: flezha_runner::SleepAfter::After(Duration::from_secs(60)),
+                keep_finished: flezha_runner::KeepFinished::Nothing,
             },
             ..flezha_runner::RelaySettings::default()
         }

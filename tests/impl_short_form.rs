@@ -103,7 +103,8 @@ struct PlaceIt;
     factory_id = "place_it",
     output = "placed",
     input = "order",
-    run = steps(each = per_input)
+    run = steps(each = per_input),
+    durable = local(sleep_after = false, keep_finished = 24)
 )]
 impl Tasklet for PlaceIt {
     type Input = String;
@@ -115,9 +116,13 @@ impl Tasklet for PlaceIt {
 }
 
 #[test]
-fn a_steps_short_form_on_the_impl_block_declares_its_run() {
+fn a_steps_short_form_on_the_impl_block_declares_its_run_and_durability() {
     assert_eq!(<PlaceIt as Relay>::factory_id(), "place_it");
     assert_eq!(PlaceIt::settings().run, Run::steps(Each::PerInput));
+    assert_eq!(
+        flezha_runner::relay::settings::durable_json(&PlaceIt::settings().durable),
+        serde_json::json!({"local": {"sleep_after": false, "keep_finished": 24}})
+    );
     assert_eq!(PlaceIt::NAME, "place_it");
     assert_eq!(PlaceIt::CLOCK, ClockKind::Wall);
 }

@@ -12,14 +12,15 @@ pub(crate) use flezha_runner::state::{postcard, Change, ClockKind, CoalesceKey, 
 pub(crate) use flezha_runner::tasklet::{Ctx, Tasklet, TaskletError};
 pub(crate) use flezha_runner::{
     AckGranularity, BeyondWindowPolicy, ChannelBuilder, CheckpointOutputs, CheckpointPolicy,
-    Durable, Each, Exactly, Flezha, FlezhaRunner, OnFailure, OverflowPolicy, Relay, RelaySettings,
-    Run, SleepAfter, Stream,
+    Durable, Each, Exactly, Flezha, FlezhaRunner, KeepFinished, OnFailure, OverflowPolicy, Relay,
+    RelaySettings, Run, SleepAfter, Stream,
 };
 pub(crate) use serde::{Deserialize, Serialize};
 
 /// Where a sleeping fixture keeps its work: locally, sleeping after the class
 /// default unless the drill or the bench driving it shortens the interval
-/// through `FLEZHA_FIXTURE_SLEEP_AFTER_MS`.
+/// through `FLEZHA_FIXTURE_SLEEP_AFTER_MS`, and keeping a finished run's state
+/// only for the hours a drill sets in `FLEZHA_FIXTURE_KEEP_FINISHED_H`.
 pub(crate) fn fixture_durable() -> Durable {
     let sleep_after = env::var("FLEZHA_FIXTURE_SLEEP_AFTER_MS")
         .ok()
@@ -28,8 +29,13 @@ pub(crate) fn fixture_durable() -> Durable {
             flezha_runner::relay::DEFAULT_SLEEP_AFTER,
             Duration::from_millis,
         );
+    let keep_finished = env::var("FLEZHA_FIXTURE_KEEP_FINISHED_H")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map_or(KeepFinished::Nothing, KeepFinished::Hours);
     Durable::Local {
         sleep_after: SleepAfter::After(sleep_after),
+        keep_finished,
     }
 }
 

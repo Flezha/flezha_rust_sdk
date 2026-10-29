@@ -71,7 +71,9 @@ pub use relay::builder::TopologyBuildError;
 pub use relay::topology::{
     AckGranularity, BeyondWindowPolicy, CheckpointOutputs, CheckpointPolicy,
 };
-pub use relay::{Durable, Each, Exactly, OnFailure, Relay, RelaySettings, Run, SleepAfter};
+pub use relay::{
+    Durable, Each, Exactly, KeepFinished, OnFailure, Relay, RelaySettings, Run, SleepAfter,
+};
 pub use runner_handle::{ErrorModel, Flezha, FlezhaError, FlezhaRunner, SendOpts};
 pub use steps::StepsError;
 pub use tasklet::{Change, ClockKind, CoalesceKey, Ctx, NoChange, StableId, Tasklet, TaskletError};

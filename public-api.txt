@@ -9,6 +9,7 @@ pub use flezha_runner::Durable
 pub use flezha_runner::Each
 pub use flezha_runner::ErrorModel
 pub use flezha_runner::Exactly
+pub use flezha_runner::KeepFinished
 pub use flezha_runner::OnFailure
 pub use flezha_runner::OverflowPolicy
 pub use flezha_runner::RelaySettings
@@ -990,6 +991,7 @@ pub use flezha_runner::relay::DEFAULT_SLEEP_AFTER
 pub use flezha_runner::relay::Durable
 pub use flezha_runner::relay::Each
 pub use flezha_runner::relay::Exactly
+pub use flezha_runner::relay::KeepFinished
 pub use flezha_runner::relay::KeyGroupRange
 pub use flezha_runner::relay::OnFailure
 pub use flezha_runner::relay::RelayInstance

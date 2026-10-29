@@ -183,10 +183,11 @@ impl Relay for SpawnRequesterRelay {
 // -- SpawnHoldRequesterRelay ---------------------------------------------------
 //
 // `spawn_hold_requester`: an effectively-once stream whose tasklet spawns
-// `stateless_loop_steps` with no id, prints the answer as
-// `spawn_result hold <id> <outcome>`, then blocks until the release env is set,
-// so a runner killed there dies with the spawn answered and its input not
-// durably consumed.
+// `stateless_loop_steps` with no id (under `FLEZHA_SPAWN_HOLD_ONCE`, a
+// `typed_once_steps` on the input as its ticket, which ends at once), prints
+// the answer as `spawn_result hold <id> <outcome>`, then blocks until the
+// release env is set, so a runner killed there dies with the spawn answered
+// and its input not durably consumed.
 
 #[derive(Default)]
 struct SpawnHoldRequester;
@@ -195,10 +196,14 @@ impl Tasklet for SpawnHoldRequester {
     type Input = String;
     type Output = String;
     fn run(&mut self, input: String, ctx: &mut Ctx<'_, Self>) -> Result<(), TaskletError> {
-        match ctx
-            .spawn_steps(StatelessLoopSteps::factory_id(), input)
-            .wait()
-        {
+        let handle = if env::var_os("FLEZHA_SPAWN_HOLD_ONCE").is_some() {
+            let ticket =
+                serde_json::to_string(&Ticket { text: input }).expect("a ticket serializes");
+            ctx.spawn_steps(TypedOnceSteps::factory_id(), ticket)
+        } else {
+            ctx.spawn_steps(StatelessLoopSteps::factory_id(), input)
+        };
+        match handle.wait() {
             Ok(result) => println!(
                 "spawn_result hold {} {}",
                 result.id,
