@@ -218,8 +218,9 @@ impl Control {
         self.call("PluginManager.disable", &[json!(name), json!({})])
     }
 
-    /// The relays in this namespace, one row each: its id, health, runner and
-    /// node, and a partition group's width and members.
+    /// The relays in this namespace across the cluster: `rows`, one row each
+    /// (its id, health, runner and node, and a partition group's width and
+    /// members), and `unreachable`, the controllers that did not answer.
     pub fn list_relays(&self) -> Result<Value, ControlError> {
         self.call("Relay.list", &[])
     }
