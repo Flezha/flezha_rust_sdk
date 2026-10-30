@@ -82,7 +82,7 @@ fn run_dimension<C: Change<i64> + Clone>(
                 change.apply_to(&mut state);
                 buffer.push(change);
             }
-            criterion::black_box((state, buffer));
+            std::hint::black_box((state, buffer));
         });
     });
     group.finish();

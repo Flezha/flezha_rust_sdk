@@ -44,22 +44,13 @@ flezha-macros = { path = "macros" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 schemars = { version = "1", optional = true }
-lazy_static = "1.4.0"
-erased-serde = "0.4.6"
-prost = "0.13.5"
+prost = "0.14.4"
 crossbeam = "0.8"
-thiserror = "1.0"
-mio = { version = "0.8.11", features = ["os-poll", "os-ext", "net"] }
-dashmap = "6"
-crossbeam-deque = "0.8"
-# SIGTERM trap for the SDK's graceful-shutdown handler. Default features
-# (channel + iterator) are sufficient — we use `Iterator` to block on
-# delivered signals from a dedicated handler thread.
-signal-hook = "0.3"
+thiserror = "2"
 # State persistence: postcard for change/state encoding (deterministic,
 # already a transitive dep via flz_transport's framing path); crc32fast
 # for the 16-byte header CRC; tracing for the wire-stub's trace events.
-postcard = { version = "1.0", features = ["use-std"] }
+postcard = { version = "1.1", default-features = false, features = ["use-std"] }
 crc32fast = "1.4"
 tracing = "0.1"
 # Backs `diag::init_default_tracing` (EnvFilter + fmt subscriber).
@@ -70,8 +61,7 @@ flz_core = { git = "https://github.com/flezha/flezha", tag = "v0.1.0", features 
 # This crate with its internals exposed: the integration tests reach the dispatch
 # internals, so a plain `cargo test --workspace` compiles them.
 flezha_runner = { path = ".", features = ["bench-internals", "testing"] }
-criterion = { version = "0.5", features = ["html_reports"] }
-erased-serde = "0.4.6"
+criterion = { version = "0.8", features = ["html_reports"] }
 trybuild = "1.0"
 
 [target.'cfg(loom)'.dev-dependencies]

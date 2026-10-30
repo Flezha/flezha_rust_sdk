@@ -84,8 +84,6 @@ pub unsafe fn flezha_runner::channel::builder::ChannelBuilder::drop(usize)
 pub unsafe fn flezha_runner::channel::builder::ChannelBuilder::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
 impl<T> tracing::instrument::Instrument for flezha_runner::channel::builder::ChannelBuilder
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::channel::builder::ChannelBuilder
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::channel::builder::ChannelBuilder where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::channel::builder::ChannelBuilder::vzip(self) -> V
 pub struct flezha_runner::channel::builder::EntryTarget
 impl core::clone::Clone for flezha_runner::channel::EntryTarget
 pub fn flezha_runner::channel::EntryTarget::clone(&self) -> flezha_runner::channel::EntryTarget
@@ -130,8 +128,6 @@ pub unsafe fn flezha_runner::channel::EntryTarget::drop(usize)
 pub unsafe fn flezha_runner::channel::EntryTarget::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
 impl<T> tracing::instrument::Instrument for flezha_runner::channel::EntryTarget
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::channel::EntryTarget
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::channel::EntryTarget where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::channel::EntryTarget::vzip(self) -> V
 pub struct flezha_runner::channel::builder::Merge<'b, I>
 impl<'b, I: core::marker::Send + core::marker::Sync + 'static> flezha_runner::Merge<'b, I>
 pub fn flezha_runner::Merge<'b, I>::from<S, F>(self, S, F) -> Self where S: flezha_runner::MergeSource<'b>, F: core::ops::function::Fn(<S as flezha_runner::MergeSource>::Payload) -> I + core::marker::Send + core::marker::Sync + 'static
@@ -170,8 +166,6 @@ pub unsafe fn flezha_runner::Merge<'b, I>::drop(usize)
 pub unsafe fn flezha_runner::Merge<'b, I>::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
 impl<T> tracing::instrument::Instrument for flezha_runner::Merge<'b, I>
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::Merge<'b, I>
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::Merge<'b, I> where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::Merge<'b, I>::vzip(self) -> V
 pub struct flezha_runner::channel::builder::NodeTarget
 impl core::clone::Clone for flezha_runner::channel::NodeTarget
 pub fn flezha_runner::channel::NodeTarget::clone(&self) -> flezha_runner::channel::NodeTarget
@@ -216,8 +210,6 @@ pub unsafe fn flezha_runner::channel::NodeTarget::drop(usize)
 pub unsafe fn flezha_runner::channel::NodeTarget::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
 impl<T> tracing::instrument::Instrument for flezha_runner::channel::NodeTarget
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::channel::NodeTarget
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::channel::NodeTarget where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::channel::NodeTarget::vzip(self) -> V
 pub struct flezha_runner::channel::builder::Stream<'b, T, K>
 impl<'b, T: 'static + core::marker::Send + core::marker::Sync, K: flezha_runner::channel::StreamTarget> flezha_runner::Stream<'b, T, K>
 pub fn flezha_runner::Stream<'b, T, K>::filter<F>(self, F) -> Self where F: core::ops::function::Fn(&T) -> bool + core::marker::Send + core::marker::Sync + 'static
@@ -285,8 +277,6 @@ pub unsafe fn flezha_runner::Stream<'b, T, K>::drop(usize)
 pub unsafe fn flezha_runner::Stream<'b, T, K>::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
 impl<T> tracing::instrument::Instrument for flezha_runner::Stream<'b, T, K>
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::Stream<'b, T, K>
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::Stream<'b, T, K> where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::Stream<'b, T, K>::vzip(self) -> V
 pub trait flezha_runner::channel::builder::MergeSource<'b>
 pub type flezha_runner::channel::builder::MergeSource::Payload: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
 pub fn flezha_runner::channel::builder::MergeSource::merge_site(self) -> (flz_core::channel::ChannelId, core::option::Option<u32>)
@@ -355,8 +345,6 @@ pub unsafe fn flezha_runner::CallTarget::drop(usize)
 pub unsafe fn flezha_runner::CallTarget::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
 impl<T> tracing::instrument::Instrument for flezha_runner::CallTarget
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::CallTarget
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::CallTarget where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::CallTarget::vzip(self) -> V
 pub struct flezha_runner::channel::ChannelBuilder
 impl flezha_runner::channel::builder::ChannelBuilder
 pub fn flezha_runner::channel::builder::ChannelBuilder::input<T: serde_core::de::DeserializeOwned + core::marker::Send + core::marker::Sync + 'static>(&self, &'static str) -> flezha_runner::EntryStream<'_, T>
@@ -397,8 +385,6 @@ pub unsafe fn flezha_runner::channel::builder::ChannelBuilder::drop(usize)
 pub unsafe fn flezha_runner::channel::builder::ChannelBuilder::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
 impl<T> tracing::instrument::Instrument for flezha_runner::channel::builder::ChannelBuilder
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::channel::builder::ChannelBuilder
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::channel::builder::ChannelBuilder where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::channel::builder::ChannelBuilder::vzip(self) -> V
 pub struct flezha_runner::channel::EntryTarget
 impl core::clone::Clone for flezha_runner::channel::EntryTarget
 pub fn flezha_runner::channel::EntryTarget::clone(&self) -> flezha_runner::channel::EntryTarget
@@ -443,8 +429,6 @@ pub unsafe fn flezha_runner::channel::EntryTarget::drop(usize)
 pub unsafe fn flezha_runner::channel::EntryTarget::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
 impl<T> tracing::instrument::Instrument for flezha_runner::channel::EntryTarget
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::channel::EntryTarget
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::channel::EntryTarget where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::channel::EntryTarget::vzip(self) -> V
 pub struct flezha_runner::channel::Merge<'b, I>
 impl<'b, I: core::marker::Send + core::marker::Sync + 'static> flezha_runner::Merge<'b, I>
 pub fn flezha_runner::Merge<'b, I>::from<S, F>(self, S, F) -> Self where S: flezha_runner::MergeSource<'b>, F: core::ops::function::Fn(<S as flezha_runner::MergeSource>::Payload) -> I + core::marker::Send + core::marker::Sync + 'static
@@ -483,8 +467,6 @@ pub unsafe fn flezha_runner::Merge<'b, I>::drop(usize)
 pub unsafe fn flezha_runner::Merge<'b, I>::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
 impl<T> tracing::instrument::Instrument for flezha_runner::Merge<'b, I>
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::Merge<'b, I>
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::Merge<'b, I> where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::Merge<'b, I>::vzip(self) -> V
 pub struct flezha_runner::channel::NodeTarget
 impl core::clone::Clone for flezha_runner::channel::NodeTarget
 pub fn flezha_runner::channel::NodeTarget::clone(&self) -> flezha_runner::channel::NodeTarget
@@ -529,8 +511,6 @@ pub unsafe fn flezha_runner::channel::NodeTarget::drop(usize)
 pub unsafe fn flezha_runner::channel::NodeTarget::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
 impl<T> tracing::instrument::Instrument for flezha_runner::channel::NodeTarget
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::channel::NodeTarget
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::channel::NodeTarget where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::channel::NodeTarget::vzip(self) -> V
 pub struct flezha_runner::channel::Response<Req, Ans>
 pub flezha_runner::channel::Response::created: bool
 pub flezha_runner::channel::Response::request: Req
@@ -580,8 +560,6 @@ pub unsafe fn flezha_runner::Response<Req, Ans>::drop(usize)
 pub unsafe fn flezha_runner::Response<Req, Ans>::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
 impl<T> tracing::instrument::Instrument for flezha_runner::Response<Req, Ans>
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::Response<Req, Ans>
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::Response<Req, Ans> where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::Response<Req, Ans>::vzip(self) -> V
 pub struct flezha_runner::channel::Stream<'b, T, K>
 impl<'b, T: 'static + core::marker::Send + core::marker::Sync, K: flezha_runner::channel::StreamTarget> flezha_runner::Stream<'b, T, K>
 pub fn flezha_runner::Stream<'b, T, K>::filter<F>(self, F) -> Self where F: core::ops::function::Fn(&T) -> bool + core::marker::Send + core::marker::Sync + 'static
@@ -649,8 +627,6 @@ pub unsafe fn flezha_runner::Stream<'b, T, K>::drop(usize)
 pub unsafe fn flezha_runner::Stream<'b, T, K>::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
 impl<T> tracing::instrument::Instrument for flezha_runner::Stream<'b, T, K>
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::Stream<'b, T, K>
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::Stream<'b, T, K> where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::Stream<'b, T, K>::vzip(self) -> V
 pub trait flezha_runner::channel::MergeSource<'b>
 pub type flezha_runner::channel::MergeSource::Payload: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
 pub fn flezha_runner::channel::MergeSource::merge_site(self) -> (flz_core::channel::ChannelId, core::option::Option<u32>)
@@ -721,8 +697,6 @@ pub unsafe fn flezha_runner::control::StartOutcome::init(<T as crossbeam_epoch::
 impl<T> serde_core::de::DeserializeOwned for flezha_runner::control::StartOutcome where T: for<'de> serde_core::de::Deserialize<'de>
 impl<T> tracing::instrument::Instrument for flezha_runner::control::StartOutcome
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::control::StartOutcome
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::control::StartOutcome where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::control::StartOutcome::vzip(self) -> V
 pub struct flezha_runner::control::Control
 impl flezha_runner::control::Control
 pub fn flezha_runner::control::Control::bind_plugin(&self, &str, &str, serde_json::value::Value, &str) -> core::result::Result<serde_json::value::Value, flz_core::admin::AdminError>
@@ -778,8 +752,6 @@ pub unsafe fn flezha_runner::control::Control::drop(usize)
 pub unsafe fn flezha_runner::control::Control::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
 impl<T> tracing::instrument::Instrument for flezha_runner::control::Control
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::control::Control
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::control::Control where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::control::Control::vzip(self) -> V
 pub struct flezha_runner::control::PluginSpec
 impl flezha_runner::control::PluginSpec
 pub fn flezha_runner::control::PluginSpec::bind(self, impl core::convert::Into<alloc::string::String>, serde_json::value::Value) -> Self
@@ -830,8 +802,6 @@ pub unsafe fn flezha_runner::control::PluginSpec::drop(usize)
 pub unsafe fn flezha_runner::control::PluginSpec::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
 impl<T> tracing::instrument::Instrument for flezha_runner::control::PluginSpec
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::control::PluginSpec
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::control::PluginSpec where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::control::PluginSpec::vzip(self) -> V
 pub struct flezha_runner::control::RelaySpec
 impl flezha_runner::control::RelaySpec
 pub fn flezha_runner::control::RelaySpec::id(self, impl core::convert::Into<alloc::string::String>) -> Self
@@ -882,8 +852,6 @@ pub unsafe fn flezha_runner::control::RelaySpec::drop(usize)
 pub unsafe fn flezha_runner::control::RelaySpec::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
 impl<T> tracing::instrument::Instrument for flezha_runner::control::RelaySpec
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::control::RelaySpec
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::control::RelaySpec where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::control::RelaySpec::vzip(self) -> V
 pub struct flezha_runner::control::StartResult
 pub flezha_runner::control::StartResult::id: alloc::string::String
 pub flezha_runner::control::StartResult::outcome: flezha_runner::control::StartOutcome
@@ -938,8 +906,6 @@ pub unsafe fn flezha_runner::control::StartResult::init(<T as crossbeam_epoch::a
 impl<T> serde_core::de::DeserializeOwned for flezha_runner::control::StartResult where T: for<'de> serde_core::de::Deserialize<'de>
 impl<T> tracing::instrument::Instrument for flezha_runner::control::StartResult
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::control::StartResult
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::control::StartResult where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::control::StartResult::vzip(self) -> V
 pub mod flezha_runner::diag
 pub const flezha_runner::diag::DEFAULT_DIRECTIVES: &str
 pub fn flezha_runner::diag::init_default_tracing()
@@ -984,8 +950,6 @@ pub unsafe fn flezha_runner::local::LocalRelay::drop(usize)
 pub unsafe fn flezha_runner::local::LocalRelay::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
 impl<T> tracing::instrument::Instrument for flezha_runner::local::LocalRelay
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::local::LocalRelay
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::local::LocalRelay where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::local::LocalRelay::vzip(self) -> V
 pub mod flezha_runner::relay
 pub use flezha_runner::relay::DEFAULT_SLEEP_AFTER
 pub use flezha_runner::relay::Durable
@@ -1049,8 +1013,6 @@ pub unsafe fn flezha_runner::relay::builder::TopologyBuildError::drop(usize)
 pub unsafe fn flezha_runner::relay::builder::TopologyBuildError::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
 impl<T> tracing::instrument::Instrument for flezha_runner::relay::builder::TopologyBuildError
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::relay::builder::TopologyBuildError
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::relay::builder::TopologyBuildError where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::relay::builder::TopologyBuildError::vzip(self) -> V
 pub const flezha_runner::relay::builder::DEFAULT_MAILBOX_CAPACITY: usize
 pub const flezha_runner::relay::builder::ENV_MAILBOX_CAPACITY: &str
 pub fn flezha_runner::relay::builder::build_topology(&'static str, flezha_runner::channel::builder::ChannelBuilder) -> core::result::Result<alloc::sync::Arc<flz_core::relay::topology::RelayTopology>, flezha_runner::relay::builder::TopologyBuildError>
@@ -1127,8 +1089,6 @@ pub fn flezha_runner::tasklet::change::NoChange::to_journal_bytes(&self) -> core
 impl<T> serde_core::de::DeserializeOwned for flezha_runner::tasklet::change::NoChange where T: for<'de> serde_core::de::Deserialize<'de>
 impl<T> tracing::instrument::Instrument for flezha_runner::tasklet::change::NoChange
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::tasklet::change::NoChange
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::tasklet::change::NoChange where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::tasklet::change::NoChange::vzip(self) -> V
 pub struct flezha_runner::state::CoalesceKey(_)
 impl flezha_runner::tasklet::change::CoalesceKey
 pub fn flezha_runner::tasklet::change::CoalesceKey::from_hash<H: core::hash::Hash>(&H) -> Self
@@ -1185,8 +1145,6 @@ pub unsafe fn flezha_runner::tasklet::change::CoalesceKey::drop(usize)
 pub unsafe fn flezha_runner::tasklet::change::CoalesceKey::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
 impl<T> tracing::instrument::Instrument for flezha_runner::tasklet::change::CoalesceKey
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::tasklet::change::CoalesceKey
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::tasklet::change::CoalesceKey where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::tasklet::change::CoalesceKey::vzip(self) -> V
 pub trait flezha_runner::state::Change<S>: serde_core::ser::Serialize + serde_core::de::DeserializeOwned + core::marker::Send + core::marker::Sync + 'static
 pub fn flezha_runner::state::Change::apply_to(&self, &mut S)
 pub fn flezha_runner::state::Change::coalesce_key(&self) -> core::option::Option<flezha_runner::tasklet::change::CoalesceKey>
@@ -1269,8 +1227,6 @@ pub fn flezha_runner::tasklet::change::NoChange::to_journal_bytes(&self) -> core
 impl<T> serde_core::de::DeserializeOwned for flezha_runner::tasklet::change::NoChange where T: for<'de> serde_core::de::Deserialize<'de>
 impl<T> tracing::instrument::Instrument for flezha_runner::tasklet::change::NoChange
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::tasklet::change::NoChange
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::tasklet::change::NoChange where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::tasklet::change::NoChange::vzip(self) -> V
 pub struct flezha_runner::tasklet::change::CoalesceKey(_)
 impl flezha_runner::tasklet::change::CoalesceKey
 pub fn flezha_runner::tasklet::change::CoalesceKey::from_hash<H: core::hash::Hash>(&H) -> Self
@@ -1327,8 +1283,6 @@ pub unsafe fn flezha_runner::tasklet::change::CoalesceKey::drop(usize)
 pub unsafe fn flezha_runner::tasklet::change::CoalesceKey::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
 impl<T> tracing::instrument::Instrument for flezha_runner::tasklet::change::CoalesceKey
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::tasklet::change::CoalesceKey
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::tasklet::change::CoalesceKey where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::tasklet::change::CoalesceKey::vzip(self) -> V
 pub trait flezha_runner::tasklet::change::Change<S>: serde_core::ser::Serialize + serde_core::de::DeserializeOwned + core::marker::Send + core::marker::Sync + 'static
 pub fn flezha_runner::tasklet::change::Change::apply_to(&self, &mut S)
 pub fn flezha_runner::tasklet::change::Change::coalesce_key(&self) -> core::option::Option<flezha_runner::tasklet::change::CoalesceKey>
@@ -1398,8 +1352,6 @@ pub unsafe fn flezha_runner::tasklet::ctx::Ctx<'a, S>::drop(usize)
 pub unsafe fn flezha_runner::tasklet::ctx::Ctx<'a, S>::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
 impl<T> tracing::instrument::Instrument for flezha_runner::tasklet::ctx::Ctx<'a, S>
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::tasklet::ctx::Ctx<'a, S>
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::tasklet::ctx::Ctx<'a, S> where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::vzip(self) -> V
 pub struct flezha_runner::tasklet::ctx::StableId(pub u128)
 impl core::clone::Clone for flezha_runner::tasklet::ctx::StableId
 pub fn flezha_runner::tasklet::ctx::StableId::clone(&self) -> flezha_runner::tasklet::ctx::StableId
@@ -1460,8 +1412,6 @@ pub unsafe fn flezha_runner::tasklet::ctx::StableId::drop(usize)
 pub unsafe fn flezha_runner::tasklet::ctx::StableId::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
 impl<T> tracing::instrument::Instrument for flezha_runner::tasklet::ctx::StableId
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::tasklet::ctx::StableId
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::tasklet::ctx::StableId where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::tasklet::ctx::StableId::vzip(self) -> V
 pub const flezha_runner::tasklet::ctx::RESERVED_METADATA_PREFIX: &str
 pub mod flezha_runner::tasklet::error
 pub use flezha_runner::tasklet::error::format_panic
@@ -1536,8 +1486,6 @@ pub unsafe fn flezha_runner::tasklet::error::TaskletError::drop(usize)
 pub unsafe fn flezha_runner::tasklet::error::TaskletError::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
 impl<T> tracing::instrument::Instrument for flezha_runner::tasklet::error::TaskletError
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::tasklet::error::TaskletError
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::tasklet::error::TaskletError where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::tasklet::error::TaskletError::vzip(self) -> V
 pub enum flezha_runner::tasklet::NoChange
 impl core::clone::Clone for flezha_runner::tasklet::change::NoChange
 pub fn flezha_runner::tasklet::change::NoChange::clone(&self) -> flezha_runner::tasklet::change::NoChange
@@ -1598,8 +1546,6 @@ pub fn flezha_runner::tasklet::change::NoChange::to_journal_bytes(&self) -> core
 impl<T> serde_core::de::DeserializeOwned for flezha_runner::tasklet::change::NoChange where T: for<'de> serde_core::de::Deserialize<'de>
 impl<T> tracing::instrument::Instrument for flezha_runner::tasklet::change::NoChange
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::tasklet::change::NoChange
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::tasklet::change::NoChange where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::tasklet::change::NoChange::vzip(self) -> V
 pub enum flezha_runner::tasklet::TaskletError
 pub flezha_runner::tasklet::TaskletError::Custom(alloc::string::String)
 pub flezha_runner::tasklet::TaskletError::Effect(flz_transport::errors::FlezhaError)
@@ -1671,8 +1617,6 @@ pub unsafe fn flezha_runner::tasklet::error::TaskletError::drop(usize)
 pub unsafe fn flezha_runner::tasklet::error::TaskletError::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
 impl<T> tracing::instrument::Instrument for flezha_runner::tasklet::error::TaskletError
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::tasklet::error::TaskletError
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::tasklet::error::TaskletError where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::tasklet::error::TaskletError::vzip(self) -> V
 pub struct flezha_runner::tasklet::CoalesceKey(_)
 impl flezha_runner::tasklet::change::CoalesceKey
 pub fn flezha_runner::tasklet::change::CoalesceKey::from_hash<H: core::hash::Hash>(&H) -> Self
@@ -1729,8 +1673,6 @@ pub unsafe fn flezha_runner::tasklet::change::CoalesceKey::drop(usize)
 pub unsafe fn flezha_runner::tasklet::change::CoalesceKey::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
 impl<T> tracing::instrument::Instrument for flezha_runner::tasklet::change::CoalesceKey
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::tasklet::change::CoalesceKey
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::tasklet::change::CoalesceKey where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::tasklet::change::CoalesceKey::vzip(self) -> V
 pub struct flezha_runner::tasklet::Ctx<'a, S: flezha_runner::tasklet::Tasklet>
 impl<'a, S: flezha_runner::tasklet::Tasklet> flezha_runner::tasklet::ctx::Ctx<'a, S>
 pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::cancel_timer(&self, flz_core::schema::TimerKind, u64) -> core::result::Result<bool, flezha_runner::tasklet::error::TaskletError>
@@ -1785,8 +1727,6 @@ pub unsafe fn flezha_runner::tasklet::ctx::Ctx<'a, S>::drop(usize)
 pub unsafe fn flezha_runner::tasklet::ctx::Ctx<'a, S>::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
 impl<T> tracing::instrument::Instrument for flezha_runner::tasklet::ctx::Ctx<'a, S>
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::tasklet::ctx::Ctx<'a, S>
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::tasklet::ctx::Ctx<'a, S> where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::vzip(self) -> V
 pub struct flezha_runner::tasklet::StableId(pub u128)
 impl core::clone::Clone for flezha_runner::tasklet::ctx::StableId
 pub fn flezha_runner::tasklet::ctx::StableId::clone(&self) -> flezha_runner::tasklet::ctx::StableId
@@ -1847,8 +1787,6 @@ pub unsafe fn flezha_runner::tasklet::ctx::StableId::drop(usize)
 pub unsafe fn flezha_runner::tasklet::ctx::StableId::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
 impl<T> tracing::instrument::Instrument for flezha_runner::tasklet::ctx::StableId
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::tasklet::ctx::StableId
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::tasklet::ctx::StableId where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::tasklet::ctx::StableId::vzip(self) -> V
 pub trait flezha_runner::tasklet::Change<S>: serde_core::ser::Serialize + serde_core::de::DeserializeOwned + core::marker::Send + core::marker::Sync + 'static
 pub fn flezha_runner::tasklet::Change::apply_to(&self, &mut S)
 pub fn flezha_runner::tasklet::Change::coalesce_key(&self) -> core::option::Option<flezha_runner::tasklet::change::CoalesceKey>
@@ -1933,8 +1871,6 @@ pub unsafe fn flezha_runner::testing::harness::EmitStreamMismatch::drop(usize)
 pub unsafe fn flezha_runner::testing::harness::EmitStreamMismatch::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
 impl<T> tracing::instrument::Instrument for flezha_runner::testing::harness::EmitStreamMismatch
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::testing::harness::EmitStreamMismatch
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::testing::harness::EmitStreamMismatch where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::testing::harness::EmitStreamMismatch::vzip(self) -> V
 pub struct flezha_runner::testing::harness::ReplayMismatch
 pub flezha_runner::testing::harness::ReplayMismatch::actual_serialized: alloc::vec::Vec<u8>
 pub flezha_runner::testing::harness::ReplayMismatch::expected_serialized: alloc::vec::Vec<u8>
@@ -1977,8 +1913,6 @@ pub unsafe fn flezha_runner::testing::harness::ReplayMismatch::drop(usize)
 pub unsafe fn flezha_runner::testing::harness::ReplayMismatch::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
 impl<T> tracing::instrument::Instrument for flezha_runner::testing::harness::ReplayMismatch
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::testing::harness::ReplayMismatch
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::testing::harness::ReplayMismatch where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::testing::harness::ReplayMismatch::vzip(self) -> V
 pub struct flezha_runner::testing::harness::TaskletTestHarness<S: flezha_runner::tasklet::Tasklet>
 impl<S: flezha_runner::tasklet::Tasklet> flezha_runner::testing::harness::TaskletTestHarness<S> where <S as flezha_runner::tasklet::Tasklet>::State: serde_core::ser::Serialize + serde_core::de::DeserializeOwned
 pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::new() -> Self
@@ -2037,8 +1971,6 @@ pub unsafe fn flezha_runner::testing::harness::TaskletTestHarness<S>::drop(usize
 pub unsafe fn flezha_runner::testing::harness::TaskletTestHarness<S>::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
 impl<T> tracing::instrument::Instrument for flezha_runner::testing::harness::TaskletTestHarness<S>
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::testing::harness::TaskletTestHarness<S>
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::testing::harness::TaskletTestHarness<S> where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::vzip(self) -> V
 pub struct flezha_runner::testing::ReplayMismatch
 pub flezha_runner::testing::ReplayMismatch::actual_serialized: alloc::vec::Vec<u8>
 pub flezha_runner::testing::ReplayMismatch::expected_serialized: alloc::vec::Vec<u8>
@@ -2081,8 +2013,6 @@ pub unsafe fn flezha_runner::testing::harness::ReplayMismatch::drop(usize)
 pub unsafe fn flezha_runner::testing::harness::ReplayMismatch::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
 impl<T> tracing::instrument::Instrument for flezha_runner::testing::harness::ReplayMismatch
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::testing::harness::ReplayMismatch
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::testing::harness::ReplayMismatch where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::testing::harness::ReplayMismatch::vzip(self) -> V
 pub struct flezha_runner::testing::TaskletTestHarness<S: flezha_runner::tasklet::Tasklet>
 impl<S: flezha_runner::tasklet::Tasklet> flezha_runner::testing::harness::TaskletTestHarness<S> where <S as flezha_runner::tasklet::Tasklet>::State: serde_core::ser::Serialize + serde_core::de::DeserializeOwned
 pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::new() -> Self
@@ -2141,8 +2071,6 @@ pub unsafe fn flezha_runner::testing::harness::TaskletTestHarness<S>::drop(usize
 pub unsafe fn flezha_runner::testing::harness::TaskletTestHarness<S>::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
 impl<T> tracing::instrument::Instrument for flezha_runner::testing::harness::TaskletTestHarness<S>
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::testing::harness::TaskletTestHarness<S>
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::testing::harness::TaskletTestHarness<S> where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::testing::harness::TaskletTestHarness<S>::vzip(self) -> V
 pub enum flezha_runner::FlezhaError
 pub flezha_runner::FlezhaError::AlreadyRunning
 pub flezha_runner::FlezhaError::AlreadyRunning::namespace: alloc::string::String
@@ -2207,8 +2135,6 @@ pub unsafe fn flezha_runner::FlezhaError::drop(usize)
 pub unsafe fn flezha_runner::FlezhaError::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
 impl<T> tracing::instrument::Instrument for flezha_runner::FlezhaError
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::FlezhaError
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::FlezhaError where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::FlezhaError::vzip(self) -> V
 pub enum flezha_runner::NoChange
 impl core::clone::Clone for flezha_runner::tasklet::change::NoChange
 pub fn flezha_runner::tasklet::change::NoChange::clone(&self) -> flezha_runner::tasklet::change::NoChange
@@ -2269,8 +2195,6 @@ pub fn flezha_runner::tasklet::change::NoChange::to_journal_bytes(&self) -> core
 impl<T> serde_core::de::DeserializeOwned for flezha_runner::tasklet::change::NoChange where T: for<'de> serde_core::de::Deserialize<'de>
 impl<T> tracing::instrument::Instrument for flezha_runner::tasklet::change::NoChange
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::tasklet::change::NoChange
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::tasklet::change::NoChange where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::tasklet::change::NoChange::vzip(self) -> V
 pub enum flezha_runner::StartOutcome
 pub flezha_runner::StartOutcome::AlreadyRunning
 pub flezha_runner::StartOutcome::Started
@@ -2326,8 +2250,6 @@ pub unsafe fn flezha_runner::control::StartOutcome::init(<T as crossbeam_epoch::
 impl<T> serde_core::de::DeserializeOwned for flezha_runner::control::StartOutcome where T: for<'de> serde_core::de::Deserialize<'de>
 impl<T> tracing::instrument::Instrument for flezha_runner::control::StartOutcome
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::control::StartOutcome
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::control::StartOutcome where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::control::StartOutcome::vzip(self) -> V
 pub enum flezha_runner::TaskletError
 pub flezha_runner::TaskletError::Custom(alloc::string::String)
 pub flezha_runner::TaskletError::Effect(flz_transport::errors::FlezhaError)
@@ -2399,8 +2321,6 @@ pub unsafe fn flezha_runner::tasklet::error::TaskletError::drop(usize)
 pub unsafe fn flezha_runner::tasklet::error::TaskletError::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
 impl<T> tracing::instrument::Instrument for flezha_runner::tasklet::error::TaskletError
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::tasklet::error::TaskletError
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::tasklet::error::TaskletError where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::tasklet::error::TaskletError::vzip(self) -> V
 pub struct flezha_runner::CallTarget
 impl flezha_runner::CallTarget
 pub fn flezha_runner::CallTarget::answer_channel(self, impl core::convert::Into<alloc::string::String>) -> Self
@@ -2456,8 +2376,6 @@ pub unsafe fn flezha_runner::CallTarget::drop(usize)
 pub unsafe fn flezha_runner::CallTarget::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
 impl<T> tracing::instrument::Instrument for flezha_runner::CallTarget
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::CallTarget
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::CallTarget where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::CallTarget::vzip(self) -> V
 pub struct flezha_runner::ChannelBuilder
 impl flezha_runner::channel::builder::ChannelBuilder
 pub fn flezha_runner::channel::builder::ChannelBuilder::input<T: serde_core::de::DeserializeOwned + core::marker::Send + core::marker::Sync + 'static>(&self, &'static str) -> flezha_runner::EntryStream<'_, T>
@@ -2498,8 +2416,6 @@ pub unsafe fn flezha_runner::channel::builder::ChannelBuilder::drop(usize)
 pub unsafe fn flezha_runner::channel::builder::ChannelBuilder::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
 impl<T> tracing::instrument::Instrument for flezha_runner::channel::builder::ChannelBuilder
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::channel::builder::ChannelBuilder
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::channel::builder::ChannelBuilder where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::channel::builder::ChannelBuilder::vzip(self) -> V
 pub struct flezha_runner::CoalesceKey(_)
 impl flezha_runner::tasklet::change::CoalesceKey
 pub fn flezha_runner::tasklet::change::CoalesceKey::from_hash<H: core::hash::Hash>(&H) -> Self
@@ -2556,8 +2472,6 @@ pub unsafe fn flezha_runner::tasklet::change::CoalesceKey::drop(usize)
 pub unsafe fn flezha_runner::tasklet::change::CoalesceKey::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
 impl<T> tracing::instrument::Instrument for flezha_runner::tasklet::change::CoalesceKey
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::tasklet::change::CoalesceKey
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::tasklet::change::CoalesceKey where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::tasklet::change::CoalesceKey::vzip(self) -> V
 pub struct flezha_runner::Control
 impl flezha_runner::control::Control
 pub fn flezha_runner::control::Control::bind_plugin(&self, &str, &str, serde_json::value::Value, &str) -> core::result::Result<serde_json::value::Value, flz_core::admin::AdminError>
@@ -2613,8 +2527,6 @@ pub unsafe fn flezha_runner::control::Control::drop(usize)
 pub unsafe fn flezha_runner::control::Control::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
 impl<T> tracing::instrument::Instrument for flezha_runner::control::Control
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::control::Control
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::control::Control where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::control::Control::vzip(self) -> V
 pub struct flezha_runner::Ctx<'a, S: flezha_runner::tasklet::Tasklet>
 impl<'a, S: flezha_runner::tasklet::Tasklet> flezha_runner::tasklet::ctx::Ctx<'a, S>
 pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::cancel_timer(&self, flz_core::schema::TimerKind, u64) -> core::result::Result<bool, flezha_runner::tasklet::error::TaskletError>
@@ -2669,8 +2581,6 @@ pub unsafe fn flezha_runner::tasklet::ctx::Ctx<'a, S>::drop(usize)
 pub unsafe fn flezha_runner::tasklet::ctx::Ctx<'a, S>::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
 impl<T> tracing::instrument::Instrument for flezha_runner::tasklet::ctx::Ctx<'a, S>
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::tasklet::ctx::Ctx<'a, S>
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::tasklet::ctx::Ctx<'a, S> where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::tasklet::ctx::Ctx<'a, S>::vzip(self) -> V
 pub struct flezha_runner::Flezha
 impl flezha_runner::Flezha
 pub fn flezha_runner::Flezha::create_runner(impl core::convert::Into<alloc::string::String>) -> core::result::Result<flezha_runner::FlezhaRunner, flezha_runner::FlezhaError>
@@ -2707,8 +2617,6 @@ pub unsafe fn flezha_runner::Flezha::drop(usize)
 pub unsafe fn flezha_runner::Flezha::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
 impl<T> tracing::instrument::Instrument for flezha_runner::Flezha
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::Flezha
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::Flezha where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::Flezha::vzip(self) -> V
 pub struct flezha_runner::FlezhaRunner
 impl flezha_runner::FlezhaRunner
 pub fn flezha_runner::FlezhaRunner::await_termination(&self) -> core::result::Result<(), flezha_runner::FlezhaError>
@@ -2755,8 +2663,6 @@ pub unsafe fn flezha_runner::FlezhaRunner::drop(usize)
 pub unsafe fn flezha_runner::FlezhaRunner::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
 impl<T> tracing::instrument::Instrument for flezha_runner::FlezhaRunner
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::FlezhaRunner
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::FlezhaRunner where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::FlezhaRunner::vzip(self) -> V
 pub struct flezha_runner::LocalRelay
 impl flezha_runner::local::LocalRelay
 pub fn flezha_runner::local::LocalRelay::feed(&self, &str, impl core::convert::AsRef<[u8]>) -> core::result::Result<(), flezha_runner::FlezhaError>
@@ -2795,8 +2701,6 @@ pub unsafe fn flezha_runner::local::LocalRelay::drop(usize)
 pub unsafe fn flezha_runner::local::LocalRelay::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
 impl<T> tracing::instrument::Instrument for flezha_runner::local::LocalRelay
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::local::LocalRelay
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::local::LocalRelay where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::local::LocalRelay::vzip(self) -> V
 pub struct flezha_runner::Merge<'b, I>
 impl<'b, I: core::marker::Send + core::marker::Sync + 'static> flezha_runner::Merge<'b, I>
 pub fn flezha_runner::Merge<'b, I>::from<S, F>(self, S, F) -> Self where S: flezha_runner::MergeSource<'b>, F: core::ops::function::Fn(<S as flezha_runner::MergeSource>::Payload) -> I + core::marker::Send + core::marker::Sync + 'static
@@ -2835,8 +2739,6 @@ pub unsafe fn flezha_runner::Merge<'b, I>::drop(usize)
 pub unsafe fn flezha_runner::Merge<'b, I>::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
 impl<T> tracing::instrument::Instrument for flezha_runner::Merge<'b, I>
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::Merge<'b, I>
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::Merge<'b, I> where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::Merge<'b, I>::vzip(self) -> V
 pub struct flezha_runner::PluginSpec
 impl flezha_runner::control::PluginSpec
 pub fn flezha_runner::control::PluginSpec::bind(self, impl core::convert::Into<alloc::string::String>, serde_json::value::Value) -> Self
@@ -2887,8 +2789,6 @@ pub unsafe fn flezha_runner::control::PluginSpec::drop(usize)
 pub unsafe fn flezha_runner::control::PluginSpec::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
 impl<T> tracing::instrument::Instrument for flezha_runner::control::PluginSpec
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::control::PluginSpec
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::control::PluginSpec where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::control::PluginSpec::vzip(self) -> V
 pub struct flezha_runner::RelaySpec
 impl flezha_runner::control::RelaySpec
 pub fn flezha_runner::control::RelaySpec::id(self, impl core::convert::Into<alloc::string::String>) -> Self
@@ -2939,8 +2839,6 @@ pub unsafe fn flezha_runner::control::RelaySpec::drop(usize)
 pub unsafe fn flezha_runner::control::RelaySpec::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
 impl<T> tracing::instrument::Instrument for flezha_runner::control::RelaySpec
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::control::RelaySpec
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::control::RelaySpec where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::control::RelaySpec::vzip(self) -> V
 pub struct flezha_runner::Response<Req, Ans>
 pub flezha_runner::Response::created: bool
 pub flezha_runner::Response::request: Req
@@ -2990,8 +2888,6 @@ pub unsafe fn flezha_runner::Response<Req, Ans>::drop(usize)
 pub unsafe fn flezha_runner::Response<Req, Ans>::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
 impl<T> tracing::instrument::Instrument for flezha_runner::Response<Req, Ans>
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::Response<Req, Ans>
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::Response<Req, Ans> where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::Response<Req, Ans>::vzip(self) -> V
 pub struct flezha_runner::SendOpts
 impl flezha_runner::SendOpts
 pub fn flezha_runner::SendOpts::key(self, impl core::convert::Into<alloc::string::String>) -> Self
@@ -3042,8 +2938,6 @@ pub unsafe fn flezha_runner::SendOpts::drop(usize)
 pub unsafe fn flezha_runner::SendOpts::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
 impl<T> tracing::instrument::Instrument for flezha_runner::SendOpts
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::SendOpts
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::SendOpts where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::SendOpts::vzip(self) -> V
 pub struct flezha_runner::StableId(pub u128)
 impl core::clone::Clone for flezha_runner::tasklet::ctx::StableId
 pub fn flezha_runner::tasklet::ctx::StableId::clone(&self) -> flezha_runner::tasklet::ctx::StableId
@@ -3104,8 +2998,6 @@ pub unsafe fn flezha_runner::tasklet::ctx::StableId::drop(usize)
 pub unsafe fn flezha_runner::tasklet::ctx::StableId::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
 impl<T> tracing::instrument::Instrument for flezha_runner::tasklet::ctx::StableId
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::tasklet::ctx::StableId
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::tasklet::ctx::StableId where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::tasklet::ctx::StableId::vzip(self) -> V
 pub struct flezha_runner::StartResult
 pub flezha_runner::StartResult::id: alloc::string::String
 pub flezha_runner::StartResult::outcome: flezha_runner::control::StartOutcome
@@ -3160,8 +3052,6 @@ pub unsafe fn flezha_runner::control::StartResult::init(<T as crossbeam_epoch::a
 impl<T> serde_core::de::DeserializeOwned for flezha_runner::control::StartResult where T: for<'de> serde_core::de::Deserialize<'de>
 impl<T> tracing::instrument::Instrument for flezha_runner::control::StartResult
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::control::StartResult
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::control::StartResult where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::control::StartResult::vzip(self) -> V
 pub struct flezha_runner::Stream<'b, T, K>
 impl<'b, T: 'static + core::marker::Send + core::marker::Sync, K: flezha_runner::channel::StreamTarget> flezha_runner::Stream<'b, T, K>
 pub fn flezha_runner::Stream<'b, T, K>::filter<F>(self, F) -> Self where F: core::ops::function::Fn(&T) -> bool + core::marker::Send + core::marker::Sync + 'static
@@ -3229,8 +3119,6 @@ pub unsafe fn flezha_runner::Stream<'b, T, K>::drop(usize)
 pub unsafe fn flezha_runner::Stream<'b, T, K>::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
 impl<T> tracing::instrument::Instrument for flezha_runner::Stream<'b, T, K>
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::Stream<'b, T, K>
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::Stream<'b, T, K> where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::Stream<'b, T, K>::vzip(self) -> V
 pub struct flezha_runner::TopologyBuildError
 pub flezha_runner::TopologyBuildError::errors: alloc::vec::Vec<flz_core::host::issue::TopologyIssue>
 impl core::convert::From<flezha_runner::relay::builder::TopologyBuildError> for flezha_runner::FlezhaError
@@ -3276,8 +3164,6 @@ pub unsafe fn flezha_runner::relay::builder::TopologyBuildError::drop(usize)
 pub unsafe fn flezha_runner::relay::builder::TopologyBuildError::init(<T as crossbeam_epoch::atomic::Pointable>::Init) -> usize
 impl<T> tracing::instrument::Instrument for flezha_runner::relay::builder::TopologyBuildError
 impl<T> tracing::instrument::WithSubscriber for flezha_runner::relay::builder::TopologyBuildError
-impl<V, T> ppv_lite86::types::VZip<V> for flezha_runner::relay::builder::TopologyBuildError where V: ppv_lite86::types::MultiLane<T>
-pub fn flezha_runner::relay::builder::TopologyBuildError::vzip(self) -> V
 pub trait flezha_runner::Change<S>: serde_core::ser::Serialize + serde_core::de::DeserializeOwned + core::marker::Send + core::marker::Sync + 'static
 pub fn flezha_runner::Change::apply_to(&self, &mut S)
 pub fn flezha_runner::Change::coalesce_key(&self) -> core::option::Option<flezha_runner::tasklet::change::CoalesceKey>

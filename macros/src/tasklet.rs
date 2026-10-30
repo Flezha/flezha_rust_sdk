@@ -236,7 +236,7 @@ pub(crate) fn impl_target(item: TokenStream, attribute: &str) -> syn::Result<Ite
     let is_tasklet = block
         .trait_
         .as_ref()
-        .is_some_and(|(_, path, _)| path.segments.last().is_some_and(|s| s.ident == "Tasklet"));
+        .is_some_and(|(path, _)| path.segments.last().is_some_and(|s| s.ident == "Tasklet"));
     if !is_tasklet {
         return Err(syn::Error::new_spanned(
             &block.self_ty,
