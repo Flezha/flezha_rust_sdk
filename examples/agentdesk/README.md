@@ -39,13 +39,15 @@ the session's answer as it is written, and each user has a daily token budget.
 You need Rust with Cargo, and Docker with Docker Compose.
 
 ```sh
-cargo build --release
+cargo build --release --target-dir target
 docker compose up -d --build --wait
 alias flz='docker compose exec controller bin/flz'
 ```
 
 The runner's image copies the binary Cargo built on this machine; one built against a C
-library newer than Debian 12's may not start in it. The alias runs `flz` inside the
+library newer than Debian 12's may not start in it. `--target-dir target` keeps the
+binary where the image looks for it, also inside a Flezha checkout, whose Cargo settings
+put build output elsewhere. The alias runs `flz` inside the
 controller's container. The runner joins `agents` on its own; the controller lists it:
 
 ```sh
@@ -109,7 +111,7 @@ flz_transport = { path = "../../../../crates/flz_transport" }
 EOF
 ```
 
-Then build with `cargo build --release --offline`, so Cargo does not look for the
+Then build with `cargo build --release --offline --target-dir target`, so Cargo does not look for the
 missing tag. Build the controller's image from the repository root:
 
 ```sh
