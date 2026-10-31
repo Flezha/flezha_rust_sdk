@@ -7,9 +7,8 @@
 //! same Cell, so a class that appends to its state observes its inputs in
 //! arrival order.
 //!
-//! Worked examples live in `sdk/rust/examples/` — start with
-//! `append_relay.rs` (sticky ordering with persistent state). Method names
-//! and lifecycle verbs follow `docs/internal/sdk/naming_conventions.md`, mirrored 1:1
+//! Worked examples live in `sdk/rust/examples/`, starting with `echo`.
+//! Method names and lifecycle verbs follow `docs/internal/sdk/naming_conventions.md`, mirrored 1:1
 //! with the Java SDK; every environment knob the runner reads is listed in
 //! `docs/public/configuration.md`.
 

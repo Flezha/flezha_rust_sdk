@@ -22,8 +22,6 @@ use crate::channel::ChannelBuilder;
 /// The runtime calls `R::channels(...)` and `R::settings()` once at
 /// `register_factory(R)` time and freezes the result in an
 /// `Arc<RelayTopology>` shared by every `RelayInstance` of this class.
-/// A worked example of a class that runs in steps:
-/// `sdk/rust/examples/spawn_steps_worker.rs`.
 pub trait Relay: Send + Sync + 'static {
     /// Stable name. Used as the controller-facing factory identifier — the
     /// controller's `flz relay start <factory_id>` looks this up.
