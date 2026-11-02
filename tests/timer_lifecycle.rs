@@ -38,7 +38,14 @@ fn an_idle_evicted_cell_loses_its_timers() {
         ),
         "the Cell must arm its timer before the reaper runs"
     );
-    assert_eq!(flezha_runner::cell::timer::timers_armed(), armed_before + 1);
+    // The wake-list entry lands just after the Cell's live set, outside its lock.
+    assert!(
+        wait_until(
+            || flezha_runner::cell::timer::timers_armed() == armed_before + 1,
+            Duration::from_secs(5)
+        ),
+        "the armed timer reaches the wake list"
+    );
 
     // Sweep directly rather than waiting on the reaper's cadence: the seam
     // under test is what the sweep does, not when it decides to run.
