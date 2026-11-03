@@ -1,6 +1,6 @@
 //! The starter example, built and tested against this checkout: its own
-//! `Cargo.toml` names the SDK by its released version, which resolves only
-//! once the crate is published. Its tasklet's tests run here as they run there.
+//! `Cargo.toml` names the SDK by its released version on crates.io, so its
+//! sources are compiled here instead. Its tasklet's tests run here as they run there.
 
 #[path = "../examples/starter/src/count.rs"]
 mod count;

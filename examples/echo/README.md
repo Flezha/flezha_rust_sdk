@@ -38,26 +38,23 @@ first argument and defaults to `default`: `cargo run --release -- my_app`.
 
 ## Building from a checkout
 
-`flezha_runner` is not on crates.io yet, and the core it builds on has no
-release tag yet, so Cargo cannot resolve either. From this folder, point Cargo
-at the checkout once:
+To run the example against a Flezha checkout instead of the published crates,
+point Cargo at the checkout once, from this folder:
 
 ```sh
 mkdir -p .cargo
 cat > .cargo/config.toml <<'EOF'
 [patch.crates-io]
 flezha_runner = { path = "../.." }
-
-[patch."https://github.com/flezha/flezha"]
 flz_core = { path = "../../../../crates/flz_core" }
 flz_transport = { path = "../../../../crates/flz_transport" }
 EOF
 ```
 
-Then build with `cargo run --release --offline`, so Cargo does not look for the
-missing tag. A copy of this folder outside the checkout names the checkout's `sdk/rust`,
-`flz_core` and `flz_transport` instead of the relative paths. Git ignores the `.cargo` folder, and once the crate is
-published the step goes away and `cargo run --release` is all you need.
+Then build with `cargo run --release` as before. A copy of this folder outside the
+checkout names the checkout's `sdk/rust`, `flz_core` and `flz_transport` instead of the
+relative paths. Git ignores the `.cargo` folder; delete it to use the published crates
+again.
 
 The empty `[workspace]` table in `Cargo.toml` keeps the repository's own
 workspace from claiming this folder, and does nothing in a copy of its own.

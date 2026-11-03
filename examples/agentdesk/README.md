@@ -94,32 +94,28 @@ builds the images and deploys `k8s/agentdesk.yaml` on k3s.
 
 ## Building from a checkout
 
-`flezha_runner` is not on crates.io yet, and the core it builds on has no
-release tag yet, so Cargo cannot resolve either, and the controller's image
-`flezha/flezha:0.1.0` has to be built. From this folder, point Cargo at the
-checkout once:
+The controller's image `flezha/flezha:0.1.0` has to be built. To run the project
+against a Flezha checkout instead of the published crates, also point Cargo at the
+checkout once, from this folder:
 
 ```sh
 mkdir -p .cargo
 cat > .cargo/config.toml <<'EOF'
 [patch.crates-io]
 flezha_runner = { path = "../.." }
-
-[patch."https://github.com/flezha/flezha"]
 flz_core = { path = "../../../../crates/flz_core" }
 flz_transport = { path = "../../../../crates/flz_transport" }
 EOF
 ```
 
-Then build with `cargo build --release --offline --target-dir target`, so Cargo does not look for the
-missing tag. Build the controller's image from the repository root:
+Then build with `cargo build --release --target-dir target` as before. Build the
+controller's image from the repository root:
 
 ```sh
 docker build -f deploy/docker/prod/Dockerfile.controller -t flezha/flezha:0.1.0 .
 ```
 
-Git ignores the `.cargo` folder, and once the crate and the image are published
-the step goes away and the commands above are all you need. The empty
+Git ignores the `.cargo` folder; delete it to use the published crates again. The empty
 `[workspace]` table in `Cargo.toml` keeps the repository's own workspace from
 claiming this folder, and does nothing in a copy of its own.
 

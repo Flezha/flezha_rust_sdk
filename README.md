@@ -14,8 +14,7 @@ permanently supported.
 flezha_runner = "0.1.0"
 ```
 
-`flezha_runner` is not on crates.io yet, and the core it builds on has no
-release tag yet. Until both exist, point Cargo at a checkout as
+To work on the SDK itself, point Cargo at a checkout as
 [`examples/echo`](examples/echo/README.md#building-from-a-checkout) shows.
 
 ## Supported Rust versions
@@ -26,7 +25,7 @@ Rust version.
 ## The native library
 
 There is none to install. The kernel, `flz_core`, is an ordinary Cargo
-dependency at a git tag, compiled into your binary with the rest of the crate,
+dependency from crates.io, compiled into your binary with the rest of the crate,
 so nothing is loaded at run time.
 
 ## Local mode, testing and the relay API
@@ -320,8 +319,8 @@ with the `testing` feature so the test harness is part of it.
 
 3. Review the diff in your PR. Treat new pub items as additive;
    removals or signature changes are breaking and require a SemVer bump
-   (the library is unpublished today; see umbrella decision on
-   "no-legacy-shims" before adding compatibility code).
+   (see umbrella decision on "no-legacy-shims" before adding
+   compatibility code).
 
 ## Features
 

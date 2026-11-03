@@ -42,23 +42,20 @@ Nothing inside the files is renamed for you. Change the package name in
 `Cargo.toml`. `starter` is the name `flz relay start` takes. `count` is the name
 the tasklet's state is saved under, so choose it before the first run.
 
-## Before the SDK is published
+## Building from a checkout
 
-`flezha_runner` is not on crates.io yet, and the core it builds on has no
-release tag yet. Point Cargo at a Flezha checkout once, from this folder, with
-the checkout's absolute path:
+To run the project against a Flezha checkout instead of the published crates,
+point Cargo at the checkout once, from this folder, with the checkout's absolute
+path:
 
 ```sh
 mkdir -p .cargo
 cat > .cargo/config.toml <<'TOML'
 [patch.crates-io]
 flezha_runner = { path = "/path/to/flezha/sdk/rust" }
-
-[patch."https://github.com/flezha/flezha"]
 flz_core = { path = "/path/to/flezha/crates/flz_core" }
 flz_transport = { path = "/path/to/flezha/crates/flz_transport" }
 TOML
 ```
 
-Then add `--offline` to the `cargo` commands, so Cargo does not look for the
-missing tag. Git ignores the `.cargo` folder.
+Git ignores the `.cargo` folder; delete it to use the published crates again.
