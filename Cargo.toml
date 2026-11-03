@@ -38,8 +38,8 @@ schemars = ["dep:schemars"]
 # The core at the tag this SDK is proven against. The core's own tree builds this
 # crate as a member of its workspace, whose `[patch]` maps this source back to
 # its path crates, so the same line works in both places.
-flz_core = { version = "0.1.0", git = "https://github.com/flezha/flezha", tag = "v0.1.0" }
-flz_transport = { version = "0.1.0", git = "https://github.com/flezha/flezha", tag = "v0.1.0" }
+flz_core = "0.1.0"
+flz_transport = "0.1.0"
 flezha-macros = { version = "0.1.0", path = "macros" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -57,7 +57,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
-flz_core = { version = "0.1.0", git = "https://github.com/flezha/flezha", tag = "v0.1.0", features = ["test-support"] }
+flz_core = { version = "0.1.0", features = ["test-support"] }
 # This crate with its internals exposed: the integration tests reach the dispatch
 # internals, so a plain `cargo test --workspace` compiles them.
 flezha_runner = { path = ".", features = ["bench-internals", "testing"] }
