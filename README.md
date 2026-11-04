@@ -11,7 +11,7 @@ permanently supported.
 
 ```toml
 [dependencies]
-flezha_runner = "0.1.0"
+flezha_runner = "0.1.1"
 ```
 
 To work on the SDK itself, point Cargo at a checkout as

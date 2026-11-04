@@ -11,7 +11,7 @@
 # controller and the contract set come from the core release at the same
 # version, checked against that release's manifest.
 #
-#   scripts/ci.sh --core <dir|url> [--version 0.1.0]
+#   scripts/ci.sh --core <dir|url> [--version 0.1.1]
 #
 # What this cannot see is the fifteen-capability vocabulary the controller
 # owns: persistence, effectively-once, correction, partitioning, steps relays,
@@ -22,7 +22,7 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 CORE=""
-VERSION="0.1.0"
+VERSION="0.1.1"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --core)    CORE="$2"; shift 2 ;;

@@ -8,7 +8,7 @@ edition = "2021"
 publish = false
 
 [dependencies]
-flezha_runner = "0.1.0"
+flezha_runner = "0.1.1"
 # The control calls commented out in main.rs take their fields as JSON.
 serde_json = "1"
 
